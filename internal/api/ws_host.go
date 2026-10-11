@@ -94,10 +94,12 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
 			// One bucket for every open host of the address: the bound is the address's, not each connection's.
-			hc.relay = s.openRelay.acquire(addr, s.cfg.Switchyard.OpenHostRelayKBps*1024)
+			rate := s.cfg.Switchyard.OpenHostRelayKBps * 1024
+			hc.relay = s.openRelay.acquire(addr, rate, s.relayBurst(rate))
 			defer s.openRelay.release(addr)
 		case s.cfg.Switchyard.RelayKBps > 0:
-			hc.relay = newByteBucket(s.cfg.Switchyard.RelayKBps * 1024)
+			rate := s.cfg.Switchyard.RelayKBps * 1024
+			hc.relay = newByteBucket(rate, s.relayBurst(rate))
 		}
 	}
 	s.log.Info("host registered", "session", info.ID, "host", info.HostName, "resumed", resumed, "open", open)
@@ -202,7 +204,8 @@ type hostConnState struct {
 	relay       *byteBucket
 }
 
-// byteBucket is a token bucket of bytes: rate a second, burst at most.
+// byteBucket is a token bucket of bytes: rate a second, burst at most (a
+// relay bound's is Server.relayBurst).
 // take charges n bytes at once, all of them, and then waits, as long as ctx
 // allows, until the bucket has refilled what it owes, so a host (or a
 // viewer) that streams more than the bound is slowed rather than cut off:
@@ -222,9 +225,23 @@ type byteBucket struct {
 	last   time.Time
 }
 
-func newByteBucket(bytesPerSecond int) *byteBucket {
-	r := float64(bytesPerSecond)
-	return &byteBucket{rate: r, burst: 2 * r, tokens: 2 * r, last: time.Now()}
+func newByteBucket(bytesPerSecond, burst int) *byteBucket {
+	return &byteBucket{rate: float64(bytesPerSecond), burst: float64(burst), tokens: float64(burst), last: time.Now()}
+}
+
+// relayBurstFloor is the least burst a relay bound allows: what a person's
+// tabs ask for or send together, at most, passes at once whatever the rate,
+// for the browser gives up on a file request or a save after 20 s. That is
+// three of the largest frames, a file of proto.MaxFileBytes read or saved
+// with its header, and room besides. A server takes it when it is made
+// (Server.relayBurstFloor), so a test may lower it for the servers it makes.
+var relayBurstFloor = 4 << 20
+
+// relayBurst is the burst of a relay bound of rate bytes a second: twice the
+// rate, and never less than the floor. The rate is what the bound allows
+// over time; the burst, what a person may ask for at once.
+func (s *Server) relayBurst(rate int) int {
+	return max(2*rate, s.relayBurstFloor)
 }
 
 // refill brings tokens up to now. Called with mu held.

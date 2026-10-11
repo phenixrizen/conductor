@@ -3,9 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,13 +20,24 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/signal"
 )
 
 // viewerBudget sets what the viewers of one address may send hosts through
-// the server: 256 KiB a second, a burst of 512 KiB.
+// the server: 256 KiB a second, a burst of 512 KiB under noBurstFloor.
 func viewerBudget(c *config.Config) { c.ViewerRelayKBps = 256 }
+
+// noBurstFloor has the servers this test makes give each relay bound a burst
+// of twice its rate alone, without relayBurstFloor: a test of a rate sends
+// past the burst, and need not send 4 MiB first. Called before they are made.
+func noBurstFloor(t *testing.T) {
+	old := relayBurstFloor
+	relayBurstFloor = 0
+	t.Cleanup(func() { relayBurstFloor = old })
+}
 
 // relayTap records the frames the server relays to a fake host, by viewer.
 type relayTap struct {
@@ -159,6 +174,7 @@ func dialViewerFrom(t *testing.T, e *testEnv, local, sessionID, token string) *w
 // it sends all reaches the host, whole and in order, but no faster than the
 // budget, on a switchyard as on a plain server.
 func TestRelayedViewerIsSlowedToItsAddressBudget(t *testing.T) {
+	noBurstFloor(t)
 	for name, mutate := range map[string]func(*config.Config){
 		"switchyard": func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) },
 		"serve":      viewerBudget,
@@ -192,6 +208,7 @@ func TestRelayedViewerIsSlowedToItsAddressBudget(t *testing.T) {
 // Two viewers of one address send under one budget: together they wait as
 // one would, where a budget for each would let both through at once.
 func TestViewersOfOneAddressShareOneBudget(t *testing.T) {
+	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	tap := tapRelays(t, host)
@@ -329,6 +346,7 @@ func TestAViewerThatLeavesWhileWaitingIsFoundByItsPings(t *testing.T) {
 // A viewer that spends its address's burst and connects again finds it still
 // spent: leaving buys no fresh burst.
 func TestAViewerThatComesBackFindsItsBudgetSpent(t *testing.T) {
+	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	tap := tapRelays(t, host)
@@ -356,6 +374,7 @@ func TestAViewerThatComesBackFindsItsBudgetSpent(t *testing.T) {
 // A viewer of another address sends under its own budget: one that drained
 // its address's does not slow it.
 func TestAnotherAddressKeepsItsOwnViewerBudget(t *testing.T) {
+	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	tap := tapRelays(t, host)
@@ -430,10 +449,218 @@ func TestOrdinaryViewerTrafficPassesUnderTheDefaultBudget(t *testing.T) {
 	}
 }
 
+// browserFileDeadline is how long the browser waits for the answer to a file
+// request or a save before it gives up on it (FILE_TIMEOUT_MS in
+// web/app/utils/transport/base.ts): a save then shows as not saved.
+const browserFileDeadline = 20 * time.Second
+
+// A relay bound's burst is twice its rate and never less than the floor,
+// which holds three of the largest frames relayed, a file of
+// proto.MaxFileBytes read with its header, and a little more: what a
+// person's tabs ask for together passes at once, whatever the rate.
+func TestRelayBurstHoldsWhatAPersonAsksForAtOnce(t *testing.T) {
+	largest := 1 + proto.ViewerIDLen + proto.MaxFrame
+	if relayBurstFloor < 3*largest {
+		t.Fatalf("a floor of %d holds fewer than three frames of %d", relayBurstFloor, largest)
+	}
+	e := newTestEnv(t, nil)
+	if got := e.srv.relayBurst(128 << 10); got != relayBurstFloor {
+		t.Fatalf("the burst at 128 KiB/s is %d", got)
+	}
+	if got := e.srv.relayBurst(4 << 20); got != 8<<20 {
+		t.Fatalf("the burst at 4 MiB/s is %d", got)
+	}
+}
+
+// relayedViewers has local publish its next session to rendezvous (as an
+// open host when token is empty) and joins n viewers there, each through
+// the relay, as the workbench.
+func relayedViewers(t *testing.T, rendezvous, local *testEnv, token string, n int) []*wsClient {
+	t.Helper()
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: token, HostName: "office-server", RelayOnly: true}})
+	local.createSession("cat")
+	var hostedID string
+	if !waitFor(10*time.Second, func() bool {
+		rendezvous.srv.Registry().Each(func(d session.Driver) {
+			if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" {
+				hostedID = i.ID
+			}
+		})
+		return hostedID != ""
+	}) {
+		t.Fatal("the rendezvous never listed the session")
+	}
+	viewers := make([]*wsClient, n)
+	for i := range viewers {
+		v := dialViewer(t, rendezvous, hostedID, adminToken)
+		v.expectControl(proto.CtlWelcome)
+		relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
+		v.send(relay)
+		for {
+			f, err := v.read()
+			if err != nil {
+				t.Fatalf("waiting for relay_ok: %v", err)
+			}
+			if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
+				break
+			}
+		}
+		v.hello(80, 24)
+		v.expectControl(proto.CtlWelcome)
+		v.expectControl(proto.CtlReady)
+		viewers[i] = v
+	}
+	return viewers
+}
+
+// awaitFile reads v until the FILE frame answering reqID.
+func awaitFile(ctx context.Context, v *wsClient, reqID string) (proto.FileHeader, []byte, error) {
+	for {
+		_, data, err := v.c.Read(ctx)
+		if err != nil {
+			return proto.FileHeader{}, nil, err
+		}
+		f, err := proto.Decode(data)
+		if err != nil || f.Type != proto.TypeFile {
+			continue
+		}
+		if h, body, err := proto.DecodeFile(f.Payload); err == nil && h.ReqID == reqID {
+			return h, body, nil
+		}
+	}
+}
+
+// saveRelayed saves body over path from v as the editor does, in parts of
+// proto.MaxWritePart under reqID, and returns the answer.
+func saveRelayed(ctx context.Context, v *wsClient, reqID, path, base string, body []byte) (proto.FileHeader, error) {
+	for off := 0; off < len(body); off += proto.MaxWritePart {
+		end := min(off+proto.MaxWritePart, len(body))
+		frame, err := proto.EncodeFileWrite(proto.FileWrite{ReqID: reqID, Path: path, Offset: int64(off), Total: int64(len(body)), BaseSha256: base}, body[off:end])
+		if err != nil {
+			return proto.FileHeader{}, err
+		}
+		if err := v.c.Write(ctx, websocket.MessageBinary, frame); err != nil {
+			return proto.FileHeader{}, err
+		}
+	}
+	h, _, err := awaitFile(ctx, v, reqID)
+	return h, err
+}
+
+// allAtOnce runs do(i) for each of n at once, and returns how long each took
+// from the start and what it returned.
+func allAtOnce(n int, do func(i int) error) ([]time.Duration, []error) {
+	took, errs := make([]time.Duration, n), make([]error, n)
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = do(i)
+			took[i] = time.Since(start)
+		}()
+	}
+	wg.Wait()
+	return took, errs
+}
+
+// Three tabs behind one address save a file of the largest size the editor
+// saves, all at once, into a session another server publishes here and
+// relays to them: under the default budget each save is written and
+// answered well inside the browser's deadline.
+func TestThreeLargestSavesFromOneAddressAnswerWithinTheBrowsersDeadline(t *testing.T) {
+	rendezvous := newTestEnv(t, nil)
+	if rendezvous.srv.cfg.ViewerRelayKBps != config.Defaults().ViewerRelayKBps {
+		t.Fatal("the rendezvous is not on the default budget")
+	}
+	local := newTestEnv(t, nil)
+	names := []string{"a.txt", "b.txt", "c.txt"}
+	bases := make([]string, len(names))
+	bodies := make([][]byte, len(names))
+	for i, n := range names {
+		old := []byte("old " + n + "\n")
+		if err := os.WriteFile(filepath.Join(local.root, n), old, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(old)
+		bases[i] = hex.EncodeToString(sum[:])
+		bodies[i] = bytes.Repeat([]byte{byte('a' + i)}, proto.MaxFileBytes)
+	}
+	viewers := relayedViewers(t, rendezvous, local, "test-host-token", len(names))
+	ctx, cancel := context.WithTimeout(t.Context(), 2*browserFileDeadline)
+	defer cancel()
+	answers := make([]proto.FileHeader, len(names))
+	took, errs := allAtOnce(len(names), func(i int) (err error) {
+		answers[i], err = saveRelayed(ctx, viewers[i], "w"+names[i], names[i], bases[i], bodies[i])
+		return err
+	})
+	for i, n := range names {
+		t.Logf("%s answered after %v", n, took[i])
+		switch {
+		case errs[i] != nil:
+			t.Fatalf("%s: no answer after %v: %v", n, took[i], errs[i])
+		case answers[i].Kind != "written":
+			t.Fatalf("%s: answered %+v", n, answers[i])
+		case took[i] > browserFileDeadline/2:
+			t.Errorf("%s: answered after %v, the browser gives up after %v", n, took[i], browserFileDeadline)
+		}
+		if got, err := os.ReadFile(filepath.Join(local.root, n)); err != nil || !bytes.Equal(got, bodies[i]) {
+			t.Errorf("%s on disk: %d bytes, %v", n, len(got), err)
+		}
+	}
+}
+
+// Three tabs read a large file each, all at once, from a session an open
+// host publishes on a switchyard and relays to them: under the default
+// bound on what open hosts relay, each answer comes well inside the
+// browser's deadline. (960 KiB: a file of 1 MiB or more disconnects the
+// viewer today, a bug of its own in docs/tasks-todo.md.)
+func TestThreeLargeReadsFromAnOpenHostAnswerWithinTheBrowsersDeadline(t *testing.T) {
+	switchyard := openSwitchyardEnv(t, nil)
+	if switchyard.srv.cfg.Switchyard.OpenHostRelayKBps != config.Defaults().Switchyard.OpenHostRelayKBps {
+		t.Fatal("the switchyard is not on the default bound")
+	}
+	local := newTestEnv(t, nil)
+	names := []string{"a.txt", "b.txt", "c.txt"}
+	const size = 960 << 10
+	for i, n := range names {
+		if err := os.WriteFile(filepath.Join(local.root, n), bytes.Repeat([]byte{byte('a' + i)}, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	viewers := relayedViewers(t, switchyard, local, "", len(names))
+	ctx, cancel := context.WithTimeout(t.Context(), 2*browserFileDeadline)
+	defer cancel()
+	answers := make([]proto.FileHeader, len(names))
+	bodies := make([][]byte, len(names))
+	took, errs := allAtOnce(len(names), func(i int) error {
+		get := proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "f" + names[i], Path: names[i]})
+		if err := viewers[i].c.Write(ctx, websocket.MessageBinary, get); err != nil {
+			return err
+		}
+		var err error
+		answers[i], bodies[i], err = awaitFile(ctx, viewers[i], "f"+names[i])
+		return err
+	})
+	for i, n := range names {
+		t.Logf("%s answered after %v", n, took[i])
+		switch {
+		case errs[i] != nil:
+			t.Fatalf("%s: no answer after %v: %v", n, took[i], errs[i])
+		case answers[i].Kind != "file" || len(bodies[i]) != size:
+			t.Fatalf("%s: answered %+v with %d bytes", n, answers[i], len(bodies[i]))
+		case took[i] > browserFileDeadline/2:
+			t.Errorf("%s: answered after %v, the browser gives up after %v", n, took[i], browserFileDeadline)
+		}
+	}
+}
+
 // While one viewer sends past its budget, the host is answered at once and
 // another viewer's ping goes through: the flood waits in its own read loop
 // alone.
 func TestHostAndOtherViewersStayResponsiveDuringAFlood(t *testing.T) {
+	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	tap := tapRelays(t, host)

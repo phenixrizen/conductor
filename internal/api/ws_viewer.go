@@ -343,7 +343,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	defer sink.cancel()
 	var budget *byteBucket
 	if kbps := s.cfg.ViewerRelayKBps; kbps > 0 {
-		budget = s.viewerRelay.acquire(addr, kbps*1024)
+		budget = s.viewerRelay.acquire(addr, kbps*1024, s.relayBurst(kbps*1024))
 		defer s.viewerRelay.release(addr)
 	}
 

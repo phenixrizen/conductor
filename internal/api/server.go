@@ -50,6 +50,9 @@ type Server struct {
 	// pingEvery is how often a WebSocket is pinged (the package's pingEvery
 	// when the server was made).
 	pingEvery time.Duration
+	// relayBurstFloor is the least burst of a relay bound (relayBurst; the
+	// package's relayBurstFloor when the server was made).
+	relayBurstFloor int
 	// keeper keeps the links a switchyard mints across its restarts
 	// (linkfiles.go); nil elsewhere.
 	keeper *linkKeeper
@@ -232,6 +235,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		started:     time.Now(),
 		relayed:     newRelayMeter(nil),
 	}
+	s.relayBurstFloor = relayBurstFloor
 	s.selfLimits = newSelfCounters()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }
 	s.events = newEventHub()

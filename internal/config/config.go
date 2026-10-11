@@ -138,10 +138,12 @@ type Switchyard struct {
 	Relay *bool `json:"relay,omitempty"`
 	// RelayKBps bounds what one host connection may send through the relay,
 	// in kilobytes a second (the host's output to all of its viewers, and
-	// its messages, the answers and candidates for its viewers among them;
-	// a burst of twice that is allowed): a public switchyard's protection
-	// against a session that streams. 0, the default, is no bound. What
-	// viewers send hosts is bounded by Config.ViewerRelayKBps.
+	// its messages, the answers and candidates for its viewers among them):
+	// a public switchyard's protection against a session that streams. A
+	// burst of twice that is allowed, never less than 4 MiB, so that what a
+	// person's tabs ask for at once (three of the largest files a viewer
+	// reads) passes at once. 0, the default, is no bound. What viewers send
+	// hosts is bounded by Config.ViewerRelayKBps.
 	RelayKBps int `json:"relayKBps,omitempty"`
 	// AllowedOrigins are the browser origins that may fetch the join route
 	// and open a hosted session's WebSocket from another page, as host
@@ -165,8 +167,9 @@ type Switchyard struct {
 	// OpenHostRelayKBps bounds what the open hosts of one address relay
 	// (as RelayKBps counts it), all of them together (128 KiB/s by
 	// default): one bucket per address,
-	// shared by its connections, with a burst of twice the rate. 0 falls
-	// back to RelayKBps, which is per connection.
+	// shared by its connections, with a burst of twice the rate and never
+	// less than 4 MiB, as RelayKBps has. 0 falls back to RelayKBps, which is
+	// per connection.
 	OpenHostRelayKBps int `json:"openHostRelayKBps,omitempty"`
 	// OpenHostLinks bounds the links the open hosts of one address keep on
 	// the switchyard at a time (32 by default): links outlive restarts, so
@@ -337,9 +340,11 @@ type Config struct {
 	// ViewerRelayKBps bounds what the viewers of one address send hosted
 	// sessions' hosts through this server, all of them together, in KiB a
 	// second (128 by default): relayed frames and signaling alike, one
-	// bucket per address with a burst of twice the rate. A viewer past it is
-	// slowed, its connection read no faster than the bucket refills. It
-	// holds on a switchyard and on a plain server alike; 0 is no bound.
+	// bucket per address with a burst of twice the rate, and never less
+	// than 4 MiB, so that three saves of the largest file the editor saves
+	// pass at once. A viewer past it is slowed, its connection read no
+	// faster than the bucket refills. It holds on a switchyard and on a
+	// plain server alike; 0 is no bound.
 	ViewerRelayKBps int `json:"viewerRelayKBps"`
 	// EnvPassthrough lists extra environment variables copied into PTYs.
 	EnvPassthrough []string `json:"envPassthrough"`

@@ -184,14 +184,20 @@ answers a CONTROL `error{code:"relay_off"}` instead and keeps the connection,
 so the viewer stays on its WebRTC attempt; such a switchyard also refuses a
 host that registers with `relayOnly` (close 1002, `relay_off`). With
 `switchyard.relayKBps` set, a host's relayed output, and its messages with
-it, is read no faster than that many KiB a second (a burst of twice it):
-the host is slowed by its own connection, and every frame still arrives
-whole and in order. The other way, on any server, what a hosted session's
-viewers send (SIGNAL and relayed frames) is read under one budget per
-address, `viewerRelayKBps` (128 KiB a second by default, a burst of twice
-it), shared by every hosted viewer of the address and kept after the last
-one leaves until it has refilled: a viewer past it is slowed the same way,
-and each frame is charged whole, in the order the frames come. What waits for a host's connection is bounded in bytes
+it, is read no faster than that many KiB a second: the host is slowed by
+its own connection, and every frame still arrives whole and in order. The
+other way, on any server, what a hosted session's viewers send (SIGNAL and
+relayed frames) is read under one budget per address, `viewerRelayKBps`
+(128 KiB a second by default), shared by every hosted viewer of the
+address and kept after the last one leaves until it has refilled: a viewer
+past it is slowed the same way, and each frame is charged whole, in the
+order the frames come. Each of these bounds, and
+`switchyard.openHostRelayKBps` (the open hosts of one address together),
+allows a burst of twice its rate and never less than 4 MiB: what a
+person's tabs ask for or send at once, three files of 1 MiB read or saved
+among it, passes at once whatever the rate, where the browser gives up on
+a file request or a save after 20 s; the rate bounds what goes over time.
+What waits for a host's connection is bounded in bytes
 as well as in messages (8 MiB): the viewers' frames fill at most 7 MiB of it
 and then wait in their own read loops, in the order they came, for the host
 to take some (a viewer whose connection fails meanwhile is let go), which

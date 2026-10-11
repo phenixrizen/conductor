@@ -93,8 +93,8 @@ func (c *addrCounter) acquire(key string, max int) bool {
 // addrBuckets shares one byte bucket among the connections of an address:
 // the open hosts of one address on a switchyard relay under one bound, so
 // holding openHostSessions sessions buys no more relay than one. acquire hands
-// out the address's bucket, made at the rate when the address holds none;
-// the viewers of hosted sessions share theirs the same way. After the last
+// out the address's bucket, made at the rate and burst when the address holds
+// none; the viewers of hosted sessions share theirs the same way. After the last
 // holder releases it the bucket is kept until it has refilled, and then
 // dropped, so an address that left soon costs nothing, and one that leaves
 // and comes back finds what it spent still spent rather than a fresh burst.
@@ -134,7 +134,7 @@ func (c *addrBuckets) forget(key string, sb *sharedBucket) {
 	})
 }
 
-func (c *addrBuckets) acquire(key string, bytesPerSecond int) *byteBucket {
+func (c *addrBuckets) acquire(key string, bytesPerSecond, burst int) *byteBucket {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.held == nil {
@@ -142,7 +142,7 @@ func (c *addrBuckets) acquire(key string, bytesPerSecond int) *byteBucket {
 	}
 	sb := c.held[key]
 	if sb == nil {
-		sb = &sharedBucket{bucket: newByteBucket(bytesPerSecond)}
+		sb = &sharedBucket{bucket: newByteBucket(bytesPerSecond, burst)}
 		c.held[key] = sb
 	}
 	sb.n++

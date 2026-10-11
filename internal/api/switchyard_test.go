@@ -213,6 +213,7 @@ func TestOriginMatches(t *testing.T) {
 // A switchyard with a relay bound slows a host that streams more than it:
 // every frame still arrives, in order, but no faster than the bound.
 func TestSwitchyardRelayIsThrottledPerHost(t *testing.T) {
+	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) {
 		c.Switchyard.Enabled = true
 		c.Switchyard.RelayKBps = 256
@@ -226,6 +227,7 @@ func TestSwitchyardRelayIsThrottledPerHost(t *testing.T) {
 // A host's messages count in its relay bound as its relayed frames do: the
 // answers it sends a viewer go no faster than the bound either.
 func TestSwitchyardRelayBoundCountsAHostsMessages(t *testing.T) {
+	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) {
 		c.Switchyard.Enabled = true
 		c.Switchyard.RelayKBps = 256
@@ -317,7 +319,7 @@ func relayOneMiB(t *testing.T, e *testEnv, host *fakeHost) time.Duration {
 // A take larger than the burst is charged whole: what it brings past the
 // burst is owed, and the next take waits for it.
 func TestByteBucketChargesATakePastTheBurstWhole(t *testing.T) {
-	b := newByteBucket(100_000) // a burst of 200 000
+	b := newByteBucket(100_000, 200_000)
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 	if err := b.take(ctx, 500_000); err == nil {
@@ -333,7 +335,7 @@ func TestByteBucketChargesATakePastTheBurstWhole(t *testing.T) {
 // Takes are served in their order: a large one is not held back for ever by
 // small ones that keep coming, each fitting what has refilled meanwhile.
 func TestByteBucketServesTakesInOrder(t *testing.T) {
-	b := newByteBucket(64 << 10)
+	b := newByteBucket(64<<10, 128<<10)
 	if err := b.take(t.Context(), 128<<10); err != nil { // the burst, spent
 		t.Fatal(err)
 	}
@@ -357,12 +359,12 @@ func TestByteBucketServesTakesInOrder(t *testing.T) {
 // goes, and the next holder gets a fresh one.
 func TestAddrBucketsKeepASpentBucketUntilItRefills(t *testing.T) {
 	var c addrBuckets
-	b := c.acquire("a", 100_000)
+	b := c.acquire("a", 100_000, 200_000)
 	if err := b.take(t.Context(), 200_000); err != nil {
 		t.Fatal(err)
 	}
 	c.release("a")
-	if again := c.acquire("a", 100_000); again != b {
+	if again := c.acquire("a", 100_000, 200_000); again != b {
 		t.Fatal("an address that came back at once got a fresh burst")
 	}
 	c.release("a")
@@ -379,16 +381,16 @@ func TestAddrBucketsKeepASpentBucketUntilItRefills(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if c.acquire("a", 100_000) == b {
+	if c.acquire("a", 100_000, 200_000) == b {
 		t.Fatal("a refilled bucket was handed out again rather than a fresh one")
 	}
 	c.release("a")
 }
 
-// A byte bucket refills at its rate and allows a burst of twice it; a take
-// past what it holds is charged whole and waits for what it owes.
+// A byte bucket refills at its rate and starts with its burst; a take past
+// what it holds is charged whole and waits for what it owes.
 func TestByteBucket(t *testing.T) {
-	b := newByteBucket(1000)
+	b := newByteBucket(1000, 2000)
 	if b.burst != 2000 || b.tokens != 2000 {
 		t.Fatalf("%+v", b)
 	}
@@ -515,6 +517,7 @@ func TestOpenHostRegistrationsAreRateLimitedPerAddress(t *testing.T) {
 
 // An open host relays under openHostRelayKBps, its own bound.
 func TestOpenHostsRelayUnderTheirOwnBound(t *testing.T) {
+	noBurstFloor(t)
 	e := openSwitchyardEnv(t, func(c *config.Config) { c.Switchyard.OpenHostRelayKBps = 256; c.Switchyard.RelayKBps = 0 })
 	host := dialFakeHostAuth(t, e, "hosted-agent-token", "")
 	if took := relayOneMiB(t, e, host); took < 1500*time.Millisecond {
@@ -552,7 +555,7 @@ func TestHostedSessionsTakeMaxViewersFromTheConfig(t *testing.T) {
 // One bucket shared by many takers never hands out more than its burst and
 // what it refills meanwhile.
 func TestByteBucketIsSafeToShare(t *testing.T) {
-	b := newByteBucket(64 << 10)
+	b := newByteBucket(64<<10, 128<<10)
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -578,17 +581,17 @@ func TestByteBucketIsSafeToShare(t *testing.T) {
 
 func TestAddrBucketsShareOneBucketPerAddress(t *testing.T) {
 	var c addrBuckets
-	a1, a2, b := c.acquire("a", 1024), c.acquire("a", 1024), c.acquire("b", 1024)
+	a1, a2, b := c.acquire("a", 1024, 2048), c.acquire("a", 1024, 2048), c.acquire("b", 1024, 2048)
 	if a1 != a2 || a1 == b {
 		t.Fatal("an address gets one bucket, another address its own")
 	}
 	c.release("a")
-	if c.acquire("a", 1024) != a1 {
+	if c.acquire("a", 1024, 2048) != a1 {
 		t.Fatal("the bucket goes only with its last holder")
 	}
 	c.release("a")
 	c.release("a")
-	if c.acquire("a", 1024) == a1 {
+	if c.acquire("a", 1024, 2048) == a1 {
 		t.Fatal("a fresh bucket after the address left")
 	}
 	c.release("a")
@@ -602,6 +605,7 @@ func TestAddrBucketsShareOneBucketPerAddress(t *testing.T) {
 // relay finds the bucket the first drained, where a bound per connection
 // would give it a fresh burst.
 func TestOpenHostsFromOneAddressShareTheRelayBound(t *testing.T) {
+	noBurstFloor(t)
 	e := openSwitchyardEnv(t, func(c *config.Config) { c.Switchyard.OpenHostRelayKBps = 256; c.Switchyard.RelayKBps = 0 })
 	first := dialFakeHostAuth(t, e, "hosted-agent-token", "")
 	second := dialFakeHostAuth(t, e, "hosted-agent-token", "")
