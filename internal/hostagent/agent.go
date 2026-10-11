@@ -902,6 +902,7 @@ func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 		return
 	case <-a.local.Ended():
 	}
+	a.handViewersTheEnd(ctx, w)
 	info := a.local.Info()
 	if b, err := json.Marshal(proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode}); err == nil {
 		_ = w.sendControl(websocket.MessageText, b)
@@ -914,10 +915,38 @@ func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 	a.mu.Unlock()
 }
 
-// flushStatus waits briefly for the final status message to be sent. It gives
-// up at once when ctx is cancelled: watchStatus stops then without sending it.
+// endDrain bounds how long the session's end waits for the viewers to be
+// handed their last frames before the server is told of it
+// (handViewersTheEnd).
+const endDrain = 2 * time.Second
+
+// handViewersTheEnd waits, at most endDrain, until the session's last
+// frames for its viewers, its final status entry among them, have been
+// handed to their transports: those of the relayed viewers then go out on
+// the control connection ahead of what is handed to it after, the
+// session's end among it. The server ends a hosted session's links when it
+// hears the session ended, and with them the viewers attached through
+// them, dropping what was not relayed to them yet; the host's own messages
+// otherwise go ahead of relayed frames (controlWriter).
+func (a *agent) handViewersTheEnd(ctx context.Context, w *controlWriter) {
+	deadline := time.Now().Add(endDrain)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if a.statusQueued.Load() && a.local.Drained() {
+			return
+		}
+		select {
+		case <-w.done:
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// flushStatus waits briefly for the final status message to be sent, the
+// viewers' last frames handed first (handViewersTheEnd). It gives up at once
+// when ctx is cancelled: watchStatus stops then without sending it.
 func (a *agent) flushStatus(ctx context.Context) {
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(endDrain + 2*time.Second)
 	for {
 		a.mu.Lock()
 		done := a.flushed

@@ -450,9 +450,9 @@ func (w *controlWriter) run() {
 		var m *outMessage
 		switch {
 		case len(w.control) > 0:
-			m, w.control = w.control[0], w.control[1:]
+			m, w.control = dequeue(w.control)
 		case len(w.relay) > 0:
-			m, w.relay = w.relay[0], w.relay[1:]
+			m, w.relay = dequeue(w.relay)
 		}
 		if m != nil {
 			m.taken = true
@@ -475,6 +475,18 @@ func (w *controlWriter) run() {
 			return
 		}
 	}
+}
+
+// dequeue takes a lane's first message, and leaves no reference to it in
+// the lane: a message written is not kept, with its data, by the array
+// under the lane. An empty lane lets go of its array.
+func dequeue(lane []*outMessage) (*outMessage, []*outMessage) {
+	m := lane[0]
+	lane[0] = nil
+	if len(lane) == 1 {
+		return m, nil
+	}
+	return m, lane[1:]
 }
 
 // stop ends the writer: what waits is answered errConnDown, as is every

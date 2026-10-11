@@ -728,6 +728,86 @@ func TestAPacedDialWorksThroughAnHTTPSProxy(t *testing.T) {
 	}
 }
 
+// The server is told the session ended only after the relayed viewers' last
+// frames, though the host's own messages otherwise go first: a server ends
+// an ended session's links, and with them their viewers, dropping what was
+// not relayed to them yet.
+func TestTheSessionsEndGoesAfterTheViewersLastFrames(t *testing.T) {
+	s, c, pc := dialHeld(t, 0)
+	dir := t.TempDir()
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/sh", "-c", "sleep 0.5; echo LAST"}, Dir: dir, Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.Stop(context.Background(), time.Second)
+	a := &agent{opts: Options{Switchyard: true}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	w := a.useConn(c, pc)
+	t.Cleanup(w.stop)
+	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{OnActivity: a.onLocalActivity})
+	big := bytes.Repeat([]byte("b"), 1<<20)
+	if err := w.sendRelay(big, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	backedUp(t, pc)
+	const relayed = "relay-0123456789"
+	if _, err := a.local.AttachWith(session.AttachOptions{ID: relayed, Role: session.RoleView, Name: "relayed"}, newRelaySink(a, relayed)); err != nil {
+		t.Fatal(err)
+	}
+	go a.watchStatus(t.Context(), w)
+	select {
+	case <-a.local.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session never ended")
+	}
+	time.Sleep(500 * time.Millisecond)
+	close(s.read)
+	s.expectGot(t, big)
+	frames, ended := 0, false
+	for !ended {
+		select {
+		case got := <-s.got:
+			switch {
+			case bytes.Contains(got, []byte(`"t":"status"`)) && bytes.Contains(got, []byte(`"exited"`)) && !bytes.Contains(got, []byte(relayed)):
+				ended = true
+			case bytes.Contains(got, []byte(relayed)):
+				frames++
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("the server was never told the session ended")
+		}
+	}
+	if frames == 0 {
+		t.Fatal("no frame of the viewer's went before the session's end")
+	}
+	select {
+	case got := <-s.got:
+		if bytes.Contains(got, []byte(relayed)) {
+			t.Fatalf("a frame of the viewer's went after the session's end: %.80q", got)
+		}
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// A message taken from its lane is no longer kept, with its data, by the
+// array under the lane, and an emptied lane lets go of its array.
+func TestAMessageTakenIsNotKeptByItsLane(t *testing.T) {
+	under := []*outMessage{{data: []byte("one")}, {data: []byte("two")}}
+	m, rest := dequeue(under)
+	if string(m.data) != "one" || len(rest) != 1 || string(rest[0].data) != "two" {
+		t.Fatalf("took %q, left %d", m.data, len(rest))
+	}
+	if under[0] != nil {
+		t.Fatal("the lane's array keeps the message taken")
+	}
+	m, rest = dequeue(rest)
+	if string(m.data) != "two" || rest != nil {
+		t.Fatalf("took %q, left %v", m.data, rest)
+	}
+	if under[1] != nil {
+		t.Fatal("the lane's array keeps the last message taken")
+	}
+}
+
 // Stopping the writer, as the connection ends, answers what waits at once.
 func TestStoppingTheWriterAnswersWhatWaits(t *testing.T) {
 	_, c, pc := dialHeld(t, 0)

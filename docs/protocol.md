@@ -220,7 +220,9 @@ host's queue) is dropped, and nothing the viewer sent after it goes. What waits 
 connection goes one message at a time: its own messages (its status,
 attention and activity, the answers and candidates for its WebRTC viewers,
 its link requests) ahead of the frames it relays, and those viewer by
-viewer in turn, each viewer's in order. A relayed frame that waits more than
+viewer in turn, each viewer's in order; but the `status` that says the
+session ended waits, at most 2 s, for the viewers' last frames to go
+first, since the server ends an ended session's links and their viewers. A relayed frame that waits more than
 30 s for its turn is never sent: that viewer alone is let go
 (`slow_consumer`, then `viewer_closed`), as a WebRTC viewer is whose data
 channel stays full; one of the host's own messages that waits more than 15 s
