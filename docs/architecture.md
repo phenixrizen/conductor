@@ -272,7 +272,8 @@ registers the `conductor:` scheme: an invite opens its own join page with
 - Server session working directories must resolve under `allowedRoots` after
   symlink evaluation, and are opened through the root they lie under
   (`os.Root`): the process starts in the directory opened (on Linux by its
-  descriptor), and the session keeps it open. File reads, listings, finds
+  descriptor; on macOS by its path, checked to name it just before the
+  start), and the session keeps it open. File reads, listings, finds
   and saves are confined to that directory: a path is checked, then opened
   from it one element at a time without following links, so a link put on
   the way after the check leads nowhere. In

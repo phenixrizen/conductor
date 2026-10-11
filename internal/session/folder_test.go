@@ -309,6 +309,51 @@ func TestFileGetRefusesWhenTheSessionsPathNamesAnotherFolder(t *testing.T) {
 	}
 }
 
+// A repository's .git moved into the place of the folder a save goes to,
+// after the save's check, is still read only: the save is refused and the
+// repository's files stay as they were. So is a bare repository moved
+// into the place of a folder above the file.
+func TestFileWriteStaysOutOfAGitDirMovedInAfterTheCheck(t *testing.T) {
+	for _, c := range []struct {
+		name, path, git string
+	}{{"its own folder", "sub/config", "sub"}, {"a folder above", "sub/hooks/pre-commit", "sub"}} {
+		t.Run(c.name, func(t *testing.T) {
+			root, _ := linkTree(t)
+			gitDir := filepath.Join(root, ".git")
+			for _, d := range []string{"objects", "refs/heads", "hooks"} {
+				os.MkdirAll(filepath.Join(gitDir, d), 0o755)
+			}
+			os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+			os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+			os.WriteFile(filepath.Join(gitDir, "hooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o755)
+			os.MkdirAll(filepath.Join(root, "sub", "hooks"), 0o755)
+			os.WriteFile(filepath.Join(root, "sub", "config"), []byte("mine\n"), 0o644)
+			os.WriteFile(filepath.Join(root, "sub", "hooks", "pre-commit"), []byte("mine\n"), 0o644)
+			s, _ := newLocal(t, root)
+			sink := newChanSink(false)
+			sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+			if err != nil {
+				t.Fatal(err)
+			}
+			onceAfterCheck(t, func() {
+				dir := filepath.Join(root, c.git)
+				os.Rename(dir, dir+".was")
+				os.Rename(gitDir, dir)
+				os.Symlink(c.git, gitDir)
+			})
+			save(s, sub, "w", c.path, []byte("[core]\n\thooksPath = /tmp/x\n"), 512, "", true)
+			if f := fileReply(t, sink, "w"); f.Kind != "error" || f.Error.Code != "read_only" {
+				t.Fatalf("save %s once .git was moved there: %+v %+v", c.path, f, f.Error)
+			}
+			for rel, body := range map[string]string{"config": "[core]\n", "hooks/pre-commit": "#!/bin/sh\n"} {
+				if b, _ := os.ReadFile(filepath.Join(root, c.git, rel)); string(b) != body {
+					t.Fatalf("the repository's %s holds %q", rel, b)
+				}
+			}
+		})
+	}
+}
+
 // A folder opened under a directory stays under it: a link out of it on
 // the way, absolute or climbing out, is refused; a relative one that stays
 // in it is followed.

@@ -172,18 +172,33 @@ func (f *Folder) resolve(raw string, deny []string) (real, rel string, err error
 // returned, or "."), one element at a time (stepDir). The caller closes
 // what it returns.
 func (f *Folder) openDir(rel string, deny denySet) (*os.Root, os.FileInfo, error) {
+	return f.openDirChecked(rel, deny, nil)
+}
+
+// openDirChecked is openDir with check run on each directory it opens,
+// the folder's own first: an error from it ends the walk with that error.
+func (f *Folder) openDirChecked(rel string, deny denySet, check func(*os.Root) error) (*os.Root, os.FileInfo, error) {
 	cur, err := f.root.OpenRoot(".")
 	if err != nil {
 		return nil, nil, errFolderGone
 	}
 	id := f.id
-	if rel == "." || rel == "" {
-		if fi, err := cur.Stat("."); err == nil {
-			id = fi
-		}
-		return cur, id, nil
+	if fi, err := cur.Stat("."); err == nil {
+		id = fi
+	}
+	if rel == "" {
+		rel = "."
 	}
 	for _, name := range strings.Split(rel, string(filepath.Separator)) {
+		if check != nil {
+			if err := check(cur); err != nil {
+				cur.Close()
+				return nil, nil, err
+			}
+		}
+		if name == "." {
+			break
+		}
 		next, nid, err := stepDir(cur, id, name, deny)
 		cur.Close()
 		if err != nil {
@@ -191,7 +206,23 @@ func (f *Folder) openDir(rel string, deny denySet) (*os.Root, os.FileInfo, error
 		}
 		cur, id = next, nid
 	}
+	if check != nil && rel != "." {
+		if err := check(cur); err != nil {
+			cur.Close()
+			return nil, nil, err
+		}
+	}
 	return cur, id, nil
+}
+
+// refuseGitDir is a save's check on each directory it opens: a git
+// directory by its own files (gitDirectoryIn) is read only, as gitMetadata
+// says of its path, whatever was moved where since the check.
+func refuseGitDir(r *os.Root) error {
+	if gitDirectoryIn(r) {
+		return errGitDir
+	}
+	return nil
 }
 
 // stepDir opens the directory name in dir (dirID being dir as a file): it

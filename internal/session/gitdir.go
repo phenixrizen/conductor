@@ -461,13 +461,54 @@ func validHead(path string) bool {
 		return err == nil && strings.HasPrefix(target, "refs/")
 	}
 	head, _, ok := readPrefix(path, headPrefix)
-	if !ok {
-		return false
-	}
+	return ok && validHeadContent(head)
+}
+
+// validHeadContent reports whether head, a HEAD file's first bytes, is
+// one git takes: "ref:", spaces and refs/..., or an object id in hex.
+func validHeadContent(head []byte) bool {
 	if ref, ok := strings.CutPrefix(string(head), "ref:"); ok {
 		return strings.HasPrefix(strings.TrimLeft(ref, " \t\n\v\f\r"), "refs/")
 	}
 	return hexPrefix(string(head), 40)
+}
+
+// gitDirectoryIn is isGitDirectory for the directory r, open: its files
+// looked at through r, so it tells what was opened, whatever its path
+// names by then. A link in it that leads out of it counts for nothing
+// (os.Root), so it finds no more git directories than isGitDirectory.
+func gitDirectoryIn(r *os.Root) bool {
+	fi, err := r.Lstat("HEAD")
+	switch {
+	case err != nil:
+		return false
+	case fi.Mode()&os.ModeSymlink != 0:
+		target, err := r.Readlink("HEAD")
+		if err != nil || !strings.HasPrefix(target, "refs/") {
+			return false
+		}
+	case fi.Mode().IsRegular():
+		f, _, err := openFileIn(r, "HEAD", fi)
+		if err != nil {
+			return false
+		}
+		head, err := io.ReadAll(io.LimitReader(f, headPrefix))
+		f.Close()
+		if err != nil || !validHeadContent(head) {
+			return false
+		}
+	default:
+		return false
+	}
+	if fi, err := r.Stat("commondir"); err == nil && fi.Mode().IsRegular() {
+		return true
+	}
+	for _, sub := range []string{"objects", "refs"} {
+		if fi, err := r.Stat(sub); err != nil || !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // isGitFile reports whether path is a file git would take as a .git file

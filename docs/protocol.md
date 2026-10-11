@@ -770,7 +770,8 @@ file's directory as opened from the working directory) and answers
 kind `written` with the new `sha256`, `mtime` and `size`; the save is a `file`
 event `write` by the person with tool `editor`. Other refusals: `read_only`
 (not a controller, the session's `fileEdit` is `off`, or the file is in a
-repository's `.git`, however the path reaches it), `denied`,
+repository's `.git`, however the path reaches it, a folder on its way
+being a git directory by its own files as it is opened included), `denied`,
 `too_large`, `out_of_order`, `write`. The `fileEdit` setting (`control`, the
 default, or `off`; `CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`) is the
 same that offers Neovim, and the welcome's `fileEdit` says whether this

@@ -122,8 +122,11 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 		return errh("denied", "not a regular file")
 	}
 	ds := newDenySet(deny)
-	dir, dirID, err := s.folder.openDir(filepath.Dir(rel), ds)
+	// Each directory on the way is held to the .git rule again as opened.
+	dir, dirID, err := s.folder.openDirChecked(filepath.Dir(rel), ds, refuseGitDir)
 	switch {
+	case errors.Is(err, errGitDir):
+		return errh("read_only", "a repository's .git is read only here")
 	case errors.Is(err, errPathChanged), errors.Is(err, errNotReadable), errors.Is(err, errFolderGone):
 		return errh("denied", err.Error())
 	case err != nil && !h.Force:
