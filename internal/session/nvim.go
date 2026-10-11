@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -33,33 +34,78 @@ var ErrNvimUnavailable = errors.New("session: neovim is not available")
 
 // nvimEditor is one open editor of one subscription.
 type nvimEditor struct {
-	id     string
-	path   string // the resolved file
-	ed     *nvim.Editor
+	id   string
+	path string // the resolved file
+	// ed is Neovim, once it has started; set under the subscription's
+	// nvimMu, and never once the editor is gone.
+	ed *nvim.Editor
+	// cancel ends Neovim, starting or started.
 	cancel context.CancelFunc
-	gone   atomic.Bool
+	// gone says the editor was closed (its connection went, a close,
+	// Neovim's own exit); set under the subscription's nvimMu, so that an
+	// open still under way either sees it or is seen by whoever ends it.
+	gone atomic.Bool
 	// ready gates the frames: nothing before `opened` is sent.
 	ready atomic.Bool
 	// ending ends Neovim once, however many ways ask (end).
 	ending sync.Once
+	// endWait is nvimEndWait as the editor opened.
+	endWait time.Duration
+}
+
+// nvimEndWait bounds how long end lets Neovim leave on its own (a quit hook
+// that hangs holds `:qa!` and the exit) before it ends it with its context.
+// A session takes it as it is made (Local.nvimEndWait); tests shorten it.
+var nvimEndWait = 5 * time.Second
+
+// nvimReap is how long, past nvimEndWait, WaitEditors gives an editor
+// ended with its context to be reaped.
+const nvimReap = 2 * time.Second
+
+// nvimStarted, when set, runs as an editor's Neovim has started, before
+// the file is shown: tests make Neovim busy there.
+var nvimStarted func(*nvim.Editor)
+
+// WaitEditors waits for the editors ending on the session to have ended,
+// at most nvimEndWait and a moment more: those of a connection end on
+// their own goroutines as it goes (closeNvims), and a process about to
+// exit (the server's shutdown, through CloseAll; a host's end) waits here,
+// after its connections have gone, so that no Neovim outlives it.
+func (s *Local) WaitEditors() {
+	deadline := time.Now().Add(s.nvimEndWait + nvimReap)
+	for s.nvimCount.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // end ends Neovim and reaps it, once: with discard as `:qa!` does, else as
 // a lost connection does. Neovim that quit on its own (`:q`) is let finish
 // its exit, which removes its swap files last, before it is reaped; the
-// context's cancel comes after, never during, so it is not killed halfway.
+// context's cancel comes after, never during, so it is not killed halfway,
+// unless it has not left within nvimEndWait. A second caller waits for the
+// first's end, so no more than that.
 func (e *nvimEditor) end(discard bool) {
 	e.ending.Do(func() {
 		if e.ed != nil {
-			if discard {
-				e.ed.Discard()
-			} else {
-				e.ed.Close()
+			left := make(chan struct{})
+			go func() {
+				defer close(left)
+				if discard {
+					e.ed.Discard()
+				} else {
+					e.ed.Close()
+				}
+			}()
+			t := time.NewTimer(e.endWait)
+			select {
+			case <-left:
+			case <-t.C:
+				e.cancel()
+				<-left
 			}
+			t.Stop()
 		}
-		if e.cancel != nil {
-			e.cancel()
-		}
+		e.cancel()
 	})
 }
 
@@ -100,7 +146,10 @@ func (s *Local) nvimOwnerOnly(sub *Subscription) bool {
 // nvim_event of kind opened (then the whole buffer as lines), or returns
 // why not: ErrNvimUnavailable, ErrFileDenied (the path or the policy),
 // errGitDir (a file in a repository's .git), ErrTooManyRequests (the
-// bounds).
+// bounds), errGone (the connection went: nothing would close an editor
+// opened then), or an error of Neovim's
+// start. ctx bounds the start: Neovim still starting when it ends is ended,
+// and so is one whose connection goes meanwhile (closeNvims).
 func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimOpen) error {
 	if req.ReqID == "" || len(req.ReqID) > 64 || len(req.Path) > 4096 {
 		return errors.New("session: invalid nvim request")
@@ -118,29 +167,77 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 		// Neovim would write it.
 		return errGitDir
 	}
+	// Neovim outlives the request that opens it: its own context, which
+	// ctx ends only while it starts.
+	ectx, cancel := context.WithCancel(context.Background())
+	id := newNvimID()
+	e := &nvimEditor{id: id, path: target, cancel: cancel, endWait: s.nvimEndWait}
 	sub.nvimMu.Lock()
+	// Registered only while the connection is there: closeNvims, as it
+	// goes, marks its editors closed under this lock, and ends each one it
+	// finds, a Neovim still starting included.
+	gone := sub.nvimsClosed
+	select {
+	case <-sub.done:
+		gone = true
+	default:
+	}
+	if gone {
+		sub.nvimMu.Unlock()
+		cancel()
+		return errGone
+	}
 	if sub.nvims == nil {
 		sub.nvims = map[string]*nvimEditor{}
 	}
 	if len(sub.nvims) >= proto.MaxNvimPerSub || s.nvimCount.Load() >= proto.MaxNvimPerSession {
 		sub.nvimMu.Unlock()
+		cancel()
 		return ErrTooManyRequests
 	}
-	id := newNvimID()
-	e := &nvimEditor{id: id, path: target}
 	sub.nvims[id] = e
 	s.nvimCount.Add(1)
 	sub.nvimMu.Unlock()
-	ectx, cancel := context.WithCancel(context.Background())
-	e.cancel = cancel
+	// ctx bounds the start, up to the file shown: its end ends Neovim.
+	stop := context.AfterFunc(ctx, cancel)
 	h := &nvimHandler{s: s, sub: sub, e: e}
 	ed, err := nvim.Open(ectx, s.info.Cwd, target, h)
+	if err == nil && ctx.Err() != nil {
+		// ctx ended as the start finished: the cancel ends Neovim.
+		cancel()
+		ed.Close()
+		err = ctx.Err()
+	}
 	if err != nil {
+		stop()
 		cancel()
 		s.forgetNvim(sub, e)
+		if ctx.Err() != nil {
+			return fmt.Errorf("session: neovim did not start in time: %w", ctx.Err())
+		}
 		return errors.New("session: neovim: " + err.Error())
 	}
+	sub.nvimMu.Lock()
+	if e.gone.Load() {
+		// Closed while it started (closeNvims, NvimClose, Neovim's own
+		// exit): whoever closed it had no Neovim to end but through its
+		// cancel, and it is ended here.
+		connGone := sub.nvimsClosed
+		sub.nvimMu.Unlock()
+		stop()
+		cancel()
+		ed.Close()
+		s.forgetNvim(sub, e)
+		if connGone {
+			return errGone
+		}
+		return errors.New("session: neovim: closed as it started")
+	}
 	e.ed = ed
+	sub.nvimMu.Unlock()
+	if nvimStarted != nil {
+		nvimStarted(ed)
+	}
 	sub.send(proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, ID: id, Kind: proto.NvimOpened, ReqID: req.ReqID, Path: target}))
 	e.ready.Store(true)
 	if lines, err := ed.Lines(); err == nil {
@@ -150,6 +247,11 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	// A swap file found while the file opened was told to no one yet.
 	if sw := ed.FoundSwap(); sw != nil {
 		h.Swap(*sw)
+	}
+	if !stop() {
+		// ctx ended before Neovim had shown the file (busy as it
+		// started): its cancel has ended Neovim, and the editor closes.
+		h.Exited("error: neovim did not answer in time")
 	}
 	return nil
 }
@@ -169,11 +271,15 @@ func (s *Local) NvimSwap(sub *Subscription, req proto.NvimSwap) error {
 	}
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
+	var ed *nvim.Editor
+	if e != nil {
+		ed = e.ed
+	}
 	sub.nvimMu.Unlock()
-	if e == nil || e.ed == nil {
+	if ed == nil {
 		return ErrFileDenied
 	}
-	if err := e.ed.SwapChoice(req.Choice); err != nil {
+	if err := ed.SwapChoice(req.Choice); err != nil {
 		h := &nvimHandler{s: s, sub: sub, e: e}
 		h.emit(proto.NvimEvent{Kind: proto.NvimMessage, Text: truncateRunes(err.Error(), proto.MaxNvimLine), MessageKind: "emsg"})
 	}
@@ -190,19 +296,23 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	}
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
+	var ed *nvim.Editor
+	if e != nil {
+		ed = e.ed
+	}
 	if sub.nvimKeys.rate == 0 {
 		// Keys, not posts: sized for typing (proto.NvimKeysPerSecond).
 		sub.nvimKeys.rate, sub.nvimKeys.burst = proto.NvimKeysPerSecond, proto.NvimKeyBurst
 	}
 	ok := sub.nvimKeys.take(time.Now())
 	sub.nvimMu.Unlock()
-	if e == nil {
+	if ed == nil {
 		return ErrFileDenied
 	}
 	if !ok {
 		return ErrTooManyRequests
 	}
-	return e.ed.InputSeq(req.Keys, req.Seq)
+	return ed.InputSeq(req.Keys, req.Seq)
 }
 
 // NvimClose ends one of sub's editors: with Discard as `:qa!` does (the
@@ -211,31 +321,45 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 func (s *Local) NvimClose(sub *Subscription, req proto.NvimClose) {
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
-	sub.nvimMu.Unlock()
+	started := false
 	if e != nil {
 		e.gone.Store(true)
+		started = e.ed != nil
+	}
+	sub.nvimMu.Unlock()
+	if e != nil {
 		e.end(req.Discard)
-		s.forgetNvim(sub, e)
+		if started {
+			s.forgetNvim(sub, e)
+		}
 	}
 }
 
-// closeNvims ends every editor of sub (the connection is going).
+// closeNvims ends every editor of sub (the connection is going), those
+// still starting included, and refuses any open for it after (NvimOpen).
+// They end on goroutines of their own, each within nvimEndWait, and leave
+// the session's count as they have: whoever detaches the connection (a
+// host's frame loop among them) waits for no Neovim.
 func (s *Local) closeNvims(sub *Subscription) {
 	sub.nvimMu.Lock()
-	all := make([]*nvimEditor, 0, len(sub.nvims))
+	sub.nvimsClosed = true
 	for _, e := range sub.nvims {
-		all = append(all, e)
+		e.gone.Store(true)
+		started := e.ed != nil
+		go func() {
+			e.end(false)
+			if started {
+				s.forgetNvim(sub, e)
+			}
+		}()
 	}
 	sub.nvimMu.Unlock()
-	for _, e := range all {
-		e.gone.Store(true)
-		e.end(false)
-		s.forgetNvim(sub, e)
-	}
 }
 
 // forgetNvim takes e off sub's editors and the session's count; ending it
-// is end's.
+// is end's. An editor closed while still starting (no Neovim yet) is ended
+// through its context alone, and its open, which reaps that Neovim, is the
+// one to forget it (NvimOpen): it counts until then (WaitEditors).
 func (s *Local) forgetNvim(sub *Subscription, e *nvimEditor) {
 	sub.nvimMu.Lock()
 	if _, ok := sub.nvims[e.id]; ok {
@@ -303,10 +427,18 @@ func (h *nvimHandler) Swap(sw nvim.Swap) {
 }
 func (h *nvimHandler) Exited(reason string) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})
+	h.sub.nvimMu.Lock()
 	h.e.gone.Store(true)
-	h.s.forgetNvim(h.sub, h.e)
+	started := h.e.ed != nil
+	h.sub.nvimMu.Unlock()
 	// Off this goroutine: reaping waits for the client, which runs this.
-	go h.e.end(false)
+	// It leaves the session's count once it has ended (WaitEditors).
+	go func() {
+		h.e.end(false)
+		if started {
+			h.s.forgetNvim(h.sub, h.e)
+		}
+	}()
 }
 
 func newNvimID() string {

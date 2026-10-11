@@ -119,6 +119,9 @@ type Options struct {
 	ConfirmSubmit bool
 	// ConfirmWait is that wait; ConfirmWait when zero.
 	ConfirmWait time.Duration
+	// InputWait bounds how long a write to the process waits for the
+	// program to take it (input.go); InputWait when zero.
+	InputWait time.Duration
 	// WatchGit records what the agent changed in a git working directory
 	// without a hook naming the file (files seen by git, gitseen.go): the
 	// server's and the host's agent sessions set it.
@@ -213,6 +216,10 @@ type Local struct {
 	// submitting holds a token while a submission runs (Submit): one at a
 	// time per session.
 	submitting chan struct{}
+	// writer makes every write to the process, in order (input.go).
+	writer procWriter
+	// nvimEndWait is nvimEndWait as the session was made: its editors'.
+	nvimEndWait time.Duration
 	// paste follows the program's bracketed-paste mode (Submit, BracketedPaste).
 	paste pasteMode
 	// attnChanged is closed and replaced, under mu, on every attention change:
@@ -246,6 +253,9 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	if opts.ConfirmWait <= 0 {
 		opts.ConfirmWait = ConfirmWait
 	}
+	if opts.InputWait <= 0 {
+		opts.InputWait = InputWait
+	}
 	if info.Status == "" {
 		info.Status = StatusRunning
 	}
@@ -268,6 +278,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 
 		submitting:  make(chan struct{}, 1),
 		attnChanged: make(chan struct{}),
+		nvimEndWait: nvimEndWait,
 	}
 	if opts.Pattern != nil {
 		s.pattern = NewPatternWatcher(opts.Pattern, patternQuiet, s.firePattern)
@@ -1049,6 +1060,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub.LinkLabel = o.LinkLabel
 	sub.quiet = o.ChatOnly
 	sub.owner = o.Owner && o.LinkID == ""
+	sub.authorize = o.Authorize
 	if sized {
 		sub.want = [2]uint16{cols, rows}
 	}
@@ -1209,7 +1221,34 @@ func (s *Local) Detach(sub *Subscription) {
 // position query), which is written and answers nothing. While a question
 // asked during the work shows, a write of several keys with an Enter that
 // is not one of its choices is refused with ErrQuestion, nothing written.
+// They are written in their turn among the session's writes (input.go), and
+// Input waits for that at most Options.InputWait: a program that takes
+// nothing meanwhile gets ErrInputStalled, the keystrokes written later if
+// the write had begun (see writeProc) and never otherwise. Keystrokes not
+// yet written when sub ends (revoked, detached) are never written. data may
+// be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
+	return s.input(context.Background(), sub, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
+}
+
+// InputContext is Input waiting until ctx ends in place of
+// Options.InputWait (ctx's error then), and refused at once, as Input is,
+// while the program is known not to read: a host hands a viewer's
+// keystrokes on from its frame loop and gives each its time from its
+// arrival.
+func (s *Local) InputContext(ctx context.Context, sub *Subscription, data []byte) error {
+	return s.input(ctx, sub, data, writeWait{stall: s.opts.InputWait})
+}
+
+// InputWaiting is InputContext for a terminal of the person's own (a
+// host's): it waits for the program to read, however long it has not, as
+// a terminal does, until ctx ends.
+func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte) error {
+	return s.input(ctx, sub, data, writeWait{})
+}
+
+// input is Input waiting as o says, until ctx ends.
+func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o writeWait) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
@@ -1274,9 +1313,6 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if answersQuestion && s.trust != nil {
 		s.trust.Reset()
 	}
-	if enter {
-		s.nextTurn()
-	}
 	noted := false
 	if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
 		// A key that answers a dialog on the screen: the look before a
@@ -1293,7 +1329,14 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 			noted = true
 		}
 	}
-	if _, err := s.proc.Write(data); err != nil {
+	o.from, o.anyEnd = sub, true
+	if enter {
+		// The turn a done ended is behind as the Enter is written: the
+		// writer says so as it takes the keys (nextTurn), never for keys
+		// not written.
+		o.before = s.nextTurn
+	}
+	if _, err := s.writeProc(ctx, data, o); err != nil {
 		return err
 	}
 	if isTerminalReport(data) {
@@ -1555,7 +1598,8 @@ func (s *Local) Retire() {
 }
 
 // CloseAll evicts every subscription with the given reason (server shutdown)
-// and ends their editors. It returns once their transports have closed,
+// and ends their editors (closeNvims), waiting for those (WaitEditors). It
+// returns once their transports have closed,
 // those of the clients that had ended already included, together, as
 // DisconnectLink's do.
 func (s *Local) CloseAll(reason error) {
@@ -1573,6 +1617,7 @@ func (s *Local) CloseAll(reason error) {
 		s.closeNvims(sub)
 	}
 	waitClosed(all)
+	s.WaitEditors()
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

@@ -75,6 +75,11 @@ type Submission struct {
 	// Conductor types itself, recorded as ByName (cleaned as a display name).
 	By     *Subscription
 	ByName string
+	// From is the connection whose request this is when By is not set (a
+	// run's chat sent to another member's agent, recorded as ByName): its
+	// link's revoke or expiry withdraws the submission as By's does
+	// (revoked). Nil for what Conductor types on its own.
+	From *Subscription
 	// UnlessWaiting writes nothing while the session waits on a prompt: for
 	// what must never answer one (handoffs, broadcasts).
 	UnlessWaiting bool
@@ -89,9 +94,25 @@ type Submission struct {
 	BeforeEnter func()
 }
 
+// ErrSubmitPending says a submission's text was being taken when its time
+// ran out: the program has not read it all yet. The submission is accepted:
+// it is finished as the program reads (its Enter, as it would have been),
+// holding the session's turn until then, and it is never typed again.
+var ErrSubmitPending = errors.New("session: the program is taking its input slowly; the line is entered once it has")
+
+// submitState is what a submission carries from its text to its Enter.
+type submitState struct {
+	promptSince *time.Time
+	byName      string
+	typedAt     time.Time
+	wait        writeWait
+}
+
 // SubmitResult says how far a submission went.
 type SubmitResult struct {
-	// Typed is set once the text was written.
+	// Typed is set once the text was written, or its write begun: with an
+	// error, the text may land when the program reads again (see
+	// Local.Submit).
 	Typed bool
 	// Entered is set once its Enter was written. Typed without Entered: a
 	// prompt appeared during the pause, and the text waits in the program's
@@ -125,13 +146,23 @@ type SubmitResult struct {
 //   - It records one input entry: always, with the text, for what Conductor
 //     types; for a controller's reply, the question it answered, when it
 //     answered one.
-//   - ctx ends the wait for the session's turn and the pause; an error after
-//     the text was written comes with Typed set, and the text is never
-//     written again.
+//   - ctx ends the wait for the session's turn, the pause and each write;
+//     a write also waits at most Options.InputWait for the program to take
+//     it (ErrInputStalled), so a program that stops reading holds the
+//     session's turn no longer than that, unless its text's write has
+//     begun: then the submission is accepted and finished as the program
+//     reads (ErrSubmitPending, Typed set), holding the turn till then; so
+//     is one whose text is typed and whose Enter had no turn in time. An
+//     Enter whose write began counts as entered, with no error: it lands
+//     when the program reads, and Confirm presses nothing more for it.
+//     BeforeEnter runs as the writer takes the Enter.
 //
 // Errors: ErrReadOnly for a view-role By, ErrTextTooLong for a text over
-// MaxSubmitText bytes once cleaned, ErrSessionEnded, ctx's error, or the
-// process's write error.
+// MaxSubmitText bytes once cleaned, ErrSessionEnded, ctx's error,
+// ErrInputStalled, ErrSubmitPending (accepted), ErrTooManyRequests, the
+// process's write error, or why
+// the session ended By for its link (ErrRevoked, ErrExpired) before
+// the text was typed.
 func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error) {
 	var res SubmitResult
 	if sub.By != nil && sub.By.Role != RoleControl {
@@ -141,14 +172,47 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if len(text) > MaxSubmitText {
 		return res, ErrTextTooLong
 	}
-	select {
-	case s.submitting <- struct{}{}:
-	case <-ctx.Done():
-		return res, ctx.Err()
-	case <-s.ended:
-		return res, ErrSessionEnded
+	// A controller's submission goes on when the controller goes (a reply
+	// box closes its connection once it has sent, and one that fails or is
+	// too slow is no different), but not once the session has ended the
+	// controller for its link (revoked or expired): until its text is
+	// typed, it waits with that in view.
+	from := sub.By
+	if from == nil {
+		from = sub.From
 	}
-	defer func() { <-s.submitting }()
+	var fromEnded <-chan struct{}
+	if from != nil {
+		fromEnded = from.done
+	}
+	for turn := false; !turn; {
+		select {
+		case s.submitting <- struct{}{}:
+			turn = true
+		case <-ctx.Done():
+			return res, ctx.Err()
+		case <-s.ended:
+			return res, ErrSessionEnded
+		case <-fromEnded:
+			if err := revoked(from); err != nil {
+				return res, err
+			}
+			fromEnded = nil
+		}
+	}
+	// The turn is given back as Submit returns, unless the submission goes
+	// on without its caller (ErrSubmitPending), which gives it back then.
+	release := true
+	defer func() {
+		if release {
+			<-s.submitting
+		}
+	}()
+	if from != nil {
+		if err := revoked(from); err != nil {
+			return res, err
+		}
+	}
 
 	// A dialog already drawn and not yet seen quiet takes a paste and drops
 	// it (Codex routes a paste to its overlay): look at the screen before the
@@ -185,20 +249,134 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		}
 		return res, ErrQuestion
 	}
-	byName := CleanName(sub.ByName)
-	typedAt := time.Now()
+	st := submitState{
+		promptSince: promptSince,
+		byName:      CleanName(sub.ByName),
+		typedAt:     time.Now(),
+		// Each write waits Options.InputWait at most, is refused at once
+		// while the program is known not to read, and is withdrawn when
+		// the session ends its controller (not when the controller only
+		// goes).
+		wait: writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from},
+	}
 	if text != "" {
 		data := text
 		if s.paste.on() {
 			data = pasteStart + text + pasteEnd
 		}
-		if _, err := s.proc.Write([]byte(data)); err != nil {
-			return res, err
+		landed, err := s.writeProc(ctx, []byte(data), st.wait)
+		if err != nil {
+			if landed == nil || errors.Is(err, ErrSessionEnded) || s.isEnded() {
+				return res, err
+			}
+			// Begun, the text lands when the program reads, and the
+			// submission is finished then as it would have been, holding
+			// the session's turn: no later submission's text joins it, and
+			// it is never typed again. Its caller is answered now.
+			res.Typed = true
+			release = false
+			go s.finishSubmission(landed, sub, text, st)
+			return res, ErrSubmitPending
 		}
 		res.Typed = true
-		if sub.By == nil {
-			s.Record(ActivityEntry{Type: ActivityInput, ByName: byName, Message: text})
+		s.typedEntry(sub, text, st)
+	}
+	res, err = s.enter(ctx, sub, res, st)
+	if errors.Is(err, errEnterLater) {
+		// Its text is typed and its Enter had no turn in time (another's
+		// write the program does not take): accepted, and the Enter
+		// pressed as the program reads, holding the turn till then, so
+		// no other line joins its text.
+		release = false
+		go s.finishEnter(sub, res, st)
+		return res, ErrSubmitPending
+	}
+	return res, err
+}
+
+// errEnterLater says a submission's text is typed and its Enter's write had
+// no turn in time and was not made (enter): its Enter is to be pressed
+// later, the turn held (finishEnter).
+var errEnterLater = errors.New("session: the Enter is to be pressed later")
+
+// finishEnter presses the Enter of a submission whose text is typed and
+// whose Enter had no turn in time (errEnterLater): as long as the session
+// lasts, holding its turn, with no second Enter, its caller having had its
+// answer; then it gives the turn back. The checks before an Enter are made
+// again, as for any.
+func (s *Local) finishEnter(sub Submission, res SubmitResult, st submitState) {
+	defer func() { <-s.submitting }()
+	s.pressEnterHeld(sub, res, st)
+}
+
+// pressEnterHeld presses a submission's Enter, the session's turn held by
+// its caller, as long as the session lasts: with no time of its own, and
+// again a moment later while the writer's queue is full. An Enter not
+// pressed (the session's end, a prompt, its link) is logged.
+func (s *Local) pressEnterHeld(sub Submission, res SubmitResult, st submitState) {
+	sub.Confirm = false
+	st.wait.wait, st.wait.stall = 0, 0
+	for {
+		got, err := s.pressEnter(context.Background(), sub, res, st)
+		if errors.Is(err, errEnterLater) {
+			select {
+			case <-time.After(100 * time.Millisecond):
+				continue
+			case <-s.ended:
+				err = ErrSessionEnded
+			}
 		}
+		if err != nil || !got.Entered {
+			s.log.Info("a submission whose Enter waited for the program was typed without its Enter", "err", err)
+		}
+		return
+	}
+}
+
+// typedEntry records what Conductor typed itself (By unset), once its text
+// is written.
+func (s *Local) typedEntry(sub Submission, text string, st submitState) {
+	if sub.By == nil {
+		s.Record(ActivityEntry{Type: ActivityInput, ByName: st.byName, Message: text})
+	}
+}
+
+// finishSubmission finishes a submission whose text was being taken when
+// its caller was answered (ErrSubmitPending): once the text has landed, the
+// pause and its Enter, as enter does, BeforeEnter included, with no second
+// Enter, for its caller has had its answer. The Enter waits as long as the
+// session lasts, with no time of its own: the submission holds the
+// session's turn until then, so no other line joins its text, and gives it
+// back. The session's end, a prompt come meanwhile or its link no longer
+// standing ends it without its Enter, which is logged.
+func (s *Local) finishSubmission(landed <-chan error, sub Submission, text string, st submitState) {
+	defer func() { <-s.submitting }()
+	select {
+	case err := <-landed:
+		if err != nil {
+			return
+		}
+	case <-s.ended:
+		return
+	}
+	s.typedEntry(sub, text, st)
+	sub.Confirm = false
+	st.wait.wait, st.wait.stall = 0, 0
+	res, err := s.enter(context.Background(), sub, SubmitResult{Typed: true}, st)
+	switch {
+	case errors.Is(err, errEnterLater):
+		s.pressEnterHeld(sub, res, st)
+	case err != nil || !res.Entered:
+		s.log.Info("a submission taken slowly was typed without its Enter", "err", err)
+	}
+}
+
+// enter is the rest of a submission once its text is written (res.Typed),
+// or when it has none: the pause and the look for a trust question after a
+// text, then its Enter, unless a prompt came meanwhile or its controller's
+// link no longer stands.
+func (s *Local) enter(ctx context.Context, sub Submission, res SubmitResult, st submitState) (SubmitResult, error) {
+	if res.Typed {
 		t := time.NewTimer(s.opts.SubmitPause)
 		select {
 		case <-t.C:
@@ -228,12 +406,23 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			return res, err
 		}
 	} else if res.Typed && s.trust != nil {
-		if err := s.awaitLook(ctx, typedAt); err != nil {
+		if err := s.awaitLook(ctx, st.typedAt); err != nil {
 			return res, err
 		}
 	}
+	return s.pressEnter(ctx, sub, res, st)
+}
+
+// pressEnter writes a submission's Enter, unless the session has ended, a
+// prompt came since the submission began or its controller's link no
+// longer stands; BeforeEnter runs as the writer takes it. An Enter whose
+// write has begun counts as entered. With its text typed, an Enter whose
+// write had no turn in time (its context's deadline, InputWait, a stall)
+// and was not made is errEnterLater.
+func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult, st submitState) (SubmitResult, error) {
+	promptSince, byName, wait := st.promptSince, st.byName, st.wait
 	s.mu.Lock()
-	ended = s.info.Status.Ended()
+	ended := s.info.Status.Ended()
 	att := s.info.Attention
 	s.mu.Unlock()
 	if ended {
@@ -242,14 +431,34 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if att.State == AttentionNeedsInput && att.Since != promptSince {
 		return res, nil
 	}
-	if sub.BeforeEnter != nil {
-		sub.BeforeEnter()
-	}
-	s.nextTurn()
-	enterAt := time.Now().UTC()
-	if _, err := s.proc.Write([]byte{'\r'}); err != nil {
+	if err := wait.withdrawn(); err != nil {
+		// The session ended the controller during the pause: its text
+		// waits without its Enter.
 		return res, err
 	}
+	// As the writer takes the Enter, never for one not written: the
+	// caller's BeforeEnter, and the turn a done ended is behind (nextTurn).
+	wait.before = func() {
+		if sub.BeforeEnter != nil {
+			sub.BeforeEnter()
+		}
+		s.nextTurn()
+	}
+	enterAt := time.Now().UTC()
+	landed, err := s.writeProc(ctx, []byte{'\r'}, wait)
+	pending := landed != nil
+	if err != nil && !pending && res.Typed && waitedOut(err) {
+		return res, errEnterLater
+	}
+	if err != nil && (!pending || errors.Is(err, ErrSessionEnded) || s.isEnded()) {
+		// Not begun, or the session ended under it: never entered.
+		if pending && !errors.Is(err, ErrSessionEnded) {
+			err = ErrSessionEnded
+		}
+		return res, err
+	}
+	// An Enter whose write has begun lands when the program reads again:
+	// the submission is entered, and nothing more is pressed for it.
 	res.Entered = true
 	if s.trust != nil {
 		// A trust question comes before the first prompt, never after.
@@ -261,8 +470,12 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	} else {
 		s.answer(promptSince, "", byName, false, true)
 	}
+	if pending {
+		s.log.Info("a submission's Enter waits for the program to take input")
+		return res, nil
+	}
 	if sub.Confirm && s.opts.ConfirmSubmit && !s.confirmed(ctx, enterAt) {
-		res.Reentered = s.enterAgain()
+		res.Reentered = s.enterAgain(ctx)
 	}
 	return res, nil
 }
@@ -302,6 +515,13 @@ func (s *Local) lookAsked(ctx context.Context) (bool, error) {
 // output, and a program that keeps drawing is not held up for longer than
 // this.
 const lookBudget = 2 * time.Second
+
+// waitedOut says a write was not made for want of a turn in time: its
+// context's deadline, InputWait, a stall, a full queue; not its sender's
+// withdrawal, its context's cancel or the session's end.
+func waitedOut(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrInputStalled) || errors.Is(err, ErrTooManyRequests)
+}
 
 // awaitLook waits until the screen watchers have had their quiet period
 // (patternQuiet) after the last output, when that output came after since,
@@ -367,14 +587,14 @@ func (s *Local) confirmed(ctx context.Context, enterAt time.Time) bool {
 
 // enterAgain writes one more carriage return, unless the session has ended or
 // waits on a prompt, which the Enter must not answer. It records nothing.
-func (s *Local) enterAgain() bool {
+func (s *Local) enterAgain(ctx context.Context) bool {
 	s.mu.Lock()
 	skip := s.info.Status.Ended() || s.info.Attention.State == AttentionNeedsInput
 	s.mu.Unlock()
 	if skip {
 		return false
 	}
-	if _, err := s.proc.Write([]byte{'\r'}); err != nil {
+	if _, err := s.writeProc(ctx, []byte{'\r'}, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}); err != nil {
 		return false
 	}
 	s.log.Info("pressed Enter again: the agent did not report taking the prompt", "after", s.opts.ConfirmWait)

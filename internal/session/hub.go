@@ -62,6 +62,9 @@ type Subscription struct {
 	nvimMu   sync.Mutex
 	nvims    map[string]*nvimEditor
 	nvimKeys chatBucket
+	// nvimsClosed says the connection's editors were closed as it went
+	// (closeNvims): none opens for it after. Under nvimMu.
+	nvimsClosed bool
 	// write is the save this connection is sending (design round 12, F6):
 	// one at a time, its parts in order.
 	writeMu sync.Mutex
@@ -69,6 +72,12 @@ type Subscription struct {
 	// owner marks one of the owner's own connections (AttachOptions.Owner),
 	// the only ones offered the editor's Neovim.
 	owner bool
+	// authorize is the connection's credential check (AttachOptions.
+	// Authorize), nil for one without a link: asked again before a
+	// submission of the connection is written (revoked), since the
+	// connection may have ended for another reason first. Set once, as it
+	// attaches.
+	authorize func() (Grant, error)
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool
