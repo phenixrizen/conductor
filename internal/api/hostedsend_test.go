@@ -656,6 +656,45 @@ func TestThreeLargeReadsFromAnOpenHostAnswerWithinTheBrowsersDeadline(t *testing
 	}
 }
 
+// Viewers that come and go are charged to their address the join and the
+// leave the server sends the host for each, whether or not the join went:
+// the next viewer of the address waits for what they owe.
+func TestViewersComingAndGoingArePaidForByTheirAddress(t *testing.T) {
+	noBurstFloor(t)
+	const rate = 1024 // viewerRelayKBps 1: a burst of 2 KiB
+	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; c.ViewerRelayKBps = 1 })
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	join, _ := json.Marshal(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: "0123456789abcdef", Role: "control"})
+	leave, _ := json.Marshal(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: "0123456789abcdef"})
+	// A hosted viewer is welcomed without a hello: the viewers send nothing,
+	// and what their address owes is their joins and leaves alone.
+	const churn = 40
+	start := time.Now()
+	for range churn {
+		v := dialViewer(t, e, host.sessionID, adminToken)
+		v.expectControl(proto.CtlWelcome)
+		v.c.Close(websocket.StatusNormalClosure, "")
+	}
+	// One more of the address joins: its join goes once the address has
+	// paid for the others' joins and leaves, past the burst.
+	last := dialViewer(t, e, host.sessionID, adminToken)
+	id, _ := last.expectControl(proto.CtlWelcome)["viewerId"].(string)
+	deadline := time.After(30 * time.Second)
+	for got := false; !got; {
+		select {
+		case m := <-host.msgs:
+			got = m["t"] == proto.HostViewerJoin && m["viewerId"] == id
+		case <-deadline:
+			t.Fatal("the last viewer's join never reached the host")
+		}
+	}
+	took := time.Since(start)
+	owed := float64(churn*(len(join)+len(leave))-2*rate) / rate
+	if took.Seconds() < 0.8*owed {
+		t.Fatalf("%d viewers came and went, and the next joined, in %v: their joins and leaves owe %.1f s at 1 KiB/s", churn, took, owed)
+	}
+}
+
 // A viewer is charged what its messages bring the host, not only what it
 // sent: offers the server encodes anew for the host, six bytes for each '<'
 // the viewer sent as one, go no faster than the budget either.

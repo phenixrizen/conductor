@@ -340,6 +340,9 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 	// which is where the viewer sends the host anything.
 	var credit int
 	var charge func(n int) error
+	// chargeJoin charges the viewer's join and leave, on the join's own
+	// goroutine (the read loop's credit is not its), until the viewer closes.
+	var chargeJoin func(stop <-chan struct{}, n int) error
 	if budget != nil {
 		charge = func(n int) error {
 			use := min(credit, n)
@@ -349,9 +352,21 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 			}
 			return budget.take(sink.ctx, n-use)
 		}
+		chargeJoin = func(stop <-chan struct{}, n int) error {
+			ctx, cancel := context.WithCancel(sink.ctx)
+			defer cancel()
+			go func() {
+				select {
+				case <-stop:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+			return budget.take(ctx, n)
+		}
 	}
 	viewerID := session.NewID()
-	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check, Charge: charge})
+	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check, Charge: charge, ChargeJoin: chargeJoin})
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded):

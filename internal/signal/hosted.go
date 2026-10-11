@@ -170,14 +170,34 @@ func (c *HostConn) sendFrom(o Outbound, stop <-chan struct{}) error {
 		return ErrViewerGone
 	default:
 	}
+	me := c.enter(o)
+	if me == nil {
+		return nil
+	}
+	return c.await(me, o, stop)
+}
+
+// enter is sendFrom's first half: o is queued at once when nobody waits and
+// the viewers' share has room (nil), or takes its place in line (the waiter
+// await then waits as). What is sent after o goes after it either way.
+func (c *HostConn) enter(o Outbound) *roomWaiter {
 	n := o.size()
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if len(c.waiting) == 0 && c.admit(o, n) {
-		c.mu.Unlock()
 		return nil
 	}
 	me := &roomWaiter{n: n}
 	c.waiting = append(c.waiting, me)
+	return me
+}
+
+// await is sendFrom's second half: o, in line as me, waits for room in its
+// turn, until the connection closes (ErrSlowHost) or stop does
+// (ErrViewerGone), when it leaves the line.
+func (c *HostConn) await(me *roomWaiter, o Outbound, stop <-chan struct{}) error {
+	n := me.n
+	c.mu.Lock()
 	for {
 		if c.waiting[0] == me && c.admit(o, n) {
 			c.waiting = c.waiting[1:]
@@ -254,6 +274,11 @@ type Viewer struct {
 	lapse *time.Timer
 	// charge is ViewerOptions.Charge.
 	charge func(n int) error
+	// joinDone is closed once the viewer's join has gone to the host, or
+	// will not (joinSent false: the viewer or the connection closed first,
+	// or its charge failed); joinSent is written before, and read after.
+	joinDone chan struct{}
+	joinSent bool
 }
 
 // chargeHost tells the viewer's Charge of a message of n bytes it sends the
@@ -265,8 +290,23 @@ func (v *Viewer) chargeHost(n int) error {
 	return v.charge(n)
 }
 
+// joined waits for the viewer's join, which every message of the viewer's
+// to the host follows: ErrViewerGone when the viewer closes first, or its
+// join did not go.
+func (v *Viewer) joined() error {
+	select {
+	case <-v.joinDone:
+	case <-v.done:
+		return ErrViewerGone
+	}
+	if !v.joinSent {
+		return ErrViewerGone
+	}
+	return nil
+}
+
 func newViewer(id string, role session.Role, linkID, linkLabel string) *Viewer {
-	return &Viewer{ID: id, Role: role, LinkID: linkID, LinkLabel: linkLabel, Out: make(chan []byte, viewerQueue), done: make(chan struct{})}
+	return &Viewer{ID: id, Role: role, LinkID: linkID, LinkLabel: linkLabel, Out: make(chan []byte, viewerQueue), done: make(chan struct{}), joinDone: make(chan struct{})}
 }
 
 // Done is closed when the viewer must be disconnected.
@@ -611,6 +651,13 @@ type ViewerOptions struct {
 	// ForwardOffer, ForwardICE, StartRelay); an error drops the message
 	// and is returned.
 	Charge func(n int) error
+	// ChargeJoin, when set, is told the size of the viewer's join and leave
+	// together, as the host's connection carries them, before the join
+	// goes: a viewer that comes and goes is charged both. It is called on a
+	// goroutine of its own, not the one that sends, and must return once
+	// stop (the viewer's closing) is closed; an error drops the join, and
+	// with it the leave.
+	ChargeJoin func(stop <-chan struct{}, n int) error
 }
 
 // AddViewerWith registers a browser and notifies the host.
@@ -651,22 +698,54 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	}
 	conn := h.conn
 	h.mu.Unlock()
-	// The join is the viewer's own message: charged to it, and within the
-	// viewers' share of the host's queue in its turn (sendFrom), so viewers
-	// coming and going never spend the room kept for the server's messages.
-	// It waits while the viewer is registered, so a session has at most
-	// maxViewers joins waiting.
-	if join, err := jsonMarshal(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel}); err == nil && v.chargeHost(len(join)) == nil {
-		_ = conn.sendFrom(Outbound{Text: join}, v.done)
-	}
+	h.sendJoin(conn, v, proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel}, o.ChargeJoin)
 	h.notifyChange()
 	return v, nil
 }
 
+// sendJoin sends the host v's join without holding up the caller, which
+// goes on to serve the viewer (and so notices it leave). The join is the
+// viewer's own message: charged to it with its leave (chargeJoin), and
+// within the viewers' share of the host's queue in its turn, so viewers
+// coming and going never spend the room kept for the server's messages.
+// Without a charge it takes its place in line at once; with one, it does
+// once charged. Either way it waits on a goroutine of its own, and every
+// later message of the viewer's waits for it (Viewer.joined).
+func (h *HostedSession) sendJoin(conn *HostConn, v *Viewer, msg proto.ViewerJoin, chargeJoin func(stop <-chan struct{}, n int) error) {
+	join, err := jsonMarshal(msg)
+	if err != nil {
+		close(v.joinDone)
+		return
+	}
+	o := Outbound{Text: join}
+	if chargeJoin == nil {
+		me := conn.enter(o)
+		if me == nil {
+			v.joinSent = true
+			close(v.joinDone)
+			return
+		}
+		go func() {
+			v.joinSent = conn.await(me, o, v.done) == nil
+			close(v.joinDone)
+		}()
+		return
+	}
+	leave, _ := jsonMarshal(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: v.ID})
+	go func() {
+		defer close(v.joinDone)
+		if chargeJoin(v.done, len(join)+len(leave)) != nil {
+			return
+		}
+		v.joinSent = conn.sendFrom(o, v.done) == nil
+	}()
+}
+
 // RemoveViewer unregisters a browser and notifies the host. The leave goes
-// as the viewer's join did, within the viewers' share of the host's queue:
-// it waits for room until the host's connection closes, and is never
-// dropped, for the host would keep a viewer it was not told left.
+// as the viewer's join did, within the viewers' share of the host's queue
+// (charged with the join): it waits for room until the host's connection
+// closes, and is never dropped, for the host would keep a viewer it was not
+// told left. A viewer whose join never went sends none.
 func (h *HostedSession) RemoveViewer(v *Viewer) {
 	h.mu.Lock()
 	_, present := h.viewers[v.ID]
@@ -677,14 +756,18 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 	}
 	h.mu.Unlock()
 	v.close(nil)
-	if present && conn != nil {
+	if !present {
+		return
+	}
+	// The join stops waiting as the viewer closes; one that never went
+	// needs no leave.
+	<-v.joinDone
+	if conn != nil && v.joinSent {
 		if leave, err := jsonMarshal(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: v.ID}); err == nil {
 			_ = conn.sendFrom(Outbound{Text: leave}, nil)
 		}
 	}
-	if present {
-		h.notifyChange()
-	}
+	h.notifyChange()
 }
 
 // ForwardOffer sends a viewer's SDP offer to the host. Like every message a
@@ -735,6 +818,9 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 	if err != nil {
 		return err
 	}
+	if err := v.joined(); err != nil {
+		return err
+	}
 	h.mu.Lock()
 	conn := h.conn
 	h.mu.Unlock()
@@ -752,6 +838,9 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 func (h *HostedSession) fromViewer(v *Viewer, msg any) error {
 	b, err := jsonMarshal(msg)
 	if err != nil {
+		return err
+	}
+	if err := v.joined(); err != nil {
 		return err
 	}
 	h.mu.Lock()
