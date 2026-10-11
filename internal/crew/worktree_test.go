@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
 )
 
 // newRepo makes a git repository with one commit holding README (three
@@ -362,6 +364,53 @@ func TestRepoRoots(t *testing.T) {
 	plain := t.TempDir()
 	if got := RepoRoots(t.Context(), plain); !slices.Equal(got, []string{plain}) {
 		t.Fatalf("no repository: %q", got)
+	}
+}
+
+// Making and reading a member's worktree starts no program the repository's
+// own configuration names (gitclitest: hooks in .git/hooks and through
+// core.hooksPath, the file system monitor, filters, text conversion, some
+// through include and includeIf): the checks, the exclude line, worktree
+// add with its checkout and branch, the diff a run's members show. The
+// worktree still holds the commit's files and the diff counts right.
+func TestWorktreesStartNoProgramTheRepositoryNames(t *testing.T) {
+	for _, hooksPath := range []bool{false, true} {
+		r := gitclitest.New(t, gitclitest.Options{HooksPath: hooksPath})
+		ctx := t.Context()
+		if st, err := GitState(ctx, r.Dir); err != nil || !st.InRepo || !st.HasCommit || st.Toplevel != r.Dir {
+			t.Fatalf("GitState: %+v %v", st, err)
+		}
+		if err := CheckRepo(ctx, r.Dir); err != nil {
+			t.Fatal(err)
+		}
+		if roots := RepoRoots(ctx, r.Dir); !slices.Equal(roots, []string{r.Dir}) {
+			t.Fatalf("RepoRoots: %q", roots)
+		}
+		if err := excludeWorktrees(ctx, r.Dir); err != nil {
+			t.Fatal(err)
+		}
+		r.NoneFired(t, "the checks")
+		path := filepath.Join(r.Dir, ".conductor", "worktrees", "run", "lead")
+		if err := AddWorktree(ctx, r.Dir, path, "crew/run/lead"); err != nil {
+			t.Fatal(err)
+		}
+		r.NoneFired(t, "worktree add")
+		for name, body := range gitclitest.Committed {
+			if b, err := os.ReadFile(filepath.Join(path, name)); err != nil || string(b) != body {
+				t.Fatalf("hooksPath %v: %s in the worktree: %q %v", hooksPath, name, b, err)
+			}
+		}
+		base, err := headCommit(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(path, "conv.txt"), "a\nb\n")
+		writeFile(t, filepath.Join(path, "clean.dat"), "x\ny\nz\n")
+		writeFile(t, filepath.Join(path, "README"), "one\nthree\n")
+		if added, removed, err := DiffStat(ctx, path, base); err != nil || added != 3 || removed != 1 {
+			t.Fatalf("hooksPath %v: DiffStat +%d -%d %v", hooksPath, added, removed, err)
+		}
+		r.NoneFired(t, "the diff")
 	}
 }
 

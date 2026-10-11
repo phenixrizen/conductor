@@ -343,7 +343,12 @@ by side or inline, the base's version beside the working directory's, with
 the file itself one click away; a working directory with no repository says
 so. The status and the base's version come over the terminal's connection
 like a read, from the machine the session runs on, under the same file
-policy and deny list.
+policy and deny list. Conductor's git starts no program the repository's
+configuration names, no clean filter either: a file a filter transforms
+(Git LFS, git-crypt) that git has to read again is compared as it is on
+disk, so it can show as changed, with its raw lines, when your own `git
+status` would not. A change inside a submodule shows once the submodule's
+commit moves.
 
 The box at the top of the Explorer filters the tree as you type, and
 reaches folders you have not opened: a search on the session's machine
@@ -387,8 +392,13 @@ lands in Activity and Touched as your write. An unsaved tab wears a dot and
 asks before it closes. If the file changed on disk since you opened it (the
 agent edited it, say), the save stops and says who and when, with
 **Compare** (disk and yours side by side), **Reload** (take the disk's) and
-**Save anyway**. A file cut at 1 MiB, or a binary one, stays read-only, and
-so does everything for a view-only guest. The server's or host's `fileEdit`
+**Save anyway**. A file cut at 1 MiB, or a binary one, stays read-only, as
+does a file in a repository's `.git` (its folder, a worktree's `.git` file,
+wherever a link or another spelling leads; Neovim does not open one either;
+a file the repository's configuration names outside it, such as an
+`include.path` file or a `core.hooksPath` folder like `.husky`, stays an
+ordinary file),
+and so does everything for a view-only guest. The server's or host's `fileEdit`
 setting (`control`, the default, or `off`) turns editing off for everyone.
 
 **Comments on lines.** Select lines in the editor and a bar offers
@@ -969,10 +979,16 @@ answers `not_a_repo`), and `git` must be on the server's `PATH` (otherwise it
 answers `launch_failed`: git is not installed on the server). Each member gets its own checkout and branch:
 
 ```
-git worktree add -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
+git worktree add --no-checkout -b crew/<run>/<member> <cwd>/.conductor/worktrees/<run>/<member> HEAD
+git -C <cwd>/.conductor/worktrees/<run>/<member> reset --hard
 ```
 
-The run's id is the crew's id and eight hex digits. A crew whose `cwd` is
+Conductor runs it, as every git it runs, without the programs the
+repository's configuration names: no hook (no `post-checkout`) and no
+clean or smudge filter, your global configuration's included, so a file a
+filter stores differently comes out as the repository stores it (a Git LFS
+file as its pointer, until `git lfs checkout` in the worktree). The
+run's id is the crew's id and eight hex digits. A crew whose `cwd` is
 below the top of the repository starts in the same subdirectory of its
 worktree. The first worktree adds a `.conductor/` line to the repository's
 `.git/info/exclude`, so the worktrees stay out of `git status` without touching

@@ -286,6 +286,8 @@ export interface FileHeader {
   by?: string
   tool?: string
   at?: string
+  /** A `file` reply the owner takes no save of (one in a repository's .git): the editor shows it read only, Neovim does not open it. */
+  readOnly?: boolean
   /** A `log` reply: the commits newest first, and the time they start from when no base was asked for. A `commit` reply: the commit (its files in `changes`). */
   commits?: CommitInfo[]
   since?: string

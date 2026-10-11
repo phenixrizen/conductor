@@ -33,8 +33,8 @@ func sha256Hex(b []byte) string {
 
 // FileWrite takes one part of a save for sub. Every refusal and the result
 // go back to sub as a FILE frame with the save's ReqID: kind `written`, or
-// `error` with a code (read_only, denied, too_large, out_of_order,
-// not_found, changed_on_disk, write).
+// `error` with a code (read_only, also for a file in a repository's .git;
+// denied, too_large, out_of_order, not_found, changed_on_disk, write).
 func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 	reply := func(fh proto.FileHeader) {
 		fh.ReqID = h.ReqID
@@ -89,8 +89,9 @@ func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 }
 
 // saveFile writes body over the file h names, after the checks: the path
-// through ResolvePath and the deny list, an existing regular file, and its
-// content unchanged since the read (BaseSha256) unless Force.
+// through ResolvePath and the deny list, not in a repository's .git
+// (gitMetadata), an existing regular file, and its content unchanged since the
+// read (BaseSha256) unless Force.
 func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) proto.FileHeader {
 	errh := func(code, msg string) proto.FileHeader {
 		return proto.FileHeader{Path: h.Path, Kind: "error", Error: &proto.ErrorInfo{Code: code, Message: msg}}
@@ -98,6 +99,9 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	target, err := ResolvePath(s.info.Cwd, h.Path, s.fileDeny())
 	if err != nil {
 		return errh("denied", err.Error())
+	}
+	if gitMetadata(h.Path, target) {
+		return errh("read_only", "a repository's .git is read only here")
 	}
 	fi, err := os.Stat(target)
 	switch {

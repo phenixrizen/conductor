@@ -203,6 +203,9 @@ type FileHeader struct {
 	By     string `json:"by,omitempty"`
 	Tool   string `json:"tool,omitempty"`
 	At     string `json:"at,omitempty"`
+	// ReadOnly marks a `file` reply the owner takes no save of: a file in
+	// a repository's .git.
+	ReadOnly bool `json:"readOnly,omitempty"`
 	// A `log` reply (design 4e): the commits newest first (at most
 	// gitrepo.MaxCommits, Truncated then), Since the time they start from
 	// when no base was asked for. A `commit` reply: Commit, and its files

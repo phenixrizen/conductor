@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
 )
 
 func repo(t *testing.T) string {
@@ -162,5 +165,208 @@ func TestPorcelain(t *testing.T) {
 	}
 	if _, _, _, err := Porcelain(context.Background(), t.TempDir()); err == nil {
 		t.Fatal("outside a repository must fail")
+	}
+}
+
+// The git Conductor runs starts no program the repository's own
+// configuration names (gitclitest arms one with a marking script at every
+// such place, some through include and includeIf, a filter with the empty
+// name; hooks in .git/hooks and through core.hooksPath), and still reads it
+// right: the status with its lines, the porcelain status, a file at a
+// revision. Nothing fetches from the repository's remote either.
+func TestGitStartsNoProgramTheRepositoryNames(t *testing.T) {
+	for _, hooksPath := range []bool{false, true} {
+		r := gitclitest.New(t, gitclitest.Options{HooksPath: hooksPath})
+		ctx := context.Background()
+		st, err := GetStatus(ctx, r.Dir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]Change{}
+		for _, c := range st.Changes {
+			got[c.Path] = c
+		}
+		want := map[string]Change{}
+		for path := range gitclitest.Dirty {
+			status := "M"
+			if _, ok := gitclitest.Committed[path]; !ok {
+				status = "?"
+			}
+			want[path] = Change{Path: path, Status: status, Added: 1}
+		}
+		for p, w := range want {
+			if got[p] != w {
+				t.Errorf("hooksPath %v: %s: got %+v want %+v", hooksPath, p, got[p], w)
+			}
+		}
+		if len(st.Changes) != len(want) || st.Branch != "main" || st.Base == "" || st.Added != len(want) || st.Removed != 0 {
+			t.Fatalf("hooksPath %v: status %+v", hooksPath, st)
+		}
+		r.NoneFired(t, "the status")
+		if _, changes, _, err := Porcelain(ctx, r.Dir); err != nil || len(changes) != len(want) {
+			t.Fatalf("porcelain: %+v %v", changes, err)
+		}
+		r.NoneFired(t, "the porcelain status")
+		for path, body := range gitclitest.Committed {
+			if b, _, err := Show(ctx, r.Dir, "HEAD", path); err != nil || string(b) != body {
+				t.Fatalf("show %s: %q %v", path, b, err)
+			}
+		}
+		r.NoneFired(t, "show")
+		// The repository allows the file protocol; the environment allows none.
+		if out, err := Run(ctx, r.Dir, "ls-remote", "origin"); err == nil || !strings.Contains(err.Error(), "not allowed") {
+			t.Fatalf("ls-remote: %q %v", out, err)
+		}
+		if _, err := Run(ctx, r.Dir, "fetch", "origin"); err == nil || !strings.Contains(err.Error(), "not allowed") {
+			t.Fatalf("fetch: %v", err)
+		}
+		r.NoneFired(t, "a transport")
+	}
+}
+
+// No filter runs, not even one the person's global configuration defines
+// (a filter such as Git LFS's reads the repository's configuration for
+// programs of its own): not for a status, not for a checkout, which writes
+// the file as the repository stores it.
+func TestNoFilterRunsNotEvenAGlobalOne(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	ctx := context.Background()
+	global := "[filter \"owner\"]\n\tclean = " + r.Script + " owner-clean\n\tsmudge = " + r.Script + " owner-smudge\n\trequired = true\n"
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".gitconfig"), []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(r.Dir, "owner.own"), []byte("o\np\n"), 0o644)
+	st, err := GetStatus(ctx, r.Dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var own Change
+	for _, c := range st.Changes {
+		if c.Path == "owner.own" {
+			own = c
+		}
+	}
+	if own.Status != "M" || own.Added != 1 {
+		t.Fatalf("owner.own: %+v", own)
+	}
+	r.NoneFired(t, "the status")
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := AddWorktree(ctx, r.Dir, wt, "side", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	r.NoneFired(t, "worktree add")
+	if b, err := os.ReadFile(filepath.Join(wt, "owner.own")); err != nil || string(b) != "o\n" {
+		t.Fatalf("owner.own in the worktree: %q %v", b, err)
+	}
+}
+
+// AddWorktree checks the new worktree out with the configuration that
+// applies there (a filter included only on its branch or only in a linked
+// worktree is off too) and the files as committed; a worktree add that
+// checks out in one command is refused, as are arguments that read as
+// options.
+func TestAddWorktreeChecksOutInTheNewWorktree(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	ctx := context.Background()
+	wt := filepath.Join(r.Dir, ".conductor", "worktrees", "run", "lead")
+	if err := AddWorktree(ctx, r.Dir, wt, "crew/run/lead", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	r.NoneFired(t, "worktree add")
+	for path, body := range gitclitest.Committed {
+		if b, err := os.ReadFile(filepath.Join(wt, path)); err != nil || string(b) != body {
+			t.Fatalf("%s in the worktree: %q %v", path, b, err)
+		}
+	}
+	if out, err := Run(ctx, wt, "status", "--porcelain"); err != nil || out != "" {
+		t.Fatalf("the new worktree's status: %q %v", out, err)
+	}
+	if branch, err := Run(ctx, wt, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || strings.TrimSpace(branch) != "crew/run/lead" {
+		t.Fatalf("branch %q %v", branch, err)
+	}
+	r.NoneFired(t, "the new worktree's status")
+	if _, err := Run(ctx, r.Dir, "worktree", "add", "-b", "one", filepath.Join(t.TempDir(), "one"), "HEAD"); err == nil {
+		t.Fatal("a worktree add that checks out ran")
+	}
+	if err := AddWorktree(ctx, r.Dir, filepath.Join(t.TempDir(), "x"), "--orphan", "HEAD"); err == nil {
+		t.Fatal("a branch that reads as an option was taken")
+	}
+}
+
+// A repository whose shared configuration sets core.worktree (with
+// extensions.worktreeConfig, which makes linked worktrees honour it) does
+// not send the new worktree's checkout to that directory: the original
+// checkout's uncommitted work stays, and the new worktree holds the commit.
+func TestAddWorktreeChecksOutWhereItWasMadeWhateverCoreWorktreeSays(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	ctx := context.Background()
+	gitclitest.Git(t, r.Dir, "config", "core.repositoryformatversion", "1")
+	gitclitest.Git(t, r.Dir, "config", "extensions.worktreeConfig", "true")
+	gitclitest.Git(t, r.Dir, "config", "core.worktree", r.Dir)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := AddWorktree(ctx, r.Dir, wt, "side", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range gitclitest.Dirty {
+		if b, err := os.ReadFile(filepath.Join(r.Dir, path)); err != nil || string(b) != body {
+			t.Fatalf("%s in the original checkout: %q %v", path, b, err)
+		}
+	}
+	for path, body := range gitclitest.Committed {
+		if b, err := os.ReadFile(filepath.Join(wt, path)); err != nil || string(b) != body {
+			t.Fatalf("%s in the new worktree: %q %v", path, b, err)
+		}
+	}
+	r.NoneFired(t, "worktree add")
+}
+
+// filterNames reads the names a configuration gives a filter program,
+// wherever it is defined, whatever their case or dots, the empty name too,
+// each once; a configuration's conditional includes count as they apply in
+// the directory asked about.
+func TestFilterNames(t *testing.T) {
+	r := gitclitest.New(t, gitclitest.Options{})
+	names := func(dir string) []string {
+		t.Helper()
+		n, err := filterNames(context.Background(), []string{"-C", dir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(n)
+		return n
+	}
+	// The machine's system config (a CI runner's names Git LFS's filter) is
+	// listed too, as it should be; git reads it whatever the environment, so
+	// its names are expected beside the test's own.
+	system := names(t.TempDir())
+	with := func(want ...string) []string {
+		all := slices.Concat(want, system)
+		slices.Sort(all)
+		return slices.Compact(all)
+	}
+	global := "[filter \"owner\"]\n\tclean = x\n[filter \"Dotted.Name\"]\n\tsmudge = y\n\trequired = true\n[filter \"none\"]\n\trequired = true\n"
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".gitconfig"), []byte(global), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := names(r.Dir), with("", "Dotted.Name", "inc", "owner", "proc", "single"); !slices.Equal(got, want) {
+		t.Fatalf("on main: %q, want %q", got, want)
+	}
+	// A linked worktree on a crew/ branch: both conditional includes apply there.
+	wt := filepath.Join(r.Dir, ".conductor", "wt")
+	gitclitest.Git(t, r.Dir, "worktree", "add", "-q", "--no-checkout", "-b", "crew/x/y", wt, "HEAD")
+	if got, want := names(wt), with("", "Dotted.Name", "inc", "inworktree", "onbranch", "owner", "proc", "single"); !slices.Equal(got, want) {
+		t.Fatalf("in a crew worktree: %q, want %q", got, want)
+	}
+	if got := names(t.TempDir()); !slices.Equal(got, with("Dotted.Name", "owner")) {
+		t.Fatalf("outside a repository: %q", got)
+	}
+	// The empty name goes through -c: a status turns it off and runs.
+	if _, err := Run(context.Background(), r.Dir, "status", "--porcelain"); err != nil {
+		t.Fatal(err)
+	}
+	// A name -c cannot carry is refused, not passed over.
+	gitclitest.Git(t, r.Dir, "config", "filter.a=b.clean", "x")
+	if _, err := Run(context.Background(), r.Dir, "status", "--porcelain"); err == nil || !strings.Contains(err.Error(), "cannot be turned off") {
+		t.Fatalf("a filter named with =: %v", err)
 	}
 }

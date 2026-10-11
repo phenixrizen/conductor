@@ -154,15 +154,17 @@ func CheckRepo(ctx context.Context, repo string) error {
 }
 
 // AddWorktree adds a worktree of the repository repo is in at path, on a new
-// branch made from HEAD: git -C repo worktree add -b branch path HEAD. git
-// makes the parent directories of path. The error matches ErrNotRepo when
-// repo is in no git working tree, and is ErrNoGit when git is not on PATH.
+// branch made from HEAD (gitcli.AddWorktree: git -C repo worktree add
+// --no-checkout -b branch path HEAD, then the checkout in the new
+// worktree). git makes the parent directories of path. No hook of the
+// repository runs (no post-checkout, no reference-transaction), nor any
+// filter. The error matches ErrNotRepo when repo is in no git working tree,
+// and is ErrNoGit when git is not on PATH.
 func AddWorktree(ctx context.Context, repo, path, branch string) error {
 	if err := inRepo(ctx, repo); err != nil {
 		return err
 	}
-	_, err := git(ctx, repo, "worktree", "add", "-b", branch, path, "HEAD")
-	return err
+	return gitcli.AddWorktree(ctx, repo, path, branch, "HEAD")
 }
 
 // DiffStat counts the lines a worktree adds and removes against base, the
@@ -310,7 +312,8 @@ func headCommit(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// git runs git for the crews (gitcli.Run: argv, the C locale, the line that says why on failure).
+// git runs git for the crews (gitcli.Run: argv, the C locale, no program the repository's configuration names, the line that
+// says why on failure).
 func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitcli.Run(ctx, dir, args...)
 }

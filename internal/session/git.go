@@ -30,7 +30,7 @@ func GitBranch(dir string) string {
 					return ""
 				}
 			}
-			return branchFromHead(filepath.Join(gitPath, "HEAD"))
+			return branchFromHead(rawJoin(gitPath, "HEAD"))
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -40,28 +40,22 @@ func GitBranch(dir string) string {
 	}
 }
 
-// gitDirFromFile resolves a "gitdir: <path>" pointer file.
+// gitDirFromFile resolves a "gitdir: <path>" pointer file, read as git
+// reads one (readGitFile), a relative path from base, joined as the
+// kernel walks it (rawJoin), not cleaned.
 func gitDirFromFile(path, base string) string {
-	b, err := os.ReadFile(path)
-	if err != nil || len(b) > 4096 {
-		return ""
-	}
-	line := strings.TrimSpace(string(b))
-	target, ok := strings.CutPrefix(line, "gitdir:")
+	target, ok := readGitFile(path)
 	if !ok {
 		return ""
 	}
-	target = strings.TrimSpace(target)
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(base, target)
-	}
-	return target
+	return rawJoin(base, target)
 }
 
 // branchFromHead parses "ref: refs/heads/<branch>"; a bare SHA is detached.
+// HEAD is read with readPrefix: a regular file, at most 4 KiB of it.
 func branchFromHead(headPath string) string {
-	b, err := os.ReadFile(headPath)
-	if err != nil || len(b) > 4096 {
+	b, whole, ok := readPrefix(headPath, 4096)
+	if !ok || !whole {
 		return ""
 	}
 	line := strings.TrimSpace(string(b))

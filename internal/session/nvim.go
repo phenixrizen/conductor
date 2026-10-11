@@ -99,7 +99,8 @@ func (s *Local) nvimOwnerOnly(sub *Subscription) bool {
 // NvimOpen starts an editor for sub on req.Path and answers with an
 // nvim_event of kind opened (then the whole buffer as lines), or returns
 // why not: ErrNvimUnavailable, ErrFileDenied (the path or the policy),
-// ErrTooManyRequests (the bounds).
+// errGitDir (a file in a repository's .git), ErrTooManyRequests (the
+// bounds).
 func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimOpen) error {
 	if req.ReqID == "" || len(req.ReqID) > 64 || len(req.Path) > 4096 {
 		return errors.New("session: invalid nvim request")
@@ -110,6 +111,10 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	target, err := ResolvePath(s.info.Cwd, req.Path, s.fileDeny())
 	if err != nil {
 		return ErrFileDenied
+	}
+	if gitMetadata(req.Path, target) {
+		// Neovim would write it.
+		return errGitDir
 	}
 	sub.nvimMu.Lock()
 	if sub.nvims == nil {
