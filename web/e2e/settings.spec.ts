@@ -164,7 +164,12 @@ test('the app\'s publishing notice says what is published and leads to Settings'
   await expect(toast).toContainText('Settings → Switchyard')
   await toast.getByRole('button', { name: 'Settings' }).click()
   await expect(page).toHaveURL(/\/settings$/)
-  await expect(page.locator('[data-switchyard-settings]')).toBeVisible()
+  const card = page.locator('[data-switchyard-settings]')
+  await expect(card).toBeVisible()
+  // The card says what the switchyard is told and what it does.
+  await expect(card).toContainText("never its chat, activity or command line")
+  await expect(card).toContainText('It mints and checks the links and decides who joins')
+  await expect(card).toContainText('Publish only to a switchyard whose operator you trust')
   // Once only.
   await page.reload()
   await expect(page.locator('[data-switchyard-settings]')).toBeVisible()

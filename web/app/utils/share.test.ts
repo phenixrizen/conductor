@@ -8,7 +8,8 @@ describe('shareReach', () => {
     const r = shareReach({ url: 'https://switchyard.example.net/join/abc', remote: true }, offline)
     expect(r.kind).toBe('remote')
     expect(r.title).toBe('Works from anywhere')
-    expect(r.text).toContain('switchyard.example.net')
+    expect(r.text).toContain('switchyard.example.net, which mints and checks the link')
+    expect(r.text).toContain("through the switchyard's relay when no direct path forms")
   })
   it('a link made here while a switchyard is configured says why the session is not there, then what it reaches', () => {
     const r = shareReach({ url: 'http://127.0.0.1:8080/join/abc', rendezvous: { server: 'https://switchyard.example.net', error: 'connection refused' } }, offline)

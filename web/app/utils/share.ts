@@ -37,8 +37,8 @@ export function shareReach(created: CreatedLink, reach: ReachInfo | null | undef
       level: 'remote',
       title: 'Works from anywhere',
       text: run
-        ? `Shared through ${hostOf(created.url)}: the link opens every agent of the crew there, members who join later included, and each terminal comes straight to this machine, through the switchyard's relay only when it must.`
-        : `Shared through ${hostOf(created.url)}: the link opens there, and the terminal comes straight to this machine, through the switchyard's relay only when it must.`,
+        ? `Shared through ${hostOf(created.url)}, which mints and checks the link: it opens every agent of the crew there, members who join later included, and each terminal comes to this machine over WebRTC, or through the switchyard's relay when no direct path forms.`
+        : `Shared through ${hostOf(created.url)}, which mints and checks the link: it opens there, and the terminal comes to this machine over WebRTC, or through the switchyard's relay when no direct path forms.`,
     }
   }
   const local = linkReach(created.url, reach)

@@ -30,7 +30,7 @@ func TestSwitchyardServesItsOwnPages(t *testing.T) {
 	e := switchyardEnv(t, true)
 	e.srv.web = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "app:"+r.URL.Path) })
 	code, body := getPage(t, e, "/")
-	for _, want := range []string{"This is a Conductor switchyard.", "Were you sent a link?", "Looking for the workbench?", "Sharing from your machine?", "This server is up", "only when the network allows no direct path", "conductor://", "Paste the workbench token", "No cookies."} {
+	for _, want := range []string{"This is a Conductor switchyard.", "Were you sent a link?", "Looking for the workbench?", "Sharing from your machine?", "This server is up", "It mints and checks the links", "which can read it, when the network allows no direct path", "publish here only if you trust its operator", "conductor://", "Paste the workbench token", "No cookies."} {
 		if code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("landing: %d, missing %q in %.300s", code, want, body)
 		}

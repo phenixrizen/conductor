@@ -431,7 +431,7 @@ footer.sy .note{flex-basis:100%}
 <main class="sy">
 <div class="hero">
 <h1>This is a Conductor switchyard.</h1>
-<p class="muted">It introduces viewers to Conductor sessions running on their owners' own machines. Nothing runs here: no agents, no terminals, no stored output. {{if .RelayOn}}Once a viewer joins, the session travels straight from the owner's machine to the viewer's browser, and passes through this server's relay only when the network allows no direct path.{{else}}Once a viewer joins, the session travels straight from the owner's machine to the viewer's browser. This server's relay is off, so a viewer whose network allows no direct path cannot join.{{end}}</p>
+<p class="muted">It introduces viewers to Conductor sessions running on their owners' own machines. No agent runs here and no output is kept. It mints and checks the links that open those sessions. {{if .RelayOn}}Once a viewer joins, the session goes over WebRTC between the owner's machine and the viewer's browser, and through this server's relay, which can read it, when the network allows no direct path.{{else}}Once a viewer joins, the session goes over WebRTC between the owner's machine and the viewer's browser. This server's relay is off, so a viewer whose network allows no direct path cannot join.{{end}}</p>
 </div>
 <div class="cols">
 <div class="col">
@@ -452,12 +452,12 @@ footer.sy .note{flex-basis:100%}
 <div class="code">"rendezvous": {
   "server": "https://{{.Host}}"
 }</div>
-<p class="small muted">In the desktop app it is Settings → Switchyard. A host token is optional and marks a trusted machine, outside the per-address limits. Your sessions stay on your machine; this server only passes along who may join them.</p>{{else}}<p>Ask the operator of this switchyard for a host token, then add both to your Conductor config:</p>
+<p class="small muted">In the desktop app it is Settings → Switchyard. A host token is optional and marks a trusted machine, outside the per-address limits. Your sessions run on your machine. This server is told each one's name, agent, folder name and your machine's name, mints and checks its links and decides who joins: publish here only if you trust its operator.</p>{{else}}<p>Ask the operator of this switchyard for a host token, then add both to your Conductor config:</p>
 <div class="code">"rendezvous": {
   "server": "https://{{.Host}}",
   "token": "&lt;host token&gt;"
 }</div>
-<p class="small muted">In the desktop app it is Settings → Switchyard. Your sessions stay on your machine; this server only passes along who may join them.</p>{{end}}
+<p class="small muted">In the desktop app it is Settings → Switchyard. Your sessions run on your machine. This server is told each one's name, agent, folder name and your machine's name, mints and checks its links and decides who joins: publish here only if you trust its operator.</p>{{end}}
 </section>
 </div>
 <aside class="aside">
