@@ -808,6 +808,31 @@ request each from main.
   without its fix). The check with the real Codex and Claude Code in the
   installed app comes with the next release candidate.
 
+- **The mouse with the real agents, and Shift+drag over a program that
+  asks for every move.** Checked on 2026-10-11 in the installed v0.7.0-rc.7
+  Windows app (its server in WSL) with Codex 0.161.0 and Claude Code
+  2.1.296, driven with the system's own mouse events. Both agents now turn
+  mouse reporting on (Claude Code's full-screen view too). The wheel
+  scrolls each agent's own view, xterm's stays put; a click and a drag are
+  the agent's (Codex draws its own selection); a right-click is the
+  agent's, no menu and no paste of ours (Codex copies its own selection,
+  "Copied 35 chars to host clipboard"; Claude Code pastes the clipboard
+  itself, the page reading nothing); Shift+right-click opens the
+  terminal's menu over both. In a shell with no mouse reporting a drag
+  selects, a right-click copies and clears it, the next pastes. But a
+  Shift+drag left no selection over either agent: both ask for every move
+  (1003), xterm reports a move with no button held, Shift or not, and
+  takes the report for typing, which clears the selection; the probe of
+  `mouse.spec.ts` asked for presses and drags only. Now (#115), while a
+  program asks for every move, a move with no button held is kept from it
+  while Shift is held or a selection shows, after xterm's own listeners on
+  its screen have seen it (link hover still works); a click is the
+  program's and clears the selection, and its moves are the program's
+  again. Codex reviewed it three times, the last two approving. Tests:
+  vitest (`withholdsMove`, `pressClearsSelection`), Playwright (a probe
+  asking for every move, and one in xterm's first encoding and on a view
+  link; both fail on main's build).
+
 - **Codex's hook trust lasts.** Checked live on 2026-10-10 with the real
   Codex 0.161 in a throwaway home (its own `CODEX_HOME`, a copy of the
   login, deleted afterwards; no Enter typed into a startup screen).
@@ -874,6 +899,38 @@ request each from main.
     the host's and each viewer's queues. A save is waited for while its
     connection lives, and its answer marks saved only the text it sent.
   - **Desktop tests** (#107). They fetch Electron's binary before they start.
+  - **Folders** (#112). A launch's working directory opens through the
+    root it was checked against, so the folder a session starts in is the
+    one the check named.
+  - **Saving** (#113). A save asked for while another is on its way says
+    so under the editor's tabs instead of passing silently; the next save,
+    once that one is answered, saves what changed since.
+  - **A relayed viewer's last frames** (#114). What a hosted session's
+    viewer sent just before its connection closed reaches the host before
+    its leave (a reply box sends, then closes): its connection is read for
+    at most 2 s more once a write to it has failed, and nothing after a
+    frame dropped then goes. It was #110's regression, found by the
+    v0.7.0-rc.7 release run (a relayed submission's test, 4 in 120 under
+    load before, 600 of 600 after).
+
+- **v0.7.0-rc.7 in the app, and the sidebar's five tasks walked once.**
+  Tagged on main at 45bd86f (#100–#113) on 2026-10-11; the switchyard runs
+  it (rc.6 kept as `conductor.prev`), and the owner's Windows app was
+  updated to it (the owner answered the installer's admin prompt). The
+  mouse check is above. The five tasks of `docs/sidebar-tasks.md` were
+  walked once in that app, as the script's newcomer would, with a
+  throwaway crew of two Codex members and a Claude Code one. Each
+  intended path held: Needs you on top with the run's block and the member
+  asking first, answered from the row; Share on a member's row making and
+  copying one view link in one step; the run header's Stop asking in the
+  row and stopping every member; Crews → the crew → Runs → Open showing
+  the earlier run; the words "Saved crew" and "plans … nothing runs until
+  you launch one" against "run started 09:44 · 3 agents". What went wrong
+  is in `docs/tasks-todo.md` (Bugs): a Codex member's command approval
+  missed or shown as "terminal bell", Codex's turn-end bell leaving a
+  member in Needs you, Codex's trust and update questions' words, and
+  small layout slips. The watching, with two coworkers, stays the
+  owner's.
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
