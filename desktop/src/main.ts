@@ -67,7 +67,7 @@ async function run() {
   const settingsFile = join(userData, 'settings.json')
   const defaults = defaultSettings(homedir(), userData)
   let settings = loadSettings(settingsFile, defaults)
-  // A notice owed to settings from an earlier build: shown once, in the workbench, then marked.
+  // A notice owed to these settings (a fresh install's, or an earlier build's): shown once, in the workbench, then marked.
   const owed = owedNotice(settings)
   let notice = owed.notice
   if (owed.settings !== settings) {

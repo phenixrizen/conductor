@@ -106,3 +106,67 @@ test('a "Runs in" field has a folder button that browses the allowed roots and f
   await expect(page.locator('[data-dir-picker-path]')).toHaveCount(0)
   await expect(field).toHaveValue(state.repo)
 })
+
+// The one-time notice the desktop app hands the workbench (a fresh install's,
+// or an upgrade's): one toast that says sessions are published to a
+// switchyard, that it mints and checks the links, and how to turn it off, with
+// the way to Settings.
+test('the app\'s publishing notice says what is published and leads to Settings', async ({ page, state }) => {
+  const form = {
+    dataDir: state.data,
+    allowedRoots: [state.root],
+    defaultCwd: state.root,
+    yolo: false,
+    reach: 'off',
+    closeToTray: true,
+    wslDistro: '',
+    wslWindowsHome: false,
+    switchyardEnabled: true,
+    switchyardServer: '',
+    switchyardToken: '',
+    switchyardName: '',
+    noticed: ['publishing'],
+  }
+  await page.addInitScript(
+    ({ token, form, url }) => {
+      const settings = { ...form }
+      // The app hands the notice out once; a page loaded again is told nothing.
+      let owed = sessionStorage.getItem('e2e.noticed') ? '' : 'publishing'
+      ;(window as unknown as { conductorDesktop: unknown }).conductorDesktop = {
+        version: 'e2e',
+        platform: 'linux',
+        token: async () => token,
+        openExternal: async () => {},
+        settings: { get: async () => ({ ...settings }), set: async (p: object) => Object.assign(settings, p) },
+        restartServer: async () => {},
+        openInBrowser: async () => {},
+        showLog: async () => {},
+        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        notice: async () => {
+          const n = owed
+          owed = ''
+          if (n) sessionStorage.setItem('e2e.noticed', '1')
+          return n
+        },
+        ice: async () => ({ forwarding: false, port: 0, publicIp: '', wslAddress: '', firewall: 'unknown' }),
+        allowIceFirewall: async () => 'unknown',
+        versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+        onServerState: () => () => {},
+      }
+    },
+    { token: state.token, form, url: state.baseURL },
+  )
+  await page.goto('/yard')
+  const toast = page.locator('li').filter({ hasText: 'Sessions are published to a switchyard' }).last()
+  await expect(toast).toBeVisible({ timeout: 15_000 })
+  await expect(toast).toContainText('switchyard.rslabs.net')
+  await expect(toast).toContainText('publish only to one whose operator you trust')
+  await expect(toast).toContainText('Settings → Switchyard')
+  await toast.getByRole('button', { name: 'Settings' }).click()
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(page.locator('[data-switchyard-settings]')).toBeVisible()
+  // Once only.
+  await page.reload()
+  await expect(page.locator('[data-switchyard-settings]')).toBeVisible()
+  await expect(page.getByText('Sessions are published to a switchyard')).toHaveCount(0)
+})

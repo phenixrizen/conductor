@@ -111,8 +111,17 @@ describe('settings inside WSL', () => {
 
 describe('the one-time notices', () => {
   const defaults = defaultSettings('/home/me', '/home/me/.config/conductor-desktop')
-  it('owes a fresh install nothing', () => {
-    expect(owedNotice(defaults)).toEqual({ notice: '', settings: defaults })
+  it.skipIf(win)('owes a fresh install the publishing notice once, and keeps it marked through the file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fresh-'))
+    const file = join(dir, 'settings.json')
+    // No file yet: the defaults, which have been told nothing.
+    const fresh = loadSettings(file, defaults)
+    expect(fresh.noticed).toEqual([])
+    const first = owedNotice(fresh)
+    expect(first.notice).toBe('publishing')
+    expect(first.settings.noticed).toEqual(['publishing'])
+    saveSettings(file, first.settings)
+    expect(owedNotice(loadSettings(file, defaults))).toMatchObject({ notice: '' })
   })
   it.skipIf(win)('owes settings from an earlier build the publishing notice once, and keeps it marked through the file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cd-notice-'))
