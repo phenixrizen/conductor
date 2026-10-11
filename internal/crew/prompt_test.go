@@ -124,8 +124,9 @@ func TestAnApprovalFoundAsThePromptIsSubmittedHoldsIt(t *testing.T) {
 	e, fl := newEngine(t)
 	fl.questions = codexAnytime()
 	fl.onLaunch = func(_ string, p *sessiontest.FakeProc, l *session.Local) {
-		l.SetAttention(session.AttentionNeedsInput, "ready?", session.SourceAPI)
 		_ = p.Print("\x1b[12;3HWould you like to run the following command?\x1b[14;3H$ curl -sI https://example.com\x1b[16;1H› 1. Yes, proceed (y)\x1b[17;3H2. No, and tell Codex what to do differently (esc)\x1b[19;3HPress enter to confirm or esc to cancel")
+		time.Sleep(50 * time.Millisecond) // the session has read it; not yet quiet
+		l.SetAttention(session.AttentionNeedsInput, "ready?", session.SourceAPI)
 	}
 	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
 	if err != nil {

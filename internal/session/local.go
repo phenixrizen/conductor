@@ -1216,7 +1216,13 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter (a page's choice, a paste): look at the
 		// screen first, so that a dialog drawn and not yet seen quiet is the
-		// question they are weighed against, not the one it replaced.
+		// question they are weighed against, not the one it replaced. Right
+		// after a key that answered a dialog the screen is not looked at yet
+		// (Hold): they wait for the look, refused meanwhile, since the key
+		// may have done nothing and left the dialog.
+		if s.asked.Held() {
+			return ErrQuestion
+		}
 		s.asked.CheckNow()
 	}
 	s.mu.Lock()
@@ -1271,11 +1277,19 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if enter {
 		s.nextTurn()
 	}
-	if s.asked != nil && (enter || s.askedKeys[string(data)]) {
-		// What the screen shows is being answered: a look before a
-		// submission does not ask it again before the program draws what
-		// follows (the look at the end of a quiet period still does).
-		s.asked.Hold()
+	if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
+		// A key that answers a dialog on the screen: the look before a
+		// submission does not ask the dialog again before the program draws
+		// what follows (the look at the end of a quiet period still does).
+		// The key is noted against the dialog, also one not yet asked: the
+		// dialog asked later, before the program took it away, gives way to
+		// it (missAsked).
+		if words := s.askedOnScreen(); words != "" {
+			s.mu.Lock()
+			s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
+			s.mu.Unlock()
+			s.asked.Hold()
+		}
 	}
 	if _, err := s.proc.Write(data); err != nil {
 		return err
@@ -1294,6 +1308,18 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	}
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
 	return nil
+}
+
+// askedOnScreen returns the words of the question asked during the work
+// that the screen shows now, "" when it shows none.
+func (s *Local) askedOnScreen() string {
+	text := s.asked.Text()
+	for _, q := range s.askedQuestions {
+		if words := q.words(text); words != "" {
+			return words
+		}
+	}
+	return ""
 }
 
 // typedAt is who typed into the session while a question asked during the

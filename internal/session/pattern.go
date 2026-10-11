@@ -346,6 +346,13 @@ func (w *PatternWatcher) Held() bool {
 	return w.held && !w.stopped
 }
 
+// Text returns the text the watcher matches now (its tracker's Last).
+func (w *PatternWatcher) Text() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.tracker.Last()
+}
+
 // Feed adds a chunk of the stream and restarts the quiet period. It never
 // waits for a fire.
 func (w *PatternWatcher) Feed(chunk []byte) {

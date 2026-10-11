@@ -650,6 +650,52 @@ func TestAChoiceClickedAsADialogIsDrawnIsRefused(t *testing.T) {
 	}
 }
 
+// Right after a key that may have done nothing (a digit past the dialog's
+// lines), several keys with an Enter (a stale choice, a paste) are refused
+// until the screen has been looked at again: they would land on the dialog
+// still there.
+func TestSeveralKeysAfterAKeyThatDidNothingAreRefused(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	waitAttention(t, s, asked)
+	s.Input(sub, []byte("9"))
+	nextWrite(t, p)
+	if err := s.Input(sub, []byte("SQLite\r")); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("several keys right after: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	waitAttention(t, s, asked) // looked at again: the dialog is asked again
+	if err := s.Input(sub, []byte("SQLite\r")); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("several keys at the dialog asked again: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}
+
+// A key typed into the dialog before it is asked (the person was quicker
+// than the quiet look) is noted against the dialog on the screen: when the
+// program is slow to take the dialog away and the look asks it meanwhile,
+// it gives way to that key once it goes.
+func TestAKeyBeforeTheDialogIsAskedAnswersItWhenItGoesLate(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	s.Input(sub, []byte("\x1b"))
+	nextWrite(t, p)
+	waitAttention(t, s, asked) // the program has not drawn since: the dialog is asked
+	p.outW.Write([]byte(approvalGone("■ Conversation interrupted\r\n› ")))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil || s.Info().LastAnswer.ByName != "nater" {
+		t.Fatalf("%+v %+v", a, s.Info().LastAnswer)
+	}
+}
+
 // A digit past the dialog's lines does nothing in Codex, and the dialog
 // stays: a handoff that comes right after it waits for the screen to be
 // looked at again, finds the dialog, and writes nothing.
