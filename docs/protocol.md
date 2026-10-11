@@ -742,7 +742,9 @@ FILE frame's layout in the other direction: the header
 `{reqId, path, offset, total, baseSha256?, force?}` and the bytes
 `[offset, offset+len)` of a file of `total` bytes (at most 1 MiB), in parts of
 at most 32 KiB (under a data channel's message cap), in order, one save at a
-time per connection; a save whose next part has not come for 30 s is dropped.
+time per connection; a save's next part is waited for however long it takes
+(a relayed save's parts can be slowed on their way), and an unfinished save
+goes when the connection's next save starts, or with the connection.
 When the last part arrives the owner resolves `path` as a read does (the same
 deny list), and refuses with a FILE frame of kind `error` and code
 `changed_on_disk` when the file's sha256 is not `baseSha256` (the read's),

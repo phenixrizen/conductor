@@ -132,6 +132,52 @@ func TestFileWriteSavesAndRefuses(t *testing.T) {
 	}
 }
 
+// An unfinished save takes its next part however late it comes (a relayed
+// save's parts may be slowed on their way), and goes when the connection's
+// next save starts: one at a time, and nothing kept past the connection.
+func TestAnUnfinishedSaveWaitsForItsNextPart(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	dir := s.info.Cwd
+	file := filepath.Join(dir, "a.txt")
+	os.WriteFile(file, []byte("a\n"), 0o644)
+	read, _ := ReadPath(dir, "a.txt", false, nil)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("0123456789\n")
+	part := func(reqID string, off, end int) {
+		s.FileWrite(sub, proto.FileWrite{ReqID: reqID, Path: "a.txt", Offset: int64(off), Total: int64(len(body)), BaseSha256: read.Sha256}, body[off:end])
+	}
+	part("w1", 0, 5)
+	// No clock stands between the parts: what is pending is the save alone.
+	sub.writeMu.Lock()
+	if w := sub.write; w == nil || w.reqID != "w1" || len(w.buf) != 5 {
+		t.Fatalf("pending: %+v", w)
+	}
+	sub.writeMu.Unlock()
+	part("w1", 5, len(body))
+	if h := fileReply(t, sink, "w1"); h.Kind != "written" {
+		t.Fatalf("a save whose last part came late: %+v %+v", h, h.Error)
+	}
+	if b, _ := os.ReadFile(file); string(b) != string(body) {
+		t.Fatalf("on disk %q", b)
+	}
+	// A save left unfinished goes when the next starts: its late part is refused.
+	now, _ := ReadPath(dir, "a.txt", false, nil)
+	read = now
+	part("w2", 0, 5)
+	part("w3", 0, len(body))
+	if h := fileReply(t, sink, "w3"); h.Kind != "written" {
+		t.Fatalf("the next save: %+v %+v", h, h.Error)
+	}
+	part("w2", 5, len(body))
+	if h := fileReply(t, sink, "w2"); h.Error == nil || h.Error.Code != "out_of_order" {
+		t.Fatalf("a replaced save's late part: %+v", h)
+	}
+}
+
 // With FileEdit off a controller saves nothing.
 func TestFileWriteRefusedWhenEditingIsOff(t *testing.T) {
 	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, FileEdit: "off"})
