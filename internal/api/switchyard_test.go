@@ -264,6 +264,57 @@ func TestSwitchyardRelayBoundCountsAHostsMessages(t *testing.T) {
 	}
 }
 
+// A host's message is charged what the server forwards for it, not only what
+// the host sent, and before the viewer is sent it: an answer the server
+// encodes anew, six bytes for each '<' the host sent as one, waits for all
+// of it when the bound is spent.
+func TestSwitchyardRelayBoundCountsWhatAViewerIsSent(t *testing.T) {
+	noBurstFloor(t)
+	e := newTestEnv(t, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.RelayKBps = 256
+	})
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	v := dialViewer(t, e, host.sessionID, host.link("view", ""))
+	v.expectControl(proto.CtlWelcome)
+	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
+	answer := func(sdp string) []byte {
+		// By hand: json.Marshal would escape the '<'.
+		return []byte(`{"t":"` + proto.HostAnswer + `","viewerId":"` + viewerID + `","sdp":"` + sdp + `"}`)
+	}
+	// The burst of 512 KiB spent on eight plain answers, then one of 60 KiB
+	// of '<': about 360 KiB to the viewer, which waits for all of it, about
+	// 1.4 s at 256 KiB/s (its 60 KiB alone would be a quarter of a second).
+	plain := answer(strings.Repeat("a", 64<<10))
+	sent := make(chan time.Time, 1)
+	go func() {
+		for range 8 {
+			if host.c.Write(t.Context(), websocket.MessageText, plain) != nil {
+				return
+			}
+		}
+		if host.c.Write(t.Context(), websocket.MessageText, answer(strings.Repeat("<", 60<<10))) == nil {
+			sent <- time.Now()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	for got := 0; got < 9; {
+		_, data, err := v.c.Read(ctx)
+		if err != nil {
+			t.Fatalf("after %d answers: %v", got, err)
+		}
+		if len(data) > 1 && data[0] == proto.TypeSignal {
+			if tt, _ := proto.ParseHeader(data[1:]); tt == proto.SigAnswer {
+				got++
+			}
+		}
+	}
+	if took := time.Since(<-sent); took < time.Second {
+		t.Fatalf("an answer of 360 KiB reached the viewer %v after the host sent it, past a spent bound of 256 KiB/s", took)
+	}
+}
+
 // relayOneMiB joins host's session as a relayed viewer, streams 1 MiB from
 // the host in 64 whole frames and says how long the viewer took to get it all.
 func relayOneMiB(t *testing.T, e *testEnv, host *fakeHost) time.Duration {

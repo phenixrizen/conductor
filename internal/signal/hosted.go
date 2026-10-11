@@ -1006,21 +1006,37 @@ func hostActivityMsg(e session.ActivityEntry) proto.HostActivityMsg {
 
 // --- messages from the host ---
 
+// AnswerFrame is the SIGNAL frame HostAnswer queues for a viewer, and
+// ICEFrame the one HostICE does: the host's message encoded anew, which can
+// be larger than the host sent it (json.Marshal writes a '<' as six bytes).
+// A bound on what the host sends charges it before it is queued (HostSignal).
+func AnswerFrame(sdp string) ([]byte, error) {
+	return proto.EncodeJSON(proto.TypeSignal, proto.SDP{T: proto.SigAnswer, SDP: sdp})
+}
+
+// ICEFrame: see AnswerFrame.
+func ICEFrame(c proto.ICECandidate) ([]byte, error) {
+	return proto.EncodeJSON(proto.TypeSignal, proto.ICE{T: proto.SigICE, Candidate: c})
+}
+
+// HostSignal queues a SIGNAL frame AnswerFrame or ICEFrame made for a viewer.
+func (h *HostedSession) HostSignal(viewerID string, f []byte) {
+	if v := h.viewer(viewerID); v != nil {
+		v.push(f)
+	}
+}
+
 // HostAnswer delivers an SDP answer to a viewer.
 func (h *HostedSession) HostAnswer(viewerID, sdp string) {
-	if v := h.viewer(viewerID); v != nil {
-		if f, err := proto.EncodeJSON(proto.TypeSignal, proto.SDP{T: proto.SigAnswer, SDP: sdp}); err == nil {
-			v.push(f)
-		}
+	if f, err := AnswerFrame(sdp); err == nil {
+		h.HostSignal(viewerID, f)
 	}
 }
 
 // HostICE delivers a host ICE candidate to a viewer.
 func (h *HostedSession) HostICE(viewerID string, c proto.ICECandidate) {
-	if v := h.viewer(viewerID); v != nil {
-		if f, err := proto.EncodeJSON(proto.TypeSignal, proto.ICE{T: proto.SigICE, Candidate: c}); err == nil {
-			v.push(f)
-		}
+	if f, err := ICEFrame(c); err == nil {
+		h.HostSignal(viewerID, f)
 	}
 }
 
@@ -1031,7 +1047,8 @@ func (h *HostedSession) HostRelayFrame(viewerID string, inner proto.Frame) {
 	}
 }
 
-// HostViewerError forwards a per-viewer error and closes the viewer.
+// HostViewerError forwards a per-viewer error and closes the viewer. The
+// viewer is sent proto.NewError(code, message).
 func (h *HostedSession) HostViewerError(viewerID, code, message string) {
 	if v := h.viewer(viewerID); v != nil {
 		v.push(proto.NewError(code, message))

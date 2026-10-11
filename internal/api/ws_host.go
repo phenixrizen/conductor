@@ -85,7 +85,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := hs.Info()
-	hc := &hostConnState{base: s.publicBase(r)}
+	hc := &hostConnState{base: s.publicBase(r), ctx: ctx}
 	if open {
 		hc.addr = addr
 	}
@@ -202,6 +202,19 @@ type hostConnState struct {
 	// updateTimes bounds link_run_update (proto.RunLinkUpdatesPerMinute).
 	updateTimes []time.Time
 	relay       *byteBucket
+	// ctx is the connection's: a wait on relay ends with it.
+	ctx context.Context
+}
+
+// chargeForward charges, before a viewer is sent it, what a host's message
+// brings the viewer (n bytes) past what it was charged as read: a message
+// encoded anew can be larger than the host sent it. False when the
+// connection ends meanwhile, and the viewer is sent nothing.
+func (hc *hostConnState) chargeForward(n, read int) bool {
+	if hc.relay == nil || n <= read {
+		return true
+	}
+	return hc.relay.take(hc.ctx, n-read) == nil
 }
 
 // byteBucket is a token bucket of bytes: rate a second, burst at most (a
@@ -290,13 +303,17 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil || m.SDP == "" {
 			return false
 		}
-		hs.HostAnswer(m.ViewerID, m.SDP)
+		if f, err := signal.AnswerFrame(m.SDP); err == nil && hc.chargeForward(len(f), len(data)) {
+			hs.HostSignal(m.ViewerID, f)
+		}
 	case proto.HostICE:
 		var m proto.ViewerICE
 		if json.Unmarshal(data, &m) != nil || len(m.Candidate.Candidate) > proto.MaxICECandidate {
 			return false
 		}
-		hs.HostICE(m.ViewerID, m.Candidate)
+		if f, err := signal.ICEFrame(m.Candidate); err == nil && hc.chargeForward(len(f), len(data)) {
+			hs.HostSignal(m.ViewerID, f)
+		}
 	case proto.HostStatus:
 		var m proto.HostStatusMsg
 		if json.Unmarshal(data, &m) != nil {
@@ -320,7 +337,9 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil {
 			return false
 		}
-		hs.HostViewerError(m.ViewerID, m.Code, m.Message)
+		if hc.chargeForward(len(proto.NewError(m.Code, m.Message)), len(data)) {
+			hs.HostViewerError(m.ViewerID, m.Code, m.Message)
+		}
 	case proto.HostViewerClose:
 		var m proto.ViewerRef
 		if json.Unmarshal(data, &m) != nil {
