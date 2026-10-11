@@ -325,6 +325,9 @@ func TestAddWorktreeChecksOutWhereItWasMadeWhateverCoreWorktreeSays(t *testing.T
 // each once; a configuration's conditional includes count as they apply in
 // the directory asked about.
 func TestFilterNames(t *testing.T) {
+	// The machine's own system config (a CI runner's has Git LFS's filter)
+	// stays out of the names this test expects.
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	r := gitclitest.New(t, gitclitest.Options{})
 	global := "[filter \"owner\"]\n\tclean = x\n[filter \"Dotted.Name\"]\n\tsmudge = y\n\trequired = true\n[filter \"none\"]\n\trequired = true\n"
 	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".gitconfig"), []byte(global), 0o644); err != nil {
