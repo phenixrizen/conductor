@@ -2,7 +2,7 @@
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
-import { clipboardKey, forcesSelection, menuPress, readRightClickPastes, rightClick, RightPress, writeRightClickPastes } from '~/utils/terminalClipboard'
+import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRightClickPastes, rightClick, RightPress, withholdsMove, writeRightClickPastes } from '~/utils/terminalClipboard'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { findFileLocations } from '~/utils/links'
@@ -137,9 +137,14 @@ function appHoldsMouse(): boolean {
 }
 /** A right-click is decided by what its press held, not by the moment the menu event comes (RightPress). */
 const rightPress = new RightPress()
-/** Every press on the page, so one outside the terminal forgets a right press here that brought no menu. */
+/**
+ * Every press on the page, so one outside the terminal forgets a right press here that brought no menu. A press in the terminal that is
+ * the program's clears the selection (pressClearsSelection), where xterm would leave it.
+ */
 function onAnyMouseDown(e: MouseEvent) {
-  if (host.value?.contains(e.target as Node) && menuPress(e, isMac)) rightPress.press({ appMouse: appHoldsMouse(), force: forcesSelection(e, isMac) })
+  const inTerminal = !!host.value?.contains(e.target as Node)
+  if (inTerminal && term?.hasSelection() && pressClearsSelection(e, { tracking: term.modes.mouseTrackingMode, mac: isMac })) term.clearSelection()
+  if (inTerminal && menuPress(e, isMac)) rightPress.press({ appMouse: appHoldsMouse(), force: forcesSelection(e, isMac) })
   else rightPress.clear()
 }
 /** The keyboard's menu key, noted as it goes down: its menu event is the keyboard's whatever the browser marks on it. */
@@ -157,6 +162,26 @@ function onContextMenu(e: MouseEvent) {
   if (act === 'app') return // xterm has reported the click to the program
   if (act === 'copy') copySelection(true)
   else void pasteClipboard()
+}
+/** xterm's screen, where its own listeners find the link under the pointer and set the cursor's style on a move. */
+let screenEl: HTMLElement | null = null
+/** Whether xterm's report of this move is kept from the program (withholdsMove). */
+function withheld(e: MouseEvent): boolean {
+  return !!term && withholdsMove(e, { tracking: term.modes.mouseTrackingMode, hasSelection: term.hasSelection(), mac: isMac })
+}
+/**
+ * A move xterm would report to a program that asks for every move is kept from it while Shift is held or a selection shows: xterm takes
+ * the report for typing and clears the selection. xterm reports a move from its element. Over the screen the move stops on its way up
+ * there, after xterm's listeners on the screen have seen it (they were added first); elsewhere in the terminal (its padding) no listener
+ * of xterm's needs it, and it stops on its way down, at the host. A drag (a button held) is never stopped: xterm's selection follows it
+ * from the document.
+ */
+function onScreenMouseMove(e: MouseEvent) {
+  if (withheld(e)) e.stopPropagation()
+}
+function onHostMouseMove(e: MouseEvent) {
+  const target = e.target as Node
+  if (term?.element?.contains(target) && !screenEl?.contains(target) && withheld(e)) e.stopPropagation()
 }
 function setRightClickPastes(on: boolean) {
   rightClickPastes.value = on
@@ -664,6 +689,10 @@ onMounted(() => {
   window.addEventListener('mousedown', onAnyMouseDown, true)
   window.addEventListener('keydown', onAnyKeyDown, true)
   host.value!.addEventListener('contextmenu', onContextMenu, true)
+  // After term.open, so that xterm's own listeners on its screen see a move before this one.
+  screenEl = term.element?.querySelector<HTMLElement>('.xterm-screen') ?? null
+  screenEl?.addEventListener('mousemove', onScreenMouseMove)
+  host.value!.addEventListener('mousemove', onHostMouseMove, true)
   // Re-measure once the bundled font has loaded so cell metrics are exact.
   document.fonts?.ready.then(() => {
     if (!term) return
@@ -712,6 +741,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('mousedown', onAnyMouseDown, true)
   window.removeEventListener('keydown', onAnyKeyDown, true)
   host.value?.removeEventListener('contextmenu', onContextMenu, true)
+  host.value?.removeEventListener('mousemove', onHostMouseMove, true)
+  screenEl?.removeEventListener('mousemove', onScreenMouseMove)
+  screenEl = null
   observer?.disconnect()
   document.removeEventListener('visibilitychange', onVisibility)
   stopTheme?.()

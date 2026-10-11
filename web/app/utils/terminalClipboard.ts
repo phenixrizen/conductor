@@ -15,6 +15,14 @@
  * pasted or opened. Shift, with which xterm takes the mouse back, still opens the menu with a right-click and selects with a drag; xterm
  * reports neither. On a Mac nothing takes it back (xterm's Option forcing is left off: its Option-click would move the program's
  * cursor), so those are the program's too; ⌘C and ⌘V still copy and paste.
+ *
+ * Moves: a program that asks for every move (any-event tracking, which Codex and Claude Code turn on) has xterm report each move with no
+ * button held, Shift or not, and xterm takes a report for typing, which clears the selection: the move that ends a Shift+drag would
+ * clear what it selected. So while Shift is held, or a selection shows (⌘A selects all on a Mac), a move with no button held is kept
+ * from xterm's report and the program does not hear it (withholdsMove); xterm still sees it on its screen, where it finds the link
+ * under the pointer. A click is the program's as ever and clears the selection (pressClearsSelection: in either encoding of the
+ * reports, and on a read-only view such as a view link's, which sends none), and the moves after it are the program's again. A move
+ * with a button held always reaches xterm: its selection follows the drag with it.
  */
 export interface ClipboardKeyEvent {
   type: string
@@ -115,6 +123,29 @@ export function menuPress(e: { button: number; ctrlKey: boolean }, mac: boolean)
  */
 export function forcesSelection(e: { shiftKey: boolean; altKey: boolean }, mac: boolean): boolean {
   return !mac && e.shiftKey
+}
+
+/** The mouse reports the program running asked for, as xterm names them (its modes.mouseTrackingMode); 'any' reports every move. */
+export type MouseTracking = 'none' | 'x10' | 'vt200' | 'drag' | 'any'
+
+/**
+ * Whether a mouse move is kept from xterm's report, so that the program running does not hear it and the selection stays: a move with no
+ * button held, while the program asks for every move and the forcing key is held or a selection shows. A move with a button held is a
+ * drag, and is never kept. Under any other tracking xterm reports no move without a button, so nothing is kept.
+ */
+export function withholdsMove(e: { buttons: number; shiftKey: boolean; altKey: boolean }, ctx: { tracking: MouseTracking; hasSelection: boolean; mac: boolean }): boolean {
+  return ctx.tracking === 'any' && e.buttons === 0 && (forcesSelection(e, ctx.mac) || ctx.hasSelection)
+}
+
+/**
+ * Whether a press clears the selection while the program running holds the mouse: a press of the main button, which is the program's.
+ * xterm clears it only for a report it takes for typing (an SGR one, on a connection that may type); a report in its first encoding goes
+ * out as bytes and a read-only view sends none, and the selection would stay, with the moves kept from the program while it shows. The
+ * forcing key's press selects instead, and a press that brings a menu event (Control-click on a Mac; the right button is not the main
+ * one) is the right-click's to decide (rightClick), which may copy the selection or open the menu on it.
+ */
+export function pressClearsSelection(e: { button: number; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }, ctx: { tracking: MouseTracking; mac: boolean }): boolean {
+  return ctx.tracking !== 'none' && e.button === 0 && !forcesSelection(e, ctx.mac) && !menuPress(e, ctx.mac)
 }
 
 /** Where the right-click setting is kept, per browser. */
