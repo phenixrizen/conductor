@@ -638,12 +638,299 @@ func TestServePrintsTheListenHandshake(t *testing.T) {
 	if lines := logLines(logs.String(), "conductor serving", "publicUrl=http://localhost:"+port); len(lines) != 1 {
 		t.Fatalf("publicUrl did not follow the port:\n%s", logs.String())
 	}
-	if strings.Contains(logs.String(), h.WorkbenchToken) {
-		// The generated token is logged once by design (a developer signs in with it); the handshake does not change that.
-		t.Log("the generated token is in the log, as before")
-	}
 	cancel()
 	<-done
+	// The log names the file that holds the generated token, never the token.
+	if strings.Contains(logs.String(), h.WorkbenchToken) {
+		t.Fatalf("the generated token is in the log:\n%s", logs.String())
+	}
+	if lines := logLines(logs.String(), "level=WARN", "generated one for this run", "file="+filepath.Join(data, "workbench-token")); len(lines) != 1 {
+		t.Fatalf("no line naming the generated token's file:\n%s", logs.String())
+	}
+}
+
+// The terminal the server was started from gets one plain line naming the
+// file that holds a generated workbench token; neither it nor the logger
+// gets the value, which only the --print-listen line carries.
+func TestServeNamesTheGeneratedTokensFileOnTheTerminal(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	t.Cleanup(agents.ForgetBinary())
+	var tty syncBuffer
+	old := terminalOf
+	t.Cleanup(func() { terminalOf = old })
+	terminalOf = func(io.Writer) io.Writer { return &tty }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs, out syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
+		done <- err
+	}()
+	deadline := time.After(10 * time.Second)
+	for !strings.Contains(out.String(), "\n") {
+		select {
+		case err := <-done:
+			t.Fatalf("serve returned: %v\n%s", err, logs.String())
+		case <-deadline:
+			t.Fatalf("no handshake:\n%s", logs.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("serve: %v\n%s", err, logs.String())
+	}
+	var h handshake
+	if err := json.Unmarshal([]byte(strings.SplitN(out.String(), "\n", 2)[0]), &h); err != nil {
+		t.Fatalf("handshake %q: %v", out.String(), err)
+	}
+	if len(h.WorkbenchToken) < 32 {
+		t.Fatalf("handshake %+v", h)
+	}
+	path := filepath.Join(data, "workbench-token")
+	want := "Workbench token: generated for this run, in " + path + " (set CONDUCTOR_WORKBENCH_TOKEN to choose your own)\n"
+	if tty.String() != want {
+		t.Fatalf("the terminal got:\n%q\nwant:\n%q", tty.String(), want)
+	}
+	if strings.Contains(tty.String(), h.WorkbenchToken) {
+		t.Fatalf("the token is on the terminal:\n%s", tty.String())
+	}
+	if strings.Contains(logs.String(), h.WorkbenchToken) {
+		t.Fatalf("the generated token went through the logger:\n%s", logs.String())
+	}
+	if lines := logLines(logs.String(), "level=WARN", "generated one for this run", "file="+filepath.Join(data, "workbench-token")); len(lines) != 1 {
+		t.Fatalf("no line naming the generated token's file:\n%s", logs.String())
+	}
+}
+
+// readTokenFile returns the workbench token file's contents, failing unless
+// it is a regular file of mode 0600.
+func readTokenFile(t *testing.T, path string) string {
+	t.Helper()
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("token file: %v", err)
+	}
+	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("token file mode %v", fi.Mode())
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A generated workbench token is kept in the data directory while the server
+// runs (0600, the directory made 0700), rewritten by every start that
+// generates one and removed when the server stops, unless another has
+// replaced it meanwhile; the log names the file, never the token.
+func TestServeKeepsAGeneratedTokenInTheDataDirectory(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	path := filepath.Join(data, "workbench-token")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+
+	var first string
+	logs := serveWhile(t, "conductor serving", func(string) {
+		first = strings.TrimSuffix(readTokenFile(t, path), "\n")
+		if len(first) < 32 || strings.ContainsAny(first, " \n") {
+			t.Fatalf("token file holds %q", first)
+		}
+		if fi, err := os.Stat(data); err != nil || fi.Mode().Perm() != 0o700 {
+			t.Fatalf("data directory mode %v %v", fi.Mode(), err)
+		}
+	}, "--config", cfg)
+	if strings.Contains(logs, first) {
+		t.Fatalf("the generated token is in the log:\n%s", logs)
+	}
+	if lines := logLines(logs, "level=WARN", "generated one for this run", "file="+path, "CONDUCTOR_WORKBENCH_TOKEN"); len(lines) != 1 {
+		t.Fatalf("no line naming the token's file:\n%s", logs)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the token file outlived its server: %v", err)
+	}
+
+	// A file left by an earlier run is rewritten; one another server puts
+	// there while this one runs is left alone when this one stops.
+	if err := os.WriteFile(path, []byte("old-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	serveWhile(t, "conductor serving", func(string) {
+		second := strings.TrimSuffix(readTokenFile(t, path), "\n")
+		if second == "old-token" || second == first || len(second) < 32 {
+			t.Fatalf("token file holds %q (first run %q)", second, first)
+		}
+		other := filepath.Join(data, "other.tmp")
+		if err := os.WriteFile(other, []byte("another server's\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(other, path); err != nil {
+			t.Fatal(err)
+		}
+	}, "--config", cfg)
+	if got := readTokenFile(t, path); got != "another server's\n" {
+		t.Fatalf("token file %q after the server stopped", got)
+	}
+}
+
+// A configured workbench token removes a token file an earlier run left, with
+// or without the lock file a server that stopped leaves beside it.
+func TestServeRemovesAStaleTokenFileWhenATokenIsConfigured(t *testing.T) {
+	for _, withLock := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lock-file-%v", withLock), func(t *testing.T) {
+			clearConductorEnv(t)
+			dir := t.TempDir()
+			data := filepath.Join(dir, "state")
+			path := filepath.Join(data, "workbench-token")
+			if err := os.MkdirAll(data, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("stale-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if withLock {
+				if err := os.WriteFile(filepath.Join(data, "workbench-token.lock"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+			t.Setenv("CONDUCTOR_WORKBENCH_TOKEN", "configured-token")
+			logs := serveWhile(t, "conductor serving", func(string) {
+				if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("the stale token file is still there: %v", err)
+				}
+			}, "--config", cfg)
+			if strings.Contains(logs, "generated one") || strings.Contains(logs, "workbench-token") {
+				t.Fatalf("a configured token logged a generated one:\n%s", logs)
+			}
+		})
+	}
+}
+
+// A server started on a data directory where another running server keeps
+// the token file leaves that file as it is: one that generates its own token
+// (which starts only with --print-listen, a terminal being no place for its
+// value), one that cannot listen, and one with a configured token.
+func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	path := filepath.Join(data, "workbench-token")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	cdir := filepath.Join(dir, "configured")
+	if err := os.Mkdir(cdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configured := writeServeConfig(t, cdir, fmt.Sprintf(`{"workbenchToken": "configured-token", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+
+	serveWhile(t, "conductor serving", func(firstLogs string) {
+		first := readTokenFile(t, path)
+
+		// One that generates its token, with nowhere to keep it, does not
+		// start, with a terminal or without.
+		var tty syncBuffer
+		for _, withTTY := range []bool{false, true} {
+			old := terminalOf
+			if withTTY {
+				terminalOf = func(io.Writer) io.Writer { return &tty }
+			}
+			var errOut syncBuffer
+			code, err := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg}, strings.NewReader(""), io.Discard, &errOut)
+			terminalOf = old
+			if code != 1 || err == nil || !strings.Contains(err.Error(), "keeps the workbench token file") {
+				t.Fatalf("a second server with its token nowhere (terminal %v): %d %v\n%s", withTTY, code, err, errOut.String())
+			}
+			if got := readTokenFile(t, path); got != first {
+				t.Fatalf("a second server replaced the token file: %q, was %q", got, first)
+			}
+		}
+		if tty.String() != "" {
+			t.Fatalf("a server that did not start wrote to the terminal:\n%s", tty.String())
+		}
+
+		// With --print-listen it starts: its token is the handshake's alone,
+		// the terminal and the log say so, and the file stays the first's.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var out, logs syncBuffer
+		old := terminalOf
+		defer func() { terminalOf = old }()
+		terminalOf = func(io.Writer) io.Writer { return &tty }
+		done := make(chan error, 1)
+		go func() {
+			_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
+			done <- err
+		}()
+		deadline := time.After(10 * time.Second)
+		for !strings.Contains(out.String(), "\n") {
+			select {
+			case err := <-done:
+				t.Fatalf("serve returned: %v\n%s", err, logs.String())
+			case <-deadline:
+				t.Fatalf("no handshake:\n%s", logs.String())
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		if got := readTokenFile(t, path); got != first {
+			t.Fatalf("a second server replaced the token file: %q, was %q", got, first)
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatalf("serve: %v\n%s", err, logs.String())
+		}
+		var h handshake
+		if err := json.Unmarshal([]byte(strings.SplitN(out.String(), "\n", 2)[0]), &h); err != nil || len(h.WorkbenchToken) < 32 || h.WorkbenchToken+"\n" == first {
+			t.Fatalf("handshake %q: %v", out.String(), err)
+		}
+		if lines := logLines(logs.String(), "level=WARN", "--print-listen line only", "file="+path); len(lines) != 1 {
+			t.Fatalf("the second server does not say its token is not in the file:\n%s", logs.String())
+		}
+		if !strings.Contains(tty.String(), "--print-listen line only") || !strings.Contains(tty.String(), path) {
+			t.Fatalf("the second server's terminal:\n%s", tty.String())
+		}
+		for _, tok := range []string{h.WorkbenchToken, strings.TrimSpace(first)} {
+			if strings.Contains(logs.String(), tok) || strings.Contains(tty.String(), tok) {
+				t.Fatalf("a token value on the terminal or in the log:\n%s\n%s", tty.String(), logs.String())
+			}
+		}
+		if got := readTokenFile(t, path); got != first {
+			t.Fatalf("the second server's stop changed the token file: %q, was %q", got, first)
+		}
+
+		// A server that cannot listen: on the first one's address.
+		var addr string
+		for _, f := range strings.Fields(strings.Join(logLines(firstLogs, "conductor serving"), " ")) {
+			if v, ok := strings.CutPrefix(f, "listen="); ok {
+				addr = v
+			}
+		}
+		if addr == "" {
+			t.Fatalf("no listen address:\n%s", firstLogs)
+		}
+		if _, err := runServe(context.Background(), []string{"--listen", addr, "--config", cfg}, strings.NewReader(""), io.Discard, io.Discard); err == nil {
+			t.Fatalf("a second server listened on %s", addr)
+		}
+		if got := readTokenFile(t, path); got != first {
+			t.Fatalf("a server that could not listen changed the token file: %q, was %q", got, first)
+		}
+
+		clogs := serveWhile(t, "conductor serving", nil, "--config", configured)
+		if lines := logLines(clogs, "belongs to another server", "file="+path); len(lines) != 1 {
+			t.Fatalf("the configured server does not say the file stays:\n%s", clogs)
+		}
+		if got := readTokenFile(t, path); got != first {
+			t.Fatalf("a configured server changed the token file: %q, was %q", got, first)
+		}
+	}, "--config", cfg)
+	if _, err := os.Lstat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the token file outlived its server: %v", err)
+	}
 }
 
 func TestServeExitsWhenStdinCloses(t *testing.T) {

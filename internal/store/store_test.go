@@ -358,3 +358,74 @@ func TestLoadLimit(t *testing.T) {
 		t.Fatalf("a link: %v %v", ok, err)
 	}
 }
+
+// A plain file is written as a document is: mode 0600 through a temp file,
+// replaced in full; RemoveFile takes it away, and a missing one is no error.
+func TestWriteAndRemoveAPlainFile(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	path := filepath.Join(s.Dir(), "plain-file")
+	for _, body := range []string{"first contents\n", "second\n"} {
+		if err := s.WriteFile("plain-file", []byte(body)); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil || string(b) != body {
+			t.Fatalf("contents %q %v, want %q", b, err, body)
+		}
+		fi, err := os.Stat(path)
+		if err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("mode %v %v", fi.Mode(), err)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(s.Dir(), "*.tmp")); len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+	// A plain file is no document.
+	if docs, err := s.List(); err != nil || len(docs) != 0 {
+		t.Fatalf("List: %v %v", docs, err)
+	}
+	if err := s.RemoveFile("plain-file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("still there: %v", err)
+	}
+	if err := s.RemoveFile("plain-file"); err != nil {
+		t.Fatalf("a missing file: %v", err)
+	}
+	for _, bad := range []string{"", "a.json", "../x", "A", "a/b", ".hidden"} {
+		if err := s.WriteFile(bad, nil); err == nil {
+			t.Errorf("WriteFile(%q) accepted", bad)
+		}
+		if err := s.RemoveFile(bad); err == nil {
+			t.Errorf("RemoveFile(%q) accepted", bad)
+		}
+	}
+	// A sub-store's directory is not a plain file.
+	if _, err := s.Sub("sub"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveFile("sub"); err == nil {
+		t.Fatal("RemoveFile removed a directory")
+	}
+}
+
+// A failed write keeps the previous contents and leaves no temp file.
+func TestFailedWriteFileKeepsThePreviousContents(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	if err := s.WriteFile("plain-file", []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	refused := errors.New("rename refused")
+	rename = func(string, string) error { return refused }
+	t.Cleanup(func() { rename = os.Rename })
+	if err := s.WriteFile("plain-file", []byte("new")); !errors.Is(err, refused) {
+		t.Fatalf("WriteFile with a failing rename: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(s.Dir(), "plain-file")); err != nil || string(b) != "old" {
+		t.Fatalf("previous contents lost: %q %v", b, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(s.Dir(), "*.tmp")); len(left) != 0 {
+		t.Fatalf("temp files left behind: %v", left)
+	}
+}
