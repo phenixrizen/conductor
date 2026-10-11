@@ -327,7 +327,7 @@ func TestNvimRefusedInARepositorysGitDir(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	root := gitDirTree(t)
 	s, _ := newLocal(t, root)
-	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, newChanSink(false))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, newChanSink(false))
 	if err != nil {
 		t.Fatal(err)
 	}

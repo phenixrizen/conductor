@@ -116,7 +116,7 @@ func TestFileWriteRefusesALinkedHeadAndAPointerFileElsewhere(t *testing.T) {
 	}
 	if nvim.Available() {
 		for i, p := range []string{"unborn/config", "gitfile2", "gitfile3"} {
-			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: fmt.Sprintf("n%d", i), Path: p}); !errors.Is(err, errGitDir) {
+			if err := s.NvimOpen(context.Background(), ownerOf(t, s), proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: fmt.Sprintf("n%d", i), Path: p}); !errors.Is(err, errGitDir) {
 				t.Errorf("Neovim on %s: %v", p, err)
 			}
 		}
@@ -437,7 +437,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 	}
 	if nvim.Available() {
 		for _, p := range []string{"project/git-pointer", "alias"} {
-			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-" + p, Path: p}); !errors.Is(err, errGitDir) {
+			if err := s.NvimOpen(context.Background(), ownerOf(t, s), proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-" + p, Path: p}); !errors.Is(err, errGitDir) {
 				t.Errorf("Neovim on %s: %v", p, err)
 			}
 		}
@@ -449,7 +449,7 @@ func TestFileWriteRefusesMetadataLinkedOutAndPointersAsGitWalksThem(t *testing.T
 			continue
 		}
 		if nvim.Available() {
-			if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-" + p, Path: p}); !errors.Is(err, errGitDir) {
+			if err := s.NvimOpen(context.Background(), ownerOf(t, s), proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "n-" + p, Path: p}); !errors.Is(err, errGitDir) {
 				t.Errorf("Neovim on %s: %v", p, err)
 			}
 		}
@@ -596,6 +596,17 @@ func TestGitDirMetAsCommonThenAsGitDir(t *testing.T) {
 	if h, _ := ReadPath(w, "notes.txt", false, nil); h.ReadOnly {
 		t.Fatalf("notes.txt reads as ReadOnly: %+v", h)
 	}
+}
+
+// ownerOf attaches one of the owner's own windows to s: the editor's
+// Neovim is offered there alone.
+func ownerOf(t *testing.T, s *Local) *Subscription {
+	t.Helper()
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sub
 }
 
 // writeTemp writes body to a new file in a temporary directory.
