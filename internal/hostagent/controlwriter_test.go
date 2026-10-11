@@ -280,7 +280,8 @@ func TestASocketThatTakesNothingForTheStallIsGivenUp(t *testing.T) {
 // A relayed viewer whose frames do not get their turn on the control
 // connection in time is let go alone, as a slow consumer: the session goes
 // on for its other viewers, the connection stays, and the server is told
-// the viewer is closed once the connection takes it.
+// the viewer is closed once the connection takes it, however long after the
+// time one of the host's own messages waits for its turn.
 func TestARelayedViewerWhoseFramesWaitTooLongIsLetGoAlone(t *testing.T) {
 	s, c, pc := dialHeld(t, 0)
 	dir := t.TempDir()
@@ -289,7 +290,7 @@ func TestARelayedViewerWhoseFramesWaitTooLongIsLetGoAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer proc.Stop(context.Background(), time.Second)
-	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", relayWait: 300 * time.Millisecond}
+	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", relayWait: 300 * time.Millisecond, controlWait: 200 * time.Millisecond}
 	w := a.useConn(c, pc)
 	t.Cleanup(w.stop)
 	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
@@ -330,6 +331,10 @@ func TestARelayedViewerWhoseFramesWaitTooLongIsLetGoAlone(t *testing.T) {
 	if r := hsub.Reason(); r != nil {
 		t.Fatalf("the other viewer was closed: %v", r)
 	}
+	// The server goes on not reading past the frame's wait, the wait of the
+	// error that tells the viewer why, and the wait of a message of the
+	// host's own.
+	time.Sleep(time.Second)
 	if _, _, err := pc.unsent(); err != nil {
 		t.Fatalf("the connection failed: %v", err)
 	}
@@ -451,6 +456,110 @@ func TestAConnectionHoldsBoundedUnsent(t *testing.T) {
 	defer cancel()
 	if _, _, err := c.Read(ctx); err == nil || ctx.Err() != nil {
 		t.Fatalf("the connection was not closed: %v", err)
+	}
+}
+
+// The stall is time in which the socket takes nothing at all: one that takes
+// a little at a time, never a whole part within the stall, keeps the
+// connection, and one that then stops taking anything loses it.
+func TestTheStallIsTimeWithNothingTaken(t *testing.T) {
+	near, far := net.Pipe()
+	t.Cleanup(func() { near.Close(); far.Close() })
+	pc := newPacedConn(near, 200*time.Millisecond)
+	want := bytes.Repeat([]byte("0123456789abcdef"), sendChunk/16)
+	if _, err := pc.Write(want); err != nil {
+		t.Fatal(err)
+	}
+	// 1 KiB every 50 ms: a part of sendChunk takes over three seconds.
+	var got []byte
+	buf := make([]byte, 1024)
+	for len(got) < len(want) {
+		time.Sleep(50 * time.Millisecond)
+		n, err := far.Read(buf)
+		if err != nil {
+			t.Fatalf("after %d bytes: %v", len(got), err)
+		}
+		got = append(got, buf[:n]...)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("the socket was handed other bytes")
+	}
+	if _, _, err := pc.unsent(); err != nil {
+		t.Fatalf("a socket that took a little at a time was given up: %v", err)
+	}
+	if _, err := pc.Write(want); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, _, err := pc.unsent(); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a socket that took nothing was never given up")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A viewer's error goes to the server however long the connection keeps it
+// waiting, the first of the viewer's alone.
+func TestAViewersErrorWaitsAsLongAsTheConnection(t *testing.T) {
+	s, c, pc := dialHeld(t, 0)
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", controlWait: 100 * time.Millisecond}
+	w := a.useConn(c, pc)
+	t.Cleanup(w.stop)
+	big := bytes.Repeat([]byte("b"), 1<<20)
+	if err := w.sendRelay(big, time.Second, nil); err != nil {
+		t.Fatal(err)
+	}
+	backedUp(t, pc)
+	a.sendViewerError("0123456789abcdef", "attach_failed", "first")
+	a.sendViewerError("0123456789abcdef", "attach_failed", "second")
+	time.Sleep(500 * time.Millisecond)
+	close(s.read)
+	s.expectGot(t, big)
+	select {
+	case got := <-s.got:
+		if !bytes.Contains(got, []byte(`"viewer_error"`)) || !bytes.Contains(got, []byte("first")) {
+			t.Fatalf("the server got %.80q", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the viewer's error never went")
+	}
+	select {
+	case got := <-s.got:
+		t.Fatalf("the server got %.80q besides", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// The watcher that reports the session's end on a connection ends with the
+// connection: one per connection the host ever had would otherwise wait
+// for the session's end, each holding its connection's writer.
+func TestAStatusWatcherEndsWithItsConnection(t *testing.T) {
+	dir := t.TempDir()
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proc.Stop(context.Background(), time.Second)
+	a := &agent{opts: Options{}, proc: proc, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
+	for range 3 {
+		_, c, pc := dialHeld(t, 0)
+		w := a.useConn(c, pc)
+		ended := make(chan struct{})
+		go func() {
+			a.watchStatus(t.Context(), w)
+			close(ended)
+		}()
+		a.dropConn(c)
+		select {
+		case <-ended:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the watcher outlived its connection")
+		}
 	}
 }
 

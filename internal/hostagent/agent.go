@@ -342,6 +342,11 @@ type agent struct {
 	submitWait time.Duration
 	// relayWait replaces relayTurnWait, and stallWait writeStall, in tests.
 	relayWait, stallWait time.Duration
+	// controlWait replaces controlTurnWait in tests.
+	controlWait time.Duration
+	// erring holds the viewers whose error is on its way to the server
+	// (sendViewerError). Guarded by mu.
+	erring map[string]bool
 }
 
 // submitDeadline is when a submission arriving now must be done by: its
@@ -762,6 +767,7 @@ func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivi
 // written to as its socket takes it.
 func (a *agent) useConn(c *websocket.Conn, pc *pacedConn) *controlWriter {
 	w := newControlWriter(c, pc)
+	w.controlTurn = a.controlWait
 	a.mu.Lock()
 	old := a.out
 	a.out = w
@@ -844,6 +850,9 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 	select {
 	case <-ctx.Done():
+		return
+	case <-w.done:
+		// The connection ended: the next one's watcher reports.
 		return
 	case <-a.local.Ended():
 	}
@@ -1189,8 +1198,51 @@ func (a *agent) sendRelay(viewerID string, frame []byte, gone <-chan struct{}) e
 	return w.sendRelay(env, turn, gone)
 }
 
+// sendViewerError tells the server a viewer's error, which closes the viewer
+// there: on a goroutine of its own, for its caller may be the one reading
+// the connection, and waiting as long as the connection lasts (tell), the
+// first of a viewer's alone, for the first closes it.
 func (a *agent) sendViewerError(viewerID, code, msg string) {
-	a.send(proto.ViewerError{T: proto.HostViewerError, ViewerID: viewerID, Code: code, Message: msg})
+	a.mu.Lock()
+	if a.erring[viewerID] {
+		a.mu.Unlock()
+		return
+	}
+	if a.erring == nil {
+		a.erring = map[string]bool{}
+	}
+	a.erring[viewerID] = true
+	a.mu.Unlock()
+	go func() {
+		_ = a.tell(proto.ViewerError{T: proto.HostViewerError, ViewerID: viewerID, Code: code, Message: msg})
+		a.mu.Lock()
+		delete(a.erring, viewerID)
+		a.mu.Unlock()
+	}()
+}
+
+// tell is send for a message the server must have while the connection
+// lasts (a viewer's close or error, which lets the viewer go there too): it
+// waits for its turn as long as the connection does.
+func (a *agent) tell(v any) error {
+	if a.sendHook != nil {
+		a.sendHook(v)
+		return nil
+	}
+	a.mu.Lock()
+	w := a.out
+	a.mu.Unlock()
+	if w == nil {
+		return errConnDown
+	}
+	b, err := json.Marshal(v)
+	if err == nil {
+		err = w.sendControlWhole(websocket.MessageText, b)
+	}
+	if err != nil {
+		a.log.Debug("control send failed", "err", err)
+	}
+	return err
 }
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {

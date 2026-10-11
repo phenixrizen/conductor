@@ -224,10 +224,13 @@ viewer in turn, each viewer's in order. A relayed frame that waits more than
 30 s for its turn is never sent: that viewer alone is let go
 (`slow_consumer`, then `viewer_closed`), as a WebRTC viewer is whose data
 channel stays full; one of the host's own messages that waits more than 15 s
-is dropped. However slowly the server reads the connection (a relay bound
-pauses its reading), the host answers its pings and keeps the connection; it
-gives the connection up only when its socket takes nothing at all for 2
-minutes. After `relay_ok` the same WebSocket carries terminal frames: the
+is dropped, but for `viewer_closed` and `viewer_error`, which wait as long
+as the connection lasts (an attention change that was dropped is sent again
+with the session's next change). However slowly the server reads the
+connection (a relay bound pauses its reading), the host answers its pings
+and keeps the connection; it gives the connection up only when its socket
+takes nothing at all for 2 minutes, or when it would hold more than 4 MiB
+unsent (a server that pings and does not read). After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
 View-role INPUT, FILE_WRITE, `resize`, `submit`, `chat_send` and the `nvim_*` messages are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent. A control connection's FILE_WRITE is carried, so the editor's saves work on the relay the same as a file read does (the editor's Neovim is the owner's own window only, so a link's controller edits with the editor's keys and saves).

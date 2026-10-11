@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -39,7 +40,9 @@ import (
 const (
 	// controlTurnWait bounds how long one of the host's own messages waits
 	// for its turn; one that waits longer is dropped, as a write that timed
-	// out was.
+	// out was. The few the server must have while the connection lasts (a
+	// viewer's close or error, which let the viewer go there too) wait as
+	// long as the connection does (sendControlWhole).
 	controlTurnWait = 15 * time.Second
 	// relayTurnWait bounds how long a frame relayed to a viewer waits for
 	// its turn, as long as a frame for a WebRTC viewer waits for room in its
@@ -83,8 +86,8 @@ var (
 
 // pacedConn is a control connection's socket (see above). Writes are kept
 // in order and never wait; pump hands them to the socket, sendChunk at a
-// time, each within the stall, and the first failure is every later write's
-// error and closes the socket. Close drops what is still kept: a host that
+// time, until the socket takes nothing at all for the stall, and the first
+// failure is every later write's error and closes the socket. Close drops what is still kept: a host that
 // lets the connection go on purpose waits for it to empty first (settle).
 type pacedConn struct {
 	net.Conn
@@ -172,7 +175,8 @@ func (p *pacedConn) fail(err error) {
 		return
 	}
 	p.err = err
-	p.kept.Reset()
+	// Released, not only emptied: a connection that failed holds nothing.
+	p.kept = bytes.Buffer{}
 	p.sending = 0
 	close(p.less)
 	p.less = make(chan struct{})
@@ -199,19 +203,34 @@ func (p *pacedConn) pump() {
 		n, _ := p.kept.Read(buf)
 		p.sending = n
 		p.mu.Unlock()
-		_ = p.Conn.SetWriteDeadline(time.Now().Add(p.stall))
-		_, err := p.Conn.Write(buf[:n])
-		if err != nil {
+		if err := p.send(buf[:n]); err != nil {
 			p.fail(err)
 			_ = p.Conn.Close()
 			return
 		}
-		p.mu.Lock()
-		p.sending = 0
-		close(p.less)
-		p.less = make(chan struct{})
-		p.mu.Unlock()
 	}
+}
+
+// send hands b to the socket, giving up only when the socket takes nothing
+// at all for the stall: a write whose deadline passes after it took some of
+// b goes on with the rest under a deadline of its own.
+func (p *pacedConn) send(b []byte) error {
+	for len(b) > 0 {
+		_ = p.Conn.SetWriteDeadline(time.Now().Add(p.stall))
+		n, err := p.Conn.Write(b)
+		b = b[n:]
+		if n > 0 {
+			p.mu.Lock()
+			p.sending = max(0, p.sending-n)
+			close(p.less)
+			p.less = make(chan struct{})
+			p.mu.Unlock()
+		}
+		if err != nil && (n == 0 || !errors.Is(err, os.ErrDeadlineExceeded)) {
+			return err
+		}
+	}
+	return nil
 }
 
 // pacedClient is base (http.DefaultClient's transport when nil) with each
@@ -274,6 +293,8 @@ type outMessage struct {
 type controlWriter struct {
 	c  *websocket.Conn
 	pc *pacedConn
+	// controlTurn replaces controlTurnWait in tests.
+	controlTurn time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -295,9 +316,20 @@ func newControlWriter(c *websocket.Conn, pc *pacedConn) *controlWriter {
 }
 
 // sendControl writes one of the host's own messages, ahead of the relayed
-// frames, once its turn comes within controlTurnWait.
+// frames, once its turn comes within controlTurnWait (controlTurn).
 func (w *controlWriter) sendControl(typ websocket.MessageType, data []byte) error {
-	return w.put(true, typ, data, controlTurnWait, nil)
+	turn := controlTurnWait
+	if w.controlTurn > 0 {
+		turn = w.controlTurn
+	}
+	return w.put(true, typ, data, turn, nil)
+}
+
+// sendControlWhole is sendControl for a message the server must have while
+// the connection lasts: it waits for its turn as long as the connection
+// does, which writeStall bounds.
+func (w *controlWriter) sendControlWhole(typ websocket.MessageType, data []byte) error {
+	return w.put(true, typ, data, 0, nil)
 }
 
 // sendRelay writes a frame relayed to a viewer once its turn comes within
@@ -315,7 +347,7 @@ func (w *controlWriter) unsent() int {
 }
 
 // put queues a message in its lane and waits until it is written or its
-// wait for its turn ends (turn, gone): then it is withdrawn.
+// wait for its turn ends (turn, none when 0; gone): then it is withdrawn.
 func (w *controlWriter) put(control bool, typ websocket.MessageType, data []byte, turn time.Duration, gone <-chan struct{}) error {
 	m := &outMessage{typ: typ, data: data, done: make(chan error, 1)}
 	w.mu.Lock()
@@ -333,13 +365,17 @@ func (w *controlWriter) put(control bool, typ websocket.MessageType, data []byte
 	case w.wake <- struct{}{}:
 	default:
 	}
-	t := time.NewTimer(turn)
-	defer t.Stop()
+	var expired <-chan time.Time
+	if turn > 0 {
+		t := time.NewTimer(turn)
+		defer t.Stop()
+		expired = t.C
+	}
 	why := session.ErrSlowConsumer
 	select {
 	case err := <-m.done:
 		return err
-	case <-t.C:
+	case <-expired:
 	case <-gone:
 		why = errViewerGone
 	}

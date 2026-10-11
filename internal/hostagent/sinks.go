@@ -153,13 +153,18 @@ func (s *relaySink) Transport() string { return proto.TransportRelay }
 
 func (s *relaySink) WriteFrame(frame []byte) error { return s.a.sendRelay(s.viewerID, frame, s.gone) }
 
+// Close tells the viewer why, when its turn comes in time, and then the
+// server that the viewer is closed, however long that waits while the
+// connection lasts: a close the server missed would leave the viewer
+// attached there, to a session that no longer serves it. It runs on the
+// viewer's own goroutine (session.Sink).
 func (s *relaySink) Close(reason error) {
 	s.once.Do(func() {
 		if reason != nil {
 			if code := errorCode(reason); code != "" {
 				_ = s.a.sendRelay(s.viewerID, proto.NewError(code, reason.Error()), s.gone)
 			}
-			s.a.send(proto.ViewerRef{T: proto.HostViewerClose, ViewerID: s.viewerID})
+			_ = s.a.tell(proto.ViewerRef{T: proto.HostViewerClose, ViewerID: s.viewerID})
 		}
 	})
 }
