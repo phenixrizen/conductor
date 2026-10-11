@@ -201,6 +201,31 @@ func TestShow(t *testing.T) {
 	if b, _, err := Show(context.Background(), dir, "", "0:README.md"); err == nil {
 		t.Fatalf("no revision was taken: %q", b)
 	}
+	// A revision names one commit: a folder's tree or a range would read the
+	// path from elsewhere.
+	tree, err := Run(context.Background(), dir, "rev-parse", "HEAD:internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{strings.TrimSpace(tree), "HEAD...HEAD", "HEAD^{tree}", "no-such-rev"} {
+		if b, _, err := Show(context.Background(), dir, rev, "api/users.go"); err == nil {
+			t.Errorf("revision %q was taken: %q", rev, b)
+		}
+	}
+	head, err := Run(context.Background(), dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{strings.TrimSpace(head), "HEAD~0", "main", "HEAD^{commit}"} {
+		if rev == "main" {
+			if _, err := Run(context.Background(), dir, "rev-parse", "--verify", "--quiet", "main"); err != nil {
+				continue // the default branch has another name here
+			}
+		}
+		if b, _, err := Show(context.Background(), dir, rev, "README.md"); err != nil || string(b) != "# repo\n\none\ntwo\n" {
+			t.Errorf("revision %q: %q %v", rev, b, err)
+		}
+	}
 	if _, _, err := Show(context.Background(), t.TempDir(), "HEAD", "README.md"); err != ErrNotRepo {
 		t.Fatalf("outside a repository: %v", err)
 	}

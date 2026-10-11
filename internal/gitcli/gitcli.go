@@ -296,14 +296,40 @@ func countLines(path string) (int, bool) {
 	return lines, false
 }
 
+// isObjectID reports whether s is an object id as rev-parse prints one: 40
+// (SHA-1) or 64 (SHA-256) lowercase hex digits.
+func isObjectID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // Show is the content of path (relative to the working tree's top) at rev,
-// at most MaxShowBytes of it (truncated says so); ErrNotRepo outside a
-// repository, an error for a path the revision does not have.
+// a revision that names one commit, at most MaxShowBytes of it (truncated
+// says so); ErrNotRepo outside a repository, an error for a revision that
+// is not a commit (a tree's id, a range) and for a path the commit does not
+// have.
 func Show(ctx context.Context, dir, rev, path string) (content []byte, truncated bool, err error) {
 	if rev == "" || strings.HasPrefix(rev, "-") || strings.HasPrefix(path, "-") || strings.Contains(rev, ":") {
 		return nil, false, fmt.Errorf("git show: invalid revision or path")
 	}
-	out, err := Run(ctx, dir, "show", rev+":"+filepath.ToSlash(path))
+	// rev names one commit, and path is read from its top: a tree's id (a
+	// folder of a commit) or a range would read path from elsewhere.
+	commit, err := Run(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	if errors.Is(err, ErrNotRepo) {
+		return nil, false, err
+	}
+	commit = strings.TrimSpace(commit)
+	if err != nil || !isObjectID(commit) {
+		return nil, false, fmt.Errorf("git show: %q is not a commit", rev)
+	}
+	out, err := Run(ctx, dir, "show", commit+":"+filepath.ToSlash(path))
 	if err != nil {
 		return nil, false, err
 	}

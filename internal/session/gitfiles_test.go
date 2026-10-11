@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,6 +284,17 @@ func TestGitShowRefusesDeniedPathsTheWorkingTreeNoLongerHas(t *testing.T) {
 	for _, c := range []struct{ rev, path string }{{"", "0:README.md"}, {"", "0:.conductor/catalog.json"}, {"", "README.md"}, {"HEAD:", "README.md"}, {"-p", "README.md"}} {
 		if sh, body := GitShowPath(dir, c.rev, c.path, deny, RoleControl); sh.Kind != "error" || sh.Error == nil || sh.Error.Code != "bad_request" || len(body) != 0 {
 			t.Errorf("revision %q, %s: %+v %q", c.rev, c.path, sh, body)
+		}
+	}
+	// A revision names a commit, whose top the path is read from: a folder's
+	// tree, or a range, would read a denied path under another one.
+	tree, err := gitcli.Run(context.Background(), dir, "rev-parse", "HEAD~1:cfg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rev := range []string{strings.TrimSpace(tree), "HEAD~1...HEAD~1"} {
+		if sh, body := GitShowPath(dir, rev, "conductor.json", deny, RoleControl); sh.Kind != "error" || len(body) != 0 || strings.Contains(sh.Error.Message, secret) {
+			t.Errorf("revision %q: %+v %q", rev, sh, body)
 		}
 	}
 	for p, body := range map[string]string{".conductor-notes/read.md": "notes\n", "cfg-other/conductor.md": "other\n", "README.md": "one\ntwo\n"} {
