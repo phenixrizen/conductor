@@ -167,15 +167,21 @@ type procWriter struct {
 	running bool
 	// writing is when the write being made began; zero while none is.
 	writing time.Time
+	// current is the write being made, nil while none is; stalled says
+	// that a wait for it ran out of its own time (ErrInputStalled) while
+	// it was being made: the program is not reading.
+	current *procWrite
+	stalled bool
 }
 
 // add queues w for to. It refuses w, never blocking, with ErrInputStalled
-// when stall is set and the writer has been on one write for that long, and
-// with ErrTooManyRequests when maxQueuedWrites wait already.
+// when stall is set and the program is known not to read (a wait for the
+// write being made ran out of its time, or the writer has been on it for
+// stall), and with ErrTooManyRequests when maxQueuedWrites wait already.
 func (q *procWriter) add(w *procWrite, to io.Writer, stall time.Duration) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if stall > 0 && !q.writing.IsZero() && time.Since(q.writing) >= stall {
+	if stall > 0 && (q.stalled || !q.writing.IsZero() && time.Since(q.writing) >= stall) {
 		return ErrInputStalled
 	}
 	if len(q.queue) >= maxQueuedWrites {
@@ -192,7 +198,7 @@ func (q *procWriter) add(w *procWrite, to io.Writer, stall time.Duration) error 
 func (q *procWriter) run(to io.Writer) {
 	for {
 		q.mu.Lock()
-		q.writing = time.Time{}
+		q.writing, q.current, q.stalled = time.Time{}, nil, false
 		if len(q.queue) == 0 {
 			q.running = false
 			q.mu.Unlock()
@@ -209,13 +215,23 @@ func (q *procWriter) run(to io.Writer) {
 			continue
 		}
 		w.begun = true
-		q.writing = time.Now()
+		q.writing, q.current = time.Now(), w
 		q.mu.Unlock()
 		if w.before != nil {
 			w.before()
 		}
 		_, err := to.Write(w.data)
 		w.done <- err
+	}
+}
+
+// stall notes that a wait for w ran out of its time while the writer was
+// making it: until it is made, the program is known not to read.
+func (q *procWriter) stall(w *procWrite) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.current == w {
+		q.stalled = true
 	}
 }
 
@@ -298,6 +314,12 @@ wait:
 	case werr := <-w.done:
 		return nil, werr
 	default:
+	}
+	if errors.Is(err, ErrInputStalled) {
+		// Its own time ran out on it: the writes after it are refused at
+		// once while it is still being made, not a wait each, from now on
+		// rather than once the writer's clock says so.
+		s.writer.stall(w)
 	}
 	if s.isEnded() {
 		// The session ended meanwhile, whatever woke the wait: the write
