@@ -215,14 +215,20 @@ func (f *Folder) openDirChecked(rel string, deny denySet, check func(*os.Root) e
 	return cur, id, nil
 }
 
-// refuseGitDir is a save's check on each directory it opens: a git
-// directory by its own files (gitDirectoryIn) is read only, as gitMetadata
-// says of its path, whatever was moved where since the check.
-func refuseGitDir(r *os.Root) error {
-	if gitDirectoryIn(r) {
-		return errGitDir
+// refuseGit is a save's check on each directory it opens, given what a
+// repository's metadata was at the save's check (gitMetadataIDs): a git
+// directory by its own files (gitDirectoryIn), or one of those, is read
+// only, as gitMetadata says of a path, whatever was moved where since.
+func refuseGit(ids []os.FileInfo) func(*os.Root) error {
+	return func(r *os.Root) error {
+		if gitDirectoryIn(r) {
+			return errGitDir
+		}
+		if fi, err := r.Stat("."); err == nil && sameAsAny(fi, ids) {
+			return errGitDir
+		}
+		return nil
 	}
-	return nil
 }
 
 // stepDir opens the directory name in dir (dirID being dir as a file): it

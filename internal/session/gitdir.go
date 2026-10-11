@@ -36,12 +36,23 @@ const (
 // (before its links are resolved) is .git however spelled, or inGitDir
 // says so of real.
 func gitMetadata(raw, real string) bool {
+	in, _ := gitMetadataIDs(raw, real)
+	return in
+}
+
+// gitMetadataIDs is gitMetadata, and when it says no, what the
+// repositories beside real and its parents stand for, as files (the
+// .git directories and files, the git directories they name, their
+// entries and the targets of those that are links): a save holds what it
+// opens to them (saveFile), so that metadata moved into its place since
+// this check is still read only.
+func gitMetadataIDs(raw, real string) (bool, []os.FileInfo) {
 	for _, el := range strings.Split(filepath.ToSlash(raw), "/") {
 		if isDotGit(el) {
-			return true
+			return true, nil
 		}
 	}
-	return inGitDir(real)
+	return inGitDirIDs(real)
 }
 
 // inGitDir reports whether real, an absolute path with its symbolic links
@@ -67,13 +78,20 @@ func gitMetadata(raw, real string) bool {
 // and finding them would mean walking the folder for every check.
 // Conductor's own git runs none of it (gitcli.Run).
 func inGitDir(real string) bool {
+	in, _ := inGitDirIDs(real)
+	return in
+}
+
+// inGitDirIDs is inGitDir, and when it says no, the identities it held
+// real and its parents to (gitIDs.files).
+func inGitDirIDs(real string) (bool, []os.FileInfo) {
 	for _, el := range strings.Split(real, string(filepath.Separator)) {
 		if isDotGit(el) {
-			return true
+			return true, nil
 		}
 	}
 	if isGitFile(real) {
-		return true
+		return true, nil
 	}
 	ids := gitIDs{budget: maxScan, bytes: maxScanBytes}
 	for p := real; ; p = filepath.Dir(p) {
@@ -86,28 +104,34 @@ func inGitDir(real string) bool {
 		// What a repository on the way stands for could not be told in full
 		// (an oversized commondir, more entries than are looked at): read
 		// only rather than guess.
-		return true
+		return true, nil
 	}
 	for _, m := range ids.missing {
 		if sameMissing(m, real) {
-			return true
+			return true, nil
 		}
 	}
 	for p := real; ; p = filepath.Dir(p) {
-		if fi, err := os.Stat(p); err == nil {
-			for _, d := range ids.files {
-				if os.SameFile(fi, d) {
-					return true
-				}
-			}
+		if fi, err := os.Stat(p); err == nil && sameAsAny(fi, ids.files) {
+			return true, nil
 		}
 		if isGitDirectory(p) {
-			return true
+			return true, nil
 		}
 		if filepath.Dir(p) == p {
-			return false
+			return false, ids.files
 		}
 	}
+}
+
+// sameAsAny reports whether fi is one of files, compared as files.
+func sameAsAny(fi os.FileInfo, files []os.FileInfo) bool {
+	for _, f := range files {
+		if os.SameFile(fi, f) {
+			return true
+		}
+	}
+	return false
 }
 
 // gitIDs is what a repository's metadata is, to compare a path with:

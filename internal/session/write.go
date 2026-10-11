@@ -108,7 +108,8 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	if err != nil {
 		return errh("denied", err.Error())
 	}
-	if gitMetadata(h.Path, target) {
+	inGit, gitIDs := gitMetadataIDs(h.Path, target)
+	if inGit {
 		return errh("read_only", "a repository's .git is read only here")
 	}
 	afterCheck()
@@ -122,8 +123,9 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 		return errh("denied", "not a regular file")
 	}
 	ds := newDenySet(deny)
-	// Each directory on the way is held to the .git rule again as opened.
-	dir, dirID, err := s.folder.openDirChecked(filepath.Dir(rel), ds, refuseGitDir)
+	// Each directory on the way, and the file replaced, is held to the .git
+	// rule again as opened.
+	dir, dirID, err := s.folder.openDirChecked(filepath.Dir(rel), ds, refuseGit(gitIDs))
 	switch {
 	case errors.Is(err, errGitDir):
 		return errh("read_only", "a repository's .git is read only here")
@@ -147,6 +149,8 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 		return errh("write", "cannot read the file")
 	case ds.hit(fi, name, dirID):
 		return errh("denied", errNotReadable.Error())
+	case err == nil && sameAsAny(fi, gitIDs):
+		return errh("read_only", "a repository's .git is read only here")
 	case err == nil && !fi.Mode().IsRegular():
 		return errh("denied", "not a regular file")
 	case err != nil && !h.Force:

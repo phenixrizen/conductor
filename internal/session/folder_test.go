@@ -354,6 +354,49 @@ func TestFileWriteStaysOutOfAGitDirMovedInAfterTheCheck(t *testing.T) {
 	}
 }
 
+// The same for what a repository's .git holds, moved into the save's
+// place after its check: its hooks folder in the place of the save's
+// folder, its config in the place of the file saved.
+func TestFileWriteStaysOutOfGitMetadataMovedInAfterTheCheck(t *testing.T) {
+	for _, c := range []struct {
+		name, path, from, to, body string
+	}{
+		{"hooks folder", "sub/pre-commit", ".git/hooks", "sub", "#!/bin/sh\n"},
+		{"config file", "sub/config", ".git/config", "sub/config", "[core]\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root, _ := linkTree(t)
+			gitDir := filepath.Join(root, ".git")
+			for _, d := range []string{"objects", "refs/heads", "hooks"} {
+				os.MkdirAll(filepath.Join(gitDir, d), 0o755)
+			}
+			os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644)
+			os.WriteFile(filepath.Join(gitDir, "config"), []byte("[core]\n"), 0o644)
+			os.WriteFile(filepath.Join(gitDir, "hooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o755)
+			os.WriteFile(filepath.Join(root, "sub", "pre-commit"), []byte("mine\n"), 0o644)
+			os.WriteFile(filepath.Join(root, "sub", "config"), []byte("mine\n"), 0o644)
+			s, _ := newLocal(t, root)
+			sink := newChanSink(false)
+			sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+			if err != nil {
+				t.Fatal(err)
+			}
+			from, to := filepath.Join(root, c.from), filepath.Join(root, c.to)
+			onceAfterCheck(t, func() {
+				os.Rename(to, to+".was")
+				os.Rename(from, to)
+			})
+			save(s, sub, "w", c.path, []byte("changed\n"), 512, "", true)
+			if f := fileReply(t, sink, "w"); f.Kind != "error" || f.Error.Code != "read_only" {
+				t.Fatalf("save %s once %s was moved there: %+v %+v", c.path, c.from, f, f.Error)
+			}
+			if b, _ := os.ReadFile(filepath.Join(root, c.path)); string(b) != c.body {
+				t.Fatalf("the repository's file, at %s now, holds %q", c.path, b)
+			}
+		})
+	}
+}
+
 // A folder opened under a directory stays under it: a link out of it on
 // the way, absolute or climbing out, is refused; a relative one that stays
 // in it is followed.
