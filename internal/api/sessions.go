@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/agents"
@@ -101,10 +102,18 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if cwdInput == "" {
 		cwdInput = s.cfg.DefaultCwd
 	}
-	cwd, err := s.resolveCwd(cwdInput)
+	folder, err := s.openCwd(cwdInput)
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "invalid_cwd", err.Error())
 	}
+	// The session takes the folder; a launch that stops before closes it.
+	keepFolder := false
+	defer func() {
+		if !keepFolder {
+			folder.Close()
+		}
+	}()
+	cwd := folder.Path()
 	name := strings.TrimSpace(req.Name)
 	if len(name) > 120 {
 		name = name[:120]
@@ -225,13 +234,21 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	// The agent's envPassthrough adds to the server-wide list; the clone keeps
 	// one launch from growing the list another launch reads.
 	passthrough := append(slices.Clone(s.cfg.EnvPassthrough), agent.EnvPassthrough...)
+	launchHook("checked")
+	// The process starts in the folder opened and checked, not at its path.
+	dirFile, err := folder.Dir()
+	if err != nil {
+		return nil, newAPIError(http.StatusBadRequest, "invalid_cwd", "working directory does not exist")
+	}
 	proc, err := pty.Start(pty.Spec{
-		Argv: argv,
-		Dir:  cwd,
-		Env:  pty.BuildEnv(pty.ParentEnv(), passthrough, env, inject),
-		Cols: cols,
-		Rows: rows,
+		Argv:    argv,
+		Dir:     cwd,
+		DirFile: dirFile,
+		Env:     pty.BuildEnv(pty.ParentEnv(), passthrough, env, inject),
+		Cols:    cols,
+		Rows:    rows,
 	})
+	dirFile.Close()
 	if err != nil {
 		s.log.Warn("session start failed", "agent", agent.ID, "err", err)
 		return nil, newAPIError(http.StatusBadGateway, "start_failed", "could not start the agent process")
@@ -275,6 +292,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
 		WatchGit:        true,
 		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},
+		Folder:          folder,
 	})
 	local.SetAgentToken(agentToken)
 	if err := s.registry.Add(local); err != nil {
@@ -283,6 +301,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		_ = local.Stop(ctx)
 		return nil, newAPIError(http.StatusConflict, "too_many_sessions", "session limit reached")
 	}
+	keepFolder = true
 	s.log.Info("session started", "session", id, "agent", agent.ID, "pid", proc.PID(), "yolo", applied)
 	if yolo && !applied {
 		local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: noYoloRecipe(agent)})
@@ -343,8 +362,49 @@ func (s *Server) nextCounter() int {
 	return s.counter
 }
 
+// launchHookFn, when set (by a test), runs as a launch's working directory
+// is "resolved" (its path, by resolveCwd) and once it is "checked" (opened
+// through its allowed root), before the process starts (launchHook).
+var launchHookFn atomic.Pointer[func(stage string)]
+
+func launchHook(stage string) {
+	if fn := launchHookFn.Load(); fn != nil {
+		(*fn)(stage)
+	}
+}
+
+// openCwd is resolveCwd for a launch: cwd resolved and checked by path as
+// resolveCwd does, then opened through the allowed root it lies under
+// (session.OpenFolderIn, an os.Root), so that the folder opened is under
+// that root whatever a link on its way does meanwhile. The session's
+// process starts in that folder and its Files tab serves it, whatever its
+// path names later.
+func (s *Server) openCwd(cwd string) (*session.Folder, error) {
+	real, err := s.resolveCwd(cwd)
+	if err != nil {
+		return nil, err
+	}
+	launchHook("resolved")
+	for _, root := range s.cfg.AllowedRoots {
+		rootReal, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rootReal, real)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if f, err := session.OpenFolderIn(rootReal, rel); err == nil {
+			return f, nil
+		}
+	}
+	return nil, errors.New("working directory is outside the allowed roots")
+}
+
 // resolveCwd makes cwd absolute, follows symlinks, and requires it to be an
-// existing directory under one of the allowed roots.
+// existing directory under one of the allowed roots. A launch opens it
+// through its root (openCwd); a check alone (a resume's, the pickers')
+// takes the path.
 func (s *Server) resolveCwd(cwd string) (string, error) {
 	abs, err := filepath.Abs(cwd)
 	if err != nil {

@@ -270,7 +270,12 @@ registers the `conductor:` scheme: an invite opens its own join page with
   an agent only as one argument, after matching its agent's pattern and
   beginning with a letter or a digit.
 - Server session working directories must resolve under `allowedRoots` after
-  symlink evaluation. File reads are confined to the session directory. In
+  symlink evaluation, and are opened through the root they lie under
+  (`os.Root`): the process starts in the directory opened (on Linux by its
+  descriptor), and the session keeps it open. File reads, listings, finds
+  and saves are confined to that directory: a path is checked, then opened
+  from it one element at a time without following links, so a link put on
+  the way after the check leads nowhere. In
   server sessions they never reach the data directory, the config file or the
   catalog file, even when those lie inside it; a hosted session refuses the
   same files of the server on its machine (`~/.conductor` or the data

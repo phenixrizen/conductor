@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,9 +21,15 @@ import (
 type Spec struct {
 	Argv []string
 	Dir  string
-	Env  []string
-	Cols uint16
-	Rows uint16
+	// DirFile, when set, is Dir as its caller opened and checked it: the
+	// process starts in that directory, not in whatever Dir names by then.
+	// On Linux the child changes into the open directory itself (through
+	// /proc/self/fd); elsewhere, or without /proc, Dir is used once it is
+	// checked to still name DirFile's directory. Start does not close it.
+	DirFile *os.File
+	Env     []string
+	Cols    uint16
+	Rows    uint16
 }
 
 // ExitStatus describes how the process ended.
@@ -62,12 +69,23 @@ func Start(spec Spec) (*Process, error) {
 	if rows == 0 {
 		rows = 24
 	}
+	dir, err := startDir(spec)
+	if err != nil {
+		return nil, fmt.Errorf("pty: start %s: %w", spec.Argv[0], err)
+	}
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
-	cmd.Dir = spec.Dir
+	cmd.Dir = dir
 	cmd.Env = spec.Env
+	if cmd.Env == nil && dir != spec.Dir {
+		// exec sets PWD to Dir without an environment of the caller's:
+		// the directory's path, not the descriptor's.
+		cmd.Env = append(os.Environ(), "PWD="+spec.Dir)
+	}
 	// creack/pty sets Setsid and Setctty so the child gets its own session and
 	// the PTY as controlling terminal; the process group ID equals the PID.
 	f, err := creack.StartWithSize(cmd, &creack.Winsize{Cols: cols, Rows: rows})
+	// The child has changed into DirFile's directory by now, or failed to.
+	runtime.KeepAlive(spec.DirFile)
 	if err != nil {
 		return nil, fmt.Errorf("pty: start %s: %w", spec.Argv[0], err)
 	}

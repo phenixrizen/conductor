@@ -56,8 +56,10 @@ session store in `web/app/composables/useAttention.ts` (streaming fetch of
   `scripts/notices/`.
 - Commands are argv arrays. Never build a shell string from user input.
 - Compare tokens with `share.Equal`; store only hashes; never log query strings.
-- Server session working directories go through `resolveCwd`; file reads go
-  through `session.ResolvePath`. Do not bypass either.
+- Server session working directories go through `resolveCwd` (a launch
+  through `openCwd`, which opens the folder it checks); file reads and saves
+  go through `session.ResolvePath` and then the session's `session.Folder`
+  (an `os.Root`), never a path opened again. Do not bypass either.
 - Keep per-connection bounds (read limits, queues, in-flight file requests).
 - UI components come from Nuxt UI; use the brand palette in `web/app/app.config.ts`
   and `docs/design/brand.md`. The junction mark is artwork, never a status light.
