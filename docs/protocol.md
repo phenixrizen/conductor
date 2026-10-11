@@ -629,7 +629,12 @@ begun is accepted, with no error, and finished as the program reads (its
 carriage return after its pause, the session's turn held till then, so no
 later line joins it); so is one whose text is written and whose carriage
 return has no turn in time, and one whose carriage return has begun counts
-as entered. Once one write has waited its 10 s,
+as entered. A write that waited behind another is looked at again as the
+writer takes it: a submission's text or carriage return, or several keys
+with an Enter, that a question or a dialog come meanwhile would take are
+held back then as they would have been before they waited (a reply or the
+keys refused, a handoff not sent, the carriage return left out), and
+nothing of them is written. Once one write has waited its 10 s,
 the next are refused at once until the program takes it, rather than 10 s
 each. A controller's keys not yet written when its connection ends (a
 revoked link, a viewer that left) are never written. The other viewers and
