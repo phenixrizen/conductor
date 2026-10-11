@@ -348,21 +348,16 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 		k.fmu.Unlock()
 		return errLinkNotKept
 	}
-	// The links that give their places up end now, each looked at again
-	// under mu and leaving the keeper and the store together, so a host
-	// coming back meanwhile (hostUp) either keeps its link (the address
-	// over its bound by it for a while) or is told it is gone.
+	// The links that give their places up end now, leaving the keeper and
+	// the store together. fmu is held from their choice to here, so none
+	// of them was dropped meanwhile and none of their hosts is back
+	// (hostUp takes fmu): the host is told they are gone.
 	var (
 		ended []*share.Link
 		gone  = map[string]string{}
 	)
-	now := time.Now()
 	k.mu.Lock()
 	for _, id := range yielded {
-		kl, ok := k.kept[id]
-		if !ok || k.away(kl.owner, now) <= linkYieldAfter {
-			continue
-		}
 		gone[id] = k.release(id)
 		if l, ok := s.links.Drop(id); ok {
 			ended = append(ended, l)
@@ -447,16 +442,20 @@ func (s *Server) dropLinkFile(linkID string) {
 // its kept links are neither swept nor give their places up, and its time
 // away starts when its last one ends. Called before the host is told which
 // of its links the switchyard holds, so a link ended for its place is
-// either ended before (and not told) or kept.
+// either ended before (and not told) or kept. It takes fmu too: a link
+// that is giving its place up (keepLink, from its choice until it ends)
+// or being swept (endKept) is done before its host is back.
 func (s *Server) hostUp(owner string) func() {
 	k := s.keeper
 	if k == nil || owner == "" {
 		return func() {}
 	}
+	k.fmu.Lock()
 	k.mu.Lock()
 	k.live[owner]++
 	k.seen[owner] = time.Now()
 	k.mu.Unlock()
+	k.fmu.Unlock()
 	return func() {
 		k.mu.Lock()
 		if k.live[owner]--; k.live[owner] <= 0 {

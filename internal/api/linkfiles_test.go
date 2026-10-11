@@ -739,6 +739,32 @@ func TestALinkRefusedEndsNoOther(t *testing.T) {
 	}
 }
 
+// A host coming back waits while links give their places up (from their
+// choice until they end, under the keeper's file lock), so none of its own
+// is chosen and then kept: the address never ends over its bound.
+func TestAHostComingBackWaitsForLinksGivingTheirPlacesUp(t *testing.T) {
+	e := keptSwitchyard(t, filepath.Join(t.TempDir(), "data"), nil)
+	k := e.srv.keeper
+	k.fmu.Lock()
+	up := make(chan func(), 1)
+	go func() { up <- e.srv.hostUp("an-owner") }()
+	select {
+	case <-up:
+		k.fmu.Unlock()
+		t.Fatal("the host came back while links were giving their places up")
+	case <-time.After(100 * time.Millisecond):
+	}
+	k.fmu.Unlock()
+	release := <-up
+	k.mu.Lock()
+	live := k.live["an-owner"]
+	k.mu.Unlock()
+	release()
+	if live != 1 {
+		t.Fatalf("connections noted: %d", live)
+	}
+}
+
 // Links give their places up only when that makes room for the new one:
 // at an address holding more than its bound (lowered across a restart),
 // none is ended while too few may give way.
