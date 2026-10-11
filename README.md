@@ -52,6 +52,14 @@ headless, or `--stun stun:host:3478` to override the ICE servers.
 `--server-is-mine`, for a server on this machine only, says that server is
 yours: a window its workbench opens with no link is then one of yours and gets
 the editor's Neovim (without it, only this terminal is).
+`--link view` (or `control`) has the server mint a share link to the session
+once it is registered, good for two hours, and prints it: the way to share a
+session hosted on a switchyard, whose workbench token mints none; the line
+names `kill -USR1 <pid>`, which mints another (once the first expired, or
+could not be had). Either way
+`conductor host` sends its server the session's chat, activity and full
+details, for that server's workbench, and obeys its Stop: point it at a
+server you trust.
 `--ice-udp-port 7877` puts every WebRTC connection on that one UDP port and
 `--ice-public-ip 192.168.1.20` advertises that address as the host's own
 (`CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP`): what a forwarder in
@@ -98,8 +106,10 @@ copied at once, and the dialog says where it reaches. It is **View** (watch
 and open files) until you pick **Control** (types into the agent, answers
 prompts) on the link: that makes a control link in its place, copies it, and
 the next Share makes control too, until you pick View again. With the session published to a switchyard (the default) that is
-"works from anywhere": the link is minted there and opens there, and the
-terminal comes straight to this machine. Below it, another link with a
+"works from anywhere": the link is minted and checked there, and the
+terminal comes to this machine over WebRTC, or through the switchyard's
+relay when no direct path forms ([what a switchyard is trusted
+with](#security-model-and-limits)). Below it, another link with a
 role, a label and an expiry of your own. Opening Share again shows the link already made. The link URL is
 `<base>/join/<token>`; the token is shown once. Guests type a display name
 before joining; nothing connects until they press **Join**, so a fetched link
@@ -131,7 +141,7 @@ what reaches whom:
 | on your machine behind a home router | no one outside until the router forwards a port to the server and the link carries your public address. With `reach.mode` `auto` (the default) the server learns its public address from STUN and, once it has a TLS listener with a certificate, maps that port on the router and builds links on `https://<public address>`; until then links keep the address you opened the workbench at, and the Share dialog says so. `GET /api/reach` reports the state. A mapping is reported as mapped, never as reachable: the server's own check through the public address is refused by most home routers, so open a link once from a phone on mobile data |
 | on your machine under WSL2 | through the desktop app: it forwards WebRTC into the distribution itself (a switchyard invite, or a paste invite), and WSL's default NAT mode stays as it is; you configure no Windows networking. A plain `http://` link to a server inside WSL reaches no one outside the distribution, and the public-address path (TLS and the router mapping) from WSL waits for the app to forward that listener and map the router itself |
 | on a machine with a public address, or behind a reverse proxy | anyone, at `publicUrl` or the proxy's forwarded host |
-| anywhere, by default | the public switchyard: this server publishes every session to `switchyard.rslabs.net` through the host protocol (`rendezvous`, on unless turned off), where it is listed as hosted by this machine and the link is minted; the terminal goes between the viewer and this machine, through the switchyard's relay only when it must |
+| anywhere, by default | the public switchyard: this server publishes every session to `switchyard.rslabs.net` through the host protocol (`rendezvous`, on unless turned off), where it is listed as hosted by this machine and the link is minted and checked; the terminal goes between the viewer and this machine over WebRTC, through the switchyard's relay when no direct path forms. Publish only to a switchyard whose operator you trust ([Security model and limits](#security-model-and-limits)) |
 | behind carrier-grade NAT or a corporate network, with publishing off | a tunnel or a reverse proxy in front of the server; or `conductor host` from your machine against a server anyone can reach |
 
 The ICE servers play no part in a link. STUN tells a browser or a `conductor
@@ -159,7 +169,13 @@ can reach: every Conductor publishes its sessions to one (`rendezvous`; the
 public `switchyard.rslabs.net` unless the config names another or turns it
 off), viewers join by links minted there, and the terminal goes over WebRTC
 between the viewer and the publishing machine, through the switchyard's
-relay only for the pairs ICE cannot connect. A switchyard that admits
+relay for the pairs ICE cannot connect. A switchyard is trusted with the
+sessions published to it ([Security model and
+limits](#security-model-and-limits)); a Conductor sends it each session's
+name, agent, folder name and machine name and its status and attention
+state, never its chat, its activity or its command line. The desktop app
+says so once, on its first start, with the way to turn publishing off
+(Settings → Switchyard). A switchyard that admits
 **open hosts** (`switchyard.openHosts`) needs no token from a publisher:
 each address may hold `openHostSessions` live sessions (4), register
 `openHostRegistrationsPerMinute` times (6) and relay `openHostRelayKBps`
@@ -180,8 +196,15 @@ root), and an ACME account without an email, which Let's Encrypt accepts.
 
 `conductor switchyard` is `conductor serve --switchyard`: the sessions,
 crews, runs, catalog and integrations routes answer `403 switchyard`, and
-everything about hosted sessions, links and the events stream works as on
-any server. It serves no workbench: its root is a landing page that says
+hosted sessions, links and the events stream work as on any server, but
+for the workbench token. On a switchyard it lists the sessions published
+there and stops a publication (the session runs on at its home, and its
+owner's next Share publishes it again), and has no role on them: it views,
+controls and shares none, reports nothing for them (their attention and
+events routes take the session's agent token alone), and the events stream
+carries no chat or activity of them. A link to a session there is minted
+by the machine that publishes it, over its own connection: a Conductor's
+Share, or `conductor host --link`. It serves no workbench: its root is a landing page that says
 what the server is, how a link looks, how a machine publishes to it and
 whether it is up (version, uptime, the certificate's renewal, the relay),
 every workbench path (`/sessions/…`, `/crews`, `/yard`, `/agents`,
@@ -262,7 +285,10 @@ The inspector's **Chat** tab is for the people watching a session together:
 everyone on it, the owner and anyone who joined by a link, view or control.
 It goes over the terminal's own connection, so it works wherever a link
 works, on a `conductor host` session and through a switchyard too, and
-needs no account: people are the names they joined with. Plain text, up to
+needs no account: people are the names they joined with. Through a
+switchyard it goes between the viewer and the publishing machine, which
+sends the switchyard none of it; a viewer relayed through the switchyard
+has it in the relayed frames, which the switchyard can read. Plain text, up to
 2 KiB, links clickable; Enter sends, Shift+Enter is a new line. A
 controller's **To agent** sends the message and types it into the agent,
 and **Send to agent** on any message does the same later; the thread marks
@@ -1404,7 +1430,7 @@ file must run `compinit` before that line.
 | `tls.acme.dnsProvider`, `tls.acme.dnsEnv` | `CONDUCTOR_TLS_ACME_DNS_PROVIDER`, `CONDUCTOR_TLS_ACME_DNS_ENV` (`K=V,K=V`) | none | `cloudflare`, `exec` or `httpreq`, with its settings under lego's names (`CLOUDFLARE_DNS_API_TOKEN`, `EXEC_PATH`, `HTTPREQ_ENDPOINT`, …); never logged or shown |
 | `tls.acme.caDirectory`, `tls.acme.profile` | `CONDUCTOR_TLS_ACME_CA`, `CONDUCTOR_TLS_ACME_PROFILE` | Let's Encrypt; `shortlived` for IP addresses | the ACME directory (`https`), and the certificate profile |
 | `rendezvous.enabled` | `CONDUCTOR_RENDEZVOUS` (`1`/`true` on, `0`/`false` off) | `true` | publish every session to a switchyard, where share links are minted and work from anywhere; off, links work where this server is reachable |
-| `rendezvous.server`, `rendezvous.token` | `CONDUCTOR_RENDEZVOUS_SERVER`, `CONDUCTOR_RENDEZVOUS_TOKEN` | `https://switchyard.rslabs.net`, no token | the switchyard every session is published to, through the host protocol (as `conductor host` does); the token is optional (a host token of a private switchyard, or a trusted seat on the public one); the session is listed there as hosted by this server (`rendezvous.hostName`, the machine's name by default), its viewers served over WebRTC or the relay (`rendezvous.relayOnly`), and share links minted there; the local session's activity records where it is published |
+| `rendezvous.server`, `rendezvous.token` | `CONDUCTOR_RENDEZVOUS_SERVER`, `CONDUCTOR_RENDEZVOUS_TOKEN` | `https://switchyard.rslabs.net`, no token | the switchyard every session is published to, through the host protocol (as `conductor host` does); the token is optional (a host token of a private switchyard, or a trusted seat on the public one); the session is listed there as hosted by this server (`rendezvous.hostName`, the machine's name by default), its viewers served over WebRTC or the relay (`rendezvous.relayOnly`), and share links minted there; the local session's activity records where it is published. The switchyard is told the session's name, agent and folder's last element and its status and attention state, never its command line, OS user, branch, chat or activity; a stop it sends ends the publication, not the session |
 | `ice.udpPort`, `ice.publicIp` | `CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP` | none | how this server's published sessions (`rendezvous`) gather their WebRTC candidates: one UDP port for every connection, and the address advertised as this machine's in place of its interfaces' own, for a forwarder in front of it (the desktop app on Windows, in front of WSL) |
 | `tls.certFile`, `tls.keyFile` | `CONDUCTOR_TLS_CERT_FILE`, `CONDUCTOR_TLS_KEY_FILE` | none | a certificate of your own (PEM, with its chain), re-read when the files change; exclusive with `tls.acme` |
 
@@ -1553,15 +1579,31 @@ that matches neither an empty id nor one that begins with a dash.
 ## Security model and limits
 
 - The workbench token gates launching, listing, stopping, link management and
-  editing the agent catalog; share tokens grant one role on one session; host
-  tokens only allow registering hosted sessions. A switchyard that admits open
+  editing the agent catalog of its own server, and is control on every
+  session there; share tokens grant their role on one session; host tokens
+  only allow registering hosted sessions. A switchyard that admits open
   hosts registers a host with no token at all, limited per address (sessions
-  held, registrations a minute, relayed bytes) and never trusted beyond that:
-  it sees who publishes and who joins, never terminal content unless it
-  relays, and keeps none. Tokens are compared in constant time and stored
-  hashed. A crew run's link grants its role on every
+  held, registrations a minute, relayed bytes). Tokens are compared in
+  constant time and stored hashed. A crew run's link grants its role on every
   member session of that run, members added to the run later included, and
   on no other session.
+- A switchyard is trusted with the sessions published to it. It mints and
+  checks their share links and tells the publishing machine each viewer's
+  role, which the machine accepts: a switchyard could let anyone in, with
+  either role. It receives each session's name, agent and folder's last
+  element, the machine's name, and the session's status and attention state;
+  a Conductor publishing there sends it no command line, OS user or branch,
+  and no chat, activity, attention words or prompts Conductor types for
+  crews (`conductor host` treats its server as your own and sends it all).
+  It carries the WebRTC signalling, so it could place itself between both
+  ends of a direct connection, and it reads whatever it relays: the
+  terminal, files and chat of a viewer relayed through it. Its operator's
+  workbench token lists the sessions published there and can end a
+  publication (the session runs on at home), and has no role on them: it
+  views, controls and shares none. Publish only to a switchyard whose
+  operator you trust: `rendezvous.enabled: false` (Settings → Switchyard in
+  the desktop app) keeps sessions off it, and `conductor switchyard` on a
+  machine of your own keeps that trust in-house.
 - Editing the catalog is as powerful as the server user. An admin can add or
   replace any agent, built-in and configured ones included, with any argv and
   env, and it runs as the user running `conductor serve`; `disableDefaults` or

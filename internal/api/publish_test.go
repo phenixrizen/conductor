@@ -3,10 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,8 +29,8 @@ func (p uplinkPublisher) Server() string { return p.u.ServerURL }
 
 // A server with a rendezvous publishes every session it starts there: the
 // rendezvous lists it as hosted by this server, a viewer there types into
-// it through the relay, its activity shows there, and ending the session
-// here ends it there.
+// it through the relay, its attention state shows there but not its
+// activity, and ending the session here ends it there.
 func TestAPublishedServerSessionIsViewableAtTheRendezvous(t *testing.T) {
 	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
 	local := newTestEnv(t, nil)
@@ -92,27 +95,44 @@ func TestAPublishedServerSessionIsViewableAtTheRendezvous(t *testing.T) {
 	lv.expectControl(proto.CtlWelcome)
 	lv.expectOutput("hello from afar")
 
-	// An event reported to the local server shows at the rendezvous: it
-	// reaches the rendezvous's event hub (its admin stream and webhooks).
-	seen := make(chan struct{}, 1)
+	// An event reported to the local server stays here: the rendezvous's
+	// event hub (its admin stream and webhooks) never has it. An attention
+	// change reported after it reaches the rendezvous, with its state and
+	// without its words, so by then the event would have too.
+	var mu sync.Mutex
+	var there []session.ActivityEntry
 	rendezvous.srv.events.addSink(func(sid string, e session.ActivityEntry, _ session.AttentionState) {
-		if sid == hosted.ID && e.Type == session.ActivityProgress && e.Message == "step 1" {
-			select {
-			case seen <- struct{}{}:
-			default:
-			}
-		}
+		mu.Lock()
+		there = append(there, e)
+		mu.Unlock()
 	})
 	resp, _ := local.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "progress", "message": "step 1"})
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("event: %d", resp.StatusCode)
 	}
-	select {
-	case <-seen:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the event did not reach the rendezvous")
+	if resp, _ := local.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "message": "pick one"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("attention: %d", resp.StatusCode)
 	}
 	rd, _ := rendezvous.srv.Registry().Get(hosted.ID)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && rd.Info().Attention.State != session.AttentionNeedsInput {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if att := rd.Info().Attention; att.State != session.AttentionNeedsInput || att.Message != "" {
+		t.Fatalf("attention at the rendezvous %+v", att)
+	}
+	mu.Lock()
+	if len(there) != 0 {
+		t.Fatalf("the rendezvous was told the session's activity: %+v", there)
+	}
+	mu.Unlock()
+	found := false
+	for _, e := range d.(*session.Local).Activity() {
+		found = found || (e.Type == session.ActivityProgress && e.Message == "step 1")
+	}
+	if !found {
+		t.Fatal("the event is not in the session's activity here")
+	}
 
 	// Ending the session here ends it there.
 	if resp, _ := local.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK {
@@ -552,5 +572,371 @@ func TestAPublicationRefusedForNowIsTriedAgain(t *testing.T) {
 		if e.Type == session.ActivityError {
 			t.Fatalf("an error entry for a refusal: %+v", e)
 		}
+	}
+}
+
+// A stop the switchyard's operator sends ends the publication, not the
+// session: the guest there is let go and the switchyard shows the session
+// ended, while at home it runs on and its activity says what happened. The
+// owner's next Share publishes it again, as a new session there.
+func TestAStopFromTheSwitchyardEndsThePublicationNotTheSession(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) {
+		c.PublicURL = "https://rendezvous.example.net"
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+	})
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, HostName: "office-server", RelayOnly: true}})
+	id := local.createSession("cat")
+	var hosted session.Info
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && hosted.ID == "" {
+		rendezvous.srv.Registry().Each(func(d session.Driver) {
+			if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" {
+				hosted = i
+			}
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hosted.ID == "" {
+		t.Fatal("the rendezvous never listed the session")
+	}
+	_, lo := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	_, token, _ := strings.Cut(fmt.Sprint(lo["url"]), "/join/")
+	if lo["remote"] != true || token == "" {
+		t.Fatalf("link %v", lo)
+	}
+	guest := dialViewer(t, rendezvous, hosted.ID, token)
+	guest.expectControl(proto.CtlWelcome)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
+	guest.send(relay)
+	guest.hello(80, 24)
+	guest.expectControl(proto.CtlReady)
+
+	// The operator stops it there.
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+hosted.ID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the switchyard: %d", resp.StatusCode)
+	}
+	for {
+		if _, err := guest.read(); err != nil {
+			break
+		}
+	}
+	rd, _ := rendezvous.srv.Registry().Get(hosted.ID)
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !rd.Info().Status.Ended() {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !rd.Info().Status.Ended() {
+		t.Fatalf("the switchyard shows %s", rd.Info().Status)
+	}
+
+	// At home the session runs on, unpublished, and says so.
+	d, _ := local.srv.Registry().Get(id)
+	said := false
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !said {
+		for _, e := range d.(*session.Local).Activity() {
+			said = said || (e.Type == session.ActivityStatus && strings.Contains(e.Message, "no longer shared through the switchyard"))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !said {
+		t.Fatalf("the session's activity does not say the publication ended: %+v", d.(*session.Local).Activity())
+	}
+	if st := d.Info().Status; st != session.StatusRunning {
+		t.Fatalf("the session at home is %s", st)
+	}
+	if local.srv.publishedOf(id) != nil {
+		t.Fatal("the ended publication is still held")
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); strings.Contains(fmt.Sprint(out), "remote:true") {
+		t.Fatalf("the ended publication's link is still listed: %v", out)
+	}
+
+	// The next Share publishes it again: a new session there.
+	resp, again := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated || again["remote"] != true {
+		t.Fatalf("share again: %d %v", resp.StatusCode, again)
+	}
+	pub := local.srv.publishedOf(id)
+	if pub == nil || pub.CurrentID() == hosted.ID {
+		t.Fatalf("published again as %v", pub)
+	}
+	if nd, ok := rendezvous.srv.Registry().Get(pub.CurrentID()); !ok || nd.Info().Status != session.StatusRunning {
+		t.Fatalf("the new publication there: %v", ok)
+	}
+}
+
+// flakyPublisher is an uplink that refuses while down is set, as a
+// switchyard out of reach does.
+type flakyPublisher struct {
+	uplinkPublisher
+	down atomic.Bool
+}
+
+func (p *flakyPublisher) Publish(ctx context.Context, local *session.Local) (PublishedSession, error) {
+	if p.down.Load() {
+		return nil, errors.New("dial: connection refused")
+	}
+	return p.uplinkPublisher.Publish(ctx, local)
+}
+
+// A session whose publication the switchyard ended stays owed one until one
+// is made: a Share while the switchyard is out of reach makes a link here
+// and says why, and the next Share, once it is back, publishes the session
+// again. Two Shares at once make one publication.
+func TestARepublishThatFailedIsTriedAgainAtTheNextShare(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) {
+		c.PublicURL = "https://rendezvous.example.net"
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+	})
+	local := newTestEnv(t, nil)
+	pub := &flakyPublisher{uplinkPublisher: uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, HostName: "office-server", RelayOnly: true}}}
+	local.srv.SetPublisher(pub)
+	id := local.createSession("cat")
+	var hosted session.Info
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && hosted.ID == "" {
+		rendezvous.srv.Registry().Each(func(d session.Driver) {
+			if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" {
+				hosted = i
+			}
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hosted.ID == "" {
+		t.Fatal("the rendezvous never listed the session")
+	}
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+hosted.ID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the switchyard: %d", resp.StatusCode)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && local.srv.publishedOf(id) != nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if local.srv.publishedOf(id) != nil {
+		t.Fatal("the ended publication is still held")
+	}
+	// The Share dialog is told a link made now publishes the session again.
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); out["republish"] != true {
+		t.Fatalf("links after the stop: %v", out)
+	}
+
+	// Out of reach: a link here, saying why.
+	pub.down.Store(true)
+	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	rv, _ := out["rendezvous"].(map[string]any)
+	if resp.StatusCode != http.StatusCreated || out["remote"] == true || !strings.Contains(fmt.Sprint(rv["error"]), "connection refused") {
+		t.Fatalf("share while out of reach: %d %v", resp.StatusCode, out)
+	}
+
+	// Back: the next Shares publish it again, once.
+	pub.down.Store(false)
+	var wg sync.WaitGroup
+	remote := make(chan bool, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+			remote <- out["remote"] == true
+		}()
+	}
+	wg.Wait()
+	close(remote)
+	for r := range remote {
+		if !r {
+			t.Fatal("a Share once the switchyard was back made a link here")
+		}
+	}
+	running := 0
+	rendezvous.srv.Registry().Each(func(d session.Driver) {
+		if i := d.Info(); i.Kind == session.KindHosted && i.HostName == "office-server" && i.Status == session.StatusRunning {
+			running++
+		}
+	})
+	if running != 1 {
+		t.Fatalf("%d publications of the session there", running)
+	}
+	if _, out := local.do("GET", "/api/sessions/"+id+"/links", adminToken, nil); out["republish"] != nil || out["published"] != true {
+		t.Fatalf("links once published again: %v", out)
+	}
+}
+
+// A run member whose publication the switchyard ended and which then ended
+// here is owed nothing: the run's links stop saying a link would publish it
+// again, so the Share dialog keeps the run's link.
+func TestAMemberThatEndedIsOwedNoPublication(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	run, _ := local.srv.runs.Get(runID)
+	lead := run.Members[0].SessionID
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+local.srv.publishedOf(lead).CurrentID(), adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the rendezvous: %d", resp.StatusCode)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && local.srv.publishedOf(lead) != nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["republish"] != true || out["published"] != true {
+		t.Fatalf("the run's links after a member's stop: %v", out)
+	}
+	if resp, _ := local.do("DELETE", "/api/sessions/"+lead, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop the member: %d", resp.StatusCode)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		_, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil)
+		if out["republish"] == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("an ended member is still owed a publication: %v", out)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A run member whose publication the switchyard ended is published again by
+// the run's next link: the run's links say so, so the Share dialog makes one
+// rather than show the one it made before.
+func TestARunMemberStoppedThereIsPublishedAgainByTheNextRunLink(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	resp, first := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated || first["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, first)
+	}
+	firstToken := strings.TrimPrefix(first["url"].(string), "https://rendezvous.example.net/join/")
+	run, _ := local.srv.runs.Get(runID)
+	lead := run.Members[0].SessionID
+	there := local.srv.publishedOf(lead).CurrentID()
+	if resp, _ := rendezvous.do("DELETE", "/api/sessions/"+there, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop at the rendezvous: %d", resp.StatusCode)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && local.srv.publishedOf(lead) != nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if local.srv.publishedOf(lead) != nil {
+		t.Fatal("the member's ended publication is still held")
+	}
+	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["republish"] != true {
+		t.Fatalf("the run's links after a member's stop: %v", out)
+	}
+	if resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"}); resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("the next run link: %d %v", resp.StatusCode, out)
+	}
+	waitMembersPublished(t, local, runID, 2)
+	again := local.srv.publishedOf(lead).CurrentID()
+	if again == there {
+		t.Fatalf("published again under the ended id %s", again)
+	}
+	// The run's first link follows too: it opens the member's new session.
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		_, got := rendezvous.do("GET", "/api/join/"+firstToken, firstToken, nil)
+		r, _ := got["run"].(map[string]any)
+		ms, _ := r["members"].([]any)
+		if len(ms) > 0 && ms[0].(map[string]any)["sessionId"] == again {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run's first link still names %v", ms)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if _, out := local.do("GET", "/api/runs/"+runID+"/links", adminToken, nil); out["republish"] != nil {
+		t.Fatalf("the run's links once published again: %v", out)
+	}
+}
+
+// gatedPublication is a publication whose run updates wait for a gate and
+// are recorded as the rendezvous would apply them, in the order they land.
+type gatedPublication struct {
+	id      string
+	gate    chan struct{}
+	applied *[]string
+	mu      *sync.Mutex
+	done    chan struct{}
+}
+
+func (p *gatedPublication) OnChange(session.Info)                                            {}
+func (p *gatedPublication) OnActivity(string, session.ActivityEntry, session.AttentionState) {}
+func (p *gatedPublication) OnChat(string, session.ChatMessage)                               {}
+func (p *gatedPublication) Stop()                                                            {}
+func (p *gatedPublication) Base() string                                                     { return "https://rendezvous.example.net" }
+func (p *gatedPublication) ID() string                                                       { return p.id }
+func (p *gatedPublication) CurrentID() string                                                { return p.id }
+func (p *gatedPublication) HeldLinks() ([]string, bool)                                      { return nil, false }
+func (p *gatedPublication) Done() <-chan struct{}                                            { return p.done }
+func (p *gatedPublication) StoppedThere() bool                                               { return false }
+func (p *gatedPublication) Link(context.Context, string, time.Duration, string) (proto.LinkCreated, error) {
+	return proto.LinkCreated{}, errors.New("not here")
+}
+func (p *gatedPublication) Revoke(context.Context, string) error { return nil }
+func (p *gatedPublication) RunLink(context.Context, string, time.Duration, string, proto.RunGroup) (proto.LinkCreated, error) {
+	return proto.LinkCreated{}, errors.New("not here")
+}
+func (p *gatedPublication) RunLinkUpdate(ctx context.Context, g proto.RunGroup) error {
+	select {
+	case <-p.gate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	ids := make([]string, 0, len(g.Members))
+	for _, m := range g.Members {
+		ids = append(ids, m.SessionID)
+	}
+	p.mu.Lock()
+	*p.applied = append(*p.applied, strings.Join(ids, ","))
+	p.mu.Unlock()
+	return nil
+}
+
+// A run's syncs take turns: an update that omits a member, still on its way
+// through another member's connection when the member is published again,
+// lands before the update that names it, never after.
+func TestARunsUpdatesLandInTurn(t *testing.T) {
+	local := newTestEnv(t, nil)
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	run, _ := local.srv.runs.Get(runID)
+	lead, core := run.Members[0].SessionID, run.Members[1].SessionID
+	var mu sync.Mutex
+	var applied []string
+	slow := &gatedPublication{id: "there-core", gate: make(chan struct{}), applied: &applied, mu: &mu, done: make(chan struct{})}
+	quick := &gatedPublication{id: "there-lead-again", gate: make(chan struct{}), applied: &applied, mu: &mu, done: make(chan struct{})}
+	close(quick.gate)
+	local.srv.pubMu.Lock()
+	local.srv.published = map[string]PublishedSession{core: slow}
+	local.srv.pubMu.Unlock()
+	local.srv.recordRemoteRunLink(runID, proto.LinkCreated{LinkID: "l1", Role: "view"})
+
+	// The lead is not published: the update omits it and goes through the core's connection, slowly.
+	first := make(chan struct{})
+	go func() { defer close(first); local.srv.syncRunLinks(runID) }()
+	time.Sleep(100 * time.Millisecond)
+	// The lead is published again: the next update names it and goes through its own connection.
+	local.srv.pubMu.Lock()
+	local.srv.published[lead] = quick
+	local.srv.pubMu.Unlock()
+	second := make(chan struct{})
+	go func() { defer close(second); local.srv.syncRunLinks(runID) }()
+	time.Sleep(100 * time.Millisecond)
+	close(slow.gate)
+	<-first
+	<-second
+	mu.Lock()
+	defer mu.Unlock()
+	if len(applied) != 2 || applied[0] != ",there-core" || applied[1] != "there-lead-again,there-core" {
+		t.Fatalf("updates landed as %q", applied)
 	}
 }

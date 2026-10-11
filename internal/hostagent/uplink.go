@@ -3,9 +3,11 @@ package hostagent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/proto"
@@ -17,8 +19,10 @@ import (
 // a rendezvous Conductor through the host protocol: one control connection
 // per session, as `conductor host` makes for the process it runs. The
 // rendezvous lists the session as hosted, serves its viewers over WebRTC or
-// its relay, and mints the share links; attention and activity travel both
-// ways through the hooks the caller chains (Published.OnChange, OnActivity).
+// its relay, and mints the share links. It is a switchyard, which someone
+// else may run (Options.Switchyard): the caller chains the hooks
+// (Published.OnChange, OnActivity, OnChat), and the rendezvous is told the
+// session's status and attention state, never its chat or its activity.
 type Uplink struct {
 	ServerURL string
 	Token     string
@@ -36,11 +40,40 @@ type Uplink struct {
 	// rendezvous restarts (proto.HostInfo.Instance). Made on first use.
 	instOnce sync.Once
 	instance string
+
+	// stopped counts, by session, the publications the rendezvous ended with
+	// a stop of its own: the session's next publication registers under a
+	// local id of its own (localID), so it is a new session there and the
+	// ended one's links do not open it. Rare, so never pruned.
+	mu      sync.Mutex
+	stopped map[string]int
 }
 
 func (u *Uplink) instanceID() string {
 	u.instOnce.Do(func() { u.instance, _ = share.NewToken() })
 	return u.instance
+}
+
+// localID is the local id a publication of session id registers under: the
+// session's own, or after the rendezvous ended n publications of it,
+// "<id>.<n>".
+func (u *Uplink) localID(id string) string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if n := u.stopped[id]; n > 0 {
+		return fmt.Sprintf("%s.%d", id, n)
+	}
+	return id
+}
+
+// noteStopped counts a publication of session id the rendezvous ended.
+func (u *Uplink) noteStopped(id string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.stopped == nil {
+		u.stopped = map[string]int{}
+	}
+	u.stopped[id]++
 }
 
 // Published is a session published to the rendezvous.
@@ -55,7 +88,17 @@ type Published struct {
 	stop   func()
 	done   chan struct{}
 	once   sync.Once
+	// there says the switchyard ended the publication (its stop).
+	there atomic.Bool
 }
+
+// Done is closed once the publication has ended: Stop, the session's end,
+// or a stop the switchyard sent (StoppedThere).
+func (p *Published) Done() <-chan struct{} { return p.done }
+
+// StoppedThere says the switchyard ended the publication with a stop of its
+// own. The session goes on here; publishing it again is a new publication.
+func (p *Published) StoppedThere() bool { return p.there.Load() }
 
 // CurrentSessionID is the rendezvous's id for the session now: SessionID
 // unless the rendezvous restarted and the session was registered afresh.
@@ -111,6 +154,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	opts := Options{
 		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
 		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
+		Switchyard: true,
 	}
 	if opts.HostName == "" {
 		opts.HostName, _ = os.Hostname()
@@ -126,7 +170,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	// attention there; agents of a published session report to their own
 	// server, so this one is used by nobody, and is fresh for every publish.
 	agentToken, _ := share.NewToken()
-	a := &agent{opts: opts, wsURL: wsURL, dir: info.Cwd, cols: info.Cols, rows: info.Rows, peers: map[string]*peer{}, log: log, agentToken: agentToken, local: local, instance: u.instanceID(), localID: info.ID}
+	a := &agent{opts: opts, wsURL: wsURL, dir: info.Cwd, cols: info.Cols, rows: info.Rows, peers: map[string]*peer{}, log: log, agentToken: agentToken, local: local, instance: u.instanceID(), localID: u.localID(info.ID)}
 	a.activity = newActivityForwarder(a.sendActivity, a.sendChat, log)
 	conn, registered, err := a.dialAndRegister(ctx)
 	if err != nil {
@@ -138,6 +182,12 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	p := &Published{SessionID: registered.SessionID, ShareBaseURL: registered.ShareBaseURL, a: a, cancel: cancel, done: make(chan struct{})}
 	stopped := make(chan struct{})
 	p.stop = func() { close(stopped) }
+	a.unpublish = func() {
+		if p.there.CompareAndSwap(false, true) {
+			u.noteStopped(info.ID)
+		}
+		p.once.Do(p.stop)
+	}
 	go a.activity.run(runCtx)
 	go a.controlLoop(runCtx, conn)
 	go func() {
@@ -146,8 +196,9 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 		case <-local.Ended():
 			a.settle(runCtx)
 		case <-stopped:
-			// The session goes on here; for the rendezvous it is over. Tell it
-			// so, rather than leave it waiting for a host that will not return.
+			// Stop, or the switchyard's own stop: the session goes on here;
+			// for the rendezvous it is over. Tell it so, rather than leave it
+			// waiting for a host that will not return, and let its viewers go.
 			a.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: p.CurrentSessionID(), Status: string(session.StatusStopped)})
 			a.flushViewers(runCtx)
 		}
@@ -161,11 +212,13 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 // rendezvous; the caller chains it from the session's OnChange hook.
 func (p *Published) OnChange(info session.Info) { p.a.onLocalChange(info) }
 
-// OnActivity forwards an activity entry of the local session; the caller
-// chains it from the session's OnActivity hook. It never waits.
-// OnChat is the local session's OnChat hook: the message goes to the rendezvous, whose stream shows it as a hosted session's.
+// OnChat is the local session's OnChat hook. The rendezvous is sent no
+// chat: the people on the session have it over their own connection.
 func (p *Published) OnChat(id string, m session.ChatMessage) { p.a.onLocalChat(id, m) }
 
+// OnActivity is the local session's OnActivity hook; the caller chains it.
+// It never waits, and the rendezvous is sent no entry: the publication only
+// notes when the session's final status entry is recorded.
 func (p *Published) OnActivity(id string, e session.ActivityEntry, state session.AttentionState) {
 	p.a.onLocalActivity(id, e, state)
 }

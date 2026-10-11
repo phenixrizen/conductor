@@ -12,8 +12,11 @@ import (
 // principal is the authenticated caller of a request.
 type principal struct {
 	admin bool
-	host  bool
-	link  *share.Link
+	// yard is the workbench token of a switchyard: it lists the sessions
+	// published there and has no role on any of them (role).
+	yard bool
+	host bool
+	link *share.Link
 	// runOf answers the run a session is a member of, for a run link
 	// (Server.runOf).
 	runOf func(sessionID string) (runID string, ok bool)
@@ -22,8 +25,14 @@ type principal struct {
 // role returns the terminal role the principal has on sessionID, or "" when
 // it has no access. A session's link grants its role on that session; a
 // run's link on the session of every member of the run, whenever it joined.
+// The workbench token is control on every session of its own server, and
+// none on a switchyard's: every session there is published from a machine
+// of its own, and only the links that machine's owner minted grant a role.
 func (p principal) role(sessionID string) session.Role {
 	if p.admin {
+		if p.yard {
+			return ""
+		}
 		return session.RoleControl
 	}
 	if p.link == nil || sessionID == "" {
@@ -115,7 +124,7 @@ func (s *Server) authenticate(r *http.Request, allowQuery bool) principal {
 		return principal{}
 	}
 	if share.Equal(tok, s.cfg.WorkbenchToken) {
-		return principal{admin: true, host: true}
+		return principal{admin: true, yard: s.cfg.Switchyard.Enabled, host: true}
 	}
 	for _, ht := range s.cfg.HostTokens {
 		if share.Equal(tok, ht) {

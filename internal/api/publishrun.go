@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/crew"
@@ -62,6 +63,11 @@ func (s *Server) awaitRunGroup(ctx context.Context, runID string) (proto.RunGrou
 		return proto.RunGroup{}, nil, "no such run"
 	}
 	why := ""
+	for _, m := range run.Members {
+		if m.SessionID != "" {
+			s.republish(m.SessionID)
+		}
+	}
 	for _, m := range run.Members {
 		if m.SessionID == "" {
 			continue
@@ -140,10 +146,31 @@ func (s *Server) scheduleRunSync(runID string) {
 	})
 }
 
+// lockRunSync takes the run's turn at telling the switchyard its members
+// and returns the unlock. The run's syncs and its links' minting take turns:
+// each carrier is a member's own connection, so two of them in flight at once
+// could be applied in either order, an older membership last.
+func (s *Server) lockRunSync(runID string) func() {
+	s.pubMu.Lock()
+	if s.runSyncMu == nil {
+		s.runSyncMu = map[string]*sync.Mutex{}
+	}
+	mu := s.runSyncMu[runID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		s.runSyncMu[runID] = mu
+	}
+	s.pubMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
+
 // syncRunLinks sends the run's members to the switchyard when they changed
 // since the last time; a switchyard that holds no link for the run any more
-// (not_found) has the records dropped here too.
+// (not_found) has the records dropped here too. Syncs of one run take turns
+// (lockRunSync), each reading the members as they are when its turn comes.
 func (s *Server) syncRunLinks(runID string) {
+	defer s.lockRunSync(runID)()
 	run, ok := s.runs.Get(runID)
 	if !ok {
 		return

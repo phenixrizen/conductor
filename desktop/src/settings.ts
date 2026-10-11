@@ -28,20 +28,20 @@ export interface DesktopSettings {
   switchyardToken: string
   /** How this machine is named there; '' for its host name. */
   switchyardName: string
-  /** The one-time notices already shown (or not owed: a fresh install owes none), by name. */
+  /** The one-time notices already shown, by name. */
   noticed: string[]
   /** The workbench's zoom level (0 is 100%), kept by the app as Ctrl+= and Ctrl+- move it; never set from the Settings page. */
   zoomLevel: number
 }
 
-/** The notices the app owes once: publishing, the round that turned sharing through the public switchyard on by default. */
+/** The notices the app owes once: publishing, that sessions are published to a switchyard (on by default), to a fresh install and an upgrade alike. */
 export const NOTICES = ['publishing'] as const
 export type Notice = (typeof NOTICES)[number]
 
 export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
 
 export function defaultSettings(home: string, userData: string): DesktopSettings {
-  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [...NOTICES], zoomLevel: 0 }
+  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [], zoomLevel: 0 }
 }
 
 /**
@@ -127,14 +127,32 @@ function pick(raw: Partial<DesktopSettings>): Partial<DesktopSettings> {
 }
 
 /**
- * owedNotice is the notice to show once, and the settings with it marked shown: publishing, to settings that came from a file
- * saved before it existed while publishing is on (turned off, there is nothing to tell). A fresh install starts with every notice
- * marked (defaultSettings), so it owes none.
+ * owedNotice is the notice to show once, and the settings with it marked shown: publishing, to settings that have not been told
+ * yet while publishing is on (turned off, there is nothing to tell): a fresh install (defaultSettings marks nothing) and settings
+ * from a file saved before the notice existed alike. The caller asks as it hands the notice to the workbench, and saves the
+ * settings it returns, which keeps the notice marked.
  */
 export function owedNotice(s: DesktopSettings): { notice: Notice | ''; settings: DesktopSettings } {
   if (s.noticed.includes('publishing')) return { notice: '', settings: s }
   const settings = { ...s, noticed: [...s.noticed, 'publishing'] }
   return { notice: s.switchyardEnabled ? 'publishing' : '', settings }
+}
+
+/**
+ * noticeOnce is the bridge's notice handler: the first time the workbench asks, the notice owed to the settings get() gives
+ * (owedNotice), marked through set() then; '' after, and when none is owed. Nothing is marked until the workbench asks, so a
+ * start that never shows it (Windows without WSL yet, a server that does not start) still owes the notice.
+ */
+export function noticeOnce(get: () => DesktopSettings, set: (s: DesktopSettings) => void): () => Notice | '' {
+  let taken = false
+  return () => {
+    if (taken) return ''
+    taken = true
+    const s = get()
+    const owed = owedNotice(s)
+    if (owed.settings !== s) set(owed.settings)
+    return owed.notice
+  }
 }
 
 /** saveSettings writes the file through a temporary one, mode 0600. */

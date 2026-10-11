@@ -206,6 +206,8 @@ export interface Welcome {
   chat?: boolean
   /** The session is a run's member with a run chat: scope `run` posts and sends, and `chat_roster`. */
   runChat?: boolean
+  /** The session's working directory, from the owner itself, to a role that may read files (at most 4096 bytes; absent from an older owner): a guest's Files root. */
+  cwd?: string
   iceServers?: ICEServer[]
   relayTimeoutMs?: number
   relayOnly?: boolean

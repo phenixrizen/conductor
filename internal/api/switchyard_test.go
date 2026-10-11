@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
 )
 
 func switchyardEnv(t *testing.T, relay bool) *testEnv {
@@ -57,16 +58,13 @@ func TestSwitchyardLaunchesNothing(t *testing.T) {
 	}
 }
 
-// A host registers on the switchyard, an admin mints a link, a viewer joins
-// by it and asks for the relay: relay_ok, and the host is told.
+// A host registers on the switchyard and has a link minted over its
+// connection, a viewer joins by it and asks for the relay: relay_ok, and the
+// host is told.
 func TestSwitchyardCoordinatesAHostAndAViewer(t *testing.T) {
 	e := switchyardEnv(t, true)
 	host := dialFakeHost(t, e, "hosted-agent-token")
-	resp, out := e.do("POST", "/api/sessions/"+host.sessionID+"/links", adminToken, map[string]any{"role": "view", "label": "a friend"})
-	if resp.StatusCode != http.StatusCreated || out["token"] == nil {
-		t.Fatalf("link: %d %v", resp.StatusCode, out)
-	}
-	token := out["token"].(string)
+	token := host.link("view", "a friend")
 	if resp, out := e.do("GET", "/api/join/"+token, "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil {
 		t.Fatalf("join: %d %v", resp.StatusCode, out)
 	}
@@ -104,7 +102,7 @@ func TestSwitchyardRelayOff(t *testing.T) {
 		t.Fatalf("health: %v", out)
 	}
 	host := dialFakeHost(t, e, "hosted-agent-token")
-	v := dialViewer(t, e, host.sessionID, adminToken)
+	v := dialViewer(t, e, host.sessionID, host.link("control", ""))
 	v.hello(80, 24)
 	v.expectControl(proto.CtlWelcome)
 	host.expect(proto.HostViewerJoin)
@@ -156,8 +154,7 @@ func TestSwitchyardAnswersLoopbackOriginsOnTheJoinRoute(t *testing.T) {
 		c.Switchyard.Enabled = true
 	})
 	host := dialFakeHost(t, e, "hosted-agent-token")
-	_, out := e.do("POST", "/api/sessions/"+host.sessionID+"/links", adminToken, map[string]any{"role": "view"})
-	token := out["token"].(string)
+	token := host.link("view", "")
 	get := func(env *testEnv, path, origin, method string) *http.Response {
 		req, _ := http.NewRequest(method, env.http.URL+path, nil)
 		req.Header.Set("Origin", origin)
@@ -191,8 +188,7 @@ func TestSwitchyardAnswersLoopbackOriginsOnTheJoinRoute(t *testing.T) {
 		c.Switchyard.AllowedOrigins = []string{"app.example:*"}
 	})
 	h2 := dialFakeHost(t, custom, "hosted-agent-token")
-	_, out = custom.do("POST", "/api/sessions/"+h2.sessionID+"/links", adminToken, map[string]any{"role": "view"})
-	tok2 := out["token"].(string)
+	tok2 := h2.link("view", "")
 	if resp := get(custom, "/api/join/"+tok2, "https://app.example:8443", "GET"); resp.Header.Get("Access-Control-Allow-Origin") != "https://app.example:8443" {
 		t.Fatalf("configured origin: %v", resp.Header)
 	}
@@ -231,7 +227,7 @@ func TestSwitchyardRelayIsThrottledPerHost(t *testing.T) {
 // the host in 64 whole frames and says how long the viewer took to get it all.
 func relayOneMiB(t *testing.T, e *testEnv, host *fakeHost) time.Duration {
 	t.Helper()
-	v := dialViewer(t, e, host.sessionID, adminToken)
+	v := dialViewer(t, e, host.sessionID, host.link("view", ""))
 	v.hello(80, 24)
 	v.expectControl(proto.CtlWelcome)
 	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
@@ -349,11 +345,7 @@ func openSwitchyardEnv(t *testing.T, mutate func(*config.Config)) *testEnv {
 func TestSwitchyardAdmitsOpenHosts(t *testing.T) {
 	e := openSwitchyardEnv(t, nil)
 	host := dialFakeHostAuth(t, e, "hosted-agent-token", "")
-	resp, out := e.do("POST", "/api/sessions/"+host.sessionID+"/links", adminToken, map[string]any{"role": "view", "label": "open"})
-	if resp.StatusCode != http.StatusCreated || out["token"] == nil {
-		t.Fatalf("link: %d %v", resp.StatusCode, out)
-	}
-	if resp, out := e.do("GET", "/api/join/"+out["token"].(string), "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil {
+	if resp, out := e.do("GET", "/api/join/"+host.link("view", "open"), "", nil); resp.StatusCode != http.StatusOK || out["session"] == nil {
 		t.Fatalf("join: %d %v", resp.StatusCode, out)
 	}
 	if got := dialHostRaw(t, e, "Bearer nope"); got != http.StatusUnauthorized {
@@ -426,10 +418,11 @@ func TestHostedSessionsTakeMaxViewersFromTheConfig(t *testing.T) {
 	e2 := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; c.MaxViewersPerSession = 1 })
 	_ = e
 	host := dialFakeHost(t, e2, "hosted-agent-token")
-	v1 := dialViewer(t, e2, host.sessionID, adminToken)
+	token := host.link("view", "")
+	v1 := dialViewer(t, e2, host.sessionID, token)
 	v1.hello(80, 24)
 	v1.expectControl(proto.CtlWelcome)
-	v2 := dialViewer(t, e2, host.sessionID, adminToken)
+	v2 := dialViewer(t, e2, host.sessionID, token)
 	v2.hello(80, 24)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -505,5 +498,104 @@ func TestOpenHostsFromOneAddressShareTheRelayBound(t *testing.T) {
 	relayOneMiB(t, e, first)
 	if took := relayOneMiB(t, e, second); took < 3*time.Second {
 		t.Fatalf("the second open host of the address relayed 1 MiB in %v: its bound is its own", took)
+	}
+}
+
+// On a switchyard the workbench token lists the sessions published there and
+// has no role on any of them: it neither views nor controls one, mints no
+// link to one, reads none of its files and reports nothing for it. The link
+// the publishing machine had minted over its own connection is what grants a
+// role. On a server of the owner's own, the token is control on a hosted
+// session as ever.
+func TestOnASwitchyardTheWorkbenchTokenHasNoRole(t *testing.T) {
+	e := switchyardEnv(t, true)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	id := host.sessionID
+
+	_, list := e.do("GET", "/api/sessions", adminToken, nil)
+	if sessions, _ := list["sessions"].([]any); len(sessions) != 1 {
+		t.Fatalf("listing %v", list)
+	}
+	if resp, out := e.do("GET", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK || out["role"] != "" || out["session"] == nil {
+		t.Fatalf("get: %d %v", resp.StatusCode, out)
+	}
+	admin := dialViewer(t, e, id, adminToken)
+	admin.expectClose(proto.CloseUnauthorized)
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"}); resp.StatusCode != http.StatusForbidden || errorCode(out) != "switchyard" {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+	if resp, _ := e.do("GET", "/api/sessions/"+id+"/files?path=x", adminToken, nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("files: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "message": "1", "options": []map[string]any{{"label": "Yes", "input": "y\r"}}}); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("attention: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do("POST", "/api/sessions/"+id+"/events", adminToken, map[string]any{"type": "progress", "message": "x"}); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("events: %d", resp.StatusCode)
+	}
+	if msgs := host.drain(200 * time.Millisecond); len(ofType(msgs, proto.HostViewerJoin)) != 0 || len(ofType(msgs, proto.HostAttention)) != 0 || len(ofType(msgs, proto.HostActivity)) != 0 {
+		t.Fatalf("the host was sent %v", msgs)
+	}
+	// The session's own agent still reports.
+	if resp, _ := e.do("POST", "/api/sessions/"+id+"/attention", "hosted-agent-token", map[string]any{"state": "working"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the agent's report: %d", resp.StatusCode)
+	}
+	// The publishing machine's link grants its role.
+	guest := dialViewer(t, e, id, host.link("control", "for Priya"))
+	guest.hello(80, 24)
+	if w := guest.expectControl(proto.CtlWelcome); w["role"] != "control" {
+		t.Fatalf("guest welcome %v", w)
+	}
+	if join := host.expect(proto.HostViewerJoin); join["role"] != "control" || join["linkLabel"] != "for Priya" {
+		t.Fatalf("viewer_join %v", join)
+	}
+
+	// The owner's own server: the token is control on a hosted session.
+	own := newTestEnv(t, nil)
+	h2 := dialFakeHost(t, own, "hosted-agent-token")
+	v := dialViewer(t, own, h2.sessionID, adminToken)
+	v.hello(80, 24)
+	if w := v.expectControl(proto.CtlWelcome); w["role"] != "control" {
+		t.Fatalf("on the owner's server %v", w)
+	}
+}
+
+// A switchyard keeps no chat and no activity of the sessions published
+// there: a host that sends them (an older publisher, a `conductor host`)
+// reaches no stream and no webhook. Its attention state still shows.
+func TestASwitchyardKeepsNoChatOrActivity(t *testing.T) {
+	e := switchyardEnv(t, true)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	var mu sync.Mutex
+	var entries []session.ActivityEntry
+	e.srv.events.addSink(func(_ string, en session.ActivityEntry, _ session.AttentionState) {
+		mu.Lock()
+		entries = append(entries, en)
+		mu.Unlock()
+	})
+	ch := e.srv.events.subscribe()
+	defer e.srv.events.unsubscribe(ch)
+	host.send(proto.HostChatMsg{T: proto.HostChat, Message: proto.ChatMessage{T: proto.CtlChat, ID: "m1", At: time.Now().UTC().Format(time.RFC3339Nano), Scope: proto.ChatScopeSession, Kind: proto.ChatKindMessage, By: proto.ChatBy{ID: "b1", Name: "Nate", Role: "control"}, Text: "between us"}})
+	host.send(proto.HostActivityMsg{T: proto.HostActivity, Entry: proto.Activity{T: proto.CtlActivity, Type: session.ActivityProgress, At: time.Now().UTC().Format(time.RFC3339Nano), Message: "rotated the key"}})
+	host.send(proto.HostAttentionMsg{T: proto.HostAttention, State: string(session.AttentionNeedsInput), Source: session.SourceAPI})
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case msg := <-ch:
+			s := string(msg)
+			if strings.HasPrefix(s, "event: chat") || strings.HasPrefix(s, "event: activity") {
+				t.Fatalf("the switchyard's stream carried %s", s)
+			}
+			if strings.HasPrefix(s, "event: session") && strings.Contains(s, `"needs_input"`) {
+				mu.Lock()
+				defer mu.Unlock()
+				if len(entries) != 0 {
+					t.Fatalf("the switchyard's sinks got %+v", entries)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("the attention state never showed")
+		}
 	}
 }

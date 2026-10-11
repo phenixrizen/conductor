@@ -122,6 +122,16 @@ export function joinedFromInfo(info: JoinInfo): Pick<JoinedEntry, 'kind' | 'name
   return { kind: 'session', name: s?.name ?? 'session', role: info.role, agentId: s?.agentId, sessionKind: s?.kind, hostedOn: s?.hostName || undefined, sessionStatus: s?.status }
 }
 
+/**
+ * The folder a joined session's Files pane roots at: the one the session's own welcome names (its machine's word), else the join
+ * reply's when that is a whole path. A switchyard lists a published session with its folder's last element alone, which roots
+ * nothing: until the welcome comes there is no root.
+ */
+export function filesRoot(listed: string | undefined, fromOwner: string | undefined): string | undefined {
+  if (fromOwner) return fromOwner
+  return listed?.startsWith('/') ? listed : undefined
+}
+
 /** What a failed look at a link says of it; undefined when it says nothing new (the last status stands). */
 export function joinedStatusOf(err: { status: number; code: string }): JoinedStatus | undefined {
   if (err.status === 0) return 'unreachable'

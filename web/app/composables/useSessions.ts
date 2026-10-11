@@ -562,6 +562,9 @@ export function useSessions() {
       request<BroadcastResult>(`/api/runs/${encodeURIComponent(runId)}/broadcast`, { method: 'POST', body }),
     /** A run's share links, each with the viewers attached through it to the sessions of its members. */
     listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
+    /** The run's links, whether a member is published to the switchyard now, and whether a member's publication there was ended, which a run link made now makes again. */
+    runLinkList: (runId: string) =>
+      request<{ links: ShareLink[]; republish?: boolean; published?: boolean }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => ({ links: r.links ?? [], republish: r.republish === true, published: r.published === true })),
     /** Creates a run link: its role on the session of every member of the run, those added later included. The token is shown this once. */
     createRunLink: (runId: string, body: { role: Role; label?: string; ttlSeconds?: number }) =>
       request<{ link: ShareLink; token?: string; url: string; invite?: string; remote?: boolean; rendezvous?: { server: string; error: string } }>(`/api/runs/${encodeURIComponent(runId)}/links`, { method: 'POST', body }),
@@ -595,6 +598,12 @@ export function useSessions() {
     installIntegration: (id: string) =>
       request<{ changed: string[] }>(`/api/integrations/${encodeURIComponent(id)}/install`, { method: 'POST' }).then((r) => r.changed ?? []),
     links: (id: string) => request<{ links: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => r.links ?? []),
+    /**
+     * The links, whether the session is published to the switchyard now (`published`, with one configured), and whether the switchyard
+     * ended its publication, which a link made now publishes again (`republish`).
+     */
+    linkList: (id: string) =>
+      request<{ links: ShareLink[]; republish?: boolean; published?: boolean }>(`/api/sessions/${encodeURIComponent(id)}/links`).then((r) => ({ links: r.links ?? [], republish: r.republish === true, published: r.published === true })),
     /**
      * The token is shown this once; `invite` is the same link for the desktop app; `remote` says the switchyard minted it (no token here);
      * `rendezvous` says, for a link made here although a switchyard is configured, which one and why the session is not there.

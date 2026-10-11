@@ -98,6 +98,34 @@ type Options struct {
 	// banner), and again when the server lost the session (a restarted
 	// switchyard) and the host registered afresh under a new id.
 	Registered func(sessionID, shareBaseURL string)
+	// Link, view or control, has the server mint a share link to the
+	// session once it is registered, over the host's own connection (`link`),
+	// good for LinkTTL: how the owner shares a session hosted on a
+	// switchyard, whose workbench token mints none. LinkMinted is told the
+	// link, or why there is none. Each receive on LinkAgain mints another
+	// the same way: the owner's way to a new one once the first expired or
+	// could not be had (conductor host takes SIGUSR1 for it).
+	Link       string
+	LinkTTL    time.Duration
+	LinkMinted func(proto.LinkCreated, error)
+	LinkAgain  <-chan struct{}
+	// Switchyard says the server is a switchyard, which someone else may
+	// run, rather than the owner's own Conductor: it is told what it needs
+	// to list the session and introduce its viewers, and no more. No chat
+	// message and no activity entry goes to it, and an attention change goes
+	// with its state, kind and source but without its words or its choices.
+	// Its registration names the session, its agent, the last element of
+	// its folder and the machine, and leaves out the command line, the OS
+	// user and the git branch (registration). Its viewers get all of it
+	// from the session itself, over their own connection. A stop it sends
+	// never stops the process: it ends the Uplink's publication. An
+	// attention change or an event it sends is not taken: the session's
+	// agent reports to its own server, never to the switchyard, so only the
+	// switchyard could send one, and an attention's choices are keys the
+	// owner types with one click. The Uplink sets it; `conductor host`
+	// publishes to the owner's own server, which shows the session in its
+	// workbench, stops it and forwards its agent's reports, and leaves it off.
+	Switchyard bool
 }
 
 // Result reports how the hosted process ended.
@@ -219,6 +247,9 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	go a.controlLoop(runCtx, firstConn)
+	if opts.Link != "" {
+		go a.mintLink(runCtx)
+	}
 
 	select {
 	case <-local.Ended():
@@ -274,6 +305,11 @@ type agent struct {
 	// statusQueued says the session's final (status) entry is in it.
 	activity     *activityForwarder
 	statusQueued atomic.Bool
+
+	// unpublish ends the publication when a switchyard sends a stop
+	// (Options.Switchyard): the Uplink's, which leaves the session running
+	// here. Set before the control loop starts; nil ignores the stop.
+	unpublish func()
 
 	// sendHook replaces the control connection in tests.
 	sendHook func(v any)
@@ -427,15 +463,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		info := a.local.Info()
 		cols, rows = info.Cols, info.Rows
 	}
-	reg := proto.Register{
-		T:     proto.HostRegister,
-		Proto: proto.ProtoVersion,
-		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser(), Instance: a.instance},
-		Session: proto.HostSession{
-			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: a.dir, Cols: cols, Rows: rows,
-			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, Branch: session.GitBranch(a.dir), LocalID: a.localID,
-		},
-	}
+	reg := a.registration(cols, rows)
 	if a.sessID != "" {
 		reg.Resume = &proto.HostResume{SessionID: a.sessID, Secret: a.secret}
 	}
@@ -491,16 +519,70 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	return c, registered, nil
 }
 
+// registration is the register message: the session as the owner's own
+// server lists it, or, to a switchyard (Options.Switchyard), as little as
+// lists it there and introduces its viewers. A switchyard gets the
+// session's name and agent, the machine's name and the last element of the
+// folder; for a command line, the one word older switchyards require (the
+// agent's id, else the program's name, never an argument); no OS user and
+// no branch. Its viewers have the folder in full from the session's welcome.
+func (a *agent) registration(cols, rows uint16) proto.Register {
+	reg := proto.Register{
+		T:     proto.HostRegister,
+		Proto: proto.ProtoVersion,
+		Host:  proto.HostInfo{Name: a.opts.HostName, Version: version.Version, User: currentUser(), Instance: a.instance},
+		Session: proto.HostSession{
+			Name: a.opts.Name, AgentID: a.opts.AgentID, Command: a.opts.Argv, Cwd: a.dir, Cols: cols, Rows: rows,
+			RelayOnly: a.opts.RelayOnly, AgentToken: a.agentToken, LocalID: a.localID,
+		},
+	}
+	if !a.opts.Switchyard {
+		reg.Session.Branch = session.GitBranch(a.dir)
+		return reg
+	}
+	reg.Host.User = ""
+	program := a.opts.AgentID
+	if program == "" && len(a.opts.Argv) > 0 {
+		program = filepath.Base(a.opts.Argv[0])
+	}
+	if program == "" || program == "." || program == string(filepath.Separator) {
+		program = "agent"
+	}
+	reg.Session.Command = []string{program}
+	reg.Session.Cwd = lastElement(a.dir)
+	return reg
+}
+
+// lastElement is the last element of a folder's path, "" for none.
+func lastElement(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Base(dir)
+}
+
 // onLocalChange forwards attention changes of the local session to the
 // server so listings stay current for hosted sessions.
 func (a *agent) onLocalChange(info session.Info) {
+	att := a.toServer(info.Attention)
 	a.mu.Lock()
-	changed := info.Attention.State != a.lastAttention.State || info.Attention.Message != a.lastAttention.Message || info.Attention.Kind != a.lastAttention.Kind || len(info.Attention.Options) != len(a.lastAttention.Options)
-	a.lastAttention = info.Attention
+	changed := att.State != a.lastAttention.State || att.Message != a.lastAttention.Message || att.Kind != a.lastAttention.Kind || len(att.Options) != len(a.lastAttention.Options)
+	a.lastAttention = att
 	a.mu.Unlock()
 	if changed {
-		a.send(hostAttentionMsg(info.ID, info.Attention))
+		a.send(hostAttentionMsg(info.ID, att))
 	}
+}
+
+// toServer is an attention change as the server is told it: in full to the
+// owner's own server, and to a switchyard (Options.Switchyard) its state,
+// kind and source alone, never its words (a prompt's text, the start of the
+// agent's reply a "done" carries) or its choices.
+func (a *agent) toServer(att session.Attention) session.Attention {
+	if a.opts.Switchyard {
+		att.Message, att.Options = "", nil
+	}
+	return att
 }
 
 // hostAttentionMsg encodes an attention change for the control connection.
@@ -518,8 +600,12 @@ func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttenti
 // goroutine that recorded the entry, so it never waits for the connection.
 // Entries recorded while the connection is down are lost to the stream; the
 // session log has them.
+// A switchyard (Options.Switchyard) is sent no entry: the session's own
+// viewers have its log over their connection.
 func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session.AttentionState) {
-	a.activity.push(e, state)
+	if !a.opts.Switchyard {
+		a.activity.push(e, state)
+	}
 	if e.Type == session.ActivityStatus {
 		a.statusQueued.Store(true)
 	}
@@ -529,8 +615,13 @@ func (a *agent) onLocalActivity(_ string, e session.ActivityEntry, state session
 // the server, whose admin stream shows it to the browsers' unread counts.
 // The session calls it on the goroutine that kept the message, so it never
 // waits for the connection; a message kept while the connection is down is
-// lost to the stream, and the session's chat keeps it.
+// lost to the stream, and the session's chat keeps it. A switchyard
+// (Options.Switchyard) is sent none: the people on the session have the chat
+// over their own connection.
 func (a *agent) onLocalChat(_ string, m session.ChatMessage) {
+	if a.opts.Switchyard {
+		return
+	}
 	a.activity.pushChat(m)
 }
 
@@ -621,7 +712,7 @@ func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivi
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
 	// Re-send the current attention after a reconnect.
-	if att := a.local.Info().Attention; att.State != session.AttentionNone {
+	if att := a.toServer(a.local.Info().Attention); att.State != session.AttentionNone {
 		a.send(hostAttentionMsg(a.sessionID(), att))
 	}
 	defer func() {
@@ -752,6 +843,9 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		a.removePeer(m.ViewerID)
 	case proto.HostAttention:
+		if a.opts.Switchyard {
+			return nil // see Options.Switchyard
+		}
 		var m proto.HostAttentionMsg
 		if err := json.Unmarshal(data, &m); err != nil {
 			return err
@@ -766,6 +860,9 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
 	case proto.HostActivity:
+		if a.opts.Switchyard {
+			return nil // see Options.Switchyard
+		}
 		// An event an agent reported through the API for this session. It is
 		// recorded like any other entry, so the people watching the host see
 		// it, and the OnActivity hook reports it back to the server.
@@ -778,6 +875,14 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		a.local.Record(session.EntryFromProto(m.Entry))
 	case proto.HostStop:
+		if a.opts.Switchyard {
+			// A switchyard ends the publication; the process is the owner's.
+			a.log.Info("the switchyard ended the publication; the session goes on here")
+			if a.unpublish != nil {
+				go a.unpublish()
+			}
+			return nil
+		}
 		a.log.Info("stop requested by server")
 		go func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -811,6 +916,55 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		a.log.Warn("server error", "code", m.Code, "message", m.Message)
 	}
 	return nil
+}
+
+// linkAttemptWait is how long one try of --link's request waits for the
+// server's answer; linkAttempts how many tries it makes.
+var (
+	linkAttemptWait = 15 * time.Second
+	linkAttempts    = 5
+)
+
+// mintLink asks the server for the link Options.Link names and tells
+// Options.LinkMinted, then again at each receive on Options.LinkAgain, until
+// ctx ends.
+func (a *agent) mintLink(ctx context.Context) {
+	for {
+		a.mintLinkOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.opts.LinkAgain: // nil: never
+		}
+	}
+}
+
+// mintLinkOnce is one link of mintLink's. A try that gets no answer (the
+// connection dropped before link_created, or was down) is made again once
+// the control loop has had time to reconnect, up to linkAttempts tries; a
+// refusal is final.
+func (a *agent) mintLinkOnce(ctx context.Context) {
+	backoff := time.Second
+	for attempt := 1; ; attempt++ {
+		lctx, cancel := context.WithTimeout(ctx, linkAttemptWait)
+		res, err := a.requestLink(lctx, a.opts.Link, a.opts.LinkTTL, "conductor host")
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) || attempt >= linkAttempts {
+			if a.opts.LinkMinted != nil {
+				a.opts.LinkMinted(res, err)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, a.opts.ReconnectMax)
+	}
 }
 
 // linkAnswer is what a link request waits for.
@@ -939,7 +1093,9 @@ func (a *agent) sendViewerError(viewerID, code, msg string) {
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
 	a.removePeer(id)
-	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners)
+	// A switchyard's viewer is never the owner's window, whatever else says
+	// so: its workbench is its operator's (Options.Switchyard).
+	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice

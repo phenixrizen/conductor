@@ -17,6 +17,22 @@ export interface CreatedLink {
   rendezvous?: { server: string; error: string }
 }
 
+/**
+ * reuseHeld says whether the Share dialog shows again the link it made for this target rather than make one: while that link is
+ * listed and not revoked, unless the switchyard ended the publication since (republish: a link made now publishes it again), or
+ * the link was made here because the session was not at the switchyard (rendezvous) and it is now (published).
+ */
+export function reuseHeld(
+  created: { linkId: string; rendezvous?: unknown } | null,
+  forThisTarget: boolean,
+  links: ReadonlyArray<{ id: string; revoked?: boolean }>,
+  publication: { republish: boolean; published: boolean },
+): boolean {
+  if (!created || !forThisTarget || publication.republish) return false
+  if (created.rendezvous && publication.published) return false
+  return links.some((l) => l.id === created.linkId && !l.revoked)
+}
+
 /** The host of a URL, for "shared through <host>"; the URL itself when it does not parse. */
 export function hostOf(url: string): string {
   try {
@@ -37,8 +53,8 @@ export function shareReach(created: CreatedLink, reach: ReachInfo | null | undef
       level: 'remote',
       title: 'Works from anywhere',
       text: run
-        ? `Shared through ${hostOf(created.url)}: the link opens every agent of the crew there, members who join later included, and each terminal comes straight to this machine, through the switchyard's relay only when it must.`
-        : `Shared through ${hostOf(created.url)}: the link opens there, and the terminal comes straight to this machine, through the switchyard's relay only when it must.`,
+        ? `Shared through ${hostOf(created.url)}, which mints and checks the link: it opens every agent of the crew there, members who join later included, and each terminal comes to this machine over WebRTC, or through the switchyard's relay when no direct path forms.`
+        : `Shared through ${hostOf(created.url)}, which mints and checks the link: it opens there, and the terminal comes to this machine over WebRTC, or through the switchyard's relay when no direct path forms.`,
     }
   }
   const local = linkReach(created.url, reach)

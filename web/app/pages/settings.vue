@@ -154,7 +154,7 @@ onMounted(load)
           <div class="flex flex-col gap-4">
             <USwitch v-model="form.switchyardEnabled" label="Publish sessions to a switchyard" description="So a share link works from anywhere." data-switchyard-enabled />
             <p class="text-sm text-muted">
-              Every session here is shared through a public switchyard, switchyard.rslabs.net unless you name another: the link is minted there, and the terminal goes between the viewer and this machine, through the switchyard's relay only when it must. Off, links work where this machine is reachable.
+              Every session here is published to a switchyard, switchyard.rslabs.net unless you name another. It is told each session's name, agent and folder name, this machine's name, and whether the session waits on you; never its chat, activity or command line. It mints and checks the links and decides who joins, and the terminal goes between the viewer and this machine over WebRTC, or through the switchyard's relay, which can read it, when no direct path forms. Publish only to a switchyard whose operator you trust. Off, links work where this machine is reachable.
             </p>
             <UFormField label="Switchyard" description="Leave empty for the public one.">
               <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" placeholder="https://switchyard.rslabs.net" :disabled="!form.switchyardEnabled" />

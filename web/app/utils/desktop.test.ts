@@ -18,7 +18,11 @@ describe('desktop bridge', () => {
 
 describe('noticeWords', () => {
   it('words the publishing notice and nothing else', () => {
-    expect(noticeWords('publishing')?.description).toContain('Settings → Switchyard')
+    const words = noticeWords('publishing')
+    expect(words?.title).toBe('Sessions are published to a switchyard')
+    expect(words?.description).toContain('switchyard.rslabs.net')
+    expect(words?.description).toContain('whose operator you trust')
+    expect(words?.description).toContain('Settings → Switchyard')
     expect(noticeWords('')).toBeNull()
     expect(noticeWords('later')).toBeNull()
   })

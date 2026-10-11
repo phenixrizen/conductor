@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, migrateToWsl, owedNotice, saveSettings, serverAffecting, validate } from '../src/settings'
+import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, saveSettings, serverAffecting, validate } from '../src/settings'
 import { serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -111,8 +111,17 @@ describe('settings inside WSL', () => {
 
 describe('the one-time notices', () => {
   const defaults = defaultSettings('/home/me', '/home/me/.config/conductor-desktop')
-  it('owes a fresh install nothing', () => {
-    expect(owedNotice(defaults)).toEqual({ notice: '', settings: defaults })
+  it.skipIf(win)('owes a fresh install the publishing notice once, and keeps it marked through the file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-fresh-'))
+    const file = join(dir, 'settings.json')
+    // No file yet: the defaults, which have been told nothing.
+    const fresh = loadSettings(file, defaults)
+    expect(fresh.noticed).toEqual([])
+    const first = owedNotice(fresh)
+    expect(first.notice).toBe('publishing')
+    expect(first.settings.noticed).toEqual(['publishing'])
+    saveSettings(file, first.settings)
+    expect(owedNotice(loadSettings(file, defaults))).toMatchObject({ notice: '' })
   })
   it.skipIf(win)('owes settings from an earlier build the publishing notice once, and keeps it marked through the file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cd-notice-'))
@@ -125,6 +134,29 @@ describe('the one-time notices', () => {
     expect(first.notice).toBe('publishing')
     saveSettings(file, first.settings)
     expect(owedNotice(loadSettings(file, defaults))).toMatchObject({ notice: '' })
+  })
+  it.skipIf(win)('marks the notice only when the workbench takes it: a start that never shows the workbench still owes it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-taken-'))
+    const file = join(dir, 'settings.json')
+    const start = () => {
+      let s = loadSettings(file, defaults)
+      return noticeOnce(
+        () => s,
+        (next) => {
+          s = next
+          saveSettings(file, next)
+        },
+      )
+    }
+    // A first start that never asks (setup shown instead of the workbench): nothing marked, nothing written.
+    start()
+    expect(existsSync(file)).toBe(false)
+    // The next start's workbench asks: the notice, once, and marked.
+    const take = start()
+    expect(take()).toBe('publishing')
+    expect(take()).toBe('')
+    expect(loadSettings(file, defaults).noticed).toEqual(['publishing'])
+    expect(start()()).toBe('')
   })
   it('says nothing to someone who turned publishing off, and marks it all the same', () => {
     const off = owedNotice({ ...defaults, noticed: [], switchyardEnabled: false })

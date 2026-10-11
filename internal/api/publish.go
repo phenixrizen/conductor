@@ -42,6 +42,11 @@ type PublishedSession interface {
 	// HeldLinks is what the rendezvous last said it holds of the links
 	// minted for the session; false when it never said (an older one).
 	HeldLinks() ([]string, bool)
+	// Done is closed once the publication has ended, whatever ended it;
+	// StoppedThere says the rendezvous ended it with a stop of its own, the
+	// session going on here.
+	Done() <-chan struct{}
+	StoppedThere() bool
 	// RunLink mints, at the rendezvous, one link to the sessions of a run's
 	// members there; RunLinkUpdate tells it the members now. Either goes over
 	// this session's connection, which must be a member's.
@@ -138,11 +143,17 @@ func (s *Server) publish(local *session.Local) {
 		return
 	}
 	// A link request made meanwhile waits for this to end (awaitPublication).
+	// One publication of a session is made at a time: a second asked for
+	// while one is under way (two Shares republishing at once) is that one.
 	id := local.Info().ID
 	pending := make(chan struct{})
 	s.pubMu.Lock()
 	if s.pubPending == nil {
 		s.pubPending = map[string]chan struct{}{}
+	}
+	if s.pubPending[id] != nil {
+		s.pubMu.Unlock()
+		return
 	}
 	s.pubPending[id] = pending
 	delete(s.pubErr, id)
@@ -204,12 +215,14 @@ func (s *Server) publish(local *session.Local) {
 		gone := s.pubGone[local.Info().ID]
 		if !gone {
 			s.published[local.Info().ID] = pub
+			delete(s.pubStopped, local.Info().ID)
 		}
 		s.pubMu.Unlock()
 		if gone {
 			pub.Stop()
 			return
 		}
+		go s.watchPublication(local, pub)
 		url := pub.Base() + "/sessions/" + pub.ID()
 		s.log.Info("published to the rendezvous", "session", local.Info().ID, "at", url)
 		local.Record(session.ActivityEntry{Type: session.ActivityLink, Message: "published at the rendezvous", URL: url})
@@ -220,6 +233,85 @@ func (s *Server) publish(local *session.Local) {
 			s.scheduleRunSync(runID)
 		}
 	})
+}
+
+// stoppedThere is why a session is not published once the switchyard ended
+// its publication with a stop of its own.
+const stoppedThere = "the switchyard ended its publication; Share publishes it again"
+
+// watchPublication waits for pub to end while local runs. A publication the
+// rendezvous ended with a stop of its own (StoppedThere) is forgotten here,
+// its links there with it, and the session's activity says so: the session
+// goes on, unpublished, until its owner shares it again (republish).
+func (s *Server) watchPublication(local *session.Local, pub PublishedSession) {
+	select {
+	case <-pub.Done():
+	case <-local.Ended():
+		return
+	}
+	if !pub.StoppedThere() {
+		return
+	}
+	id := local.Info().ID
+	s.pubMu.Lock()
+	ours := s.published[id] == pub
+	if ours {
+		delete(s.published, id)
+		delete(s.remoteLinks, id)
+		if s.pubErr == nil {
+			s.pubErr = map[string]string{}
+		}
+		s.pubErr[id] = stoppedThere
+		if s.pubStopped == nil {
+			s.pubStopped = map[string]bool{}
+		}
+		s.pubStopped[id] = true
+	}
+	s.pubMu.Unlock()
+	if !ours {
+		return
+	}
+	s.log.Info("the rendezvous ended a publication", "session", id)
+	local.Record(session.ActivityEntry{Type: session.ActivityStatus, Message: "no longer shared through the switchyard: it ended the publication. The session goes on here; Share publishes it again"})
+	if runID, _, ok := s.runs.MemberOf(id); ok {
+		s.scheduleRunSync(runID)
+	}
+}
+
+// owedPublication says the switchyard ended session id's publication and
+// none has been made since: the next link made for it publishes it again.
+func (s *Server) owedPublication(id string) bool {
+	s.pubMu.Lock()
+	owed := s.pubStopped[id] && s.publisher != nil && s.published[id] == nil
+	s.pubMu.Unlock()
+	if !owed {
+		return false
+	}
+	// A session that ended is owed nothing: there is nothing left to share.
+	d, ok := s.registry.Get(id)
+	_, isLocal := d.(*session.Local)
+	return ok && isLocal && !d.Info().Status.Ended()
+}
+
+// republish publishes session id again when the switchyard ended its
+// publication: its owner's Share is the word to. The session stays owed a
+// publication until one is made, so a Share whose try failed (the
+// switchyard unreachable for a while) is followed by another try at the
+// next. It reports whether it tried.
+func (s *Server) republish(id string) bool {
+	s.pubMu.Lock()
+	again := s.pubStopped[id] && s.publisher != nil && s.published[id] == nil && s.pubPending[id] == nil
+	s.pubMu.Unlock()
+	if !again {
+		return false
+	}
+	d, ok := s.registry.Get(id)
+	local, isLocal := d.(*session.Local)
+	if !ok || !isLocal || local.Info().Status.Ended() {
+		return false
+	}
+	s.publish(local)
+	return true
 }
 
 // awaitPublication is the publication of session id, waiting as long as ctx
@@ -282,6 +374,7 @@ func (s *Server) unpublish(id string) {
 	delete(s.published, id)
 	delete(s.remoteLinks, id)
 	delete(s.pubErr, id)
+	delete(s.pubStopped, id)
 	if s.publisher != nil {
 		if s.pubGone == nil {
 			s.pubGone = map[string]bool{}
@@ -318,6 +411,7 @@ func (s *Server) endLinks(id string) {
 	pub := s.published[id]
 	remote := s.remoteLinks[id]
 	delete(s.remoteLinks, id)
+	delete(s.pubStopped, id)
 	s.pubMu.Unlock()
 	if pub == nil || len(remote) == 0 {
 		return

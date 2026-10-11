@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -836,6 +837,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		NvimOwnerOnly:   s.nvimOwnerOnly(sub),
 		Chat:            true,
 		RunChat:         room != nil,
+		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),
 	}))
 	if !sub.quiet {
 		snap := s.ring.Snapshot()
@@ -1186,3 +1188,19 @@ func (s *Local) Drained() bool { return s.hub.Drained() }
 
 // LinkViewers counts attached clients per share link id.
 func (s *Local) LinkViewers() map[string]int { return s.hub.CountByLink() }
+
+// welcomeCwd is the working directory a welcome carries: the session's own,
+// to a viewer whose role may read files (it roots the Files pane, which is
+// all it is for), or "" when its JSON string, as the welcome encodes it
+// (`&`, `<` and `>` escaped to six bytes each, a control character or a byte
+// that is not UTF-8 likewise), passes proto.MaxCwd bytes: the welcome must
+// fit one CONTROL frame on every path, the relay's included.
+func welcomeCwd(cwd string, files bool) string {
+	if !files || len(cwd) > proto.MaxCwd {
+		return ""
+	}
+	if b, err := json.Marshal(cwd); err != nil || len(b) > proto.MaxCwd {
+		return ""
+	}
+	return cwd
+}

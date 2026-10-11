@@ -68,11 +68,13 @@ func (s *Server) reportTarget(w http.ResponseWriter, r *http.Request) (session.D
 
 // attentionPrincipal decides who is reporting on d and whether they may: an
 // admin (source "admin") or the holder of d's agent token (source "api"),
-// presented in the Authorization header. Anyone else is refused with a 401
-// that counts against their rate limit; the response is written and ok is
-// false. Both the attention route and the events route use it.
+// presented in the Authorization header. A switchyard's workbench token has
+// no role on the sessions published there, and reports nothing for them.
+// Anyone else is refused with a 401 that counts against their rate limit;
+// the response is written and ok is false. Both the attention route and the
+// events route use it.
 func (s *Server) attentionPrincipal(w http.ResponseWriter, r *http.Request, d session.Driver) (source string, ok bool) {
-	if s.authenticate(r, false).admin {
+	if p := s.authenticate(r, false); p.admin && !p.yard {
 		return session.SourceAdmin, true
 	}
 	if agentTokenOK(d, presentedToken(r, false)) {

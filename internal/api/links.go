@@ -52,13 +52,32 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"links": s.sessionLinks(id, d)})
+	out := map[string]any{"links": s.sessionLinks(id, d)}
+	// With a switchyard configured, whether the session is published there
+	// now, and whether the switchyard ended its publication, which a link
+	// made now makes again: the Share dialog makes a link anew rather than
+	// show one it made here while the session was not there, or one from
+	// before the switchyard ended it.
+	if s.publisherServer() != "" {
+		out["published"] = s.publishedOf(id) != nil
+		if s.owedPublication(id) {
+			out["republish"] = true
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, ok := s.registry.Get(id); !ok {
 		writeError(w, http.StatusNotFound, "not_found", "no such session")
+		return
+	}
+	// A session published to a switchyard is shared by the machine that
+	// publishes it, over its own connection (link); the switchyard's
+	// workbench token mints nothing for it.
+	if s.cfg.Switchyard.Enabled {
+		writeError(w, http.StatusForbidden, "switchyard", "on a switchyard, links to a session are minted by the machine that publishes it")
 		return
 	}
 	req, ok := readLinkRequest(w, r)
@@ -72,6 +91,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	var pub PublishedSession
 	why := ""
 	if server != "" {
+		s.republish(id)
 		wctx, wcancel := context.WithTimeout(r.Context(), publicationWait)
 		pub, why = s.awaitPublication(wctx, id)
 		wcancel()
@@ -223,19 +243,37 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 		if carrier != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 			defer cancel()
+			// In turn with the run's syncs (syncRunLinks): an update the
+			// switchyard applies after this link is made would rename its
+			// members.
+			unlock := s.lockRunSync(id)
 			res, err := carrier.RunLink(ctx, string(req.Role), req.ttl(), req.Label, g)
 			if err != nil {
+				unlock()
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not mint the link: "+err.Error())
 				return
 			}
 			s.recordRemoteRunLink(id, res)
+			// The new link names the members as they are now; the run's other
+			// links there may not (a member published again just now, for one):
+			// with others, the members are sent again so all of them follow.
+			others := false
 			if b, err := json.Marshal(g); err == nil {
 				s.pubMu.Lock()
-				if s.runSent == nil {
-					s.runSent = map[string]string{}
+				others = len(s.remoteRunLinks[id]) > 1
+				if others {
+					delete(s.runSent, id)
+				} else {
+					if s.runSent == nil {
+						s.runSent = map[string]string{}
+					}
+					s.runSent[id] = string(b)
 				}
-				s.runSent[id] = string(b)
 				s.pubMu.Unlock()
+			}
+			unlock()
+			if others {
+				s.scheduleRunSync(id)
 			}
 			s.runs.Note(id, session.ActivityLink, "link created at the rendezvous: "+linkLabelOr(res.Label)+" ("+res.Role+")")
 			writeJSON(w, http.StatusCreated, map[string]any{
@@ -300,7 +338,25 @@ func (s *Server) handleListRunLinks(w http.ResponseWriter, r *http.Request) {
 	for _, rl := range s.remoteRunLinksOf(id) {
 		out = append(out, linkView{Link: &share.Link{ID: rl.ID, RunID: id, Role: rl.Role, Label: rl.Label, CreatedAt: rl.CreatedAt, ExpiresAt: rl.ExpiresAt}, Remote: true})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"links": out})
+	reply := map[string]any{"links": out}
+	// As a session's (handleListLinks): whether a member is published, and
+	// whether a member's publication the switchyard ended is made again by
+	// a run link made now.
+	if s.publisherServer() != "" {
+		published, owed := false, false
+		for _, m := range run.Members {
+			if m.SessionID == "" {
+				continue
+			}
+			published = published || s.publishedOf(m.SessionID) != nil
+			owed = owed || s.owedPublication(m.SessionID)
+		}
+		reply["published"] = published
+		if owed {
+			reply["republish"] = true
+		}
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // handleRevokeRunLink revokes a run's link, which closes every viewer

@@ -65,7 +65,9 @@ sequenceDiagram
 The host reuses `session.Local` unchanged; only the sinks differ (a pion data
 channel with backpressure, or a relay sink that wraps frames in RELAY envelopes).
 The server never sees terminal bytes on the WebRTC path and never runs the
-command.
+command. On the relay path it carries them and can read them; and since it
+carries the signalling and tells the host each viewer's role, a host trusts
+its server with both.
 
 ## Reachability
 
@@ -176,6 +178,14 @@ workbench, served from a loopback address, may join from its own page: the
 join route answers the switchyard's allowed origins across origins and the
 session WebSocket accepts them. What a switchyard carries is signaling and
 the relayed terminals, so one small machine with a certificate serves many.
+It is trusted with what is published to it: it mints and checks the links
+and tells the publisher each viewer's role. A Conductor publishing there
+(`hostagent.Options.Switchyard`, which the Uplink sets) tells it less: each
+session's name, agent, folder's last element and machine name, status and
+attention state, no chat or activity; takes no report from it; and ends the
+publication, not the process, on its stop. In switchyard mode the workbench
+token lists the published sessions and has no role on them
+(`principal.yard`).
 
 Its pages are its own (`internal/api/switchyard_page.go`): a server-rendered
 landing page at `/` (what the server is, how a link looks, how a machine

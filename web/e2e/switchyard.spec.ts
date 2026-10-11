@@ -9,9 +9,10 @@ import { expect, test } from './fixtures'
 import { renderConfig, scratchRepo, serverBinary, startServer, stopServer, stubPath, type Started } from './server'
 
 // A switchyard: a second Conductor in switchyard mode, a conductor host
-// publishing a stub session to it, a link minted there, and this workbench's
-// own join page signalling to the switchyard from its own origin (what the
-// desktop app does for an invite). The terminal goes through the
+// publishing a stub session to it with a link minted there over its own
+// connection (--link: the switchyard's workbench token mints none), and this
+// workbench's own join page signalling to the switchyard from its own origin
+// (what the desktop app does for an invite). The terminal goes through the
 // switchyard's relay (the host runs relay-only here, as a CI box may have no
 // route for ICE).
 test.describe.configure({ mode: 'serial' })
@@ -23,6 +24,8 @@ const syAdmin = randomBytes(16).toString('hex')
 const hostToken = 'sy-host-' + randomBytes(8).toString('hex')
 const agentSession = randomUUID()
 let home = ''
+/** The link the conductor host had minted at the switchyard (--link control), from its terminal output. */
+let hostLink = ''
 /** A second server of the suite's shape, publishing to the switchyard: the crew run link test's. */
 let publisher: Started | null = null
 
@@ -64,7 +67,7 @@ test.beforeAll(async ({ state }) => {
     return r.ok && h.switchyard === true
   })
   // A hosted stub published to the switchyard, relay-only, headless.
-  host = spawn(serverBinary(), ['host', '--server', syURL, '--token', hostToken, '--relay-only', '--no-local', '--name', 'hosted-stub', '--cwd', home, '--', '/bin/bash', stubPath, '--session-id', agentSession], {
+  host = spawn(serverBinary(), ['host', '--server', syURL, '--token', hostToken, '--relay-only', '--no-local', '--name', 'hosted-stub', '--cwd', home, '--link', 'control', '--', '/bin/bash', stubPath, '--session-id', agentSession], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
@@ -73,6 +76,11 @@ test.beforeAll(async ({ state }) => {
     const list = (await r.json()) as { sessions?: Array<{ name: string }> } | Array<{ name: string }>
     const sessions = Array.isArray(list) ? list : (list.sessions ?? [])
     return sessions.some((s) => s.name === 'hosted-stub')
+  })
+  await until('the host prints its link', async () => {
+    const m = /conductor: share link control (\S+)/.exec(readFileSync(join(state.root, 'switchyard.log'), 'utf8'))
+    hostLink = m?.[1] ?? ''
+    return hostLink !== ''
   })
 })
 
@@ -91,10 +99,12 @@ test('a link minted on the switchyard opens on this workbench with ?server=, and
   const sessions = Array.isArray(list) ? list : (list.sessions ?? [])
   const hosted = sessions.find((s) => s.name === 'hosted-stub')!
   expect(hosted.kind).toBe('hosted')
-  const made = await fetch(`${syURL}/api/sessions/${hosted.id}/links`, { method: 'POST', headers: { Authorization: `Bearer ${syAdmin}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'control', label: 'e2e invite' }) })
-  const link = (await made.json()) as { url: string; token: string; invite: string }
-  expect(made.status).toBe(201)
-  expect(link.invite).toBe(`conductor://127.0.0.1:${new URL(syURL).port}/join/${link.token}?http=1`)
+  // The link the host had minted over its own connection; the operator's token mints none.
+  expect(hostLink.startsWith(`${syURL}/join/`), hostLink).toBe(true)
+  const link = { token: hostLink.slice(`${syURL}/join/`.length) }
+  const refused = await fetch(`${syURL}/api/sessions/${hosted.id}/links`, { method: 'POST', headers: { Authorization: `Bearer ${syAdmin}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ role: 'control', label: 'e2e invite' }) })
+  expect(refused.status).toBe(403)
+  expect(((await refused.json()) as { error: { code: string } }).error.code).toBe('switchyard')
 
   // This workbench's own join page, told to signal to the switchyard: the join route answers it across origins.
   await page.goto(`/join/${link.token}?server=${encodeURIComponent(syURL)}`)
@@ -291,6 +301,106 @@ test('a crew run published to the switchyard is shared through it: Share says wo
   await expect.poll(async () => (await fetch(`${syURL}/api/join/${token}`)).status, { timeout: 15_000 }).toBe(404)
   await expect.poll(() => badge.getAttribute('data-transport-state'), { timeout: 30_000 }).not.toBe('open')
   await pub('POST', `/api/runs/${runId}/stop`)
+  await stopServer(publisher.pid)
+  publisher = null
+})
+
+// A session a Conductor publishes to the switchyard: the switchyard lists it
+// by its name, its agent, its folder's last element and the machine, never by
+// its command line; the owner's Share mints the link there; a guest's Files
+// pane roots at the folder the session's own welcome names, not at what the
+// switchyard lists. A stop from the switchyard's operator ends the
+// publication: the guest is let go, the session runs on at home and its
+// Activity says so, and the owner's next Share publishes it again.
+test('a session a Conductor publishes is listed there by little, a guest\'s Files pane roots at its folder, and a stop there ends only the publication', async ({ page, browser, state }) => {
+  test.setTimeout(150_000)
+  const here = dirname(fileURLToPath(import.meta.url))
+  const home3 = join(state.root, 'publisher3-home')
+  const data3 = join(state.root, 'publisher3-data')
+  const repo3 = join(state.root, 'publisher3-repo')
+  for (const d of [home3, data3, repo3]) mkdirSync(d, { recursive: true })
+  scratchRepo(repo3)
+  const config = join(state.root, 'publisher3.json')
+  renderConfig(join(here, 'conductor.e2e.json'), config)
+  publisher = await startServer({
+    config,
+    home: home3,
+    data: data3,
+    allowedRoot: state.root,
+    defaultCwd: repo3,
+    log: join(state.root, 'publisher3.log'),
+    env: { CONDUCTOR_RENDEZVOUS: '1', CONDUCTOR_RENDEZVOUS_SERVER: syURL, CONDUCTOR_RENDEZVOUS_TOKEN: hostToken, CONDUCTOR_RENDEZVOUS_RELAY_ONLY: '1', CONDUCTOR_RENDEZVOUS_HOST_NAME: 'publisher3' },
+  })
+  const pub = async <T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> => {
+    const r = await fetch(publisher!.baseURL + path, { method, headers: { Authorization: `Bearer ${publisher!.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+    const text = await r.text()
+    return { status: r.status, body: (text ? JSON.parse(text) : undefined) as T }
+  }
+  const made = await pub<{ id: string }>('POST', '/api/sessions', { agentId: 'claude', name: 'published-stub', cwd: repo3 })
+  expect(made.status).toBe(201)
+  type Listed = { id: string; name: string; agentId: string; hostName: string; hostUser?: string; cwd: string; command: string[]; status: string }
+  const listed = async () => {
+    const r = await fetch(`${syURL}/api/sessions`, { headers: { Authorization: `Bearer ${syAdmin}` } })
+    const list = (await r.json()) as { sessions?: Listed[] } | Listed[]
+    return (Array.isArray(list) ? list : (list.sessions ?? [])).find((s) => s.hostName === 'publisher3' && s.status === 'running')
+  }
+  await until('the switchyard lists the published session', async () => !!(await listed()))
+  const there = (await listed())!
+  expect(there.name).toBe('published-stub')
+  expect(there.agentId).toBe('claude')
+  expect(there.cwd).toBe('publisher3-repo')
+  expect(there.command).toEqual(['claude'])
+  expect(there.hostUser ?? '').toBe('')
+
+  // Share at home mints the link at the switchyard.
+  const share = await pub<{ url: string; remote?: boolean }>('POST', `/api/sessions/${made.body.id}/links`, { role: 'view', label: 'e2e files guest' })
+  expect(share.status).toBe(201)
+  expect(share.body.remote).toBe(true)
+  expect(share.body.url.startsWith(`${syURL}/join/`), share.body.url).toBe(true)
+  const token = share.body.url.slice(`${syURL}/join/`.length)
+
+  await page.goto(`/join/${token}?server=${encodeURIComponent(syURL)}`)
+  await expect(page.getByRole('heading', { name: 'Join published-stub' })).toBeVisible({ timeout: 15_000 })
+  await page.getByRole('textbox', { name: 'Your name' }).fill('e2e files guest')
+  await page.getByRole('button', { name: 'Join session' }).click()
+  await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+  const pane = page.locator('[data-files-mode]').first()
+  await expect(pane.locator(`[data-file-node="${repo3}/README.md"]`)).toBeVisible({ timeout: 30_000 })
+  await expect(pane.locator('[data-files-crumbs] [data-files-crumb]').last()).toHaveText('publisher3-repo')
+  await expect(pane.locator(`[data-files-crumbs] [data-files-crumb="${repo3}"]`)).toHaveCount(1)
+
+  // The owner's Share before the stop: a link minted there, which the dialog keeps for its next open.
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+  await ctx.addInitScript((t) => localStorage.setItem('conductor.workbenchToken', t), publisher.token)
+  const owner = await ctx.newPage()
+  try {
+    await owner.goto(`${publisher.baseURL}/sessions/${made.body.id}`)
+    await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+    const dialog = owner.getByRole('dialog')
+    await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
+    await expect(dialog.locator('[data-link-reach]')).toHaveAttribute('data-link-reach', 'remote')
+    const before = await dialog.locator('[data-created-url]').getAttribute('title')
+    await owner.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+
+    // The operator stops it at the switchyard: the guest is let go, the session runs on at home.
+    const stopped = await fetch(`${syURL}/api/sessions/${there.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${syAdmin}` } })
+    expect(stopped.status).toBe(200)
+    await expect.poll(() => page.locator('[data-transport-state]').first().getAttribute('data-transport-state'), { timeout: 30_000 }).not.toBe('open')
+    const home = await pub<{ session: { status: string } }>('GET', `/api/sessions/${made.body.id}`)
+    expect(home.body.session.status).toBe('running')
+    await owner.locator('[data-inspector] button', { hasText: 'Activity' }).click()
+    await expect(owner.locator('[data-inspector]')).toContainText('no longer shared through the switchyard', { timeout: 30_000 })
+    // Share again, in the same page: a new link, which publishes it again there as a new session.
+    await owner.getByRole('button', { name: 'Share', exact: true }).first().click()
+    await expect(dialog.locator('[data-created-url]')).toBeVisible({ timeout: 30_000 })
+    await expect(dialog.locator('[data-link-reach]')).toHaveAttribute('data-link-reach', 'remote')
+    await expect(dialog.locator('[data-created-url]')).not.toHaveAttribute('title', before ?? '')
+    await expect.poll(async () => (await listed())?.id ?? '', { timeout: 30_000 }).not.toBe(there.id)
+  } finally {
+    await ctx.close()
+  }
+  await pub('DELETE', `/api/sessions/${made.body.id}`)
   await stopServer(publisher.pid)
   publisher = null
 })

@@ -485,6 +485,7 @@ type fakeHost struct {
 	bin       chan []byte         // the server's binary messages (relay envelopes), in order
 	done      chan struct{}       // closed when the connection has ended
 	err       error               // why, once done is closed
+	links     int                 // link requests made, for their ids
 }
 
 func dialFakeHost(t *testing.T, e *testEnv, agentToken string) *fakeHost {
@@ -599,6 +600,23 @@ func (h *fakeHost) expect(t string) map[string]any {
 			h.t.Fatalf("host waiting for %s: nothing came", t)
 		}
 	}
+}
+
+// link has the server mint a share link to the host's session over the
+// host's own connection (link, link_created), as a publishing machine has
+// its links minted, and returns the link's token: on a switchyard, the only
+// way to a link.
+func (h *fakeHost) link(role, label string) string {
+	h.t.Helper()
+	h.links++
+	h.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: fmt.Sprintf("test-%d", h.links), Role: role, Label: label})
+	m := h.expect(proto.HostLinkCreated)
+	u, _ := m["url"].(string)
+	_, token, ok := strings.Cut(u, "/join/")
+	if !ok || token == "" {
+		h.t.Fatalf("link_created %v", m)
+	}
+	return token
 }
 
 // drain returns what the server sends until it has been quiet for idle.

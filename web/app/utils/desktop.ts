@@ -20,8 +20,9 @@ export interface DesktopSettings {
 export function noticeWords(notice: string): { title: string; description: string } | null {
   if (notice === 'publishing') {
     return {
-      title: 'Sessions are shared through the switchyard now',
-      description: 'Share makes a link that works from anywhere, through switchyard.rslabs.net by default. Turn it off under Settings → Switchyard.',
+      title: 'Sessions are published to a switchyard',
+      description:
+        'Each session you start is listed at switchyard.rslabs.net, or the switchyard Settings names, so Share makes a link that works from anywhere. The switchyard mints and checks those links: publish only to one whose operator you trust. Turn it off under Settings → Switchyard.',
     }
   }
   return null

@@ -909,3 +909,65 @@ func TestDisconnectLinkSaysWhyOnceTheSessionEnded(t *testing.T) {
 		t.Fatalf("once ended: %v", subAfter.Reason())
 	}
 }
+
+// The welcome names the session's working directory, from the owner itself,
+// to a viewer whose role may read files: a guest's Files pane roots there,
+// whatever a switchyard lists. A viewer who may read none is not told, and a
+// path past the protocol's bound is left out.
+func TestTheWelcomeNamesTheSessionsFolder(t *testing.T) {
+	welcome := func(fileView string, role Role) map[string]any {
+		t.Helper()
+		s, _ := newLocalWith(t, Options{FileView: fileView})
+		sink := newChanSink(false)
+		if _, err := s.Attach("", role, "", 80, 24, sink); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitFrames(t, 1)
+		m := decodeControl(t, sink.frame(0))
+		if m["t"] != proto.CtlWelcome {
+			t.Fatalf("first frame %v", m)
+		}
+		m["want"] = s.Info().Cwd
+		return m
+	}
+	if m := welcome("view", RoleView); m["cwd"] != m["want"] || m["cwd"] == "" {
+		t.Fatalf("file view for all, a view link: %v", m)
+	}
+	if m := welcome("control", RoleView); m["cwd"] != nil {
+		t.Fatalf("file view for control, a view link: %v", m)
+	}
+	if m := welcome("control", RoleControl); m["cwd"] != m["want"] {
+		t.Fatalf("file view for control, a control link: %v", m)
+	}
+	if m := welcome("off", RoleControl); m["cwd"] != nil {
+		t.Fatalf("file view off: %v", m)
+	}
+	if got := welcomeCwd("/"+strings.Repeat("a", proto.MaxCwd), true); got != "" {
+		t.Fatalf("an over-long folder went in the welcome: %d bytes", len(got))
+	}
+	// The bound is on the folder as the welcome encodes it: two quotes, and
+	// six bytes for each `&`.
+	if got := welcomeCwd("/srv/"+strings.Repeat("a", proto.MaxCwd-7), true); len(got) != proto.MaxCwd-2 {
+		t.Fatalf("a folder at the bound was left out: %d bytes", len(got))
+	}
+	amps := "/srv/" + strings.Repeat(strings.Repeat("&", 200)+"/", 7)
+	if len(amps) > 1500 || welcomeCwd(amps, true) != "" {
+		t.Fatalf("a %d-byte folder that encodes past the bound went in the welcome", len(amps))
+	}
+	// The longest folder a welcome carries keeps it within one CONTROL frame.
+	widest := "/" + strings.Repeat("a", proto.MaxCwd-3)
+	s, _ := newLocalWith(t, Options{FileView: "view"})
+	s.info.Cwd = widest
+	sink := newChanSink(false)
+	if _, err := s.Attach(strings.Repeat("v", 16), RoleControl, "", 80, 24, sink); err != nil {
+		t.Fatal(err)
+	}
+	sink.waitFrames(t, 1)
+	f, err := proto.Decode(sink.frame(0))
+	if err != nil || len(f.Payload) > proto.MaxControl {
+		t.Fatalf("the widest welcome: %d bytes, %v", len(f.Payload), err)
+	}
+	if m := decodeControl(t, sink.frame(0)); m["cwd"] != widest {
+		t.Fatalf("the widest folder was left out: %v", m["t"])
+	}
+}
