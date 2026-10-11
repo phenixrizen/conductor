@@ -379,11 +379,18 @@ export function decodeText(payload: Uint8Array): string {
 /** A save from the editor (design round 12, F6): the parts are at most MAX_WRITE_PART bytes, the file at most 1 MiB. */
 export const MAX_WRITE_PART = 32 * 1024
 export const MAX_WRITE_BYTES = 1024 * 1024
+/** A part's JSON header is at most this many bytes (proto.MaxWriteHeader): past it the owner cannot read the part, nor answer the save. */
+export const MAX_WRITE_HEADER = 4 * 1024
 export interface FileWriteOptions {
   /** The sha256 of the file as it was read: the owner refuses with `changed_on_disk` when the file differs now. */
   baseSha256?: string
   /** Save anyway, over a file changed on disk. */
   force?: boolean
+  /**
+   * Called once when the save has had no answer for 20 s. It goes on waiting while the connection lives (the owner answers every
+   * save, and a relayed one may be slowed on its way), so the page can say it is still on its way.
+   */
+  onSlow?: () => void
 }
 /** How a page saves a file over its terminal's connection: the reply is the FILE frame, kind `written` or `error`. */
 export type FileWriter = (path: string, data: Uint8Array, opts?: FileWriteOptions) => Promise<FileResponse>

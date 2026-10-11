@@ -93,8 +93,11 @@ func (c *addrCounter) acquire(key string, max int) bool {
 // addrBuckets shares one byte bucket among the connections of an address:
 // the open hosts of one address on a switchyard relay under one bound, so
 // holding openHostSessions sessions buys no more relay than one. acquire hands
-// out the address's bucket, made at the rate when the address holds none;
-// release drops it with the last holder, so an address that left costs nothing.
+// out the address's bucket, made at the rate and burst when the address holds
+// none; the viewers of hosted sessions share theirs the same way. After the last
+// holder releases it the bucket is kept until it has refilled, and then
+// dropped, so an address that left soon costs nothing, and one that leaves
+// and comes back finds what it spent still spent rather than a fresh burst.
 type addrBuckets struct {
 	mu   sync.Mutex
 	held map[string]*sharedBucket
@@ -103,9 +106,35 @@ type addrBuckets struct {
 type sharedBucket struct {
 	bucket *byteBucket
 	n      int
+	// waiting says a check is set for when the bucket will be full (forget):
+	// one at a time, however often the address comes and goes meanwhile.
+	waiting bool
 }
 
-func (c *addrBuckets) acquire(key string, bytesPerSecond int) *byteBucket {
+// forget drops sb, which nobody holds, once its bucket is full again: at
+// once when it is, else when it will be, unless it is held again by then.
+// Called with mu held.
+func (c *addrBuckets) forget(key string, sb *sharedBucket) {
+	if sb.waiting {
+		return
+	}
+	wait := sb.bucket.untilFull(time.Now())
+	if wait <= 0 {
+		delete(c.held, key)
+		return
+	}
+	sb.waiting = true
+	time.AfterFunc(wait, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		sb.waiting = false
+		if c.held[key] == sb && sb.n == 0 {
+			c.forget(key, sb)
+		}
+	})
+}
+
+func (c *addrBuckets) acquire(key string, bytesPerSecond, burst int) *byteBucket {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.held == nil {
@@ -113,7 +142,7 @@ func (c *addrBuckets) acquire(key string, bytesPerSecond int) *byteBucket {
 	}
 	sb := c.held[key]
 	if sb == nil {
-		sb = &sharedBucket{bucket: newByteBucket(bytesPerSecond)}
+		sb = &sharedBucket{bucket: newByteBucket(bytesPerSecond, burst)}
 		c.held[key] = sb
 	}
 	sb.n++
@@ -125,7 +154,8 @@ func (c *addrBuckets) release(key string) {
 	defer c.mu.Unlock()
 	if sb := c.held[key]; sb != nil {
 		if sb.n--; sb.n <= 0 {
-			delete(c.held, key)
+			sb.n = 0
+			c.forget(key, sb)
 		}
 	}
 }

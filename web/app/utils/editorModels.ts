@@ -28,6 +28,32 @@ export function forgetModel(path: string): void {
   savedVersions.delete(path)
 }
 
+/**
+ * Each open file's model's version now, as its editor saw it last (noteVersion): a model changes only while its editor is up, so this
+ * holds while the tab is switched away from too. A save completes against the version it sent (savedAt), not the one on screen when
+ * its answer lands: what was typed meanwhile stays, and stays unsaved.
+ */
+const currentVersions = new Map<string, number>()
+
+export function noteVersion(path: string, version: number): void {
+  currentVersions.set(path, version)
+}
+
+/**
+ * A save of path's model at version was written: that version is the saved one (version undefined: the text sent was not the model's,
+ * so the model is forgotten and takes the saved text from the next read). Reports whether the model is unsaved still, edits having
+ * been made since that version.
+ */
+export function savedAt(path: string, version: number | undefined): boolean {
+  if (version === undefined) {
+    forgetModel(path)
+    return false
+  }
+  markSaved(path, version)
+  const now = currentVersions.get(path)
+  return now !== undefined && now !== version
+}
+
 /** "Changed on disk since you opened it · 08:34:10 · codex (Edit). Saving would overwrite that." */
 export function conflictWords(h: Pick<FileHeader, 'mtime' | 'at' | 'by' | 'tool' | 'exists'> | null): string {
   if (!h) return ''

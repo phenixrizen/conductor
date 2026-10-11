@@ -18,8 +18,14 @@ const (
 	writeTimeout = 15 * time.Second
 	helloTimeout = 5 * time.Second
 	readLimit    = 64 << 10
-	pingEvery    = 30 * time.Second
 )
+
+// defaultPingEvery is how often a connection is pinged.
+const defaultPingEvery = 30 * time.Second
+
+// pingEvery is defaultPingEvery, which a server takes when it is made
+// (Server.pingEvery), so a test may shorten it for the servers it makes.
+var pingEvery = defaultPingEvery
 
 // wsSink writes session frames to a viewer WebSocket and translates the close
 // reason into a close code.
@@ -108,9 +114,12 @@ func readFrame(ctx context.Context, c *websocket.Conn, timeout time.Duration) (p
 	return proto.Decode(data)
 }
 
-// keepalive pings the peer until ctx ends.
-func keepalive(ctx context.Context, c *websocket.Conn) {
-	t := time.NewTicker(pingEvery)
+// keepalive pings the peer every `every` until ctx ends or a ping fails.
+func keepalive(ctx context.Context, c *websocket.Conn, every time.Duration) {
+	if every <= 0 {
+		every = defaultPingEvery // a Server made without New
+	}
+	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		select {
@@ -121,6 +130,35 @@ func keepalive(ctx context.Context, c *websocket.Conn) {
 			err := c.Ping(pctx)
 			cancel()
 			if err != nil {
+				return
+			}
+		}
+	}
+}
+
+// keepaliveUntilGone pings the peer every `every` until ctx ends, and calls
+// gone, once, when a ping cannot be written: the connection has failed. A
+// pong that does not come is no such sign, for pongs are read by the
+// connection's reader, which may be held meanwhile (a hosted viewer slowed
+// by its address's budget, or waiting for room in its host's queue); the
+// pings go on. A write that times out closes the connection, and the next
+// ping says so.
+func keepaliveUntilGone(ctx context.Context, c *websocket.Conn, every time.Duration, gone func()) {
+	if every <= 0 {
+		every = defaultPingEvery
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pctx, cancel := context.WithTimeout(ctx, min(writeTimeout, every))
+			err := c.Ping(pctx)
+			cancel()
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+				gone()
 				return
 			}
 		}

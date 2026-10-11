@@ -85,7 +85,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := hs.Info()
-	hc := &hostConnState{base: s.publicBase(r)}
+	hc := &hostConnState{base: s.publicBase(r), ctx: ctx}
 	if open {
 		hc.addr = addr
 	}
@@ -94,10 +94,12 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
 			// One bucket for every open host of the address: the bound is the address's, not each connection's.
-			hc.relay = s.openRelay.acquire(addr, s.cfg.Switchyard.OpenHostRelayKBps*1024)
+			rate := s.cfg.Switchyard.OpenHostRelayKBps * 1024
+			hc.relay = s.openRelay.acquire(addr, rate, s.relayBurst(rate))
 			defer s.openRelay.release(addr)
 		case s.cfg.Switchyard.RelayKBps > 0:
-			hc.relay = newByteBucket(s.cfg.Switchyard.RelayKBps * 1024)
+			rate := s.cfg.Switchyard.RelayKBps * 1024
+			hc.relay = newByteBucket(rate, s.relayBurst(rate))
 		}
 	}
 	s.log.Info("host registered", "session", info.ID, "host", info.HostName, "resumed", resumed, "open", open)
@@ -126,6 +128,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			case o := <-conn.Send:
+				conn.Took(o)
 				var err error
 				if o.Text != nil {
 					err = writeText(ctx, c, o.Text)
@@ -142,12 +145,20 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	go keepalive(ctx, c)
+	go keepalive(ctx, c, s.pingEvery)
 
 	for {
 		typ, data, err := c.Read(ctx)
 		if err != nil {
 			return
+		}
+		// A switchyard's bound on what the host sends: its relayed output,
+		// and its messages too, an answer or a candidate for a viewer among
+		// them. The host waits for it.
+		if hc.relay != nil {
+			if err := hc.relay.take(ctx, len(data)); err != nil {
+				return
+			}
 		}
 		if typ == websocket.MessageBinary {
 			f, err := proto.Decode(data)
@@ -159,12 +170,6 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				c.Close(proto.CloseProtocolError, "bad relay envelope")
 				return
-			}
-			// A switchyard's bound on relayed output: the host waits for it.
-			if hc.relay != nil {
-				if err := hc.relay.take(ctx, len(data)); err != nil {
-					return
-				}
 			}
 			s.relayed.add(len(data))
 			if inner.Type == proto.TypeInput {
@@ -188,7 +193,7 @@ func writeText(ctx context.Context, c *websocket.Conn, b []byte) error {
 
 // hostConnState is what one host connection keeps between its messages:
 // the base its links take, when it last asked for links, and the bucket
-// its relayed output drains (nil without a bound).
+// what it sends drains (nil without a bound).
 type hostConnState struct {
 	base string
 	// addr is an open host's address, for the bound on the links it keeps; "" for a tokened host.
@@ -197,46 +202,93 @@ type hostConnState struct {
 	// updateTimes bounds link_run_update (proto.RunLinkUpdatesPerMinute).
 	updateTimes []time.Time
 	relay       *byteBucket
+	// ctx is the connection's: a wait on relay ends with it.
+	ctx context.Context
 }
 
-// byteBucket is a token bucket of bytes: rate a second, burst at most.
-// take waits, as long as ctx allows, until n bytes are there, so a host
-// that streams more than the bound is slowed rather than cut off: the
-// server reads its connection no faster than the bucket refills, and TCP
+// chargeForward charges, before a viewer is sent it, what a host's message
+// brings the viewer (n bytes) past what it was charged as read: a message
+// encoded anew can be larger than the host sent it. False when the
+// connection ends meanwhile, and the viewer is sent nothing.
+func (hc *hostConnState) chargeForward(n, read int) bool {
+	if hc.relay == nil || n <= read {
+		return true
+	}
+	return hc.relay.take(hc.ctx, n-read) == nil
+}
+
+// byteBucket is a token bucket of bytes: rate a second, burst at most (a
+// relay bound's is Server.relayBurst).
+// take charges n bytes at once, all of them, and then waits, as long as ctx
+// allows, until the bucket has refilled what it owes, so a host (or a
+// viewer) that streams more than the bound is slowed rather than cut off:
+// the server reads its connection no faster than the bucket refills, and TCP
 // does the rest.
-// It is safe to share: the open hosts of one address take from one bucket.
+// It is safe to share: the open hosts of one address take from one bucket,
+// and so do the viewers of one address (Config.ViewerRelayKBps). Since each
+// take is charged as it comes, takes are served in their order, whatever
+// their sizes: a large one never waits behind small ones that keep coming.
+// One that is cancelled while it waits stays charged: its bytes were read.
 type byteBucket struct {
 	mu          sync.Mutex
 	rate, burst float64
-	tokens      float64
-	last        time.Time
+	// tokens is what may be taken without waiting; below zero, what the
+	// takes so far owe.
+	tokens float64
+	last   time.Time
 }
 
-func newByteBucket(bytesPerSecond int) *byteBucket {
-	r := float64(bytesPerSecond)
-	return &byteBucket{rate: r, burst: 2 * r, tokens: 2 * r, last: time.Now()}
+func newByteBucket(bytesPerSecond, burst int) *byteBucket {
+	return &byteBucket{rate: float64(bytesPerSecond), burst: float64(burst), tokens: float64(burst), last: time.Now()}
+}
+
+// relayBurstFloor is the least burst a relay bound allows: what a person's
+// tabs ask for or send together, at most, passes at once whatever the rate,
+// for the browser gives up on a file request after 20 s (and calls a save
+// slow then; docs/protocol.md, File saves). That is
+// three of the largest frames, a file of proto.MaxFileBytes read or saved
+// with its header, and room besides. A server takes it when it is made
+// (Server.relayBurstFloor), so a test may lower it for the servers it makes.
+var relayBurstFloor = 4 << 20
+
+// relayBurst is the burst of a relay bound of rate bytes a second: twice the
+// rate, and never less than the floor. The rate is what the bound allows
+// over time; the burst, what a person may ask for at once.
+func (s *Server) relayBurst(rate int) int {
+	return max(2*rate, s.relayBurstFloor)
+}
+
+// refill brings tokens up to now. Called with mu held.
+func (b *byteBucket) refill(now time.Time) {
+	b.tokens = min(b.burst, b.tokens+now.Sub(b.last).Seconds()*b.rate)
+	b.last = now
 }
 
 func (b *byteBucket) take(ctx context.Context, n int) error {
-	for {
-		b.mu.Lock()
-		now := time.Now()
-		b.tokens = min(b.burst, b.tokens+now.Sub(b.last).Seconds()*b.rate)
-		b.last = now
-		need := min(float64(n), b.burst)
-		if b.tokens >= need {
-			b.tokens -= need
-			b.mu.Unlock()
-			return nil
-		}
-		wait := time.Duration((need - b.tokens) / b.rate * float64(time.Second))
-		b.mu.Unlock()
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	b.mu.Lock()
+	b.refill(time.Now())
+	b.tokens -= float64(n)
+	owed := -b.tokens
+	b.mu.Unlock()
+	if owed <= 0 {
+		return nil
 	}
+	t := time.NewTimer(time.Duration(owed / b.rate * float64(time.Second)))
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// untilFull is how long the bucket takes, from now, to hold its burst again.
+func (b *byteBucket) untilFull(now time.Time) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill(now)
+	return time.Duration((b.burst - b.tokens) / b.rate * float64(time.Second))
 }
 
 // handleHostMessage dispatches a JSON message from the host; false is fatal.
@@ -251,13 +303,17 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil || m.SDP == "" {
 			return false
 		}
-		hs.HostAnswer(m.ViewerID, m.SDP)
+		if f, err := signal.AnswerFrame(m.SDP); err == nil && hc.chargeForward(len(f), len(data)) {
+			hs.HostSignal(m.ViewerID, f)
+		}
 	case proto.HostICE:
 		var m proto.ViewerICE
 		if json.Unmarshal(data, &m) != nil || len(m.Candidate.Candidate) > proto.MaxICECandidate {
 			return false
 		}
-		hs.HostICE(m.ViewerID, m.Candidate)
+		if f, err := signal.ICEFrame(m.Candidate); err == nil && hc.chargeForward(len(f), len(data)) {
+			hs.HostSignal(m.ViewerID, f)
+		}
 	case proto.HostStatus:
 		var m proto.HostStatusMsg
 		if json.Unmarshal(data, &m) != nil {
@@ -281,7 +337,9 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil {
 			return false
 		}
-		hs.HostViewerError(m.ViewerID, m.Code, m.Message)
+		if hc.chargeForward(len(proto.NewError(m.Code, m.Message)), len(data)) {
+			hs.HostViewerError(m.ViewerID, m.Code, m.Message)
+		}
 	case proto.HostViewerClose:
 		var m proto.ViewerRef
 		if json.Unmarshal(data, &m) != nil {

@@ -137,9 +137,13 @@ type Switchyard struct {
 	// refused.
 	Relay *bool `json:"relay,omitempty"`
 	// RelayKBps bounds what one host connection may send through the relay,
-	// in kilobytes a second (the host's output to all of its viewers; a
-	// burst of twice that is allowed): a public switchyard's protection
-	// against a session that streams. 0, the default, is no bound.
+	// in kilobytes a second (the host's output to all of its viewers, and
+	// its messages, the answers and candidates for its viewers among them):
+	// a public switchyard's protection against a session that streams. A
+	// burst of twice that is allowed, never less than 4 MiB, so that what a
+	// person's tabs ask for at once (three of the largest files a viewer
+	// reads) passes at once. 0, the default, is no bound. What viewers send
+	// hosts is bounded by Config.ViewerRelayKBps.
 	RelayKBps int `json:"relayKBps,omitempty"`
 	// AllowedOrigins are the browser origins that may fetch the join route
 	// and open a hosted session's WebSocket from another page, as host
@@ -160,10 +164,12 @@ type Switchyard struct {
 	// OpenHostRegistrationsPerMinute bounds how often one address may
 	// register as an open host (6 a minute by default).
 	OpenHostRegistrationsPerMinute int `json:"openHostRegistrationsPerMinute,omitempty"`
-	// OpenHostRelayKBps bounds what the open hosts of one address relay,
-	// all of them together (128 KiB/s by default): one bucket per address,
-	// shared by its connections, with a burst of twice the rate. 0 falls
-	// back to RelayKBps, which is per connection.
+	// OpenHostRelayKBps bounds what the open hosts of one address relay
+	// (as RelayKBps counts it), all of them together (128 KiB/s by
+	// default): one bucket per address,
+	// shared by its connections, with a burst of twice the rate and never
+	// less than 4 MiB, as RelayKBps has. 0 falls back to RelayKBps, which is
+	// per connection.
 	OpenHostRelayKBps int `json:"openHostRelayKBps,omitempty"`
 	// OpenHostLinks bounds the links the open hosts of one address keep on
 	// the switchyard at a time (32 by default): links outlive restarts, so
@@ -331,6 +337,15 @@ type Config struct {
 	ICEServers []ICEServer `json:"iceServers"`
 	// RelayTimeoutMs is how long a viewer waits for a data channel before relaying.
 	RelayTimeoutMs int `json:"relayTimeoutMs"`
+	// ViewerRelayKBps bounds what the viewers of one address send hosted
+	// sessions' hosts through this server, all of them together, in KiB a
+	// second (128 by default): relayed frames and signaling alike, one
+	// bucket per address with a burst of twice the rate, and never less
+	// than 4 MiB, so that three saves of the largest file the editor saves
+	// pass at once. A viewer past it is slowed, its connection read no
+	// faster than the bucket refills. It holds on a switchyard and on a
+	// plain server alike; 0 is no bound.
+	ViewerRelayKBps int `json:"viewerRelayKBps"`
 	// EnvPassthrough lists extra environment variables copied into PTYs.
 	EnvPassthrough []string `json:"envPassthrough"`
 	// FileView controls which roles may read session files.
@@ -408,6 +423,7 @@ func Defaults() *Config {
 		ExitedRetention:      Duration(10 * time.Minute),
 		ICEServers:           []ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}},
 		RelayTimeoutMs:       8000,
+		ViewerRelayKBps:      128,
 		FileView:             FileViewView,
 		FileEdit:             FileEditControl,
 		Reach:                Reach{Mode: ReachAuto, PublicPort: 443},
@@ -538,6 +554,7 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 		"CONDUCTOR_MAX_SESSIONS":            &cfg.MaxSessions,
 		"CONDUCTOR_MAX_VIEWERS_PER_SESSION": &cfg.MaxViewersPerSession,
 		"CONDUCTOR_RELAY_TIMEOUT_MS":        &cfg.RelayTimeoutMs,
+		"CONDUCTOR_VIEWER_RELAY_KBPS":       &cfg.ViewerRelayKBps,
 	} {
 		if err := num(key, dst); err != nil {
 			return err
@@ -727,6 +744,9 @@ func (c *Config) Validate() error {
 	}
 	if c.RelayTimeoutMs < 500 || c.RelayTimeoutMs > 120000 {
 		errs = append(errs, errors.New("relayTimeoutMs must be between 500 and 120000"))
+	}
+	if c.ViewerRelayKBps < 0 || c.ViewerRelayKBps > 1<<20 {
+		errs = append(errs, errors.New("viewerRelayKBps must be between 0 and 1048576"))
 	}
 	if time.Duration(c.ExitedRetention) < 0 {
 		errs = append(errs, errors.New("exitedRetention must not be negative"))

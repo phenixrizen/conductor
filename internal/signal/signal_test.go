@@ -30,6 +30,7 @@ func drainText(t *testing.T, conn *HostConn, want string) {
 	t.Helper()
 	select {
 	case o := <-conn.Send:
+		conn.Took(o)
 		if o.Text == nil {
 			t.Fatalf("expected text %s, got binary", want)
 		}

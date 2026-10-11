@@ -183,9 +183,36 @@ sends `relay`. A switchyard without a relay (`switchyard.relay: false`)
 answers a CONTROL `error{code:"relay_off"}` instead and keeps the connection,
 so the viewer stays on its WebRTC attempt; such a switchyard also refuses a
 host that registers with `relayOnly` (close 1002, `relay_off`). With
-`switchyard.relayKBps` set, a host's relayed output is read no faster than
-that many KiB a second (a burst of twice it): the host is slowed by its own
-connection, and every frame still arrives whole and in order. After `relay_ok` the same WebSocket carries terminal frames: the
+`switchyard.relayKBps` set, a host's relayed output, and its messages with
+it (each counted as read, or as the server forwards it to a viewer when
+that is larger, an answer encoded anew, before the viewer is sent it), is
+read no faster than that many
+KiB a second: the host is slowed by
+its own connection, and every frame still arrives whole and in order. The
+other way, on any server, what a hosted session's viewers send (SIGNAL and
+relayed frames) is read under one budget per address, `viewerRelayKBps`
+(128 KiB a second by default), shared by every hosted viewer of the
+address and kept after the last one leaves until it has refilled: a viewer
+past it is slowed the same way, and each frame is charged whole, in the
+order the frames come, as the larger of what the viewer sent and what goes
+to the host for it (a relayed frame in its envelope, an offer or a
+candidate as encoded for the host). Each of these bounds, and
+`switchyard.openHostRelayKBps` (the open hosts of one address together),
+allows a burst of twice its rate and never less than 4 MiB: what a
+person's tabs ask for or send at once, three files of 1 MiB read or saved
+among it, passes at once whatever the rate, where the browser gives up on
+a file request after 20 s (and says a save is slow then); the rate bounds
+what goes over time.
+What waits for a host's connection is bounded in bytes
+as well as in messages (8 MiB): the viewers' frames, and the server's
+`viewer_join` and `viewer_leave` for them, fill at most 7 MiB of it and
+then wait in their own read loops, in the order they came, for the host
+to take some (a viewer whose connection fails meanwhile is let go), which
+neither holds up the host's messages nor closes its connection; a server
+message that finds the whole queue full closes the connection, as a host
+too slow to keep. What waits for a viewer is bounded at 16 MiB beside its
+2048 frames: past either the viewer is closed as too slow (1008,
+`slow_consumer`). After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
 View-role INPUT, FILE_WRITE, `resize`, `submit`, `chat_send` and the `nvim_*` messages are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent. A control connection's FILE_WRITE is carried, so the editor's saves work on the relay the same as a file read does (the editor's Neovim is the owner's own window only, so a link's controller edits with the editor's keys and saves).
@@ -719,7 +746,9 @@ FILE frame's layout in the other direction: the header
 `{reqId, path, offset, total, baseSha256?, force?}` and the bytes
 `[offset, offset+len)` of a file of `total` bytes (at most 1 MiB), in parts of
 at most 32 KiB (under a data channel's message cap), in order, one save at a
-time per connection; a save whose next part has not come for 30 s is dropped.
+time per connection; a save's next part is waited for however long it takes
+(a relayed save's parts can be slowed on their way), and an unfinished save
+goes when the connection's next save starts, or with the connection.
 When the last part arrives the owner resolves `path` as a read does (the same
 deny list), and refuses with a FILE frame of kind `error` and code
 `changed_on_disk` when the file's sha256 is not `baseSha256` (the read's),
@@ -736,6 +765,20 @@ default, or `off`; `CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`) is the
 same that offers Neovim, and the welcome's `fileEdit` says whether this
 connection may save. The switchyard drops FILE_WRITE from view-role
 connections.
+
+Since the owner answers every save, written or refused, the browser never
+gives a save up while its connection lives: one given up on could still be
+written, its answer lost and the editor left on the old `sha256`, so the
+next save would be refused as `changed_on_disk`. After 20 s without an
+answer the editor says the save goes on (a relayed save can be slowed on
+its way: the relay's bounds, a slow link, a host that reads slowly), and the
+answer, when it lands, is taken as ever; a connection that closes ends the
+save with an error. The answer marks saved the text that was sent: what was
+typed meanwhile stays, unsaved, and a tab in front by then keeps its own
+changes. Since every save sent is waited for, the browser sends none the
+owner could not read: one whose part's header would pass 4 KiB (a very long
+path) is refused before anything is sent. A file request still gives up
+after 20 s.
 
 ## HTTP API
 

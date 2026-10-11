@@ -60,7 +60,7 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	case *session.Local:
 		s.serveLocalViewer(r.Context(), c, drv, role, p.linkID(), p.admin, check)
 	case *signal.HostedSession:
-		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID(), check)
+		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID(), check, clientKey(r))
 	default:
 		c.Close(websocket.StatusInternalError, "unsupported session kind")
 	}
@@ -93,7 +93,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 		return
 	}
 	defer local.Detach(sub)
-	go keepalive(sink.ctx, c)
+	go keepalive(sink.ctx, c, s.pingEvery)
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
@@ -319,14 +319,58 @@ func (s *Server) linkLabel(linkID string) string {
 }
 
 // serveHostedViewer brokers WebRTC signaling for a hosted session and relays
-// frames through the host connection when the viewer asks for it.
-func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error)) {
+// frames through the host connection when the viewer asks for it. What the
+// viewer sends is read under its address's budget (cfg.ViewerRelayKBps),
+// one bucket for every hosted viewer of the address, as the open hosts of
+// one address share theirs: past it the viewer is slowed, its connection
+// read no faster than the bucket refills. Each frame is charged the larger
+// of what the viewer sent and what it sends the host (a relayed frame in its
+// envelope, a message encoded anew).
+func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
+	sink := newWSSink(c)
+	defer sink.cancel()
+	var budget *byteBucket
+	if kbps := s.cfg.ViewerRelayKBps; kbps > 0 {
+		budget = s.viewerRelay.acquire(addr, kbps*1024, s.relayBurst(kbps*1024))
+		defer s.viewerRelay.release(addr)
+	}
+	// credit is what the frame in hand was charged as it was read and what
+	// it sends the host has not used yet: a message to the host is charged
+	// only what it brings past it. Read and charged on the read loop alone,
+	// which is where the viewer sends the host anything.
+	var credit int
+	var charge func(n int) error
+	// chargeJoin charges the viewer's join and leave, on the join's own
+	// goroutine (the read loop's credit is not its), until the viewer closes.
+	var chargeJoin func(stop <-chan struct{}, n int) error
+	if budget != nil {
+		charge = func(n int) error {
+			use := min(credit, n)
+			credit -= use
+			if n == use {
+				return nil
+			}
+			return budget.take(sink.ctx, n-use)
+		}
+		chargeJoin = func(stop <-chan struct{}, n int) error {
+			ctx, cancel := context.WithCancel(sink.ctx)
+			defer cancel()
+			go func() {
+				select {
+				case <-stop:
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+			return budget.take(ctx, n)
+		}
+	}
 	viewerID := session.NewID()
-	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check})
+	v, err := hs.AddViewerWith(signal.ViewerOptions{ID: viewerID, Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Authorize: check, Charge: charge, ChargeJoin: chargeJoin})
 	if err != nil {
 		switch {
 		case errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrSessionEnded):
-			newWSSink(c).Close(err)
+			sink.Close(err)
 		case errors.Is(err, signal.ErrTooManyViewer):
 			c.Close(proto.CloseTooManyViewers, "too many viewers")
 		default:
@@ -335,8 +379,6 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		return
 	}
 	defer hs.RemoveViewer(v)
-	sink := newWSSink(c)
-	defer sink.cancel()
 
 	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
 	for _, srv := range s.cfg.ICEServers {
@@ -361,17 +403,31 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		return
 	}
 	// Writer: drain frames queued by the host side. pumped closes when Pump
-	// has closed the sink.
+	// has closed the sink, or given up on a connection that failed; the read
+	// loop's waits (the budget, readFrame) end with it.
 	pumped := make(chan struct{})
 	go func() {
 		defer close(pumped)
 		v.Pump(sink)
+		sink.cancel()
 	}()
-	go keepalive(sink.ctx, c)
+	// A connection that fails while nothing is written to it is found by
+	// its pings: the viewer is let go then, though its read loop is held.
+	go keepaliveUntilGone(sink.ctx, c, s.pingEvery, func() { hs.RemoveViewer(v) })
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
 			return
+		}
+		// Every frame is counted, whatever becomes of it, before the next
+		// is read; a frame waits for the host's queue in its turn after
+		// (signal.HostConn's share for viewers), so neither wait holds up
+		// the host's connection or another viewer's.
+		if budget != nil {
+			credit = 1 + len(f.Payload)
+			if budget.take(sink.ctx, credit) != nil {
+				return
+			}
 		}
 		switch f.Type {
 		case proto.TypeSignal:

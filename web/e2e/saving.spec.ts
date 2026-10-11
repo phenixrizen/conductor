@@ -178,3 +178,148 @@ test("a file in a repository's .git opens read only; the working tree beside it 
     await api.stopSession(s.id)
   }
 })
+
+// A save whose answer is slow (a relayed one slowed on its way) is not given
+// up on: the file is written, the bar says the save goes on, and when the
+// answer lands what was sent is saved, on the new hash, so the next save
+// goes through. What was typed meanwhile stays, unsaved, and a tab in
+// front when the answer lands keeps its own changes. The page holds the
+// answer back here, as a slow relay would.
+test('a save that answers late is still on its way, then saved', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-saving-late')
+  mkdirSync(cwd, { recursive: true })
+  const file = join(cwd, 'notes.txt')
+  writeFileSync(file, 'alpha\n')
+  const other = join(cwd, 'other.txt')
+  writeFileSync(other, 'one\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving late', cwd })
+  // While window.__holdWrittenMs is set, a FILE frame answering a save as written reaches the page that much later.
+  await page.addInitScript(() => {
+    const Native = window.WebSocket
+    class Holding extends Native {
+      override set onmessage(fn: ((ev: MessageEvent) => void) | null) {
+        super.onmessage = fn && ((ev: MessageEvent) => {
+          const hold = (window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs
+          if (hold && ev.data instanceof ArrayBuffer) {
+            const b = new Uint8Array(ev.data)
+            if (b[0] === 0x06 && b.length > 13) {
+              const len = new DataView(ev.data).getUint32(9)
+              const header = JSON.parse(new TextDecoder().decode(b.subarray(13, 13 + len))) as { kind?: string }
+              if (header.kind === 'written') {
+                setTimeout(() => fn.call(this, ev), hold)
+                return
+              }
+            }
+          }
+          fn.call(this, ev)
+        })
+      }
+      override get onmessage(): ((ev: MessageEvent) => void) | null {
+        return super.onmessage
+      }
+    }
+    window.WebSocket = Holding
+  })
+  const area = page.locator('[data-editor-area]')
+  const lines = area.locator('.monaco-editor .view-lines')
+  const typeAtEnd = async (text: string) => {
+    await lines.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type(text)
+  }
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await pane.locator('[data-files-section="explorer"]').click()
+    await pane.locator(`[data-file-node="${file}"]`).click()
+    await expect(lines).toBeVisible({ timeout: 30_000 })
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 22_000))
+    await typeAtEnd('beta\n')
+    await page.keyboard.press('Control+s')
+    // Written at once on the session's machine; the page hears nothing for 22 s.
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\n')
+    // After 20 s the bar says the save goes on, and nothing says it failed.
+    const slow = area.locator('[data-editor-save-slow]')
+    await expect(slow).toBeVisible({ timeout: 25_000 })
+    await expect(slow).toContainText('Still saving')
+    await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+    // Typed while the answer is on its way.
+    await typeAtEnd('more\n')
+    // The answer lands: saved, the bar gone; what was typed meanwhile is
+    // still there, and still unsaved.
+    await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
+    await expect(slow).toHaveCount(0)
+    await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
+    await page.waitForTimeout(500)
+    await expect(lines).toContainText('more')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+    // The tab took the new hash: the next save is no conflict.
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
+    await page.keyboard.press('Control+s')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
+    await expect(area.locator('[data-editor-conflict]')).toHaveCount(0)
+    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\nmore\n')
+    // Another tab with changes of its own is in front when a save's answer
+    // lands: its changes stay, unsaved, and the saved tab is saved.
+    await pane.locator(`[data-file-node="${other}"]`).click()
+    await expect(lines).toContainText('one', { timeout: 30_000 })
+    await typeAtEnd('two\n')
+    const tabOf = (path: string) => area.locator(`[data-editor-tab]:has(button[title="${path}"])`)
+    await expect(tabOf(other).locator('[data-editor-dirty]')).toHaveCount(1)
+    await tabOf(file).locator('button').first().click()
+    await expect(lines).toContainText('more', { timeout: 15_000 })
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 3_000))
+    await typeAtEnd('gamma\n')
+    await page.keyboard.press('Control+s')
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\nmore\ngamma\n')
+    await tabOf(other).locator('button').first().click()
+    await expect(lines).toContainText('two', { timeout: 15_000 })
+    await expect(tabOf(file).locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
+    await page.waitForTimeout(500)
+    await expect(tabOf(other).locator('[data-editor-dirty]')).toHaveCount(1)
+    await expect(lines).toContainText('two')
+    expect(readFileSync(other, 'utf8')).toBe('one\n')
+    // Saved anyway from the compare view, then back to editing and typing
+    // before the answer lands: what was typed stays, unsaved.
+    await tabOf(file).locator('button').first().click()
+    await expect(lines).toContainText('gamma', { timeout: 15_000 })
+    writeFileSync(file, 'outside\n')
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
+    await typeAtEnd('delta\n')
+    await page.keyboard.press('Control+s')
+    await expect(area.locator('[data-editor-conflict]')).toBeVisible({ timeout: 15_000 })
+    await area.locator('[data-editor-compare]').click()
+    await expect(area.locator('[data-editor-comparing]')).toBeVisible({ timeout: 15_000 })
+    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 3_000))
+    await area.locator('[data-editor-save-anyway]').click()
+    await area.getByRole('button', { name: 'Back to editing' }).click()
+    await typeAtEnd('epsilon\n')
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\nmore\ngamma\ndelta\n')
+    await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
+    await page.waitForTimeout(500)
+    await expect(lines).toContainText('epsilon')
+    await expect(tabOf(file).locator('[data-editor-dirty]')).toHaveCount(1)
+    // Saved, typed on, and closed with Don't save before the answer lands:
+    // what was typed is gone, and the file opens again as it is on disk.
+    await typeAtEnd('zeta\n')
+    await page.keyboard.press('Control+s')
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toContain('zeta')
+    await typeAtEnd('eta\n')
+    await tabOf(file).locator('[data-editor-close]').click()
+    const prompt = page.locator('[role="dialog"]', { hasText: 'Save notes.txt?' })
+    await expect(prompt).toBeVisible()
+    await prompt.locator('[data-editor-discard]').click()
+    await expect(tabOf(file)).toHaveCount(0)
+    await page.waitForTimeout(4_000)
+    await pane.locator(`[data-file-node="${file}"]`).click()
+    await expect(lines).toContainText('zeta', { timeout: 30_000 })
+    await page.waitForTimeout(500)
+    await expect(lines).not.toContainText('zetaeta')
+    await expect(tabOf(file).locator('[data-editor-dirty]')).toHaveCount(0)
+    expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\nmore\ngamma\ndelta\nepsilon\nzeta\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

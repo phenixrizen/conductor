@@ -14,16 +14,16 @@ import (
 // Saving a file from the editor (design round 12, F6): a controller on a
 // session whose FileEdit allows it sends the file in parts (TypeFileWrite),
 // in order, one save at a time per connection; the last part writes the
-// file, unless it changed on disk since the controller read it.
-
-// writeStale drops a save whose next part has not come for this long.
-const writeStale = 30 * time.Second
+// file, unless it changed on disk since the controller read it. A save's
+// next part is waited for however long it takes (a relayed save's parts can
+// be slowed on their way, and the browser waits for every save's answer): an
+// unfinished save goes when the connection's next save starts, or with the
+// connection.
 
 type pendingWrite struct {
 	reqID string
 	h     proto.FileWrite
 	buf   []byte
-	at    time.Time
 }
 
 func sha256Hex(b []byte) string {
@@ -59,7 +59,7 @@ func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 	}
 	sub.writeMu.Lock()
 	w := sub.write
-	if w == nil || w.reqID != h.ReqID || time.Since(w.at) > writeStale {
+	if w == nil || w.reqID != h.ReqID {
 		if h.Offset != 0 {
 			sub.write = nil
 			sub.writeMu.Unlock()
@@ -76,7 +76,6 @@ func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 		return
 	}
 	w.buf = append(w.buf, part...)
-	w.at = time.Now()
 	done := int64(len(w.buf)) == w.h.Total
 	if done {
 		sub.write = nil
