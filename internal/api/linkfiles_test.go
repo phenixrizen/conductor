@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -296,4 +297,189 @@ func TestALinkGoneAsItIsMadeIsNotKept(t *testing.T) {
 		}
 	}
 	mintHostLink(t, host, "r1")
+}
+
+// linkAnswer is the switchyard's answer to the host's link request id:
+// link_created or an error.
+func linkAnswer(t *testing.T, h *fakeHost, id string) map[string]any {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case m := <-h.msgs:
+			if m["requestId"] == id {
+				return m
+			}
+		case <-timeout:
+			t.Fatalf("no answer to %s", id)
+		}
+	}
+}
+
+// ownerOf is the instance a hosted session was registered under, as the switchyard keeps it.
+func ownerOf(t *testing.T, e *testEnv, sessionID string) string {
+	t.Helper()
+	d, ok := e.srv.hosts.Get(sessionID)
+	if !ok {
+		t.Fatalf("no hosted session %s", sessionID)
+	}
+	return d.Owner()
+}
+
+// leave closes the host's connection and waits until the switchyard has seen it go.
+func leave(t *testing.T, e *testEnv, h *fakeHost) {
+	t.Helper()
+	d, ok := e.srv.hosts.Get(h.sessionID)
+	if !ok {
+		t.Fatalf("no hosted session %s", h.sessionID)
+	}
+	h.c.Close(websocket.StatusNormalClosure, "")
+	<-h.done
+	deadline := time.Now().Add(5 * time.Second)
+	for d.Connected() {
+		if time.Now().After(deadline) {
+			t.Fatal("the switchyard never saw the host go")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// awayFor makes the host instance owner look gone since d ago.
+func awayFor(e *testEnv, owner string, d time.Duration) {
+	k := e.srv.keeper
+	k.mu.Lock()
+	k.seen[owner] = time.Now().Add(-d)
+	k.mu.Unlock()
+}
+
+// An open host's kept links hold their places in its address's count while
+// it may still come back. Once it has been gone longer than a reconnect
+// takes, another host of the address with no room left gets a link in
+// place of the oldest of them, which is ended: it opens nothing and its
+// file goes. Its other link still waits for its host.
+func TestAGoneOpenHostsLinksGiveTheirPlacesUp(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, func(c *config.Config) { c.Switchyard.OpenHostLinks = 2 })
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	oldest, oldestToken := mintHostLink(t, host, "r1")
+	newer, newerToken := mintHostLink(t, host, "r2")
+	owner := ownerOf(t, e, host.sessionID)
+	leave(t, e, host)
+	e.srv.hosts.Expire(time.Now().Add(time.Hour))
+
+	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
+	other.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o1", Role: "view"})
+	if m := linkAnswer(t, other, "o1"); m["code"] != "link_refused" {
+		t.Fatalf("while the first host may still come back: %v", m)
+	}
+	awayFor(e, owner, time.Hour)
+	other.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o2", Role: "view"})
+	m := linkAnswer(t, other, "o2")
+	if m["t"] != proto.HostLinkCreated {
+		t.Fatalf("with the first host gone an hour: %v", m)
+	}
+	u := m["url"].(string)
+	if code, out := joinStatus(t, e, u[strings.LastIndex(u, "/")+1:]); code != http.StatusOK {
+		t.Fatalf("the new link: %d %v", code, out)
+	}
+	if code, out := joinStatus(t, e, oldestToken); code != http.StatusNotFound {
+		t.Fatalf("the link that gave its place: %d %v", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "links", oldest+".json")); !os.IsNotExist(err) {
+		t.Fatalf("its file stays: %v", err)
+	}
+	if code, out := joinStatus(t, e, newerToken); code != http.StatusServiceUnavailable {
+		t.Fatalf("the gone host's other link: %d %v", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "links", newer+".json")); err != nil {
+		t.Fatalf("its file: %v", err)
+	}
+}
+
+// A host that comes back finds its kept links as it left them, however long
+// it was gone, while no other host of its address needed their places.
+func TestAHostBackFindsItsKeptLinks(t *testing.T) {
+	e := keptSwitchyard(t, filepath.Join(t.TempDir(), "data"), func(c *config.Config) { c.Switchyard.OpenHostLinks = 2 })
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	a, _ := mintHostLink(t, host, "r1")
+	b, token := mintHostLink(t, host, "r2")
+	owner := ownerOf(t, e, host.sessionID)
+	leave(t, e, host)
+	e.srv.hosts.Expire(time.Now().Add(time.Hour))
+	awayFor(e, owner, 6*24*time.Hour)
+	e.srv.sweepLinks(time.Now())
+
+	back, reg := dialFakeHostWith(t, e, hi, hs, "")
+	links, _ := reg["links"].([]any)
+	if back.sessionID != host.sessionID || len(links) != 2 || !slices.Contains(links, any(a)) || !slices.Contains(links, any(b)) {
+		t.Fatalf("back as %s (was %s), links %v", back.sessionID, host.sessionID, reg["links"])
+	}
+	if code, out := joinStatus(t, e, token); code != http.StatusOK {
+		t.Fatalf("a link after its host is back: %d %v", code, out)
+	}
+	// Back, it holds its places again: another host of the address has no room.
+	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, proto.HostSession{Name: "other", AgentID: "cat", Command: []string{"cat"}, Cwd: e.root, Cols: 80, Rows: 24, LocalID: "2"}, "")
+	awayFor(e, owner, time.Hour)
+	other.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o1", Role: "view"})
+	if m := linkAnswer(t, other, "o1"); m["code"] != "link_refused" {
+		t.Fatalf("the places of a connected host's links: %v", m)
+	}
+}
+
+// The sweep leaves the kept links of a connected host alone however long it
+// has been connected, and takes them once it has been gone linkOrphanAfter.
+func TestTheSweepKeepsAConnectedHostsLinks(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, nil)
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "Bearer test-host-token")
+	id, token := mintHostLink(t, host, "r1")
+	later := time.Now().Add(linkOrphanAfter + time.Hour)
+	e.srv.sweepLinks(later)
+	if code, out := joinStatus(t, e, token); code != http.StatusOK {
+		t.Fatalf("a connected host's link after the sweep: %d %v", code, out)
+	}
+	leave(t, e, host)
+	e.srv.sweepLinks(time.Now().Add(linkOrphanAfter - time.Hour))
+	if code, out := joinStatus(t, e, token); code != http.StatusOK {
+		t.Fatalf("a link whose host has been gone less than %v: %d %v", linkOrphanAfter, code, out)
+	}
+	e.srv.sweepLinks(time.Now().Add(linkOrphanAfter + time.Hour))
+	if code, _ := joinStatus(t, e, token); code != http.StatusNotFound {
+		t.Fatalf("a link whose host has been gone %v: %d", linkOrphanAfter, code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "links", id+".json")); !os.IsNotExist(err) {
+		t.Fatalf("its file stays: %v", err)
+	}
+}
+
+// After a restart the restored links hold their places for their hosts as
+// long as a reconnect takes, counted from the start, then give them up as
+// a gone host's do.
+func TestRestoredLinksHoldTheirPlacesForAWhile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	limit := func(c *config.Config) { c.Switchyard.OpenHostLinks = 1 }
+	a := keptSwitchyard(t, dir, limit)
+	hi, hs := instanceHost(a, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, a, hi, hs, "")
+	_, token := mintHostLink(t, host, "r1")
+	owner := ownerOf(t, a, host.sessionID)
+	leave(t, a, host)
+
+	b := keptSwitchyard(t, dir, limit)
+	other, _ := dialFakeHostWith(t, b, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
+	other.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o1", Role: "view"})
+	if m := linkAnswer(t, other, "o1"); m["code"] != "link_refused" {
+		t.Fatalf("just after the restart: %v", m)
+	}
+	awayFor(b, owner, time.Hour)
+	other.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o2", Role: "view"})
+	if m := linkAnswer(t, other, "o2"); m["t"] != proto.HostLinkCreated {
+		t.Fatalf("with the restored link's host away an hour: %v", m)
+	}
+	if code, _ := joinStatus(t, b, token); code != http.StatusNotFound {
+		t.Fatalf("the restored link that gave its place: %d", code)
+	}
 }

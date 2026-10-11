@@ -367,7 +367,12 @@ starts; a Conductor publishing to a switchyard makes one for its life and
 uses each session's own id. The publishing server keeps its records of the
 links minted for a session while `registered.links` (then `link_created` and
 `link_revoked`) says the switchyard holds them, and, with an older
-switchyard that says nothing, only while the session keeps its id.
+switchyard that says nothing, only while the session keeps its id. A
+switchyard holds a host's links while any of its instance's connections
+is up, and for seven days after the last one ends; an open host's link
+also gives its place in its address's count (`switchyard.openHostLinks`)
+to a new link of that address that has no other once its host has been
+gone five minutes, and is ended (`registered.links` leaves it out).
 
 ## Attention
 

@@ -89,7 +89,6 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	if open {
 		hc.addr = addr
 	}
-	s.sawHost(hs.Owner())
 	if s.cfg.Switchyard.Enabled {
 		switch {
 		case open && s.cfg.Switchyard.OpenHostRelayKBps > 0:
@@ -107,6 +106,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		hs.HostDisconnected(conn)
 		s.log.Info("host disconnected", "session", info.ID)
 	}()
+	// The host's kept links wait for it while it is connected, from before
+	// it is told which the switchyard holds; its time away starts as this
+	// connection ends (before the session shows it gone).
+	defer s.hostUp(hs.Owner())()
 
 	ice := make([]proto.ICEServer, 0, len(s.cfg.ICEServers))
 	for _, srv := range s.cfg.ICEServers {
