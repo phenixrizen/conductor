@@ -332,7 +332,8 @@ let savedTimer: ReturnType<typeof setTimeout> | undefined
 onBeforeUnmount(() => clearTimeout(savedTimer))
 const saveError = ref('')
 const conflict = ref<{ tabId: string; header: FileHeader } | null>(null)
-const compare = ref<{ tabId: string; disk: string; mine: string } | null>(null)
+// mine is the editor's text as Compare opened, and version its model's version then: a save from the compare view saves that version.
+const compare = ref<{ tabId: string; disk: string; mine: string; version?: number } | null>(null)
 const closing = ref<{ ids: string[] } | null>(null)
 const editable = computed(
   () => !!props.write && !!props.canEdit && !nvimOn.value && !fileReadOnly.value && active.value?.kind === 'file' && view.value?.state === 'text' && !view.value.header?.truncated && !!view.value.header?.sha256,
@@ -347,17 +348,20 @@ async function save(force = false) {
   const t = active.value
   const v = view.value
   if (!t || !v || !editable.value || !props.write || saving.value) return
-  // From the compare view the editor is not up: its text is the compare's right side, and its model takes the saved text when it returns.
+  // From the compare view the editor is not up: its text is the compare's right side, the model's text as Compare opened.
   const fromCompare = !!activeCompare.value
   const text = fromCompare ? activeCompare.value!.mine : (editorRef.value?.getText() ?? v.text ?? '')
-  // The model's version whose text this is: the answer may land after more typing, or with another tab in front, and completes this
-  // version alone (savedAt); the editor on screen then may not be this tab's.
-  const sent = fromCompare ? undefined : editorRef.value?.version()
+  // The model's version whose text this is: the answer may land after more typing (back from the compare view too), or with another
+  // tab in front, and completes this version alone (savedAt); the editor on screen then may not be this tab's.
+  const sent = fromCompare ? activeCompare.value!.version : editorRef.value?.version()
   saving.value = true
   saveError.value = ''
   try {
     const res = await props.write(t.path, new TextEncoder().encode(text), { baseSha256: v.header?.sha256, force, onSlow: () => (saveSlow.value = true) })
     const h = res.header
+    // The tab as the save found it, or nothing: one closed meanwhile (its edits dropped), opened again or read again from disk holds
+    // what happened since, and the answer changes none of it. The file on disk is what the answer says either way.
+    if (loaded.get(t.id) !== v) return
     if (h.kind === 'written') {
       // The saved version first: the text below reaches the editor's watcher, which keeps a model with edits since as it is.
       setDirty(t.id, savedAt(t.path, sent))
@@ -403,8 +407,9 @@ async function openCompare() {
   const t = active.value
   if (!t) return
   const mine = editorRef.value?.getText() ?? view.value?.text ?? ''
+  const version = editorRef.value?.version()
   const res = await props.request(t.path, false)
-  compare.value = { tabId: t.id, disk: res.header.kind === 'file' ? new TextDecoder().decode(res.body) : '', mine }
+  compare.value = { tabId: t.id, disk: res.header.kind === 'file' ? new TextDecoder().decode(res.body) : '', mine, version }
 }
 function closeNow(ids: string[]) {
   let st = tabs.value
