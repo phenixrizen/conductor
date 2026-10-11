@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "npm run build && electron .",
+    "pretest": "node node_modules/electron/install.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dist": "npm run build && electron-builder --config electron-builder.yml",
