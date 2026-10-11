@@ -43,6 +43,9 @@ CONDUCTOR_HOST_TOKEN=host-token ./bin/conductor host --server http://localhost:8
 Your terminal is attached as a controller; the session appears in the UI as
 `hosted`. Add `--relay-only` to skip WebRTC entirely, `--no-local` to run it
 headless, or `--stun stun:host:3478` to override the ICE servers.
+`--server-is-mine`, for a server on this machine only, says that server is
+yours: a window its workbench opens with no link is then one of yours and gets
+the editor's Neovim (without it, only this terminal is).
 `--ice-udp-port 7877` puts every WebRTC connection on that one UDP port and
 `--ice-public-ip 192.168.1.20` advertises that address as the host's own
 (`CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP`): what a forwarder in
@@ -405,7 +408,7 @@ writes through Neovim, **Don't save** drops them), and the keymap button
 waits until nothing is left unsaved. The choice is kept per
 browser and is off until chosen, so nobody who never asked for Vim keys
 meets one. It needs `nvim` on that machine (the button says when it is
-missing), one of your own windows (not a share link or an invite; for a `conductor host` session, the workbench of a server on the same machine), and the
+missing), one of your own windows (not a share link or an invite; for a `conductor host` session, only with `--server-is-mine`, which says the server on this machine is yours), and the
 server's or host's `fileEdit` setting left at `control`
 (`CONDUCTOR_FILE_EDIT`, `conductor host --file-edit`; `off` turns editing
 off for everyone). A control-link guest still edits and saves, with the

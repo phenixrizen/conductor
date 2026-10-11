@@ -22,8 +22,8 @@ type peer struct {
 	role      session.Role
 	linkID    string
 	linkLabel string
-	// owner is a viewer with no link from a server on the owner's own
-	// machine (Options.ServerIsOwners): one of the owner's own windows,
+	// owner is a viewer with no link from a server the person said is
+	// their own (Options.ServerIsOwners): one of the owner's own windows,
 	// offered the editor's Neovim. A paste invite's viewer has no link
 	// either and is not, nor one a switchyard sends.
 	owner bool

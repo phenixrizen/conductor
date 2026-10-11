@@ -47,11 +47,14 @@ type Options struct {
 	Argv      []string
 	Dir       string
 	RelayOnly bool
-	// ServerIsOwners says the server this host reports to runs on the
-	// owner's own machine (conductor host to a server on localhost): a
-	// viewer it sends with no link is then one of the owner's own windows,
-	// offered the editor's Neovim. Never so for a switchyard, whose
-	// workbench is its operator's, not the owner's: the uplink leaves it off.
+	// ServerIsOwners says the server this host reports to is the owner's
+	// own, on this machine (conductor host --server-is-mine, for a server on
+	// localhost): a viewer it sends with no link is then one of the owner's
+	// own windows, offered the editor's Neovim, and the connection is held
+	// to this machine (ownersServerClient). Off by default: a loopback
+	// address alone could be a forward to someone else's server. Never so
+	// for a switchyard, whose workbench is its operator's: the uplink leaves
+	// it off.
 	ServerIsOwners bool
 	// LocalAttach connects Stdin/Stdout to the PTY as a controller.
 	LocalAttach bool

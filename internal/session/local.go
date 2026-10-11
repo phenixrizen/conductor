@@ -728,8 +728,8 @@ type AttachOptions struct {
 	// session.
 	Authorize func() (Grant, error)
 	// Owner marks one of the owner's own connections: the workbench's on a
-	// server, a host's viewer with no link from a server on the owner's own
-	// machine (never a switchyard's). Only such a
+	// server, a host's viewer with no link from a server the person said is
+	// their own (never a switchyard's). Only such a
 	// connection is offered the editor's Neovim (see nvimAllowed); a link's
 	// never is, nor a paste invite's, whatever the caller says.
 	Owner bool

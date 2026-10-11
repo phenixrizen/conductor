@@ -102,7 +102,7 @@ func completionSpec() []commandSpec {
 		// Every flag serve takes, and no other: TestCompletionSpecMatchesEveryFlag checks it.
 		{name: "serve", flags: serveFlags},
 		{name: "switchyard", flags: serveFlags},
-		{name: "host", flags: []flagSpec{{name: "--ice-udp-port", kind: flagValue}, {name: "--ice-public-ip", kind: flagValue}, {name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}, {name: "--name", kind: flagValue}, {name: "--host-name", kind: flagValue}, {name: "--agent", kind: flagValue}, {name: "--cwd", kind: flagFile}, {name: "--relay-only"}, {name: "--no-local"}, {name: "--stun", kind: flagValue}, {name: "--scrollback", kind: flagValue}, {name: "--file-view", kind: flagEnum, values: []string{"view", "control", "off"}},
+		{name: "host", flags: []flagSpec{{name: "--ice-udp-port", kind: flagValue}, {name: "--ice-public-ip", kind: flagValue}, {name: "--server", kind: flagValue}, {name: "--token", kind: flagValue}, {name: "--name", kind: flagValue}, {name: "--host-name", kind: flagValue}, {name: "--agent", kind: flagValue}, {name: "--cwd", kind: flagFile}, {name: "--relay-only"}, {name: "--server-is-mine"}, {name: "--no-local"}, {name: "--stun", kind: flagValue}, {name: "--scrollback", kind: flagValue}, {name: "--file-view", kind: flagEnum, values: []string{"view", "control", "off"}},
 			{name: "--file-edit", kind: flagEnum, values: []string{"control", "off"}}, {name: "--server-config", kind: flagFile}, {name: "--signal-pattern", kind: flagValue}, {name: "--log-level", kind: flagEnum, values: levels}}},
 		{name: "notify", flags: notifyFlags},
 		{name: "mcp"},
