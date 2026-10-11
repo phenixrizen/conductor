@@ -1001,6 +1001,16 @@ Codex or run `npm install -g` to update it. An agent's further startup
 questions are its `questions` in the catalog, each a `prompt`, its `answers`
 and, when the words to show are not the ones that find it, its `words`.
 
+Codex also asks during its work, before a command it would run outside its
+sandbox: "Would you like to run the following command?" with the command and
+**Yes, proceed**, **Yes, and don't ask again** and **No, tell Codex what to
+do differently**. Conductor reads that dialog off the screen for the
+session's whole life, whatever Codex's hooks file holds and whether anyone
+watches: the member is in Needs you with the question, the command and the
+three choices, each of which types its own key (`y`, `p`, Esc); typed text
+is refused while it shows, since its letters are the dialog's keys and its
+Enter would approve. A catalog question marked `anytime` is held this way.
+
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch
 answers `not_a_repo`), and `git` must be on the server's `PATH` (otherwise it

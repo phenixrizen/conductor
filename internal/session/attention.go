@@ -35,6 +35,9 @@ const (
 	SourceInput   = "input"
 	SourceAdmin   = "admin"
 	SourceTrust   = "trust" // the agent's workspace-trust question is on the screen (Options.TrustPattern)
+	// SourceQuestion: a question the agent asks during its work is on the
+	// screen (Options.Questions marked Anytime: Codex's command approval).
+	SourceQuestion = "question"
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can

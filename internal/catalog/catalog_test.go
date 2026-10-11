@@ -1060,7 +1060,7 @@ func TestTrustAnswers(t *testing.T) {
 func TestStartupQuestions(t *testing.T) {
 	c := Default()
 	codex, _ := c.Get("codex")
-	if len(codex.Questions) != 3 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
+	if len(codex.Questions) != 5 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
 		t.Fatalf("codex: %+v", codex.Questions)
 	}
 	// The background-server question picks on a digit, and the update question skips on Escape: no answer
@@ -1116,7 +1116,7 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "Ready\\?", Answers: []Answer{{Label: "", Input: "\r"}}}},
 		{{Prompt: "Ready\\?", Words: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "Ready\\?", Words: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
-		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}},
+		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}, {Prompt: "f"}, {Prompt: "g"}, {Prompt: "h"}, {Prompt: "i"}},
 	} {
 		a := ok
 		a.Questions = bad
@@ -1129,4 +1129,95 @@ func TestStartupQuestions(t *testing.T) {
 	if err := validate(good); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Codex's command approval (Codex 0.161, seen in the rc.7 app on 2026-10-11)
+// is a question asked at any time, not only at start: found by its choices'
+// keys, told by its heading and command, answered by y, p and Escape alone
+// (each picks at once; an Enter would pick the highlighted Yes). The dialog
+// without its "don't ask again" of a prefix is found by the second entry,
+// with Yes and No alone; neither is found on a screen that only mentions
+// the words.
+func TestCodexCommandApproval(t *testing.T) {
+	codex, _ := Default().Get("codex")
+	withP, plain := codex.Questions[3], codex.Questions[4]
+	if !withP.Anytime || !plain.Anytime {
+		t.Fatalf("not asked at any time: %+v %+v", withP, plain)
+	}
+	for _, q := range codex.Questions[:3] {
+		if q.Anytime {
+			t.Fatalf("a startup question marked anytime: %+v", q)
+		}
+	}
+	yes, dont, no := Answer{Label: "Yes, proceed", Input: "y"}, Answer{Label: "Yes, and don't ask again", Input: "p"}, Answer{Label: "No, tell Codex what to do differently", Input: "\x1b"}
+	if len(withP.Answers) != 3 || withP.Answers[0] != yes || withP.Answers[1] != dont || withP.Answers[2] != no {
+		t.Fatalf("answers %+v", withP.Answers)
+	}
+	if len(plain.Answers) != 2 || plain.Answers[0] != yes || plain.Answers[1] != no {
+		t.Fatalf("answers without the prefix %+v", plain.Answers)
+	}
+	// The dialog as ScreenTail reads it: escapes and line breaks one space each.
+	screen := "Would you like to run the following command? Environment: local Reason: May I rerun the curl command with network access? The sandboxed attempt failed to resolve the host. $ curl -sI https://example.com › 1. Yes, proceed (y) 2. Yes, and don't ask again for commands that start with `curl -sI https://example.com` (p) 3. No, and tell Codex what to do differently (esc) Press enter to confirm or esc to cancel "
+	noPrefix := "Would you like to run the following command? $ rm -rf build › 1. Yes, proceed (y) 2. No, and tell Codex what to do differently (esc) Press enter to confirm or esc to cancel"
+	re := func(p string) *regexp.Regexp {
+		t.Helper()
+		r, err := CompilePattern(p)
+		if err != nil {
+			t.Fatalf("%q: %v", p, err)
+		}
+		return r
+	}
+	if !re(withP.Prompt).MatchString(screen) || re(withP.Prompt).MatchString(noPrefix) || !re(plain.Prompt).MatchString(noPrefix) {
+		t.Fatal("the approval's patterns do not tell the two dialogs apart")
+	}
+	// A key drawn in a style of its own reads with a space on each side.
+	if styled := strings.NewReplacer("(y)", "( y )", "(p)", "( p )", "(esc)", "( esc )").Replace(screen); !re(withP.Prompt).MatchString(styled) {
+		t.Fatalf("the styled keys are not found: %q", styled)
+	}
+	for _, text := range []string{"Codex would proceed (y) if you said so", "Would you like to run the following command?", "› Ask Codex to do anything"} {
+		if re(withP.Prompt).MatchString(text) || re(plain.Prompt).MatchString(text) {
+			t.Fatalf("%q held as the approval", text)
+		}
+	}
+	words := re(withP.Words)
+	if m := words.FindStringSubmatch(screen); len(m) != 3 || m[1] != "Would you like to run the following command?" || m[2] != "$ curl -sI https://example.com" {
+		t.Fatalf("words %q", m)
+	}
+	if m := words.FindStringSubmatch("Would you like to make the following edits? src/a.go +1 -1 › 1. Yes, proceed (y)"); len(m) != 3 || m[1] != "Would you like to make the following edits?" || m[2] != "" {
+		t.Fatalf("words without a command %q", m)
+	}
+	for _, a := range append(withP.Answers, plain.Answers...) {
+		if strings.ContainsAny(a.Input, "\r\n") {
+			t.Fatalf("answer %+v carries an Enter, which picks the highlighted Yes", a)
+		}
+	}
+}
+
+// The e2e suite's Codex (web/e2e/conductor.e2e.json, the stub with Codex's
+// recipes) carries the built-in entry's questions, so that what the specs
+// check is what ships.
+func TestTheE2ECodexCarriesTheBuiltInQuestions(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "e2e", "conductor.e2e.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Catalog struct {
+			Agents []Agent `json:"agents"`
+		} `json:"catalog"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	builtIn, _ := Default().Get("codex")
+	for _, a := range cfg.Catalog.Agents {
+		if a.ID != "codex" {
+			continue
+		}
+		if !reflect.DeepEqual(a.Questions, builtIn.Questions) {
+			t.Fatalf("the e2e Codex's questions differ from the built-in's:\n%+v\n%+v", a.Questions, builtIn.Questions)
+		}
+		return
+	}
+	t.Fatal("no codex in the e2e catalog")
 }

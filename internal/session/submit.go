@@ -54,6 +54,16 @@ const TrustQuestionWords = "the agent asks whether to trust the folder: answer w
 // question shows.
 var ErrTrustQuestion = errors.New(TrustQuestionWords)
 
+// QuestionWords say why a person's typed text is refused while a question
+// the agent asks during its work shows (source "question"): its letters
+// would reach the dialog's keys (Codex's command approval takes y, p and
+// Esc) and its Enter would pick what the dialog highlights (Yes, proceed).
+const QuestionWords = "the agent asks a question on its screen: answer with the question's choices, or in its terminal"
+
+// ErrQuestion is Submit's refusal of a person's text while a question asked
+// during the work shows.
+var ErrQuestion = errors.New(QuestionWords)
+
 // Submission is a line to submit (Local.Submit).
 type Submission struct {
 	// Text is the line. Submit makes each line break, carriage return and
@@ -102,8 +112,12 @@ type SubmitResult struct {
 //     typing does; a prompt raised during the pause (one with a new Since) is
 //     never answered: the Enter is left out. In a session with a trust
 //     watcher the pause ends only once the watcher has looked at what was
-//     drawn since the text (awaitTrustLook), so a trust question drawn
-//     during the pause holds the Enter back too.
+//     drawn since the text (awaitLook), so a trust question drawn during the
+//     pause holds the Enter back too; with a watcher for the questions asked
+//     during the work, once it has looked at everything drawn so far.
+//   - A person's text (By) is refused while a question the session holds
+//     shows: ErrTrustQuestion for a trust or startup question, ErrQuestion
+//     for one asked during the work.
 //   - It records one input entry: always, with the text, for what Conductor
 //     types; for a controller's reply, the question it answered, when it
 //     answered one.
@@ -136,7 +150,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	ended := s.info.Status.Ended()
 	promptSince := s.info.Attention.Since
 	showing := s.info.Attention.State == AttentionNeedsInput
-	trustShowing := showing && s.info.Attention.Source == SourceTrust
+	source := s.info.Attention.Source
 	s.mu.Unlock()
 	if ended {
 		return res, ErrSessionEnded
@@ -144,8 +158,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if sub.UnlessWaiting && showing {
 		return res, nil
 	}
-	if sub.By != nil && trustShowing {
+	if sub.By != nil && showing && source == SourceTrust {
 		return res, ErrTrustQuestion
+	}
+	if sub.By != nil && showing && source == SourceQuestion {
+		return res, ErrQuestion
 	}
 	byName := CleanName(sub.ByName)
 	typedAt := time.Now()
@@ -172,11 +189,20 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			return res, ErrSessionEnded
 		}
 	}
-	if res.Typed && s.trust != nil {
-		// A trust question drawn during the pause is found by the screen
-		// watcher only once the screen has been quiet for patternQuiet: let
-		// it look at what was drawn since the text before the Enter.
-		if err := s.awaitTrustLook(ctx, typedAt); err != nil {
+	// The screen watchers look before the Enter (awaitLook). A trust
+	// question drawn during the pause is found only once the screen has
+	// been quiet for patternQuiet: the trust watcher looks at what was drawn
+	// since the text. A question asked during the work can be drawn at any
+	// time, also just before the text, and an Enter that lands on it picks
+	// what it highlights (Codex's "Yes, proceed"): its watcher looks at
+	// everything drawn so far, so that a dialog drawn since the last quiet
+	// has raised the question by then, text or none.
+	if s.asked != nil {
+		if err := s.awaitLook(ctx, time.Time{}); err != nil {
+			return res, err
+		}
+	} else if res.Typed && s.trust != nil {
+		if err := s.awaitLook(ctx, typedAt); err != nil {
 			return res, err
 		}
 	}
@@ -192,6 +218,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	if sub.BeforeEnter != nil {
 		sub.BeforeEnter()
+	}
+	if s.asked != nil {
+		// What the screen showed before the Enter is behind it (Input).
+		s.asked.Reset()
 	}
 	enterAt := time.Now().UTC()
 	if _, err := s.proc.Write([]byte{'\r'}); err != nil {
@@ -214,21 +244,21 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	return res, nil
 }
 
-// trustLookBudget bounds how long Submit waits, before its Enter, for the
-// trust watcher to look at what the program drew since the text: the echo of
-// a paste moves the output, and a program that keeps drawing is not held up
-// for longer than this.
-const trustLookBudget = 2 * time.Second
+// lookBudget bounds how long Submit waits, before its Enter, for the screen
+// watchers to look at what the program drew: the echo of a paste moves the
+// output, and a program that keeps drawing is not held up for longer than
+// this.
+const lookBudget = 2 * time.Second
 
-// awaitTrustLook waits until the trust watcher has had its quiet period
-// (patternQuiet) after the last output that came since typedAt, so that a
-// trust question drawn during the pause has raised needs_input before the
-// Enter is written; at most trustLookBudget, or until ctx or the session ends.
-func (s *Local) awaitTrustLook(ctx context.Context, typedAt time.Time) error {
-	deadline := time.Now().Add(trustLookBudget)
+// awaitLook waits until the screen watchers have had their quiet period
+// (patternQuiet) after the last output, when that output came after since,
+// so that a question drawn meanwhile has raised needs_input before the
+// Enter is written; at most lookBudget, or until ctx or the session ends.
+func (s *Local) awaitLook(ctx context.Context, since time.Time) error {
+	deadline := time.Now().Add(lookBudget)
 	for {
 		last := s.LastOutputAt()
-		if !last.After(typedAt) {
+		if !last.After(since) {
 			return nil
 		}
 		wait := time.Until(last.Add(patternQuiet + 50*time.Millisecond))

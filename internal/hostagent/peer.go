@@ -410,7 +410,7 @@ func submitError(err error) []byte {
 		code = proto.ErrCodeReadOnly
 	case errors.Is(err, session.ErrSessionEnded):
 		code = proto.ErrCodeSessionEnded
-	case errors.Is(err, session.ErrTrustQuestion):
+	case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion):
 		code = proto.ErrCodeNotSent
 	}
 	return proto.NewError(code, err.Error())

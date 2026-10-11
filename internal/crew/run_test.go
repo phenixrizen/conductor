@@ -1023,6 +1023,7 @@ func TestReadiness(t *testing.T) {
 		{"between screens, but asking", readiness{state: needs, source: session.SourceAPI, pasteSeen: true}, at(s), true, false, false},
 		{"a trust question", readiness{state: needs, source: session.SourceTrust, lastOutput: at(0)}, at(5 * s), false, false, true},
 		{"a trust question past the cap", readiness{state: needs, source: session.SourceTrust}, at(90 * s), false, false, true},
+		{"a question asked during the work", readiness{state: needs, source: session.SourceQuestion, lastOutput: at(0)}, at(5 * s), false, false, true},
 	} {
 		ready, capped, hold := readyAt(tc.rd, start, tc.now)
 		if ready != tc.ready || capped != tc.capped || hold != tc.hold {

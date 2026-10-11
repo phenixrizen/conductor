@@ -175,6 +175,8 @@ export interface AgentQuestion {
   prompt: string
   /** RE2 picking the words a page shows out of the same screen (its groups joined); without it, what `prompt` matched. */
   words?: string
+  /** Asked at any time in the session's life (Codex's command approval), not only as it starts: held with source `question`. */
+  anytime?: boolean
   answers?: AgentAnswer[]
 }
 

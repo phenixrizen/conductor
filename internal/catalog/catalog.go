@@ -64,8 +64,9 @@ type Agent struct {
 	// trust question (round 13, G2c): while one shows, a crew run types no
 	// prompt, typed text is refused and its answers are the choices. Codex
 	// asks "Hooks need review" whenever its hooks are new or changed. Each a
-	// prompt (as TrustPrompt) and its answers (as TrustAnswers); at most 4.
-	// nil in a saved override takes the replaced agent's.
+	// prompt (as TrustPrompt), its words, its answers (as TrustAnswers) and
+	// whether it is asked at any time (Anytime: Codex's command approval);
+	// at most 8. nil in a saved override takes the replaced agent's.
 	Questions []Question `json:"questions,omitempty"`
 	// Session is the agent's session recipe: how Conductor names the agent's
 	// own session and resumes it. nil in a saved override takes the replaced
@@ -773,12 +774,19 @@ type Question struct {
 	// found by its highlighted "Update now (runs …" and told by its heading,
 	// "Update available 0.161.0 → 0.162.0": the highlighted line read as if
 	// it had been the answer.
-	Words   string   `json:"words,omitempty"`
+	Words string `json:"words,omitempty"`
+	// Anytime marks a question the agent can ask at any time in the
+	// session's life, not only as it starts: it is watched until the
+	// session ends (a startup question only until the first submission),
+	// held as a startup question is but with source "question", and raised
+	// again each time it is drawn after an answer. Codex's command approval
+	// is one.
+	Anytime bool     `json:"anytime,omitempty"`
 	Answers []Answer `json:"answers,omitempty"`
 }
 
 // MaxQuestions bounds Agent.Questions.
-const MaxQuestions = 4
+const MaxQuestions = 8
 
 func cloneQuestions(qs []Question) []Question {
 	if qs == nil {

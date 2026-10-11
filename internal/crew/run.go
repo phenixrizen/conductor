@@ -1490,14 +1490,15 @@ type readiness struct {
 }
 
 // readyAt says whether a session is ready for its prompt at now, in a wait
-// that began at start. A trust question on its screen holds the prompt (hold).
+// that began at start. A trust question on its screen holds the prompt (hold),
+// and so does a question asked during the work (source "question").
 // It is ready when its agent reports that it waits for input or is done, or
 // when its output has been quiet for readyQuiet and readyMin has passed, but
 // never while the program has turned bracketed paste on and then off again:
 // it is between screens (Claude Code while it starts), and what is typed then
 // loses its Enter. capped is the wait reaching readyCap.
 func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
-	if rd.state == session.AttentionNeedsInput && rd.source == session.SourceTrust {
+	if rd.state == session.AttentionNeedsInput && (rd.source == session.SourceTrust || rd.source == session.SourceQuestion) {
 		return false, false, true
 	}
 	if rd.state == session.AttentionNeedsInput || rd.state == session.AttentionDone {

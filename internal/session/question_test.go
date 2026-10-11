@@ -1,8 +1,12 @@
 package session
 
 import (
+	"errors"
 	"regexp"
 	"testing"
+	"time"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // codexUpdateScreen is Codex 0.161.0's update question as it drew it in a
@@ -53,5 +57,242 @@ func TestAQuestionsWordsAreItsHeading(t *testing.T) {
 	}
 	if got := q.words("nothing to see"); got != "" {
 		t.Fatalf("words of a screen without the question %q", got)
+	}
+}
+
+// approvalChoices are the answers to Codex's command approval, as the
+// catalog has them: each key picks at once.
+var approvalChoices = []Option{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes, and don't ask again", Input: "p"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}}
+
+// approvalQuestions are the questions Codex's command approval is held by,
+// as the catalog has them: asked at any time.
+func approvalQuestions() []StartupQuestion {
+	words := regexp.MustCompile(`(?i)(would\s*you\s*like\s*to\s*\w[^?]{0,80}\?)(?:.*(\$ .{1,200}?)\s*›?\s*1\.\s*yes,\s*proceed)?`)
+	return []StartupQuestion{{
+		Pattern: regexp.MustCompile(`(?i)proceed\s*\(\s*y\s*\).{0,400}?\(\s*p\s*\).{0,400}?\(\s*esc\s*\)`),
+		Words:   words, Anytime: true, Answers: approvalChoices,
+	}, {
+		Pattern: regexp.MustCompile(`(?i)proceed\s*\(\s*y\s*\).{0,800}?\(\s*esc\s*\)`),
+		Words:   words, Anytime: true, Answers: []Option{approvalChoices[0], approvalChoices[2]},
+	}}
+}
+
+// approvalDialog is Codex 0.161's command approval for cmd as a TUI draws
+// it: cursor moves and styles between the words, each key in a style of its
+// own (the words of the screen the owner saw in the rc.7 app).
+func approvalDialog(cmd string) string {
+	return "\x1b[?2026h\x1b[14;1H\x1b[J\x1b[15;3H\x1b[1mWould you like to run the following command?\x1b[22m" +
+		"\x1b[17;3HEnvironment: local\x1b[19;3HReason: May I rerun the curl command with network access? The sandboxed attempt failed to resolve the host." +
+		"\x1b[21;3H\x1b[2m$\x1b[22m " + cmd +
+		"\x1b[23;1H\x1b[36m› 1. Yes, proceed (\x1b[1my\x1b[22m)" +
+		"\x1b[24;3H\x1b[39m2. Yes, and don't ask again for commands that start with `" + cmd + "` (\x1b[1mp\x1b[22m)" +
+		"\x1b[25;3H3. No, and tell Codex what to do differently (\x1b[1mesc\x1b[22m)" +
+		"\x1b[27;3H\x1b[2mPress enter to confirm or esc to cancel\x1b[22m\x1b[?2026l"
+}
+
+const approvalWords = "Would you like to run the following command? $ curl -sI https://example.com"
+
+func asked(a Attention) bool { return a.State == AttentionNeedsInput && a.Source == SourceQuestion }
+
+// Codex's command approval comes after the first prompt, which stops the
+// startup questions' watcher: the questions asked during the work have a
+// watcher of their own. The session needs input with the dialog's words
+// and its three choices; a person's typed text is refused with nothing
+// written (its letters would reach the dialog's keys, its Enter would pick
+// Yes), Conductor's own text waits, an arrow answers nothing, and the
+// choice's key alone answers it.
+func TestAnApprovalAfterTheFirstPromptIsAskedWithItsChoices(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{
+		TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`),
+		TrustAnswers: []Option{{Label: "Yes, trust this folder", Input: "\r"}},
+		Questions:    approvalQuestions(),
+	}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h› Ask Codex to do anything"))
+	waitPaste(t, s, true)
+	// The crew's first prompt: its Enter ends the startup questions' watch.
+	if res, err := s.Submit(t.Context(), Submission{Text: "check example.com", ByName: "crew"}); err != nil || !res.Entered {
+		t.Fatalf("the first prompt: %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	nextWrite(t, p)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	att := waitAttention(t, s, asked)
+	if att.Message != approvalWords || att.Kind != KindPermission || !sameOptions(att.Options, approvalChoices) {
+		t.Fatalf("attention %+v", att)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "yes please", By: sub}); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("typed text at the approval: %v", err)
+	}
+	// A chat to the agent gets the refusal's words, not the trust question's.
+	if m := decodeControl(t, ChatErrorFrame(ErrQuestion, "r1")); m["code"] != proto.ErrCodeNotSent || m["message"] != QuestionWords || m["requestId"] != "r1" {
+		t.Fatalf("the chat's refusal %v", m)
+	}
+	if res, err := s.Submit(t.Context(), Submission{Text: "handoff", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
+		t.Fatalf("Conductor's own text: %+v %v", res, err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	if err := s.Input(sub, []byte("\x1b[B")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; !asked(a) || a.Since == nil || *a.Since != *att.Since {
+		t.Fatalf("an arrow answered the approval: %+v", a)
+	}
+	if err := s.Input(sub, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	info := s.Info()
+	if info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.Message != approvalWords || info.LastAnswer.ByName != "nater" {
+		t.Fatalf("the choice did not answer: %+v %+v", info.Attention, info.LastAnswer)
+	}
+}
+
+// The bell Codex rings as it shows the dialog (while its terminal is not
+// focused) gives way to the dialog's question once the screen is quiet; a
+// bell after the question is seen leaves it as it is, words, choices and
+// all. A bell with nothing waiting still asks.
+func TestABellBeforeTheApprovalGivesWayAndOneAfterLeavesIt(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\a"))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNeedsInput }); a.Source != SourceBell || a.Message != "terminal bell" {
+		t.Fatalf("a bell with nothing waiting: %+v", a)
+	}
+	s.Input(sub, []byte("x"))
+	nextWrite(t, p)
+	time.Sleep(600 * time.Millisecond) // past the bell's burst limit
+	// The bell before the dialog, in the same write.
+	p.outW.Write([]byte("\a" + approvalDialog("curl -sI https://example.com")))
+	att := waitAttention(t, s, asked)
+	if att.Message != approvalWords || len(att.Options) != 3 {
+		t.Fatalf("the question after the bell: %+v", att)
+	}
+	time.Sleep(600 * time.Millisecond)
+	p.outW.Write([]byte("\a"))
+	time.Sleep(300 * time.Millisecond)
+	if a := s.Info().Attention; !asked(a) || a.Message != approvalWords || len(a.Options) != 3 || *a.Since != *att.Since {
+		t.Fatalf("a bell after the question replaced it: %+v", a)
+	}
+}
+
+// The same dialog, answered, comes again for the next command: it is asked
+// again with its choices, and answered again, by Escape this time.
+func TestTheSameApprovalAnsweredThenShownAgainIsAskedAgain(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	first := waitAttention(t, s, asked)
+	s.Input(sub, []byte("y"))
+	nextWrite(t, p)
+	if st := s.Info().Attention.State; st != AttentionNone {
+		t.Fatalf("not answered: %q", st)
+	}
+	p.outW.Write([]byte("\x1b[14;1H\x1b[J✔ You approved codex to run curl -sI https://example.com this time\r\nHTTP/2 200\r\n\x1b[2m• Working\x1b[22m"))
+	time.Sleep(800 * time.Millisecond)
+	if a := s.Info().Attention; a.State != AttentionNone {
+		t.Fatalf("the answered dialog was asked again without being drawn: %+v", a)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	again := waitAttention(t, s, asked)
+	if again.Message != approvalWords || len(again.Options) != 3 || !again.Since.After(*first.Since) {
+		t.Fatalf("asked again: %+v", again)
+	}
+	s.Input(sub, []byte("\x1b"))
+	if got := nextWrite(t, p); got != "\x1b" {
+		t.Fatalf("written %q", got)
+	}
+	if st := s.Info().Attention.State; st != AttentionNone {
+		t.Fatalf("Escape did not answer: %q", st)
+	}
+}
+
+// A person who answers the dialog in its terminal before the session has
+// seen the screen quiet leaves its words in the text the watcher keeps:
+// the key that answers it (one of the choices' keys, or an Enter) puts
+// them behind, so that the question is not raised once Codex has moved on.
+func TestAnApprovalAnsweredInTheTerminalBeforeItIsSeenIsNotAskedAfter(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	s.Input(sub, []byte("y"))
+	nextWrite(t, p)
+	p.outW.Write([]byte("\x1b[14;1H\x1b[JHTTP/2 200\r\n› "))
+	time.Sleep(900 * time.Millisecond)
+	if a := s.Info().Attention; a.State == AttentionNeedsInput {
+		t.Fatalf("the answered dialog was asked: %+v", a)
+	}
+}
+
+// A dialog drawn just before Conductor types (a handoff, a broadcast) and
+// not yet seen holds the Enter back: the watcher looks at everything drawn
+// so far before the Enter, which would have approved the command.
+func TestAnApprovalDrawnJustBeforeASubmissionHoldsItsEnter(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	p.outW.Write([]byte("\x1b[?2004h› "))
+	waitPaste(t, s, true)
+	time.Sleep(700 * time.Millisecond)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	noWrite(t, p, 200*time.Millisecond)
+	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("attention %+v", a)
+	}
+}
+
+// What the question takes the place of, and what it does not: a hook's
+// report without choices (the PermissionRequest hook's "Allow exec?") gives
+// way to the dialog's words and choices, and the same report coming late
+// does not hide them; a report with choices of its own stays, and so does
+// the question under an OSC notification.
+func TestAnApprovalTakesThePlaceOfAWaitWithoutChoicesOnly(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow exec?", SourceAPI, KindPermission, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	att := waitAttention(t, s, asked)
+	if att.Message != approvalWords || len(att.Options) != 3 {
+		t.Fatalf("attention %+v", att)
+	}
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow exec?", SourceAPI, KindPermission, nil); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(600 * time.Millisecond)
+	p.outW.Write([]byte("\x1b]9;Codex wants to run a command\a"))
+	time.Sleep(300 * time.Millisecond)
+	if a := s.Info().Attention; !asked(a) || *a.Since != *att.Since {
+		t.Fatalf("a report without choices hid the question: %+v", a)
+	}
+
+	s2, p2 := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	mine := []Option{{Label: "Allow", Input: "y"}, {Label: "Deny", Input: "n"}}
+	if err := s2.TrySetAttentionFull(AttentionNeedsInput, "Allow curl?", SourceAPI, KindPermission, mine); err != nil {
+		t.Fatal(err)
+	}
+	p2.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(900 * time.Millisecond)
+	if a := s2.Info().Attention; a.Source != SourceAPI || a.Message != "Allow curl?" || !sameOptions(a.Options, mine) {
+		t.Fatalf("the question replaced a report with its choices: %+v", a)
 	}
 }

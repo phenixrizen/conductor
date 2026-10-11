@@ -400,7 +400,11 @@ Automatic detection runs on whichever process owns the PTY. A bare BEL
 (`0x07`) outside an escape sequence, `ESC ] 9 ; text ST` (iTerm2/ConEmu style)
 or `ESC ] 777 ; notify ; title ; body ST` (urxvt style) marks the session
 `needs_input`; the BEL that terminates an ordinary OSC (window title, hyperlink)
-does not. Bursts are limited to one change per 500 ms. Successful input from a
+does not. A bare BEL leaves a session that is `needs_input` already as it is
+(a question's words and choices, a hook's report): it says nothing more. An
+OSC notification, which has words, replaces a wait without choices, never a
+prompt with choices or a question the session holds (`source` `trust` or
+`question`). Bursts are limited to one change per 500 ms. Successful input from a
 `control` client clears the `needs_input` state that was showing when the input
 began. One raised while the input was being written (a process that answers at
 once, an echo that rings the bell) is left for the next input. An input that is
@@ -412,8 +416,9 @@ a window report (`ESC[<n>;…t`), a colour query's reply (`ESC]4;…`, `ESC]10;`
 to `ESC]12;` with `rgb:…`, ended by BEL or ST), a DCS reply such as XTVERSION
 (`ESC P >|… ESC \`), or focus in and out (`ESC[I`, `ESC[O`): a browser's xterm
 answers Codex's cursor position query after every turn, and that answer is not
-a person answering Codex. A trust question (`source:"trust"`) is cleared only
-by an input with a carriage return in it, so an arrow key that moves its
+a person answering Codex. A trust question (`source:"trust"`), and a question
+asked during the work (`source:"question"`), is cleared only by an input with
+a carriage return in it or one of its choices, so an arrow key that moves its
 selection leaves it showing. When a session's process exits or is stopped, its
 attention state is cleared in the step that makes it `exited` or `stopped`, and
 viewers get an `attention` message with the empty state: an ended session never
@@ -556,8 +561,8 @@ keys that pick it, the trusting answer first (Claude Code highlights "No,
 exit", so its trusting answer is Down then Enter; Codex highlights the trusting
 answer, so Enter). While it shows, the owner refuses a person's `submit`, a
 `chat` to the agent and a `chat_send` with `not_sent`. The agent's other
-startup questions, the catalog's `questions` (`[{prompt, words?, answers}]`,
-at most 4, each prompt and its answers bounded as `trustPrompt` and
+startup questions, the catalog's `questions` (`[{prompt, words?, anytime?, answers}]`,
+at most 8, each prompt and its answers bounded as `trustPrompt` and
 `trustAnswers` are; a saved agent that leaves them out keeps the replaced
 agent's), are held the same way, with `source` `trust`, the words of the one
 showing as the `message` and its answers as the `options`. A question's
@@ -577,6 +582,35 @@ way; the update question is found by its highlighted "Update now (runs" and
 its words are its heading, "Update available 0.161.0 → 0.162.1". An input
 that is exactly one of the showing question's choices answers it with or
 without an Enter.
+
+A question marked `anytime` (`{prompt, words?, anytime: true, answers}`) is
+one the agent asks during its work, not only as it starts. A server session
+watches for it for its whole life, with a screen watcher of its own (the
+startup questions' ends with the first submission's Enter): after 500 ms
+without output, title updates aside, a match marks the session
+`needs_input` with `source:"question"`, `kind:"permission"`, its words and
+its answers. It takes the place of a wait that has nothing to answer it with
+(a bell, an OSC notification, a pattern's prompt, a report without
+`options`, which says the same dialog with less) and of a `done`, never of a
+prompt with `options` or a question held already; a report without
+`options` that comes after it does not hide it. While it shows it is held as
+a trust question is: a crew types no prompt, handoff or broadcast into it,
+and the owner refuses a person's `submit`, a `chat` to the agent and a
+`chat_send` with `not_sent` ("the agent asks a question on its screen…"). A
+key that answers such a dialog (an Enter, or one of the anytime questions'
+answers' keys) puts what the screen showed before it behind, so that a
+dialog a person answered in the terminal before it was seen is not raised
+afterwards; the same dialog drawn again is asked again. Before the Enter of
+any submission the owner waits until the watcher has looked at everything
+drawn so far (at most 2 s), so that an Enter never lands on a dialog drawn
+just before it. Codex's built-in entry has its command approval (Codex 0.161:
+"Would you like to run the following command?", its reason, `$ <command>`,
+then "1. Yes, proceed (y)", "2. Yes, and don't ask again for commands that
+start with `<prefix>` (p)", "3. No, and tell Codex what to do differently
+(esc)"): found by its choices' keys, its words the heading and the command,
+its answers `y`, `p` and Escape, each of which picks at once (an Enter picks
+the highlighted Yes); the same dialog without the "don't ask again" choice
+is offered Yes and No alone.
 
 ## Events
 
@@ -906,7 +940,8 @@ Conductor has, an `env` key or `envPassthrough` name at most 128 bytes and an
 `env` value at most 16384 bytes. A `yolo` recipe: at most 16 `args` of 1 to
 4096 bytes without NUL, at most 16 `env` variables named like an
 `envPassthrough` name and never `CONDUCTOR_*`, each value at most 4096 bytes
-without NUL. A `trustPrompt`: as a signal `pattern`. A `session` recipe: at
+without NUL. A `trustPrompt`, and a question's `prompt` and `words`: as a signal
+`pattern`. A `session` recipe: at
 most 16 `startArgs` and 16 `resumeArgs` of 1 to 4096 bytes without NUL, `{id}`
 only as a whole argument, once in `resumeArgs` and once in `startArgs` when it
 has any; `newId` `uuid` (the default) or `name` (`cdr-` and a UUID); `idFrom`

@@ -147,6 +147,8 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError(proto.ErrCodeSessionEnded, "the session has ended"))
 	case errors.Is(err, session.ErrTrustQuestion):
 		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.TrustQuestionWords))
+	case errors.Is(err, session.ErrQuestion):
+		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.QuestionWords))
 	default:
 		local.Send(sub, proto.NewError("input_failed", "input could not be delivered"))
 	}

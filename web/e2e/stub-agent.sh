@@ -44,6 +44,11 @@
 # that agent's hook flag, the payloads a live run of it sends (round 13,
 # G2b): a shell `cat README.md` and the write of stub-tools.txt, in the
 # shapes captured in internal/notify/testdata.
+# A line `stub approve <command>` (letters, digits, spaces and ./:_-) makes
+# the stub ask, as Codex 0.161 does before a command outside its sandbox,
+# "Would you like to run the following command?" with its three choices
+# (y, p, Esc; Enter picks Yes) before it answers the line; the answer goes
+# into the transcript as "approval: …". It is never run.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -213,6 +218,47 @@ tool_replay() {
 	printf '%s' "$write" | "$conductor" notify "--$1-hook" >/dev/null 2>&1 || true
 }
 
+# approval draws Codex 0.161's command approval for the command $1, as the
+# owner saw it in the rc.7 app (2026-10-11), with the bell first, as Codex
+# rings it while its terminal is not focused, and waits for one key: y
+# approves, p approves and stops asking for commands that start with it,
+# Esc declines, Enter picks the highlighted Yes; anything else (an arrow,
+# a paste, whose letters are not keys) is ignored. The answer goes into the
+# transcript as "approval: approved", "approval: approved-prefix" or
+# "approval: declined".
+approval() {
+	local cmd=$1 key seq answer= pasted
+	printf '\a\nWould you like to run the following command?\n\nEnvironment: local\n\nReason: May I run this with network access? The sandboxed attempt failed.\n\n$ %s\n\n› 1. Yes, proceed (y)\n  2. Yes, and don'"'"'t ask again for commands that start with `%s` (p)\n  3. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n' "$cmd" "$cmd"
+	while IFS= read -rsn1 key; do
+		case $key in
+		y | '' | $'\r') answer=approved ;;
+		p) answer=approved-prefix ;;
+		$'\e')
+			seq=''
+			IFS= read -rsn2 -t 0.2 seq || true
+			if [[ $seq == '[2' ]]; then
+				pasted=''
+				while IFS= read -rsn1 key; do
+					pasted+=$key
+					[[ $pasted == *$'\e[201~' ]] && break
+				done
+				continue
+			fi
+			[[ -n $seq ]] && continue
+			answer=declined
+			;;
+		*) continue ;;
+		esac
+		break
+	done
+	printf 'approval: %s\n' "$answer" >>"$transcript"
+	if [[ $answer == declined ]]; then
+		printf '✗ You did not approve %s\n' "$cmd"
+	else
+		printf '✔ You approved codex to run %s\n' "$cmd"
+	fi
+}
+
 # report_done reports the answer $1 to the line $2.
 report_done() {
 	case $report_mode in
@@ -334,6 +380,9 @@ answer() {
 	report_working
 	if [[ $line =~ ^stub\ tools\ (codex|copilot|agy|goose)$ ]]; then
 		tool_replay "${BASH_REMATCH[1]}"
+	fi
+	if [[ $line =~ ^stub\ approve\ ([A-Za-z0-9\ ./:_-]{1,100})$ ]]; then
+		approval "${BASH_REMATCH[1]}"
 	fi
 	while [[ $rest =~ $target_re ]]; do
 		kind=${BASH_REMATCH[1]}
