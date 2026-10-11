@@ -3,13 +3,17 @@ package session
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
-// Bounds of a Screen: a window larger than this is kept at this size, its
-// rows and columns past it dropped.
+// Bounds of a Screen: every size a terminal of a session can have
+// (proto.MaxTerminalDimension each way), so that the model's rows are the
+// PTY's at any size: a smaller model would put a dialog drawn at the
+// bottom of a taller window on rows it does not have.
 const (
-	maxScreenCols = 500
-	maxScreenRows = 300
+	maxScreenCols = proto.MaxTerminalDimension
+	maxScreenRows = proto.MaxTerminalDimension
 	// maxScreenParams bounds the parameter bytes of one control sequence.
 	maxScreenParams = 64
 )

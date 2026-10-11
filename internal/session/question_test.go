@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -259,21 +260,49 @@ func TestAnApprovalAnsweredInTheTerminalBeforeItIsSeenIsNotAskedAfter(t *testing
 }
 
 // A dialog drawn just before Conductor types (a handoff, a broadcast) and
-// not yet seen holds the Enter back: the watcher looks at everything drawn
-// so far before the Enter, which would have approved the command.
-func TestAnApprovalDrawnJustBeforeASubmissionHoldsItsEnter(t *testing.T) {
+// not yet seen quiet is looked at before the text: nothing is written (the
+// overlay would drop the paste, and the handoff with it), the handoff waits
+// for the answer, and a person's reply is refused. One drawn during the
+// pause, after the text, holds the Enter back: the screen is looked at
+// again before it, and the Enter would have approved the command.
+func TestAnApprovalDrawnJustBeforeASubmissionHoldsIt(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
 	p.outW.Write([]byte("\x1b[?2004h› "))
 	waitPaste(t, s, true)
 	time.Sleep(700 * time.Millisecond)
 	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
 	res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
-	if err != nil || !res.Typed || res.Entered {
-		t.Fatalf("result %+v %v", res, err)
+	if err != nil || res.Typed || res.Entered {
+		t.Fatalf("a handoff at the dialog: %+v %v", res, err)
 	}
-	nextWrite(t, p)
+	if _, err := s.Submit(t.Context(), Submission{Text: "yes", By: sub}); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("a reply at the dialog: %v", err)
+	}
 	noWrite(t, p, 200*time.Millisecond)
 	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("attention %+v", a)
+	}
+
+	s2, p2 := newLocalWith(t, quiet(Options{Questions: approvalQuestions(), SubmitPause: 100 * time.Millisecond}))
+	p2.outW.Write([]byte("\x1b[?2004h› "))
+	waitPaste(t, s2, true)
+	time.Sleep(700 * time.Millisecond)
+	var once sync.Once
+	p2.onWrite = func() {
+		once.Do(func() { go p2.outW.Write([]byte(approvalDialog("curl -sI https://example.com"))) })
+	}
+	res, err = s2.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("a handoff whose pause saw the dialog drawn: %+v %v", res, err)
+	}
+	nextWrite(t, p2)
+	noWrite(t, p2, 200*time.Millisecond)
+	if a := s2.Info().Attention; !asked(a) {
 		t.Fatalf("attention %+v", a)
 	}
 }
@@ -320,19 +349,44 @@ func TestAnApprovalTakesThePlaceOfAWaitWithoutChoicesOnly(t *testing.T) {
 // and its prefix alone. It is asked again, with its own command, since the
 // session reads the screen, not the bytes since the answer.
 func TestAQueuedApprovalDrawnAsWhatChangedIsAskedAgain(t *testing.T) {
-	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
-	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
-	if err != nil {
-		t.Fatal(err)
+	// The first answered by one of its choices, by a digit (Codex's list
+	// picks on it at once), by Ctrl+C, or by a key the dialog takes that
+	// Conductor does not know (d, n): the next is asked with its own words
+	// and a Since of its own.
+	for _, key := range []string{"y", "\x1b", "1", "3", "\x03", "d"} {
+		s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+		sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+		first := waitAttention(t, s, asked)
+		s.Input(sub, []byte(key))
+		nextWrite(t, p)
+		p.outW.Write([]byte(approvalNext("rm -rf build")))
+		next := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Message != approvalWords })
+		if next.Message != "Would you like to run the following command? $ rm -rf build" || len(next.Options) != 3 || !next.Since.After(*first.Since) {
+			t.Fatalf("%q, the queued approval: %+v", key, next)
+		}
+		if key != "d" {
+			if info := s.Info(); info.LastAnswer == nil || info.LastAnswer.Message != approvalWords || info.LastAnswer.ByName != "nater" {
+				t.Fatalf("%q did not answer the first: %+v", key, info.LastAnswer)
+			}
+		}
 	}
-	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
-	waitAttention(t, s, asked)
-	s.Input(sub, []byte("y"))
-	nextWrite(t, p)
-	p.outW.Write([]byte(approvalNext("rm -rf build")))
-	next := waitAttention(t, s, asked)
-	if next.Message != "Would you like to run the following command? $ rm -rf build" || len(next.Options) != 3 {
-		t.Fatalf("the queued approval: %+v", next)
+}
+
+// The screen is as tall as the window, whatever its size: a dialog drawn
+// at the bottom of a 500-row window reads whole.
+func TestAnApprovalAtTheBottomOfATallWindowIsAsked(t *testing.T) {
+	p := newFakeProc()
+	s := NewLocal(Info{ID: "tall", Cwd: t.TempDir(), Cols: 80, Rows: 500}, p, quiet(Options{Questions: approvalQuestions()}))
+	t.Cleanup(p.exit)
+	dialog := strings.NewReplacer("\x1b[12;", "\x1b[488;", "\x1b[13;", "\x1b[489;", "\x1b[15;", "\x1b[491;", "\x1b[17;", "\x1b[493;", "\x1b[19;", "\x1b[495;",
+		"\x1b[20;", "\x1b[496;", "\x1b[21;", "\x1b[497;", "\x1b[22;", "\x1b[498;", "\x1b[23;", "\x1b[499;", "\x1b[24;", "\x1b[500;").Replace(approvalDialog("curl -sI https://example.com"))
+	p.outW.Write([]byte(dialog))
+	if a := waitAttention(t, s, asked); a.Message != approvalWords {
+		t.Fatalf("attention %+v", a)
 	}
 }
 
@@ -375,13 +429,14 @@ func TestAnApprovalDrawnAsTheLookRunsOutHoldsTheEnter(t *testing.T) {
 	}
 }
 
-// The dialog can go with a key Conductor does not offer as a choice (a
-// digit, Ctrl+C, a click): once a person typed into the session while the
-// question showed and the screen no longer shows it, the question gives way,
-// answered by that person. With no key typed it stays: the dialog cannot
-// have been answered, and the held question keeps every Enter off it.
+// The dialog can go with a key Conductor does not know as an answer (d,
+// which Codex shows on some of its dialogs; a click): once a person typed
+// into the session while the question showed and the screen no longer
+// shows it, the question gives way, answered by that person. With no key
+// typed it stays: the dialog cannot have been answered, and the held
+// question keeps every Enter off it.
 func TestAnApprovalGoneAfterAKeyTypedIntoItGivesWay(t *testing.T) {
-	for _, key := range []string{"3", "\x03"} {
+	for _, key := range []string{"d", "\x1b[<0;12;23M"} {
 		s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 		sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 		if err != nil {

@@ -612,15 +612,20 @@ without `options` that comes after it does not hide it. While it shows it is
 held as a trust question is: a crew types no prompt, handoff or broadcast
 into it, and the owner refuses a person's `submit`, a `chat` to the agent
 and a `chat_send` with `not_sent` ("the agent asks a question on its
-screen…"). Its choices and an Enter answer it; the same dialog drawn again
-after an answer, or the next one in a queue, is asked again. When a person
-has typed into the session while it showed and a quiet screen no longer
-shows it (the dialog went with a key that is not one of its choices: a
-digit, Ctrl+C, a click), it is recorded as answered by that person; with no
-key typed, it stays until the agent reports something else. Before the
-Enter of any submission the owner waits for a quiet screen (at most 2 s),
-then looks at the screen once more whether quiet or not, so that an Enter
-never lands on a dialog drawn just before it. The words are bounded as a
+screen…"). Its choices, an Enter, a digit from 1 to 9 (a dialog's list
+picks on its number) and Ctrl+C answer it; the same dialog drawn again
+after an answer, still there after a key that did nothing, or the next one
+in a queue, is asked again, and a dialog the screen shows with other words
+than the question held takes its place. When a person has typed into the
+session while it showed and a quiet screen no longer shows it (the dialog
+went with a key Conductor does not know as an answer: d, a click), it is
+recorded as answered by that person; with no key typed, it stays until the
+agent reports something else. The model is as large as any terminal a
+session can have (500 by 500). Before a submission writes anything, and
+again before its Enter (after a wait for a quiet screen of at most 2 s),
+the owner looks at the screen whether quiet or not: a dialog drawn just
+before the text holds it back whole (Codex's overlay would drop the
+paste), and one drawn during the pause holds the Enter. The words are bounded as a
 message is; longer ones end with "…". Codex's built-in entry has its
 command approval (Codex 0.161: "Would you like to run the following
 command?", its reason, `$ <command>`, then "1. Yes, proceed (y)", "2. Yes,

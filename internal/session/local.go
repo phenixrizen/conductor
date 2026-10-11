@@ -567,7 +567,7 @@ func (s *Local) fireTrust(text string) {
 func (s *Local) fireAsked(text string) {
 	for _, q := range s.askedQuestions {
 		if words := q.words(text); words != "" {
-			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessChoices)
+			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessChoices|overAsked)
 			return
 		}
 	}
@@ -741,6 +741,11 @@ const (
 	// or a submission's, starts the next turn, whose bell is a question
 	// again; so does any change of state (a working report, a question).
 	unlessTurnEnded
+	// overAsked lets the watcher of the questions asked during the work
+	// replace its own question (unlessChoices aside): the screen shows the
+	// dialog there is now, the next of a queue answered by a key Conductor
+	// did not see as an answer, say.
+	overAsked
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -771,7 +776,7 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	}
 	cur := s.info.Attention
 	waiting := cur.State == AttentionNeedsInput
-	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source))
+	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source)) && (rules&overAsked == 0 || cur.Source != SourceQuestion)
 	// A report from outside that the session waits, without choices, does
 	// not hide a question asked during the work, whose choices are what
 	// answers the dialog on the screen (a hook that reports the same dialog
@@ -1222,6 +1227,14 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 			break
 		}
 	}
+	// A question asked during the work is a dialog's numbered list: a digit
+	// picks a line at once and Ctrl+C cancels it (Codex 0.161's approval
+	// overlay), whether the choices offer those keys or not. A key that
+	// leaves the dialog where it was is answered all the same; the screen,
+	// looked at again, asks it again.
+	if s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && listKey(data) {
+		choice = true
+	}
 	enter := choice || bytes.IndexByte(data, '\r') >= 0
 	// The screen that showed a startup question is behind once it is
 	// answered: only a new question counts. It is cleared before the answer
@@ -1283,6 +1296,12 @@ func (s *Local) sized(cols, rows uint16) {
 	if s.asked != nil {
 		s.asked.Resize(int(cols), int(rows))
 	}
+}
+
+// listKey reports whether data is a key a dialog's list takes as an answer
+// of its own: a digit from 1 to 9, or Ctrl+C.
+func listKey(data []byte) bool {
+	return len(data) == 1 && (data[0] >= '1' && data[0] <= '9' || data[0] == 0x03)
 }
 
 // nextTurn says an Enter is about to be written: the turn a done ended is

@@ -146,6 +146,12 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	defer func() { <-s.submitting }()
 
+	if s.asked != nil {
+		// A dialog already drawn and not yet seen quiet takes a paste and
+		// drops it (Codex routes a paste to its overlay): look at the screen
+		// before the text, so that a handoff waits for the answer instead.
+		s.asked.CheckNow()
+	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	promptSince := s.info.Attention.Since
