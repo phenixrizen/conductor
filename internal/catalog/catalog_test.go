@@ -1060,7 +1060,7 @@ func TestTrustAnswers(t *testing.T) {
 func TestStartupQuestions(t *testing.T) {
 	c := Default()
 	codex, _ := c.Get("codex")
-	if len(codex.Questions) != 5 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
+	if len(codex.Questions) != 7 || len(codex.Questions[0].Answers) != 2 || codex.Questions[0].Answers[0] != (Answer{Label: "Trust all and continue", Input: "2\r"}) || codex.Questions[0].Answers[1].Input != "3\r" {
 		t.Fatalf("codex: %+v", codex.Questions)
 	}
 	// The background-server question picks on a digit, and the update question skips on Escape: no answer
@@ -1140,9 +1140,11 @@ func TestStartupQuestions(t *testing.T) {
 // the words.
 func TestCodexCommandApproval(t *testing.T) {
 	codex, _ := Default().Get("codex")
-	withP, plain := codex.Questions[3], codex.Questions[4]
-	if !withP.Anytime || !plain.Anytime {
-		t.Fatalf("not asked at any time: %+v %+v", withP, plain)
+	withP, deny, plain, other := codex.Questions[3], codex.Questions[4], codex.Questions[5], codex.Questions[6]
+	for _, q := range codex.Questions[3:] {
+		if !q.Anytime {
+			t.Fatalf("not asked at any time: %+v", q)
+		}
 	}
 	for _, q := range codex.Questions[:3] {
 		if q.Anytime {
@@ -1155,6 +1157,35 @@ func TestCodexCommandApproval(t *testing.T) {
 	}
 	if len(plain.Answers) != 2 || plain.Answers[0] != yes || plain.Answers[1] != no {
 		t.Fatalf("answers without the prefix %+v", plain.Answers)
+	}
+	if len(deny.Answers) != 3 || deny.Answers[0] != yes || deny.Answers[1] != (Answer{Label: "No, continue without running it", Input: "d"}) || deny.Answers[2].Input != "\x1b" {
+		t.Fatalf("answers of the accept-or-decline dialog %+v", deny.Answers)
+	}
+	if len(other.Answers) != 2 || other.Answers[0].Input != "y" || other.Answers[1].Input != "\x1b" {
+		t.Fatalf("answers of another approval %+v", other.Answers)
+	}
+	// The first pattern that matches gives the choices: each dialog finds its own.
+	which := func(text string) int {
+		t.Helper()
+		for i, q := range codex.Questions {
+			if re, err := CompilePattern(q.Prompt); err != nil {
+				t.Fatalf("%q: %v", q.Prompt, err)
+			} else if re.MatchString(text) {
+				return i
+			}
+		}
+		return -1
+	}
+	denyScreen := "  Would you like to run the following command?\n\n  $ git push --force\n\n› 1. Yes, proceed (y)\n  2. No, continue without running it (d)\n\n  Press enter to confirm or esc to cancel"
+	network := "  Do you want to approve network access to \"example.com\"?\n\n› 1. Yes, just this once (y)\n  2. Yes, and allow this host in the future (p)\n  3. No, and block this host in the future (d)\n\n  Press enter to confirm or esc to cancel"
+	if got := which(denyScreen); got != 4 {
+		t.Fatalf("the accept-or-decline dialog is question %d", got)
+	}
+	if got := which(network); got != 6 {
+		t.Fatalf("the network dialog is question %d", got)
+	}
+	if m := regexp.MustCompile(other.Words).FindStringSubmatch(network); len(m) != 3 || m[1] != `Do you want to approve network access to "example.com"?` {
+		t.Fatalf("the network dialog's words %q", m)
 	}
 	// The dialog as the session's Screen reads it: its rows joined by line breaks, the history above.
 	screen := strings.Join([]string{

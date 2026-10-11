@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
 
@@ -68,18 +69,22 @@ func TestAQuestionsWordsAreItsHeading(t *testing.T) {
 // catalog has them: each key picks at once.
 var approvalChoices = []Option{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes, and don't ask again", Input: "p"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}}
 
-// approvalQuestions are the questions Codex's command approval is held by,
-// as the catalog has them: asked at any time.
+// approvalQuestions are the questions Codex's approvals are held by, as the
+// built-in catalog entry has them: asked at any time.
 func approvalQuestions() []StartupQuestion {
-	const footer = `.{0,200}?press\s+enter\s+to\s+confirm\s+or\s+esc\s+to\s+cancel[^\n]*(?:\n[^\n]*){0,3}\z`
-	words := regexp.MustCompile(`(?ism)(would\s+you\s+like\s+to\s+[^?]{1,80}\?)(?:.*?^[ \t]*(\$ .*?)\s*^\s*›?\s*1\.\s+yes,\s+proceed)?`)
-	return []StartupQuestion{{
-		Pattern: regexp.MustCompile(`(?is)proceed\s*\(\s*y\s*\).{0,400}?\(\s*p\s*\).{0,400}?\(\s*esc\s*\)` + footer),
-		Words:   words, Anytime: true, Answers: approvalChoices,
-	}, {
-		Pattern: regexp.MustCompile(`(?is)proceed\s*\(\s*y\s*\).{0,800}?\(\s*esc\s*\)` + footer),
-		Words:   words, Anytime: true, Answers: []Option{approvalChoices[0], approvalChoices[2]},
-	}}
+	codex, _ := catalog.Default().Get("codex")
+	var out []StartupQuestion
+	for _, q := range codex.Questions {
+		if !q.Anytime {
+			continue
+		}
+		answers := make([]Option, len(q.Answers))
+		for i, a := range q.Answers {
+			answers[i] = Option{Label: a.Label, Input: a.Input}
+		}
+		out = append(out, StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Words: regexp.MustCompile(q.Words), Anytime: true, Answers: answers})
+	}
+	return out
 }
 
 // approvalDialog is Codex 0.161's command approval for cmd as a TUI draws
@@ -485,5 +490,79 @@ func TestAnApprovalsWordsAreItsWholeCommand(t *testing.T) {
 	got := q.words(screen(long))
 	if len(got) > MaxAttentionMessage || !strings.HasSuffix(got, "…") || !strings.Contains(got, "$ echo abcdefghij && echo") || !utf8.ValidString(got) {
 		t.Fatalf("words of a long command (%d bytes) %q", len(got), got)
+	}
+}
+
+// Codex 0.161's other approvals: an accept-or-decline request ("No,
+// continue without running it (d)", Escape only in the footer) and a
+// network one ("Do you want to approve network access to …?", "Yes, just
+// this once (y)"). Each is asked with the keys it shows, and neither text
+// nor an Enter is typed into it.
+func TestCodexsOtherApprovalsAreAsked(t *testing.T) {
+	for _, tc := range []struct {
+		name, screen, words string
+		keys                []string
+	}{
+		{"deny", "\x1b[14;3HWould you like to run the following command?\x1b[16;3H$ git push --force\x1b[18;1H› 1. Yes, proceed (y)\x1b[19;3H2. No, continue without running it (d)\x1b[21;3HPress enter to confirm or esc to cancel",
+			"Would you like to run the following command? $ git push --force", []string{"y", "d", "\x1b"}},
+		{"network", "\x1b[14;3HDo you want to approve network access to \"example.com\"?\x1b[16;1H› 1. Yes, just this once (y)\x1b[17;3H2. Yes, and allow this host in the future (p)\x1b[18;3H3. No, and block this host in the future (d)\x1b[20;3HPress enter to confirm or esc to cancel",
+			`Do you want to approve network access to "example.com"?`, []string{"y", "\x1b"}},
+	} {
+		s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+		sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.outW.Write([]byte(tc.screen))
+		a := waitAttention(t, s, asked)
+		var keys []string
+		for _, o := range a.Options {
+			keys = append(keys, o.Input)
+		}
+		if a.Message != tc.words || strings.Join(keys, ",") != strings.Join(tc.keys, ",") {
+			t.Fatalf("%s: %+v", tc.name, a)
+		}
+		if _, err := s.Submit(t.Context(), Submission{Text: "no, stop", By: sub}); !errors.Is(err, ErrQuestion) {
+			t.Fatalf("%s: a reply: %v", tc.name, err)
+		}
+		noWrite(t, p, 100*time.Millisecond)
+	}
+}
+
+// Conductor's own text that is no handoff, a crew's prompt, is refused like
+// a person's at a dialog the screen shows: neither the text (the overlay
+// drops a paste) nor its Enter (which picks Yes) is written.
+func TestAPromptAtAnApprovalIsRefused(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
+	res, err := s.Submit(t.Context(), Submission{Text: "Plan it.", ByName: "crew", Confirm: true})
+	if !errors.Is(err, ErrQuestion) || res.Typed {
+		t.Fatalf("a prompt at the dialog: %+v %v", res, err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A look before a submission that finds nothing leaves the quiet period's
+// own look to come: a question a person's unknown key took off the screen
+// gives way once the screen is quiet, though a handoff looked in between and
+// no output follows.
+func TestALookBeforeASubmissionLeavesTheQuietLook(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	waitAttention(t, s, asked)
+	s.Input(sub, []byte("n"))
+	nextWrite(t, p)
+	p.outW.Write([]byte(approvalGone("› ")))
+	time.Sleep(50 * time.Millisecond)
+	if res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
+		t.Fatalf("the handoff: %+v %v", res, err)
+	}
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil {
+		t.Fatalf("not answered: %+v", a)
 	}
 }

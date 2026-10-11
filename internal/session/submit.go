@@ -115,9 +115,13 @@ type SubmitResult struct {
 //     drawn since the text (awaitLook), so a trust question drawn during the
 //     pause holds the Enter back too; with a watcher for the questions asked
 //     during the work, once it has looked at everything drawn so far.
-//   - A person's text (By) is refused while a question the session holds
-//     shows: ErrTrustQuestion for a trust or startup question, ErrQuestion
-//     for one asked during the work.
+//   - A submission is refused while a question the session holds shows,
+//     a person's and Conductor's own alike (with UnlessWaiting it writes
+//     nothing and returns a zero result, as for any prompt):
+//     ErrTrustQuestion for a trust or startup question, ErrQuestion for
+//     one asked during the work. A session with a watcher for the latter
+//     looks at its screen first, so that a dialog drawn and not yet seen
+//     quiet counts.
 //   - It records one input entry: always, with the text, for what Conductor
 //     types; for a controller's reply, the question it answered, when it
 //     answered one.
@@ -164,10 +168,13 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if sub.UnlessWaiting && showing {
 		return res, nil
 	}
-	if sub.By != nil && showing && source == SourceTrust {
+	// Nothing is typed into a question the session holds, whoever types:
+	// a person's reply, and Conductor's own text too (a crew's prompt, which
+	// waits for the answer and is typed then).
+	if showing && source == SourceTrust {
 		return res, ErrTrustQuestion
 	}
-	if sub.By != nil && showing && source == SourceQuestion {
+	if showing && source == SourceQuestion {
 		return res, ErrQuestion
 	}
 	byName := CleanName(sub.ByName)

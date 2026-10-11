@@ -5,11 +5,12 @@ const uuidPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 
 // codexApprovalWords picks the words of Codex's approval dialog out of the
 // screen (its rows joined by line breaks): its heading ("Would you like to
-// run the following command?") and, when it shows one, the command, from
-// the first row after the heading that begins with "$ " up to the row of
-// the first choice, every row of it ("$ curl -sI https://example.com"); a
-// "$ " inside the command is part of it.
-const codexApprovalWords = `(?ism)(would\s+you\s+like\s+to\s+[^?]{1,80}\?)(?:.*?^[ \t]*(\$ .*?)\s*^\s*›?\s*1\.\s+yes,\s+proceed)?`
+// run the following command?", "Do you want to approve network access to
+// …?") and, when it shows one, the command, from the first row after the
+// heading that begins with "$ " up to the row of the first choice, every
+// row of it ("$ curl -sI https://example.com"); a "$ " inside the command
+// is part of it.
+const codexApprovalWords = `(?ism)((?:would\s+you\s+like|do\s+you\s+want)\s+to\s+[^?]{1,120}\?)(?:.*?^[ \t]*(\$ .*?)\s*^\s*›?\s*1\.\s+yes,\s+proceed)?`
 
 // codexApprovalFooter ends a pattern of Codex's approval dialog: its footer,
 // on one of the last rows the screen shows (the dialog is the bottom of
@@ -116,6 +117,15 @@ func defaults() []Agent {
 				Anytime: true,
 				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "Yes, and don't ask again", Input: "p"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}},
 			}, {
+				// The same dialog whose No is "No, continue without running
+				// it (d)" (an accept-or-decline request: the deny shortcut
+				// of approval_overlay.rs, its test pressing d); Escape, in
+				// its footer, cancels it.
+				Prompt:  `(?is)proceed\s*\(\s*y\s*\).{0,600}?\(\s*d\s*\)` + codexApprovalFooter,
+				Words:   codexApprovalWords,
+				Anytime: true,
+				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "No, continue without running it", Input: "d"}, {Label: "Cancel", Input: "\x1b"}},
+			}, {
 				// The same dialog without the "don't ask again" of a prefix
 				// (Codex offers it only when it has a prefix to propose):
 				// Yes and No alone, whose keys are the same.
@@ -123,6 +133,14 @@ func defaults() []Agent {
 				Words:   codexApprovalWords,
 				Anytime: true,
 				Answers: []Answer{{Label: "Yes, proceed", Input: "y"}, {Label: "No, tell Codex what to do differently", Input: "\x1b"}},
+			}, {
+				// Any other of Codex's approvals (network access: "Do you
+				// want to approve network access to …?", "Yes, just this
+				// once (y)"): its y and the footer's Escape, which cancels.
+				Prompt:  `(?is)\(\s*y\s*\).{0,800}?` + codexApprovalFooter,
+				Words:   codexApprovalWords,
+				Anytime: true,
+				Answers: []Answer{{Label: "Yes", Input: "y"}, {Label: "Cancel", Input: "\x1b"}},
 			}},
 			// Verified live (0.159.0); the id is captured, never chosen.
 			Session: &SessionRecipe{IDFrom: "hook", IDPolicy: "lowest", ResumeArgs: []string{"resume", IDArg, "-c", `tui.resume_cwd="session"`}, IDPattern: uuidPattern, ResumeNeedsCwd: true},

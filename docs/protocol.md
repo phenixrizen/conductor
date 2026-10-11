@@ -610,9 +610,10 @@ without `options`, which says the same dialog with less) and of a `done`,
 never of a prompt with `options` or a question held already; a report
 without `options` that comes after it does not hide it. While it shows it is
 held as a trust question is: a crew types no prompt, handoff or broadcast
-into it, and the owner refuses a person's `submit`, a `chat` to the agent
-and a `chat_send` with `not_sent` ("the agent asks a question on its
-screen…"). Its choices, an Enter, a digit from 1 to 9 (a dialog's list
+into it (a prompt the readiness wait typed anyway is refused, nothing
+written, and waits for the answer), and the owner refuses a person's
+`submit`, a `chat` to the agent and a `chat_send` with `not_sent` ("the
+agent asks a question on its screen…"). Its choices, an Enter, a digit from 1 to 9 (a dialog's list
 picks on its number) and Ctrl+C answer it; the same dialog drawn again
 after an answer, still there after a key that did nothing, or the next one
 in a queue, is asked again, and a dialog the screen shows with other words
@@ -636,8 +637,11 @@ last rows shown (the dialog is the bottom of what Codex draws, so its words
 in a file on the screen do not count), its words the heading and the
 command from its first `$ ` row to the first choice, every row of it, its
 answers `y`, `p` and Escape, each of which picks at once (an Enter picks the
-highlighted Yes); the same dialog without the "don't ask again" choice is
-offered Yes and No alone.
+highlighted Yes); the same dialog with "No, continue without running it
+(d)" is offered `y`, `d` and Escape (Cancel), the one without the "don't ask
+again" choice Yes and No alone, and any other of Codex's approvals with the
+same footer (network access: "Do you want to approve network access to
+…?", "Yes, just this once (y)") its `y` and Escape.
 
 ## Events
 

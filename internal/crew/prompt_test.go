@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/session/sessiontest"
 )
@@ -95,6 +96,73 @@ func TestATrustQuestionHoldsThePrompt(t *testing.T) {
 	if n := logCount(t, e, run.ID, "asks"); n != 1 {
 		t.Fatalf("the hold was noted %d times", n)
 	}
+}
+
+// codexAnytime are Codex's questions asked during the work, as the built-in
+// catalog entry has them.
+func codexAnytime() []session.StartupQuestion {
+	codex, _ := catalog.Default().Get("codex")
+	var out []session.StartupQuestion
+	for _, q := range codex.Questions {
+		if q.Anytime {
+			var answers []session.Option
+			for _, a := range q.Answers {
+				answers = append(answers, session.Option{Label: a.Label, Input: a.Input})
+			}
+			out = append(out, session.StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Words: regexp.MustCompile(q.Words), Anytime: true, Answers: answers})
+		}
+	}
+	return out
+}
+
+// A dialog the readiness wait has not seen (the agent says it waits, then
+// draws an approval, which the screen's quiet look has not raised yet)
+// holds the prompt all the same: the session finds it as the prompt is
+// submitted and refuses it, nothing typed, and the prompt waits for the
+// answer, then is typed.
+func TestAnApprovalFoundAsThePromptIsSubmittedHoldsIt(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.questions = codexAnytime()
+	fl.onLaunch = func(_ string, p *sessiontest.FakeProc, l *session.Local) {
+		l.SetAttention(session.AttentionNeedsInput, "ready?", session.SourceAPI)
+		_ = p.Print("\x1b[12;3HWould you like to run the following command?\x1b[14;3H$ curl -sI https://example.com\x1b[16;1H› 1. Yes, proceed (y)\x1b[17;3H2. No, and tell Codex what to do differently (esc)\x1b[19;3HPress enter to confirm or esc to cancel")
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for logCount(t, e, run.ID, "asks") == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got, _ := e.Get(run.ID); !logged(got, `lead asks "Would you like to run the following command? $ curl -sI https://example.com"`) || got.Members[0].Status != MemberStarting {
+		t.Fatalf("run %+v", got)
+	}
+	l, p := fl.member("lead")
+	time.Sleep(1500 * time.Millisecond)
+	if w := typed(p); len(w) != 0 {
+		t.Fatalf("typed into the approval: %q", w)
+	}
+	sub, err := l.Attach("", session.RoleControl, "", 0, 0, nopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Input(sub, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	_ = p.Print("\x1b[12;1H\x1b[J■ Conversation interrupted\r\n› ")
+	select {
+	case got := <-p.Input:
+		if string(got) != "\x1b" {
+			t.Fatalf("the person typed %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the person's Escape was not written")
+	}
+	if got := waitTyped(t, p, 10*time.Second); got != "Plan it.\r" {
+		t.Fatalf("typed %q", got)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
 }
 
 // A run's state: running while a member is pending, starting or running and

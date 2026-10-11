@@ -305,7 +305,8 @@ func (w *PatternWatcher) Poke() { w.Feed(nil) }
 
 // CheckNow looks at the text now, without waiting for the stream to go
 // quiet, and fires when it matches; it never calls miss. The quiet period
-// under way is taken: it does not look again at the same text.
+// under way is left as it is: it still looks once the stream is quiet, and
+// calls miss then if nothing matches.
 func (w *PatternWatcher) CheckNow() {
 	w.fireMu.Lock()
 	defer w.fireMu.Unlock()
@@ -314,7 +315,6 @@ func (w *PatternWatcher) CheckNow() {
 		w.mu.Unlock()
 		return
 	}
-	w.checked = w.feeds
 	line := w.tracker.Last()
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
