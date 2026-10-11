@@ -47,28 +47,34 @@ func FindPath(root, query string, deny []string) proto.FileHeader {
 // by identity; a file that matches is looked at through its folder's handle
 // for the deny list too. Folders are walked in name order, as
 // filepath.WalkDir walks them, with one of them open at a time: a folder is
-// closed while one inside it is walked and opened again from the top after
-// (openDir), so a deep tree costs time, which the bounds limit, not open
-// files.
+// closed while one inside it is walked and opened again from the top
+// (openDir) only when an entry left in it needs it, within the bounds, so
+// a deep tree costs time, which the bounds limit, not open files.
 func (f *Folder) find(query string, deny []string) proto.FileHeader {
+	h, _ := f.findWalk(query, deny)
+	return h
+}
+
+// findWalk is find, and how many folders its walk opened again.
+func (f *Folder) findWalk(query string, deny []string) (proto.FileHeader, int) {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" || len(q) > MaxFindQuery {
-		return proto.FileHeader{Path: f.Path(), Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "a find needs its words, at most 200 bytes"}}
+		return proto.FileHeader{Path: f.Path(), Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "a find needs its words, at most 200 bytes"}}, 0
 	}
 	// The deny list as looked up once, for the whole walk.
 	ds := newDenySet(deny)
 	base, _, err := f.resolve(".", ds)
 	if err != nil {
-		return deniedHeader(f.Path(), err)
+		return deniedHeader(f.Path(), err), 0
 	}
 	h := proto.FileHeader{Path: base, Kind: "find", Exists: true}
 	w := finder{f: f, deny: ds, q: q, base: base, h: &h, deadline: time.Now().Add(findTimeout), budget: proto.MaxFileHeader - 4096}
 	dir, id, err := f.openDir(".", w.deny)
 	if err != nil {
-		return deniedHeader(f.Path(), err)
+		return deniedHeader(f.Path(), err), 0
 	}
 	w.walk(".", dir, id)
-	return h
+	return h, w.reopened
 }
 
 // finder is one find's walk and what it found so far.
@@ -82,6 +88,8 @@ type finder struct {
 	budget   int
 	scanned  int
 	used     int
+	// reopened counts the folders opened again from the top (walk).
+	reopened int
 }
 
 // walk reads the folder rel, open as dir (id being dir as a file), which
@@ -98,6 +106,27 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 		return nil
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	// open has dir open again, from the top, once a folder inside it was
+	// walked and an entry left needs it; only then, and within the
+	// bounds checked before it, so going back up a deep tree costs nothing
+	// where nothing is left.
+	open := func() bool {
+		if dir != nil {
+			return true
+		}
+		again, aid, err := w.f.openDir(filepath.FromSlash(rel), w.deny)
+		w.reopened++
+		if err != nil || !os.SameFile(id, aid) {
+			// The folder changed while one inside it was walked.
+			if again != nil {
+				again.Close()
+			}
+			w.h.Truncated = true
+			return false
+		}
+		dir = again
+		return true
+	}
 	for _, e := range entries {
 		w.scanned++
 		if w.scanned > MaxFindScan || time.Now().After(w.deadline) {
@@ -110,6 +139,9 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 			if name == ".git" || name == "node_modules" {
 				continue
 			}
+			if !open() {
+				return nil
+			}
 			afterCheck()
 			child, cid, err := stepDir(dir, id, name, w.deny)
 			if err != nil {
@@ -121,20 +153,13 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 			if err := w.walk(p, child, cid); err != nil {
 				return err
 			}
-			again, aid, err := w.f.openDir(filepath.FromSlash(rel), w.deny)
-			if err != nil || !os.SameFile(id, aid) {
-				// The folder changed while one inside it was walked.
-				if again != nil {
-					again.Close()
-				}
-				w.h.Truncated = true
-				return nil
-			}
-			dir = again
 			continue
 		}
 		if !strings.Contains(strings.ToLower(name), w.q) {
 			continue
+		}
+		if !open() {
+			return nil
 		}
 		fi, err := dir.Lstat(name)
 		if err != nil || w.deny.hit(fi, name, id) {

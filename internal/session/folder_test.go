@@ -520,6 +520,9 @@ func TestRetiredSessionReadsNoFile(t *testing.T) {
 // its place.
 func TestFindPathStopsInAFolderReplacedWhileItWasWalked(t *testing.T) {
 	root, _ := linkTree(t)
+	// After sub/deep, sub has a match left to look at: the find opens sub
+	// again for it.
+	os.WriteFile(filepath.Join(root, "sub", "only-later.txt"), []byte("x"), 0o644)
 	calls := 0
 	setAfterCheck(t, func() {
 		// The first runs before the find goes into sub, the second before
@@ -542,5 +545,48 @@ func TestFindPathStopsInAFolderReplacedWhileItWasWalked(t *testing.T) {
 	}
 	if !slices.Contains(h.Matches, "sub/deep/only-inside.txt") {
 		t.Fatalf("the find lost what it walked before: %v", h.Matches)
+	}
+	if slices.Contains(h.Matches, "sub/only-later.txt") {
+		t.Fatalf("the find names a file of the folder moved away: %v", h.Matches)
+	}
+}
+
+// A find opens a folder again from the top only for an entry left in it
+// that needs it: none on the way back up a deep chain of single folders,
+// one per folder walked before an entry that is looked at. Matches keep
+// their order.
+func TestFindPathOpensAFolderAgainOnlyWhenAnEntryNeedsIt(t *testing.T) {
+	deep := t.TempDir()
+	chain := deep
+	for range 300 {
+		chain = filepath.Join(chain, "d")
+	}
+	if err := os.MkdirAll(chain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(chain, "only-bottom.txt"), []byte("x"), 0o644)
+	f, err := OpenFolder(deep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h, reopened := f.findWalk("only", nil)
+	if len(h.Matches) != 1 || !strings.HasSuffix(h.Matches[0], "d/only-bottom.txt") || h.Truncated || reopened != 0 {
+		t.Fatalf("a chain 300 deep: %v truncated %v, opened again %d times", h.Matches, h.Truncated, reopened)
+	}
+	wide := t.TempDir()
+	for _, p := range []string{"a/x-only.txt", "b/skipped.txt", "c/y-only.txt", "z-only.txt"} {
+		os.MkdirAll(filepath.Join(wide, filepath.Dir(p)), 0o755)
+		os.WriteFile(filepath.Join(wide, p), []byte("x"), 0o644)
+	}
+	g, err := OpenFolder(wide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	h, reopened = g.findWalk("only", nil)
+	// Opened again for b, c (folders to go into) and z-only.txt (a match).
+	if !slices.Equal(h.Matches, []string{"a/x-only.txt", "c/y-only.txt", "z-only.txt"}) || reopened != 3 {
+		t.Fatalf("matches %v, opened again %d times", h.Matches, reopened)
 	}
 }

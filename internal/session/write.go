@@ -113,6 +113,11 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	if inGit {
 		return errh("read_only", "a repository's .git is read only here")
 	}
+	// The .git check looked by path: the session's path must still name
+	// the folder the save goes to.
+	if err := s.folder.check(); err != nil {
+		return errh("denied", err.Error())
+	}
 	afterCheck()
 	deleted := func() proto.FileHeader {
 		out := errh("changed_on_disk", "the file was deleted since you opened it")
