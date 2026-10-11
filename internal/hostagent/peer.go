@@ -44,12 +44,18 @@ type peer struct {
 	// nvimOpening counts its nvim_opens running (queue.go).
 	typing      requestQueue
 	nvimOpening atomic.Int32
+
+	// left is closed when the peer is closed (the viewer left): what waits
+	// to tell the server of the viewer is withdrawn then. erred says the
+	// viewer's error is on its way (sendViewerError), the first alone.
+	left  chan struct{}
+	erred atomic.Bool
 }
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
 
 func newPeer(a *agent, id string, role session.Role, linkID, linkLabel string, owner bool) *peer {
-	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == ""}
+	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == "", left: make(chan struct{})}
 }
 
 // startWebRTC prepares a peer connection that answers the viewer's offer.
@@ -169,8 +175,12 @@ func (p *peer) startRelay() {
 		p.replaces = p.sub
 		p.sub = nil
 	}
-	p.relay = &relaySink{a: p.a, viewerID: p.id}
+	old := p.relay
+	p.relay = newRelaySink(p.a, p.id)
 	p.mu.Unlock()
+	if old != nil {
+		old.let()
+	}
 	if pc != nil {
 		_ = pc.Close()
 	}
@@ -479,12 +489,19 @@ func (p *peer) close() {
 		return
 	}
 	p.closed = true
-	pc, sub := p.pc, p.sub
+	pc, sub, relay := p.pc, p.sub, p.relay
 	p.pc, p.sub = nil, nil
 	p.mu.Unlock()
+	close(p.left)
 	p.typing.close()
 	if sub != nil {
 		p.a.local.Detach(sub)
+	}
+	if relay != nil {
+		// A frame of the viewer's waiting for its turn on the control
+		// connection is withdrawn; after the Detach, which ends the
+		// subscription as the viewer leaving, not as a failed write.
+		relay.let()
 	}
 	if pc != nil {
 		_ = pc.Close()

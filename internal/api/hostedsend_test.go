@@ -774,7 +774,14 @@ func TestRelayBurstHoldsWhatAPersonAsksForAtOnce(t *testing.T) {
 // the relay, as the workbench.
 func relayedViewers(t *testing.T, rendezvous, local *testEnv, token string, n int) []*wsClient {
 	t.Helper()
-	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: token, HostName: "office-server", RelayOnly: true}})
+	return relayedViewersVia(t, rendezvous, rendezvous.http.URL, local, token, n)
+}
+
+// relayedViewersVia is relayedViewers with local's host connecting to the
+// rendezvous at hostURL (another listener of its, say).
+func relayedViewersVia(t *testing.T, rendezvous *testEnv, hostURL string, local *testEnv, token string, n int) []*wsClient {
+	t.Helper()
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: hostURL, Token: token, HostName: "office-server", RelayOnly: true}})
 	localID := local.createSession("cat")
 	var hostedID string
 	if !waitFor(10*time.Second, func() bool {

@@ -199,12 +199,14 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	// session's file reads and saves go through it.
 	folder, err := session.OpenFolder(dir)
 	if err != nil {
+		a.dropConn(firstConn)
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
 	dirFile, err := folder.Dir()
 	if err != nil {
 		folder.Close()
+		a.dropConn(firstConn)
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
@@ -212,6 +214,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	dirFile.Close()
 	if err != nil {
 		folder.Close()
+		a.dropConn(firstConn)
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
@@ -295,16 +298,26 @@ type agent struct {
 	proc  *pty.Process
 	log   *slog.Logger
 
-	mu      sync.Mutex
-	sessID  string
-	secret  string
-	ice     []proto.ICEServer
-	conn    *websocket.Conn
+	mu     sync.Mutex
+	sessID string
+	secret string
+	ice    []proto.ICEServer
+	// out writes on the current control connection (controlWriter); nil
+	// while there is none.
+	out     *controlWriter
 	peers   map[string]*peer
 	flushed chan struct{}
 
 	agentToken    string
 	lastAttention session.Attention
+	// attentionUntold says the last attention change was not sent for want
+	// of a connection: the next change sends it, whatever it is.
+	// attentionRetry says a retry of one that had no turn in time is under
+	// way (retryAttention); attentionOf is the session the last change was
+	// of. Guarded by mu.
+	attentionUntold bool
+	attentionRetry  bool
+	attentionOf     string
 	// instance and localID fix the session's id on the server across its
 	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
 	instance, localID string
@@ -331,6 +344,10 @@ type agent struct {
 	sendHook func(v any)
 	// submitWait replaces submitTimeout in tests.
 	submitWait time.Duration
+	// relayWait replaces relayTurnWait, and stallWait writeStall, in tests.
+	relayWait, stallWait time.Duration
+	// controlWait replaces controlTurnWait in tests.
+	controlWait time.Duration
 }
 
 // submitDeadline is when a submission arriving now must be done by: its
@@ -459,11 +476,12 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if a.opts.Token != "" {
 		header["Authorization"] = []string{"Bearer " + a.opts.Token}
 	}
-	dial := &websocket.DialOptions{HTTPHeader: header}
+	var base *http.Client
 	if a.opts.ServerIsOwners {
-		dial.HTTPClient = ownersServerClient()
+		base = ownersServerClient()
 	}
-	c, resp, err := websocket.Dial(dialCtx, a.wsURL, dial)
+	// The connection's socket is a pacedConn (controlWriter).
+	c, pc, resp, err := pacedDial(dialCtx, a.wsURL, header, base, a.stallWait)
 	cancel()
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
@@ -526,8 +544,8 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if len(a.opts.ICEServers) > 0 {
 		a.ice = a.opts.ICEServers
 	}
-	a.conn = c
 	a.mu.Unlock()
+	a.useConn(c, pc)
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
 	if first && a.opts.Registered != nil {
 		a.opts.Registered(registered.SessionID, registered.ShareBaseURL)
@@ -582,12 +600,65 @@ func lastElement(dir string) string {
 func (a *agent) onLocalChange(info session.Info) {
 	att := a.toServer(info.Attention)
 	a.mu.Lock()
-	changed := att.State != a.lastAttention.State || att.Message != a.lastAttention.Message || att.Kind != a.lastAttention.Kind || len(att.Options) != len(a.lastAttention.Options)
-	a.lastAttention = att
+	changed := a.attentionUntold || !sameAttention(att, a.lastAttention)
+	a.lastAttention, a.attentionOf = att, info.ID
+	retrying := a.attentionRetry
 	a.mu.Unlock()
-	if changed {
-		a.send(hostAttentionMsg(info.ID, att))
+	if !changed || retrying {
+		// A retry under way sends the latest when its turn comes.
+		return
 	}
+	err := a.send(hostAttentionMsg(info.ID, att))
+	switch {
+	case err == nil:
+		a.mu.Lock()
+		a.attentionUntold = false
+		a.mu.Unlock()
+	case errors.Is(err, errConnDown):
+		// No connection: the session's next change tells it, and a new
+		// connection is told the current attention as it starts.
+		a.mu.Lock()
+		a.attentionUntold = true
+		a.mu.Unlock()
+	default:
+		// No turn in time on a connection the server reads slowly.
+		a.retryAttention()
+	}
+}
+
+// retryAttention sends the latest attention as soon as the connection takes
+// it, however long that waits while the connection lasts, and again while
+// it changed meanwhile: one retry at a time, and while it runs the changes
+// are only noted (onLocalChange), so the server is told them in order.
+func (a *agent) retryAttention() {
+	a.mu.Lock()
+	if a.attentionRetry {
+		a.mu.Unlock()
+		return
+	}
+	a.attentionRetry = true
+	a.mu.Unlock()
+	go func() {
+		for {
+			a.mu.Lock()
+			att, id := a.lastAttention, a.attentionOf
+			a.mu.Unlock()
+			err := a.tell(hostAttentionMsg(id, att), nil)
+			a.mu.Lock()
+			if err != nil || sameAttention(att, a.lastAttention) {
+				a.attentionRetry = false
+				a.attentionUntold = err != nil
+				a.mu.Unlock()
+				return
+			}
+			a.mu.Unlock()
+		}
+	}()
+}
+
+// sameAttention says whether x and y tell the server the same.
+func sameAttention(x, y session.Attention) bool {
+	return x.State == y.State && x.Message == y.Message && x.Kind == y.Kind && len(x.Options) == len(y.Options)
 }
 
 // toServer is an attention change as the server is told it: in full to the
@@ -671,7 +742,8 @@ func (a *agent) settle(ctx context.Context) {
 // flushViewers waits for the viewers to be handed the frames queued for them,
 // and for the data channels of the WebRTC viewers to have what they were given
 // acknowledged. A relay viewer's frames go out on the control connection, which
-// closes once settle returns, and a data channel drops what it still holds when
+// closes once settle returns (and drops what its socket has not taken yet), and
+// a data channel drops what it still holds when
 // its connection is closed: a frame that is queued or held by then is lost, and
 // the viewer is left without the status that says the session ended. Run it
 // after flushActivity: the session announces its end, and only then queues the
@@ -679,11 +751,23 @@ func (a *agent) settle(ctx context.Context) {
 func (a *agent) flushViewers(ctx context.Context) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
-		if a.local.Drained() && !a.channelsBuffered() {
+		if a.local.Drained() && !a.channelsBuffered() && a.unsent() == 0 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// unsent is what the control connection holds that its socket has not
+// taken yet (pacedConn), which closing the connection drops.
+func (a *agent) unsent() int {
+	a.mu.Lock()
+	w := a.out
+	a.mu.Unlock()
+	if w == nil {
+		return 0
+	}
+	return w.unsent()
 }
 
 // channelsBuffered reports whether the data channel of a WebRTC viewer still
@@ -723,25 +807,66 @@ func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivi
 	return proto.HostActivityMsg{T: proto.HostActivity, SessionID: sessionID, Entry: session.EntryToProto(e)}
 }
 
+// useConn makes c, whose socket is pc, the control connection the host
+// writes on, through a controlWriter of its own, which ends with the
+// connection (dropConn). A connection dialed without a pacedConn (nil) is
+// written to as its socket takes it.
+func (a *agent) useConn(c *websocket.Conn, pc *pacedConn) *controlWriter {
+	w := newControlWriter(c, pc)
+	w.controlTurn = a.controlWait
+	a.mu.Lock()
+	old := a.out
+	a.out = w
+	a.mu.Unlock()
+	if old != nil {
+		old.stop()
+	}
+	return w
+}
+
+// writerFor is the writer of c, made now when c has none.
+func (a *agent) writerFor(c *websocket.Conn) *controlWriter {
+	a.mu.Lock()
+	w := a.out
+	a.mu.Unlock()
+	if w != nil && w.c == c {
+		return w
+	}
+	return a.useConn(c, nil)
+}
+
+// dropConn ends the writer of c, if it is the current one: what waits to be
+// written on c is answered errConnDown.
+func (a *agent) dropConn(c *websocket.Conn) {
+	a.mu.Lock()
+	w := a.out
+	if w != nil && w.c == c {
+		a.out = nil
+	} else {
+		w = nil
+	}
+	a.mu.Unlock()
+	if w != nil {
+		w.stop()
+	}
+}
+
 // serveConn processes messages on an established control connection until
 // it fails. Peers are closed when the connection ends.
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
+	w := a.writerFor(c)
 	// Re-send the current attention after a reconnect.
 	if att := a.toServer(a.local.Info().Attention); att.State != session.AttentionNone {
 		a.send(hostAttentionMsg(a.sessionID(), att))
 	}
 	defer func() {
-		a.mu.Lock()
-		if a.conn == c {
-			a.conn = nil
-		}
-		a.mu.Unlock()
+		a.dropConn(c)
 		a.closeAllPeers()
 	}()
 
 	// Report the current status in case the process ended while disconnected.
-	go a.watchStatus(ctx, c)
+	go a.watchStatus(ctx, w)
 
 	for {
 		typ, data, err := c.Read(ctx)
@@ -768,14 +893,20 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	}
 }
 
-func (a *agent) watchStatus(ctx context.Context, c *websocket.Conn) {
+func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 	select {
 	case <-ctx.Done():
 		return
+	case <-w.done:
+		// The connection ended: the next one's watcher reports.
+		return
 	case <-a.local.Ended():
 	}
+	a.handViewersTheEnd(ctx, w.done)
 	info := a.local.Info()
-	_ = writeJSON(ctx, c, proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode})
+	if b, err := json.Marshal(proto.HostStatusMsg{T: proto.HostStatus, SessionID: info.ID, Status: string(info.Status), ExitCode: info.ExitCode}); err == nil {
+		_ = w.sendControl(websocket.MessageText, b)
+	}
 	a.mu.Lock()
 	if a.flushed == nil {
 		a.flushed = make(chan struct{})
@@ -784,10 +915,42 @@ func (a *agent) watchStatus(ctx context.Context, c *websocket.Conn) {
 	a.mu.Unlock()
 }
 
-// flushStatus waits briefly for the final status message to be sent. It gives
-// up at once when ctx is cancelled: watchStatus stops then without sending it.
+// endDrain bounds how long the session's end waits for the viewers to be
+// handed their last frames before the server is told of it
+// (handViewersTheEnd).
+const endDrain = 2 * time.Second
+
+// handViewersTheEnd waits, at most endDrain, until the session's last
+// frames for its viewers, its final status entry among them, have been
+// handed to their transports: those of the relayed viewers then go out on
+// the control connection ahead of what is handed to it after, the
+// session's end among it. The server ends a hosted session's links when it
+// hears the session ended (and the publishing server revokes them when its
+// session ends, requestRevoke), and with them the viewers attached through
+// them, dropping what was not relayed to them yet; the host's own messages
+// otherwise go ahead of relayed frames (controlWriter). done, when not nil,
+// ends the wait (the connection's writer ending).
+func (a *agent) handViewersTheEnd(ctx context.Context, done <-chan struct{}) {
+	deadline := time.Now().Add(endDrain)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if a.statusQueued.Load() && a.local.Drained() {
+			return
+		}
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// flushStatus waits briefly for the final status message to be sent, the
+// viewers' last frames handed first (handViewersTheEnd). It gives up at once
+// when ctx is cancelled: watchStatus stops then without sending it.
 func (a *agent) flushStatus(ctx context.Context) {
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(endDrain + 2*time.Second)
 	for {
 		a.mu.Lock()
 		done := a.flushed
@@ -1000,8 +1163,18 @@ func (a *agent) requestLink(ctx context.Context, role string, ttl time.Duration,
 
 // requestRevoke asks the server to revoke a link it minted for the session
 // and waits for the answer; a link the server does not know answers
-// "not_found: …".
+// "not_found: …". While the session runs the request goes at once, ahead
+// of relayed frames; once it has ended (the publishing server ends its
+// links then), after the viewers' last frames (handViewersTheEnd), which
+// the revocation would drop.
 func (a *agent) requestRevoke(ctx context.Context, linkID string) error {
+	if a.local != nil {
+		select {
+		case <-a.local.Ended():
+			a.handViewersTheEnd(ctx, nil)
+		default:
+		}
+	}
 	_, err := a.ask(ctx, func(id string) any {
 		return proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: id, LinkID: linkID}
 	})
@@ -1067,44 +1240,91 @@ func (a *agent) answerLink(id string, link proto.LinkCreated, err error) {
 	}
 }
 
-// send delivers a JSON message on the current control connection.
-func (a *agent) send(v any) {
+// send delivers a JSON message on the current control connection, ahead of
+// the relayed frames waiting (controlWriter); one that waits longer than
+// controlTurnWait is dropped. The error says it was not sent; most callers
+// need not know.
+func (a *agent) send(v any) error {
 	if a.sendHook != nil {
 		a.sendHook(v)
-		return
+		return nil
 	}
 	a.mu.Lock()
-	c := a.conn
+	w := a.out
 	a.mu.Unlock()
-	if c == nil {
-		return
+	if w == nil {
+		return errConnDown
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := writeJSON(ctx, c, v); err != nil {
+	b, err := json.Marshal(v)
+	if err == nil {
+		err = w.sendControl(websocket.MessageText, b)
+	}
+	if err != nil {
 		a.log.Debug("control send failed", "err", err)
 	}
+	return err
 }
 
-// sendRelay delivers a relayed terminal frame for a viewer.
-func (a *agent) sendRelay(viewerID string, frame []byte) error {
+// sendRelay delivers a relayed terminal frame for a viewer, in its turn
+// among the other viewers' (controlWriter): session.ErrSlowConsumer when the
+// turn does not come within relayTurnWait, errViewerGone when gone closes
+// first. Neither touches the connection.
+func (a *agent) sendRelay(viewerID string, frame []byte, gone <-chan struct{}) error {
 	env, err := proto.EncodeRelay(viewerID, frame)
 	if err != nil {
 		return err
 	}
 	a.mu.Lock()
-	c := a.conn
+	w := a.out
 	a.mu.Unlock()
-	if c == nil {
-		return errors.New("host: control connection down")
+	if w == nil {
+		return errConnDown
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return c.Write(ctx, websocket.MessageBinary, env)
+	turn := relayTurnWait
+	if a.relayWait > 0 {
+		turn = a.relayWait
+	}
+	return w.sendRelay(env, turn, gone)
 }
 
+// sendViewerError tells the server a viewer's error, which closes the viewer
+// there: on a goroutine of its own, for its caller may be the one reading
+// the connection, and waiting as long as the connection lasts and the
+// viewer is there (tell), the first of a viewer's alone, for the first
+// closes it. One for a viewer that has left goes nowhere.
 func (a *agent) sendViewerError(viewerID, code, msg string) {
-	a.send(proto.ViewerError{T: proto.HostViewerError, ViewerID: viewerID, Code: code, Message: msg})
+	p := a.peer(viewerID)
+	if p == nil || !p.erred.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		_ = a.tell(proto.ViewerError{T: proto.HostViewerError, ViewerID: viewerID, Code: code, Message: msg}, p.left)
+	}()
+}
+
+// tell is send for a message the server must have while the connection
+// lasts (a viewer's close or error, which lets the viewer go there too): it
+// waits for its turn as long as the connection does, or until gone closes
+// (the viewer left, and the server let it go itself).
+func (a *agent) tell(v any, gone <-chan struct{}) error {
+	if a.sendHook != nil {
+		a.sendHook(v)
+		return nil
+	}
+	a.mu.Lock()
+	w := a.out
+	a.mu.Unlock()
+	if w == nil {
+		return errConnDown
+	}
+	b, err := json.Marshal(v)
+	if err == nil {
+		err = w.sendControlWhole(websocket.MessageText, b, gone)
+	}
+	if err != nil {
+		a.log.Debug("control send failed", "err", err)
+	}
+	return err
 }
 
 func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {

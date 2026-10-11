@@ -68,6 +68,13 @@ sequenceDiagram
 
 The host reuses `session.Local` unchanged; only the sinks differ (a pion data
 channel with backpressure, or a relay sink that wraps frames in RELAY envelopes).
+Everything the host writes on its control connection goes through one writer
+per connection (`hostagent/controlwriter.go`): the host's own messages ahead
+of the relayed frames, the relayed viewers in turn, and a socket whose writes
+never wait, so the WebSocket library's own time limits (a write's, a ping's
+answer) never fire on a server that reads slowly; a relayed viewer whose frame
+waits too long for its turn is let go alone, and the connection is given up
+only when its socket takes nothing for two minutes.
 The server never sees terminal bytes on the WebRTC path and never runs the
 command. On the relay path it carries them and can read them; and since it
 carries the signalling and tells the host each viewer's role, a host trusts
