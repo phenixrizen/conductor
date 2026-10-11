@@ -162,7 +162,7 @@ func TestFileWriteAndEditorRefuseTheDenyList(t *testing.T) {
 	s := NewLocal(Info{ID: "sess", Cwd: dir, Cols: 80, Rows: 24}, p, Options{ScrollbackBytes: 4096, FileDeny: DenyList([]string{data}, []string{cfg})})
 	t.Cleanup(func() { p.exit() })
 	sink := newChanSink(false)
-	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, sink)
 	if err != nil {
 		t.Fatal(err)
 	}
