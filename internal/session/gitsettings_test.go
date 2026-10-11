@@ -213,7 +213,7 @@ func TestCopiesOfAGitConfigAreForControllers(t *testing.T) {
 func TestNamesAreComparedWithoutTheCharactersHFSIgnores(t *testing.T) {
 	held := newDenySet(nil)
 	never := func() bool { return false }
-	for _, n := range []string{".gitcon\u200cfig", ".GIT\u200dCONFIG.local", "git\ufeffconfig", ".git-cred\u200centials"} {
+	for _, n := range []string{".gitcon\u200cfig", ".GIT\u200dCONFIG.local", "git\ufeffconfig", ".git-cred\u200centials", "gitconfig~\u200c", "\u200c#gitconfig#", "#\u200dgitconfig\u200c#", ".\u200c#GitConfig"} {
 		if !forControllers("dotfiles/"+n, "/x/dotfiles/"+n, held, never) {
 			t.Errorf("%q not held", n)
 		}

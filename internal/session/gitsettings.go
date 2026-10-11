@@ -55,7 +55,7 @@ func gitconfigName(n string) bool {
 	if containsFold(n, ".gitconfig") {
 		return true
 	}
-	t := strings.TrimRight(strings.TrimLeft(n, "#.~"), "#~")
+	t := strings.TrimRight(strings.TrimLeft(foldName(n), "#.~"), "#~")
 	return sameName(t, "gitconfig") || hasPrefixFold(t, "gitconfig.")
 }
 
