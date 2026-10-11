@@ -54,9 +54,11 @@ type nvimEditor struct {
 }
 
 // nvimEndWait bounds how long end lets Neovim leave on its own (a quit hook
-// that hangs holds `:qa!` and the exit) before it ends it with its context.
+// that hangs holds `:qa!` and the exit) before it ends it with its context:
+// as long as the client's own close let it, so that a Neovim slow to leave
+// on a loaded machine still writes its state and removes its swap files.
 // A session takes it as it is made (Local.nvimEndWait); tests shorten it.
-var nvimEndWait = 5 * time.Second
+var nvimEndWait = 10 * time.Second
 
 // nvimReap is how long, past nvimEndWait, WaitEditors gives an editor
 // ended with its context to be reaped.
