@@ -840,8 +840,12 @@ request each from main.
     submissions wait in a bounded queue of their own, in order, each with its
     deadline from arrival.
   - **Files on a host** (#103). A `conductor host` session refuses the files
-    of the server on its machine (its data directory, config and catalog,
-    the desktop app's), as a server session does.
+    of the server on its machine, as a server session does. It knows them
+    from where `conductor serve` would find them: `~/.conductor`, the
+    desktop app's directories and settings, `CONDUCTOR_DATA_DIR` and
+    `CONDUCTOR_CATALOG_PATH`. A config file elsewhere comes with
+    `--server-config`, and a data directory the Windows app moves for its
+    WSL server with `CONDUCTOR_DATA_DIR` (README, the Files tab).
   - **Neovim** (#104). The editor's Neovim is kept for the owner's own
     windows. A link or an invite edits with the editor's keys and Save. On a
     host, a server's window is the owner's only with `--server-is-mine`, for
