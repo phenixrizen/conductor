@@ -182,8 +182,9 @@ func TestRelayedViewerIsSlowedToItsAddressBudget(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := newTestEnv(t, mutate)
 			host := dialFakeHost(t, e, "hosted-agent-token")
+			tok := host.link("control", "")
 			tap := tapRelays(t, host)
-			v := dialViewer(t, e, host.sessionID, adminToken)
+			v := dialViewer(t, e, host.sessionID, tok)
 			id := joinRelayed(t, host, v)
 			// 1 MiB: past the burst of 512 KiB the rest goes at 256 KiB/s, two
 			// seconds or more.
@@ -211,10 +212,11 @@ func TestViewersOfOneAddressShareOneBudget(t *testing.T) {
 	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
+	tok := host.link("control", "")
 	tap := tapRelays(t, host)
-	a := dialViewer(t, e, host.sessionID, adminToken)
+	a := dialViewer(t, e, host.sessionID, tok)
 	idA := joinRelayed(t, host, a)
-	b := dialViewer(t, e, host.sessionID, adminToken)
+	b := dialViewer(t, e, host.sessionID, tok)
 	idB := joinRelayed(t, host, b)
 	const each = 512 << 10
 	start := time.Now()
@@ -349,9 +351,10 @@ func TestAViewerThatComesBackFindsItsBudgetSpent(t *testing.T) {
 	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
+	tok := host.link("control", "")
 	tap := tapRelays(t, host)
 	const burst = 512 << 10
-	first := dialViewer(t, e, host.sessionID, adminToken)
+	first := dialViewer(t, e, host.sessionID, tok)
 	idFirst := joinRelayed(t, host, first)
 	go flood(t.Context(), first, burst)
 	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idFirst) >= burst }) {
@@ -359,7 +362,7 @@ func TestAViewerThatComesBackFindsItsBudgetSpent(t *testing.T) {
 	}
 	first.c.Close(websocket.StatusNormalClosure, "")
 	host.expect(proto.HostViewerLeave)
-	again := dialViewer(t, e, host.sessionID, adminToken)
+	again := dialViewer(t, e, host.sessionID, tok)
 	idAgain := joinRelayed(t, host, again)
 	start := time.Now()
 	go flood(t.Context(), again, burst)
@@ -377,10 +380,11 @@ func TestAnotherAddressKeepsItsOwnViewerBudget(t *testing.T) {
 	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
+	tok := host.link("control", "")
 	tap := tapRelays(t, host)
-	b := dialViewerFrom(t, e, "127.0.0.2", host.sessionID, adminToken)
+	b := dialViewerFrom(t, e, "127.0.0.2", host.sessionID, tok)
 	idB := joinRelayed(t, host, b)
-	a := dialViewer(t, e, host.sessionID, adminToken)
+	a := dialViewer(t, e, host.sessionID, tok)
 	idA := joinRelayed(t, host, a)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -416,8 +420,9 @@ func TestOrdinaryViewerTrafficPassesUnderTheDefaultBudget(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := newTestEnv(t, mutate)
 			host := dialFakeHost(t, e, "hosted-agent-token")
+			tok := host.link("control", "")
 			tap := tapRelays(t, host)
-			v := dialViewer(t, e, host.sessionID, adminToken)
+			v := dialViewer(t, e, host.sessionID, tok)
 			id := joinRelayed(t, host, v)
 			var want [][]byte
 			for i := 0; i < 200; i++ {
@@ -478,7 +483,7 @@ func TestRelayBurstHoldsWhatAPersonAsksForAtOnce(t *testing.T) {
 func relayedViewers(t *testing.T, rendezvous, local *testEnv, token string, n int) []*wsClient {
 	t.Helper()
 	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: token, HostName: "office-server", RelayOnly: true}})
-	local.createSession("cat")
+	localID := local.createSession("cat")
 	var hostedID string
 	if !waitFor(10*time.Second, func() bool {
 		rendezvous.srv.Registry().Each(func(d session.Driver) {
@@ -490,9 +495,21 @@ func relayedViewers(t *testing.T, rendezvous, local *testEnv, token string, n in
 	}) {
 		t.Fatal("the rendezvous never listed the session")
 	}
+	// A switchyard's workbench token has no role on a published session: the
+	// viewers come by a link the publishing server mints there.
+	viewerTok := adminToken
+	if rendezvous.srv.cfg.Switchyard.Enabled {
+		resp, out := local.do("POST", "/api/sessions/"+localID+"/links", adminToken, map[string]any{"role": "control"})
+		u, _ := out["url"].(string)
+		_, tok, ok := strings.Cut(u, "/join/")
+		if resp.StatusCode != http.StatusCreated || !ok || tok == "" {
+			t.Fatalf("a link on the switchyard: %d %v", resp.StatusCode, out)
+		}
+		viewerTok = tok
+	}
 	viewers := make([]*wsClient, n)
 	for i := range viewers {
-		v := dialViewer(t, rendezvous, hostedID, adminToken)
+		v := dialViewer(t, rendezvous, hostedID, viewerTok)
 		v.expectControl(proto.CtlWelcome)
 		relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
 		v.send(relay)
@@ -614,8 +631,8 @@ func TestThreeLargestSavesFromOneAddressAnswerWithinTheBrowsersDeadline(t *testi
 // Three tabs read a large file each, all at once, from a session an open
 // host publishes on a switchyard and relays to them: under the default
 // bound on what open hosts relay, each answer comes well inside the
-// browser's deadline. (960 KiB: a file of 1 MiB or more disconnects the
-// viewer today, a bug of its own in docs/tasks-todo.md.)
+// browser's deadline. Each file is the largest a FILE frame carries whole
+// (session.MaxFileFrameBody).
 func TestThreeLargeReadsFromAnOpenHostAnswerWithinTheBrowsersDeadline(t *testing.T) {
 	switchyard := openSwitchyardEnv(t, nil)
 	if switchyard.srv.cfg.Switchyard.OpenHostRelayKBps != config.Defaults().Switchyard.OpenHostRelayKBps {
@@ -623,7 +640,7 @@ func TestThreeLargeReadsFromAnOpenHostAnswerWithinTheBrowsersDeadline(t *testing
 	}
 	local := newTestEnv(t, nil)
 	names := []string{"a.txt", "b.txt", "c.txt"}
-	const size = 960 << 10
+	const size = session.MaxFileFrameBody
 	for i, n := range names {
 		if err := os.WriteFile(filepath.Join(local.root, n), bytes.Repeat([]byte{byte('a' + i)}, size), 0o600); err != nil {
 			t.Fatal(err)
@@ -664,6 +681,8 @@ func TestViewersComingAndGoingArePaidForByTheirAddress(t *testing.T) {
 	const rate = 1024 // viewerRelayKBps 1: a burst of 2 KiB
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; c.ViewerRelayKBps = 1 })
 	host := dialFakeHost(t, e, "hosted-agent-token")
+	tok := host.link("control", "")
+	// What each owes at least: a join (its link's id besides) and a leave.
 	join, _ := json.Marshal(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: "0123456789abcdef", Role: "control"})
 	leave, _ := json.Marshal(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: "0123456789abcdef"})
 	// A hosted viewer is welcomed without a hello: the viewers send nothing,
@@ -671,13 +690,13 @@ func TestViewersComingAndGoingArePaidForByTheirAddress(t *testing.T) {
 	const churn = 40
 	start := time.Now()
 	for range churn {
-		v := dialViewer(t, e, host.sessionID, adminToken)
+		v := dialViewer(t, e, host.sessionID, tok)
 		v.expectControl(proto.CtlWelcome)
 		v.c.Close(websocket.StatusNormalClosure, "")
 	}
 	// One more of the address joins: its join goes once the address has
 	// paid for the others' joins and leaves, past the burst.
-	last := dialViewer(t, e, host.sessionID, adminToken)
+	last := dialViewer(t, e, host.sessionID, tok)
 	id, _ := last.expectControl(proto.CtlWelcome)["viewerId"].(string)
 	deadline := time.After(30 * time.Second)
 	for got := false; !got; {
@@ -702,7 +721,7 @@ func TestAViewersOffersAreChargedAsTheHostGetsThem(t *testing.T) {
 	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
-	v := dialViewer(t, e, host.sessionID, adminToken)
+	v := dialViewer(t, e, host.sessionID, host.link("control", ""))
 	v.hello(80, 24)
 	v.expectControl(proto.CtlWelcome)
 	host.expect(proto.HostViewerJoin)
@@ -734,10 +753,11 @@ func TestHostAndOtherViewersStayResponsiveDuringAFlood(t *testing.T) {
 	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true; viewerBudget(c) })
 	host := dialFakeHost(t, e, "hosted-agent-token")
+	tok := host.link("control", "")
 	tap := tapRelays(t, host)
-	a := dialViewer(t, e, host.sessionID, adminToken)
+	a := dialViewer(t, e, host.sessionID, tok)
 	idA := joinRelayed(t, host, a)
-	b := dialViewer(t, e, host.sessionID, adminToken)
+	b := dialViewer(t, e, host.sessionID, tok)
 	idB := joinRelayed(t, host, b)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -767,7 +787,7 @@ func TestHostAndOtherViewersStayResponsiveDuringAFlood(t *testing.T) {
 		}
 	}
 	// A viewer joining is told to the host as ever.
-	c := dialViewer(t, e, host.sessionID, adminToken)
+	c := dialViewer(t, e, host.sessionID, tok)
 	c.hello(80, 24)
 	c.expectControl(proto.CtlWelcome)
 	host.expect(proto.HostViewerJoin)

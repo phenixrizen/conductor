@@ -233,7 +233,7 @@ func TestSwitchyardRelayBoundCountsAHostsMessages(t *testing.T) {
 		c.Switchyard.RelayKBps = 256
 	})
 	host := dialFakeHost(t, e, "hosted-agent-token")
-	v := dialViewer(t, e, host.sessionID, adminToken)
+	v := dialViewer(t, e, host.sessionID, host.link("view", ""))
 	v.hello(80, 24)
 	v.expectControl(proto.CtlWelcome)
 	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
