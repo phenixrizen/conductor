@@ -705,11 +705,11 @@ func TestFileReadsNeverReachCopiesBesideASymlinkedConfigTarget(t *testing.T) {
 }
 
 // git's settings and credentials often hold access tokens: a remote URL with
-// one in it, an extra header, a credential store. A view link reads neither
-// a repository's config nor config.worktree in its .git, nor a
-// .git-credentials or .gitconfig in the folder, nor one a revision keeps
+// one in it, an extra header, a credential store. A view link reads nothing
+// of a repository's .git (its config, config.worktree, the rest of it), nor
+// a .git-credentials or .gitconfig in the folder, nor one a revision keeps
 // (show): it is answered file_denied, over HTTP and in-band. The owner still
-// reads them all, and the rest of .git and of the folder still reads.
+// reads them all, and the rest of the folder still reads.
 func TestRepositorySettingsAreForControllers(t *testing.T) {
 	const secret = "ghp-token-in-the-remote-url"
 	e := newTestEnv(t, nil)
@@ -740,21 +740,19 @@ func TestRepositorySettingsAreForControllers(t *testing.T) {
 	id := e.createSession("cat")
 	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
 	view := lo["token"].(string)
-	held := []string{".git/config", ".git/config.worktree", ".git-credentials", ".gitconfig", filepath.Join(e.root, ".git", "config")}
+	held := []string{".git/config", ".git/config.worktree", ".git-credentials", ".gitconfig", filepath.Join(e.root, ".git", "config"), ".git/HEAD", ".git"}
 	for _, p := range held {
 		for _, mode := range []string{"raw", "stat", ""} {
 			if status, got, code := e.getFile(id, view, p, mode); status != http.StatusForbidden || code != proto.ErrCodeFileDenied || strings.Contains(got, secret) {
 				t.Errorf("view link, HTTP %q (mode %q): %d %s", p, mode, status, got)
 			}
 		}
-		if status, got, _ := e.getFile(id, adminToken, p, "raw"); status != http.StatusOK || !strings.Contains(got, secret) {
+		if status, got, _ := e.getFile(id, adminToken, p, "raw"); status != http.StatusOK || (!strings.HasPrefix(p, ".git/HEAD") && p != ".git" && !strings.Contains(got, secret)) {
 			t.Errorf("owner, HTTP %q: %d %q", p, status, got)
 		}
 	}
-	for _, p := range []string{".git/HEAD", "README"} {
-		if status, _, _ := e.getFile(id, view, p, "raw"); status != http.StatusOK {
-			t.Errorf("view link, HTTP %q: %d", p, status)
-		}
+	if status, _, _ := e.getFile(id, view, "README", "raw"); status != http.StatusOK {
+		t.Errorf("view link, HTTP README: %d", status)
 	}
 	c := dialViewer(t, e, id, view)
 	c.hello(80, 24)
@@ -856,6 +854,25 @@ func TestFileReadsNeverReachAnotherConductorsFiles(t *testing.T) {
 		if h, b := c.expectFile(reqID); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
 			t.Errorf("file_get %q: %+v %q", p, h, b)
 		}
+	}
+	// The desktop app moves its server's data into the home while this
+	// server runs: it is refused from the next request on.
+	moved := filepath.Join(home, "app-data")
+	if err := os.MkdirAll(moved, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moved, "catalog.json"), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "conductor-desktop", "settings.json"), []byte(`{"dataDir": "`+moved+`", "switchyardToken": "`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, got, code := e.getFile(id, view, "app-data/catalog.json", "raw"); status != http.StatusForbidden || code != "denied" || strings.Contains(got, secret) {
+		t.Errorf("HTTP, a data directory the app moved to: %d %s", status, got)
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "moved", Path: "app-data/catalog.json"}))
+	if h, b := c.expectFile("moved"); h.Kind != "error" || h.Error == nil || h.Error.Code != "denied" || len(b) != 0 {
+		t.Errorf("file_get, a data directory the app moved to: %+v %q", h, b)
 	}
 }
 

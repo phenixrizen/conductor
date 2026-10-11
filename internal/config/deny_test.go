@@ -495,6 +495,54 @@ func TestLocalFileDeny(t *testing.T) {
 	})
 }
 
+// A server's FileDenyFunc follows what the desktop app's settings name while
+// the server runs, and keeps what it named before: a data directory the app
+// moves to is refused from then on, and the one it left stays refused.
+// Settings that cannot be read meanwhile take nothing away.
+func TestFileDenyFuncFollowsTheDesktopApp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	base, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(t.TempDir(), "data")
+	deny := (&Config{DataDir: data}).FileDenyFunc()
+	first := deny()
+	if !slices.Contains(first, data) || !slices.Contains(first, filepath.Join(home, ".conductor")) {
+		t.Fatalf("first: %q", first)
+	}
+	settings := filepath.Join(base, "conductor-desktop", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, b := filepath.Join(home, "work", "app-data-a"), filepath.Join(home, "work", "app-data-b")
+	for _, d := range []string{a, b} {
+		if slices.Contains(first, d) {
+			t.Fatalf("%s named before the settings did: %q", d, first)
+		}
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(settings, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"dataDir": "` + a + `"}`)
+	if got := deny(); !slices.Contains(got, a) {
+		t.Fatalf("after the app named %s: %q", a, got)
+	}
+	write(`{"dataDir": "` + b + `"}`)
+	if got := deny(); !slices.Contains(got, a) || !slices.Contains(got, b) {
+		t.Fatalf("after the app moved to %s: %q", b, got)
+	}
+	write(`{oops`)
+	if got := deny(); !slices.Contains(got, a) || !slices.Contains(got, b) || !slices.Contains(got, data) {
+		t.Fatalf("settings that cannot be read: %q", got)
+	}
+}
+
 // LocalFileDenyFunc follows what the config file and the desktop app's
 // settings name while a session runs, and keeps what it named before: a
 // data directory moved is refused at both places. A config file that cannot

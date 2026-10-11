@@ -725,7 +725,9 @@ app's own directory (`conductor-desktop` and `Conductor` in the user's config
 directory, and the one `CONDUCTOR_DESKTOP_DIR` names, which the app sets for
 the server it starts: on Windows its folder in the Windows profile, under
 `/mnt` inside WSL), its settings file as a config file, the data directory
-those settings name and `~/.local/share/conductor/data`. The config file, the
+those settings name and `~/.local/share/conductor/data`, looked up again at
+each request and kept once named, so a data directory the app moves to while
+the server runs is refused from then on. The config file, the
 catalog file and the settings file are matched as files, so a link to them is
 refused as well; the copies are matched by name alone. One of these paths that is not on
 disk (a data directory never made, a config file moved away) is matched by its
@@ -763,17 +765,20 @@ four requests may be in flight per client. `stat:true` returns only the header.
 
 The `fileView` server setting decides who may read: `view` (both roles, the
 default), `control` (controllers only) or `off`; `conductor host --file-view`
-does the same for a hosted session. A view link is not given git's settings
-and credentials, which often hold access tokens (a remote URL with one in it,
-an extra header, a credential store): in a repository's `.git`, any name that
-contains `config` or `credential` (`config`, `config.worktree`, a linked
-worktree's, a submodule's and the copies beside them); anywhere, a name that
+does the same for a hosted session. A view link is not given a repository's
+`.git` nor git's settings and credentials, which often hold access tokens (a
+remote URL with one in it, an extra header, a credential store): nothing of a
+repository's `.git`, however the path reaches it (the rules that make it read
+only: a `.git` element, a linked worktree's or a submodule's `.git` file, the
+git directory one names, a bare repository, a file of the working tree a
+metadata link leads to, a hard link to an entry); anywhere, a name that
 contains `git-credentials`, a `.gitconfig` or `gitconfig` and its copies; and
-the config and credentials in `~/.config/git`. Names are compared ignoring
-case, at the path asked for and at its link's target. Such a read, whole or
-`stat`, or a `show` of one at a revision, answers `file_denied` ("git's
-settings and credentials are for controllers"), 403 over HTTP; a controller
-reads them as before.
+a name that contains `config` or `credential` in `~/.config/git` (compared as
+a deny entry is, so also once that directory is gone). Names are compared
+ignoring case, at the path asked for and at its link's target. Such a read,
+whole or `stat`, or a `show` of one at a revision, answers `file_denied` ("a
+repository's .git and git's settings and credentials are for controllers"),
+403 over HTTP; a controller reads them as before.
 
 ## File saves
 

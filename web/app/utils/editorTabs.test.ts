@@ -94,12 +94,12 @@ describe('the keymap setting', () => {
     expect(fileReadOnlyWords(null)).toBe('')
   })
 
-  it('says why a file was refused: viewing off, git\'s settings for controllers, or files for controllers', async () => {
+  it('says why a file was refused: viewing off, git\'s files for controllers, or files for controllers', async () => {
     const { refusedWords } = await import('./editorTabs')
     expect(refusedWords('file viewing is disabled').title).toBe('File viewing is off for this session')
-    const git = refusedWords("git's settings and credentials are for controllers")
-    expect(git.title).toBe("Git's settings are for controllers")
-    expect(git.words).toMatch(/view-only link does not open it/)
+    const git = refusedWords("a repository's .git and git's settings and credentials are for controllers")
+    expect(git.title).toBe("Git's files are for controllers")
+    expect(git.words).toMatch(/view-only link does not open them/)
     expect(git.icon).toBe('i-lucide-key-round')
     expect(refusedWords('file viewing requires the control role').title).toBe('Files are for controllers on this session')
     expect(refusedWords('').title).toBe('Files are for controllers on this session')

@@ -138,7 +138,8 @@ func TestResolvePathDenyList(t *testing.T) {
 // An entry that is not there is refused by its path, below the deepest
 // directory on it that is, compared as a file: through a link on the way
 // to it, in another case, through a link on the way that leads nowhere yet
-// and at that link's target; a name entry whose directory is not there
+// and at that link's target, walked as the system walks it (a ".." after a
+// link leaves where the link leads); a name entry whose directory is not there
 // too. A name that only starts the same, or a path beside it, reads; and
 // once the entry is made, a read of it is refused as before.
 func TestResolvePathDeniesAMissingEntryByItsPath(t *testing.T) {
@@ -150,6 +151,17 @@ func TestResolvePathDeniesAMissingEntryByItsPath(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "later"), filepath.Join(root, "dangling")); err != nil {
 		t.Fatal(err)
 	}
+	// A link to nothing yet whose target goes through a link and then up:
+	// it leads where the system walks it, actual/private, not to private.
+	if err := os.MkdirAll(filepath.Join(root, "actual", "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("actual", "child"), filepath.Join(root, "jump")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("jump/../private", filepath.Join(root, "store")); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		entry string
 		paths []string
@@ -158,6 +170,8 @@ func TestResolvePathDeniesAMissingEntryByItsPath(t *testing.T) {
 		{filepath.Join(root, "sub", "gone", "conductor.json"), []string{"sub/gone/conductor.json", "inside/gone/conductor.json", "sub/Gone/Conductor.JSON"}},
 		{filepath.Join(other, "link", "gone"), []string{"gone/catalog.json"}},
 		{filepath.Join(root, "dangling", "data"), []string{"dangling/data/catalog.json", "later/data/catalog.json"}},
+		{filepath.Join(root, "store"), []string{"store/catalog.json", "actual/private/catalog.json", "jump/../actual/private/catalog.json"}},
+		{root + "/jump/../gone", []string{"actual/gone/x"}},
 		{filepath.Join(root, "gone", "*conductor.json*"), []string{"gone/conductor.json", "gone/conductor.json.bak", "gone/.Conductor.json.swp", "gone/conductor.json.d/x"}},
 	} {
 		for _, p := range c.paths {
@@ -172,6 +186,7 @@ func TestResolvePathDeniesAMissingEntryByItsPath(t *testing.T) {
 		{filepath.Join(root, "sub", "gone", "conductor.json"), "sub/gone/other.json"},
 		{filepath.Join(root, "gone", "*conductor.json*"), "gone/agents.json"},
 		{filepath.Join(root, "gone", "*conductor.json*"), "conductor.json"},
+		{filepath.Join(root, "store"), "private/catalog.json"},
 	} {
 		if _, err := ResolvePath(root, c.path, []string{c.entry}); err != nil {
 			t.Errorf("entry %s: %q: %v", c.entry, c.path, err)

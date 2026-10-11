@@ -164,7 +164,17 @@ func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (prot
 	if err != nil {
 		return fail("denied", err.Error())
 	}
-	if role != RoleControl && forControllers(raw, target) {
+	// Whether target is in a repository's .git, looked at once: a view
+	// link is not given it, and a save of it would be refused (saveFile),
+	// so the editor shows Read only.
+	inGit, looked := false, false
+	isGit := func() bool {
+		if !looked {
+			looked, inGit = true, gitMetadata(raw, target)
+		}
+		return inGit
+	}
+	if role != RoleControl && forControllers(raw, target, isGit) {
 		return fail(proto.ErrCodeFileDenied, errForControllers.Error())
 	}
 	h.Path = target
@@ -212,7 +222,7 @@ func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (prot
 				return failOpen(err)
 			}
 			defer file.Close()
-			return readFile(h, raw, file, got)
+			return readFile(h, file, got, isGit())
 		}
 	}
 	h.Exists = true
@@ -235,20 +245,20 @@ func (f *Folder) read(raw string, statOnly bool, deny []string, role Role) (prot
 	// A regular file, stat'ed only.
 	h.Kind = "file"
 	h.Mime = mime.TypeByExtension(filepath.Ext(h.Path))
-	// A save of it would be refused (saveFile): the editor shows Read only.
-	h.ReadOnly = gitMetadata(raw, h.Path)
+	h.ReadOnly = isGit()
 	return h, nil
 }
 
-// readFile completes h, a read of raw, for file, open and checked (its
-// stat fi): its first MaxFileRead bytes, none for a binary file.
-func readFile(h proto.FileHeader, raw string, file *os.File, fi os.FileInfo) (proto.FileHeader, []byte) {
+// readFile completes h for file, open and checked (its stat fi): its first
+// MaxFileRead bytes, none for a binary file; readOnly when it is in a
+// repository's .git, whose save would be refused (saveFile), so the editor
+// shows Read only.
+func readFile(h proto.FileHeader, file *os.File, fi os.FileInfo, readOnly bool) (proto.FileHeader, []byte) {
 	h.Exists = true
 	h.Size = fi.Size()
 	h.Kind = "file"
 	h.Mime = mime.TypeByExtension(filepath.Ext(h.Path))
-	// A save of it would be refused (saveFile): the editor shows Read only.
-	h.ReadOnly = gitMetadata(raw, h.Path)
+	h.ReadOnly = readOnly
 	body, err := io.ReadAll(io.LimitReader(file, MaxFileRead+1))
 	if err != nil {
 		h.Kind, h.Exists, h.Size = "error", false, 0

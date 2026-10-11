@@ -32,6 +32,29 @@ func (c *Config) FileDeny(dirs ...string) []string {
 	return c.fileDeny(append(slices.Clone(dirs), more...), files)
 }
 
+// FileDenyFunc is FileDeny(dirs...) for a server that runs a long time
+// (session.Options.FileDenyFunc, the files route): the function it returns
+// computes the list again at each call, so that what the other Conductors
+// on the machine come to keep while the server runs (a data directory the
+// desktop app's settings move to) is refused from then on, and keeps every
+// entry it has named before, with the path a link on its way led to then
+// (withTargets), so that what was refused once stays refused until the
+// server stops. The paths of c are taken when it is called. It is safe to
+// call from many goroutines, and the slices it returns are never changed.
+func (c *Config) FileDenyFunc(dirs ...string) func() []string {
+	own := &Config{DataDir: c.DataDir, Path: c.Path, CatalogPath: c.CatalogPath, DesktopDir: c.DesktopDir}
+	dirs = slices.Clone(dirs)
+	var mu sync.Mutex
+	list := withTargets(nil, own.FileDeny(dirs...))
+	return func() []string {
+		next := own.FileDeny(dirs...)
+		mu.Lock()
+		defer mu.Unlock()
+		list = withTargets(list, slices.Concat(list, next))
+		return list
+	}
+}
+
 // machineFiles are the directories and files of the other Conductors this
 // machine may run: ~/.conductor, the default data directory, whichever
 // this server uses; the desktop app's (desktopFiles: its own directory

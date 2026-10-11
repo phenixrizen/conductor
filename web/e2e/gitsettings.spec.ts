@@ -3,12 +3,13 @@ import { join } from 'node:path'
 import { expect, git, test, type Session } from './fixtures'
 
 // git's settings and credentials often hold access tokens (a remote URL with
-// one in it): a view-only guest who types .git/config or .git-credentials
-// into the Files box is told they are for controllers, and the token never
-// shows; the owner opens them as before, and the guest reads the rest. A
+// one in it): a view-only guest who types .git/config, .git/HEAD or
+// .git-credentials into the Files box is told git's files are for
+// controllers, and the token never shows; the owner opens them as before,
+// and the guest reads the rest. A
 // repository whose core.worktree points outside its folder lists no changes
 // from there: the Changes section says why.
-test("git's settings are for controllers; a working tree elsewhere lists no changes", async ({ page, api, state, browser }) => {
+test("git's files are for controllers; a working tree elsewhere lists no changes", async ({ page, api, state, browser }) => {
   const secret = 'ghp-e2e-token-in-the-remote-url'
   const cwd = join(state.root, 'files-git-settings')
   mkdirSync(cwd, { recursive: true })
@@ -39,13 +40,13 @@ test("git's settings are for controllers; a working tree elsewhere lists no chan
     const aside = jane.locator('[data-files-aside]')
     await expect(aside.locator(`[data-file-node="${cwd}/notes.md"]`)).toBeVisible({ timeout: 30_000 })
     const guestArea = jane.locator('[data-editor-area]')
-    for (const p of ['.git/config', '.git-credentials']) {
+    for (const p of ['.git/config', '.git/HEAD', '.git-credentials']) {
       const guestBox = aside.locator('[data-files-box] input, input[data-files-box]').first()
       await guestBox.fill(p)
       await guestBox.press('Enter')
       await expect(guestArea.locator('[data-editor-state]')).toHaveAttribute('data-editor-state', 'refused', { timeout: 30_000 })
-      await expect(guestArea.locator('[data-editor-refused]')).toContainText("Git's settings are for controllers")
-      await expect(guestArea.locator('[data-editor-refused]')).toContainText('view-only link does not open it')
+      await expect(guestArea.locator('[data-editor-refused]')).toContainText("Git's files are for controllers")
+      await expect(guestArea.locator('[data-editor-refused]')).toContainText('view-only link does not open them')
       await expect(jane.locator('body')).not.toContainText(secret)
     }
     // The rest of the folder still reads.

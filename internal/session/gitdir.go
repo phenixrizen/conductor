@@ -14,11 +14,11 @@ import (
 // the .git file of a linked worktree or a submodule, the git directory
 // such a file or a .git link names, a bare repository. A save there is
 // refused, as is a Neovim editor on a file there (Neovim would write it),
-// and a read says so (ReadOnly), so the editor shows Read only. Reads stay
-// as they were, .git/objects aside: the tab leaves .git out of the tree
-// and of Find, but a path an agent printed or touched still opens, and
-// what is in .git is no more private than the rest of the working
-// directory a link may read.
+// and a read says so (ReadOnly), so the editor shows Read only. A
+// controller's reads stay as they were, .git/objects aside: the tab leaves
+// .git out of the tree and of Find, but a path an agent printed or touched
+// still opens. A view link reads nothing of a repository's .git, whose
+// configuration can hold access tokens (forControllers).
 
 // errGitDir refuses a save or an editor on a file in a repository's .git.
 var errGitDir = errors.New("session: a repository's .git is read only here")

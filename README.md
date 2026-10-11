@@ -378,11 +378,12 @@ commit moves. The status is of the folder's own working tree: the folder, or
 the repository it is in; a repository whose `core.worktree` points anywhere
 else lists nothing from there and says so.
 
-A view-only guest does not open git's settings and credentials, which often
-hold the tokens git signs in with: a repository's `.git/config`,
-`config.worktree` and their copies, a `.git-credentials`, a `.gitconfig`, and
-git's own files in `~/.config/git`, nor those a commit keeps; the editor says
-they are for controllers. A controller opens them as before.
+A view-only guest opens nothing of a repository's `.git`, whose settings
+often hold the tokens git signs in with (a `.git/config` reached through a
+link or under another name included), nor a `.git-credentials`, a
+`.gitconfig` or git's own files in `~/.config/git`, nor those a commit keeps;
+the editor says git's files are for controllers. A controller opens them as
+before.
 
 The box at the top of the Explorer filters the tree as you type, and
 reaches folders you have not opened: a search on the session's machine

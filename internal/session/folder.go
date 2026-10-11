@@ -369,9 +369,8 @@ type missingEntry struct {
 const maxMissingLinks = 40
 
 // newDenySet looks up deny's entries. One that is not there, or whose
-// directory is not, is kept by its path (missingEntry); one that names a
-// link to nothing yet on its way is kept by the link's path and by its
-// target's, as the link would lead once its target is made.
+// directory is not, is kept by its path (missingEntry), walked as the
+// system walks it (appendMissing).
 func newDenySet(deny []string) denySet {
 	var d denySet
 	for _, e := range deny {
@@ -387,9 +386,13 @@ func newDenySet(deny []string) denySet {
 			}
 			continue
 		}
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			continue
+		abs := p
+		if !filepath.IsAbs(abs) {
+			wd, err := os.Getwd()
+			if err != nil {
+				continue
+			}
+			abs = wd + string(filepath.Separator) + p
 		}
 		links := 0
 		d.missing = appendMissing(d.missing, abs, name, &links)
@@ -397,28 +400,68 @@ func newDenySet(deny []string) denySet {
 	return d
 }
 
-// appendMissing appends to list the missing entry for p, an absolute path
-// that is not there (with name, a name entry's): the deepest directory on
-// it that is there, and the rest. A link to nothing yet on the way is the
-// path it is and, from its target on, the path it would lead to; *links
-// counts the links followed so (maxMissingLinks).
+// appendMissing appends to list the missing entries for p, an absolute
+// path as given (not cleaned) that is not there, with name, a name
+// entry's. p is walked as the system walks it: each element from the
+// directory reached so far, a link that leads somewhere followed to where
+// it leads before a ".." after it is taken, so that the entry is kept below
+// the directory the path really reaches, with the elements below it that
+// are not there. A link to nothing yet on the way keeps the path spelt
+// through it (a request's path does not follow it either: evalExisting)
+// and, from its target on, the path it would lead to once its target is
+// made; *links counts the links followed so (maxMissingLinks).
 func appendMissing(list []missingEntry, p, name string, links *int) []missingEntry {
+	sep := string(filepath.Separator)
+	parts := strings.Split(p, sep)
+	cur := sep
+	for i, el := range parts {
+		switch el {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, el)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return appendTail(list, cur, parts[i:], name)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		if real, err := filepath.EvalSymlinks(next); err == nil {
+			cur = real
+			continue
+		}
+		list = appendTail(list, cur, parts[i:], name)
+		if *links >= maxMissingLinks {
+			return list
+		}
+		*links++
+		target, err := os.Readlink(next)
+		if err != nil {
+			return list
+		}
+		if !filepath.IsAbs(target) {
+			target = cur + sep + target
+		}
+		return appendMissing(list, target+sep+strings.Join(parts[i+1:], sep), name, links)
+	}
+	return appendTail(list, cur, nil, name)
+}
+
+// appendTail appends to list the missing entry for rest below cur, a
+// directory reached with its links resolved: the deepest directory of
+// that path that is there, compared as a file, and the elements below it.
+// rest has nothing on it to follow, so it is taken lexically.
+func appendTail(list []missingEntry, cur string, rest []string, name string) []missingEntry {
 	var tail []string
-	for q := filepath.Clean(p); ; q = filepath.Dir(q) {
+	for q := filepath.Join(append([]string{cur}, rest...)...); ; q = filepath.Dir(q) {
 		if fi, err := os.Stat(q); err == nil {
 			slices.Reverse(tail)
 			return append(list, missingEntry{fi, tail, name})
-		}
-		if li, err := os.Lstat(q); err == nil && li.Mode()&os.ModeSymlink != 0 && *links < maxMissingLinks {
-			if target, err := os.Readlink(q); err == nil {
-				*links++
-				if !filepath.IsAbs(target) {
-					target = filepath.Join(filepath.Dir(q), target)
-				}
-				rest := slices.Clone(tail)
-				slices.Reverse(rest)
-				list = appendMissing(list, filepath.Join(append([]string{target}, rest...)...), name, links)
-			}
 		}
 		if filepath.Dir(q) == q {
 			return list
