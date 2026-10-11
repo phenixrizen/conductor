@@ -393,9 +393,10 @@ func TestARevokeNotDoneOutlivesItsLink(t *testing.T) {
 	}
 }
 
-// The files of links that give their places up go only once the new link's
-// is written: when it cannot be, they stay, and a restart brings them back.
-func TestYieldedLinksKeepTheirFilesUntilTheNewOneIsWritten(t *testing.T) {
+// No link gives its place up for one whose file cannot be written: that
+// one is refused and they stay as they were, file and all; once the file
+// can be written, the link is kept and they end.
+func TestNoLinkGivesItsPlaceUpForOneNotKept(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a directory whose mode keeps its owner from writing in it")
 	}
@@ -414,17 +415,35 @@ func TestYieldedLinksKeepTheirFilesUntilTheNewOneIsWritten(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
 	other, _ := dialFakeHostWith(t, e, proto.HostInfo{Name: "desk", Instance: "another-instance-0123456789"}, hs, "")
-	mintHostLink(t, other, "o1")
+	other.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "o1", Role: "view"})
+	if m := linkAnswer(t, other, "o1"); m["code"] != "link_refused" {
+		t.Fatalf("a link whose file cannot be written, with no room but a gone host's: %v", m)
+	}
+	if _, ok := e.srv.links.Get(id); !ok {
+		t.Fatal("the gone host's link ended for a link not kept")
+	}
 	if err := os.Chmod(links, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e.srv.sweepLinks(time.Now())
 	if _, err := os.Stat(filepath.Join(links, id+".json")); err != nil {
-		t.Fatalf("the file of the link that gave its place, the new one's unwritten: %v", err)
+		t.Fatalf("its file: %v", err)
+	}
+	newID, newToken := mintHostLink(t, other, "o2")
+	if _, ok := e.srv.links.Get(id); ok {
+		t.Fatal("the gone host's link kept its place once the new one was kept")
+	}
+	if _, err := os.Stat(filepath.Join(links, id+".json")); !os.IsNotExist(err) {
+		t.Fatalf("its file stays: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(links, newID+".json")); err != nil {
+		t.Fatalf("the new link's file: %v", err)
 	}
 	b := keptSwitchyard(t, dir, limit)
-	if _, err := b.srv.links.Resolve(token); err != nil {
-		t.Fatalf("the link that gave its place, after a restart: %v", err)
+	if _, err := b.srv.links.Resolve(token); err == nil {
+		t.Fatal("the link that gave its place is back after a restart")
+	}
+	if _, err := b.srv.links.Resolve(newToken); err != nil {
+		t.Fatalf("the new link after a restart: %v", err)
 	}
 }
 

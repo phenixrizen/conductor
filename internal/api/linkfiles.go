@@ -289,37 +289,37 @@ func (s *Server) openLinkKeeper(st *store.Store) {
 
 // Why keepLink refuses a link.
 var (
-	errLinksFull = errors.New("this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
-	errLinkGone  = errors.New("the link was revoked, or its session ended, as it was made")
+	errLinksFull   = errors.New("this address holds as many links as this switchyard keeps; revoke one, or ask the operator for a host token")
+	errLinkGone    = errors.New("the link was revoked, or its session ended, as it was made")
+	errLinkNotKept = errors.New("the switchyard could not keep the link; try again")
 )
 
 // keepLink makes a link minted for a hosted session of owner durable and
 // writes its file, within the bounds. At an open host's address with no
 // room left, links whose host has been gone longer than linkYieldAfter
 // give their places up (yielding) and are ended, only when that leaves the
-// new link room. It refuses (the link dropped) when the bounds leave none,
-// ending no other link, and keeps nothing of a link the store no longer
-// holds unrevoked: one revoked or dropped since it was made is neither
-// counted nor written, nor has any other ended for it.
+// new link room and once its file is written: a link that needed them and
+// whose file cannot be written is refused, and they stay as they were. It
+// refuses (the link dropped) when the bounds leave no room, ending no other
+// link, and keeps nothing of a link the store no longer holds unrevoked:
+// one revoked or dropped since it was made is neither counted nor written,
+// nor has any other ended for it.
 func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	k := s.keeper
 	if k == nil || owner == "" {
 		return nil
 	}
 	h := share.HashToken(token)
-	now := time.Now()
 	k.fmu.Lock()
 	k.mu.Lock()
 	var (
-		err        error
-		yielded    []string
-		yieldedFor = map[string]string{}
-		ended      []*share.Link
+		err     error
+		yielded []string
 	)
 	if s.links.Count() > maxDurableLinks {
 		err = errLinksFull
 	} else if over := len(k.addrs[addr]) - s.cfg.Switchyard.OpenHostLinks + 1; addr != "" && over > 0 {
-		if yielded = k.yielding(addr, now, over); yielded == nil {
+		if yielded = k.yielding(addr, time.Now(), over); yielded == nil {
 			err = errLinksFull
 		}
 	}
@@ -329,38 +329,55 @@ func (s *Server) keepLink(link *share.Link, token, owner, addr string) error {
 	// Under mu, so a drop of the link (its file and its count, which
 	// follows the store's) comes after this whole or finds nothing.
 	case !s.links.SetOwner(link.ID, owner, addr):
-		err, yielded = errLinkGone, nil
+		err = errLinkGone
 	default:
-		// The links ended for the new one leave the keeper and the store
-		// together under mu, so a host coming back (hostUp) either finds
-		// them gone or keeps them.
-		for _, id := range yielded {
-			yieldedFor[id] = k.release(id)
-			if gone, ok := s.links.Drop(id); ok {
-				ended = append(ended, gone)
-			}
-		}
 		k.hold(link.ID, keptLink{hash: hex.EncodeToString(h[:]), owner: owner, addr: addr, created: link.CreatedAt})
 	}
 	k.mu.Unlock()
-	if err == nil {
-		link.Owner, link.Addr = owner, addr
-		// The files of the links that gave their places go once the new
-		// one's is written: should it not be, they stay, and a restart
-		// brings them back rather than lose them for a link it does not.
-		if serr := s.saveLinkFile(link.ID); serr != nil {
-			yielded = nil
+	if err != nil {
+		k.fmu.Unlock()
+		return err
+	}
+	link.Owner, link.Addr = owner, addr
+	if serr := s.saveLinkFile(link.ID); serr != nil && len(yielded) > 0 {
+		// No link gives its place up for one that is not kept.
+		k.mu.Lock()
+		k.release(link.ID)
+		s.links.Drop(link.ID)
+		k.mu.Unlock()
+		k.fmu.Unlock()
+		return errLinkNotKept
+	}
+	// The links that give their places up end now, each looked at again
+	// under mu and leaving the keeper and the store together, so a host
+	// coming back meanwhile (hostUp) either keeps its link (the address
+	// over its bound by it for a while) or is told it is gone.
+	var (
+		ended []*share.Link
+		gone  = map[string]string{}
+	)
+	now := time.Now()
+	k.mu.Lock()
+	for _, id := range yielded {
+		kl, ok := k.kept[id]
+		if !ok || k.away(kl.owner, now) <= linkYieldAfter {
+			continue
+		}
+		gone[id] = k.release(id)
+		if l, ok := s.links.Drop(id); ok {
+			ended = append(ended, l)
 		}
 	}
-	for _, id := range yielded {
-		s.deleteFile(id, yieldedFor[id])
+	k.mu.Unlock()
+	for id, o := range gone {
+		s.deleteFile(id, o)
 		s.log.Info("a kept link gave its place to a new one, its host gone", "link", id)
 	}
 	k.fmu.Unlock()
 	for _, l := range ended {
 		s.closeLinkViewers(l)
 	}
-	return err
+	return nil
 }
 
 // writeLinkFile writes a kept link's file as the store holds it now.
