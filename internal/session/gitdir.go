@@ -405,11 +405,14 @@ func sameMissing(missing, real string) bool {
 }
 
 // foldName leaves out of name the characters HFS+ ignores in names, and
-// composes what is left (NFC): HFS+ and APFS take a name and its
-// decomposed spelling (an e and a combining acute for an é) for the same
-// name, so the two compare equal.
+// decomposes what is left (NFD), as HFS+ keeps names: HFS+ and APFS take a
+// name and its composed or decomposed spelling (an é, or an e and a
+// combining acute) for the same name, so the two compare equal. Decomposed,
+// each base letter stands alone, so case folds rune by rune after
+// (strings.EqualFold): a composed form that only one case of a letter has
+// (U+01F0, j with caron) compares equal to the other case spelt out.
 func foldName(name string) string {
-	return norm.NFC.String(strings.Map(func(r rune) rune {
+	return norm.NFD.String(strings.Map(func(r rune) rune {
 		if hfsIgnored(r) {
 			return -1
 		}

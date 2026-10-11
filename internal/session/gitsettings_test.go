@@ -206,6 +206,17 @@ func TestNamesAreComparedWithoutTheCharactersHFSIgnores(t *testing.T) {
 	if r, err := ResolvePath(root, composed+".json.bak", deny); err == nil {
 		t.Errorf("a composed copy beside a decomposed name resolved to %s", r)
 	}
+	// A letter whose composed form only one case has (U+01F0, j with caron):
+	// the other case spelt out is the same name too.
+	deny = []string{filepath.Join(root, "\u01f0.json"), filepath.Join(root, "*\u01f0.json*")}
+	for _, p := range []string{"J\u030c.json.bak", "j\u030c.json.bak", "\u01f0.JSON.bak"} {
+		if r, err := ResolvePath(root, p, deny); err == nil {
+			t.Errorf("%q resolved to %s", p, r)
+		}
+	}
+	if !sameName("J\u030c", "\u01f0") || !containsFold("x-J\u030c.json.bak", "\u01f0.json") || sameName("J", "\u01f0") {
+		t.Error("j with caron in either case and spelling")
+	}
 }
 
 // A home git file that is a link to nothing yet holds the copies beside the
