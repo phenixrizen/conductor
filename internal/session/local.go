@@ -809,6 +809,11 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	replacing := r != nil && !given
 	if replacing && s.hub.remove(r) {
 		r.closeWith(nil)
+		// The size stays with the viewer's id, which a replacement under the
+		// same id keeps; under another id it is handed on as at a leave.
+		if s.sizer == r.ID && o.ID != r.ID {
+			s.handOverSize()
+		}
 		select {
 		case <-r.closed:
 		default:
@@ -977,7 +982,10 @@ func (s *Local) Detach(sub *Subscription) {
 		}
 		s.closing[sub] = struct{}{}
 	}
-	if s.sizer == sub.ID {
+	// Only the client that held the size as it left hands it on: a late
+	// Detach of one a replacement took over (the same id) leaves the size
+	// with the replacement.
+	if present && s.sizer == sub.ID {
 		s.handOverSize()
 	}
 	var left ChatMessage

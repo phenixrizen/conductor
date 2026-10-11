@@ -635,3 +635,38 @@ func TestADetachAfterTheTransportClosedClearsItsAccountTogether(t *testing.T) {
 		t.Fatalf("closing %d, passed on %d", len(s.closing), len(s.passedOn))
 	}
 }
+
+// A controller holding the size that moves (the same id, taken over where it
+// stands) keeps the size, and its old subscription's late Detach does not
+// hand it to another of the owner's windows.
+func TestALateDetachLeavesTheSizeWithTheReplacement(t *testing.T) {
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 4})
+	held := newHeldSink()
+	old, err := s.AttachWith(AttachOptions{ID: "mover", Role: RoleControl, Name: "nate", Cols: 120, Rows: 40}, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	sizer := s.sizer
+	s.mu.Unlock()
+	if sizer != "mover" {
+		t.Fatalf("sizer before the move: %q", sizer)
+	}
+	if _, err := s.AttachWith(AttachOptions{ID: "mover", Role: RoleControl, Name: "nate", Cols: 120, Rows: 40, Replaces: old}, newChanSink(false)); err != nil {
+		t.Fatal(err)
+	}
+	// Another of the owner's windows, the last to attach: a handover would go to it.
+	if _, err := s.AttachWith(AttachOptions{ID: "other", Role: RoleControl, Name: "nate", Cols: 100, Rows: 30}, newChanSink(false)); err != nil {
+		t.Fatal(err)
+	}
+	s.Detach(old)
+	s.mu.Lock()
+	sizer = s.sizer
+	s.mu.Unlock()
+	if sizer != "mover" {
+		t.Fatalf("sizer after the old one's late Detach: %q", sizer)
+	}
+	close(held.writes)
+	close(held.closes)
+	<-old.Closed()
+}
