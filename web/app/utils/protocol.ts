@@ -379,6 +379,8 @@ export function decodeText(payload: Uint8Array): string {
 /** A save from the editor (design round 12, F6): the parts are at most MAX_WRITE_PART bytes, the file at most 1 MiB. */
 export const MAX_WRITE_PART = 32 * 1024
 export const MAX_WRITE_BYTES = 1024 * 1024
+/** A part's JSON header is at most this many bytes (proto.MaxWriteHeader): past it the owner cannot read the part, nor answer the save. */
+export const MAX_WRITE_HEADER = 4 * 1024
 export interface FileWriteOptions {
   /** The sha256 of the file as it was read: the owner refuses with `changed_on_disk` when the file differs now. */
   baseSha256?: string

@@ -771,7 +771,10 @@ its way: the relay's bounds, a slow link, a host that reads slowly), and the
 answer, when it lands, is taken as ever; a connection that closes ends the
 save with an error. The answer marks saved the text that was sent: what was
 typed meanwhile stays, unsaved, and a tab in front by then keeps its own
-changes. A file request still gives up after 20 s.
+changes. Since every save sent is waited for, the browser sends none the
+owner could not read: one whose part's header would pass 4 KiB (a very long
+path) is refused before anything is sent. A file request still gives up
+after 20 s.
 
 ## HTTP API
 

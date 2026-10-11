@@ -100,6 +100,27 @@ describe('BaseTransport.writeFile', () => {
     expect(save.error?.message).toBe('connection closed')
   })
 
+  it('a save whose part the owner could not read is refused at once, sends nothing, and the next save goes', async () => {
+    const t = new TestTransport()
+    // A path of 4026 bytes: with the hash and the rest, the part's header passes 4 KiB.
+    const long = '/w/' + 'd'.repeat(4023)
+    const refused = track(t.writeFile(long, new TextEncoder().encode('hi'), { baseSha256: 'a'.repeat(64) }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(refused.error?.message).toBe('the path is too long to save from the editor')
+    expect(t.sent).toHaveLength(0)
+    const next = track(t.writeFile('a.txt', new TextEncoder().encode('hi'), { baseSha256: 'a'.repeat(64) }))
+    expect(t.sent).toHaveLength(1)
+    t.receive(fileFrame({ reqId: t.reqIdOf(0), path: '/w/a.txt', kind: 'written', sha256: 'new' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(next.value?.header.kind).toBe('written')
+  })
+
+  it('a save whose header fits 4 KiB is sent whole', async () => {
+    const t = new TestTransport()
+    track(t.writeFile('/w/' + 'd'.repeat(3800), new TextEncoder().encode('hi'), { baseSha256: 'a'.repeat(64) }))
+    expect(t.sent).toHaveLength(1)
+  })
+
   it('a file request still gives up after 20 s', async () => {
     const t = new TestTransport()
     const read = track<FileResponse>(t.requestFile('a.txt'))
