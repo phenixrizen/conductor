@@ -742,7 +742,9 @@ whole, for a save to tell the file changed since; `readOnly` marks a file in
 a repository's `.git` (the directory, a linked worktree's or a submodule's
 `.git` file, the git directory such a file or a `.git` link names, a bare
 repository), which reads as any other but is never saved. Files with a NUL byte in the
-first 8 KiB are reported `binary` without bytes; images are sent as bytes. Up to
+first 8 KiB are reported `binary` without bytes; images are sent as bytes. A
+directory lists at most 2,000 entries, directories first, then by name, of
+the first 20,000 it reads (`truncated` when there are more). Up to
 four requests may be in flight per client. `stat:true` returns only the header.
 
 The `fileView` server setting decides who may read: `view` (both roles, the

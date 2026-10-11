@@ -630,6 +630,31 @@ func TestFindPathOpensAFolderAgainOnlyWhenAnEntryNeedsIt(t *testing.T) {
 	}
 }
 
+// A listing reads at most maxListScan entries: a folder with more shows
+// those it read, sorted, and says it is truncated; one with fewer is
+// listed whole.
+func TestReadPathListsAtMostItsReadBound(t *testing.T) {
+	old := maxListScan
+	maxListScan = 30
+	t.Cleanup(func() { maxListScan = old })
+	root := t.TempDir()
+	for _, d := range []string{"big", "small"} {
+		os.MkdirAll(filepath.Join(root, d), 0o755)
+	}
+	for i := range 50 {
+		os.WriteFile(filepath.Join(root, "big", fmt.Sprintf("f%02d", i)), []byte("x"), 0o644)
+	}
+	for i := range 20 {
+		os.WriteFile(filepath.Join(root, "small", fmt.Sprintf("f%02d", i)), []byte("x"), 0o644)
+	}
+	if h, _ := ReadPath(root, "big", false, nil); h.Kind != "dir" || !h.Truncated || len(h.Entries) != 30 || !slices.IsSortedFunc(h.Entries, func(a, b proto.FileEntry) int { return strings.Compare(a.Name, b.Name) }) {
+		t.Fatalf("big: %s truncated %v, %d entries", h.Kind, h.Truncated, len(h.Entries))
+	}
+	if h, _ := ReadPath(root, "small", false, nil); h.Kind != "dir" || h.Truncated || len(h.Entries) != 20 || h.Entries[0].Size != 1 {
+		t.Fatalf("small: %s truncated %v, %d entries", h.Kind, h.Truncated, len(h.Entries))
+	}
+}
+
 // A find reads at most maxFindScan entries in all, wherever they are: a
 // wide folder whose first entry is another wide folder reads the bound and
 // one more look, and says it stopped short; a tree within the bound is read

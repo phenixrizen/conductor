@@ -264,18 +264,37 @@ func readFile(h proto.FileHeader, raw string, file *os.File, fi os.FileInfo) (pr
 	return h, body
 }
 
+// maxListScan is the entries a listing reads at most (a test lowers it):
+// a folder opened through the session's folder is read with each entry's
+// stat (os.Root's ReadDir), so a listing of a folder with more entries
+// sorts the first maxListScan it reads and says it is truncated.
+var maxListScan = 10 * MaxDirEntries
+
 // listDir lists dir, open: directories first, then by name, at most
-// MaxDirEntries (truncated when there are more), each entry's size looked
-// up through dir, not by a path that could lead elsewhere by then.
+// MaxDirEntries of the first maxListScan entries read (truncated when
+// there are more), each entry's size looked up through dir, not by a path
+// that could lead elsewhere by then.
 func listDir(dir *os.Root) (entries []proto.FileEntry, truncated bool, err error) {
 	d, err := dir.Open(".")
 	if err != nil {
 		return nil, false, err
 	}
-	all, err := d.ReadDir(-1)
-	d.Close()
-	if err != nil {
-		return nil, false, err
+	defer d.Close()
+	var all []os.DirEntry
+	for {
+		if len(all) >= maxListScan {
+			more, _ := d.ReadDir(1)
+			truncated = len(more) > 0
+			break
+		}
+		chunk, err := d.ReadDir(min(256, maxListScan-len(all)))
+		all = append(all, chunk...)
+		if errors.Is(err, io.EOF) || err == nil && len(chunk) == 0 {
+			break
+		}
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].IsDir() != all[j].IsDir() {
