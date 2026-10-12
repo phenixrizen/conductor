@@ -932,13 +932,19 @@ line, a key typed into a terminal (as a controller's input clears a question,
 above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
 before a question showed and written once it shows (they waited behind
 another write) when they pick one of its answers (an Enter, one of its
-choices, a digit of a dialog's list), for the program takes them as its
-answer. A dialog asked during the work and drawn again with the words of the
-question just answered before the program has drawn anything since that
-answer was written (a program slow to take the key leaves the dialog on the
-screen) is that question still: asked again, it keeps its `id`, answered,
-and a reply to it is refused; once the program has drawn since, a dialog with
-those words is a question of its own, with a new `id`. So of two
+choices, Ctrl+C or a digit of one of its choices' lines in a dialog), for
+the program takes them as its answer; a digit past a dialog's lines does
+nothing, and the dialog, asked again, still waits for a reply. A dialog
+asked during the work and drawn again with the words of the question just
+answered while the screen is still the text it was as that answer was
+written (a program slow to take the key leaves the dialog on the screen;
+output that changes nothing on it, a cursor shown, is no sign the key was
+taken) is that question still: asked again, it keeps its `id`, answered, and
+a reply to it is refused. Once the screen's text has changed (the decision's
+line above the next approval, the dialog gone and drawn anew, also while the
+key was being written), a dialog with those words is a question of its own,
+with a new `id`. A next dialog that changes nothing on the screen cannot be
+told from the one answered: it is answered in the terminal. So of two
 replies to one question, from two people clicking together or one whose click
 arrives after the program has moved on, the first is written and the second
 refused with `error{question_answered}` naming its `reqId`, nothing of it
