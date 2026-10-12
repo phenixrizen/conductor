@@ -1426,6 +1426,10 @@ func TestNvimOverTheViewerWebSocket(t *testing.T) {
 		t.Fatalf("a view link: %v", ev)
 	}
 	owner.send(proto.MustControl(proto.NvimClose{T: proto.CtlNvimClose, ID: nid}))
+	// The editor ends on a goroutine of its own, and Neovim writes its state
+	// in the test's directories as it leaves: they go only once it has.
+	d, _ := e.srv.registry.Get(id)
+	d.(*session.Local).WaitEditors()
 }
 
 // A save over the viewer WebSocket (design round 12, F6): the read carries
