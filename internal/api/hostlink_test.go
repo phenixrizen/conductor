@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
-
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -141,8 +139,9 @@ func TestRegisteredListsTheLinksTheServerHolds(t *testing.T) {
 	}
 	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv", LinkID: ids[0]})
 	host.expect(proto.HostLinkRevoked)
-	host.c.Close(websocket.StatusNormalClosure, "")
-	<-host.done
+	// The server takes the session back only once it has seen its host go:
+	// one with a live connection is refused.
+	leave(t, e, host)
 	again, reg := dialFakeHostWith(t, e, hostInfo, sess, "Bearer test-host-token")
 	if again.sessionID != host.sessionID || reg["resumed"] != true {
 		t.Fatalf("the same instance and local id: %s then %s (resumed %v)", host.sessionID, again.sessionID, reg["resumed"])
