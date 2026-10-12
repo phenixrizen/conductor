@@ -941,7 +941,9 @@ request each from main.
   only the cells that change, and while one shows nothing is typed into it,
   neither a person's reply nor a crew's prompt (a handoff waits for the
   answer). A done is no longer undone by its own turn's bell, which Codex
-  rings as it ends a turn; a new turn's bell still asks. The trust
+  rings as it ends a turn; a new turn's bell still asks, unless it comes
+  within half a second of that suppressed one (the bell's debounce, in the
+  todo). The trust
   question's "No" says it quits. The update question reads "Update available
   0.161.0 → 0.162.1" and offers "Skip until next version" (the key `3`,
   checked against the real Codex in a throwaway home: it skips at once and

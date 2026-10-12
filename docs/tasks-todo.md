@@ -90,6 +90,14 @@ each reproduced with a Go test (round 15); none is fixed yet.
   waits up to 2 s for its viewers' last frames before it reports the end
   (#118), but the server side still drops them. Expected: a viewer gets
   what the session printed before it ended. Round 15 (#118's review).
+- **A new turn's bell within half a second of the last turn's is lost.**
+  `Local.scanOutput` stamps the bell's 500 ms debounce before it knows the
+  bell belongs to a turn that ended (and is suppressed), and a new turn
+  (`nextTurn`) does not clear it: done, its bell, a new prompt, and a bell
+  of the new turn within 500 ms leave the session without a question when
+  no hook or screen dialog gives one. Expected: a suppressed bell does not
+  start the debounce, or a new turn clears it; a test of two turns' bells
+  within 500 ms. Round 15 (the docs review of #121).
 - **Tests that fail under load, older than round 15's last changes.** Run
   on two CPUs shared with busy loops (#122's sweep, 2026-10-11), each the
   same on main: in `internal/api`, `TestAKeptLinkGoesWithItsSessionOrItsRevoke`
