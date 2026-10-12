@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 
 const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean }>()
@@ -6,6 +7,9 @@ const emit = defineEmits<{ reply: [text: string]; option: [index: number] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
+// A held turn (text typed and not entered): a reply waits until someone types in the terminal.
+const held = computed(() => waitsForTerminal(props.attention))
+const heading = computed(() => waitingHeading(props.attention, props.agentName))
 const options = computed(() => (show.value ? (props.attention?.options ?? []) : []))
 const canReply = computed(() => props.role === 'control' && !props.busy)
 
@@ -40,10 +44,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <template>
-  <div v-if="show" class="flex flex-wrap items-center gap-3 rounded-md border border-default bg-default px-3.5 py-3" data-quick-reply>
+  <div v-if="show" class="flex flex-wrap items-center gap-3 rounded-md border border-default bg-default px-3.5 py-3" data-quick-reply :data-held="held || undefined">
     <span class="size-2 rounded-full bg-warning flex-none" aria-hidden="true" />
     <div class="min-w-0 flex flex-col gap-0.5">
-      <span class="text-sm font-semibold">{{ agentName }} is waiting on you</span>
+      <span class="text-sm font-semibold">{{ heading }}</span>
       <span class="text-xs text-muted truncate">{{ attention?.message || 'Answer here or in the terminal. First reply wins; everyone sees who answered.' }}</span>
     </div>
     <div v-if="options.length" class="ml-auto flex flex-wrap items-center gap-2 flex-none">
@@ -62,7 +66,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </UButton>
     </div>
     <form v-else class="ml-auto flex items-center gap-2 flex-none" @submit.prevent="send">
-      <UInput v-model="text" size="sm" class="w-64" :placeholder="canReply ? `Reply to ${agentName}…` : 'View only'" :disabled="!canReply" />
+      <UInput v-model="text" size="sm" class="w-64" :placeholder="!canReply ? 'View only' : held ? 'Reply (sent after the terminal)…' : `Reply to ${agentName}…`" :disabled="!canReply" />
       <UButton type="submit" size="sm" label="Send" trailing-icon="i-lucide-corner-down-left" :disabled="!canReply || !text.trim()" />
     </form>
   </div>

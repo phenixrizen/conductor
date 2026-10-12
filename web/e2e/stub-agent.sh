@@ -51,6 +51,11 @@
 # the answer goes into the transcript as "approval: …". It is never run.
 # That turn ends as Codex's does while its terminal is not focused: a bell
 # after its done ("bell: after done" in the transcript).
+# A line `stub spin N` (N seconds, 1 to 99) makes the stub draw a dot every
+# 100 ms for about N seconds without reading, as an agent draws while it
+# works: what is typed meanwhile waits in the terminal (which echoes it),
+# and a submission's Enter waits for a quiet screen as long as Conductor's
+# look does. It reports nothing and goes into no transcript.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -384,6 +389,16 @@ update_question() {
 	fi
 }
 
+# spin draws a dot every 100 ms for about $1 seconds, reading nothing.
+spin() {
+	local end=$((SECONDS + $1))
+	while ((SECONDS < end)); do
+		printf .
+		sleep 0.1
+	done
+	printf '\n'
+}
+
 # answer answers one line.
 answer() {
 	local line=$1 rest=$1 kind target_run target branch deadline top to msg
@@ -483,7 +498,9 @@ while IFS= read -r line; do
 	line=${line//"$paste_start"/}
 	line=${line//"$paste_end"/}
 	line=${line%$'\r'}
-	if [[ -n ${line//[[:space:]]/} ]]; then
+	if [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
+		spin "${BASH_REMATCH[1]}"
+	elif [[ -n ${line//[[:space:]]/} ]]; then
 		answer "$line"
 	fi
 	printf '> '

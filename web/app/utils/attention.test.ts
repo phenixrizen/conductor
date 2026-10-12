@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { ATTENTION_DOT_COLOR, isActive, needingInput, newlyNeedingInput, titleWithCount } from './attention'
+import { ATTENTION_DOT_COLOR, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
   return {
@@ -48,5 +48,22 @@ describe('attention dot colour', () => {
   it('is the amber status colour, never the brand terracotta', () => {
     expect(ATTENTION_DOT_COLOR).toBe('#c98a1b')
     expect(ATTENTION_DOT_COLOR).not.toBe('#d26b3f')
+  })
+})
+
+describe('a turn held for the terminal', () => {
+  it('is a needs_input of source submit alone', () => {
+    expect(waitsForTerminal({ state: 'needs_input', source: 'submit' })).toBe(true)
+    expect(waitsForTerminal({ state: 'needs_input', source: 'api' })).toBe(false)
+    expect(waitsForTerminal({ state: 'needs_input' })).toBe(false)
+    expect(waitsForTerminal({ state: 'done', source: 'submit' })).toBe(false)
+    expect(waitsForTerminal({ state: '', source: 'submit' })).toBe(false)
+    expect(waitsForTerminal(undefined)).toBe(false)
+  })
+
+  it('heads the reply bar with the terminal, else with the agent', () => {
+    expect(waitingHeading({ state: 'needs_input', source: 'submit' }, 'claude')).toBe('Type in the terminal to go on')
+    expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude is waiting on you')
+    expect(waitingHeading(undefined, 'codex')).toBe('codex is waiting on you')
   })
 })
