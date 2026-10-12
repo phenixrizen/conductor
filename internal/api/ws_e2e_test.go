@@ -1264,11 +1264,18 @@ func TestChatRateLimitLeavesTheConnectionOpen(t *testing.T) {
 	c := dialViewer(t, e, id, adminToken)
 	c.hello(0, 0)
 	c.expectControl(proto.CtlReady)
-	for i := range proto.ChatBurst + 3 {
+	// The connection's bucket holds ChatBurst posts as its first is taken
+	// and earns ChatRatePerSecond more: the first refused is past the burst,
+	// and past it by no more than the bucket earned while the posts were
+	// read, which on a loaded machine is a post or more.
+	start := time.Now()
+	for i := range proto.ChatBurst + 40 {
 		c.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: strconv.Itoa(i), Nonce: strconv.Itoa(i)}))
 	}
-	if m := c.expectControl(proto.CtlError); m["code"] != proto.ErrCodeTooManyRequests || m["requestId"] != strconv.Itoa(proto.ChatBurst) {
-		t.Fatalf("limit: %v", m)
+	m := c.expectControl(proto.CtlError)
+	earned := int(time.Since(start).Seconds() * proto.ChatRatePerSecond)
+	if first, err := strconv.Atoi(fmt.Sprint(m["requestId"])); m["code"] != proto.ErrCodeTooManyRequests || err != nil || first < proto.ChatBurst || first > proto.ChatBurst+earned {
+		t.Fatalf("limit (%d earned): %v", earned, m)
 	}
 	c.send(proto.MustControl(proto.Ping{T: proto.CtlPing, TS: 7}))
 	if m := c.expectControl(proto.CtlPong); m["ts"] != float64(7) {
