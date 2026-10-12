@@ -90,6 +90,19 @@ each reproduced with a Go test (round 15); none is fixed yet.
   waits up to 2 s for its viewers' last frames before it reports the end
   (#118), but the server side still drops them. Expected: a viewer gets
   what the session printed before it ended. Round 15 (#118's review).
+- **Tests that fail under load, older than round 15's last changes.** Run
+  on two CPUs shared with busy loops (#122's sweep, 2026-10-11), each the
+  same on main: in `internal/api`, `TestAKeptLinkGoesWithItsSessionOrItsRevoke`
+  (11 of 150 on main: the test expires the hosts before the server has seen
+  its host go), `TestARelayedViewerThatStopsReadingIsLetGoAlone` (5 of 30),
+  `TestRegisteredListsTheLinksTheServerHolds` (1 of 30) and
+  `TestAViewerThatComesBackFindsItsBudgetSpent`; in `internal/hostagent`,
+  `TestAnswerPasteConnectsAViewerWithNoSignaling` (it checks the host's side
+  of the data channel once, as the viewer's opens) and
+  `TestASocketThatTakesNothingForTheStallIsGivenUp`; in `internal/session`,
+  `TestActivityBroadcastAndReplay` (it counts frames before the viewer's own
+  join entry arrives). Expected: each waits for what it means, as #122's
+  sweep made the input and submit tests do.
 - **Small things seen in the rc.7 app (2026-10-11), 1440×900.** A
   sidebar row's second choice button ("No, continue without trusting")
   runs past the row's edge. The run header's stop confirm in the sidebar
