@@ -38,6 +38,10 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 		return
 	}
+	// The session is found before the upgrade is answered: a client let in
+	// while the session was on the server is told what became of it (4410
+	// once it has left), never that there is no such session.
+	d, ok := s.registry.Get(id)
 	hk := &hijackKeeper{ResponseWriter: w}
 	c, err := websocket.Accept(hk, r, s.acceptOptions())
 	if err != nil {
@@ -49,7 +53,6 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 		c.Close(proto.CloseUnauthorized, "unauthorized")
 		return
 	}
-	d, ok := s.registry.Get(id)
 	if !ok {
 		c.Close(proto.CloseNotFound, "no such session")
 		return
