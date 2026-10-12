@@ -357,6 +357,8 @@ type agent struct {
 	controlWait time.Duration
 	// inputWait replaces session.InputWait in tests.
 	inputWait time.Duration
+	// viewersWait replaces viewersSettle in tests.
+	viewersWait time.Duration
 }
 
 // inputDeadline is when keystrokes arriving now must be written by (a
@@ -794,6 +796,10 @@ func (a *agent) settle(ctx context.Context) {
 	a.flushViewers(ctx)
 }
 
+// viewersSettle bounds how long a session that ended waits for its viewers
+// to have what it left them (flushViewers).
+const viewersSettle = 2 * time.Second
+
 // flushViewers waits for the viewers to be handed the frames queued for them,
 // and for the data channels of the WebRTC viewers to have what they were given
 // acknowledged. A relay viewer's frames go out on the control connection, which
@@ -802,9 +808,13 @@ func (a *agent) settle(ctx context.Context) {
 // its connection is closed: a frame that is queued or held by then is lost, and
 // the viewer is left without the status that says the session ended. Run it
 // after flushActivity: the session announces its end, and only then queues the
-// status entry for its viewers.
+// status entry for its viewers. It waits viewersSettle at most.
 func (a *agent) flushViewers(ctx context.Context) {
-	deadline := time.Now().Add(2 * time.Second)
+	wait := viewersSettle
+	if a.viewersWait > 0 {
+		wait = a.viewersWait
+	}
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
 		if a.local.Drained() && !a.channelsBuffered() && a.unsent() == 0 {
 			return

@@ -244,6 +244,12 @@ func flood(t *testing.T, a *agent, p *peer) {
 // is never told that the session ended.
 func TestSettleWaitsForAWebRTCViewerToGetTheFinalStatus(t *testing.T) {
 	a, p, frames := webrtcViewerAgent(t)
+	// Settle gives the viewers 2 s (viewersSettle), past which it lets
+	// what the channel still holds go; a loaded machine drains the 480 KiB
+	// in more than that, and the viewer, rightly, is never told. The test
+	// is of settle waiting for the channel: it gives it a limit the drain
+	// does not reach.
+	a.viewersWait = time.Minute
 	flood(t, a, p)
 	go a.local.Stop(t.Context())
 	select {
@@ -252,8 +258,8 @@ func TestSettleWaitsForAWebRTCViewerToGetTheFinalStatus(t *testing.T) {
 		t.Fatal("the session did not end")
 	}
 	// Settle returns once the viewers have what was queued for them, the
-	// data channel's bytes acknowledged, or after its limit (2 s). How long
-	// the channel takes to drain depends on the machine's load; what is
+	// data channel's bytes acknowledged, or after its limit. How long the
+	// channel takes to drain depends on the machine's load; what is
 	// checked is that settle returned soon after it drained, not at its
 	// limit, and not before it drained unless the limit was reached.
 	drained := func() bool { return a.local.Drained() && !a.channelsBuffered() && a.unsent() == 0 }
@@ -291,7 +297,7 @@ func TestSettleWaitsForAWebRTCViewerToGetTheFinalStatus(t *testing.T) {
 		at = returned // drained between the watcher's last look and now
 	}
 	switch took := returned.Sub(start); {
-	case at.IsZero() && took < 1900*time.Millisecond:
+	case at.IsZero() && took < a.viewersWait-100*time.Millisecond:
 		t.Fatalf("settle returned after %v with the viewer's frames not all handed on", took)
 	case !at.IsZero() && returned.Sub(at) > 500*time.Millisecond:
 		t.Fatalf("settle returned %v after the channel drained (%v in): it ran into its limit instead of seeing the channel drain", returned.Sub(at), at.Sub(start))
