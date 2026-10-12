@@ -31,6 +31,11 @@ type peer struct {
 	// relay, for the relay's attach to take over its slot.
 	replaces *session.Subscription
 
+	// attaching runs the viewer's attaches one at a time (attach): a hello
+	// over the relay waits for one over the data channel still under way,
+	// which gives way to it.
+	attaching sync.Mutex
+
 	mu        sync.Mutex
 	pc        *webrtc.PeerConnection
 	dc        *dcSink
@@ -110,7 +115,7 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 			if err != nil {
 				return
 			}
-			p.handleFrame(f)
+			p.handle(f, sink)
 		})
 		dc.OnClose(func() { p.detachDataChannel() })
 	})
@@ -205,8 +210,12 @@ func (p *peer) buffered() uint64 {
 	return sink.buffered()
 }
 
-// handleFrame processes a terminal frame from the viewer over either transport.
-func (p *peer) handleFrame(f proto.Frame) {
+// handleFrame processes a terminal frame from the viewer over the relay.
+func (p *peer) handleFrame(f proto.Frame) { p.handle(f, nil) }
+
+// handle processes a terminal frame from the viewer over either transport:
+// the data channel via, or the relay (nil).
+func (p *peer) handle(f proto.Frame, via *dcSink) {
 	p.mu.Lock()
 	sub := p.sub
 	closed := p.closed
@@ -238,7 +247,7 @@ func (p *peer) handleFrame(f proto.Frame) {
 				p.a.sendViewerError(p.id, proto.ErrCodeBadFrame, "unsupported hello")
 				return
 			}
-			p.attach(hello)
+			p.attach(hello, via)
 			return
 		}
 		if sub == nil {
@@ -524,19 +533,25 @@ func (p *peer) nvimOpen(sub *session.Subscription, req proto.NvimOpen) {
 	}
 }
 
-func (p *peer) attach(hello proto.Hello) {
+// attach attaches the viewer for its hello, which came over via: the data
+// channel's sink, or nil for the relay. The viewer's attaches run one at a
+// time. One whose transport the viewer has left by the time it is attached
+// (a move to the relay, its channel gone), or whose viewer has gone, gives
+// way: the subscription it made is let go, and kept for the viewer's next
+// attach to take over its slot (replaces); the peer's subscription is never
+// replaced by it. A hello on a transport the viewer is no longer on, or once
+// it is attached, does nothing.
+func (p *peer) attach(hello proto.Hello, via *dcSink) {
+	p.attaching.Lock()
+	defer p.attaching.Unlock()
 	p.mu.Lock()
-	var sink session.Sink
-	if p.relay != nil {
-		sink = p.relay
-	} else if p.dc != nil {
-		sink = p.dc
+	sink := p.transport(via)
+	if sink == nil || p.sub != nil || p.closed {
+		p.mu.Unlock()
+		return
 	}
 	replaces := p.replaces
 	p.mu.Unlock()
-	if sink == nil {
-		return
-	}
 	sub, err := p.a.local.AttachWith(session.AttachOptions{
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
 		Owner: p.owner, Replaces: replaces,
@@ -546,16 +561,46 @@ func (p *peer) attach(hello proto.Hello) {
 		return
 	}
 	p.mu.Lock()
+	if p.closed || p.transport(via) != sink {
+		if !p.closed {
+			// Its slot goes to the viewer's attach on the transport it
+			// moved to, as startRelay hands on one attached before.
+			p.replaces = sub
+		}
+		p.mu.Unlock()
+		p.a.local.Detach(sub)
+		return
+	}
 	p.sub = sub
 	// Handed over: a later attach of this viewer replaces this one.
 	p.replaces = nil
 	p.mu.Unlock()
 }
 
+// transport is the sink a hello that came over via attaches the viewer to:
+// the relay's, for one over the relay (via nil) once the viewer is on it;
+// the data channel's, for one over it while it is the viewer's transport;
+// nil for any other. The caller holds p.mu.
+func (p *peer) transport(via *dcSink) session.Sink {
+	if via == nil {
+		if p.relay == nil {
+			return nil
+		}
+		return p.relay
+	}
+	if p.relay != nil || p.dc != via {
+		return nil
+	}
+	return via
+}
+
 func (p *peer) detachDataChannel() {
 	p.mu.Lock()
 	sub := p.sub
 	if p.relay == nil {
+		// The channel is no longer the viewer's transport: an attach over
+		// it still under way gives way.
+		p.dc = nil
 		p.sub = nil
 		// A move to the relay after this takes over its slot while its
 		// transport closes (as startRelay notes it when it detaches first).
