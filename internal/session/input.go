@@ -172,6 +172,9 @@ type procWriter struct {
 	// it was being made: the program is not reading.
 	current *procWrite
 	stalled bool
+	// told, when set (tests), runs once a write's waiter has been told how
+	// it went, before the writer takes the next.
+	told func()
 }
 
 // add queues w for to. It refuses w, never blocking, with ErrInputStalled
@@ -221,7 +224,16 @@ func (q *procWriter) run(to io.Writer) {
 			w.before()
 		}
 		_, err := to.Write(w.data)
+		// The write is made: nothing of it is held against the next
+		// (a stall marked for it by a waiter whose time ran out as it was
+		// being made) from the moment its waiter can learn so.
+		q.mu.Lock()
+		q.writing, q.current, q.stalled = time.Time{}, nil, false
+		q.mu.Unlock()
 		w.done <- err
+		if q.told != nil {
+			q.told()
+		}
 	}
 }
 

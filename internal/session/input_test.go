@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"io"
 	"regexp"
 	"runtime"
 	"strings"
@@ -1310,5 +1311,38 @@ func TestALineTypedBeforeItsLinkIsRevokedIsFinished(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A write made is never held against the next: a waiter whose time ran
+// out just as the write was made, marking the writer stalled, marks
+// nothing once the write's waiter can learn it was made, and the next
+// write is queued, however soon it comes.
+func TestAWriteMadeIsNeverHeldAgainstTheNext(t *testing.T) {
+	release := make(chan struct{})
+	told := make(chan struct{}, 1)
+	q := procWriter{told: func() {
+		select {
+		case told <- struct{}{}:
+		default:
+		}
+		<-release
+	}}
+	defer close(release)
+	write := func(data string) *procWrite {
+		return &procWrite{data: []byte(data), done: make(chan error, 1), over: func() error { return nil }}
+	}
+	w := write("a")
+	if err := q.add(w, io.Discard, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-w.done; err != nil {
+		t.Fatal(err)
+	}
+	<-told     // the writer is past telling, not yet at the next
+	q.stall(w) // a waiter whose time ran out as the write was made
+	next := write("b")
+	if err := q.add(next, io.Discard, time.Second); err != nil {
+		t.Fatalf("the write after one made was refused: %v", err)
 	}
 }
