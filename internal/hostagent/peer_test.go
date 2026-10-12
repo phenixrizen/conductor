@@ -319,6 +319,65 @@ func TestSettleWaitsForAWebRTCViewerToGetTheFinalStatus(t *testing.T) {
 	}
 }
 
+// The server is told the session ended only once the WebRTC viewers' data
+// channels have had their last frames acknowledged, not only handed them:
+// the server then closes the connections of the viewers attached through
+// the session's links, and a browser lets go of its data channel, with what
+// the channel still holds, as that connection closes.
+func TestTheEndWaitsForTheWebRTCViewersToHaveTheirLastFrames(t *testing.T) {
+	a, p, _ := webrtcViewerAgent(t)
+	flood(t, a, p)
+	go a.local.Stop(t.Context())
+	select {
+	case <-a.local.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session did not end")
+	}
+	// As for settle: how long the channel takes to drain depends on the
+	// machine's load; the wait must return soon after it drained, and not
+	// before it drained unless it reached its limit (endDrain).
+	drained := func() bool { return a.statusQueued.Load() && a.local.Drained() && !a.channelsBuffered() }
+	var mu sync.Mutex
+	var since time.Time
+	stop := make(chan struct{})
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		for {
+			d := drained()
+			mu.Lock()
+			if !d {
+				since = time.Time{}
+			} else if since.IsZero() {
+				since = time.Now()
+			}
+			mu.Unlock()
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
+	start := time.Now()
+	a.handViewersTheEnd(t.Context(), nil)
+	returned := time.Now()
+	close(stop)
+	<-watched
+	mu.Lock()
+	at := since
+	mu.Unlock()
+	if at.IsZero() && drained() {
+		at = returned
+	}
+	switch took := returned.Sub(start); {
+	case at.IsZero() && took < endDrain-100*time.Millisecond:
+		t.Fatalf("the end was let go after %v with the viewer's data channel still holding its frames", took)
+	case !at.IsZero() && returned.Sub(at) > 500*time.Millisecond:
+		t.Fatalf("the wait returned %v after the channel drained (%v in): it ran into its limit", returned.Sub(at), at.Sub(start))
+	}
+}
+
 // Like the other waits, this one gives up at once when the host has been
 // stopped from outside.
 func TestSettleDoesNotWaitForWebRTCViewersOnceCancelled(t *testing.T) {
