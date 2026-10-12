@@ -140,12 +140,20 @@ func TestTheHostsOwnMessagesGoAheadOfRelayedFrames(t *testing.T) {
 	w := newControlWriter(c, pc)
 	t.Cleanup(w.stop)
 	big := bytes.Repeat([]byte("b"), 1<<20)
+	// The server reads nothing until the test lets it, and the socket takes
+	// a fraction of the megabyte: a write that waited on the socket would
+	// not return at all. The library hands a megabyte over a few kilobytes
+	// at a time, which takes a second on a loaded machine.
 	start := time.Now()
-	if err := w.sendRelay(big, time.Second, nil); err != nil {
-		t.Fatal(err)
-	}
-	if took := time.Since(start); took > time.Second {
-		t.Fatalf("a write waited %v on a connection the server does not read", took)
+	wrote := make(chan error, 1)
+	go func() { wrote <- w.sendRelay(big, time.Second, nil) }()
+	select {
+	case err := <-wrote:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("a write waited %v on a connection the server does not read", time.Since(start))
 	}
 	backedUp(t, pc)
 	relayed := make(chan error, 1)
