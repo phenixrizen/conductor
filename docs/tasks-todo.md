@@ -67,12 +67,6 @@ each reproduced with a Go test (round 15); none is fixed yet.
   (round 15); older than it. The fix proposed: carry the size through the
   replacement (`AttachOptions.Replaces`) in either order, without undoing an
   explicit Fit to my window made in between.
-- **A long-connected host's kept links are swept on a switchyard.** The
-  switchyard notes when it last saw a host only when the host registers, so
-  a host that stays connected more than seven days has its kept links
-  swept as orphans. Expected: a connected host's links are kept. The fix
-  proposed: refresh that time while the host is connected. Round 15
-  (#101's review).
 - **The SIGNAL size limit holds one way only.** The server can send a
   viewer a SIGNAL frame larger than the protocol's 64 KiB for SIGNAL (a
   re-encoded answer); it is charged to the relay budget but not refused.
@@ -81,55 +75,42 @@ each reproduced with a Go test (round 15); none is fixed yet.
   no longer sends one (it refuses a part whose header would pass 4 KiB),
   but the owner could answer with the save's id or close the connection.
   Round 15 (#110).
-- **A Codex member's command approval is missed, or shows only as
-  "terminal bell".** Codex 0.161 asks "Would you like to run the following
-  command?" (1. Yes, proceed (y) · 2. Yes, and don't ask again … (p) ·
-  3. No, and tell Codex what to do differently (esc)). Seen in the rc.7
-  app on 2026-10-11, a crew member running `curl` outside Codex's sandbox:
-  with nobody watching that member, its row stayed green and nothing
-  reached Needs you or its Activity tab; with the Yard open on it, the row
-  came back as "terminal bell" with a free-text Reply box, neither the
-  question nor its choices (a `y` typed there approved it). Cause:
-  Conductor passes Codex only `notify` (the end of a turn) and
-  `tui.notification_method="bel"` at launch; the PermissionRequest hook
-  lives in `~/.codex/hooks.json`, which Install writes only when there is
-  none (the owner's has empty lists, so it was never added); and Codex
-  seems to ring for an approval only while it thinks its terminal is not
-  focused (not verified). Expected: Needs you with the dialog's words and
-  its three choices, whatever the hooks file holds. A catalog question
-  like Codex's update and hooks-review screens is not enough: those are
-  watched only until the first submission (`Submit` stops the watcher,
-  `internal/session/submit.go`), and a bell already waiting keeps the
-  question's words out (`fireTrust` gives way to it, `unlessWaiting`). The
-  fix proposed: a watcher for the dialog for the session's whole life,
-  taking precedence over a bare bell (its words and choices `y`, `p`,
-  Esc), with tests for an approval after a crew's first prompt and for a
-  bell that comes before or after the dialog is seen.
-- **Codex's bell at the end of a turn leaves a member waiting on
-  nothing.** After the approved command ran, Codex reported its turn done
-  ("`HTTP/2 200`") and then rang the bell Conductor asks it for; the bell
-  came second, so the member sat in Needs you as "terminal bell" with
-  nothing to answer, minutes later still (rc.7 app, 2026-10-11). Cause:
-  `Local.scanOutput` makes any bell a question, even right after a done.
-  Expected: a done is not undone by the bell that comes with it. A time
-  window alone would also swallow the bell of a new turn's approval that
-  comes quickly, which may be the only sign of it when the hooks are
-  missing. The fix proposed: the turn's own bell is not a question, the
-  allowance ending with that turn (new input, a submission, a working
-  report), with a test of a new turn asking for approval at once.
-- **Codex's folder-trust "No" says the wrong thing.** Codex 0.161's trust
-  screen is "1. Trust and continue / 2. Quit"; the app's second answer
-  reads "No, continue without trusting", and its keys (Down, Enter) pick
-  Quit, so Codex exits (catalog `TrustAnswers`). Seen in the rc.7 app,
-  2026-10-11. Expected: the label says Quit, as Claude Code's says "No,
-  exit".
-- **Codex's update question reads as if it was answered with Update.**
-  The question's words are the highlighted line, cut at its backtick:
-  "Update now (runs". After a Skip, the Activity tab says "nater answered:
-  Update now (runs". Expected: "Update available 0.161.0 → 0.162.x", and
-  Codex's "Skip until next version" offered beside "Skip this update"
-  (every Codex launch asks again until then). Seen in the rc.7 app,
-  2026-10-11.
+- **A second controller's late click answers the next question.** Two
+  controllers clicking the same choice at nearly the same time: the second
+  click, delayed, lands on the question that comes next (a Codex approval
+  queued after another; Claude Code's numbered permission options too). A
+  quick reply carries no question id. Expected: a choice answers the
+  question it was shown for, or nothing. The fix proposed: a protocol change
+  binding a choice to the question's generation (`internal/proto`,
+  `protocol.ts`, every button path). Round 15 (#121's review).
+- **A hosted session's end drops what its link viewers had queued.** When a
+  `conductor host` session ends, the server closes the viewers attached
+  through its links as revoked and drops what it still holds for them
+  (`internal/api/server.go`, `internal/signal/hosted.go`); the host now
+  waits up to 2 s for its viewers' last frames before it reports the end
+  (#118), but the server side still drops them. Expected: a viewer gets
+  what the session printed before it ended. Round 15 (#118's review).
+- **A new turn's bell within half a second of the last turn's is lost.**
+  `Local.scanOutput` stamps the bell's 500 ms debounce before it knows the
+  bell belongs to a turn that ended (and is suppressed), and a new turn
+  (`nextTurn`) does not clear it: done, its bell, a new prompt, and a bell
+  of the new turn within 500 ms leave the session without a question when
+  no hook or screen dialog gives one. Expected: a suppressed bell does not
+  start the debounce, or a new turn clears it; a test of two turns' bells
+  within 500 ms. Round 15 (the docs review of #121).
+- **Tests that fail under load, older than round 15's last changes.** Run
+  on two CPUs shared with busy loops (#122's sweep, 2026-10-11), each the
+  same on main: in `internal/api`, `TestAKeptLinkGoesWithItsSessionOrItsRevoke`
+  (11 of 150 on main: the test expires the hosts before the server has seen
+  its host go), `TestARelayedViewerThatStopsReadingIsLetGoAlone` (5 of 30),
+  `TestRegisteredListsTheLinksTheServerHolds` (1 of 30) and
+  `TestAViewerThatComesBackFindsItsBudgetSpent`; in `internal/hostagent`,
+  `TestAnswerPasteConnectsAViewerWithNoSignaling` (it checks the host's side
+  of the data channel once, as the viewer's opens) and
+  `TestASocketThatTakesNothingForTheStallIsGivenUp`; in `internal/session`,
+  `TestActivityBroadcastAndReplay` (it counts frames before the viewer's own
+  join entry arrives). Expected: each waits for what it means, as #122's
+  sweep made the input and submit tests do.
 - **Small things seen in the rc.7 app (2026-10-11), 1440×900.** A
   sidebar row's second choice button ("No, continue without trusting")
   runs past the row's edge. The run header's stop confirm in the sidebar
