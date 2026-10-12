@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -99,6 +100,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	}
 	defer local.Detach(sub)
 	go keepalive(sink.ctx, c, s.pingEvery)
+	var held heldTyping
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
@@ -120,7 +122,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 				s.sendInputError(sub, local, err)
 			}
 		case proto.TypeControl:
-			if !s.handleLocalControl(sub, local, f.Payload) {
+			if !s.handleLocalControl(sub, local, &held, f.Payload) {
 				sink.Close(nil)
 				return
 			}
@@ -161,8 +163,41 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 	}
 }
 
+// heldTyping runs what a server viewer asked to type into the agent (a
+// submit, a chat to the agent, a chat_send) off its read loop while the
+// session's turn is held for a submission's text typed without its Enter
+// (session.Local.Held): it waits until a person types into the terminal, and
+// the viewer's own keys, sent after it, must reach the session to do that.
+// One at a time per connection: another while one waits so is refused
+// (too_many_requests) and the connection stays. Otherwise it runs on the
+// read loop, so that what the client sends next comes after it.
+type heldTyping struct{ busy atomic.Bool }
+
+// typeIn runs do, on the read loop or off it as above, and refuse with its
+// error; requestID names the request a too_many_requests refuses (a chat's
+// id or a chat_send's ref, none for a submit).
+func (h *heldTyping) typeIn(sub *session.Subscription, local *session.Local, requestID string, do func() error, refuse func(error)) {
+	if !local.Held() {
+		if err := do(); err != nil {
+			refuse(err)
+		}
+		return
+	}
+	if !h.busy.CompareAndSwap(false, true) {
+		local.Send(sub, proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: proto.ErrCodeTooManyRequests,
+			Message: "one line already waits for the terminal on this connection", RequestID: requestID}))
+		return
+	}
+	go func() {
+		defer h.busy.Store(false)
+		if err := do(); err != nil {
+			refuse(err)
+		}
+	}()
+}
+
 // handleLocalControl dispatches a control message; false means protocol error.
-func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Local, payload []byte) bool {
+func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Local, held *heldTyping, payload []byte) bool {
 	t, err := proto.ParseHeader(payload)
 	if err != nil {
 		local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad control message"))
@@ -246,15 +281,18 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		// The submission goes on when the client goes: a reply box closes its
 		// connection once it has sent, and a line cut in its pause would wait
 		// without its Enter. The read loop waits for it, so what the client
-		// sends next comes after it.
-		ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
-		_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
-		cancel()
-		// A line the program takes slowly is accepted, and entered as it
-		// reads (ErrSubmitPending).
-		if err != nil && !errors.Is(err, session.ErrSubmitPending) {
-			s.sendInputError(sub, local, err)
-		}
+		// sends next comes after it (but while the turn is held: typeIn).
+		held.typeIn(sub, local, "", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+			defer cancel()
+			_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
+			// A line the program takes slowly is accepted, and entered as it
+			// reads (ErrSubmitPending).
+			if errors.Is(err, session.ErrSubmitPending) {
+				return nil
+			}
+			return err
+		}, func(err error) { s.sendInputError(sub, local, err) })
 	case proto.CtlChat:
 		var m proto.ChatPost
 		if json.Unmarshal(payload, &m) != nil {
@@ -268,12 +306,12 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		}
 		if m.To != "" {
 			// Typed into the agent (or the run's member named) as a submit is, on the read loop, so what the client sends next comes after it.
-			ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
-			err := local.ChatSend(ctx, sub, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To})
-			cancel()
-			if err != nil {
-				local.Send(sub, session.ChatErrorFrame(err, msg.ID))
-			}
+			send := proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}
+			held.typeIn(sub, local, msg.ID, func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+				defer cancel()
+				return local.ChatSend(ctx, sub, send)
+			}, func(err error) { local.Send(sub, session.ChatErrorFrame(err, msg.ID)) })
 		}
 	case proto.CtlChatSend:
 		var m proto.ChatSend
@@ -281,12 +319,11 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat_send message"))
 			return true
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
-		err := local.ChatSend(ctx, sub, m)
-		cancel()
-		if err != nil {
-			local.Send(sub, session.ChatErrorFrame(err, m.Ref))
-		}
+		held.typeIn(sub, local, m.Ref, func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+			defer cancel()
+			return local.ChatSend(ctx, sub, m)
+		}, func(err error) { local.Send(sub, session.ChatErrorFrame(err, m.Ref)) })
 	case proto.CtlHello:
 		// duplicate hello is harmless
 	default:

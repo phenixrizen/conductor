@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -26,10 +27,11 @@ var drawer = catalog.Agent{
 }
 
 // outputLog reads a viewer's frames on a goroutine of its own and keeps its
-// output.
+// output, and the codes of the errors it was sent.
 type outputLog struct {
-	mu  sync.Mutex
-	out []byte
+	mu     sync.Mutex
+	out    []byte
+	errors []string
 }
 
 func watchOutput(t *testing.T, w *wsClient) *outputLog {
@@ -41,14 +43,28 @@ func watchOutput(t *testing.T, w *wsClient) *outputLog {
 			if err != nil {
 				return
 			}
-			if f.Type == proto.TypeOutput || f.Type == proto.TypeScrollback {
-				l.mu.Lock()
+			l.mu.Lock()
+			switch f.Type {
+			case proto.TypeOutput, proto.TypeScrollback:
 				l.out = append(l.out, f.Payload...)
-				l.mu.Unlock()
+			case proto.TypeControl:
+				var m map[string]any
+				if json.Unmarshal(f.Payload, &m) == nil && m["t"] == proto.CtlError {
+					code, _ := m["code"].(string)
+					l.errors = append(l.errors, code)
+				}
 			}
+			l.mu.Unlock()
 		}
 	}()
 	return l
+}
+
+// errorCodes are the codes of the errors the viewer was sent so far.
+func (l *outputLog) errorCodes() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.errors...)
 }
 
 func (l *outputLog) has(needle string) bool {
@@ -99,8 +115,10 @@ func waitAttention(t *testing.T, local *session.Local, state session.AttentionSt
 // A link's controller submits a line; its text is typed, and its link is
 // revoked, or expires, before its Enter: the Enter is never written, and
 // the session needs input with the hold's words. The owner's reply waits
-// for its turn; once the owner types into the terminal (Ctrl+U, the text
-// killed), the hold's words clear and the reply goes, a line of its own.
+// for its turn, off the connection's read loop (a second meanwhile is
+// refused, too_many_requests); once the owner types into the terminal on
+// the same connection (Ctrl+U, the text killed), the hold's words clear and
+// the reply goes, a line of its own.
 func TestALinksLineTypedBeforeTheLinkIsLetGoWaitsForAPersonsKeys(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -137,24 +155,27 @@ func TestALinksLineTypedBeforeTheLinkIsLetGoWaitsForAPersonsKeys(t *testing.T) {
 			waitAttention(t, local, session.AttentionNeedsInput, session.HeldWords)
 			out.absentFor(t, "got:", 2500*time.Millisecond)
 
-			// The owner's reply waits for the session's turn.
-			replier := dialViewer(t, e, id, adminToken)
-			replier.hello(0, 0)
-			replier.expectControl(proto.CtlReady)
-			replier.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "second"}))
+			// The owner's reply waits for the session's turn; a second one
+			// of the connection's meanwhile is refused.
+			owner.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "second"}))
+			owner.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "third"}))
 			out.absentFor(t, "second", time.Second)
 			waitAttention(t, local, session.AttentionNeedsInput, session.HeldWords)
+			if codes := out.errorCodes(); strings.Join(codes, ",") != proto.ErrCodeTooManyRequests {
+				t.Fatalf("errors %v, want the second reply's too_many_requests", codes)
+			}
 
-			// The owner types into the terminal: the line is killed, the
-			// hold ends, and the reply is typed and entered.
+			// The owner types into the terminal on the same connection: the
+			// line is killed, the hold ends, and the reply is typed and
+			// entered.
 			owner.send(proto.Encode(proto.TypeInput, []byte{0x15}))
 			waitAttention(t, local, session.AttentionNone, "")
 			out.waitFor(t, "got:second", 8*time.Second)
 			out.mu.Lock()
 			got := string(out.out)
 			out.mu.Unlock()
-			if strings.Contains(got, "got:first") {
-				t.Fatalf("the let-go link's line was entered: %q", got)
+			if strings.Contains(got, "got:first") || strings.Contains(got, "third") {
+				t.Fatalf("the let-go link's line, or the refused reply, was entered: %q", got)
 			}
 		})
 	}
