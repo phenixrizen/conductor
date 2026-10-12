@@ -583,8 +583,9 @@ activity log, with its state, and not shown. A key that ends the hold
 without answering such a question leaves the question showing, and the
 submissions it refuses refused. `id` names the
 change as `since` stamps it: 16 hex characters, new with every change that
-shows a state (the same words again change nothing, the id included), none
-with the empty state. A hosted session's is its host's, as the host reports
+shows a state (the same words again change nothing, the id included; a
+dialog asked again as the same question keeps its id, see Answering a
+question), none with the empty state. A hosted session's is its host's, as the host reports
 it; a change the server makes for a hosted session (a report through its
 routes) has none in the server's listings until the host reports it back with
 its own, except one the host keeps as it is (see Answering a question,
@@ -928,7 +929,16 @@ question is the session's `needs_input` and nothing written since was made
 to answer it, and then noted as answered in the same step. Every write that
 answers a question notes it so as the writer takes it: an `answer`'s keys or
 line, a key typed into a terminal (as a controller's input clears a question,
-above), a `submit`'s text or its Enter, Conductor's own Enter. So of two
+above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
+before a question showed and written once it shows (they waited behind
+another write) when they pick one of its answers (an Enter, one of its
+choices, a digit of a dialog's list), for the program takes them as its
+answer. A dialog asked during the work and drawn again with the words of the
+question just answered before the program has drawn anything since that
+answer was written (a program slow to take the key leaves the dialog on the
+screen) is that question still: asked again, it keeps its `id`, answered,
+and a reply to it is refused; once the program has drawn since, a dialog with
+those words is a question of its own, with a new `id`. So of two
 replies to one question, from two people clicking together or one whose click
 arrives after the program has moved on, the first is written and the second
 refused with `error{question_answered}` naming its `reqId`, nothing of it
@@ -937,7 +947,13 @@ next queued approval, Claude Code's next permission dialog), which stays
 waiting for its own reply. The page says so: "Already answered: the question
 was answered before your reply arrived. Nothing was sent." A reply with no
 `id` (a question from an older owner, a page that predates `answer`) goes as
-before, as INPUT or `submit`, and answers whatever shows.
+before, as INPUT or `submit`, and answers whatever shows; to an owner that
+takes `answer`, a page sends no reply that names no question (a hosted
+session's question the server lists before its host has told its `id`, a
+server older than its host): it says it was not sent, since keys that name
+nothing could land on another question. A session page whose listing lacks
+the `id` keeps the one its own connection to the owner reported for the same
+question. A page sends one reply per question: a double click is one answer.
 
 ## Events
 

@@ -242,6 +242,78 @@ func TestAKeyTypedInTheTerminalPutsTheQuestionBehind(t *testing.T) {
 	noWrite(t, p, 200*time.Millisecond)
 }
 
+// An Enter typed into the terminal before a question showed, and written
+// once it shows (it waited behind another write), is the question's answer
+// as the program takes it: it puts the question behind as it is written,
+// and a reply to the question queued after it is refused. (Codex's review
+// of this change, finding 2.)
+func TestAKeyQueuedBeforeAQuestionShowedPutsItBehind(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater"}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	release := blockFirstWrite(p)
+	defer release()
+	go s.Input(nater, []byte("x"))
+	writing(t, s)
+	typed := make(chan error, 1)
+	go func() { typed <- s.Input(nater, []byte("\r")) }()
+	queued(t, s, 1)
+	// Claude Code's permission dialog, reported by its hook while the Enter waits.
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}}); err != nil {
+		t.Fatal(err)
+	}
+	q := s.Info().Attention
+	replied := make(chan error, 1)
+	go func() { replied <- s.AnswerInput(t.Context(), jane, q.ID, []byte("1")) }()
+	queued(t, s, 2)
+	release()
+	for _, want := range []string{"x", "\r"} {
+		if got := nextWrite(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	if err := <-typed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replied; !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("the reply behind the Enter: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A dialog answered by a choice and drawn again before the program has
+// drawn anything since (it is slow to take the key) is the same dialog:
+// asked again, it keeps its id, answered, and a click on it is refused,
+// nothing written. Once the program has drawn since, a dialog with the
+// same words is a question of its own, and takes its reply. (Codex's
+// review of this change, finding 3.)
+func TestADialogAskedAgainBeforeTheProgramDrewIsStillAnswered(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	first := waitAttention(t, s, asked)
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	if err := s.AnswerInput(t.Context(), jane, again.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the dialog asked again before the program drew: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	// The program draws the same approval anew (another command of the same words): a question of its own.
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com\r\n")))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	fresh := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != again.ID && a.ID != first.ID })
+	if err := s.AnswerInput(t.Context(), jane, fresh.ID, []byte("y")); err != nil {
+		t.Fatalf("the approval drawn anew: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+}
+
 // A reply that names no question is written as keystrokes always were
 // (an older page): it answers whatever shows.
 func TestAReplyWithNoIDStillAnswers(t *testing.T) {

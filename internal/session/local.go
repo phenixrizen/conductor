@@ -195,8 +195,16 @@ type Local struct {
 	// made to answer, set as the writer takes the write (claimQuestion,
 	// noteAnswering): until the write is made and answer clears the
 	// question, it still shows, and a reply to it that comes after is
-	// refused (ErrQuestionAnswered). Guarded by mu.
-	answered  string
+	// refused (ErrQuestionAnswered). answeredWords and answeredSource are
+	// that question's; answeredLanded is when the write that answered it
+	// was made, zero until it is: a dialog with its words asked again
+	// before the program has drawn anything since is that question still
+	// (setAttention, sameDialog). Guarded by mu.
+	answered       string
+	answeredWords  string
+	answeredSource string
+	answeredLanded time.Time
+
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
 	scanner   Scanner
@@ -628,7 +636,7 @@ func (s *Local) fireTrust(text string) {
 func (s *Local) fireAsked(text string) {
 	for _, q := range s.askedQuestions {
 		if words := q.words(text); words != "" {
-			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup)
+			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog)
 			return
 		}
 	}
@@ -819,6 +827,14 @@ const (
 	// attention, which keys that ended the hold before it showed, or the
 	// session's end, must not leave behind.
 	whileHeld
+	// sameDialog (a dialog asked during the work, fireAsked): a dialog
+	// with the words of the last question a write answered, asked again
+	// before the program has drawn anything since that write was made (it
+	// is slow to take the key), is that question still: it keeps its id,
+	// answered, so that no reply to it is written twice. Once the program
+	// has drawn since, a dialog with those words is a question of its own,
+	// with an id of its own, the one still showing included.
+	sameDialog
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -916,7 +932,13 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 		// last turn's): the turn it reports has ended.
 		s.turnEnded = true
 	}
-	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
+	// A dialog with the words of the question last answered (sameDialog):
+	// the same one while the program has drawn nothing since the answer
+	// was written, a new one after.
+	answeredDialog := rules&sameDialog != 0 && state == AttentionNeedsInput && s.answered != "" && s.answeredSource == source && s.answeredWords == message
+	drawnSince := !s.answeredLanded.IsZero() && s.lastOutput.After(s.answeredLanded)
+	asksAnew := answeredDialog && cur.ID == s.answered && drawnSince
+	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && !asksAnew {
 		s.mu.Unlock()
 		return nil
 	}
@@ -934,6 +956,9 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 		now := time.Now().UTC()
 		att.Since = &now
 		att.ID = NewID()
+		if answeredDialog && !drawnSince {
+			att.ID = s.answered
+		}
 	}
 	s.info.Attention = att
 	s.signalAttention()
@@ -1466,9 +1491,11 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	}
 	// What a key does to the session's questions is done as the writer
 	// takes it, just before it is written, never for keys not written (a
-	// time run out, a stall, a connection gone): noted is set then, and
-	// read once the write is made.
+	// time run out, a stall, a connection gone): noted, and marked (the
+	// question it was noted as answering), are set then, and read once the
+	// write is made.
 	var noted bool
+	var marked string
 	o.from, o.anyEnd = sub, true
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
@@ -1526,9 +1553,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			s.endHold()
 		}
 		if !isTerminalReport(data) {
-			// Keys that answer the prompt showing (as answer will take
-			// them) put it behind for the replies queued after them.
-			s.noteAnswering(promptSince, enter)
+			// Keys that answer the question showing put it behind for the
+			// replies queued after them.
+			marked = s.noteAnswering(promptSince, enter, data)
 		}
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
@@ -1564,7 +1591,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				select {
 				case werr := <-landed:
 					if werr == nil {
-						s.typedKeys(sub, data, promptSince, enter, noted, typed)
+						s.typedKeys(sub, data, promptSince, enter, noted, typed, marked)
 					}
 				case <-s.ended:
 				}
@@ -1572,7 +1599,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		return err
 	}
-	s.typedKeys(sub, data, promptSince, enter, noted, typed)
+	s.typedKeys(sub, data, promptSince, enter, noted, typed, marked)
 	return nil
 }
 
@@ -1586,10 +1613,14 @@ func isChoice(att Attention, data []byte) bool {
 	return false
 }
 
-// typedKeys is what follows keys written to the program (input): sub is
-// typing, the dialog or question they answer is noted and looked at again,
-// and the prompt that showed as they were typed (promptSince) is answered.
-func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted, typed bool) {
+// typedKeys is what follows keys written to the program (input): the
+// question they were noted as answering (marked) has its answer landed, sub
+// is typing, the dialog or question they answer is noted and looked at
+// again, and the prompt that showed as they were typed (promptSince) is
+// answered. typed says a person typed something (typesSomething), not only
+// the terminal's reports.
+func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted, typed bool, marked string) {
+	s.answerLanded(marked)
 	if isTerminalReport(data) {
 		return
 	}
@@ -1746,24 +1777,56 @@ func (s *Local) claimQuestion(id string) error {
 	if err := s.waitsLocked(id); err != nil {
 		return err
 	}
-	s.answered = id
+	s.markAnswered(s.info.Attention)
 	return nil
 }
 
-// noteAnswering notes, as the writer takes a write that answers the prompt
-// stamped promptSince (as answer will take it: enter, or any key for a
-// prompt the session does not hold), that the prompt's question is
-// answered: a reply to it that comes after is refused (questionWaits),
-// though it shows until the write is made and answer clears it. Keys typed
-// into the terminal, a reply box's line and Conductor's own Enter put a
-// question behind as a reply to it does.
-func (s *Local) noteAnswering(promptSince *time.Time, enter bool) {
+// markAnswered notes att's question as the one a write is being made to
+// answer (answered), not landed yet. The caller holds s.mu.
+func (s *Local) markAnswered(att Attention) {
+	s.answered, s.answeredWords, s.answeredSource, s.answeredLanded = att.ID, att.Message, att.Source, time.Time{}
+}
+
+// answerLanded notes that the write made to answer the question id has
+// been made (answeredLanded), when that question is still the one noted.
+func (s *Local) answerLanded(id string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.answered == id {
+		s.answeredLanded = time.Now()
+	}
+}
+
+// noteAnswering notes, as the writer takes a write of data, that the
+// question showing is answered when the write answers it: a reply to it
+// that comes after is refused (questionWaits), though it shows until the
+// write is made and answer clears it. The write answers the prompt stamped
+// promptSince, the one showing as it was typed, as answer will take it
+// (enter, or any key for a prompt the session does not hold); and it
+// answers whatever question shows as it is written when it picks one of
+// its answers (an Enter, one of its choices, a digit of a dialog's list):
+// keys typed before the question showed and written once it shows (they
+// waited behind another write) reach it, whatever answer leaves showing.
+// Keys typed into the terminal, a reply box's line and Conductor's own
+// Enter put a question behind as a reply to it does. It returns the id
+// noted, "" for none.
+func (s *Local) noteAnswering(promptSince *time.Time, enter bool, data []byte) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	att := s.info.Attention
-	if att.State == AttentionNeedsInput && att.Since == promptSince && att.ID != "" && (enter || !heldSource(att.Source)) {
-		s.answered = att.ID
+	if att.State != AttentionNeedsInput || att.ID == "" {
+		return ""
 	}
+	typedAt := att.Since == promptSince && (enter || !heldSource(att.Source))
+	picks := bytes.IndexByte(data, '\r') >= 0 || isChoice(att, data) || att.Source == SourceQuestion && listKey(data)
+	if !typedAt && !picks {
+		return ""
+	}
+	s.markAnswered(att)
+	return att.ID
 }
 
 // ErrBadAnswer refuses an answer message out of its bounds
