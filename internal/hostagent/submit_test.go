@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,21 @@ type submitViewer struct {
 	dc     *webrtc.DataChannel
 	frames <-chan []byte
 	ts     int64
+	// begun counts the writes the session has begun to the process,
+	// those that wait in it (hold) among them.
+	begun *atomic.Int32
+}
+
+// countingProc is a FakeProc that counts the writes made to it as they
+// begin, before they wait for room.
+type countingProc struct {
+	*sessiontest.FakeProc
+	begun *atomic.Int32
+}
+
+func (c countingProc) Write(b []byte) (int, error) {
+	c.begun.Add(1)
+	return c.FakeProc.Write(b)
 }
 
 func newSubmitViewer(t *testing.T, pause time.Duration) *submitViewer {
@@ -37,11 +53,19 @@ func newSubmitViewer(t *testing.T, pause time.Duration) *submitViewer {
 // timeout from its arrival, instead of submitTimeout.
 func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitViewer {
 	t.Helper()
+	return newSubmitViewerWaits(t, pause, timeout, 0)
+}
+
+// newSubmitViewerWaits is newSubmitViewerWithin whose host also gives
+// keystrokes inputWait from their arrival, instead of session.InputWait.
+func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration) *submitViewer {
+	t.Helper()
 	proc := sessiontest.NewFakeProc()
-	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
+	begun := new(atomic.Int32)
+	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, countingProc{proc, begun}, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
 	t.Cleanup(func() { proc.End(0) })
 	out := make(chan any, 64)
-	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout}
+	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout, inputWait: inputWait}
 	a.sendHook = func(v any) { out <- v }
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
 	a.peers[p.id] = p
@@ -50,9 +74,16 @@ func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitVi
 	}
 	t.Cleanup(p.close)
 	dc, frames := loopbackViewer(t, p, out)
-	v := &submitViewer{t: t, p: p, proc: proc, dc: dc, frames: frames}
+	v := &submitViewer{t: t, p: p, proc: proc, dc: dc, frames: frames, begun: begun}
 	v.send(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "Nate"})
 	v.until(func(m map[string]any) bool { return m["t"] == proto.CtlReady })
+	// The session sends ready as it attaches the viewer, before the peer
+	// holds the subscription (attach). A frame on the data channel is
+	// handled after the hello has finished, but a test that hands the peer
+	// a frame itself (handleFrame) must not do so before: a frame of a
+	// viewer not attached yet is dropped. The ping is handled after the
+	// hello, so once its pong is in, the peer holds the subscription.
+	v.sync()
 	return v
 }
 
@@ -99,6 +130,20 @@ func (v *submitViewer) sync() []map[string]any {
 	ts := v.ts
 	v.send(proto.Ping{T: proto.CtlPing, TS: ts})
 	return v.until(func(m map[string]any) bool { return m["t"] == proto.CtlPong && m["ts"] == float64(ts) })
+}
+
+// untilBegun waits until n writes to the process have begun: the last of
+// them may wait there (hold), but it is being written, no longer waiting
+// in a queue of the viewer's or the session's.
+func (v *submitViewer) untilBegun(n int32) {
+	v.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for v.begun.Load() < n {
+		if time.Now().After(deadline) {
+			v.t.Fatalf("%d writes to the process begun, want %d", v.begun.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // hold fills the process's input so that the next write to it waits: a
@@ -356,16 +401,28 @@ func TestAViewersDataChannelClosingDropsWhatWaits(t *testing.T) {
 }
 
 // A submission's time runs from its arrival: those waiting behind one the
-// process does not take are refused as their time runs out, while it still
-// takes none, and never typed once it takes input again; the queue has
-// room again.
+// process is taking slowly are refused as their time runs out, while it
+// still takes none, and never typed once it takes input again; the queue
+// has room again. The one being taken is accepted, with no error, and
+// finished (its Enter) as the process reads, holding the session's turn
+// till then.
+//
+// The first is accepted at its own deadline, a moment before those after
+// it reach theirs: one of them may get its turn in that moment and then
+// wait for the session's turn, held by the first, for the little time it
+// has left. It is refused for its time all the same (input_failed), never
+// typed. So the chat_send names a kept message: one naming none would be
+// refused for that instead, when it gets its turn in time.
 func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 	v := newSubmitViewerWithin(t, 10*time.Millisecond, timeout)
+	v.send(proto.ChatPost{T: proto.CtlChat, Text: "kept", Nonce: "k"})
+	kept := v.until(func(m map[string]any) bool { return m["t"] == proto.CtlChat && m["nonce"] == "k" })
+	ref := kept[len(kept)-1]["id"].(string)
 	v.hold()
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "first"})
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 1"})
-	v.send(proto.ChatSend{T: proto.CtlChatSend, Ref: "ref-1"})
+	v.send(proto.ChatSend{T: proto.CtlChatSend, Ref: ref})
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "waits 2"})
 	failed := map[string]int{}
 	v.until(func(m map[string]any) bool {
@@ -376,10 +433,10 @@ func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 			id, _ := m["requestId"].(string)
 			failed[id]++
 		}
-		return failed[""]+failed["ref-1"] == 3
+		return failed[""]+failed[ref] == 3
 	})
-	if failed[""] != 2 || failed["ref-1"] != 1 {
-		t.Fatalf("failed %v, want the two waiting submits and ref-1", failed)
+	if failed[""] != 2 || failed[ref] != 1 {
+		t.Fatalf("failed %v, want the two waiting submits and the chat_send", failed)
 	}
 	for i := range maxQueued {
 		v.send(proto.Submit{T: proto.CtlSubmit, Text: fmt.Sprintf("later %d", i)})
@@ -390,10 +447,10 @@ func TestAViewersSubmissionsThatWaitedOutTheirTimeAreNotTyped(t *testing.T) {
 		}
 	}
 	time.Sleep(2 * timeout)
-	// The first had the process's turn and was typed when it took input
-	// again; its time was out by then, so its Enter is left out.
-	if first := v.release(); first != "first" {
-		t.Fatalf("typed %q", first)
+	// The first's text was being written when its time ran out: it lands
+	// when the process takes input again, and its Enter after it.
+	if typed := v.typed(v.release(), 2); fmt.Sprint(typed) != fmt.Sprint([]string{"first", "\r"}) {
+		t.Fatalf("typed %q", typed)
 	}
 	v.quiet(300 * time.Millisecond)
 }
@@ -500,6 +557,12 @@ func TestAViewerAttachedAgainHasItsQueue(t *testing.T) {
 // the test.
 func relayHost(t *testing.T) (string, string) {
 	t.Helper()
+	return relayHostOf(t, []string{"/bin/cat"})
+}
+
+// relayHostOf is relayHost of argv.
+func relayHostOf(t *testing.T, argv []string) (string, string) {
+	t.Helper()
 	_, hs := startServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	registered := make(chan string, 1)
@@ -507,7 +570,7 @@ func relayHost(t *testing.T) (string, string) {
 	go func() {
 		defer close(done)
 		if _, err := Run(ctx, Options{
-			ServerURL: hs.URL, Token: hostToken, Name: "submit test", Argv: []string{"/bin/cat"}, RelayOnly: true,
+			ServerURL: hs.URL, Token: hostToken, Name: "submit test", Argv: argv, RelayOnly: true,
 			Log:        discardLog,
 			Registered: func(id, _ string) { registered <- id },
 		}); err != nil {

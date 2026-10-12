@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -194,6 +195,15 @@ func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
 		case raw := <-frames:
 			if f, err := proto.Decode(raw); err == nil && f.Type == proto.TypeControl {
 				if typ, _ := proto.ParseHeader(f.Payload); typ == proto.CtlReady {
+					// The session sends ready as it attaches the viewer,
+					// before the peer holds the subscription (attach).
+					for !holdsSub(p) {
+						select {
+						case <-deadline:
+							t.Fatal("the peer never held the viewer's subscription")
+						case <-time.After(5 * time.Millisecond):
+						}
+					}
 					return a, p, frames
 				}
 			}
@@ -201,6 +211,13 @@ func webrtcViewerAgent(t *testing.T) (*agent, *peer, <-chan []byte) {
 			t.Fatal("the viewer was not attached")
 		}
 	}
+}
+
+// holdsSub reports whether p holds its viewer's subscription.
+func holdsSub(p *peer) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sub != nil
 }
 
 // flood queues 480 KiB of output for the viewer: less than the session and the
@@ -234,10 +251,50 @@ func TestSettleWaitsForAWebRTCViewerToGetTheFinalStatus(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the session did not end")
 	}
+	// Settle returns once the viewers have what was queued for them, the
+	// data channel's bytes acknowledged, or after its limit (2 s). How long
+	// the channel takes to drain depends on the machine's load; what is
+	// checked is that settle returned soon after it drained, not at its
+	// limit, and not before it drained unless the limit was reached.
+	drained := func() bool { return a.local.Drained() && !a.channelsBuffered() && a.unsent() == 0 }
+	var mu sync.Mutex
+	var since time.Time // when the viewers last came to have it all; zero while they have not
+	stop := make(chan struct{})
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		for {
+			d := drained()
+			mu.Lock()
+			if !d {
+				since = time.Time{}
+			} else if since.IsZero() {
+				since = time.Now()
+			}
+			mu.Unlock()
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
 	start := time.Now()
 	a.settle(t.Context())
-	if took := time.Since(start); took > 1500*time.Millisecond {
-		t.Fatalf("settle took %v: it ran into its limit instead of seeing the channel drain", took)
+	returned := time.Now()
+	close(stop)
+	<-watched
+	mu.Lock()
+	at := since
+	mu.Unlock()
+	if at.IsZero() && drained() {
+		at = returned // drained between the watcher's last look and now
+	}
+	switch took := returned.Sub(start); {
+	case at.IsZero() && took < 1900*time.Millisecond:
+		t.Fatalf("settle returned after %v with the viewer's frames not all handed on", took)
+	case !at.IsZero() && returned.Sub(at) > 500*time.Millisecond:
+		t.Fatalf("settle returned %v after the channel drained (%v in): it ran into its limit instead of seeing the channel drain", returned.Sub(at), at.Sub(start))
 	}
 	a.closeAllPeers()
 	deadline := time.After(10 * time.Second)

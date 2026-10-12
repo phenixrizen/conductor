@@ -48,6 +48,167 @@ func TestADoneBeforeTheEnterDoesNotCount(t *testing.T) {
 	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
 }
 
+// A prompt accepted while the member's program takes it slowly (its text
+// still being taken when its time ran out) counts as given only with its
+// Enter: a done the agent reports before then starts nothing, one after it
+// does.
+func TestADoneBeforeAPendingPromptsEnterDoesNotCount(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.inputWait = 200 * time.Millisecond
+	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
+		if member != "core" {
+			return
+		}
+		// The program takes nothing for now: the prompt's text waits.
+		for len(p.Input) < cap(p.Input) {
+			p.Input <- nil
+		}
+		l.SetAttention(session.AttentionNeedsInput, "what next?", session.SourceAPI)
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for logCount(t, e, run.ID, "waits for core to take its input") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the prompt was never accepted as pending")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	core, p := fl.member("core")
+	core.SetAttention(session.AttentionDone, "idle", session.SourceAPI)
+	time.Sleep(300 * time.Millisecond)
+	if n := logCount(t, e, run.ID, "core is done"); n != 0 {
+		t.Fatalf("a done before the pending prompt's Enter started the members after core (%d)", n)
+	}
+	// The program reads again: the text, then its Enter.
+	var typedNow []string
+	for len(typedNow) < 2 {
+		select {
+		case b := <-p.Input:
+			if b != nil {
+				typedNow = append(typedNow, string(b))
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("typed %q", typedNow)
+		}
+	}
+	if typedNow[0] != "Build it." || typedNow[1] != "\r" {
+		t.Fatalf("typed %q", typedNow)
+	}
+	core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	core.SetAttention(session.AttentionDone, "built", session.SourceAPI)
+	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
+}
+
+// A prompt whose Enter waits behind another's keystrokes the program does
+// not take counts as given only once the Enter is taken: a done the agent
+// reports while it waits starts nothing.
+func TestADoneWhileAPromptsEnterWaitsDoesNotCount(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.pause = 300 * time.Millisecond
+	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
+		if member != "core" {
+			return
+		}
+		l.SetAttention(session.AttentionNeedsInput, "what next?", session.SourceAPI)
+		<-p.Input // the text
+		// The program takes nothing more for now, and a person's keys come
+		// ahead of the Enter.
+		for len(p.Input) < cap(p.Input) {
+			p.Input <- nil
+		}
+		sub, err := l.Attach("", session.RoleControl, "", 0, 0, nopSink{})
+		if err != nil {
+			return
+		}
+		go l.Input(sub, []byte("x"))
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(800 * time.Millisecond) // past the pause: the Enter waits
+	core, p := fl.member("core")
+	core.SetAttention(session.AttentionDone, "idle", session.SourceAPI)
+	time.Sleep(300 * time.Millisecond)
+	if n := logCount(t, e, run.ID, "core is done"); n != 0 {
+		t.Fatalf("a done while the prompt's Enter waited started the members after core (%d)", n)
+	}
+	// The program reads again: the keys, then the Enter.
+	var typedNow []string
+	for len(typedNow) < 2 {
+		select {
+		case b := <-p.Input:
+			if b != nil {
+				typedNow = append(typedNow, string(b))
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("typed %q", typedNow)
+		}
+	}
+	if typedNow[0] != "x" || typedNow[1] != "\r" {
+		t.Fatalf("typed %q", typedNow)
+	}
+	core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	core.SetAttention(session.AttentionDone, "built", session.SourceAPI)
+	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
+}
+
+// A prompt accepted while the member's program takes it slowly, whose
+// Enter is then left out for a question come meanwhile, waits in the
+// agent's input as one typed so at once does: the run says so, and the
+// prompt counts as given, so the done after a person's Enter starts the
+// members after it.
+func TestAPendingPromptLeftWithoutItsEnterCountsAsGiven(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.inputWait = 200 * time.Millisecond
+	fl.onLaunch = func(member string, p *sessiontest.FakeProc, l *session.Local) {
+		if member != "core" {
+			return
+		}
+		for len(p.Input) < cap(p.Input) {
+			p.Input <- nil
+		}
+		l.SetAttention(session.AttentionNeedsInput, "what next?", session.SourceAPI)
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("core", "Build it."), after("tests", "", "core")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for logCount(t, e, run.ID, "waits for core to take its input") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the prompt was never accepted as pending")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	core, p := fl.member("core")
+	core.SetAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI)
+	// The program reads again: the text, and no Enter.
+	for {
+		b := <-p.Input
+		if b != nil {
+			if string(b) != "Build it." {
+				t.Fatalf("typed %q", b)
+			}
+			break
+		}
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for logCount(t, e, run.ID, "typed core's prompt without its Enter") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the run never said the prompt waits without its Enter")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// A person answers and presses Enter; the agent works and is done.
+	core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	core.SetAttention(session.AttentionDone, "built", session.SourceAPI)
+	waitStatus(t, e, run.ID, "tests", MemberRunning, 5*time.Second)
+}
+
 // A trust question on a member's screen holds its prompt past the readiness
 // cap: the member needs input with the question's words, the run says so
 // once, and nothing is typed until a person answers it with Enter. Then the
@@ -358,5 +519,63 @@ func TestResumeMember(t *testing.T) {
 	}
 	if got, _ := e.Get(run.ID); got.StoppedAt != nil {
 		t.Fatalf("not reopened: %+v", got)
+	}
+}
+
+// A handoff accepted while the member's program takes it slowly (its text
+// still being taken when its time ran out) is told in the run's log how it
+// ended once it has: delivered with its Enter, or typed without it for a
+// question come meanwhile.
+func TestAPendingHandoffIsToldHowItEnded(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		question bool
+		want     string
+	}{
+		{"entered", false, "handoff delivered from lead to core"},
+		{"without its Enter", true, "handoff from lead to core typed without its Enter"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, fl := newEngine(t)
+			fl.onLaunch = askAtOnce
+			fl.inputWait = 200 * time.Millisecond
+			run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it.")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitStatus(t, e, run.ID, "core", MemberRunning, 5*time.Second)
+			lead, _ := fl.member("lead")
+			core, p := fl.member("core")
+			typed(p)
+			core.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+			// The program takes nothing for now: the handoff's text waits.
+			for len(p.Input) < cap(p.Input) {
+				p.Input <- nil
+			}
+			lead.Record(session.ActivityEntry{Type: session.ActivityHandoff, To: "core", Message: "the handlers are in"})
+			waitLogged(t, e, run.ID, "waits for core to take its input", 1, 10*time.Second)
+			if c.question {
+				core.SetAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI)
+			}
+			// The program reads again.
+			var got string
+			deadline := time.After(10 * time.Second)
+			for !strings.Contains(got, "handlers") || !c.question && !strings.HasSuffix(got, "\r") {
+				select {
+				case b := <-p.Input:
+					got += string(b)
+				case <-deadline:
+					t.Fatalf("typed %q", got)
+				}
+			}
+			waitLogged(t, e, run.ID, c.want, 1, 10*time.Second)
+			if c.question {
+				time.Sleep(200 * time.Millisecond)
+				if w := typed(p); len(w) != 0 {
+					t.Fatalf("typed after the question: %q", w)
+				}
+				waitLogged(t, e, run.ID, "handoff delivered", 0, time.Second)
+			}
+		})
 	}
 }

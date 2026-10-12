@@ -3,9 +3,14 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -157,14 +162,39 @@ func TestNvimBridgeThroughTheSession(t *testing.T) {
 	if ev.Kind != proto.NvimError || ev.Code != proto.ErrCodeTooManyRequests || ev.ReqID != "r5" {
 		t.Fatalf("refusal: %+v", ev)
 	}
-	// Detach closes the editors.
+	// Detach closes the editors, on their own goroutines: each leaves the
+	// connection and the session's count once Neovim has gone. A Neovim
+	// that does not leave as its connection closes (one of those that found
+	// the first's swap file can wait at that question) is ended once
+	// nvimEndWait has passed, so the wait here is longer than that.
 	s.Detach(sub)
-	sub.nvimMu.Lock()
-	left := len(sub.nvims)
-	sub.nvimMu.Unlock()
-	if left != 0 || s.nvimCount.Load() != 0 {
-		t.Fatalf("editors left: %d (session %d)", left, s.nvimCount.Load())
+	deadline := time.Now().Add(nvimEndWait + 5*time.Second)
+	for {
+		sub.nvimMu.Lock()
+		left := len(sub.nvims)
+		sub.nvimMu.Unlock()
+		if left == 0 && s.nvimCount.Load() == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("editors left: %d (session %d)", left, s.nvimCount.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// editorsEnd makes the test wait, as it ends, for s's editors to have
+// ended: a connection's editors end on goroutines of their own as it goes
+// (closeNvims), and Neovim writes its state in the test's directories as it
+// leaves.
+func editorsEnd(t *testing.T, s *Local) {
+	t.Helper()
+	t.Cleanup(func() {
+		deadline := time.Now().Add(15 * time.Second)
+		for s.nvimCount.Load() != 0 && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 }
 
 func anyModified(evs []proto.NvimEvent, modified bool) bool {
@@ -196,6 +226,7 @@ func TestNvimCloseKeepsOrDiscardsTheSwapFile(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
 	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
 	sink := newChanSink(false)
 	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, sink)
 	if err != nil {
@@ -265,6 +296,7 @@ func TestNvimCloseKeepsOrDiscardsTheSwapFile(t *testing.T) {
 	}
 	// Another session's editors leave this one's bound alone.
 	other, _ := newLocal(t, dir)
+	editorsEnd(t, other)
 	osub, err := other.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Owner: true}, newChanSink(false))
 	if err != nil {
 		t.Fatal(err)
@@ -307,6 +339,7 @@ func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
 	marker := filepath.Join(t.TempDir(), "marker")
 	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
 
 	ownerSink := newChanSink(false)
 	owner, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, ownerSink)
@@ -375,5 +408,557 @@ func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 	}
 	if n := s.nvimCount.Load(); n != 1 {
 		t.Fatalf("editors on the session: %d", n)
+	}
+}
+
+// fakeNvim puts on PATH an `nvim` that starts and never answers, as a
+// Neovim stuck in its config does; it returns the file its process id is
+// written to. Whatever is left of it is killed as the test ends.
+func fakeNvim(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := "#!/bin/sh\necho $$ > '" + pidFile + "'\nexec sleep 600\n"
+	if err := os.WriteFile(filepath.Join(dir, nvim.Program), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		if pid := nvimPid(pidFile); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	return pidFile
+}
+
+// nvimPid is the process id the fake nvim wrote, 0 before it has.
+func nvimPid(pidFile string) int {
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return pid
+}
+
+// gone waits for the process pid to be gone, for at most d.
+func gone(pid int, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if syscall.Kill(pid, 0) != nil {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// editableLocal is a session whose owner may edit a.txt through Neovim.
+func editableLocal(t *testing.T) (*Local, *Subscription) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
+	return s, ownerOf(t, s)
+}
+
+// An editor's open ends with its context while Neovim is still starting:
+// Neovim is ended and holds no editor's place.
+func TestAnEditorOpenEndsWithItsContextWhileNeovimStarts(t *testing.T) {
+	pidFile := fakeNvim(t)
+	s, sub := editableLocal(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err := returnsWithin(t, 5*time.Second, "the editor's open", func() error {
+		return s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	})
+	if err == nil {
+		t.Fatal("an open that never finished starting succeeded")
+	}
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors counted after the open failed", n)
+	}
+	if pid := nvimPid(pidFile); pid == 0 || !gone(pid, 5*time.Second) {
+		t.Fatalf("Neovim (pid %d) still runs after its open ended", pid)
+	}
+}
+
+// A connection that goes while its editor still starts ends that Neovim:
+// the open fails, and nothing of it is left on the session.
+func TestAnEditorStillStartingEndsWithItsConnection(t *testing.T) {
+	pidFile := fakeNvim(t)
+	s, sub := editableLocal(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for nvimPid(pidFile) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("Neovim did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.Detach(sub)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the open of a connection that went succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the open went on after its connection went")
+	}
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors counted after the connection went", n)
+	}
+	if !gone(nvimPid(pidFile), 5*time.Second) {
+		t.Fatal("Neovim still runs after its connection went")
+	}
+}
+
+// An open that comes after its connection has gone (a host's open runs
+// apart from the frames, and may start as the viewer leaves) is refused:
+// no editor is left running on a connection nothing will close.
+func TestAnEditorOpenAfterItsConnectionWentIsRefused(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	s, sub := editableLocal(t)
+	s.Detach(sub)
+	t.Cleanup(func() { s.closeNvims(sub) })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"}); err == nil {
+		t.Fatal("an editor opened for a connection that had gone")
+	}
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors counted for a connection that had gone", n)
+	}
+}
+
+// hangingQuitConfig gives Neovim a config whose quit hook hangs for a
+// minute, as a plugin's can.
+func hangingQuitConfig(t *testing.T) {
+	t.Helper()
+	cfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "nvim", "init.vim"), []byte("autocmd VimLeavePre * sleep 60\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+}
+
+// openEditor opens a.txt in an editor of sub and returns its id.
+func openEditor(t *testing.T, s *Local, sub *Subscription) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	sub.nvimMu.Lock()
+	defer sub.nvimMu.Unlock()
+	for id := range sub.nvims {
+		return id
+	}
+	t.Fatal("no editor")
+	return ""
+}
+
+// A Neovim that does not leave (a quit hook that hangs) is ended once
+// nvimEndWait has passed: a close waits no longer, and its place is freed.
+func TestAnEditorThatDoesNotLeaveIsEndedInTime(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	hangingQuitConfig(t)
+	old := nvimEndWait
+	nvimEndWait = 300 * time.Millisecond
+	t.Cleanup(func() { nvimEndWait = old })
+	s, sub := editableLocal(t)
+	id := openEditor(t, s, sub)
+	returnsWithin(t, 10*time.Second, "the close", func() bool {
+		s.NvimClose(sub, proto.NvimClose{T: proto.CtlNvimClose, ID: id, Discard: true})
+		return true
+	})
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors counted after the close", n)
+	}
+}
+
+// Detach does not wait for the connection's editors to leave: they end on
+// their own, within nvimEndWait.
+func TestDetachDoesNotWaitForAnEditorToLeave(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	hangingQuitConfig(t)
+	old := nvimEndWait
+	nvimEndWait = time.Second
+	t.Cleanup(func() { nvimEndWait = old })
+	s, sub := editableLocal(t)
+	openEditor(t, s, sub)
+	start := time.Now()
+	s.Detach(sub)
+	if took := time.Since(start); took > 300*time.Millisecond {
+		t.Fatalf("Detach waited %v for Neovim", took)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for s.nvimCount.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the editor was never ended")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// CloseAll, the server's shutdown, returns once the editors it ends have
+// ended, a Neovim that does not leave included: none outlives the server.
+func TestCloseAllWaitsForTheEditorsToEnd(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	hangingQuitConfig(t)
+	old := nvimEndWait
+	nvimEndWait = 500 * time.Millisecond
+	t.Cleanup(func() { nvimEndWait = old })
+	s, sub := editableLocal(t)
+	openEditor(t, s, sub)
+	returnsWithin(t, 10*time.Second, "CloseAll", func() bool {
+		s.CloseAll(ErrSessionEnded)
+		return true
+	})
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors left as CloseAll returned", n)
+	}
+}
+
+// CloseAll returns only once an editor still starting has been ended and
+// reaped by its open: its Neovim does not outlive the server.
+func TestCloseAllWaitsForAnEditorStillStarting(t *testing.T) {
+	pidFile := fakeNvim(t)
+	s, sub := editableLocal(t)
+	opened := make(chan error, 1)
+	go func() {
+		opened <- s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for nvimPid(pidFile) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("Neovim did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	returnsWithin(t, 10*time.Second, "CloseAll", func() bool {
+		s.CloseAll(ErrSessionEnded)
+		return true
+	})
+	if pid := nvimPid(pidFile); syscall.Kill(pid, 0) == nil {
+		t.Fatalf("Neovim (pid %d) still there as CloseAll returned", pid)
+	}
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors as CloseAll returned", n)
+	}
+	if err := <-opened; err == nil {
+		t.Fatal("the open of a session closed meanwhile succeeded")
+	}
+}
+
+// An editor's open bounds Neovim's first answers too: a Neovim busy just
+// as it has started (a plugin's work) is ended when the open's time runs
+// out, the open returns, and the editor says it closed.
+func TestAnEditorBusyAsItStartsEndsWithItsOpen(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	nvimStarted = func(ed *nvim.Editor) {
+		// A loop, not :sleep, which goes on answering requests.
+		go ed.Input(":while 1 | endwhile<CR>")
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Cleanup(func() { nvimStarted = nil })
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	returnsWithin(t, 10*time.Second, "the open", func() error {
+		return s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	})
+	from := 0
+	nvimEvents(t, sink, &from, proto.NvimClosed, 10*time.Second)
+	deadline := time.Now().Add(10 * time.Second)
+	for s.nvimCount.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the editor was never ended")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// wrappedNvim puts on PATH an `nvim` that runs the real one as a child of
+// its own, not in its place (an AppImage's runtime does so), with initVim
+// as its config; it returns the file the wrapper's process id is written
+// to.
+func wrappedNvim(t *testing.T, initVim string) string {
+	t.Helper()
+	real, err := exec.LookPath(nvim.Program)
+	if err != nil {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	script := "#!/bin/sh\necho $$ > '" + pidFile + "'\n'" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, nvim.Program), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "nvim", "init.vim"), []byte(initVim), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Cleanup(func() {
+		if pid := nvimPid(pidFile); pid > 0 {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	return pidFile
+}
+
+// groupGone waits for the process group led by pid to have no process
+// left, for at most d.
+func groupGone(pid int, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// An open whose context ends while Neovim, started by a wrapper as its
+// child, is stuck in its config returns, and ends what the wrapper
+// started, not the wrapper alone.
+func TestAnEditorOpenThroughAWrapperEndsWithItsContext(t *testing.T) {
+	pidFile := wrappedNvim(t, "while 1 | endwhile\n")
+	s, sub := editableLocal(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := returnsWithin(t, 10*time.Second, "the open", func() error {
+		return s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	})
+	if err == nil {
+		t.Fatal("an open that never finished starting succeeded")
+	}
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors counted after the open failed", n)
+	}
+	if pid := nvimPid(pidFile); pid == 0 || !groupGone(pid, 5*time.Second) {
+		t.Fatalf("what the wrapper (pid %d) started still runs", pid)
+	}
+}
+
+// A connection's editor whose Neovim, started by a wrapper as its child,
+// does not leave (a quit hook that hangs) is ended in time, with what the
+// wrapper started.
+func TestAnEditorThroughAWrapperIsEndedWithWhatItStarted(t *testing.T) {
+	// A loop, not :sleep, which lets Neovim see its connection close.
+	pidFile := wrappedNvim(t, "autocmd VimLeavePre * let g:t = reltime() | while reltimefloat(reltime(g:t)) < 60 | endwhile\n")
+	old := nvimEndWait
+	nvimEndWait = 300 * time.Millisecond
+	t.Cleanup(func() { nvimEndWait = old })
+	s, sub := editableLocal(t)
+	openEditor(t, s, sub)
+	// Neovim itself, the wrapper's child.
+	wrapper := nvimPid(pidFile)
+	children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", wrapper, wrapper))
+	if err != nil {
+		t.Skipf("the wrapper's child is not to be found here: %v", err)
+	}
+	child, _ := strconv.Atoi(strings.Fields(string(children) + " 0")[0])
+	if child == 0 {
+		t.Fatal("the wrapper started no Neovim")
+	}
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	s.Detach(sub)
+	deadline := time.Now().Add(5 * time.Second)
+	for s.nvimCount.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the editor was never ended")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !gone(child, 5*time.Second) {
+		t.Fatalf("Neovim (pid %d), the wrapper's child, still runs", child)
+	}
+}
+
+// An open whose context ends while Neovim, started by a wrapper that also
+// left a helper of its own holding Neovim's output, is stuck as it starts
+// returns: the editor's connection is closed with its context, whatever
+// holds the output.
+func TestAnEditorOpenEndsThoughADescendantHoldsItsOutput(t *testing.T) {
+	real, err := exec.LookPath(nvim.Program)
+	if err != nil {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	setsid, err := exec.LookPath("setsid")
+	if err != nil {
+		t.Skip("setsid is not on PATH")
+	}
+	dir := t.TempDir()
+	helperPid := filepath.Join(dir, "helper")
+	// The helper, in a session of its own, outlives the editor's group and
+	// holds the output a minute.
+	script := "#!/bin/sh\n'" + setsid + "' sh -c 'echo $$ > \"" + helperPid + "\"; exec sleep 60' &\n'" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, nvim.Program), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		if pid := nvimPid(helperPid); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	cfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "nvim", "init.vim"), []byte("while 1 | endwhile\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	s, sub := editableLocal(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := returnsWithin(t, 10*time.Second, "the open", func() error {
+		return s.NvimOpen(ctx, sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	}); err == nil {
+		t.Fatal("an open that never finished starting succeeded")
+	}
+	if n := s.nvimCount.Load(); n != 0 {
+		t.Fatalf("%d editors counted after the open failed", n)
+	}
+}
+
+// exitingWrapper puts on PATH an `nvim` that starts the real one in the
+// background, its own input kept (an asynchronous command's would be
+// /dev/null), and exits at once, with initVim as Neovim's config; it
+// returns the file Neovim's process id is written to.
+func exitingWrapper(t *testing.T, initVim string) string {
+	t.Helper()
+	real, err := exec.LookPath(nvim.Program)
+	if err != nil {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	dir := t.TempDir()
+	childPid := filepath.Join(dir, "child")
+	script := "#!/bin/sh\nexec 3<&0\n'" + real + "' \"$@\" <&3 &\necho $! > '" + childPid + "'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, nvim.Program), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "nvim", "init.vim"), []byte(initVim), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Cleanup(func() {
+		if pid := nvimPid(childPid); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	return childPid
+}
+
+// detachAndWait detaches sub and waits for its editors to have ended.
+func detachAndWait(t *testing.T, s *Local, sub *Subscription, within time.Duration) {
+	t.Helper()
+	s.Detach(sub)
+	deadline := time.Now().Add(within)
+	for s.nvimCount.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the editor was never ended")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A wrapper that leaves Neovim running as it exits, Neovim's quit hook
+// hanging: the editor's end ends Neovim too, though the process it started
+// is long gone, before the editor leaves the session's count.
+func TestAnEditorWhoseWrapperExitedFirstIsEndedWithNeovim(t *testing.T) {
+	// A loop, not :sleep, which lets Neovim see its connection close.
+	childPid := exitingWrapper(t, "autocmd VimLeavePre * let g:t = reltime() | while reltimefloat(reltime(g:t)) < 60 | endwhile\n")
+	old := nvimEndWait
+	nvimEndWait = 300 * time.Millisecond
+	t.Cleanup(func() { nvimEndWait = old })
+	s, sub := editableLocal(t)
+	openEditor(t, s, sub)
+	child := nvimPid(childPid)
+	if child == 0 {
+		t.Fatal("the wrapper started no Neovim")
+	}
+	detachAndWait(t, s, sub, 10*time.Second)
+	if !gone(child, 5*time.Second) {
+		t.Fatalf("Neovim (pid %d) still runs after its editor ended", child)
+	}
+}
+
+// A wrapper that leaves Neovim running as it exits: the editor's end lets
+// Neovim leave in its own time (its quit hook done), its connection kept
+// until it has, rather than killing it as soon as the wrapper is gone.
+func TestAnEditorWhoseWrapperExitedFirstIsLetLeave(t *testing.T) {
+	left := filepath.Join(t.TempDir(), "left")
+	childPid := exitingWrapper(t, "autocmd VimLeavePre * sleep 300m | call writefile(['left'], '"+left+"')\n")
+	s, sub := editableLocal(t)
+	openEditor(t, s, sub)
+	child := nvimPid(childPid)
+	if child == 0 {
+		t.Fatal("the wrapper started no Neovim")
+	}
+	detachAndWait(t, s, sub, 10*time.Second)
+	if _, err := os.Stat(left); err != nil {
+		t.Fatalf("Neovim was ended before it had left: %v", err)
+	}
+	if !gone(child, 5*time.Second) {
+		t.Fatalf("Neovim (pid %d) still runs after its editor ended", child)
 	}
 }

@@ -41,8 +41,11 @@ type peer struct {
 	closed    bool
 
 	// typing runs the viewer's submits, chats to the agent and chat_sends;
-	// nvimOpening counts its nvim_opens running (queue.go).
+	// keys its keystrokes; editing its editor's keys, swap answers and
+	// closes; nvimOpening counts its nvim_opens running (queue.go).
 	typing      requestQueue
+	keys        requestQueue
+	editing     requestQueue
 	nvimOpening atomic.Int32
 
 	// left is closed when the peer is closed (the viewer left): what waits
@@ -55,7 +58,11 @@ type peer struct {
 var errNoWebRTC = errors.New("webrtc disabled on this host")
 
 func newPeer(a *agent, id string, role session.Role, linkID, linkLabel string, owner bool) *peer {
-	return &peer{a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == "", left: make(chan struct{})}
+	return &peer{
+		a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == "", left: make(chan struct{}),
+		keys:    requestQueue{limit: maxQueuedKeys, maxBytes: maxQueuedKeyBytes},
+		editing: requestQueue{limit: maxQueuedEdits},
+	}
 }
 
 // startWebRTC prepares a peer connection that answers the viewer's offer.
@@ -257,6 +264,10 @@ func (p *peer) handleFrame(f proto.Frame) {
 			// viewers: the submission pauses before its Enter.
 			p.typeIn(sub, "", func(ctx context.Context) error {
 				_, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
+				if errors.Is(err, session.ErrSubmitPending) {
+					// Accepted: entered as the program reads.
+					return nil
+				}
 				return err
 			}, func(err error) { p.a.local.Send(sub, submitError(err)) })
 		case proto.CtlChat:
@@ -307,23 +318,30 @@ func (p *peer) handleFrame(f proto.Frame) {
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
-			if err := p.a.local.NvimInput(sub, m); err != nil {
-				p.a.local.Send(sub, session.NvimRefused("", err))
-			}
+			// Off the frame loop, in order: Neovim answers when it is
+			// done with what it runs.
+			p.edit(sub, len(m.Keys), func() {
+				if err := p.a.local.NvimInput(sub, m); err != nil {
+					p.a.local.Send(sub, session.NvimRefused("", err))
+				}
+			})
 		case proto.CtlNvimClose:
 			var m proto.NvimClose
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
-			p.a.local.NvimClose(sub, m)
+			// Ending Neovim waits for it to exit.
+			p.edit(sub, 0, func() { p.a.local.NvimClose(sub, m) })
 		case proto.CtlNvimSwap:
 			var m proto.NvimSwap
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
-			if err := p.a.local.NvimSwap(sub, m); err != nil {
-				p.a.local.Send(sub, session.NvimRefused("", err))
-			}
+			p.edit(sub, 0, func() {
+				if err := p.a.local.NvimSwap(sub, m); err != nil {
+					p.a.local.Send(sub, session.NvimRefused("", err))
+				}
+			})
 		case proto.CtlFileGet:
 			var m proto.FileGet
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -355,15 +373,59 @@ func (p *peer) handleFrame(f proto.Frame) {
 		if sub == nil {
 			return
 		}
-		if err := p.a.local.Input(sub, f.Payload); err != nil {
-			switch {
-			case errors.Is(err, session.ErrReadOnly):
-				p.a.local.Send(sub, proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))
-			case errors.Is(err, session.ErrSessionEnded):
-				p.a.local.Send(sub, proto.NewError(proto.ErrCodeSessionEnded, "the session has ended"))
-			}
+		if sub.Role != session.RoleControl {
+			p.a.local.Send(sub, inputError(session.ErrReadOnly))
+			return
 		}
+		p.keyIn(sub, f.Payload)
 	}
+}
+
+// keyIn queues keystrokes for sub on the viewer's keys queue: off the frame
+// loop, written in the order sent, each within session.InputWait of its
+// arrival (agent.inputDeadline), its wait in the queue included; past that
+// it is refused (input_failed) and, if its write had not begun, never
+// written. A full queue refuses it at once (too_many_requests). data is
+// the frame's own: neither transport reuses it.
+func (p *peer) keyIn(sub *session.Subscription, data []byte) {
+	deadline := p.a.inputDeadline()
+	if !p.keys.add(request{
+		size: len(data),
+		run: func() {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			if err := p.a.local.InputContext(ctx, sub, data); err != nil {
+				p.a.local.Send(sub, inputError(err))
+			}
+		},
+		live: p.attached(sub),
+	}) {
+		p.a.local.Send(sub, queueFull(""))
+	}
+}
+
+// edit queues one of the editor's requests for sub (keys, a swap answer, a
+// close) on the viewer's editing queue: off the frame loop, in the order
+// sent. A full queue refuses it at once (too_many_requests).
+func (p *peer) edit(sub *session.Subscription, size int, run func()) {
+	if !p.editing.add(request{size: size, run: run, live: p.attached(sub)}) {
+		p.a.local.Send(sub, session.NvimRefused("", session.ErrTooManyRequests))
+	}
+}
+
+// inputError is the error keystrokes get for err.
+func inputError(err error) []byte {
+	switch {
+	case errors.Is(err, session.ErrReadOnly):
+		return proto.NewError(proto.ErrCodeReadOnly, "this link is view-only")
+	case errors.Is(err, session.ErrSessionEnded):
+		return proto.NewError(proto.ErrCodeSessionEnded, "the session has ended")
+	case errors.Is(err, session.ErrTooManyRequests):
+		return queueFull("")
+	case errors.Is(err, session.ErrInputStalled), errors.Is(err, context.DeadlineExceeded):
+		return proto.NewError("input_failed", session.ErrInputStalled.Error())
+	}
+	return proto.NewError("input_failed", "input could not be delivered")
 }
 
 // attached says whether sub is still the viewer's attachment: neither let go
@@ -392,10 +454,37 @@ func (p *peer) attached(sub *session.Subscription) func() bool {
 // requestID naming it).
 func (p *peer) typeIn(sub *session.Subscription, requestID string, do func(context.Context) error, refuse func(error)) {
 	deadline := p.a.submitDeadline()
+	// The keys the viewer sent before it are written (or refused) first,
+	// as the frame loop wrote them before it once; those sent after are
+	// not held back by its pause.
+	keysBefore := p.keys.after()
+	// Whether it must wait for them is decided now, on the frame loop: the
+	// viewer going closes keysBefore too, before or after this request
+	// first looks at it.
+	keysWait := false
+	select {
+	case <-keysBefore:
+	default:
+		keysWait = true
+	}
 	if !p.typing.add(request{
 		run: func() {
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
+			if keysWait {
+				// It waits for the keys before it, as one waiting in
+				// the queue does: dropped, never typed, if the viewer
+				// goes meanwhile (a revoked link's leave among them).
+				// One that need not wait goes on when the viewer goes,
+				// as a reply box's does.
+				select {
+				case <-keysBefore:
+				case <-ctx.Done():
+				}
+				if !p.attached(sub)() {
+					return
+				}
+			}
 			err := ctx.Err()
 			if err == nil {
 				err = do(ctx)
@@ -494,6 +583,8 @@ func (p *peer) close() {
 	p.mu.Unlock()
 	close(p.left)
 	p.typing.close()
+	p.keys.close()
+	p.editing.close()
 	if sub != nil {
 		p.a.local.Detach(sub)
 	}

@@ -149,6 +149,8 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.TrustQuestionWords))
 	case errors.Is(err, session.ErrQuestion):
 		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.QuestionWords))
+	case errors.Is(err, session.ErrInputStalled):
+		local.Send(sub, proto.NewError("input_failed", session.ErrInputStalled.Error()))
 	default:
 		local.Send(sub, proto.NewError("input_failed", "input could not be delivered"))
 	}
@@ -243,7 +245,9 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
 		_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
 		cancel()
-		if err != nil {
+		// A line the program takes slowly is accepted, and entered as it
+		// reads (ErrSubmitPending).
+		if err != nil && !errors.Is(err, session.ErrSubmitPending) {
 			s.sendInputError(sub, local, err)
 		}
 	case proto.CtlChat:

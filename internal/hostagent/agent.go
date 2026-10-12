@@ -242,7 +242,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		Folder:          folder,
 		Transport:       proto.TransportWebRTC,
 		Log:             opts.Log,
-		OnChange:        a.onLocalChange,
+		OnChange:        a.noteChange,
 		OnActivity:      a.onLocalActivity,
 		OnChat:          a.onLocalChat,
 		Pattern:         opts.Pattern,
@@ -284,6 +284,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	a.settle(ctx)
 	cancel()
 	a.closeAllPeers()
+	// The viewers' editors end apart from them: none outlives the host.
+	local.WaitEditors()
 	exit := proc.Exit()
 	return Result{SessionID: a.sessionID(), ExitCode: exit.Code}, nil
 }
@@ -318,6 +320,11 @@ type agent struct {
 	attentionUntold bool
 	attentionRetry  bool
 	attentionOf     string
+	// changeNext is the session's latest change not yet handed to
+	// onLocalChange, nil for none; forwarding says forwardChanges runs.
+	// Guarded by mu.
+	changeNext *session.Info
+	forwarding bool
 	// instance and localID fix the session's id on the server across its
 	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
 	instance, localID string
@@ -348,6 +355,20 @@ type agent struct {
 	relayWait, stallWait time.Duration
 	// controlWait replaces controlTurnWait in tests.
 	controlWait time.Duration
+	// inputWait replaces session.InputWait in tests.
+	inputWait time.Duration
+}
+
+// inputDeadline is when keystrokes arriving now must be written by (a
+// viewer's keys queue, peer.keyIn): their wait in the queue counts, so
+// those that waited out their time behind keystrokes the program does not
+// take are refused, never written late.
+func (a *agent) inputDeadline() time.Time {
+	d := session.InputWait
+	if a.inputWait > 0 {
+		d = a.inputWait
+	}
+	return time.Now().Add(d)
 }
 
 // submitDeadline is when a submission arriving now must be done by: its
@@ -593,6 +614,40 @@ func lastElement(dir string) string {
 		return ""
 	}
 	return filepath.Base(dir)
+}
+
+// noteChange is the local session's OnChange hook: it hands the change to
+// forwardChanges and returns at once, so that what changed the session (a
+// keystroke that answers a prompt, on a viewer's keys queue; a viewer's
+// hello, on the frame loop) never waits for the control connection's turn
+// (onLocalChange may wait up to controlTurnWait). Only the latest change
+// waits, and one goroutine forwards them, in order.
+func (a *agent) noteChange(info session.Info) {
+	a.mu.Lock()
+	a.changeNext = &info
+	running := a.forwarding
+	a.forwarding = true
+	a.mu.Unlock()
+	if !running {
+		go a.forwardChanges()
+	}
+}
+
+// forwardChanges hands the changes noteChange noted to onLocalChange, one at
+// a time, the latest of those noted meanwhile next, until none is left.
+func (a *agent) forwardChanges() {
+	for {
+		a.mu.Lock()
+		info := a.changeNext
+		a.changeNext = nil
+		if info == nil {
+			a.forwarding = false
+			a.mu.Unlock()
+			return
+		}
+		a.mu.Unlock()
+		a.onLocalChange(*info)
+	}
 }
 
 // onLocalChange forwards attention changes of the local session to the

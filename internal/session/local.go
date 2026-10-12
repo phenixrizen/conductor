@@ -119,6 +119,9 @@ type Options struct {
 	ConfirmSubmit bool
 	// ConfirmWait is that wait; ConfirmWait when zero.
 	ConfirmWait time.Duration
+	// InputWait bounds how long a write to the process waits for the
+	// program to take it (input.go); InputWait when zero.
+	InputWait time.Duration
 	// WatchGit records what the agent changed in a git working directory
 	// without a hook naming the file (files seen by git, gitseen.go): the
 	// server's and the host's agent sessions set it.
@@ -213,6 +216,10 @@ type Local struct {
 	// submitting holds a token while a submission runs (Submit): one at a
 	// time per session.
 	submitting chan struct{}
+	// writer makes every write to the process, in order (input.go).
+	writer procWriter
+	// nvimEndWait is nvimEndWait as the session was made: its editors'.
+	nvimEndWait time.Duration
 	// paste follows the program's bracketed-paste mode (Submit, BracketedPaste).
 	paste pasteMode
 	// attnChanged is closed and replaced, under mu, on every attention change:
@@ -246,6 +253,9 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	if opts.ConfirmWait <= 0 {
 		opts.ConfirmWait = ConfirmWait
 	}
+	if opts.InputWait <= 0 {
+		opts.InputWait = InputWait
+	}
 	if info.Status == "" {
 		info.Status = StatusRunning
 	}
@@ -268,6 +278,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 
 		submitting:  make(chan struct{}, 1),
 		attnChanged: make(chan struct{}),
+		nvimEndWait: nvimEndWait,
 	}
 	if opts.Pattern != nil {
 		s.pattern = NewPatternWatcher(opts.Pattern, patternQuiet, s.firePattern)
@@ -1049,6 +1060,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub.LinkLabel = o.LinkLabel
 	sub.quiet = o.ChatOnly
 	sub.owner = o.Owner && o.LinkID == ""
+	sub.authorize = o.Authorize
 	if sized {
 		sub.want = [2]uint16{cols, rows}
 	}
@@ -1209,10 +1221,41 @@ func (s *Local) Detach(sub *Subscription) {
 // position query), which is written and answers nothing. While a question
 // asked during the work shows, a write of several keys with an Enter that
 // is not one of its choices is refused with ErrQuestion, nothing written.
+// They are written in their turn among the session's writes (input.go), and
+// Input waits for that at most Options.InputWait: a program that takes
+// nothing meanwhile gets ErrInputStalled, the keystrokes written later if
+// the write had begun (see writeProc) and never otherwise. Keystrokes not
+// yet written when sub ends (revoked, detached) are never written. data may
+// be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
+	return s.input(context.Background(), sub, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
+}
+
+// InputContext is Input waiting until ctx ends in place of
+// Options.InputWait (ctx's error then), and refused at once, as Input is,
+// while the program is known not to read: a host hands a viewer's
+// keystrokes on from its frame loop and gives each its time from its
+// arrival.
+func (s *Local) InputContext(ctx context.Context, sub *Subscription, data []byte) error {
+	return s.input(ctx, sub, data, writeWait{stall: s.opts.InputWait})
+}
+
+// InputWaiting is InputContext for a terminal of the person's own (a
+// host's): it waits for the program to read, however long it has not, as
+// a terminal does, until ctx ends.
+func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte) error {
+	return s.input(ctx, sub, data, writeWait{})
+}
+
+// input is Input waiting as o says, until ctx ends.
+func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o writeWait) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
+	// The keys are this call's own: what runs as they are written, or once
+	// they land late, reads them after Input has returned, and the caller
+	// may reuse its buffer then.
+	data = bytes.Clone(data)
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter (a page's choice, a paste): look at the
 		// screen first, so that a dialog drawn and not yet seen quiet is the
@@ -1271,33 +1314,95 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 	if stale {
 		return ErrQuestion
 	}
-	if answersQuestion && s.trust != nil {
-		s.trust.Reset()
-	}
-	if enter {
-		s.nextTurn()
-	}
-	noted := false
-	if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
-		// A key that answers a dialog on the screen: the look before a
-		// submission does not ask the dialog again before the program draws
-		// what follows (the look at the end of a quiet period still does).
-		// The key is noted against the dialog, also one not yet asked: the
-		// dialog asked later, before the program took it away, gives way to
-		// it (missAsked).
-		if words := s.askedOnScreen(); words != "" {
+	// What a key does to the session's questions is done as the writer
+	// takes it, just before it is written, never for keys not written (a
+	// time run out, a stall, a connection gone): noted is set then, and
+	// read once the write is made.
+	var noted bool
+	o.from, o.anyEnd = sub, true
+	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
+		// Several keys with an Enter, looked at again as the writer takes
+		// them (they may have waited behind another write): a key that
+		// answered a dialog not looked after yet, or a dialog on the screen
+		// now whose choices they are not, refuses them (ErrQuestion), as
+		// before they were queued.
+		o.guard = func() error {
+			if s.asked.Held() {
+				return ErrQuestion
+			}
+			s.asked.CheckNow()
 			s.mu.Lock()
-			s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
+			att := s.info.Attention
 			s.mu.Unlock()
-			s.asked.Hold()
-			noted = true
+			if att.State == AttentionNeedsInput && att.Source == SourceQuestion && !isChoice(att, data) {
+				return ErrQuestion
+			}
+			return nil
 		}
 	}
-	if _, err := s.proc.Write(data); err != nil {
+	o.before = func() {
+		if answersQuestion && s.trust != nil {
+			s.trust.Reset()
+		}
+		if enter {
+			// The turn a done ended is behind as the Enter is written.
+			s.nextTurn()
+		}
+		if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
+			// A key that answers a dialog on the screen: the look before a
+			// submission does not ask the dialog again before the program
+			// draws what follows (the look at the end of a quiet period
+			// still does). The key is noted against the dialog, also one
+			// not yet asked: the dialog asked later, before the program
+			// took it away, gives way to it (missAsked).
+			if words := s.askedOnScreen(); words != "" {
+				s.mu.Lock()
+				s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
+				s.mu.Unlock()
+				s.asked.Hold()
+				noted = true
+			}
+		}
+	}
+	landed, err := s.writeProc(ctx, data, o)
+	if err != nil {
+		if landed != nil && !errors.Is(err, ErrSessionEnded) {
+			// Begun: the keys land as the program reads, and what follows
+			// written keys is done then (the prompt they answer still the
+			// one they were typed at). At most one write is begun at a
+			// time, so at most one such wait is under way.
+			go func() {
+				select {
+				case werr := <-landed:
+					if werr == nil {
+						s.typedKeys(sub, data, promptSince, enter, noted)
+					}
+				case <-s.ended:
+				}
+			}()
+		}
 		return err
 	}
+	s.typedKeys(sub, data, promptSince, enter, noted)
+	return nil
+}
+
+// isChoice reports whether data is the input of one of att's choices.
+func isChoice(att Attention, data []byte) bool {
+	for _, o := range att.Options {
+		if o.Input != "" && o.Input == string(data) {
+			return true
+		}
+	}
+	return false
+}
+
+// typedKeys is what follows keys written to the program (input): sub is
+// typing, the dialog or question they answer is noted and looked at again,
+// and the prompt that showed as they were typed (promptSince) is answered.
+func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted bool) {
 	if isTerminalReport(data) {
-		return nil
+		return
 	}
 	s.stampTyping(sub)
 	if s.asked != nil {
@@ -1314,7 +1419,6 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 		}
 	}
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
-	return nil
 }
 
 // askedOnScreen returns the words of the question asked during the work
@@ -1555,7 +1659,8 @@ func (s *Local) Retire() {
 }
 
 // CloseAll evicts every subscription with the given reason (server shutdown)
-// and ends their editors. It returns once their transports have closed,
+// and ends their editors (closeNvims), waiting for those (WaitEditors). It
+// returns once their transports have closed,
 // those of the clients that had ended already included, together, as
 // DisconnectLink's do.
 func (s *Local) CloseAll(reason error) {
@@ -1573,6 +1678,7 @@ func (s *Local) CloseAll(reason error) {
 		s.closeNvims(sub)
 	}
 	waitClosed(all)
+	s.WaitEditors()
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

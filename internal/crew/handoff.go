@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"errors"
 	"slices"
 	"strings"
 
@@ -185,12 +186,21 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		m.handoffs = slices.Delete(m.handoffs, 0, 1)
 		e.mu.Unlock()
 
-		res, err := l.Submit(r.ctx, session.Submission{Text: h.text, ByName: typedBy, UnlessWaiting: true})
+		res, err := l.Submit(r.ctx, session.Submission{Text: h.text, ByName: typedBy, UnlessWaiting: true, Finished: func(res session.SubmitResult, err error) {
+			// A handoff accepted while the program took it slowly
+			// (session.ErrSubmitPending) is told here how it ended, as
+			// one that ends at once is below.
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			r.noteHandoffEnd(h, m.def.Name, res, err)
+		}})
 		if e.tried != nil {
 			e.tried(m.def.Name, res.Typed)
 		}
 		e.mu.Lock()
 		switch {
+		case errors.Is(err, session.ErrSubmitPending):
+			r.note(session.ActivityStatus, "handoff from %s to %s waits for %s to take its input: it is entered once it has", h.from, m.def.Name, m.def.Name)
 		case err != nil && !res.Typed:
 			r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, m.def.Name, err)
 		case err != nil:
@@ -213,6 +223,23 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		if err == nil && !res.Typed {
 			waitWake(r, m, l)
 		}
+	}
+}
+
+// noteHandoffEnd notes how the handoff h to the member named to ended once
+// its submission, accepted while the program took it slowly, has finished:
+// delivered with its Enter, typed without it, or not typed. The caller
+// holds e.mu.
+func (r *run) noteHandoffEnd(h handoff, to string, res session.SubmitResult, err error) {
+	switch {
+	case res.Entered:
+		r.noteHandoff(h.from, to)
+	case !res.Typed:
+		r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, to, err)
+	case err != nil:
+		r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %v", h.from, to, err)
+	default:
+		r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %s waits on a question; answer it, then press Enter in its terminal", h.from, to, to)
 	}
 }
 

@@ -430,7 +430,7 @@ func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.Chat
 		if send.To == "" {
 			return ErrChatBadScope
 		}
-		if err := room.sendTo(ctx, send.To, AgentText(ref), sub.Name); err != nil {
+		if err := room.sendTo(ctx, send.To, AgentText(ref), sub.Name, sub); err != nil {
 			return err
 		}
 		room.post(ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeRun, Kind: proto.ChatKindSentToAgent, By: chatBy(sub), Ref: ref.ID, To: send.To})
@@ -444,7 +444,7 @@ func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.Chat
 	if !ok || ref.Kind != proto.ChatKindMessage {
 		return ErrChatUnknownRef
 	}
-	if _, err := s.Submit(ctx, Submission{Text: AgentText(ref), By: sub}); err != nil {
+	if _, err := s.Submit(ctx, Submission{Text: AgentText(ref), By: sub}); err != nil && !errors.Is(err, ErrSubmitPending) {
 		return err
 	}
 	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSentToAgent, By: chatBy(sub), Ref: ref.ID}
@@ -638,9 +638,9 @@ func (r *ChatRoom) post(m ChatMessage) {
 }
 
 // sendTo types text into the member name as a broadcast does (nothing
-// while its session waits on a prompt), recorded as byName; an ErrNotSent
-// says why it was not.
-func (r *ChatRoom) sendTo(ctx context.Context, name, text, byName string) error {
+// while its session waits on a prompt), recorded as byName, for the
+// connection from (Submission.From); an ErrNotSent says why it was not.
+func (r *ChatRoom) sendTo(ctx context.Context, name, text, byName string, from *Subscription) error {
 	l, ok := r.memberNamed(name)
 	if !ok {
 		return ErrNotSent{NotSentUnknown}
@@ -648,8 +648,11 @@ func (r *ChatRoom) sendTo(ctx context.Context, name, text, byName string) error 
 	if r.running != nil && !r.running(name) {
 		return ErrNotSent{NotSentNotRunning}
 	}
-	res, err := l.Submit(ctx, Submission{Text: text, ByName: byName, UnlessWaiting: true})
+	res, err := l.Submit(ctx, Submission{Text: text, ByName: byName, From: from, UnlessWaiting: true})
 	switch {
+	case errors.Is(err, ErrSubmitPending):
+		// Accepted: entered as the program reads.
+		return nil
 	case err != nil && !res.Typed:
 		return ErrNotSent{NotSentNotRunning}
 	case err != nil:

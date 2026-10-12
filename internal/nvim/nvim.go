@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/neovim/go-client/nvim"
 )
@@ -116,7 +117,18 @@ func childEnv(parent []string) []string {
 
 // Editor is one embedded Neovim showing one file.
 type Editor struct {
-	v      *nvim.Nvim
+	v *nvim.Nvim
+	// cmd is the Neovim process; served is closed once the client's
+	// reading of it has ended; reaping waits for both, once (reap).
+	cmd     *exec.Cmd
+	served  chan struct{}
+	reaping sync.Once
+	// out is the read end of Neovim's output, the editor's own: closed
+	// last, as it is reaped, and as its context ends.
+	out *os.File
+	// ended is the editor's context's Done: its end cuts reap's waits short.
+	ended <-chan struct{}
+
 	h      Handler
 	mu     sync.Mutex
 	buf    nvim.Buffer
@@ -132,26 +144,82 @@ type Editor struct {
 // ErrClosed is returned by Input once the editor is gone.
 var ErrClosed = errors.New("nvim: the editor has exited")
 
+// exitWait is how long Close lets Neovim leave on its own once its
+// connection is closed, before it is ended (the client's own wait was the
+// same).
+var exitWait = 10 * time.Second
+
 // Open starts Neovim in dir, loads path, and reports to h until Close or
-// Neovim's own exit. ctx ends the process when it ends.
+// Neovim's own exit. ctx ends the process when it ends, and with it what
+// it started (its process group, ownGroup).
 func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 	prog, err := exec.LookPath(Program)
 	if err != nil {
 		return nil, err
 	}
-	v, err := nvim.NewChildProcess(nvim.ChildProcessCommand(prog), nvim.ChildProcessArgs("--embed"), nvim.ChildProcessDir(dir), nvim.ChildProcessContext(ctx),
-		nvim.ChildProcessEnv(childEnv(os.Environ())), nvim.ChildProcessLogf(func(string, ...interface{}) {}))
+	// The child is started here rather than by the client's
+	// NewChildProcess, so that its process group, the end of its pipes and
+	// its reaping are the editor's own: the client's close waits on its
+	// output, which a child of a `nvim` wrapper may hold open.
+	cmd := exec.CommandContext(ctx, prog, "--embed")
+	cmd.Dir = dir
+	cmd.Env = childEnv(os.Environ())
+	ownGroup(cmd)
+	// The pipes are the editor's own, handed to the child as they are:
+	// Wait closes neither, so a Neovim still leaving when the process
+	// started is reaped (under a wrapper that exited) keeps its connection
+	// until it has left (reap), and is never cut off halfway.
+	inR, in, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	e := &Editor{v: v, h: h}
-	if err := e.register(); err != nil {
-		v.Close()
+	out, outW, err := os.Pipe()
+	if err != nil {
+		inR.Close()
+		in.Close()
 		return nil, err
 	}
-	if err := v.AttachUI(80, 24, map[string]interface{}{"ext_linegrid": true, "ext_cmdline": true, "ext_messages": true, "ext_popupmenu": true}); err != nil {
-		v.Close()
+	cmd.Stdin, cmd.Stdout = inR, outW
+	err = cmd.Start()
+	// The child's ends are the child's alone from now on.
+	inR.Close()
+	outW.Close()
+	if err != nil {
+		in.Close()
+		out.Close()
 		return nil, err
+	}
+	served := make(chan struct{})
+	v, err := nvim.New(out, in, in, func(string, ...interface{}) {})
+	if err != nil {
+		close(served)
+		in.Close()
+		e := &Editor{cmd: cmd, served: served, out: out}
+		e.end()
+		return nil, err
+	}
+	go func() {
+		defer close(served)
+		_ = v.Serve()
+	}()
+	// Its context's end closes the editor's connection too, at once, and
+	// Neovim's output: what waits on Neovim (its start, keys, a close) is
+	// answered then, though something Neovim started (a descendant out of
+	// its group) still holds that output.
+	context.AfterFunc(ctx, func() {
+		_ = v.Close()
+		_ = out.Close()
+	})
+	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
+	fail := func(err error) (*Editor, error) {
+		e.end()
+		return nil, err
+	}
+	if err := e.register(); err != nil {
+		return fail(err)
+	}
+	if err := v.AttachUI(80, 24, map[string]interface{}{"ext_linegrid": true, "ext_cmdline": true, "ext_messages": true, "ext_popupmenu": true}); err != nil {
+		return fail(err)
 	}
 	ch := v.ChannelID()
 	e.ch = ch
@@ -165,31 +233,93 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		fmt.Sprintf("autocmd SwapExists * let v:swapchoice = 'o' | call rpcnotify(%d, 'conductor_swap', v:swapname, swapinfo(v:swapname))", ch),
 	} {
 		if err := v.Command(cmd); err != nil {
-			v.Close()
-			return nil, err
+			return fail(err)
 		}
 	}
 	var escaped string
 	if err := v.Call("fnameescape", &escaped, path); err != nil {
-		v.Close()
-		return nil, err
+		return fail(err)
 	}
 	if err := v.Command("edit " + escaped); err != nil {
 		// A swap file prompt or a directory: Neovim says why.
-		v.Close()
-		return nil, err
+		return fail(err)
 	}
 	if err := e.attachCurrent(); err != nil {
-		v.Close()
-		return nil, err
+		return fail(err)
 	}
 	// Only now does a buffer change (`:e other`, `:bnext`) get followed: the
 	// first file is attached above, deterministically.
 	if err := v.Command(fmt.Sprintf("autocmd BufEnter * call rpcnotify(%d, 'conductor_buffer', expand('<afile>:p'))", ch)); err != nil {
-		v.Close()
-		return nil, err
+		return fail(err)
 	}
 	return e, nil
+}
+
+// end ends Neovim at once (Open's failures): its connection closed, its
+// process group killed, then reaped.
+func (e *Editor) end() {
+	e.closed.Store(true)
+	if e.v != nil {
+		e.v.Close()
+	}
+	e.kill()
+	e.reap(0)
+}
+
+// kill ends Neovim's process group (the process alone where there are
+// none, ownGroup).
+func (e *Editor) kill() {
+	if e.cmd.Cancel != nil {
+		_ = e.cmd.Cancel()
+		return
+	}
+	_ = e.cmd.Process.Kill()
+}
+
+// reap waits, once, for the process started and what is in its process
+// group to leave, within after (none when zero: at once) before what is
+// left is killed, then closes Neovim's output, which ends the client's
+// reading whatever still holds it, and waits for that.
+func (e *Editor) reap(after time.Duration) {
+	e.reaping.Do(func() {
+		deadline := time.Now().Add(after)
+		exited := make(chan struct{})
+		go func() {
+			_ = e.cmd.Wait()
+			close(exited)
+		}()
+		if after > 0 {
+			t := time.NewTimer(after)
+			select {
+			case <-exited:
+			case <-t.C:
+				e.kill()
+				<-exited
+			}
+			t.Stop()
+			// Neovim may outlive the process started (a wrapper that left
+			// it running as it exited): it is let leave within the same
+			// time, or until the context ends.
+			for !groupLeft(e.cmd) && time.Now().Before(deadline) && !isDone(e.ended) {
+				time.Sleep(20 * time.Millisecond)
+			}
+		} else {
+			<-exited
+		}
+		endGroup(e.cmd)
+		_ = e.out.Close()
+		<-e.served
+	})
+}
+
+// isDone reports whether done is closed; a nil done never is.
+func isDone(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 // register wires the client's notifications to the handler.
@@ -478,10 +608,13 @@ func (e *Editor) SwapChoice(choice string) error {
 	return nil
 }
 
-// Close ends Neovim without saving.
+// Close ends Neovim without saving: its connection closed, it is let leave
+// for exitWait, then killed, and reaped. Its context's end (Open) ends it
+// sooner.
 func (e *Editor) Close() {
 	e.closed.Store(true)
 	e.v.Close()
+	e.reap(exitWait)
 }
 
 // Discard ends Neovim as `:qa!` does: changes not written are dropped and
