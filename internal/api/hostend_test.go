@@ -493,3 +493,132 @@ func TestAClientTheEndClosesAsItAttachesIsCutInTime(t *testing.T) {
 		t.Fatal("the attach still waits on its own client's close")
 	}
 }
+
+// hostedGuest registers a fake host on e and has a guest join its session
+// through a view link and move to the relay; it returns the host, the
+// guest, the link's id and the guest's viewer id at the host.
+func hostedGuest(t *testing.T, e *testEnv) (*fakeHost, *wsClient, string, string) {
+	t.Helper()
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	linkID, token := viewLink(t, e, host.sessionID)
+	guest := dialViewer(t, e, host.sessionID, token)
+	guest.expectControl(proto.CtlWelcome)
+	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
+	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.Simple{T: proto.SigRelay})
+	guest.send(relay)
+	for {
+		f, err := guest.read()
+		if err != nil {
+			t.Fatalf("waiting for relay_ok: %v", err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
+			return host, guest, linkID, viewerID
+		}
+	}
+}
+
+// relayOutput has host relay output to its viewer viewerID.
+func relayOutput(t *testing.T, host *fakeHost, viewerID, out string) {
+	t.Helper()
+	env, err := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := host.c.Write(ctx, websocket.MessageBinary, env); err != nil {
+		t.Fatalf("relay: %v", err)
+	}
+}
+
+// A revoke that has marked its link as the session ends, the link's hook
+// that closes its viewers still on its way, closes them as revoked all the
+// same, written nothing more: the session's end does not take a link
+// revoked before it.
+func TestARevokeThatRacesTheEndClosesAsRevoked(t *testing.T) {
+	e := newTestEnv(t, nil)
+	writes := newHoldWrites(t)
+	e.srv.viewerSeam = writes.seam()
+	host, guest, linkID, viewerID := hostedGuest(t, e)
+	writes.hold.Store(true)
+	for i := range 20 {
+		relayOutput(t, host, viewerID, fmt.Sprintf("line %d\r\n", i))
+	}
+	gate, entered := make(chan struct{}), make(chan struct{})
+	onRevoke := e.srv.links.OnRevoke
+	e.srv.links.OnRevoke = func(sessionID, linkID string) {
+		close(entered)
+		<-gate
+		onRevoke(sessionID, linkID)
+	}
+	revoked := make(chan struct{})
+	go func() {
+		e.srv.links.Revoke(host.sessionID, linkID)
+		close(revoked)
+	}()
+	<-entered
+	host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+	// The session's end has taken its links.
+	deadline := time.Now().Add(10 * time.Second)
+	for len(e.srv.links.ListBySession(host.sessionID)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the session's end never took its links")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(gate)
+	<-revoked
+	writes.let()
+	end := readTheEnd(t, guest, 10*time.Second)
+	if end.errCode != proto.ErrCodeRevoked || end.closeCode != proto.CloseForbidden {
+		t.Fatalf("the guest was closed with %q and %d, want revoked and 4403", end.errCode, end.closeCode)
+	}
+	if end.outputs > 1 {
+		t.Fatalf("%d output frames were written to the revoked guest, the one being written at most", end.outputs)
+	}
+}
+
+// A viewer the session's end closes that takes most of closeWait to be
+// written what it is owed, and then does not answer the WebSocket's close,
+// is let go at closeWait all the same: the cut ends the close handshake
+// under way too.
+func TestAViewerThatDoesNotAnswerTheCloseIsCutAtCloseWait(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var slow atomic.Bool
+	pumped := make(chan time.Time, 1)
+	e.srv.viewerSeam = &viewerSeam{
+		write: func() error {
+			if slow.CompareAndSwap(true, false) {
+				time.Sleep(closeWait - 1500*time.Millisecond)
+			}
+			return nil
+		},
+		ended: func() { pumped <- time.Now() },
+	}
+	host, guest, linkID, viewerID := hostedGuest(t, e)
+	slow.Store(true)
+	for i := range 5 {
+		relayOutput(t, host, viewerID, fmt.Sprintf("line %d\r\n", i))
+	}
+	host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+	closed := linkLetGo(t, e, host.sessionID, linkID)
+	// The guest reads what it is owed and its error, and then nothing: the
+	// close that follows is never answered.
+	for {
+		f, err := guest.read()
+		if err != nil {
+			t.Fatalf("the guest's connection ended before its error: %v", err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeControl && tt == proto.CtlError {
+			break
+		}
+	}
+	select {
+	case at := <-pumped:
+		if took := at.Sub(closed); took > closeWait+time.Second {
+			t.Fatalf("the guest was let go %v after the end closed it, past %v", took, closeWait)
+		}
+	case <-time.After(closeWait + 10*time.Second):
+		t.Fatal("the guest was never let go")
+	}
+}

@@ -272,6 +272,16 @@ func TestEndMarksASessionsLinkAndTellsNoHook(t *testing.T) {
 	if told != 0 {
 		t.Fatalf("the end told the hooks %d times", told)
 	}
+	if s.End("sess", link.ID) {
+		t.Fatal("a second end took the link again")
+	}
+	// A link revoked first is the revoke's to close, whose hook may still be
+	// on its way: the end does not take it.
+	revoked, _, _ := s.Create("sess", session.RoleView, "", 0)
+	s.Revoke("sess", revoked.ID)
+	if s.End("sess", revoked.ID) {
+		t.Fatal("the end took a link revoked before it")
+	}
 }
 
 // A switchyard's group links: indexed by owner and run, kept current by

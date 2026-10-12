@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -35,11 +39,35 @@ type wsSink struct {
 	cancel context.CancelFunc
 	once   sync.Once
 
+	// raw is the connection under c (hijackKeeper), nil when it is not
+	// known: the cut closes it, which ends whatever c is doing, the close
+	// handshake under way included, which c's own CloseNow only waits for.
+	raw net.Conn
+
 	// cutMu guards cut, the timer Closing starts, and closed, which Close
 	// sets once it has closed the connection.
 	cutMu  sync.Mutex
 	cut    *time.Timer
 	closed bool
+}
+
+// hijackKeeper is the ResponseWriter a viewer's WebSocket is accepted on: it
+// keeps the connection the accept takes over (Hijack), under its TLS if it
+// has one, for the viewer's sink to cut (wsSink.raw).
+type hijackKeeper struct {
+	http.ResponseWriter
+	conn net.Conn
+}
+
+func (h *hijackKeeper) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c, rw, err := http.NewResponseController(h.ResponseWriter).Hijack()
+	if err == nil {
+		h.conn = c
+		if tc, ok := c.(*tls.Conn); ok {
+			h.conn = tc.NetConn()
+		}
+	}
+	return c, rw, err
 }
 
 // closeWait bounds how long the connection of a viewer the session closed
@@ -56,19 +84,31 @@ const closeWait = 5 * time.Second
 // session.Sink's closingSink, or a hosted viewer was closed): the
 // connection has closeWait from now to be written what the client is owed,
 // its error and its close, and is cut then, whatever is being written to
-// it or waits on its close. It returns at once, as it may be called under a
-// session's locks.
+// it or waits on its close, its close handshake included (raw). It returns
+// at once, as it may be called under a session's locks.
 func (s *wsSink) Closing() {
 	s.cutMu.Lock()
 	defer s.cutMu.Unlock()
 	if s.cut == nil && !s.closed {
-		s.cut = time.AfterFunc(closeWait, func() { s.c.CloseNow() })
+		s.cut = time.AfterFunc(closeWait, s.cutNow)
 	}
 }
 
-func newWSSink(c *websocket.Conn) *wsSink {
+// cutNow ends the connection at once: its socket first, which stops a
+// close handshake under way, then the WebSocket.
+func (s *wsSink) cutNow() {
+	if s.raw != nil {
+		_ = s.raw.Close()
+	}
+	_ = s.c.CloseNow()
+}
+
+func newWSSink(c *websocket.Conn) *wsSink { return newWSSinkOn(c, nil) }
+
+// newWSSinkOn is the sink of c, whose socket is raw (nil when not known).
+func newWSSinkOn(c *websocket.Conn, raw net.Conn) *wsSink {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &wsSink{c: c, ctx: ctx, cancel: cancel}
+	return &wsSink{c: c, raw: raw, ctx: ctx, cancel: cancel}
 }
 
 func (s *wsSink) WriteFrame(frame []byte) error {

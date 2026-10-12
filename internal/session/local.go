@@ -1617,8 +1617,9 @@ func (s *Local) Stop(ctx context.Context) error {
 // returns once their transports have closed, which they do together, each
 // on its own goroutine, holding no lock: as long as the slowest takes. That
 // includes the link's clients that had ended already (a slow consumer, an
-// earlier revoke) and whose transport still closes.
-func (s *Local) DisconnectLink(linkID string) { s.closeLink(linkID, ErrRevoked) }
+// earlier revoke, the session's end) and whose transport still closes: what
+// the session's end still writes them stops (Subscription.revoke).
+func (s *Local) DisconnectLink(linkID string) { s.closeLink(linkID, true) }
 
 // EndLink evicts every subscription created through linkID, one of the
 // session's own links, as the session's end, which ends its links with it
@@ -1626,20 +1627,30 @@ func (s *Local) DisconnectLink(linkID string) { s.closeLink(linkID, ErrRevoked) 
 // written what was queued for it, the session's last output and its
 // status, before its close (Subscription.owed). Otherwise it is
 // DisconnectLink.
-func (s *Local) EndLink(linkID string) { s.closeLink(linkID, ErrSessionEnded) }
+func (s *Local) EndLink(linkID string) { s.closeLink(linkID, false) }
 
-// closeLink is DisconnectLink and EndLink, which close for reason.
-func (s *Local) closeLink(linkID string, reason error) {
+// closeLink is DisconnectLink (revoked) and EndLink. A revoke also stops
+// what the session's end still writes the link's clients
+// (Subscription.revoke), should it have closed them first.
+func (s *Local) closeLink(linkID string, revoked bool) {
+	end := func(sub *Subscription) {
+		if revoked {
+			sub.revoke()
+		} else {
+			sub.closeWith(ErrSessionEnded)
+		}
+	}
 	var hit []*Subscription
 	s.mu.Lock()
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
-			sub.closeWith(reason)
+			end(sub)
 			hit = append(hit, sub)
 		}
 	})
 	for sub := range s.closing {
 		if sub.LinkID == linkID {
+			end(sub)
 			hit = append(hit, sub)
 		}
 	}

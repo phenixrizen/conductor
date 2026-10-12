@@ -65,6 +65,10 @@ type Subscription struct {
 	closed chan struct{}
 	once   sync.Once
 	reason error
+	// revoked says its link was revoked (revoke), which may come after the
+	// subscription ended for another reason: what it is still owed at the
+	// session's end is dropped from then on (owed).
+	revoked atomic.Bool
 
 	inflight atomic.Int32 // file requests in progress
 
@@ -161,14 +165,20 @@ func (s *Subscription) run() {
 // written: the session's last output, its final status among them, which
 // its viewer is given before it is told the session ended. Nothing is
 // queued after the end (send). A subscription that ended for any other
-// reason (revoked, a slow consumer, a viewer that left) is owed nothing. Its
-// transport bounds the wait (closingSink): a server cuts a connection that
+// reason (revoked, a slow consumer, a viewer that left) is owed nothing,
+// and a revoke of its link that comes as it is written them ends it
+// (revoke). Its transport bounds the wait (closingSink): a server cuts a connection that
 // reads too little (api's closeWait).
 func (s *Subscription) owed() {
 	if !errors.Is(s.reason, ErrSessionEnded) {
 		return
 	}
 	for {
+		// A revoke that lands meanwhile stops it: the frame being written
+		// is the last.
+		if s.revoked.Load() {
+			return
+		}
 		select {
 		case frame := <-s.queue:
 			s.queued.Add(-int64(len(frame)))
@@ -229,6 +239,14 @@ func (s *Subscription) closeWith(reason error) {
 			c.Closing()
 		}
 	})
+}
+
+// revoke ends the subscription as its link's revoke: as revoked, or, when
+// it ended already (the session's end), by dropping what it is still owed
+// from then on.
+func (s *Subscription) revoke() {
+	s.revoked.Store(true)
+	s.closeWith(ErrRevoked)
 }
 
 // Done is closed when the subscription ends.

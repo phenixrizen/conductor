@@ -187,6 +187,17 @@ func TestHostedDisconnectLinkIsARevokeAndEndLinkTheSessionsEnd(t *testing.T) {
 		t.Fatalf("the session's end: closed with %v after %d of 3 frames", sink.reason, sink.written())
 	}
 	hs.RemoveViewer(ended)
+
+	// A revoke that lands as the end's close is still written stops it.
+	cut := queued("0123456789abcded")
+	hs.EndLink("l1")
+	hs.DisconnectLink("l1")
+	sink = &pumpSink{}
+	cut.Pump(sink)
+	if !errors.Is(sink.reason, session.ErrSessionEnded) || sink.written() != 0 {
+		t.Fatalf("a revoke after the end's close: closed with %v after %d frames", sink.reason, sink.written())
+	}
+	hs.RemoveViewer(cut)
 }
 
 // A grant that lapses closes the viewer as it lapses, with ErrExpired, and
