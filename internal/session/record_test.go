@@ -22,8 +22,18 @@ func TestActivityBroadcastAndReplay(t *testing.T) {
 		s.Record(ActivityEntry{Type: "link", Message: "x"})
 	}
 	sink := newChanSink(false)
-	s.Attach("", RoleView, "", 80, 24, sink)
-	sink.waitFrames(t, 3+ActivityReplay)
+	sub, err := s.Attach("", RoleView, "", 80, 24, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The viewer's own join entry is recorded once it is attached, as a live
+	// entry, behind the replay on the viewer's queue: once it has come,
+	// every activity frame the viewer is sent has.
+	if waitControl(sink, func(m map[string]any) bool {
+		return m["t"] == proto.CtlActivity && m["type"] == ActivityJoin && m["by"] == sub.ID
+	}) == nil {
+		t.Fatalf("the viewer's own join entry never came (%d frames)", sink.count())
+	}
 	replayed := 0
 	for i := 0; i < sink.count(); i++ {
 		f, err := proto.Decode(sink.frame(i))
