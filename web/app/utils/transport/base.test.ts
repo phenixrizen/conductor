@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FrameType, parseJSON, type FileHeader, type FileResponse, type Welcome } from '../protocol'
-import { BaseTransport } from './base'
+import { encodeControl, FrameType, parseJSON, type FileHeader, type FileResponse, type Welcome } from '../protocol'
+import { ReplyError } from '../reply'
+import { ANSWER_TIMEOUT_MS, BaseTransport } from './base'
 
 /** A transport whose wire is a list: what it sends is kept, and a test hands it frames from the other end. */
 class TestTransport extends BaseTransport {
@@ -126,5 +127,92 @@ describe('BaseTransport.writeFile', () => {
     const read = track<FileResponse>(t.requestFile('a.txt'))
     await vi.advanceTimersByTimeAsync(20_000)
     expect(read.error?.message).toBe('file request timed out')
+  })
+})
+
+describe('BaseTransport.answer', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  /** A transport welcomed by an owner that takes answers (`answer`), or an older one. */
+  function welcomed(answer: boolean): TestTransport {
+    const t = new TestTransport()
+    t.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 80, rows: 24, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true, ...(answer ? { answer: true } : {}) }))
+    return t
+  }
+  function sentControl(t: TestTransport, n: number): Record<string, unknown> {
+    const f = t.sent[n]!
+    expect(f[0]).toBe(FrameType.Control)
+    return parseJSON<Record<string, unknown>>(f.subarray(1))!
+  }
+
+  it('names the question to an owner that takes answers, and settles true on its answer_ok', async () => {
+    const t = welcomed(true)
+    const seen = vi.fn()
+    t.onControl(seen)
+    const sent = track(t.answer({ question: '0123456789abcdef', input: 'y' }))
+    const msg = sentControl(t, 0)
+    expect(msg).toMatchObject({ t: 'answer', question: '0123456789abcdef', input: 'y' })
+    expect(msg.text).toBeUndefined()
+    t.receive(encodeControl({ t: 'answer_ok', requestId: msg.reqId as string }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.value).toBe(true)
+    // The word was the answer's own: the page's handlers never see it.
+    expect(seen).not.toHaveBeenCalled()
+  })
+
+  it('a question answered already is refused with question_answered, the page told nothing else', async () => {
+    const t = welcomed(true)
+    const seen = vi.fn()
+    t.onControl(seen)
+    const line = track(t.answer({ question: 'q1', text: 'Postgres' }))
+    const msg = sentControl(t, 0)
+    expect(msg).toMatchObject({ t: 'answer', question: 'q1', text: 'Postgres' })
+    t.receive(encodeControl({ t: 'error', code: 'question_answered', message: 'this question was already answered: nothing was sent', requestId: msg.reqId as string }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(line.error).toBeInstanceOf(ReplyError)
+    expect((line.error as ReplyError).code).toBe('question_answered')
+    expect(seen).not.toHaveBeenCalled()
+    // An error naming no answer of this transport goes to the page as before.
+    t.receive(encodeControl({ t: 'error', code: 'not_sent', message: 'x', requestId: 'chat-nonce' }))
+    expect(seen).toHaveBeenCalledTimes(1)
+  })
+
+  it('to an older owner, or with no question, goes as keys or a submit and settles false at once', async () => {
+    const old = welcomed(false)
+    const keys = track(old.answer({ question: 'q1', input: 'y' }))
+    const line = track(old.answer({ question: 'q1', text: 'Postgres' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(keys.value).toBe(false)
+    expect(line.value).toBe(false)
+    expect(old.sent[0]![0]).toBe(FrameType.Input)
+    expect(new TextDecoder().decode(old.sent[0]!.subarray(1))).toBe('y')
+    expect(sentControl(old, 1)).toEqual({ t: 'submit', text: 'Postgres' })
+    const t = welcomed(true)
+    const plain = track(t.answer({ input: '1' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(plain.value).toBe(false)
+    expect(t.sent[0]![0]).toBe(FrameType.Input)
+  })
+
+  it('a connection that closes, or no word in time, ends the wait with a ReplyError; one not open refuses at once', async () => {
+    const t = welcomed(true)
+    const closed = track(t.answer({ question: 'q1', input: 'y' }))
+    t.close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect((closed.error as ReplyError).code).toBe('closed')
+    const notOpen = track(t.answer({ question: 'q1', input: 'y' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect((notOpen.error as ReplyError).code).toBe('not_connected')
+    const slow = welcomed(true)
+    const late = track(slow.answer({ question: 'q1', input: 'y' }))
+    await vi.advanceTimersByTimeAsync(ANSWER_TIMEOUT_MS)
+    expect((late.error as ReplyError).code).toBe('no_word')
   })
 })

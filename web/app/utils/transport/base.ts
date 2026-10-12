@@ -8,6 +8,7 @@ import {
   encodeControl,
   encodeFileWrite,
   encodeInput,
+  encodeText,
   MAX_WRITE_BYTES,
   MAX_WRITE_HEADER,
   parseJSON,
@@ -21,12 +22,15 @@ import {
   type TransportKind,
   type Welcome,
 } from '../protocol'
+import { answerMessage, ReplyError, type QuestionReply } from '../reply'
 import { rttFromPong } from './rtt'
 import type { CloseInfo, TerminalTransport, TransportState } from './types'
 
 const FILE_TIMEOUT_MS = 20000
 /** How long an nvim_open may take: Neovim loading the person's config. */
 const NVIM_OPEN_TIMEOUT_MS = 20_000
+/** How long an answer waits for the owner's word: past its own waits (a keystroke's 10 s, a line's 10 s). */
+export const ANSWER_TIMEOUT_MS = 15_000
 
 /**
  * Shared frame handling for both transports: listener registration, the
@@ -44,6 +48,10 @@ export abstract class BaseTransport implements TerminalTransport {
   protected pendingFiles = new Map<string, { resolve: (r: FileResponse) => void; reject: (e: Error) => void; timer: number }>()
   /** nvim_open requests waiting for their `opened` or `error` event, by reqId (design round 12, F8). */
   protected nvimOpens = new Map<string, { resolve: (ev: NvimEvent) => void; reject: (e: Error) => void; timer: number }>()
+  /** Answers waiting for the owner's word (`answer_ok`, or an `error` naming them), by reqId. */
+  protected answers = new Map<string, { resolve: (taken: boolean) => void; reject: (e: Error) => void; timer: number }>()
+  /** The owner's welcome said `answer`: it takes replies that name their question. */
+  protected takesAnswers = false
   protected chunks = new ChunkAssembler()
   protected lastError?: { code: string; message: string }
   protected welcomeResolve?: (w: Welcome) => void
@@ -74,6 +82,31 @@ export abstract class BaseTransport implements TerminalTransport {
   submit(text: string): void {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'submit', text }))
+  }
+
+  /**
+   * Replies to an agent's question. To an owner whose welcome said `answer`, a reply naming its question goes as `answer` and settles
+   * with the owner's word: true once taken, a ReplyError with the owner's code when refused (`question_answered`: the question no
+   * longer waits, nothing was sent), the connection's end, or no word in ANSWER_TIMEOUT_MS. Otherwise (an older owner, a question
+   * with no id) it goes as keys or a submit, as before, and settles false at once: nothing will say whether it was taken.
+   */
+  answer(reply: QuestionReply): Promise<boolean> {
+    if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
+    const reqId = `a${(++this.reqCounter).toString(36)}`
+    const msg = this.takesAnswers ? answerMessage(reply, reqId) : null
+    if (!msg) {
+      if ('input' in reply) this.sendInput(encodeText(reply.input))
+      else this.submit(reply.text)
+      return Promise.resolve(false)
+    }
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.answers.delete(reqId)
+        reject(new ReplyError('no_word', 'the session did not say whether it took the reply'))
+      }, ANSWER_TIMEOUT_MS)
+      this.answers.set(reqId, { resolve, reject, timer })
+      this.send(encodeControl({ ...msg }))
+    })
   }
 
   chat(post: ChatPost): void {
@@ -208,8 +241,20 @@ export abstract class BaseTransport implements TerminalTransport {
   }
 
   protected handleControl(msg: ControlMessage): void {
+    // The owner's word on an answer is the answer's own, not the page's: it settles the reply and goes no further.
+    if ((msg.t === 'answer_ok' || msg.t === 'error') && msg.requestId) {
+      const waiting = this.answers.get(msg.requestId)
+      if (waiting) {
+        this.answers.delete(msg.requestId)
+        window.clearTimeout(waiting.timer)
+        if (msg.t === 'answer_ok') waiting.resolve(true)
+        else waiting.reject(new ReplyError(msg.code, msg.message))
+        return
+      }
+    }
     if (msg.t === 'welcome') {
       this.state.value = 'open'
+      this.takesAnswers = !!msg.answer
       this.welcomeResolve?.(msg)
       this.welcomeResolve = undefined
       this.welcomeReject = undefined
@@ -243,6 +288,11 @@ export abstract class BaseTransport implements TerminalTransport {
       p.reject(new Error('connection closed'))
     }
     this.pendingFiles.clear()
+    for (const a of this.answers.values()) {
+      window.clearTimeout(a.timer)
+      a.reject(new ReplyError('closed', 'the connection closed before the session said whether it took the reply'))
+    }
+    this.answers.clear()
     for (const cb of this.closeCbs) cb(info)
   }
 }

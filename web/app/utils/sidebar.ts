@@ -3,6 +3,7 @@ import type { EventMark, EventType, RouteRow } from './events'
 import { joinedPath, type JoinedEntry } from './joined'
 import type { AttentionKind, AttentionOption } from './protocol'
 import { isEnded } from './attention'
+import { questionOf } from './reply'
 import { relativeTime } from './sessions'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
@@ -121,8 +122,8 @@ export interface SessionRow {
   state: RowState
   /** The machine of a hosted session (UNNAMED_HOST when it gave none); absent for this server's own. */
   machine?: string
-  /** What the session asks, while it needs you. */
-  prompt?: { message: string; options: AttentionOption[]; kind?: AttentionKind; since?: string }
+  /** What the session asks, while it needs you; `question` its id, which an answer from the row names (absent from an older owner). */
+  prompt?: { message: string; options: AttentionOption[]; kind?: AttentionKind; since?: string; question?: string }
   /** `exit 0`, `stopped`: an exited row's first word; the age is added with `now` where it shows. */
   exitWord?: string
 }
@@ -170,7 +171,7 @@ export function sessionRow(s: SessionInfo): SessionRow {
   const state = rowState(s)
   const row: SessionRow = { kind: 'session', id: s.id, session: s, state }
   if (s.kind === 'hosted') row.machine = s.hostName || UNNAMED_HOST
-  if (state === 'needs') row.prompt = { message: s.attention?.message || 'Waiting for input', options: s.attention?.options ?? [], kind: s.attention?.kind, since: s.attention?.since }
+  if (state === 'needs') row.prompt = { message: s.attention?.message || 'Waiting for input', options: s.attention?.options ?? [], kind: s.attention?.kind, since: s.attention?.since, question: questionOf(s.attention) }
   if (state === 'exited') row.exitWord = s.status === 'exited' && s.exitCode !== undefined ? `exit ${s.exitCode}` : s.status
   return row
 }

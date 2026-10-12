@@ -8,7 +8,8 @@ import type { RowPrompt } from '~/utils/sidebarActions'
  * what is typed.
  */
 const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?: boolean }>(), { busy: false, big: false })
-const emit = defineEmits<{ answer: [index: number]; reply: [text: string] }>()
+/** Each answer names the question the row showed as it was clicked or typed (its id). */
+const emit = defineEmits<{ answer: [index: number, question: string | undefined]; reply: [text: string, question: string | undefined] }>()
 
 const text = ref('')
 // While the host is away, or the session waits for its terminal, nothing typed here would go.
@@ -17,7 +18,7 @@ const off = computed(() => props.busy || props.prompt.away || props.prompt.held)
 function send() {
   const t = text.value.trim()
   if (!t || off.value) return
-  emit('reply', t)
+  emit('reply', t, props.prompt.question)
   text.value = ''
 }
 </script>
@@ -36,7 +37,7 @@ function send() {
         :disabled="off"
         :loading="busy"
         :data-row-choice="i + 1"
-        @click="emit('answer', i)"
+        @click="emit('answer', i, prompt.question)"
       >
         <template v-if="i < 9" #leading><UKbd :value="String(i + 1)" size="sm" class="opacity-70" /></template>
       </UButton>

@@ -10,6 +10,7 @@ import { ALT_PASSTHROUGH_CODES } from '~/composables/useShortcuts'
 import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
+import { ReplyError, type QuestionReply } from '~/utils/reply'
 import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
 
 const props = withDefaults(
@@ -44,7 +45,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   welcome: [welcome: Welcome]
   status: [status: string, exitCode?: number]
-  attention: [msg: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }> }]
+  attention: [msg: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }>; id?: string }]
   viewers: [info: { count: number; list?: ViewerInfo[] }]
   activity: [entry: ActivityEntry]
   transport: [info: { kind: TransportKind; state: TransportState; rtt: number | null }]
@@ -481,7 +482,7 @@ function handleControl(msg: ControlMessage) {
       }
       break
     case 'attention':
-      emit('attention', { state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options })
+      emit('attention', { state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id })
       break
     case 'viewers':
       roster.value = msg.list ?? []
@@ -617,6 +618,16 @@ function submit(text: string): boolean {
   return true
 }
 
+/**
+ * Replies to the agent's question the person was shown (`question`, the attention's id): settles true once the owner took it,
+ * false once sent to an older owner that says nothing, and rejects with a ReplyError when it did not go (`question_answered`: the
+ * question no longer waits, nothing was sent; `not_connected`).
+ */
+function answer(reply: QuestionReply): Promise<boolean> {
+  if (!transport || transport.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
+  return transport.answer(reply)
+}
+
 /** Posts to the chat; false when the transport is not open (the caller queues it). */
 function chat(post: ChatPost): boolean {
   if (!transport || transport.state.value !== 'open') return false
@@ -631,7 +642,7 @@ function chatSend(send: ChatSend): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
 
 onMounted(() => {
   term = new Terminal({

@@ -2,9 +2,11 @@
 import type { SessionInfo } from '~/composables/useSessions'
 import { TERMINAL_FIRST, waitsForTerminal } from '~/utils/attention'
 import { agentInitials, relativeTime } from '~/utils/sessions'
+import { questionOf } from '~/utils/reply'
 
 const props = defineProps<{ sessions: SessionInfo[]; answered: SessionInfo[]; selected: number; sending: Set<string> }>()
-const emit = defineEmits<{ reply: [session: SessionInfo, text: string]; option: [session: SessionInfo, index: number]; open: [session: SessionInfo]; select: [index: number] }>()
+/** A reply names the question its card showed (its id), so that one answered meanwhile takes nothing. */
+const emit = defineEmits<{ reply: [session: SessionInfo, text: string, question: string | undefined]; option: [session: SessionInfo, index: number, question: string | undefined]; open: [session: SessionInfo]; select: [index: number] }>()
 
 const drafts = reactive<Record<string, string>>({})
 const now = ref(Date.now())
@@ -24,7 +26,7 @@ function submit(s: SessionInfo) {
   const text = (drafts[s.id] ?? '').trim()
   // A session that waits for its terminal takes no reply: it would only wait (TERMINAL_FIRST).
   if (!text || waitsForTerminal(s.attention)) return
-  emit('reply', s, text)
+  emit('reply', s, text, questionOf(s.attention))
   drafts[s.id] = ''
 }
 
@@ -73,7 +75,7 @@ defineExpose({ focusSelected })
           :color="oi === 0 ? 'primary' : 'neutral'"
           class="flex-1 justify-center"
           :loading="sending.has(s.id)"
-          @click.stop="emit('option', s, oi)"
+          @click.stop="emit('option', s, oi, questionOf(s.attention))"
         />
       </div>
       <form v-else class="flex items-center gap-1.5" @submit.prevent="submit(s)">

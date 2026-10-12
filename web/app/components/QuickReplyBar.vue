@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { TERMINAL_FIRST, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
+import { questionOf } from '~/utils/reply'
 
 const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean }>()
-const emit = defineEmits<{ reply: [text: string]; option: [index: number] }>()
+/** Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). */
+const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
@@ -17,15 +19,16 @@ const placeholder = computed(() => (props.role !== 'control' ? 'View only' : hel
 function send() {
   const t = text.value.trim()
   if (!t || !canReply.value) return
-  emit('reply', t)
+  emit('reply', t, questionOf(props.attention))
   text.value = ''
 }
 
 function pick(i: number) {
   // The state may have changed under us (someone else answered): options
-  // disappear with it, so a stale click is a no-op.
+  // disappear with it, so a stale click is a no-op; one that reaches the
+  // owner after the question went names it, and the owner refuses it.
   if (!canReply.value || !options.value[i]) return
-  emit('option', i)
+  emit('option', i, questionOf(props.attention))
 }
 
 // Number keys pick an option while the bar is visible and no field has focus.

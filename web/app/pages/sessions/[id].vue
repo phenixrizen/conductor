@@ -6,6 +6,8 @@ import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
 import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
+import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
+import { QUESTION_ANSWERED } from '~/utils/protocol'
 
 const route = useRoute()
 const api = useSessions()
@@ -89,10 +91,20 @@ function chatSendToAgent(ref: string) {
 function chatRetry(nonce: string) {
   chat.retry(nonce, viaChat)
 }
-/** A question's choice from the chat: its keys into the session, as the quick reply bar's. */
+/** A question's choice from the chat: its keys into the session, as the quick reply bar's, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+  if (o) answerQuestion({ question: m.id, input: o.input })
+}
+/** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
+const replied = repliedQuestions()
+function answerQuestion(reply: QuestionReply) {
+  if (!terminal.value) return toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
+  if (!replied.take(reply.question)) return
+  terminal.value.answer(reply).catch((e: unknown) => {
+    if ((e as ReplyError).code !== QUESTION_ANSWERED) replied.release(reply.question)
+    toast.add(replyFailure(e))
+  })
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return
@@ -167,7 +179,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile'] } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile'] } | null>(null)
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -286,14 +298,14 @@ async function stop() {
   }
 }
 
-function reply(text: string) {
-  if (!terminal.value?.submit(text)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+function reply(text: string, question?: string) {
+  answerQuestion({ question, text })
 }
 
-function option(index: number) {
+function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
   if (!o) return
-  if (!terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' })
+  answerQuestion({ question, input: o.input })
 }
 
 

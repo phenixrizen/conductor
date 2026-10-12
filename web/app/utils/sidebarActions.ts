@@ -72,6 +72,8 @@ export interface RowPrompt {
   /** The session waits for someone to type in its terminal (waitsForTerminal): a reply would only wait, so none is taken. */
   held: boolean
   placeholder: string
+  /** The question's id: an answer from the row names it, and the owner refuses it once the question no longer waits. */
+  question?: string
 }
 
 export const HOST_AWAY = 'The host is away'
@@ -80,7 +82,7 @@ export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPromp
   if (!row.prompt) return null
   const away = row.session.status === 'host_disconnected'
   const held = waitsForTerminal(row.session.attention)
-  return { message: row.prompt.message, choices: row.prompt.options, away, held, placeholder: away ? HOST_AWAY : held ? TERMINAL_FIRST : 'Reply…' }
+  return { message: row.prompt.message, choices: row.prompt.options, away, held, placeholder: away ? HOST_AWAY : held ? TERMINAL_FIRST : 'Reply…', question: row.prompt.question }
 }
 
 /** What the account menu beside the sidebar's name offers (design 3b): your name, the shortcuts, the theme, the workbench token. */

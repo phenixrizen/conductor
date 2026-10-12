@@ -35,7 +35,8 @@ export interface Session {
   cwd?: string
   cols?: number
   crew?: { runId: string; crewId: string; member: string }
-  attention?: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }> }
+  /** `id` names the question (a reply to it names it). */
+  attention?: { state: string; message?: string; source?: string; kind?: string; options?: Array<{ label: string; input: string }>; id?: string }
   /** Who answered the last prompt, and its words. */
   lastAnswer?: { byName: string; message?: string }
   /** The agent's own session (its conversation), as the server captured or chose it. */

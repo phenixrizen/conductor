@@ -26,6 +26,28 @@ export const FOLLOW_SIZE = { cols: 0, rows: 0 } as const
 /** The longest line a `submit` control message carries, in bytes (proto.MaxSubmit). */
 export const MAX_SUBMIT = 4096
 
+/** An answer's bounds (proto.MaxQuestionID, MaxAnswerReqID, MaxAnswerInput): the question's id, the request's, a choice's keys, in bytes. */
+export const MAX_QUESTION_ID = 32
+export const MAX_ANSWER_REQ_ID = 32
+export const MAX_ANSWER_INPUT = 48
+
+/** The error code of an answer whose question is no longer the one waiting: answered by another reply first, or gone. Nothing was sent. */
+export const QUESTION_ANSWERED = 'question_answered'
+
+/**
+ * A reply to the question a person was shown (`answer`, client → owner, controllers only; only to an owner whose welcome says
+ * `answer`): `question` is that attention's `id`; exactly one of `input` (a choice's keys, written as INPUT is) and `text` (a line,
+ * submitted as `submit` is). The owner writes nothing unless the question still waits, and answers `reqId` with `answer_ok` or an
+ * `error` naming it (`question_answered` once the question no longer waits).
+ */
+export interface AnswerMsg {
+  t: 'answer'
+  reqId?: string
+  question: string
+  input?: string
+  text?: string
+}
+
 /** A chat message's text, in bytes after cleaning (proto.MaxChatText); the composer counts from CHAT_COUNTER_FROM. */
 export const MAX_CHAT_TEXT = 2048
 export const CHAT_COUNTER_FROM = 1536
@@ -134,6 +156,8 @@ export interface Attention {
   since?: string
   kind?: AttentionKind
   options?: AttentionOption[]
+  /** The question's id, new with each change (absent with the empty state and from an older owner): a reply to it names it (`answer`). */
+  id?: string
 }
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 
@@ -208,6 +232,8 @@ export interface Welcome {
   chat?: boolean
   /** The session is a run's member with a run chat: scope `run` posts and sends, and `chat_roster`. */
   runChat?: boolean
+  /** The owner takes `answer` and refuses one whose question no longer waits; absent from an older owner, which is sent none (replies go as INPUT and `submit`). */
+  answer?: boolean
   /** The session's working directory, from the owner itself, to a role that may read files (at most 4096 bytes; absent from an older owner): a guest's Files root. */
   cwd?: string
   iceServers?: ICEServer[]
@@ -221,7 +247,9 @@ export type ControlMessage =
   /** `by` names the viewer that sizes the session now (absent: nobody holds the size) when the welcome said `sizer` (round 14). */
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
-  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[] }
+  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string }
+  /** The owner took the answer `requestId`: its keys are written, or its line accepted. */
+  | { t: 'answer_ok'; requestId: string }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
   | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string; op?: ActivityEntry['op']; path?: string }
   | { t: 'error'; code: string; message: string; requestId?: string }
