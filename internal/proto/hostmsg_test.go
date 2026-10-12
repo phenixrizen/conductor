@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The host and the server are built apart and may differ by a release, so the
@@ -38,6 +39,66 @@ func TestHostActivityMsgOmitsAnEmptySessionAndEmptyFields(t *testing.T) {
 	want := `{"t":"activity","entry":{"t":"activity","at":"2026-09-29T12:00:00Z","type":"progress"}}`
 	if string(got) != want {
 		t.Fatalf("got %s want %s", got, want)
+	}
+}
+
+// A viewer_leave carries its reason when the viewer's link went, none
+// otherwise, so that an older host reads the same message it always did;
+// a host acts on the two reasons it knows, and on nothing else: an unknown
+// reason, or one past MaxLeaveReason, is none.
+func TestViewerLeaveWireShapeAndReasons(t *testing.T) {
+	b, _ := json.Marshal(ViewerLeave{T: HostViewerLeave, ViewerID: "0123456789abcdef", Reason: LeaveExpired})
+	if want := `{"t":"viewer_leave","viewerId":"0123456789abcdef","reason":"expired"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	b, _ = json.Marshal(ViewerLeave{T: HostViewerLeave, ViewerID: "0123456789abcdef"})
+	if want := `{"t":"viewer_leave","viewerId":"0123456789abcdef"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	var old ViewerRef
+	if err := json.Unmarshal([]byte(`{"t":"viewer_leave","viewerId":"0123456789abcdef","reason":"revoked"}`), &old); err != nil || old.ViewerID != "0123456789abcdef" {
+		t.Fatalf("an older host's read: %+v %v", old, err)
+	}
+	for in, want := range map[string]string{
+		"": "", LeaveRevoked: LeaveRevoked, LeaveExpired: LeaveExpired,
+		"left": "", "Revoked": "", strings.Repeat("r", MaxLeaveReason+1): "", "revoked\x00": "",
+	} {
+		if got := LeaveReason(in); got != want {
+			t.Errorf("LeaveReason(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if len(LeaveRevoked) > MaxLeaveReason || len(LeaveExpired) > MaxLeaveReason {
+		t.Fatal("a reason is over its bound")
+	}
+}
+
+// A viewer_join carries its link's expiry when the link has one, none
+// otherwise; a host reads one of at most MaxExpiresAt bytes in RFC 3339 and
+// nothing else. link_gone names a link alone.
+func TestViewerJoinExpiryAndLinkGoneWireShapes(t *testing.T) {
+	b, _ := json.Marshal(ViewerJoin{T: HostViewerJoin, ViewerID: "0123456789abcdef", Role: "control", LinkID: "l1"})
+	if strings.Contains(string(b), "expiresAt") {
+		t.Fatalf("a join without an expiry: %s", b)
+	}
+	at := time.Date(2026, 10, 12, 8, 30, 0, 123000000, time.UTC)
+	b, _ = json.Marshal(ViewerJoin{T: HostViewerJoin, ViewerID: "0123456789abcdef", Role: "control", LinkID: "l1", ExpiresAt: at.Format(time.RFC3339Nano)})
+	if want := `{"t":"viewer_join","viewerId":"0123456789abcdef","role":"control","linkId":"l1","expiresAt":"2026-10-12T08:30:00.123Z"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	for in, want := range map[string]time.Time{
+		"":                          {},
+		"2026-10-12T08:30:00.123Z":  at,
+		"2026-10-12T10:30:00+02:00": time.Date(2026, 10, 12, 8, 30, 0, 0, time.UTC),
+		"tomorrow":                  {},
+		"2026-10-12T08:30:00Z" + strings.Repeat("0", MaxExpiresAt): {},
+	} {
+		if got := JoinExpiry(in); !got.Equal(want) {
+			t.Errorf("JoinExpiry(%q) = %v, want %v", in, got, want)
+		}
+	}
+	b, _ = json.Marshal(LinkGone{T: HostLinkGone, LinkID: "l1"})
+	if want := `{"t":"link_gone","linkId":"l1"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
+	"github.com/phenixrizen/conductor/internal/api"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/session/sessiontest"
@@ -60,6 +61,20 @@ func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitVi
 // keystrokes inputWait from their arrival, instead of session.InputWait.
 func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration) *submitViewer {
 	t.Helper()
+	return newSubmitViewerOf(t, pause, timeout, inputWait, "", time.Time{})
+}
+
+// newLinkedSubmitViewer is newSubmitViewer whose viewer joined through
+// linkID, which expires at until (none when zero).
+func newLinkedSubmitViewer(t *testing.T, pause time.Duration, linkID string, until time.Time) *submitViewer {
+	t.Helper()
+	return newSubmitViewerOf(t, pause, 0, 0, linkID, until)
+}
+
+// newSubmitViewerOf is newSubmitViewerWaits whose viewer joined through
+// linkID, which expires at until.
+func newSubmitViewerOf(t *testing.T, pause, timeout, inputWait time.Duration, linkID string, until time.Time) *submitViewer {
+	t.Helper()
 	proc := sessiontest.NewFakeProc()
 	begun := new(atomic.Int32)
 	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, countingProc{proc, begun}, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
@@ -67,7 +82,8 @@ func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration)
 	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout, inputWait: inputWait}
 	a.sendHook = func(v any) { out <- v }
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, linkID, "", linkID == "")
+	p.until = until
 	a.peers[p.id] = p
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
@@ -563,7 +579,14 @@ func relayHost(t *testing.T) (string, string) {
 // relayHostOf is relayHost of argv.
 func relayHostOf(t *testing.T, argv []string) (string, string) {
 	t.Helper()
-	_, hs := startServer(t)
+	_, base, id := relayHostOn(t, argv)
+	return base, id
+}
+
+// relayHostOn is relayHostOf that also returns the server.
+func relayHostOn(t *testing.T, argv []string) (*api.Server, string, string) {
+	t.Helper()
+	srv, hs := startServer(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	registered := make(chan string, 1)
 	done := make(chan struct{})
@@ -587,17 +610,23 @@ func relayHostOf(t *testing.T, argv []string) (string, string) {
 	})
 	select {
 	case id := <-registered:
-		return hs.URL, id
+		return srv, hs.URL, id
 	case <-time.After(10 * time.Second):
 		t.Fatal("host did not register")
 	}
-	return "", ""
+	return nil, "", ""
 }
 
 // relayController attaches a controller to the session over the relay.
 func relayController(t *testing.T, base, sessionID string) *viewer {
 	t.Helper()
-	v := dialViewer(t, base, sessionID, adminToken)
+	return relayControllerOf(t, base, sessionID, adminToken)
+}
+
+// relayControllerOf is relayController through token (a link's).
+func relayControllerOf(t *testing.T, base, sessionID, token string) *viewer {
+	t.Helper()
+	v := dialViewer(t, base, sessionID, token)
 	v.expectJSON(proto.TypeControl, proto.CtlWelcome)
 	relay, _ := proto.EncodeJSON(proto.TypeSignal, proto.RelayRequest{T: proto.SigRelay, Reason: "forced"})
 	v.send(relay)

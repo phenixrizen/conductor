@@ -20,6 +20,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -336,6 +337,14 @@ type agent struct {
 	// links are the link requests waiting for the server's answer, by
 	// request id. Guarded by mu.
 	links map[string]chan linkAnswer
+
+	// goneLinks are the links the server said no longer open the session
+	// (link_gone), the oldest first, at most maxGoneLinks: what a viewer
+	// that joined through one of them asked for and that is still under
+	// way is withdrawn (peer.authorize). goneMu guards them alone and is
+	// held for nothing else: the session asks under its own locks.
+	goneMu    sync.Mutex
+	goneLinks []string
 
 	// activity carries the local session's activity entries to the server;
 	// statusQueued says the session's final (status) entry is in it.
@@ -1056,7 +1065,16 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if !role.Valid() || len(m.ViewerID) != proto.ViewerIDLen {
 			return errors.New("invalid viewer_join")
 		}
-		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel)
+		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel, proto.JoinExpiry(m.ExpiresAt))
+	case proto.HostLinkGone:
+		var m proto.LinkGone
+		if err := json.Unmarshal(data, &m); err != nil {
+			return err
+		}
+		if m.LinkID == "" || len(m.LinkID) > proto.MaxLinkID {
+			return errors.New("invalid link_gone")
+		}
+		a.linkGone(m.LinkID)
 	case proto.HostOffer:
 		var m proto.ViewerSDP
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1089,11 +1107,21 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			p.startRelay()
 		}
 	case proto.HostViewerLeave:
-		var m proto.ViewerRef
+		var m proto.ViewerLeave
 		if err := json.Unmarshal(data, &m); err != nil {
 			return err
 		}
-		a.removePeer(m.ViewerID)
+		// Its link no longer opens the session: what the viewer has under
+		// way is withdrawn, not finished. An older server gives no reason,
+		// and one this host does not know is none.
+		var why error
+		switch proto.LeaveReason(m.Reason) {
+		case proto.LeaveRevoked:
+			why = session.ErrRevoked
+		case proto.LeaveExpired:
+			why = session.ErrExpired
+		}
+		a.removePeerFor(m.ViewerID, why)
 	case proto.HostAttention:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard
@@ -1111,6 +1139,15 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
+		if a.local.Held() {
+			// The session's turn is held for a typed text, which is what it
+			// shows (session.HeldWords), the change only recorded: the
+			// server, which shows the change it sent, is told so.
+			a.mu.Lock()
+			a.attentionUntold = true
+			a.mu.Unlock()
+			a.noteChange(a.local.Info())
+		}
 	case proto.HostActivity:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard
@@ -1399,11 +1436,12 @@ func (a *agent) tell(v any, gone <-chan struct{}) error {
 	return err
 }
 
-func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
+func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string, until time.Time) {
 	a.removePeer(id)
 	// A switchyard's viewer is never the owner's window, whatever else says
 	// so: its workbench is its operator's (Options.Switchyard).
 	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
+	p.until = until
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice
@@ -1421,13 +1459,44 @@ func (a *agent) peer(id string) *peer {
 	return a.peers[id]
 }
 
-func (a *agent) removePeer(id string) {
+func (a *agent) removePeer(id string) { a.removePeerFor(id, nil) }
+
+// maxGoneLinks bounds agent.goneLinks: the oldest goes first, a link whose
+// viewers' requests are long over.
+const maxGoneLinks = 1024
+
+// linkGone notes that linkID no longer opens the session (link_gone).
+func (a *agent) linkGone(linkID string) {
+	a.goneMu.Lock()
+	defer a.goneMu.Unlock()
+	if linkID == "" || slices.Contains(a.goneLinks, linkID) {
+		return
+	}
+	if len(a.goneLinks) >= maxGoneLinks {
+		a.goneLinks = slices.Delete(a.goneLinks, 0, 1)
+	}
+	a.goneLinks = append(a.goneLinks, linkID)
+}
+
+// isLinkGone reports whether the server said linkID no longer opens the
+// session.
+func (a *agent) isLinkGone(linkID string) bool {
+	if linkID == "" {
+		return false
+	}
+	a.goneMu.Lock()
+	defer a.goneMu.Unlock()
+	return slices.Contains(a.goneLinks, linkID)
+}
+
+// removePeerFor lets the viewer id go, for why (peer.closeFor).
+func (a *agent) removePeerFor(id string, why error) {
 	a.mu.Lock()
 	p := a.peers[id]
 	delete(a.peers, id)
 	a.mu.Unlock()
 	if p != nil {
-		p.close()
+		p.closeFor(why)
 	}
 }
 

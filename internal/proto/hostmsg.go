@@ -3,6 +3,7 @@ package proto
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Host control messages are JSON text frames on /ws/host. Relayed terminal
@@ -46,6 +47,9 @@ const (
 	HostViewerLeave = "viewer_leave"
 	HostStop        = "stop"
 	HostError       = "error"
+	// HostLinkGone tells the host a link a viewer joined through no longer
+	// opens the session (LinkGone).
+	HostLinkGone = "link_gone"
 )
 
 // HostInfo describes the host process.
@@ -144,12 +148,78 @@ type ViewerJoin struct {
 	LinkID   string `json:"linkId,omitempty"`
 	// LinkLabel is shown in the viewers roster; the host never sees the token.
 	LinkLabel string `json:"linkLabel,omitempty"`
+	// ExpiresAt is when the viewer's link expires (RFC 3339, at most
+	// MaxExpiresAt bytes), none for a link that does not: what the viewer
+	// asked for is not typed after it, also once the viewer has left. A host
+	// ignores one it cannot read; an older server sends none.
+	ExpiresAt string `json:"expiresAt,omitempty"`
 }
 
-// ViewerRef addresses one viewer (viewer_leave, relay_start, viewer_closed).
+// MaxExpiresAt bounds ViewerJoin.ExpiresAt.
+const MaxExpiresAt = 64
+
+// JoinExpiry is when a viewer_join's expiresAt says the viewer's link
+// expires: zero for none, or one over MaxExpiresAt bytes or not RFC 3339.
+func JoinExpiry(s string) time.Time {
+	if s == "" || len(s) > MaxExpiresAt {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// LinkGone tells the host that a link through which a viewer of its
+// session joined (ViewerJoin.LinkID) no longer opens the session: revoked,
+// its run forgotten, its run's session no longer named. It comes whether
+// or not a viewer is still attached through it, ahead of the leaves of
+// those that are, so that what a viewer of the link asked for and that is
+// still under way (one that left once it had sent) is withdrawn. LinkID is
+// at most MaxLinkID bytes; an older host ignores the message.
+type LinkGone struct {
+	T      string `json:"t"`
+	LinkID string `json:"linkId"`
+}
+
+// ViewerRef addresses one viewer (relay_start, viewer_closed; a
+// viewer_leave without a reason).
 type ViewerRef struct {
 	T        string `json:"t"`
 	ViewerID string `json:"viewerId"`
+}
+
+// ViewerLeave tells the host a viewer left, or was let go. Reason says the
+// viewer's link no longer opens the session (LeaveRevoked: revoked, its
+// run's link forgotten, gone; LeaveExpired), and is empty for any other
+// end (the viewer left, its connection failed, it was too slow). A host
+// takes a reason it does not know, or one over MaxLeaveReason bytes, as
+// none; an older server sends none, and an older host ignores the field.
+type ViewerLeave struct {
+	T        string `json:"t"`
+	ViewerID string `json:"viewerId"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// The reasons a viewer_leave gives, and their bound.
+const (
+	LeaveRevoked   = "revoked"
+	LeaveExpired   = "expired"
+	MaxLeaveReason = 16
+)
+
+// LeaveReason is the reason a host acts on for a viewer_leave's reason r:
+// r when it is one of the reasons above, else "" (none).
+func LeaveReason(r string) string {
+	if len(r) > MaxLeaveReason {
+		return ""
+	}
+	switch r {
+	case LeaveRevoked, LeaveExpired:
+		return r
+	}
+	return ""
 }
 
 // ViewerSDP carries an offer or answer for one viewer.

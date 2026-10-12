@@ -154,6 +154,8 @@ func (hs *HostedSession) attach(reg proto.Register, conn *HostConn) bool {
 		return false
 	}
 	hs.conn = conn
+	gone := hs.linksGoneAway
+	hs.linksGoneAway = nil
 	if !hs.info.Status.Ended() {
 		hs.info.Status = session.StatusRunning
 	}
@@ -165,6 +167,11 @@ func (hs *HostedSession) attach(reg proto.Register, conn *HostConn) bool {
 		hs.setAgentToken(reg.Session.AgentToken)
 	}
 	hs.mu.Unlock()
+	// The links viewers joined through that went while the host was away
+	// (DisconnectLink): queued now, they go after the registered reply.
+	for _, id := range gone {
+		conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: id})
+	}
 	hs.notifyChange()
 	return true
 }

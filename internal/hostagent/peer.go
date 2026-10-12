@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -30,6 +31,9 @@ type peer struct {
 	// replaces is the subscription the viewer had before it moved to the
 	// relay, for the relay's attach to take over its slot.
 	replaces *session.Subscription
+	// until is when the viewer's link expires (its viewer_join's
+	// expiresAt), zero for none; set before the peer is seen.
+	until time.Time
 
 	// attaching runs the viewer's attaches one at a time (attach): a hello
 	// over the relay waits for one over the data channel still under way,
@@ -58,6 +62,11 @@ type peer struct {
 	// viewer's error is on its way (sendViewerError), the first alone.
 	left  chan struct{}
 	erred atomic.Bool
+	// letGo is why the server let the viewer go when its link no longer
+	// opens the session (session.ErrRevoked, session.ErrExpired; closeFor),
+	// nil before and for any other end: the credential check of each of
+	// the viewer's subscriptions (authorize) says so from then on.
+	letGo atomic.Pointer[error]
 }
 
 var errNoWebRTC = errors.New("webrtc disabled on this host")
@@ -554,7 +563,7 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	p.mu.Unlock()
 	sub, err := p.a.local.AttachWith(session.AttachOptions{
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
-		Owner: p.owner, Replaces: replaces,
+		Owner: p.owner, Replaces: replaces, Authorize: p.authorize,
 	}, sink)
 	if err != nil {
 		p.a.sendViewerError(p.id, "attach_failed", err.Error())
@@ -575,6 +584,29 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	// Handed over: a later attach of this viewer replaces this one.
 	p.replaces = nil
 	p.mu.Unlock()
+}
+
+// authorize is the credential check of the viewer's subscriptions
+// (session.AttachOptions.Authorize): the viewer's role, until its link no
+// longer opens the session, and why then: the server let the viewer go for
+// it (closeFor), said the link went (link_gone; revoked), or the link's
+// expiry passed (expired). The session asks it again before it writes what
+// the viewer asked for (a submission's text and Enter), so what is under
+// way of the viewer's, on any of its subscriptions (one it had before a
+// move to the relay too), also once it has left, is withdrawn then, and a
+// text typed without its Enter holds the session's turn for a person. It
+// takes the agent's goneMu alone.
+func (p *peer) authorize() (session.Grant, error) {
+	if why := p.letGo.Load(); why != nil {
+		return session.Grant{}, *why
+	}
+	if p.a.isLinkGone(p.linkID) {
+		return session.Grant{}, session.ErrRevoked
+	}
+	if !p.until.IsZero() && !time.Now().Before(p.until) {
+		return session.Grant{}, session.ErrExpired
+	}
+	return session.Grant{Role: p.role}, nil
 }
 
 // transport is the sink a hello that came over via attaches the viewer to:
@@ -616,7 +648,20 @@ func (p *peer) detachDataChannel() {
 	}
 }
 
-func (p *peer) close() {
+// close lets the viewer go, for no reason of its link's (it left).
+func (p *peer) close() { p.closeFor(nil) }
+
+// closeFor lets the viewer go: for why, its link no longer opening the
+// session (session.ErrRevoked, session.ErrExpired), or nil for any other
+// end. What waits of the viewer's (its keys, submissions and editor
+// requests not begun) is dropped either way; with why, what is under way
+// of a submission's is withdrawn too (authorize), not finished, its text
+// typed or not. Why is set first, before anything of the viewer's sees it
+// go.
+func (p *peer) closeFor(why error) {
+	if why != nil {
+		p.letGo.CompareAndSwap(nil, &why)
+	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()

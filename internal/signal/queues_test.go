@@ -528,7 +528,8 @@ func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 	select {
 	case o := <-conn.Send:
 		conn.Took(o)
-		leave, _ := jsonMarshal(proto.ViewerRef{T: proto.HostViewerLeave, ViewerID: v.ID})
+		// The leave as it is at most: with the longest reason.
+		leave, _ := jsonMarshal(proto.ViewerLeave{T: proto.HostViewerLeave, ViewerID: v.ID, Reason: proto.LeaveRevoked})
 		if tt, _ := proto.ParseHeader(o.Text); tt != proto.HostViewerJoin || <-joinTold != o.size()+len(leave) {
 			t.Fatalf("the join: %q, ChargeJoin not told it and its leave", o.Text)
 		}
@@ -582,5 +583,162 @@ func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 	}
 	if q := conn.queued(); q != 0 || len(conn.Send) != 0 {
 		t.Fatalf("%d bytes in %d messages went past a failing Charge", q, len(conn.Send))
+	}
+}
+
+// A link a viewer joined through that no longer opens the session is named
+// to the host (link_gone), ahead of the leaves of its viewers still
+// attached, and also once they have all left; a link no viewer joined
+// through is never named, nor one twice. A viewer's join carries its link's
+// expiry. One that goes while the host is away is named to its next
+// connection.
+func TestTheHostIsToldOfTheLinksItsViewersJoinedThroughGoing(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	next := func() map[string]any {
+		t.Helper()
+		select {
+		case o := <-conn.Send:
+			conn.Took(o)
+			var m map[string]any
+			if err := json.Unmarshal(o.Text, &m); err != nil {
+				t.Fatal(err)
+			}
+			return m
+		case <-time.After(time.Second):
+			t.Fatal("nothing went to the host")
+		}
+		return nil
+	}
+	until := time.Now().Add(time.Hour).UTC()
+	attached, err := hs.AddViewerWith(ViewerOptions{ID: "aaaaaaaaaaaaaaaa", Role: session.RoleControl, LinkID: "l1", Authorize: func() (session.Grant, error) {
+		return session.Grant{Role: session.RoleControl, Until: until}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := next(); m["t"] != proto.HostViewerJoin || !proto.JoinExpiry(m["expiresAt"].(string)).Equal(until) {
+		t.Fatalf("the join: %v", m)
+	}
+	left, err := hs.AddViewerWith(ViewerOptions{ID: "bbbbbbbbbbbbbbbb", Role: session.RoleControl, LinkID: "l2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := next(); m["t"] != proto.HostViewerJoin || m["expiresAt"] != nil {
+		t.Fatalf("the join: %v", m)
+	}
+	hs.RemoveViewer(left)
+	if m := next(); m["t"] != proto.HostViewerLeave {
+		t.Fatalf("the leave: %v", m)
+	}
+
+	hs.DisconnectLink("unrelated")
+	hs.DisconnectLink("l2")
+	if m := next(); m["t"] != proto.HostLinkGone || m["linkId"] != "l2" {
+		t.Fatalf("for the link of a viewer that left: %v", m)
+	}
+	hs.DisconnectLink("l1")
+	if m := next(); m["t"] != proto.HostLinkGone || m["linkId"] != "l1" {
+		t.Fatalf("for the link of a viewer attached: %v", m)
+	}
+	hs.RemoveViewer(attached)
+	if m := next(); m["t"] != proto.HostViewerLeave || m["reason"] != proto.LeaveRevoked {
+		t.Fatalf("the attached viewer's leave: %v", m)
+	}
+	hs.DisconnectLink("l1")
+	select {
+	case o := <-conn.Send:
+		t.Fatalf("a second revoke sent %s", o.Text)
+	default:
+	}
+
+	// A link that goes while the host is away is named to its next
+	// connection, after its registered reply.
+	away, err := hs.AddViewerWith(ViewerOptions{ID: "cccccccccccccccc", Role: session.RoleControl, LinkID: "l3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next()
+	hs.RemoveViewer(away)
+	next()
+	hs.HostDisconnected(conn)
+	hs.DisconnectLink("l3")
+	conn2 := NewHostConn()
+	if _, resumed, err := hub.Register(proto.Register{T: proto.HostRegister, Proto: 1, Host: proto.HostInfo{Name: "laptop"}, Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24},
+		Resume: &proto.HostResume{SessionID: hs.Info().ID, Secret: hs.Secret()}}, conn2); err != nil || !resumed {
+		t.Fatalf("resume: %v %v", resumed, err)
+	}
+	select {
+	case o := <-conn2.Send:
+		conn2.Took(o)
+		if !strings.Contains(string(o.Text), `"t":"link_gone","linkId":"l3"`) {
+			t.Fatalf("the next connection got %s", o.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the next connection was not told of the link")
+	}
+}
+
+// A viewer's leave tells the host why when its link no longer opens the
+// session: revoked (a revoke, its run's link forgotten), expired (its link's
+// lapse); a viewer that left, or was too slow, gets a leave with no reason,
+// as an older server's. The first reason the viewer was closed for counts.
+func TestAViewersLeaveSaysWhenItsLinkWent(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	soon := time.Now().Add(50 * time.Millisecond)
+	add := func(id, link string, until time.Time) *Viewer {
+		t.Helper()
+		v, err := hs.AddViewerWith(ViewerOptions{ID: id, Role: session.RoleControl, LinkID: link, Authorize: func() (session.Grant, error) {
+			return session.Grant{Role: session.RoleControl, Until: until}, nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainText(t, conn, proto.HostViewerJoin)
+		return v
+	}
+	revoked := add("aaaaaaaaaaaaaaaa", "l1", time.Time{})
+	expired := add("bbbbbbbbbbbbbbbb", "l2", soon)
+	left := add("cccccccccccccccc", "l3", time.Time{})
+	slow := add("dddddddddddddddd", "l4", time.Time{})
+	leftThenRevoked := add("eeeeeeeeeeeeeeee", "l5", time.Time{})
+	hs.DisconnectLink("l1")
+	<-expired.Done()
+	slow.close(ErrSlowViewer)
+	leftThenRevoked.close(nil)
+	hs.DisconnectLink("l5")
+	// What goes to the host but the revokes' own link_gone
+	// (TestTheHostIsToldOfTheLinksItsViewersJoinedThroughGoing).
+	next := func() map[string]any {
+		t.Helper()
+		for {
+			select {
+			case o := <-conn.Send:
+				conn.Took(o)
+				var m map[string]any
+				if err := json.Unmarshal(o.Text, &m); err != nil {
+					t.Fatal(err)
+				}
+				if m["t"] != proto.HostLinkGone {
+					return m
+				}
+			case <-time.After(time.Second):
+				t.Fatal("no leave")
+			}
+		}
+	}
+	for _, c := range []struct {
+		v    *Viewer
+		want string
+	}{{revoked, proto.LeaveRevoked}, {expired, proto.LeaveExpired}, {left, ""}, {slow, ""}, {leftThenRevoked, ""}} {
+		hs.RemoveViewer(c.v)
+		m := next()
+		if m["t"] != proto.HostViewerLeave || m["viewerId"] != c.v.ID {
+			t.Fatalf("%s: %v", c.v.ID, m)
+		}
+		got, has := m["reason"].(string)
+		if got != c.want || (c.want == "" && has) {
+			t.Fatalf("%s: %v, want the reason %q", c.v.ID, m, c.want)
+		}
 	}
 }
