@@ -28,6 +28,11 @@ its frames and then closes its transport; ending a subscriber only marks it,
 so a transport that stops taking frames, or takes its time to close, holds up
 neither the pump nor anything else under the session's lock. A revoke waits
 for the link's viewers' transports to close, all at once, holding no lock.
+What was queued for a subscriber is dropped as it ends, but for one the
+session's end closes (its link ends with the session): it is written first,
+the session's last output and its status, and a server cuts a connection
+that has not taken it 5 s after the close. A hosted session's viewers on the
+server are closed and drained the same way at its end.
 
 `Local.Submit` is the one way Conductor types into a session (a crew member's
 prompt, a handoff, a broadcast) and the way a reply box's `submit` message is
