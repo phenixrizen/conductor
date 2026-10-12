@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { closeReason, CloseCode } from './protocol'
+import { closedByTheEnd, closeReason, CloseCode } from './protocol'
 
 describe('what a closed connection says', () => {
   it('tells a link that expired from one that was revoked, both closed with 4403', () => {
@@ -13,5 +13,18 @@ describe('what a closed connection says', () => {
     expect(closeReason(CloseCode.SessionEnded, '')).toBe('Session ended')
     expect(closeReason(1006, '')).toBe('Connection lost')
     expect(closeReason(4999, '')).toBe('Connection closed (4999)')
+  })
+})
+
+describe('a close that says the session ended', () => {
+  it('is 4410 session ended, which a link viewer of a server or a hosted session gets as the session ends, after its last output', () => {
+    expect(closedByTheEnd(CloseCode.SessionEnded, 'session ended')).toBe(true)
+    expect(closeReason(CloseCode.SessionEnded, 'session ended')).toBe('session ended')
+  })
+  it('is neither a host that went away nor a link revoked or expired', () => {
+    expect(closedByTheEnd(CloseCode.SessionEnded, 'host disconnected')).toBe(false)
+    expect(closedByTheEnd(CloseCode.Forbidden, 'link revoked')).toBe(false)
+    expect(closedByTheEnd(CloseCode.Forbidden, 'link expired')).toBe(false)
+    expect(closedByTheEnd(1006, '')).toBe(false)
   })
 })

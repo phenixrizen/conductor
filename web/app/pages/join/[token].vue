@@ -2,7 +2,7 @@
 import { SPONSOR_URL } from '~/utils/about'
 import type { JoinInfo, JoinRunMember, SessionKind } from '~/composables/useSessions'
 import type { Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, ChatQuote, ActivityEntry } from '~/utils/protocol'
-import { CloseCode } from '~/utils/protocol'
+import { closedByTheEnd } from '~/utils/protocol'
 import type { CloseInfo, TransportState } from '~/utils/transport/types'
 import { emptyTabs } from '~/utils/editorTabs'
 import { joinServer } from '~/utils/invite'
@@ -62,10 +62,10 @@ function onStatus(s: string) {
   status.value = s
   hearFocused({ status: s })
 }
-/** The connection closed: what was being said waits; a close for the session's end says so, should the status frame not have been read first. */
+/** The connection closed: what was being said waits; a close for the session's end (a server's or a hosted one's) says so, should the status frame not have been read first. */
 function onClosed(info: CloseInfo) {
   chat.offline()
-  if (info.code === CloseCode.SessionEnded && info.reason === 'session ended' && !ended.value) onStatus('exited')
+  if (closedByTheEnd(info.code, info.reason) && !ended.value) onStatus('exited')
 }
 
 // A run link opens every member of a crew run: a tile each, and one member
