@@ -979,10 +979,12 @@ request each from main.
     switchyard, which takes only newer ones; a failed sync is tried again.
   - **Writes to a program** (#122). Every write to a session's program
     (keys, a submission's paste and Enter, a crew's prompt) goes through one
-    writer per session, in order. A viewer's keys, a submission and a crew's
-    prompt each have 10 s to be taken: a program that stops reading fails
-    its sender alone, and the next such writes are refused at once. The
-    host's own terminal keeps waiting for its program, as a terminal does. On a host, a viewer's keys and editor requests leave the frame loop
+    writer per session, in order, and a sender waits at most 10 s for it. A
+    write not yet begun when that time runs out fails its sender alone, and
+    once one has run out the next are refused at once; a submission whose
+    text has begun is accepted all the same and finishes when the program
+    reads again, keeping the session's turn until then. The host's own
+    terminal keeps waiting for its program, as a terminal does. On a host, a viewer's keys and editor requests leave the frame loop
     for bounded queues. An editor's Neovim keeps to its request's time and is
     registered only while its viewer is attached.
 
