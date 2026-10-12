@@ -64,6 +64,13 @@ const QuestionWords = "the agent asks a question on its screen: answer with the 
 // during the work shows.
 var ErrQuestion = errors.New(QuestionWords)
 
+// HeldWords say why the session needs input while its turn is held for a
+// submission's text typed without its Enter, its link no longer opening the
+// session (holdTyped, source SourceSubmit): the text waits in the program's
+// input, and the next submission waits for a person to type into the
+// terminal.
+const HeldWords = "Text from a link that was let go was typed and not entered: type in the terminal to continue"
+
 // Submission is a line to submit (Local.Submit).
 type Submission struct {
 	// Text is the line. Submit makes each line break, carriage return and
@@ -165,12 +172,17 @@ type SubmitResult struct {
 // Errors: ErrReadOnly for a view-role By, ErrTextTooLong for a text over
 // MaxSubmitText bytes once cleaned, ErrSessionEnded, ctx's error,
 // ErrInputStalled, ErrSubmitPending (accepted), ErrTooManyRequests, the
-// process's write error, or why
-// the session ended By for its link (ErrRevoked, ErrExpired) before
-// the text was typed. Once the text is typed, its line is finished
-// whatever becomes of the link: the text cannot be taken back out of the
-// program, and left there without its Enter it would be entered with the
-// next submission's.
+// process's write error, or why the session ended By (or From) for its
+// link (ErrRevoked, ErrExpired), or its credential no longer stands,
+// before its Enter was written. Before the text is typed, nothing of it
+// is written. Once it is typed (or its write begun), its Enter is not
+// written either, and the text cannot be taken back out of the program:
+// the session's turn stays held (holdTyped), so that no other line is
+// typed after the text and entered with it, until a person types into the
+// terminal, who deals with the text, or the session ends. A submission
+// whose sender only went (a reply box closes its connection once it has
+// sent; one that failed or was too slow) or whose time ran out is
+// finished as above.
 func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error) {
 	var res SubmitResult
 	if sub.By != nil && sub.By.Role != RoleControl {
@@ -183,9 +195,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	// A controller's submission goes on when the controller goes (a reply
 	// box closes its connection once it has sent, and one that fails or is
 	// too slow is no different), but not once the session has ended the
-	// controller for its link (revoked or expired): until its text is
-	// typed, it waits with that in view. Once typed, the line is finished
-	// (its Enter), so that it stays a line of its own.
+	// controller for its link (revoked or expired): until its Enter is
+	// written, it waits with that in view. Once its text is typed, the
+	// session's turn is held for a person instead of its Enter (holdTyped).
 	from := sub.By
 	if from == nil {
 		from = sub.From
@@ -265,7 +277,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// Each write waits Options.InputWait at most, is refused at once
 		// while the program is known not to read, and is withdrawn when
 		// the session ends its controller (not when the controller only
-		// goes).
+		// goes): its text, and its Enter once the text is typed.
 		wait: writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from},
 	}
 	if text != "" {
@@ -281,13 +293,6 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		if errors.Is(err, errWaiting) {
 			return res, nil
 		}
-		if err == nil || landed != nil {
-			// The text is typed, or its write begun: the line's Enter is no
-			// longer withdrawn with the controller's link. Held back, it
-			// would leave the text in the program's input, to be entered
-			// with the next submission's as one line.
-			st.wait.from = nil
-		}
 		if err != nil {
 			if landed == nil || errors.Is(err, ErrSessionEnded) || s.isEnded() {
 				return res, err
@@ -295,16 +300,32 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			// Begun, the text lands when the program reads, and the
 			// submission is finished then as it would have been, holding
 			// the session's turn: no later submission's text joins it, and
-			// it is never typed again. Its caller is answered now.
+			// it is never typed again. Its caller is answered now: the
+			// session's end of its controller for its link, the turn held
+			// for a person once the text lands (finishSubmission); else
+			// accepted.
 			res.Typed = true
 			release = false
 			go s.finishSubmission(landed, sub, text, st)
+			if errors.Is(err, ErrRevoked) {
+				return res, err
+			}
 			return res, ErrSubmitPending
 		}
 		res.Typed = true
 		s.typedEntry(sub, text, st)
 	}
 	res, err = s.enter(ctx, sub, res, st)
+	if res.Typed && !res.Entered && errors.Is(err, ErrRevoked) {
+		// Its text is typed and its link no longer opens the session: no
+		// Enter, and the turn held for a person (holdTyped).
+		release = false
+		go func() {
+			defer func() { <-s.submitting }()
+			s.holdTyped()
+		}()
+		return res, err
+	}
 	if res.Typed && !res.Entered && (errors.Is(err, errEnterLater) || errors.Is(err, context.DeadlineExceeded)) {
 		// Its text is typed and its time ran out before its Enter (in its
 		// pause, its look, or another's write the program does not take
@@ -336,7 +357,8 @@ func (s *Local) finishEnter(sub Submission, res SubmitResult, st submitState) {
 // finishLine finishes a line whose text is typed, the session's turn held
 // by its caller: its pause and looks again, then its Enter, with no time of
 // its own and no second Enter, its caller having had its answer; and tells
-// how it ended (finished).
+// how it ended (finished). One whose link no longer opens the session by
+// then has no Enter, and holds the turn for a person (holdTyped).
 func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
 	sub.Confirm = false
 	st.wait.wait, st.wait.stall = 0, 0
@@ -345,6 +367,71 @@ func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
 		res, err = s.pressEnterHeld(sub, res, st)
 	}
 	s.finished(sub, res, err)
+	if res.Typed && !res.Entered && errors.Is(err, ErrRevoked) {
+		s.holdTyped()
+	}
+}
+
+// holdTyped holds the session's turn, which its caller holds and gives
+// back once it returns, after a submission whose text was typed and whose
+// Enter was not written, its link no longer opening the session: no other
+// submission (a person's reply, a crew's prompt, a handoff) is typed after
+// the text, to be entered with it, until a person types into the terminal
+// (input), who deals with what is left in the program's input, or the
+// session ends. The session shows needs_input meanwhile, with HeldWords
+// (source SourceSubmit), which the keys clear; another attention change is
+// recorded and not shown, but for a question on the screen (setAttention).
+func (s *Local) holdTyped() {
+	s.mu.Lock()
+	if s.info.Status.Ended() {
+		s.mu.Unlock()
+		return
+	}
+	held := make(chan struct{})
+	s.held = held
+	s.mu.Unlock()
+	s.log.Info("a submission's text was typed and not entered; the next waits for keys typed in the terminal")
+	s.setAttention(AttentionNeedsInput, HeldWords, SourceSubmit, "", nil, whileHeld)
+	select {
+	case <-held:
+	case <-s.ended:
+	}
+	s.mu.Lock()
+	if s.held == held {
+		s.held = nil
+	}
+	// Keys that ended the hold as it began, before it showed, answered
+	// nothing: what it shows goes with it.
+	shown := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceSubmit
+	if shown {
+		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		s.signalAttention()
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+	}
+	s.mu.Unlock()
+	if shown {
+		s.notifyChange()
+	}
+}
+
+// endHold ends the hold of the session's turn for a typed text, if one
+// stands (holdTyped): a person types into the terminal.
+func (s *Local) endHold() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held != nil {
+		close(s.held)
+		s.held = nil
+	}
+}
+
+// Held reports whether the session's turn is held for a submission's text
+// typed without its Enter (holdTyped), until a person types into the
+// terminal.
+func (s *Local) Held() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.held != nil
 }
 
 // finished tells how a submission finished in the background ended: logged
@@ -453,9 +540,9 @@ func (s *Local) enter(ctx context.Context, sub Submission, res SubmitResult, st 
 	return s.pressEnter(ctx, sub, res, st)
 }
 
-// pressEnter writes a submission's Enter, unless the session has ended, a
-// prompt came since the submission began or (st.wait.from, a submission
-// with no text) its controller's link no longer stands; BeforeEnter runs as
+// pressEnter writes a submission's Enter, unless the session has ended, its
+// controller's link no longer stands (st.wait.from: why, its text typed or
+// not) or a prompt came since the submission began; BeforeEnter runs as
 // the writer takes it. An Enter whose
 // write has begun counts as entered. With its text typed, an Enter whose
 // write had no turn in time (its context's deadline, InputWait, a stall)
@@ -469,13 +556,14 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if ended {
 		return res, ErrSessionEnded
 	}
+	if err := wait.withdrawn(); err != nil {
+		// The session ended its controller for its link: nothing more of it
+		// is written, and a text it typed holds the turn (holdTyped), a
+		// prompt come meanwhile or not.
+		return res, err
+	}
 	if att.State == AttentionNeedsInput && att.Since != promptSince {
 		return res, nil
-	}
-	if err := wait.withdrawn(); err != nil {
-		// An Enter alone (no text) whose controller the session ended:
-		// nothing of it is written.
-		return res, err
 	}
 	// As the writer takes the Enter it looks again: a prompt raised while
 	// the Enter waited behind another write, or a dialog drawn on the

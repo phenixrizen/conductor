@@ -38,6 +38,10 @@ const (
 	// SourceQuestion: a question the agent asks during its work is on the
 	// screen (Options.Questions marked Anytime: Codex's command approval).
 	SourceQuestion = "question"
+	// SourceSubmit: a submission's text is typed and its Enter was not
+	// written, its link no longer opening the session; the session's next
+	// submission waits for a person to type into the terminal (HeldWords).
+	SourceSubmit = "submit"
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can

@@ -235,6 +235,10 @@ type Local struct {
 	// submitting holds a token while a submission runs (Submit): one at a
 	// time per session.
 	submitting chan struct{}
+	// held is closed by the first keys a person types into the terminal
+	// (input) while the session's turn is held for a submission's text
+	// typed without its Enter (holdTyped); nil while it is not. Under mu.
+	held chan struct{}
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.
@@ -799,6 +803,11 @@ const (
 	// (its ended turn's own, or one at a wait that stays) has nothing to
 	// pace, and must not keep the next turn's bell from asking.
 	bellPaced
+	// whileHeld changes nothing unless the session's turn is held for a
+	// typed text (held) and the session has not ended: the hold's own
+	// attention, which keys that ended the hold before it showed, or the
+	// session's end, must not leave behind.
+	whileHeld
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -837,6 +846,31 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 		s.mu.Unlock()
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
+	}
+	if rules&whileHeld != 0 && (s.held == nil || s.info.Status.Ended()) {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.held != nil && source != SourceSubmit && !heldSource(source) {
+		// The session's turn is held for a typed text (holdTyped): the hold
+		// is what shows, until a person types into the terminal, but for a
+		// question on the screen, whose answer ends the hold too. Another
+		// change is recorded, as the report it is, and not shown; its turn
+		// is kept as a change shown keeps it.
+		if state == AttentionDone {
+			s.turnEnded = true
+		} else {
+			s.beginTurn()
+		}
+		s.mu.Unlock()
+		if state != AttentionNone {
+			label := message
+			if label == "" {
+				label = string(state)
+			}
+			s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: label}, state)
+		}
+		return nil
 	}
 	cur := s.info.Attention
 	waiting := cur.State == AttentionNeedsInput
@@ -881,10 +915,11 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 	s.info.Attention = att
 	s.signalAttention()
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
-	// The agent's question goes into the chat too (design: the agents' questions in the chat).
+	// The agent's question goes into the chat too (design: the agents' questions in the chat);
+	// the session's own hold is no question of the agent's.
 	var asked ChatMessage
 	var askedID string
-	if state == AttentionNeedsInput {
+	if state == AttentionNeedsInput && source != SourceSubmit {
 		asked, askedID = s.askInChat(att)
 	}
 	s.mu.Unlock()
@@ -1291,8 +1326,10 @@ func (s *Local) Detach(sub *Subscription) {
 // Input waits for that at most Options.InputWait: a program that takes
 // nothing meanwhile gets ErrInputStalled, the keystrokes written later if
 // the write had begun (see writeProc) and never otherwise. Keystrokes not
-// yet written when sub ends (revoked, detached) are never written. data may
-// be reused once Input returns.
+// yet written when sub ends (revoked, detached) are never written. Keys
+// written (a terminal's own report aside) end the hold of the session's
+// turn for a submission's text typed without its Enter (holdTyped). data
+// may be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
 	return s.input(context.Background(), sub, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
 }
@@ -1407,6 +1444,12 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		}
 	}
 	o.before = func() {
+		if !isTerminalReport(data) {
+			// A person types into the terminal: a submission's text typed
+			// without its Enter no longer holds the session's turn
+			// (holdTyped), and what comes next is written after these keys.
+			s.endHold()
+		}
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
 		}
