@@ -87,7 +87,14 @@ type CrewRef struct {
 type Driver interface {
 	Info() Info
 	Stop(ctx context.Context) error
+	// DisconnectLink closes the clients attached through a link that was
+	// revoked (or expired, or no longer opens the session), as revoked:
+	// they are written nothing more.
 	DisconnectLink(linkID string)
+	// EndLink closes the clients attached through one of the session's own
+	// links as the session's end, which ends its links with it: they are
+	// written what was queued for them first, its last output.
+	EndLink(linkID string)
 	// LinkViewers counts attached clients per share link id.
 	LinkViewers() map[string]int
 }

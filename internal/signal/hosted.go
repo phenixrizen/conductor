@@ -375,7 +375,7 @@ func (v *Viewer) halt() { v.stopOnce.Do(func() { close(v.stop) }) }
 // the reason. They are dropped when the link was revoked (or expired), when the
 // viewer's own queue overflowed (ErrSlowViewer) and when the viewer left (a nil
 // reason). For every other reason, the session's end (its links end with it,
-// DisconnectLink, as does its leaving the server, Retire), the host going
+// EndLink, as does its leaving the server, Retire), the host going
 // away, asking for the close or reporting an error for the viewer, they are
 // written first: at most as many as the queue holds, and up to the first frame
 // that cannot be written. They are the session's last output, its final status
@@ -528,21 +528,25 @@ func (h *HostedSession) Stop(ctx context.Context) error {
 	return nil
 }
 
-// DisconnectLink closes the viewers attached through linkID: as revoked,
-// or, once the session has ended (its links go with it), as the session's
-// end, as a server session's are (session.Local.DisconnectLink). A viewer
-// closed as the session's end is still written what was queued for it, the
-// session's last output, and then told the session ended (Pump); one
-// closed as revoked is written nothing more. It finds them under the lock
-// AddViewerWith registers them under, so a caller that marked the link
-// first (a revoke) misses none: a viewer added after this finds the mark
-// (ViewerOptions.Authorize).
-func (h *HostedSession) DisconnectLink(linkID string) {
-	reason := session.ErrRevoked
+// DisconnectLink closes the viewers attached through linkID as revoked,
+// whether or not the session has ended (a run's link keeps its viewers on a
+// member that ended, until it is revoked): each is written nothing more
+// (Pump). It finds them under the lock AddViewerWith registers them under,
+// so a caller that marked the link first (a revoke) misses none: a viewer
+// added after this finds the mark (ViewerOptions.Authorize).
+func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, session.ErrRevoked) }
+
+// EndLink closes the viewers attached through linkID, one of the session's
+// own links, as the session's end, which ends its links with it (the
+// caller marks the link first, as a revoke does), as a server session's
+// are (session.Local.EndLink): each is still written what was queued for
+// it, the session's last output, and then told the session ended (Pump).
+// Otherwise it is DisconnectLink.
+func (h *HostedSession) EndLink(linkID string) { h.closeLink(linkID, session.ErrSessionEnded) }
+
+// closeLink is DisconnectLink and EndLink, which close for reason.
+func (h *HostedSession) closeLink(linkID string, reason error) {
 	h.mu.Lock()
-	if h.info.Status.Ended() {
-		reason = session.ErrSessionEnded
-	}
 	var hit []*Viewer
 	for _, v := range h.viewers {
 		if v.LinkID == linkID {

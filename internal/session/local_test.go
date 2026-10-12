@@ -886,9 +886,10 @@ func TestAHelloOfZeroFollowsTheSize(t *testing.T) {
 	}
 }
 
-// A link's viewers are evicted as revoked while the session runs, and as the
-// session's end once it has ended: its links go with it, and the close must
-// say so, for a viewer whose status frame the close overtakes.
+// A link's viewers are evicted as revoked by a revoke, while the session
+// runs and once it has ended (a run's link keeps its viewers on a member
+// that ended, until it is revoked); the session's end evicts the viewers of
+// its own links as its end (EndLink), and the close must say so.
 func TestDisconnectLinkSaysWhyOnceTheSessionEnded(t *testing.T) {
 	s, p := newLocal(t, t.TempDir())
 	live := newChanSink(false)
@@ -897,16 +898,22 @@ func TestDisconnectLinkSaysWhyOnceTheSessionEnded(t *testing.T) {
 	if !errors.Is(subLive.Reason(), ErrRevoked) {
 		t.Fatalf("while running: %v", subLive.Reason())
 	}
-	after := newChanSink(false)
-	subAfter, _ := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "l2", Cols: 80, Rows: 24}, after)
+	ended := newChanSink(false)
+	subEnded, _ := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "l2", Cols: 80, Rows: 24}, ended)
+	revoked := newChanSink(false)
+	subRevoked, _ := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "run", Cols: 80, Rows: 24}, revoked)
 	p.exit()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && !s.Info().Status.Ended() {
 		time.Sleep(10 * time.Millisecond)
 	}
-	s.DisconnectLink("l2")
-	if !errors.Is(subAfter.Reason(), ErrSessionEnded) {
-		t.Fatalf("once ended: %v", subAfter.Reason())
+	s.EndLink("l2")
+	if !errors.Is(subEnded.Reason(), ErrSessionEnded) {
+		t.Fatalf("the end's: %v", subEnded.Reason())
+	}
+	s.DisconnectLink("run")
+	if !errors.Is(subRevoked.Reason(), ErrRevoked) {
+		t.Fatalf("a revoke once ended: %v", subRevoked.Reason())
 	}
 }
 

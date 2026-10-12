@@ -34,6 +34,36 @@ type wsSink struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	once   sync.Once
+
+	// cutMu guards cut, the timer Closing starts, and closed, which Close
+	// sets once it has closed the connection.
+	cutMu  sync.Mutex
+	cut    *time.Timer
+	closed bool
+}
+
+// closeWait bounds how long the connection of a viewer the session closed
+// is kept while it is written what it is still owed (at the session's end,
+// or its host's going, the frames queued for it: its last output) and then
+// its error and its close: past it the connection is cut (Closing). A
+// viewer that reads that little is let go, whatever it was owed; a write
+// that waits on it is never left to its own time (writeTimeout). A hosted
+// viewer's queue holds at most 16 MiB (a server session's 1 MiB), which a
+// viewer on a fast connection takes in a second or so.
+const closeWait = 5 * time.Second
+
+// Closing is told that the client was closed (its subscription ended, as
+// session.Sink's closingSink, or a hosted viewer was closed): the
+// connection has closeWait from now to be written what the client is owed,
+// its error and its close, and is cut then, whatever is being written to
+// it or waits on its close. It returns at once, as it may be called under a
+// session's locks.
+func (s *wsSink) Closing() {
+	s.cutMu.Lock()
+	defer s.cutMu.Unlock()
+	if s.cut == nil && !s.closed {
+		s.cut = time.AfterFunc(closeWait, func() { s.c.CloseNow() })
+	}
 }
 
 func newWSSink(c *websocket.Conn) *wsSink {
@@ -58,6 +88,12 @@ func (s *wsSink) Close(reason error) {
 		}
 		_ = s.c.Close(code, msg)
 		s.cancel()
+		s.cutMu.Lock()
+		s.closed = true
+		if s.cut != nil {
+			s.cut.Stop()
+		}
+		s.cutMu.Unlock()
 	})
 }
 

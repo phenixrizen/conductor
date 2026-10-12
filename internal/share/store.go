@@ -217,6 +217,16 @@ func (s *Store) Revoke(sessionID, linkID string) (found, revoked bool) {
 	})
 }
 
+// End marks a session's link unusable as its session ends, as Revoke does,
+// but tells no hook: whoever ends the session closes the viewers attached
+// through it as the session's end (session.Driver.EndLink), after the mark
+// as a revoke does, where OnRevoke would close them as revoked. It reports
+// whether the link is the session's.
+func (s *Store) End(sessionID, linkID string) bool {
+	found, _ := s.revoke(linkID, func(l *Link) bool { return l.RunID == "" && l.SessionID == sessionID }, func() {})
+	return found
+}
+
 // RevokeRun is Revoke for a run's link, notifying OnRevokeRun.
 func (s *Store) RevokeRun(runID, linkID string) (found, revoked bool) {
 	return s.revoke(linkID, func(l *Link) bool { return l.RunID != "" && l.RunID == runID }, func() {

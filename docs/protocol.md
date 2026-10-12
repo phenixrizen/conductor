@@ -1324,7 +1324,9 @@ the viewer WebSocket, `GET /api/sessions/{id}` and the file route take its
 token as they take a session link's for its session, and `GET
 /api/join/{token}` answers the run and its members. A run link is listed,
 capped at 100 and revoked through its run alone; revoking it closes the
-viewers attached through it on every session (`4403`). Creating and revoking
+viewers attached through it on every session (`4403`), a member's whose
+session ended included (a run link keeps its viewers there until then):
+they are written nothing more. Creating and revoking
 one are noted in the run log; revoking a revoked link answers `204`, logs
 nothing and closes any viewer still attached through it. When the server
 forgets the run (past 100 runs, the oldest with nothing running), its links

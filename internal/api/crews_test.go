@@ -1377,7 +1377,9 @@ func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
 	resp, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
 	wantAPIError(t, "the forgotten run", resp, out, http.StatusNotFound, "not_found", "")
 
-	viewer.expectClose(proto.CloseSessionEnded)
+	// Closed as on a revoke, its member's session's end long past: the
+	// session's end closes the viewers of the session's own links alone.
+	viewer.expectClose(proto.CloseForbidden)
 	resp, out = e.do("GET", "/api/join/"+token, "", nil)
 	wantAPIError(t, "join", resp, out, http.StatusNotFound, "invalid_link", "")
 	dialViewer(t, e, coreID, token).expectClose(proto.CloseUnauthorized)

@@ -1607,25 +1607,31 @@ func (s *Local) Stop(ctx context.Context) error {
 	return err
 }
 
-// DisconnectLink evicts every subscription created through linkID: as
-// revoked, or, once the session has ended (its links go with it), as the
-// session's end, which still writes each what was queued for it, the
-// session's last output and its status, before its close
-// (Subscription.owed); a revoked one is written nothing more. It ends them
-// under the lock AttachWith registers them under, so a caller that marked
-// the link first (a revoke) misses none: one that attaches after this finds
-// the mark (AttachOptions.Authorize); and nothing broadcast after reaches
-// them. It returns once their transports have closed, which they do
-// together, each on its own goroutine, holding no lock: as long as the
-// slowest takes. That includes the link's clients that had ended already (a
-// slow consumer, an earlier revoke) and whose transport still closes.
-func (s *Local) DisconnectLink(linkID string) {
-	reason := ErrRevoked
+// DisconnectLink evicts every subscription created through linkID as
+// revoked, whether or not the session has ended (a run's link keeps its
+// viewers on a member that ended, until it is revoked): each is written
+// nothing more that was queued for it. It ends them under the lock
+// AttachWith registers them under, so a caller that marked the link first
+// (a revoke) misses none: one that attaches after this finds the mark
+// (AttachOptions.Authorize); and nothing broadcast after reaches them. It
+// returns once their transports have closed, which they do together, each
+// on its own goroutine, holding no lock: as long as the slowest takes. That
+// includes the link's clients that had ended already (a slow consumer, an
+// earlier revoke) and whose transport still closes.
+func (s *Local) DisconnectLink(linkID string) { s.closeLink(linkID, ErrRevoked) }
+
+// EndLink evicts every subscription created through linkID, one of the
+// session's own links, as the session's end, which ends its links with it
+// (the caller marks the link first, as a revoke does): each is still
+// written what was queued for it, the session's last output and its
+// status, before its close (Subscription.owed). Otherwise it is
+// DisconnectLink.
+func (s *Local) EndLink(linkID string) { s.closeLink(linkID, ErrSessionEnded) }
+
+// closeLink is DisconnectLink and EndLink, which close for reason.
+func (s *Local) closeLink(linkID string, reason error) {
 	var hit []*Subscription
 	s.mu.Lock()
-	if s.info.Status.Ended() {
-		reason = ErrSessionEnded
-	}
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
 			sub.closeWith(reason)

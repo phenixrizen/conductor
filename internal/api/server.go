@@ -300,14 +300,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	}
 	s.hosts.OnChange = func(info session.Info) {
 		s.events.publishIf(info, s.listed)
-		// A hosted session that ended takes its links with it, as a server session does.
+		// A hosted session that ended takes its links with it, as a server
+		// session does, and closes their viewers as its end.
 		if info.Status.Ended() {
-			for _, l := range s.links.ListBySession(info.ID) {
-				s.links.Revoke(info.ID, l.ID)
-			}
-			for _, lid := range s.links.DeleteSession(info.ID, true) {
-				s.dropLinkFile(lid)
-			}
+			s.endLinks(info.ID)
 		}
 	}
 	s.hosts.OnActivity = s.events.activity

@@ -415,3 +415,81 @@ func TestAServerLinkViewerThatReadsNothingHoldsTheEndBriefly(t *testing.T) {
 		t.Fatalf("the session's end waited %v on the viewer, past %v", took, closeWait)
 	}
 }
+
+// A run's link keeps its viewers on a member whose session ended; a revoke
+// of the link then closes them as revoked (4403), not as the session's end,
+// which would still write them what was queued for them.
+func TestARunLinkRevokedAfterItsMemberEndedClosesAsRevoked(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.stopEverything(t)
+	runID := e.launchCrew(t, "Squad", catMember("core", "immediately"))
+	coreID := e.waitRunning(t, runID, "core")
+	_, out := e.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+	linkID := out["link"].(map[string]any)["id"].(string)
+	v := dialViewer(t, e, coreID, out["token"].(string))
+	v.hello(80, 24)
+	v.expectControl(proto.CtlReady)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+coreID, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d", resp.StatusCode)
+	}
+	e.waitEnded(coreID)
+	v.expectControl(proto.CtlStatus)
+	if resp, _ := e.do("DELETE", "/api/runs/"+runID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d", resp.StatusCode)
+	}
+	if end := readTheEnd(t, v, 10*time.Second); end.errCode != proto.ErrCodeRevoked || end.closeCode != proto.CloseForbidden {
+		t.Fatalf("the member's viewer was closed with %q and %d, want revoked and 4403", end.errCode, end.closeCode)
+	}
+}
+
+// The connection of a client the session closed is cut closeWait after the
+// close, whoever waits on the close: here the session's end closes a link's
+// client from within the client's own attach (the change the attach
+// reports, as one that lands while the end closes its links), before the
+// goroutine serving the client could do anything, and the client reads
+// nothing of the scrollback it is owed.
+func TestAClientTheEndClosesAsItAttachesIsCutInTime(t *testing.T) {
+	proc := newPipeProc()
+	var local atomic.Pointer[session.Local]
+	l := session.NewLocal(session.Info{ID: "ends-as-it-attaches", Cols: 80, Rows: 24}, proc, session.Options{ScrollbackBytes: 256 << 10, OnChange: func(info session.Info) {
+		if s := local.Load(); s != nil && info.Status.Ended() {
+			s.EndLink("L")
+		}
+	}})
+	local.Store(l)
+	// More scrollback than the sockets between the server and the client hold.
+	if _, err := proc.w.Write(bytes.Repeat([]byte("s"), 200<<10)); err != nil {
+		t.Fatal(err)
+	}
+	_ = proc.Stop(context.Background(), 0)
+	select {
+	case <-l.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session never ended")
+	}
+	attached := make(chan time.Duration, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		start := time.Now()
+		_, err = l.AttachWith(session.AttachOptions{Role: session.RoleView, LinkID: "L", Name: "late"}, newWSSink(c))
+		attached <- time.Since(start)
+		if err != nil {
+			c.CloseNow()
+		}
+	}))
+	srv.Listener = smallBufListener{srv.Listener}
+	srv.Start()
+	defer srv.Close()
+	dialSlowViewer(t, srv.URL, "x", "x") // reads nothing
+	select {
+	case took := <-attached:
+		if took > closeWait+2*time.Second {
+			t.Fatalf("the attach waited %v on its own client's close, past %v", took, closeWait)
+		}
+	case <-time.After(closeWait + 10*time.Second):
+		t.Fatal("the attach still waits on its own client's close")
+	}
+}
