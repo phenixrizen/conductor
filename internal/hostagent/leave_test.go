@@ -3,9 +3,11 @@ package hostagent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -209,20 +211,108 @@ func TestATypedLineOfAViewerThatLeftHoldsTheTurnWhenItsLinkGoes(t *testing.T) {
 // and changes nothing.
 func TestALinkGoneOutOfBoundsIsRefused(t *testing.T) {
 	a := &agent{peers: map[string]*peer{}, log: discardLog}
-	for _, id := range []string{"", strings.Repeat("l", proto.MaxLinkID+1)} {
+	long := strings.Repeat("l", proto.MaxLinkID+1)
+	c := a.creds.of(long)
+	for _, id := range []string{"", long} {
 		if err := a.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: id})); err == nil {
 			t.Errorf("link_gone %q was taken", id)
 		}
-		if a.isLinkGone(id) {
-			t.Errorf("link %q noted gone", id)
+	}
+	if c.err() != nil {
+		t.Fatal("a refused link_gone marked its link gone")
+	}
+}
+
+// What the host keeps of the links is held by their viewers and what they
+// asked for: a link gone stays gone for whoever holds it, however many
+// other links go after it and whatever the collector sweeps; one nobody
+// holds is not kept, and a link's viewer after the connection to the server
+// was lost starts afresh while those before it count the link as gone.
+func TestALinksGoingReachesWhoeverStillHoldsIt(t *testing.T) {
+	var l linkCreds
+	held := l.of("l0")
+	if l.of("l0") != held {
+		t.Fatal("two viewers of a link hold two creds")
+	}
+	l.gone("l0")
+	for i := range 4096 {
+		id := fmt.Sprintf("other-%d", i)
+		_ = l.of(id)
+		l.gone(id)
+	}
+	runtime.GC()
+	if !errors.Is(held.err(), session.ErrRevoked) {
+		t.Fatalf("the link's going was lost: %v", held.err())
+	}
+	// Swept, as the next viewer past the bound would have it.
+	l.mu.Lock()
+	l.sweep()
+	kept := len(l.m)
+	l.mu.Unlock()
+	if kept != 1 {
+		t.Fatalf("%d links kept, one held", kept)
+	}
+
+	standing := l.of("l1")
+	l.lost()
+	if !errors.Is(standing.err(), session.ErrRevoked) {
+		t.Fatal("the connection's loss left a link standing")
+	}
+	if fresh := l.of("l1"); fresh == standing || fresh.err() != nil {
+		t.Fatal("a viewer of the link once the connection is back holds the old cred")
+	}
+	runtime.KeepAlive(held)
+	runtime.KeepAlive(standing)
+}
+
+// A viewer that left once it had sent, its submission waiting for the
+// session's turn, has it withdrawn when the host's connection to the server
+// is lost (connLost): the host is not told of the link going until it is
+// back.
+func TestASubmissionOfAViewerThatLeftIsWithdrawnWhenTheConnectionIsLost(t *testing.T) {
+	v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1", time.Time{})
+	a := v.p.a
+	release := holdTurn(t, v)
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "reply"})
+	v.sync()
+	if err := a.handleControl(t.Context(), leaveOf(v.p.id, "")); err != nil {
+		t.Fatal(err)
+	}
+	a.connLost(nil)
+	release()
+	v.quiet(500 * time.Millisecond)
+}
+
+// A viewer that left once its text's write had begun, the program taking
+// nothing, has no Enter when its link goes, however many links go after it
+// before the program reads again: the link's going is kept by what is under
+// way of its viewer.
+func TestALinkGoneStaysGoneForAStalledLine(t *testing.T) {
+	v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1", time.Time{})
+	a := v.p.a
+	v.hold()
+	v.send(proto.Submit{T: proto.CtlSubmit, Text: "reply"})
+	v.sync()
+	v.untilBegun(1) // its text's write waits in the process
+	if err := a.handleControl(t.Context(), leaveOf(v.p.id, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: "l1"})); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2048 {
+		id := fmt.Sprintf("other-%d", i)
+		_ = a.creds.of(id)
+		if err := a.handleControl(t.Context(), mustJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: id})); err != nil {
+			t.Fatal(err)
 		}
 	}
-	for i := range maxGoneLinks + 1 {
-		a.linkGone(fmt.Sprintf("l%d", i))
+	runtime.GC()
+	if got := v.release(); got != "reply" {
+		t.Fatalf("typed %q", got)
 	}
-	if a.isLinkGone("l0") || !a.isLinkGone("l1") || len(a.goneLinks) != maxGoneLinks {
-		t.Fatalf("%d links noted; the oldest gone %v", len(a.goneLinks), !a.isLinkGone("l0"))
-	}
+	v.quiet(500 * time.Millisecond)
+	holdShows(t, a.local)
 }
 
 // A link's controller's submission waits for its turn behind a write the

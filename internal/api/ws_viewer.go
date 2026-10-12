@@ -164,36 +164,37 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 }
 
 // heldTyping runs what a server viewer asked to type into the agent (a
-// submit, a chat to the agent, a chat_send) off its read loop while the
+// submit, a chat to the agent, a chat_send): the read loop waits for it, so
+// that what the client sends next comes after it, but no longer once the
 // session's turn is held for a submission's text typed without its Enter
-// (session.Local.Held): it waits until a person types into the terminal, and
-// the viewer's own keys, sent after it, must reach the session to do that.
-// One at a time per connection: another while one waits so is refused
-// (too_many_requests) and the connection stays. Otherwise it runs on the
-// read loop, so that what the client sends next comes after it.
+// (session.Local.Holding), whether it was as the request came or became so
+// while it waited: it then waits until a person types into the terminal,
+// and the viewer's own keys, sent after it, must reach the session to do
+// that. One at a time per connection: another while one still waits is
+// refused (too_many_requests) and the connection stays.
 type heldTyping struct{ busy atomic.Bool }
 
-// typeIn runs do, on the read loop or off it as above, and refuse with its
-// error; requestID names the request a too_many_requests refuses (a chat's
-// id or a chat_send's ref, none for a submit).
+// typeIn runs do as above, and refuse with its error; requestID names the
+// request a too_many_requests refuses (a chat's id or a chat_send's ref,
+// none for a submit).
 func (h *heldTyping) typeIn(sub *session.Subscription, local *session.Local, requestID string, do func() error, refuse func(error)) {
-	if !local.Held() {
-		if err := do(); err != nil {
-			refuse(err)
-		}
-		return
-	}
 	if !h.busy.CompareAndSwap(false, true) {
 		local.Send(sub, proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: proto.ErrCodeTooManyRequests,
 			Message: "one line already waits for the terminal on this connection", RequestID: requestID}))
 		return
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer h.busy.Store(false)
 		if err := do(); err != nil {
 			refuse(err)
 		}
 	}()
+	select {
+	case <-done:
+	case <-local.Holding():
+	}
 }
 
 // handleLocalControl dispatches a control message; false means protocol error.

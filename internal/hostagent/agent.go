@@ -20,7 +20,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -338,13 +337,12 @@ type agent struct {
 	// request id. Guarded by mu.
 	links map[string]chan linkAnswer
 
-	// goneLinks are the links the server said no longer open the session
-	// (link_gone), the oldest first, at most maxGoneLinks: what a viewer
-	// that joined through one of them asked for and that is still under
-	// way is withdrawn (peer.authorize). goneMu guards them alone and is
-	// held for nothing else: the session asks under its own locks.
-	goneMu    sync.Mutex
-	goneLinks []string
+	// creds are the links the viewers joined through (linkCreds): one the
+	// server says no longer opens the session (link_gone), or every one as
+	// the connection to it is lost, withdraws what its viewers asked for
+	// and is still under way (peer.authorize). Its lock is held for nothing
+	// else: the session asks under its own locks.
+	creds linkCreds
 
 	// activity carries the local session's activity entries to the server;
 	// statusQueued says the session's final (status) entry is in it.
@@ -934,10 +932,7 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	if att := a.toServer(a.local.Info().Attention); att.State != session.AttentionNone {
 		a.send(hostAttentionMsg(a.sessionID(), att))
 	}
-	defer func() {
-		a.dropConn(c)
-		a.closeAllPeers()
-	}()
+	defer a.connLost(c)
 
 	// Report the current status in case the process ended while disconnected.
 	go a.watchStatus(ctx, w)
@@ -1074,7 +1069,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if m.LinkID == "" || len(m.LinkID) > proto.MaxLinkID {
 			return errors.New("invalid link_gone")
 		}
-		a.linkGone(m.LinkID)
+		a.creds.gone(m.LinkID)
 	case proto.HostOffer:
 		var m proto.ViewerSDP
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1442,6 +1437,7 @@ func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string, 
 	// so: its workbench is its operator's (Options.Switchyard).
 	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
 	p.until = until
+	p.cred = a.creds.of(linkID)
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice
@@ -1461,32 +1457,15 @@ func (a *agent) peer(id string) *peer {
 
 func (a *agent) removePeer(id string) { a.removePeerFor(id, nil) }
 
-// maxGoneLinks bounds agent.goneLinks: the oldest goes first, a link whose
-// viewers' requests are long over.
-const maxGoneLinks = 1024
-
-// linkGone notes that linkID no longer opens the session (link_gone).
-func (a *agent) linkGone(linkID string) {
-	a.goneMu.Lock()
-	defer a.goneMu.Unlock()
-	if linkID == "" || slices.Contains(a.goneLinks, linkID) {
-		return
-	}
-	if len(a.goneLinks) >= maxGoneLinks {
-		a.goneLinks = slices.Delete(a.goneLinks, 0, 1)
-	}
-	a.goneLinks = append(a.goneLinks, linkID)
-}
-
-// isLinkGone reports whether the server said linkID no longer opens the
-// session.
-func (a *agent) isLinkGone(linkID string) bool {
-	if linkID == "" {
-		return false
-	}
-	a.goneMu.Lock()
-	defer a.goneMu.Unlock()
-	return slices.Contains(a.goneLinks, linkID)
+// connLost is the end of the control connection c: its writer goes, every
+// viewer is let go, and every link the viewers joined through counts as
+// gone (linkCreds.lost) before them, for a link's going is not heard of
+// until the connection is back: what a link's viewer asked for and is
+// still under way is withdrawn rather than finished.
+func (a *agent) connLost(c *websocket.Conn) {
+	a.dropConn(c)
+	a.creds.lost()
+	a.closeAllPeers()
 }
 
 // removePeerFor lets the viewer id go, for why (peer.closeFor).

@@ -590,11 +590,10 @@ func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 // to the host (link_gone), ahead of the leaves of its viewers still
 // attached, and also once they have all left; a link no viewer joined
 // through is never named, nor one twice. A viewer's join carries its link's
-// expiry. One that goes while the host is away is named to its next
-// connection.
+// expiry. (A host away is not told: it counts every link gone as it loses
+// its connection.)
 func TestTheHostIsToldOfTheLinksItsViewersJoinedThroughGoing(t *testing.T) {
-	hub := NewHub(session.NewRegistry(4), nil)
-	hs, conn := register(t, hub)
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
 	next := func() map[string]any {
 		t.Helper()
 		select {
@@ -650,32 +649,6 @@ func TestTheHostIsToldOfTheLinksItsViewersJoinedThroughGoing(t *testing.T) {
 	case o := <-conn.Send:
 		t.Fatalf("a second revoke sent %s", o.Text)
 	default:
-	}
-
-	// A link that goes while the host is away is named to its next
-	// connection, after its registered reply.
-	away, err := hs.AddViewerWith(ViewerOptions{ID: "cccccccccccccccc", Role: session.RoleControl, LinkID: "l3"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	next()
-	hs.RemoveViewer(away)
-	next()
-	hs.HostDisconnected(conn)
-	hs.DisconnectLink("l3")
-	conn2 := NewHostConn()
-	if _, resumed, err := hub.Register(proto.Register{T: proto.HostRegister, Proto: 1, Host: proto.HostInfo{Name: "laptop"}, Session: proto.HostSession{Command: []string{"bash"}, Cols: 80, Rows: 24},
-		Resume: &proto.HostResume{SessionID: hs.Info().ID, Secret: hs.Secret()}}, conn2); err != nil || !resumed {
-		t.Fatalf("resume: %v %v", resumed, err)
-	}
-	select {
-	case o := <-conn2.Send:
-		conn2.Took(o)
-		if !strings.Contains(string(o.Text), `"t":"link_gone","linkId":"l3"`) {
-			t.Fatalf("the next connection got %s", o.Text)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("the next connection was not told of the link")
 	}
 }
 

@@ -511,10 +511,7 @@ type HostedSession struct {
 	// oldest first (at most maxLinksJoined): the host is told when one of
 	// them no longer opens the session (DisconnectLink), whether a viewer
 	// is still attached through it or not. Guarded by mu.
-	linksJoined []string
-	// linksGoneAway are those of linksJoined that went while the host was
-	// away, for the host's next connection (attach). Guarded by mu.
-	linksGoneAway  []string
+	linksJoined    []string
 	disconnectedAt time.Time
 	maxViewers     int
 	// retired says the session left the server's registry (Retire): no
@@ -580,7 +577,9 @@ func (h *HostedSession) joinedThrough(linkID string) {
 // ever joined through the link, the host is told the link went (link_gone)
 // first, ahead of their leaves: what a viewer of the link asked for and is
 // still under way there (one that left once it had sent) is withdrawn. A
-// link no viewer joined through is never named to the host.
+// link no viewer joined through is never named to the host. A host that is
+// away, or whose connection ends before the message reaches it, is not told
+// again: a host counts every link gone as it loses its connection.
 func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true) }
 
 // EndLink closes the viewers attached through linkID, one of the session's
@@ -613,10 +612,6 @@ func (h *HostedSession) closeLink(linkID string, revoked bool) {
 		h.linksJoined = slices.DeleteFunc(h.linksJoined, func(id string) bool { return id == linkID })
 	}
 	conn := h.conn
-	if joined && conn == nil {
-		// The host is away: its next connection is told (attach).
-		h.linksGoneAway = append(h.linksGoneAway, linkID)
-	}
 	h.mu.Unlock()
 	if joined && conn != nil {
 		conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: linkID})

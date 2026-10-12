@@ -271,7 +271,8 @@ typed late. When the viewer goes (its connection or data channel closes, or
 it moves to the relay and attaches again), what waits is dropped, and does
 not count against the 8; the one being typed is finished, unless the
 viewer's link goes (a `viewer_leave` with a reason, a `link_gone`, the link's
-`expiresAt` passing), then or later: it is then withdrawn as on the server,
+`expiresAt` passing, the host's connection to the server lost), then or
+later: it is then withdrawn as on the server,
 never typed if its text was not, and with no carriage return if it was, the
 session's turn held for a person (see `submit`). The viewer's keys and
 editor requests not yet begun are dropped as it goes, whatever the reason. The viewer's `nvim_open`s start apart, at
@@ -359,10 +360,13 @@ its link (revoked, its run forgotten, its run's session no longer named) or
 connection failed, it was too slow); `link_gone`: a link a viewer joined the
 session through (`linkId`, at most 64 bytes) no longer opens it, sent once,
 whether a viewer is still attached through it or not, ahead of the leaves of
-those that are, and to the host's next connection when it went while the host
-was away; no link no viewer joined through is named. The host types nothing
-more of what a viewer asked for once its link went, by any of these, also
-after the viewer left (see the host's queues below). A host reads a reason it
+those that are; no link no viewer joined through is named, and a host away
+is not told again. The host types nothing more of what a viewer asked for
+once its link went, by any of these, also after the viewer left (see the
+host's queues below); and as it loses its connection to the server, which
+would tell it, it counts every link its viewers joined through as gone for
+what they asked for and is still under way (a viewer joining through one
+once it is back starts afresh). A host reads a reason it
 does not know, or one over 16 bytes, as none, and an `expiresAt` it cannot
 read as none; an older server sends none of these, and an older host ignores
 them, as before: each side decodes the other's messages without refusing

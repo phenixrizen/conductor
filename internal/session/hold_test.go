@@ -226,6 +226,50 @@ func TestAHeldTurnKeepsShowingOverOtherReports(t *testing.T) {
 	}
 }
 
+// Holding says when the turn becomes held: a channel asked for before the
+// hold closes as it begins, one asked for while it stands is closed
+// already, and one asked for after it ended waits for the next.
+func TestHoldingClosesAsTheTurnIsHeld(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	owner := ownerOf(t, s)
+	before := s.Holding()
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	select {
+	case <-before:
+		t.Fatal("closed before the hold")
+	default:
+	}
+	untilIdle(t, s)
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	<-done
+	select {
+	case <-before:
+	case <-time.After(5 * time.Second):
+		t.Fatal("not closed as the hold began")
+	}
+	select {
+	case <-s.Holding():
+	default:
+		t.Fatal("not closed while the hold stands")
+	}
+	if err := s.Input(owner, []byte("k")); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	heldCleared(t, s)
+	select {
+	case <-s.Holding():
+		t.Fatal("closed once the hold ended")
+	default:
+	}
+}
+
 // The hold ends with the session: the next submission is told the session
 // ended, the turn is given back and nothing shows.
 func TestAHeldTurnEndsWithTheSession(t *testing.T) {

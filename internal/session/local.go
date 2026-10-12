@@ -237,8 +237,11 @@ type Local struct {
 	submitting chan struct{}
 	// held is closed by the first keys a person types into the terminal
 	// (input) while the session's turn is held for a submission's text
-	// typed without its Enter (holdTyped); nil while it is not. Under mu.
-	held chan struct{}
+	// typed without its Enter (holdTyped); nil while it is not. heldNext is
+	// closed as the next such hold begins, nil until someone asks
+	// (Holding). Under mu.
+	held     chan struct{}
+	heldNext chan struct{}
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.

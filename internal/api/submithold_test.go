@@ -123,7 +123,11 @@ func TestALinksLineTypedBeforeTheLinkIsLetGoWaitsForAPersonsKeys(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		ttl  int
-	}{{"revoked", 0}, {"expired", 1}} {
+		// replyFirst: the owner's reply comes while the link's line is in
+		// its look, before the hold, and waits on the read loop as the hold
+		// begins.
+		replyFirst bool
+	}{{"revoked", 0, false}, {"expired", 1, false}, {"revoked, the reply before the hold", 0, true}} {
 		t.Run(c.name, func(t *testing.T) {
 			e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{drawer})
 			id := e.createSession("drawer")
@@ -147,6 +151,11 @@ func TestALinksLineTypedBeforeTheLinkIsLetGoWaitsForAPersonsKeys(t *testing.T) {
 			guest.expectControl(proto.CtlReady)
 			guest.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "first"}))
 			out.waitFor(t, "first", 5*time.Second) // typed (the terminal echoes it)
+			if c.replyFirst {
+				// It waits for the turn the link's line holds.
+				owner.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "second"}))
+				time.Sleep(200 * time.Millisecond)
+			}
 			if c.ttl == 0 {
 				if resp, _ := e.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
 					t.Fatalf("revoke: %d", resp.StatusCode)
@@ -157,7 +166,9 @@ func TestALinksLineTypedBeforeTheLinkIsLetGoWaitsForAPersonsKeys(t *testing.T) {
 
 			// The owner's reply waits for the session's turn; a second one
 			// of the connection's meanwhile is refused.
-			owner.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "second"}))
+			if !c.replyFirst {
+				owner.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "second"}))
+			}
 			owner.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "third"}))
 			out.absentFor(t, "second", time.Second)
 			waitAttention(t, local, session.AttentionNeedsInput, session.HeldWords)

@@ -389,6 +389,10 @@ func (s *Local) holdTyped() {
 	}
 	held := make(chan struct{})
 	s.held = held
+	if s.heldNext != nil {
+		close(s.heldNext)
+		s.heldNext = nil
+	}
 	s.mu.Unlock()
 	s.log.Info("a submission's text was typed and not entered; the next waits for keys typed in the terminal")
 	s.setAttention(AttentionNeedsInput, HeldWords, SourceSubmit, "", nil, whileHeld)
@@ -432,6 +436,24 @@ func (s *Local) Held() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.held != nil
+}
+
+// Holding returns a channel closed once the session's turn is held for a
+// submission's text typed without its Enter (holdTyped): already closed
+// while it is. Whoever waits on behalf of a connection that may have to
+// type into the terminal to end the hold stops waiting then.
+func (s *Local) Holding() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.held != nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	if s.heldNext == nil {
+		s.heldNext = make(chan struct{})
+	}
+	return s.heldNext
 }
 
 // finished tells how a submission finished in the background ended: logged

@@ -84,6 +84,7 @@ func newSubmitViewerOf(t *testing.T, pause, timeout, inputWait time.Duration, li
 	a.sendHook = func(v any) { out <- v }
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, linkID, "", linkID == "")
 	p.until = until
+	p.cred = a.creds.of(linkID)
 	a.peers[p.id] = p
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
