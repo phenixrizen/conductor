@@ -1609,15 +1609,16 @@ func (s *Local) Stop(ctx context.Context) error {
 
 // DisconnectLink evicts every subscription created through linkID: as
 // revoked, or, once the session has ended (its links go with it), as the
-// session's end, so that a viewer whose status frame the close overtakes
-// still learns which. It ends them under the lock AttachWith registers them
-// under, so a caller that marked the link first (a revoke) misses none: one
-// that attaches after this finds the mark (AttachOptions.Authorize); and
-// nothing broadcast after reaches them. It returns once their transports
-// have closed, which they do together, each on its own goroutine, holding no
-// lock: as long as the slowest takes. That includes the link's clients that
-// had ended already (a slow consumer, an earlier revoke) and whose transport
-// still closes.
+// session's end, which still writes each what was queued for it, the
+// session's last output and its status, before its close
+// (Subscription.owed); a revoked one is written nothing more. It ends them
+// under the lock AttachWith registers them under, so a caller that marked
+// the link first (a revoke) misses none: one that attaches after this finds
+// the mark (AttachOptions.Authorize); and nothing broadcast after reaches
+// them. It returns once their transports have closed, which they do
+// together, each on its own goroutine, holding no lock: as long as the
+// slowest takes. That includes the link's clients that had ended already (a
+// slow consumer, an earlier revoke) and whose transport still closes.
 func (s *Local) DisconnectLink(linkID string) {
 	reason := ErrRevoked
 	var hit []*Subscription

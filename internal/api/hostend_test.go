@@ -1,0 +1,417 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/hostagent"
+	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/signal"
+)
+
+// lastWords is a shell script that waits for the file its first argument
+// names, then prints as many numbered lines as its second says and a final
+// one, and exits: a session whose last output is printed just before it
+// ends.
+const lastWords = `while [ ! -e "$1" ]; do sleep 0.02; done; seq 1 "$2"; printf 'the %s line\n' final`
+
+// holdWrites is a viewerSeam whose writer, once hold is set, waits before
+// each frame until release is closed: what the server queues for its hosted
+// viewers meanwhile stays queued, as it does for a viewer whose network is
+// slow.
+type holdWrites struct {
+	hold    atomic.Bool
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHoldWrites(t *testing.T) *holdWrites {
+	h := &holdWrites{release: make(chan struct{})}
+	t.Cleanup(h.let)
+	return h
+}
+
+func (h *holdWrites) seam() *viewerSeam {
+	return &viewerSeam{write: func() error {
+		if h.hold.Load() {
+			<-h.release
+		}
+		return nil
+	}}
+}
+
+func (h *holdWrites) let() { h.once.Do(func() { close(h.release) }) }
+
+// theEnd is what a viewer read until its connection closed.
+type theEnd struct {
+	output []byte
+	// outputs counts the output frames.
+	outputs int
+	// status is the last status control message's, errCode the error
+	// frame's before the close.
+	status, errCode string
+	// outputAfterError says output came after the error frame.
+	outputAfterError bool
+	closeCode        websocket.StatusCode
+}
+
+// readTheEnd reads v until its connection closes, at most for d.
+func readTheEnd(t *testing.T, v *wsClient, d time.Duration) theEnd {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), d)
+	defer cancel()
+	var end theEnd
+	for {
+		_, data, err := v.c.Read(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				t.Fatalf("the viewer's connection never closed (read %q)", tail(end.output))
+			}
+			end.closeCode = websocket.CloseStatus(err)
+			return end
+		}
+		f, err := proto.Decode(data)
+		if err != nil {
+			continue
+		}
+		switch f.Type {
+		case proto.TypeOutput:
+			end.output = append(end.output, f.Payload...)
+			end.outputs++
+			end.outputAfterError = end.outputAfterError || end.errCode != ""
+		case proto.TypeControl:
+			var m map[string]any
+			_ = json.Unmarshal(f.Payload, &m)
+			switch m["t"] {
+			case proto.CtlStatus:
+				end.status, _ = m["status"].(string)
+			case proto.CtlError:
+				end.errCode, _ = m["code"].(string)
+			}
+		}
+	}
+}
+
+func tail(b []byte) []byte {
+	if len(b) > 80 {
+		return b[len(b)-80:]
+	}
+	return b
+}
+
+// expectTheEnd fails unless end holds the session's output through its
+// last numbered line and its final line, its exit, and then its end as
+// such (4410 session_ended), never a revoke.
+func expectTheEnd(t *testing.T, end theEnd, lines int) {
+	t.Helper()
+	if !bytes.Contains(end.output, []byte("the final line")) {
+		t.Errorf("the viewer never got the session's last output: it ends %q", tail(end.output))
+	}
+	if !bytes.Contains(end.output, fmt.Appendf(nil, "\n%d\r\n", lines)) {
+		t.Errorf("the viewer missed output before the last line: it ends %q", tail(end.output))
+	}
+	if end.status != string(session.StatusExited) {
+		t.Errorf("the viewer was told the status %q, want exited", end.status)
+	}
+	if end.errCode != proto.ErrCodeSessionEnded || end.closeCode != proto.CloseSessionEnded {
+		t.Errorf("the viewer was closed with %q and %d, want %q and %d", end.errCode, end.closeCode, proto.ErrCodeSessionEnded, proto.CloseSessionEnded)
+	}
+	if end.outputAfterError {
+		t.Error("output came after the error frame")
+	}
+}
+
+// linkLetGo waits until the session id of e has ended and no viewer
+// attached through linkID is live on it: the session's end has closed them.
+// It returns when it saw that.
+func linkLetGo(t *testing.T, e *testEnv, id, linkID string) time.Time {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		d, ok := e.srv.registry.Get(id)
+		var live int
+		switch drv := d.(type) {
+		case *signal.HostedSession:
+			live = drv.LinkViewers()[linkID]
+		case *session.Local:
+			live = drv.LinkViewers()[linkID]
+		}
+		if ok && d.Info().Status.Ended() && live == 0 {
+			return time.Now()
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the session's end never closed the link's viewer")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// startHost runs `conductor host` with argv against e, relay only, until the
+// test ends, and returns its session's id.
+func startHost(t *testing.T, e *testEnv, argv []string) string {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	registered := make(chan string, 1)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		_, _ = hostagent.Run(ctx, hostagent.Options{
+			ServerURL: e.http.URL, Token: "test-host-token", Name: "last words", HostName: "laptop", RelayOnly: true,
+			Argv: argv, Dir: e.root, Log: slog.New(slog.DiscardHandler),
+			Registered: func(id, _ string) { registered <- id },
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-ran })
+	select {
+	case id := <-registered:
+		return id
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host never registered")
+	}
+	return ""
+}
+
+// viewLink mints a view link to session id of e and returns its id and token.
+func viewLink(t *testing.T, e *testEnv, id string) (string, string) {
+	t.Helper()
+	resp, out := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "guest"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+	return out["link"].(map[string]any)["id"].(string), out["token"].(string)
+}
+
+// slowDoor serves e on a second listener whose connections have small send
+// buffers, and returns its URL: what a viewer through it does not read soon
+// waits on the server.
+func slowDoor(t *testing.T, e *testEnv) string {
+	t.Helper()
+	hs := httptest.NewUnstartedServer(e.srv.Handler())
+	hs.Listener = smallBufListener{hs.Listener}
+	hs.Start()
+	t.Cleanup(hs.Close)
+	return hs.URL
+}
+
+// dialSlowViewer is dialViewer through base with a small receive buffer, a
+// viewer on a slow network: what it does not read soon waits on the server.
+func dialSlowViewer(t *testing.T, base, sessionID, token string) *wsClient {
+	t.Helper()
+	dialer := &net.Dialer{Control: func(_, _ string, rc syscall.RawConn) error {
+		var serr error
+		_ = rc.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4096) })
+		return serr
+	}}
+	hc := &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(base, "http")+"/ws/sessions/"+sessionID+"?token="+token, &websocket.DialOptions{HTTPClient: hc})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	c.SetReadLimit(proto.MaxFrame)
+	t.Cleanup(func() { c.CloseNow() })
+	return &wsClient{t: t, c: c}
+}
+
+// A hosted session's viewer attached through a share link is given what
+// the session printed before it ended, then the session's end as such:
+// a view link's guest whose frames are still queued on the server when the
+// host reports the end.
+func TestAHostedSessionsLinkViewerGetsItsLastOutputThenItsEnd(t *testing.T) {
+	e := newTestEnv(t, nil)
+	writes := newHoldWrites(t)
+	e.srv.viewerSeam = writes.seam()
+	start := filepath.Join(t.TempDir(), "go")
+	id := startHost(t, e, []string{"/bin/sh", "-c", lastWords, "sh", start, "2000"})
+	linkID, token := viewLink(t, e, id)
+	guest := dialViewer(t, e, id, token)
+	joinRelay(t, guest)
+
+	// From now on the guest's frames stay queued on the server until the
+	// session's end has closed it there.
+	writes.hold.Store(true)
+	if err := os.WriteFile(start, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkLetGo(t, e, id, linkID)
+	writes.let()
+	expectTheEnd(t, readTheEnd(t, guest, 10*time.Second), 2000)
+}
+
+// The same through a rendezvous: a server publishes its session there, and
+// a guest attached at the rendezvous through a link minted there is given
+// the session's last output, then its end: the publishing server's end of
+// its links does not reach the rendezvous ahead of the session's end.
+func TestAPublishedSessionsLinkViewerGetsItsLastOutputThenItsEnd(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	writes := newHoldWrites(t)
+	rendezvous.srv.viewerSeam = writes.seam()
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	start := filepath.Join(t.TempDir(), "go")
+	id := local.launch("sh", []string{"-c", lastWords, "sh", start, "2000"})["id"].(string)
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	hostedID := local.srv.publishedOf(id).ID()
+	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "guest"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+	linkID := out["link"].(map[string]any)["id"].(string)
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	guest := dialViewer(t, rendezvous, hostedID, token)
+	joinRelay(t, guest)
+
+	writes.hold.Store(true)
+	if err := os.WriteFile(start, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkLetGo(t, rendezvous, hostedID, linkID)
+	writes.let()
+	expectTheEnd(t, readTheEnd(t, guest, 10*time.Second), 2000)
+	// The rendezvous no longer opens the link.
+	if resp, _ := rendezvous.do("GET", "/api/join/"+token, token, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("the join of the ended session's link at the rendezvous: %d", resp.StatusCode)
+	}
+}
+
+// A server session's link viewer on a slow network is given what the
+// session printed before it ended, then its end, as a hosted one is: the
+// output still queued for it as its link ends with the session is written
+// first.
+func TestAServerSessionsLinkViewerGetsItsLastOutputThenItsEnd(t *testing.T) {
+	e := newTestEnv(t, nil)
+	door := slowDoor(t, e)
+	start := filepath.Join(t.TempDir(), "go")
+	// About 170 KB: more than the sockets between the server and the guest
+	// hold, less than the guest's queue on the server.
+	id := e.launch("sh", []string{"-c", lastWords, "sh", start, "30000"})["id"].(string)
+	linkID, token := viewLink(t, e, id)
+	guest := dialSlowViewer(t, door, id, token)
+	guest.hello(80, 24)
+	guest.expectControl(proto.CtlReady)
+
+	// The guest reads nothing until the session's end has closed it.
+	if err := os.WriteFile(start, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkLetGo(t, e, id, linkID)
+	expectTheEnd(t, readTheEnd(t, guest, 10*time.Second), 30000)
+}
+
+// A link revoked while its hosted session runs still closes its viewer at
+// once: nothing queued for it is written after the frame being written as
+// the revoke lands, and it is told its link was revoked.
+func TestARevokedHostedLinkViewerIsWrittenNothingMore(t *testing.T) {
+	e := newTestEnv(t, nil)
+	writes := newHoldWrites(t)
+	e.srv.viewerSeam = writes.seam()
+	start := filepath.Join(t.TempDir(), "go")
+	id := startHost(t, e, []string{"/bin/sh", "-c", lastWords + "; sleep 60", "sh", start, "30000"})
+	linkID, token := viewLink(t, e, id)
+	guest := dialViewer(t, e, id, token)
+	joinRelay(t, guest)
+
+	writes.hold.Store(true)
+	if err := os.WriteFile(start, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Some of the output reaches the server and waits there for the guest.
+	time.Sleep(300 * time.Millisecond)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d", resp.StatusCode)
+	}
+	writes.let()
+	end := readTheEnd(t, guest, 10*time.Second)
+	if end.errCode != proto.ErrCodeRevoked || end.closeCode != proto.CloseForbidden {
+		t.Fatalf("the revoked viewer was closed with %q and %d", end.errCode, end.closeCode)
+	}
+	if end.outputs > 1 {
+		t.Fatalf("%d output frames were written to the revoked viewer, the one being written as it was revoked at most", end.outputs)
+	}
+	if d, _ := e.srv.registry.Get(id); d.Info().Status.Ended() {
+		t.Fatal("the session ended: the revoke was not one of a running session")
+	}
+}
+
+// A hosted session's link viewer that reads nothing at all is let go soon
+// after the session's end, whatever it was still owed: the server does not
+// wait on it for as long as a write may take.
+func TestAHostedLinkViewerThatReadsNothingIsLetGoSoonAfterTheEnd(t *testing.T) {
+	e := newTestEnv(t, nil)
+	pumped := make(chan time.Time, 1)
+	e.srv.viewerSeam = &viewerSeam{ended: func() { pumped <- time.Now() }}
+	door := slowDoor(t, e)
+	start := filepath.Join(t.TempDir(), "go")
+	id := startHost(t, e, []string{"/bin/sh", "-c", lastWords, "sh", start, "30000"})
+	linkID, token := viewLink(t, e, id)
+	guest := dialSlowViewer(t, door, id, token)
+	joinRelay(t, guest)
+
+	// The guest reads nothing from now on.
+	if err := os.WriteFile(start, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	closed := linkLetGo(t, e, id, linkID)
+	select {
+	case at := <-pumped:
+		if took := at.Sub(closed); took > closeWait+time.Second {
+			t.Fatalf("the viewer was let go %v after the end closed it, past %v", took, closeWait)
+		}
+	case <-time.After(closeWait + 5*time.Second):
+		t.Fatalf("the viewer was not let go within %v of the end", closeWait+5*time.Second)
+	}
+}
+
+// A server session's link viewer that reads nothing at all holds up the
+// session's end no longer than closeWait: the end's close of its links
+// returns once each link viewer's connection is closed, or cut.
+func TestAServerLinkViewerThatReadsNothingHoldsTheEndBriefly(t *testing.T) {
+	e := newTestEnv(t, nil)
+	door := slowDoor(t, e)
+	start := filepath.Join(t.TempDir(), "go")
+	id := e.launch("sh", []string{"-c", lastWords, "sh", start, "30000"})["id"].(string)
+	linkID, token := viewLink(t, e, id)
+	guest := dialSlowViewer(t, door, id, token)
+	guest.hello(80, 24)
+	guest.expectControl(proto.CtlReady)
+
+	// The guest reads nothing from now on.
+	if err := os.WriteFile(start, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	closed := linkLetGo(t, e, id, linkID)
+	for len(e.srv.links.ListBySession(id)) != 0 {
+		if took := time.Since(closed); took > closeWait+3*time.Second {
+			t.Fatalf("the session's end still waits on the viewer %v after closing it", took)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if took := time.Since(closed); took > closeWait+time.Second {
+		t.Fatalf("the session's end waited %v on the viewer, past %v", took, closeWait)
+	}
+}

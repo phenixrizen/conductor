@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -113,7 +114,8 @@ func (s *Subscription) Info() proto.ViewerInfo {
 // run is the subscription's own goroutine: it hands the queued frames to the
 // sink, in order, until the subscription ends, and then closes the sink, once,
 // with the reason, which is set before done is closed. The frames still queued
-// then are dropped, and nothing reaches the sink after its Close.
+// then are dropped, but for a subscription the session's end closed (owed),
+// and nothing reaches the sink after its Close.
 func (s *Subscription) run() {
 	defer close(s.closed)
 	defer func() { s.sink.Close(s.reason) }()
@@ -122,11 +124,13 @@ func (s *Subscription) run() {
 		// at random between the two.
 		select {
 		case <-s.done:
+			s.owed()
 			return
 		default:
 		}
 		select {
 		case <-s.done:
+			s.owed()
 			return
 		case frame := <-s.queue:
 			s.queued.Add(-int64(len(frame)))
@@ -136,6 +140,33 @@ func (s *Subscription) run() {
 				s.closeWith(err)
 				return
 			}
+		}
+	}
+}
+
+// owed writes a subscription the session's end closed (ErrSessionEnded: its
+// link ended with it, or it left the server) the frames still queued for it,
+// in order, up to the first that cannot be written: the session's last
+// output, its final status among them, which its viewer is given before it
+// is told the session ended. Nothing is queued after the end (send). A
+// subscription that ended for any other reason (revoked, a slow consumer,
+// a viewer that left) is owed nothing. Its transport bounds the wait: a
+// server's connection is cut when it reads too little (api's closeWait).
+func (s *Subscription) owed() {
+	if !errors.Is(s.reason, ErrSessionEnded) {
+		return
+	}
+	for {
+		select {
+		case frame := <-s.queue:
+			s.queued.Add(-int64(len(frame)))
+			err := s.sink.WriteFrame(frame)
+			s.unsent.Add(-1)
+			if err != nil {
+				return
+			}
+		default:
+			return
 		}
 	}
 }

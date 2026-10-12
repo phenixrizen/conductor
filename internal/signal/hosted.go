@@ -372,15 +372,19 @@ func (v *Viewer) halt() { v.stopOnce.Do(func() { close(v.stop) }) }
 // serves it lets it go, having read what the connection still held.
 //
 // What becomes of the frames still queued when the viewer is closed depends on
-// the reason. They are dropped when the link was revoked, when the viewer's own
-// queue overflowed (ErrSlowViewer) and when the viewer left (a nil reason). For
-// every other reason, the host going away, asking for the close or reporting an
-// error for the viewer, they are written first: at most as many as the queue
-// holds, and up to the first frame that cannot be written. They are the host's
-// last words, the session's final status among them, and the viewer would
-// otherwise be told the host is gone without being told why. A viewer that the
-// host evicted as too slow (the host asks for the close) is in that second
-// group and is drained too.
+// the reason. They are dropped when the link was revoked (or expired), when the
+// viewer's own queue overflowed (ErrSlowViewer) and when the viewer left (a nil
+// reason). For every other reason, the session's end (its links end with it,
+// DisconnectLink, as does its leaving the server, Retire), the host going
+// away, asking for the close or reporting an error for the viewer, they are
+// written first: at most as many as the queue holds, and up to the first frame
+// that cannot be written. They are the session's last output, its final status
+// among them, which the host relayed before it reported the end, and the
+// viewer would otherwise be told the session ended, or the host is gone,
+// without what it printed last. A viewer that the host evicted as too slow
+// (the host asks for the close) is in that second group and is drained too.
+// Whoever serves the viewer bounds how long that may take: a viewer that reads
+// too little is cut off (the sink's write fails, and Pump ends).
 //
 // The close is looked at before each frame, but it does not stop a frame that
 // is being written, or one that is picked just as the close lands: a revoked
@@ -432,8 +436,9 @@ func (v *Viewer) finish(sink session.Sink) {
 }
 
 // framesOwed reports whether a viewer closed for reason is still sent the frames
-// queued for it: it is unless the link was revoked, the viewer's own queue
-// overflowed or the viewer left.
+// queued for it: it is unless the link was revoked (or expired), the viewer's
+// own queue overflowed or the viewer left. A viewer the session's end closed
+// (session.ErrSessionEnded) is.
 func framesOwed(reason error) bool {
 	switch {
 	case reason == nil, errors.Is(reason, session.ErrRevoked), errors.Is(reason, ErrSlowViewer):
@@ -523,12 +528,21 @@ func (h *HostedSession) Stop(ctx context.Context) error {
 	return nil
 }
 
-// DisconnectLink closes viewers attached through linkID. It finds them
-// under the lock AddViewerWith registers them under, so a caller that
-// marked the link first (a revoke) misses none: a viewer added after this
-// finds the mark (ViewerOptions.Authorize).
+// DisconnectLink closes the viewers attached through linkID: as revoked,
+// or, once the session has ended (its links go with it), as the session's
+// end, as a server session's are (session.Local.DisconnectLink). A viewer
+// closed as the session's end is still written what was queued for it, the
+// session's last output, and then told the session ended (Pump); one
+// closed as revoked is written nothing more. It finds them under the lock
+// AddViewerWith registers them under, so a caller that marked the link
+// first (a revoke) misses none: a viewer added after this finds the mark
+// (ViewerOptions.Authorize).
 func (h *HostedSession) DisconnectLink(linkID string) {
+	reason := session.ErrRevoked
 	h.mu.Lock()
+	if h.info.Status.Ended() {
+		reason = session.ErrSessionEnded
+	}
 	var hit []*Viewer
 	for _, v := range h.viewers {
 		if v.LinkID == linkID {
@@ -537,7 +551,7 @@ func (h *HostedSession) DisconnectLink(linkID string) {
 	}
 	h.mu.Unlock()
 	for _, v := range hit {
-		v.close(session.ErrRevoked)
+		v.close(reason)
 	}
 }
 

@@ -93,6 +93,10 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local 
 		return
 	}
 	defer local.Detach(sub)
+	// Once the client is closed (the session's end, a revoke, its leaving),
+	// it is written what it is owed, its error and its close within
+	// closeWait, or cut off.
+	go closeLate(c, sub.Done(), sub.Closed())
 	go keepalive(sink.ctx, c, s.pingEvery)
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
@@ -459,6 +463,9 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 		}
 		endWaits()
 	}()
+	// Once closed, the viewer is written what it is owed, its error and its
+	// close within closeWait, or cut off.
+	go closeLate(c, v.Done(), pumped)
 	// A failed connection is left open for the read loop, the writer having
 	// given up on it: it is closed once the read loop is done. (A connection
 	// that has not failed is closed by the writer as it ends, which letting
@@ -574,6 +581,34 @@ func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *si
 // once it has failed: what the viewer sent before it closed is in the
 // socket already.
 const drainTimeout = 2 * time.Second
+
+// closeWait bounds how long the connection of a viewer the session closed
+// is kept while it is written what it is still owed (at the session's end,
+// or its host's going, the frames queued for it: its last output) and then
+// its error and its close: past it the connection is cut (closeLate). A
+// viewer that reads that little is let go, whatever it was owed; a write
+// that waits on it is never left to its own time (writeTimeout). A hosted
+// viewer's queue holds at most 16 MiB (a server session's 1 MiB), which a
+// viewer on a fast connection takes in a second or so.
+const closeWait = 5 * time.Second
+
+// closeLate cuts c unless whoever writes it has closed it (finished)
+// within closeWait of its client's close (closed). It returns once one of
+// the two has.
+func closeLate(c *websocket.Conn, closed, finished <-chan struct{}) {
+	select {
+	case <-finished:
+		return
+	case <-closed:
+	}
+	t := time.NewTimer(closeWait)
+	defer t.Stop()
+	select {
+	case <-finished:
+	case <-t.C:
+		c.CloseNow()
+	}
+}
 
 // nvimOpenTimeout bounds the start of an editor (Neovim loading a config).
 const nvimOpenTimeout = 15 * time.Second

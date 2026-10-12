@@ -646,13 +646,15 @@ func (s *pumpSink) written() int {
 	return len(s.frames)
 }
 
-// A viewer closed because its host went away, or asked for it, still gets the
-// frames that were queued before: the host's last words, the session's final
-// status among them. Pump used to choose between the frames and the close at
-// random, and the viewer was told the host was gone without why.
+// A viewer closed because its host went away, or asked for it, or because
+// the session ended, still gets the frames that were queued before: the
+// host's last words, the session's last output and final status among
+// them. Pump used to choose between the frames and the close at random, and
+// the viewer was told the host was gone without why.
 func TestViewerPumpDeliversWhatWasQueuedBeforeTheHostClosedIt(t *testing.T) {
 	for name, reason := range map[string]error{
 		"host disconnected": ErrHostGone,
+		"the session ended": session.ErrSessionEnded,
 		"host closed it, also when it evicted it as too slow": ErrViewerGone,
 		"host reported an error for it":                       errors.New("webrtc_failed"),
 	} {

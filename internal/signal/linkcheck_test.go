@@ -139,6 +139,46 @@ func TestHostedRetireClosesEveryViewerAndRefusesMore(t *testing.T) {
 	hs.RemoveViewer(v)
 }
 
+// A link's viewers are closed as revoked while the hosted session runs, and
+// written nothing more; once the host has reported the session's end, as
+// the session's end, as a server session's are, and written what was
+// queued for them first, then closed with that reason.
+func TestHostedDisconnectLinkIsARevokeOrTheSessionsEnd(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	drainHost(t, conn)
+	queued := func(id string) *Viewer {
+		t.Helper()
+		v, err := hs.AddViewer(id, session.RoleView, "l1", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range []byte("abc") {
+			v.push([]byte{proto.TypeOutput, b})
+		}
+		return v
+	}
+
+	running := queued("0123456789abcdef")
+	hs.DisconnectLink("l1")
+	sink := &pumpSink{}
+	running.Pump(sink)
+	if !errors.Is(sink.reason, session.ErrRevoked) || sink.written() != 0 {
+		t.Fatalf("a running session's link: closed with %v after %d frames", sink.reason, sink.written())
+	}
+	hs.RemoveViewer(running)
+
+	ended := queued("fedcba9876543210")
+	hs.HostStatus(session.StatusExited, nil)
+	hs.DisconnectLink("l1")
+	sink = &pumpSink{}
+	ended.Pump(sink)
+	if !errors.Is(sink.reason, session.ErrSessionEnded) || sink.written() != 3 {
+		t.Fatalf("an ended session's link: closed with %v after %d of 3 frames", sink.reason, sink.written())
+	}
+	hs.RemoveViewer(ended)
+}
+
 // A grant that lapses closes the viewer as it lapses, with ErrExpired, and
 // the frames still queued for it are dropped as on a revoke.
 func TestHostedViewerGrantUntil(t *testing.T) {

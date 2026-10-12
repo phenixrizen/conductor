@@ -479,6 +479,109 @@ func TestNothingIsWrittenToARevokedViewer(t *testing.T) {
 	}
 }
 
+// endSink holds each write, once gated, until the gate opens, and keeps the
+// frames it was written, the reason it was closed with, and how many writes
+// came after its Close.
+type endSink struct {
+	gate    chan struct{}
+	gated   atomic.Bool
+	waiting atomic.Bool
+
+	mu         sync.Mutex
+	frames     [][]byte
+	closed     bool
+	reason     error
+	afterClose int
+}
+
+func (s *endSink) WriteFrame(f []byte) error {
+	if s.gated.Load() {
+		s.waiting.Store(true)
+		<-s.gate
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		s.afterClose++
+	}
+	s.frames = append(s.frames, f)
+	return nil
+}
+
+func (s *endSink) Close(reason error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed, s.reason = true, reason
+}
+
+// A link's viewer that the session's end closes (its link ends with it) is
+// still written what was queued for it, in order, the session's status
+// after its output, before its transport's Close, which says the session
+// ended; a revoked one is not (TestNothingIsWrittenToARevokedViewer).
+func TestTheSessionsEndWritesALinksViewerWhatWasQueued(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	sink := &endSink{gate: make(chan struct{})}
+	sub, err := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "L", Name: "v"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(time.Second, func() bool { return s.hub.Drained() }) {
+		t.Fatal("the attach frames were never written")
+	}
+	sink.mu.Lock()
+	attached := len(sink.frames)
+	sink.mu.Unlock()
+	sink.gated.Store(true)
+	for i := range 50 {
+		s.Send(sub, proto.Encode(proto.TypeOutput, fmt.Appendf(nil, "queued %d", i)))
+	}
+	if !waitFor(time.Second, sink.waiting.Load) {
+		t.Fatal("no write began")
+	}
+	p.exit()
+	select {
+	case <-s.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session never ended")
+	}
+	ended := make(chan struct{})
+	go func() { s.DisconnectLink("L"); close(ended) }()
+	if !waitFor(time.Second, func() bool { return sub.Reason() != nil }) {
+		t.Fatal("the viewer was not closed")
+	}
+	if !errors.Is(sub.Reason(), ErrSessionEnded) {
+		t.Fatalf("closed for %v", sub.Reason())
+	}
+	close(sink.gate)
+	select {
+	case <-ended:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the end's close of the link never returned")
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if !sink.closed || !errors.Is(sink.reason, ErrSessionEnded) || sink.afterClose != 0 {
+		t.Fatalf("closed %v with %v, %d writes after", sink.closed, sink.reason, sink.afterClose)
+	}
+	got := sink.frames[attached:]
+	if len(got) < 51 {
+		t.Fatalf("%d frames written after the attach, want the 50 queued and the status", len(got))
+	}
+	for i := range 50 {
+		if f, err := proto.Decode(got[i]); err != nil || string(f.Payload) != fmt.Sprintf("queued %d", i) {
+			t.Fatalf("frame %d is %q, want queued %d", i, got[i], i)
+		}
+	}
+	status := false
+	for _, f := range got[50:] {
+		m := decodeControl(t, f)
+		status = status || (m["t"] == proto.CtlStatus && m["status"] == string(StatusExited))
+	}
+	if !status {
+		t.Fatal("the viewer was not written the session's status after its last output")
+	}
+}
+
 // A client that takes over another's connection (a viewer moving to the
 // relay) takes its slot while the old transport still closes; a client that
 // replaces nobody, or names one still attached, does not.
