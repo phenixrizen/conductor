@@ -499,6 +499,56 @@ func TestRunChatReachesEveryMembersViewers(t *testing.T) {
 	}
 }
 
+// A run message posted on one member while a viewer attaches to another,
+// once the viewer has been sent the run's replay and before it is on its
+// session's hub, still reaches the viewer: in the replay or live, never
+// neither. The post is let wait up to 100 ms for the attach: a room that
+// takes it meanwhile sends it where the viewer is not yet.
+func TestARunMessagePostedAsAViewerAttachesReachesIt(t *testing.T) {
+	room := NewChatRoom(nil, nil)
+	a, _ := newLocalWith(t, Options{RunChat: room})
+	b, _ := newLocalWith(t, Options{RunChat: room})
+	room.Join(a, "core")
+	room.Join(b, "tests")
+	nate, err := a.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted := make(chan error, 1)
+	roomReplayed = func() {
+		roomReplayed = nil
+		go func() {
+			_, err := a.Chat(nate, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "meanwhile"})
+			posted <- err
+		}()
+		select {
+		case err := <-posted:
+			posted <- err
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Cleanup(func() { roomReplayed = nil })
+	late := newChanSink(false)
+	if _, err := b.AttachWith(AttachOptions{Role: RoleControl, Name: "Jane", Cols: 80, Rows: 24}, late); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-posted; err != nil {
+		t.Fatal(err)
+	}
+	if waitControl(late, func(m map[string]any) bool {
+		if m["t"] == proto.CtlChat {
+			return m["text"] == "meanwhile"
+		}
+		msgs, _ := m["messages"].([]any)
+		return m["t"] == proto.CtlChatHistory && slices.ContainsFunc(msgs, func(v any) bool {
+			mm, _ := v.(map[string]any)
+			return mm["text"] == "meanwhile"
+		})
+	}) == nil {
+		t.Fatalf("the viewer never got the message posted as it attached (%d frames)", late.count())
+	}
+}
+
 // The run's join and leave lines count a person once across its members,
 // and a quiet connection (a run page's own) joins the run's chat but is no
 // viewer of the session: no scrollback or output, not counted, no line.
