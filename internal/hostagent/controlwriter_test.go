@@ -249,7 +249,13 @@ func TestASocketThatTakesNothingForTheStallIsGivenUp(t *testing.T) {
 	_, c, pc := dialHeld(t, 300*time.Millisecond)
 	w := newControlWriter(c, pc)
 	t.Cleanup(w.stop)
-	if err := w.sendRelay(bytes.Repeat([]byte("b"), 1<<20), time.Second, nil); err != nil {
+	// A megabyte backs the socket up. It goes to the paced socket in one
+	// write, all of it kept before the socket is fed any, so the stall can
+	// only begin once it is there: through the library a megabyte goes a
+	// few kilobytes at a time, which on a loaded machine takes as long as
+	// the stall, and the socket was given up under it. The server reads
+	// nothing, so the bytes need not make a message.
+	if _, err := pc.Write(bytes.Repeat([]byte("b"), 1<<20)); err != nil {
 		t.Fatal(err)
 	}
 	waited := make(chan error, 1)
