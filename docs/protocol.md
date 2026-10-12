@@ -504,7 +504,12 @@ the `done` ended asks nothing more, and Codex rings the bell it is asked for as
 its turn ends, after or before its notify reports `done`. A `done` that
 changes nothing shown (a turn that ends with the last one's words) ends its
 turn too; after the next Enter, or any change of state, a bell asks again.
-Bursts are limited to one change per 500 ms. Successful input from a
+Bursts are limited to one change per 500 ms: a bell or notification that
+changes something starts the 500 ms, one that changes nothing (a turn's own
+after its `done`, a bare BEL at a wait that stays) does not, and the Enter
+written after a `done` starts them again, so the next turn's first bell asks
+however soon it follows the last turn's (an Enter with no `done` before it,
+an answer, keeps them). Successful input from a
 `control` client clears the `needs_input` state that was showing when the input
 began. One raised while the input was being written (a process that answers at
 once, an echo that rings the bell) is left for the next input. An input that is

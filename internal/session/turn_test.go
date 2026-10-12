@@ -114,3 +114,134 @@ func TestANewTurnsBellIsAQuestion(t *testing.T) {
 		t.Fatalf("a bell after a working report: %+v", a)
 	}
 }
+
+// flushed returns once the session has scanned everything written to p
+// before it: the pipe hands a write over only as the pump reads it, and the
+// pump reads again only once it has looked at the chunk before.
+func flushed(p *fakeProc) { p.outW.Write([]byte{0}) }
+
+// isBell reports whether the session waits on the terminal bell.
+func isBell(a Attention) bool { return a.State == AttentionNeedsInput && a.Source == SourceBell }
+
+// A new turn's bell asks however soon it rings after the last turn's
+// (round 15's todo): the bell that ended a turn and changed nothing does
+// not start the pace, and the Enter after a done begins a turn whose bells
+// are paced on their own. Both orders of Codex's done and bell: the bell
+// after the done (kept as the turn's own), and the bell before it (which
+// asked, and which the done then replaced).
+func TestANewTurnsBellSoonAfterTheLastTurnsAsks(t *testing.T) {
+	for name, bellFirst := range map[string]bool{"the bell after the done": false, "the bell before the done": true} {
+		t.Run(name, func(t *testing.T) { newTurnsBell(t, bellFirst) })
+	}
+}
+
+// newTurnsBell is one order of TestANewTurnsBellSoonAfterTheLastTurnsAsks.
+func newTurnsBell(t *testing.T, bellFirst bool) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastTurns := time.Now() // no later than the last turn's bell
+	if bellFirst {
+		p.outW.Write([]byte("\a"))
+		waitAttention(t, s, isBell)
+	}
+	if err := s.TrySetAttentionFull(AttentionDone, "HTTP/2 200", SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !bellFirst {
+		p.outW.Write([]byte("\a"))
+		flushed(p)
+		if a := s.Info().Attention; a.State != AttentionDone {
+			t.Fatalf("the turn's own bell undid its done: %+v", a)
+		}
+	}
+	// The next prompt's Enter, and the new turn's bell at once.
+	if err := s.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write([]byte("\a"))
+	if a := waitAttention(t, s, isBell); a.Message != "terminal bell" {
+		t.Fatalf("the new turn's bell %+v", a)
+	}
+	if gap := time.Since(lastTurns); gap >= bellPace {
+		t.Logf("the turns' bells were %v apart, not within the pace: the case was not tried", gap)
+	}
+}
+
+// withinPace runs try until it reports that what it checked happened
+// within bellPace of the change that started the pace: a machine slow
+// enough to let the pace run out leaves nothing to check, and is tried
+// again, three times at most.
+func withinPace(t *testing.T, try func() bool) {
+	t.Helper()
+	for range 3 {
+		if try() {
+			return
+		}
+	}
+	t.Fatal("never within the pace: the machine is too slow to tell")
+}
+
+// The pace's purpose stands: within one turn a burst of bells makes one
+// change per bellPace, whatever comes between (a working report, an
+// answer with no done before it), and the first bell past it asks again.
+func TestABurstOfBellsMakesOneChange(t *testing.T) {
+	withinPace(t, func() bool {
+		s, p := newLocalWith(t, quiet(Options{}))
+		p.outW.Write([]byte("\a"))
+		first := waitAttention(t, s, isBell)
+		if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		p.outW.Write([]byte("\a\a\x1b]9;and more\a"))
+		flushed(p)
+		a := s.Info().Attention
+		if time.Since(*first.Since) >= bellPace {
+			return false
+		}
+		if a.State != AttentionWorking {
+			t.Fatalf("a bell within the pace changed the attention: %+v", a)
+		}
+		var bells int
+		for _, e := range s.Activity() {
+			if e.Type == ActivityAttention && e.Message == "terminal bell" {
+				bells++
+			}
+		}
+		if bells != 1 {
+			t.Fatalf("the burst made %d changes", bells)
+		}
+		// Past the pace the next bell asks.
+		time.Sleep(time.Until(first.Since.Add(bellPace)))
+		p.outW.Write([]byte("\a"))
+		waitAttention(t, s, isBell)
+		return true
+	})
+	withinPace(t, func() bool {
+		s, p := newLocalWith(t, quiet(Options{}))
+		sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.outW.Write([]byte("\a"))
+		first := waitAttention(t, s, isBell)
+		// An Enter that answers the bell, no done before it: the same turn.
+		if err := s.Input(sub, []byte("\r")); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+		p.outW.Write([]byte("\a"))
+		flushed(p)
+		a := s.Info().Attention
+		if time.Since(*first.Since) >= bellPace {
+			return false
+		}
+		if a.State != AttentionNone {
+			t.Fatalf("the burst's tail asked again after its answer: %+v", a)
+		}
+		return true
+	})
+}
