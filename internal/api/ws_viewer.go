@@ -523,7 +523,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 				case errors.Is(err, session.ErrReadOnly):
 					_ = sink.WriteFrame(proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))
 				case errors.Is(err, signal.ErrHostGone):
-					hostGone(sink, pumped)
+					hostGone(sink, pumped, s.hostGoneWait)
 					return
 				case cut(err):
 					return
@@ -546,7 +546,7 @@ func (s *Server) handleViewerSignal(sink *wsSink, pumped <-chan struct{}, hs *si
 	fail := func(err error) bool {
 		switch {
 		case errors.Is(err, signal.ErrHostGone):
-			hostGone(sink, pumped)
+			hostGone(sink, pumped, s.hostGoneWait)
 			return false
 		case cut(err):
 			return false

@@ -998,6 +998,11 @@ func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
 	for _, typing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("typing=%v", typing), func(t *testing.T) {
 			e := newTestEnv(t, nil)
+			// The typing reader waits for the drain at most writeTimeout and
+			// then closes under it, as for a viewer that reads slowly: this
+			// one reads 16 MiB a frame at a time, which a loaded machine
+			// takes longer than that to do.
+			e.srv.hostGoneWait = 2 * time.Minute
 			host := dialFakeHost(t, e, "hosted-agent-token")
 			events := e.sse(t)
 			v := dialViewer(t, e, host.sessionID, adminToken)
