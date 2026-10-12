@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -116,8 +117,20 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 	}
 	reader := dialViewer(t, e, id, adminToken)
 	joinRelay(t, reader)
-	stalled := dialViewer(t, e, id, adminToken)
+	// The stalled viewer comes through a link of its own: the server's count
+	// of the link's viewers says when it is let go, whatever becomes of the
+	// reader by then.
+	resp, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, lo)
+	}
+	stalledLink := lo["link"].(map[string]any)["id"].(string)
+	stalled := dialViewer(t, e, id, lo["token"].(string))
 	joinRelay(t, stalled)
+	hosted, ok := e.srv.hosts.Get(id)
+	if !ok {
+		t.Fatal("no hosted session")
+	}
 
 	var output atomic.Int64
 	readerEnded := readAll(ctx, reader, &output)
@@ -139,6 +152,19 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 			last = n
 		case <-watch:
 			watching = false
+		}
+	}
+	if n := strings.Count(logs.String(), "host disconnected"); n != 0 {
+		t.Fatalf("the host's connection closed %d times", n)
+	}
+	// The server lets the stalled viewer go once its socket is full and a
+	// write to it has waited its time, or its queue is past its bound: the
+	// slower the output comes, the later, and on a loaded machine (where it
+	// comes at a third of an idle one's) past the watch. Read before then,
+	// its socket would empty, and it might never be let go.
+	for giveUp := time.Now().Add(2 * time.Minute); hosted.LinkViewers()[stalledLink] != 0; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(giveUp) {
+			t.Fatalf("the stalled viewer was never let go (%d bytes of output to the reader)", output.Load())
 		}
 	}
 	if n := strings.Count(logs.String(), "host disconnected"); n != 0 {
