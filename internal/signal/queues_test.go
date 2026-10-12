@@ -61,6 +61,25 @@ func waitQueued(t *testing.T, conn *HostConn, n int) {
 	}
 }
 
+// waitInLine waits until n of the viewers' messages wait in line for room in
+// conn's queue.
+func waitInLine(t *testing.T, conn *HostConn, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn.mu.Lock()
+		waiting := len(conn.waiting)
+		conn.mu.Unlock()
+		if waiting == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d messages wait for room, want %d", waiting, n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A viewer that sends more than the host reads fills the viewers' share of
 // the host's queue and then waits for room: the queue's bytes never pass
 // their bound, the host's connection stays open, and what the writer takes
@@ -122,6 +141,10 @@ func TestServerMessagesKeepTheirRoomInTheHostQueue(t *testing.T) {
 	v := relayedViewer(t, hs, conn, "0123456789abcdef")
 	sent := fillFromViewer(hs, v, 2*hostQueueBytes)
 	waitQueued(t, conn, hostViewerBytes-(1+proto.ViewerIDLen+1+proto.MaxInput))
+	// The share has no room for another frame, though it has for a join: it
+	// is full once the viewer's next frame waits in line, which a join
+	// then waits behind.
+	waitInLine(t, conn, 1)
 	before := len(conn.Send)
 	if err := hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: "r1"}); err != nil {
 		t.Fatalf("the server's answer to its host: %v", err)
