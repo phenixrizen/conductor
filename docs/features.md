@@ -967,8 +967,11 @@ request each from main.
     and a server that reads slowly (a switchyard's bound on what open hosts
     relay) never closes the connection.
   - **Files** (#119). A deny entry not on disk is matched by its path; a
-    server session refuses what other Conductors on the machine keep (the
-    desktop app names its own directory, `CONDUCTOR_DESKTOP_DIR`); a view
+    server session also refuses other Conductors' files at their usual
+    places on the machine (`~/.conductor`, the desktop app's directory, its
+    settings and the data directory they name, which the app passes as
+    `CONDUCTOR_DESKTOP_DIR`), not every directory another server could be
+    configured with; a view
     link reads nothing of `.git` nor git's settings and credential files; the
     Files status lists the folder's own working tree; a show reads the path
     from the commit its revision names.
@@ -976,9 +979,10 @@ request each from main.
     switchyard, which takes only newer ones; a failed sync is tried again.
   - **Writes to a program** (#122). Every write to a session's program
     (keys, a submission's paste and Enter, a crew's prompt) goes through one
-    writer per session, in order, each with 10 s to be taken: a program that
-    stops reading fails its sender alone, and the next writes are refused at
-    once. On a host, a viewer's keys and editor requests leave the frame loop
+    writer per session, in order. A viewer's keys, a submission and a crew's
+    prompt each have 10 s to be taken: a program that stops reading fails
+    its sender alone, and the next such writes are refused at once. The
+    host's own terminal keeps waiting for its program, as a terminal does. On a host, a viewer's keys and editor requests leave the frame loop
     for bounded queues. An editor's Neovim keeps to its request's time and is
     registered only while its viewer is attached.
 
