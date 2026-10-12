@@ -14,6 +14,9 @@ const (
 	CtlPing    = "ping"
 	CtlFileGet = "file_get"
 	CtlSubmit  = "submit"
+	// CtlAnswer replies to the question a client was shown (Answer);
+	// controllers only, and only to an owner whose welcome says Answer.
+	CtlAnswer = "answer"
 	// CtlChat is a post from a viewer and, owner -> client, one message of the chat (ChatPost, ChatMessage).
 	CtlChat = "chat"
 	// CtlChatSend types a kept chat message into the agent (ChatSend); controllers only.
@@ -31,6 +34,8 @@ const (
 	CtlError       = "error"
 	CtlPong        = "pong"
 	CtlChatHistory = "chat_history"
+	// CtlAnswerOK says the owner took an answer (AnswerOK).
+	CtlAnswerOK = "answer_ok"
 )
 
 // Error codes carried by CtlError.
@@ -49,6 +54,10 @@ const (
 	// ErrCodeNotSent answers a chat_send whose text could not be typed into
 	// the member it names (a run's chat): the message says why.
 	ErrCodeNotSent = "not_sent"
+	// ErrCodeQuestionAnswered answers an answer whose question is no longer
+	// the one waiting (answered by another reply, or gone): nothing was
+	// written.
+	ErrCodeQuestionAnswered = "question_answered"
 )
 
 // Transport labels reported in Welcome.
@@ -121,6 +130,75 @@ type Submit struct {
 
 // MaxSubmit bounds the text of a submit message, in bytes: a reply box's line.
 const MaxSubmit = 4096
+
+// Answer replies to the question the client was shown (client -> owner,
+// controllers only), sent only to an owner whose welcome says Answer (an
+// older one closes the connection on a message it does not know). Question
+// is that question's id, the attention's ID as the client had it. Exactly
+// one of Input and Text is set: Input is a choice's keys, written as INPUT
+// is; Text a line, submitted as a submit's is. The owner writes nothing
+// unless Question is still the one waiting as the keys (or the line's text)
+// are written and no earlier write answered it; it answers ReqID, when
+// given, with AnswerOK once they are written (a line once accepted), or
+// with an ErrorMsg naming it (ErrCodeQuestionAnswered for a question no
+// longer waiting).
+type Answer struct {
+	T        string `json:"t"`
+	ReqID    string `json:"reqId,omitempty"`
+	Question string `json:"question"`
+	Input    string `json:"input,omitempty"`
+	Text     string `json:"text,omitempty"`
+}
+
+// The bounds of an answer: its question's id and its request's, in bytes;
+// its Input, a choice's keys (session.MaxOptionInput); its Text, MaxSubmit.
+const (
+	MaxQuestionID  = 32
+	MaxAnswerReqID = 32
+	MaxAnswerInput = 48
+)
+
+// Valid reports whether a is within its bounds: a question named, an id and
+// a request id of printable ASCII within theirs, and exactly one of Input
+// (at most MaxAnswerInput bytes) and Text (at most MaxSubmit).
+func (a Answer) Valid() bool {
+	if !ValidQuestionID(a.Question) || !ValidAnswerReqID(a.ReqID) {
+		return false
+	}
+	if (a.Input == "") == (a.Text == "") {
+		return false
+	}
+	return len(a.Input) <= MaxAnswerInput && len(a.Text) <= MaxSubmit
+}
+
+// ValidQuestionID reports whether id can be a question's id: 1 to
+// MaxQuestionID bytes of printable ASCII.
+func ValidQuestionID(id string) bool {
+	return id != "" && len(id) <= MaxQuestionID && printable(id)
+}
+
+// ValidAnswerReqID reports whether id can be an answer's request id: none,
+// or at most MaxAnswerReqID bytes of printable ASCII.
+func ValidAnswerReqID(id string) bool {
+	return len(id) <= MaxAnswerReqID && printable(id)
+}
+
+// printable reports whether s is printable ASCII, no space.
+func printable(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] >= 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// AnswerOK says the owner took the answer RequestID (owner -> client): its
+// keys are written, or its line accepted.
+type AnswerOK struct {
+	T         string `json:"t"`
+	RequestID string `json:"requestId"`
+}
 
 // Chat beside the terminal (docs/protocol.md, Chat): the people on a session
 // talk to each other over the connection the terminal takes. A viewer posts
@@ -344,6 +422,10 @@ type Welcome struct {
 	// RunChat says the session is a run's member with a run chat: `chat` and
 	// `chat_send` take scope `run`, and `chat_roster` arrives.
 	RunChat bool `json:"runChat,omitempty"`
+	// Answer says the owner takes `answer` and refuses one whose question
+	// is no longer the one waiting: a client sends none to an owner whose
+	// welcome lacks it, and replies with INPUT and `submit` as before.
+	Answer bool `json:"answer,omitempty"`
 	// Cwd is the session's working directory on the machine that runs it,
 	// from the owner itself, to a viewer whose role may read files: the root
 	// of a guest's Files pane. A switchyard lists a published session with
@@ -397,8 +479,9 @@ type ErrorMsg struct {
 	T       string `json:"t"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
-	// RequestID names the host's link request an error answers (host
-	// control connection), empty otherwise.
+	// RequestID names the request an error answers: a host's link request
+	// (host control connection); a viewer's chat post (its nonce),
+	// chat_send (its ref) or answer (its reqId). Empty otherwise.
 	RequestID string `json:"requestId,omitempty"`
 }
 
@@ -415,7 +498,10 @@ type AttentionOption struct {
 }
 
 // Attention reports whether the agent is waiting for a human. Kind and
-// Options describe the prompt's shape (see docs/protocol.md, Attention).
+// Options describe the prompt's shape (see docs/protocol.md, Attention). ID
+// names this change of attention (a question), new with each: an answer
+// carries it (Answer.Question). Absent with the empty state and from an
+// older owner.
 type Attention struct {
 	T       string            `json:"t"`
 	State   string            `json:"state"`
@@ -423,6 +509,7 @@ type Attention struct {
 	Source  string            `json:"source,omitempty"`
 	Kind    string            `json:"kind,omitempty"`
 	Options []AttentionOption `json:"options,omitempty"`
+	ID      string            `json:"id,omitempty"`
 }
 
 // Activity is one entry of the session activity log (owner -> client). The

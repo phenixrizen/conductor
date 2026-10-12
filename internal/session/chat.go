@@ -189,7 +189,13 @@ func (s *Local) askInChat(att Attention) (ChatMessage, string) {
 	if att.Since != nil {
 		at = *att.Since
 	}
-	q := ChatMessage{ID: NewID(), At: at, Scope: proto.ChatScopeSession, Kind: proto.ChatKindQuestion, By: ChatBy{ID: "agent", Name: s.info.AgentID, Role: RoleAgent}, Text: text, Options: append([]Option(nil), att.Options...)}
+	// The question's line is the question's own id (Attention.ID), so that a
+	// choice clicked in the chat names the question it was shown for.
+	id := att.ID
+	if id == "" {
+		id = NewID()
+	}
+	q := ChatMessage{ID: id, At: at, Scope: proto.ChatScopeSession, Kind: proto.ChatKindQuestion, By: ChatBy{ID: "agent", Name: s.info.AgentID, Role: RoleAgent}, Text: text, Options: append([]Option(nil), att.Options...)}
 	s.question = q.ID
 	return q, s.keepChat(q)
 }

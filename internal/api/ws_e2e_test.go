@@ -1160,6 +1160,110 @@ func TestSubmitMessageTypesALine(t *testing.T) {
 	}
 }
 
+// verdict waits for the owner's word on the answer reqID: answer_ok, or an
+// error naming it.
+func (w *wsClient) verdict(reqID string) map[string]any {
+	w.t.Helper()
+	for {
+		f, err := w.read()
+		if err != nil {
+			w.t.Fatalf("waiting for the word on %s: %v", reqID, err)
+		}
+		if f.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		json.Unmarshal(f.Payload, &m)
+		if (m["t"] == proto.CtlAnswerOK || m["t"] == proto.CtlError) && m["requestId"] == reqID {
+			return m
+		}
+	}
+}
+
+// Two controllers answer one question together, each naming it: the
+// server takes one (answer_ok naming it) and refuses the other
+// (question_answered naming it), and the program reads the choice once.
+// One that comes late is refused too; a view link may not answer; an
+// answer past its bounds is a bad frame naming its request; a plain
+// keystroke still answers a question as before.
+func TestTwoAnswersToOneQuestionOverTheWire(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	l := e.local(id)
+	a := dialViewer(t, e, id, adminToken)
+	a.hello(0, 0)
+	if w := a.expectControl(proto.CtlWelcome); w["answer"] != true {
+		t.Fatalf("welcome %v", w)
+	}
+	a.expectControl(proto.CtlReady)
+	b := dialViewer(t, e, id, adminToken)
+	b.hello(0, 0)
+	b.expectControl(proto.CtlReady)
+	watch := dialViewer(t, e, id, adminToken)
+	watch.hello(0, 0)
+	watch.expectControl(proto.CtlReady)
+	l.SetAttentionFull(session.AttentionNeedsInput, "Allow Bash?", session.SourceAPI, session.KindPermission, []session.Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}})
+	q := l.Info().Attention.ID
+	if m := a.expectControl(proto.CtlAttention); m["id"] != q || q == "" {
+		t.Fatalf("attention %v, want id %q", m, q)
+	}
+	answer := func(reqID, question, input string) []byte {
+		return proto.MustControl(proto.Answer{T: proto.CtlAnswer, ReqID: reqID, Question: question, Input: input})
+	}
+	a.send(answer("a1", q, "1"))
+	b.send(answer("b1", q, "1"))
+	words := []map[string]any{a.verdict("a1"), b.verdict("b1")}
+	var ok, refused int
+	for _, m := range words {
+		switch {
+		case m["t"] == proto.CtlAnswerOK:
+			ok++
+		case m["code"] == proto.ErrCodeQuestionAnswered && m["message"] == session.QuestionAnsweredWords:
+			refused++
+		default:
+			t.Fatalf("a word %v", m)
+		}
+	}
+	if ok != 1 || refused != 1 {
+		t.Fatalf("%d taken, %d refused: %v", ok, refused, words)
+	}
+	if info := l.Info(); info.Attention.State != session.AttentionNone || info.LastAnswer == nil {
+		t.Fatalf("not answered: %+v", info.Attention)
+	}
+	b.send(answer("b2", q, "1"))
+	if m := b.verdict("b2"); m["code"] != proto.ErrCodeQuestionAnswered {
+		t.Fatalf("a late answer: %v", m)
+	}
+	_, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	v := dialViewer(t, e, id, lo["token"].(string))
+	v.hello(0, 0)
+	v.expectControl(proto.CtlReady)
+	l.SetAttentionFull(session.AttentionNeedsInput, "Allow Edit?", session.SourceAPI, session.KindPermission, []session.Option{{Label: "Yes", Input: "1"}})
+	next := l.Info().Attention.ID
+	v.send(answer("v1", next, "1"))
+	if m := v.verdict("v1"); m["code"] != proto.ErrCodeReadOnly {
+		t.Fatalf("a view link's answer: %v", m)
+	}
+	a.send(answer("a2", strings.Repeat("q", proto.MaxQuestionID+1), "1"))
+	if m := a.verdict("a2"); m["code"] != proto.ErrCodeBadFrame {
+		t.Fatalf("an answer past its bounds: %v", m)
+	}
+	// An older page's click: the keys alone, answering what shows.
+	a.send(proto.Encode(proto.TypeInput, []byte("2")))
+	deadline := time.Now().Add(3 * time.Second)
+	for l.Info().Attention.State != session.AttentionNone {
+		if time.Now().After(deadline) {
+			t.Fatalf("a keystroke did not answer: %+v", l.Info().Attention)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// What cat read: one 1 of the two answers, then the 2, then the line.
+	a.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "end"}))
+	if out := watch.outputUntil("12end\r\n12end"); strings.Contains(out, "11") {
+		t.Fatalf("the program read the choice twice: %q", out)
+	}
+}
+
 // expectChat waits for the next chat message of the kind.
 func (w *wsClient) expectChat(kind string) map[string]any {
 	w.t.Helper()

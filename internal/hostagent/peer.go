@@ -292,6 +292,13 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 				}
 				return err
 			}, func(err error) { p.a.local.Send(sub, submitError(err)) })
+		case proto.CtlAnswer:
+			var m proto.Answer
+			if json.Unmarshal(f.Payload, &m) != nil || !m.Valid() {
+				p.a.local.Send(sub, session.AnswerResult(m.ReqID, session.ErrBadAnswer))
+				return
+			}
+			p.answerIn(sub, m)
 		case proto.CtlChat:
 			var m proto.ChatPost
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -423,6 +430,50 @@ func (p *peer) keyIn(sub *session.Subscription, data []byte) {
 		live: p.attached(sub),
 	}) {
 		p.a.local.Send(sub, queueFull(""))
+	}
+}
+
+// answerIn queues a viewer's reply to a question (proto.Answer), answering
+// its reqId with the session's word (session.AnswerResult): a choice's keys
+// on the keys queue, as keystrokes are (keyIn), in their order among them;
+// a line on the typing queue, as a submit is (typeIn). Each is written only
+// while the question it names still waits, looked at as the session's
+// writer takes it, after whatever was queued before it: of two replies to
+// one question, from this viewer or another, the second is refused
+// (question_answered), nothing written. A view-role viewer's is refused
+// (read_only), as its keystrokes are.
+func (p *peer) answerIn(sub *session.Subscription, m proto.Answer) {
+	refuse := func(err error) {
+		if f := session.AnswerResult(m.ReqID, err); f != nil {
+			p.a.local.Send(sub, f)
+		}
+	}
+	if sub.Role != session.RoleControl {
+		refuse(session.ErrReadOnly)
+		return
+	}
+	if m.Text != "" {
+		p.typeIn(sub, m.ReqID, func(ctx context.Context) error {
+			_, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question})
+			if err == nil || errors.Is(err, session.ErrSubmitPending) {
+				refuse(nil)
+				return nil
+			}
+			return err
+		}, refuse)
+		return
+	}
+	deadline := p.a.inputDeadline()
+	if !p.keys.add(request{
+		size: len(m.Input),
+		run: func() {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			refuse(p.a.local.AnswerInput(ctx, sub, m.Question, []byte(m.Input)))
+		},
+		live: p.attached(sub),
+	}) {
+		p.a.local.Send(sub, queueFull(m.ReqID))
 	}
 }
 

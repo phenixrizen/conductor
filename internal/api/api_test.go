@@ -2731,7 +2731,9 @@ func TestEventsRouteAttentionTypesMatchTheAttentionRoute(t *testing.T) {
 	attention := func(id string) map[string]any {
 		_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
 		att := got["session"].(map[string]any)["attention"].(map[string]any)
+		// The stamp and the id are each change's own.
 		delete(att, "since")
+		delete(att, "id")
 		return att
 	}
 	for who, tok := range tokens {

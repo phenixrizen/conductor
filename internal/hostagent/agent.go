@@ -731,11 +731,13 @@ func (a *agent) retryAttention() {
 	}()
 }
 
-// sameAttention says whether x and y tell the server the same.
+// sameAttention says whether x and y tell the server the same: a question
+// asked again with the same words is another question (its ID), which the
+// server's listings must name for an answer from them to reach it.
 func sameAttention(x, y session.Attention) bool {
 	// The source too: a switchyard is told no words, and a held turn
 	// (source submit) differs from a bell's wait by its source alone there.
-	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options)
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID
 }
 
 // toServer is an attention change as the server is told it: in full to the
@@ -751,7 +753,7 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 
 // hostAttentionMsg encodes an attention change for the control connection.
 func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind}
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}

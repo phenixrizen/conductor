@@ -190,7 +190,13 @@ type Local struct {
 	chat      chatRing // guarded by mu
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
-	question  string
+	question string
+	// answered is the id (Attention.ID) of the last question a write was
+	// made to answer, set as the writer takes the write (claimQuestion,
+	// noteAnswering): until the write is made and answer clears the
+	// question, it still shows, and a reply to it that comes after is
+	// refused (ErrQuestionAnswered). Guarded by mu.
+	answered  string
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
 	scanner   Scanner
@@ -927,6 +933,7 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 	if state != AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
+		att.ID = NewID()
 	}
 	s.info.Attention = att
 	s.signalAttention()
@@ -968,7 +975,7 @@ func sameOptions(a, b []Option) bool {
 
 // attentionMessage encodes an Attention as the wire control message.
 func attentionMessage(att Attention) proto.Attention {
-	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind}
+	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}
@@ -1201,6 +1208,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		NvimSettled:     offerNvim,
 		Chat:            true,
 		RunChat:         room != nil,
+		Answer:          true,
 		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),
 	}))
 	if !sub.quiet {
@@ -1349,7 +1357,20 @@ func (s *Local) Detach(sub *Subscription) {
 // turn for a submission's text typed without its Enter (holdTyped). data
 // may be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
-	return s.input(context.Background(), sub, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
+	return s.input(context.Background(), sub, "", data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
+}
+
+// AnswerInput is Input for a reply to the question named question (its
+// Attention.ID, as the person was shown it: a choice's keys clicked or
+// pressed), waiting also until ctx ends. The keys are written only while
+// that question is the one waiting and no write before them was made to
+// answer it, which is looked at as they are queued and again, together
+// with noting them as its answer, as the writer takes them; otherwise
+// nothing is written and it returns ErrQuestionAnswered. Of two replies to
+// one question the first is written and the second refused, so that a late
+// click never lands on the question that came next.
+func (s *Local) AnswerInput(ctx context.Context, sub *Subscription, question string, data []byte) error {
+	return s.input(ctx, sub, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
 }
 
 // InputContext is Input waiting until ctx ends in place of
@@ -1358,18 +1379,19 @@ func (s *Local) Input(sub *Subscription, data []byte) error {
 // keystrokes on from its frame loop and gives each its time from its
 // arrival.
 func (s *Local) InputContext(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, data, writeWait{stall: s.opts.InputWait})
+	return s.input(ctx, sub, "", data, writeWait{stall: s.opts.InputWait})
 }
 
 // InputWaiting is InputContext for a terminal of the person's own (a
 // host's): it waits for the program to read, however long it has not, as
 // a terminal does, until ctx ends.
 func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, data, writeWait{})
+	return s.input(ctx, sub, "", data, writeWait{})
 }
 
-// input is Input waiting as o says, until ctx ends.
-func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o writeWait) error {
+// input is Input waiting as o says, until ctx ends; with question, the
+// keys are a reply to that question (AnswerInput).
+func (s *Local) input(ctx context.Context, sub *Subscription, question string, data []byte, o writeWait) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
@@ -1377,6 +1399,13 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 	// they land late, reads them after Input has returned, and the caller
 	// may reuse its buffer then.
 	data = bytes.Clone(data)
+	if question != "" {
+		// A reply to a question answered or gone is refused before
+		// anything else is looked at: nothing of it is written.
+		if err := s.questionWaits(question); err != nil {
+			return err
+		}
+	}
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter (a page's choice, a paste): look at the
 		// screen first, so that a dialog drawn and not yet seen quiet is the
@@ -1465,13 +1494,41 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 			return nil
 		}
 	}
+	if question != "" {
+		// A reply to a question, looked at again as the writer takes it
+		// (other writes may have gone before it): still the question
+		// waiting, and noted as its answer in the same critical section,
+		// so that a reply to it queued behind is refused although the
+		// question shows until this one is written and answers it.
+		dialog := o.guard
+		o.guard = func() error {
+			if err := s.questionWaits(question); err != nil {
+				return err
+			}
+			if dialog != nil {
+				if err := dialog(); err != nil {
+					return err
+				}
+			}
+			return s.claimQuestion(question)
+		}
+	}
 	o.before = func() {
-		if typed {
+		if typed && question == "" {
 			// A person types into the terminal: a submission's text typed
 			// without its Enter no longer holds the session's turn
 			// (holdTyped), and what comes next is written after these keys.
 			// The terminal's reports, the pointer's among them, type nothing.
+			// A reply's choice (an answer to a question on the screen over
+			// the hold) is no person at the terminal: the text still waits
+			// there, and the hold shows again once the question is
+			// answered (answer).
 			s.endHold()
+		}
+		if !isTerminalReport(data) {
+			// Keys that answer the prompt showing (as answer will take
+			// them) put it behind for the replies queued after them.
+			s.noteAnswering(promptSince, enter)
 		}
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
@@ -1649,6 +1706,108 @@ func (s *Local) stampTyping(sub *Subscription) {
 	}
 }
 
+// QuestionAnsweredWords say why a reply to a question was refused: the
+// question it was shown for is no longer the one waiting, answered by
+// another reply that came first or gone, and nothing of it was written.
+const QuestionAnsweredWords = "this question was already answered: nothing was sent"
+
+// ErrQuestionAnswered refuses a reply to a question that is no longer the
+// one waiting (AnswerInput, Submission.Question).
+var ErrQuestionAnswered = errors.New(QuestionAnsweredWords)
+
+// questionWaits reports whether the question named id waits for a reply:
+// it is the session's needs_input prompt, and no write was made to answer
+// it (answered). ErrQuestionAnswered otherwise.
+func (s *Local) questionWaits(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.waitsLocked(id)
+}
+
+// waitsLocked is questionWaits for a caller that holds s.mu.
+func (s *Local) waitsLocked(id string) error {
+	att := s.info.Attention
+	// The session's turn held for a typed text (source submit) is no
+	// question: a person at the terminal deals with it, and a reply naming
+	// it writes nothing.
+	if id == "" || att.State != AttentionNeedsInput || att.ID != id || s.answered == id || att.Source == SourceSubmit {
+		return ErrQuestionAnswered
+	}
+	return nil
+}
+
+// claimQuestion is questionWaits, and notes the question as answered in the
+// same critical section: asked as the writer takes the reply's write, the
+// last of its checks (writeWait.guard), so that the write is made when it
+// returns nil, and a reply to the same question after it is refused.
+func (s *Local) claimQuestion(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.waitsLocked(id); err != nil {
+		return err
+	}
+	s.answered = id
+	return nil
+}
+
+// noteAnswering notes, as the writer takes a write that answers the prompt
+// stamped promptSince (as answer will take it: enter, or any key for a
+// prompt the session does not hold), that the prompt's question is
+// answered: a reply to it that comes after is refused (questionWaits),
+// though it shows until the write is made and answer clears it. Keys typed
+// into the terminal, a reply box's line and Conductor's own Enter put a
+// question behind as a reply to it does.
+func (s *Local) noteAnswering(promptSince *time.Time, enter bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	att := s.info.Attention
+	if att.State == AttentionNeedsInput && att.Since == promptSince && att.ID != "" && (enter || !heldSource(att.Source)) {
+		s.answered = att.ID
+	}
+}
+
+// ErrBadAnswer refuses an answer message out of its bounds
+// (proto.Answer.Valid): nothing is written.
+var ErrBadAnswer = errors.New("bad answer message")
+
+// AnswerResult is the owner's word on a viewer's answer (proto.Answer)
+// that ended with err, to that viewer: an answer_ok naming reqID when err is
+// nil (nil when there is no reqID to name: nothing is sent), else an error
+// naming it, question_answered for ErrQuestionAnswered. A line accepted
+// while its program takes it slowly (ErrSubmitPending) is taken. A reqID
+// out of its bounds is named by nothing.
+func AnswerResult(reqID string, err error) []byte {
+	if !proto.ValidAnswerReqID(reqID) {
+		reqID = ""
+	}
+	if err == nil || errors.Is(err, ErrSubmitPending) {
+		if reqID == "" {
+			return nil
+		}
+		return proto.MustControl(proto.AnswerOK{T: proto.CtlAnswerOK, RequestID: reqID})
+	}
+	code, msg := "input_failed", "input could not be delivered"
+	switch {
+	case errors.Is(err, ErrQuestionAnswered):
+		code, msg = proto.ErrCodeQuestionAnswered, QuestionAnsweredWords
+	case errors.Is(err, ErrTrustQuestion):
+		code, msg = proto.ErrCodeNotSent, TrustQuestionWords
+	case errors.Is(err, ErrQuestion):
+		code, msg = proto.ErrCodeNotSent, QuestionWords
+	case errors.Is(err, ErrReadOnly):
+		code, msg = proto.ErrCodeReadOnly, "this link is view-only"
+	case errors.Is(err, ErrSessionEnded):
+		code, msg = proto.ErrCodeSessionEnded, "the session has ended"
+	case errors.Is(err, ErrTooManyRequests):
+		code, msg = proto.ErrCodeTooManyRequests, "too many requests at once"
+	case errors.Is(err, ErrTextTooLong), errors.Is(err, ErrBadAnswer):
+		code, msg = proto.ErrCodeBadFrame, err.Error()
+	case errors.Is(err, ErrInputStalled), errors.Is(err, context.DeadlineExceeded):
+		msg = ErrInputStalled.Error()
+	}
+	return proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: code, Message: msg, RequestID: reqID})
+}
+
 // answer settles the needs_input prompt a write answered: the one stamped
 // promptSince, when it is still showing, is cleared and recorded as answered
 // by by (a subscriber ID, "" for Conductor) and byName. A question the
@@ -1675,7 +1834,7 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 			// text (one gone with keys typed before the hold): the hold
 			// shows again.
 			now := time.Now().UTC()
-			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now}
+			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
 		}
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))

@@ -71,8 +71,8 @@ type Option struct {
 // Limits for quick-reply options.
 const (
 	MaxAttentionOptions = 6
-	MaxOptionLabel      = 60 // runes
-	MaxOptionInput      = 48 // bytes: a choice of 40 and the CR that enters it, or a digit
+	MaxOptionLabel      = 60                   // runes
+	MaxOptionInput      = proto.MaxAnswerInput // bytes: a choice of 40 and the CR that enters it, or a digit
 )
 
 // CleanOptions drops entries without a label or input, trims both to their
@@ -99,7 +99,10 @@ func CleanOptions(in []Option) []Option {
 	return out
 }
 
-// Attention is the current signal state of a session.
+// Attention is the current signal state of a session. ID names the change,
+// as Since stamps it, new with each one that shows a state: the question a
+// reply was shown for (Local.AnswerInput, Submission.Question), and the id of
+// the question's line in the chat. Empty with the empty state.
 type Attention struct {
 	State   AttentionState `json:"state"`
 	Message string         `json:"message,omitempty"`
@@ -107,6 +110,7 @@ type Attention struct {
 	Since   *time.Time     `json:"since,omitempty"`
 	Kind    string         `json:"kind,omitempty"`
 	Options []Option       `json:"options,omitempty"`
+	ID      string         `json:"id,omitempty"`
 }
 
 // CleanName normalises a display name from a client: oneLine at

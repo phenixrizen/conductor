@@ -315,6 +315,33 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			}
 			return err
 		}, func(err error) { s.sendInputError(sub, local, err) })
+	case proto.CtlAnswer:
+		var m proto.Answer
+		if json.Unmarshal(payload, &m) != nil {
+			return false
+		}
+		if !m.Valid() {
+			local.Send(sub, session.AnswerResult(m.ReqID, session.ErrBadAnswer))
+			return true
+		}
+		reply := func(err error) {
+			if f := session.AnswerResult(m.ReqID, err); f != nil {
+				local.Send(sub, f)
+			}
+		}
+		if m.Text != "" {
+			// A line is a submission: it waits for the session's turn as a
+			// submit does, on the read loop but no longer once the turn is
+			// held for a person (typeIn); the owner's word names it.
+			held.typeIn(sub, local, m.ReqID, func() error {
+				reply(s.answer(sub, local, m))
+				return nil
+			}, reply)
+			return true
+		}
+		// A choice's keys on the read loop, as a keystroke is, so what the
+		// client sends next comes after them; the owner's word names them.
+		reply(s.answer(sub, local, m))
 	case proto.CtlChat:
 		var m proto.ChatPost
 		if json.Unmarshal(payload, &m) != nil {
@@ -353,6 +380,19 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		return false
 	}
 	return true
+}
+
+// answer types a viewer's reply to a question (proto.Answer): a choice's
+// keys as a keystroke is written, a line as a submit is, each only while
+// the question it names still waits (ErrQuestionAnswered otherwise).
+func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto.Answer) error {
+	if m.Input != "" {
+		return local.AnswerInput(context.Background(), sub, m.Question, []byte(m.Input))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
+	defer cancel()
+	_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question})
+	return err
 }
 
 func (s *Server) readHello(ctx context.Context, c *websocket.Conn) (proto.Hello, error) {

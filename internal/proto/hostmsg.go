@@ -241,7 +241,12 @@ type ViewerError struct {
 }
 
 // HostAttentionMsg carries an attention change between host and server.
-// SessionID and Source are set by the host; the server omits them.
+// SessionID and Source are set by the host; the server omits them. ID goes
+// host to server only: the id the host's session gave the change
+// (Attention.ID), which the server keeps for its listings, so that an
+// answer from them names the question the host holds; the server keeps it
+// only when it is a question's id (ValidQuestionID), and an older server
+// ignores it.
 type HostAttentionMsg struct {
 	T         string            `json:"t"`
 	SessionID string            `json:"sessionId,omitempty"`
@@ -250,6 +255,7 @@ type HostAttentionMsg struct {
 	Source    string            `json:"source,omitempty"`
 	Kind      string            `json:"kind,omitempty"`
 	Options   []AttentionOption `json:"options,omitempty"`
+	ID        string            `json:"id,omitempty"`
 }
 
 // HostActivityMsg carries one activity-log entry between host and server.

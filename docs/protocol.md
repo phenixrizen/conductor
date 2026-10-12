@@ -44,20 +44,22 @@ Client → owner:
 | `nvim_swap` | `id, choice` | Answers the swap file editor `id` found (round 13): `choice` is `edit` (leave read-only and edit), `recover` (read the swap file's text into the buffer, which is sent whole; the buffer is modified until written) or `delete` (remove that swap file, only a regular file named `*.sw?` that Neovim reported, and edit); `recover` and `delete` only once the process that wrote it is gone, else the editor's `message` of kind `emsg` says no; fixed choices mapped to fixed commands, never a command from the page. The switchyard drops it from view-role connections |
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended` |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member |
-| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it; keys typed into the terminal stay INPUT |
+| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it to an owner whose `welcome` lacks `answer`; keys typed into the terminal stay INPUT |
+| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one waiting, and nothing written to the session since was made to answer it, as the keys (a line's text, its Enter for a line with none) are written; otherwise `error{question_answered, requestId}`. Once taken, `answer_ok{requestId}` (the keys written, a line accepted); any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
 
 Owner → client:
 
 | `t` | Fields |
 |---|---|
-| `welcome` | `proto, sessionId, role, subscriberId, cols, rows, status, scrollbackBytes, transport, fileView, chat, runChat?, cwd?` (+ `viewerId, iceServers, relayTimeoutMs` on the signaling welcome); `chat: true` says the owner takes `chat` and `chat_send`; `runChat: true` that the session is a run's member with a run chat (scope `run`, `chat_roster`); `sizer: true` that the owner sizes the session by one viewer, and `sizedBy` which (its subscriber id; absent, nobody holds the size): a view that is not it shows the session's grid scaled to its pane (round 14); `fileEdit: true` that this connection may save a file; `nvim: true` that it may also use the editor's Neovim (one of the owner's own windows, the machine has `nvim`); `nvimOwnerOnly: true` that it may edit but not through Neovim, which is kept for the owner's own windows (a link's or an invite's controller edits with the editor's own keys); `nvimSettled: true`, with `nvim`, that the owner's Neovim says when keys are done (`nvim_event` `settled`; an older owner sends neither, and a page takes a cursor's `ack` for that word, as it did); `cwd` is the session's working directory on the machine that runs it, to a viewer whose role may read files (at most 4096 bytes as encoded in the welcome, escapes included, so the welcome always fits one CONTROL frame; absent past that, to a role that may read none, and from an older owner), which roots a guest's Files pane: a switchyard lists a published session with its folder's last element alone |
+| `welcome` | `proto, sessionId, role, subscriberId, cols, rows, status, scrollbackBytes, transport, fileView, chat, runChat?, cwd?` (+ `viewerId, iceServers, relayTimeoutMs` on the signaling welcome); `chat: true` says the owner takes `chat` and `chat_send`; `runChat: true` that the session is a run's member with a run chat (scope `run`, `chat_roster`); `answer: true` that the owner takes `answer` and refuses one whose question no longer waits (absent from an older owner, which a client replies to with INPUT and `submit`); `sizer: true` that the owner sizes the session by one viewer, and `sizedBy` which (its subscriber id; absent, nobody holds the size): a view that is not it shows the session's grid scaled to its pane (round 14); `fileEdit: true` that this connection may save a file; `nvim: true` that it may also use the editor's Neovim (one of the owner's own windows, the machine has `nvim`); `nvimOwnerOnly: true` that it may edit but not through Neovim, which is kept for the owner's own windows (a link's or an invite's controller edits with the editor's own keys); `nvimSettled: true`, with `nvim`, that the owner's Neovim says when keys are done (`nvim_event` `settled`; an older owner sends neither, and a page takes a cursor's `ack` for that word, as it did); `cwd` is the session's working directory on the machine that runs it, to a viewer whose role may read files (at most 4096 bytes as encoded in the welcome, escapes included, so the welcome always fits one CONTROL frame; absent past that, to a role that may read none, and from an older owner), which roots a guest's Files pane: a switchyard lists a published session with its folder's last element alone |
 | `ready` | end of scrollback; live output follows |
 | `resize` | `cols, rows, by` (the viewer that sizes the session now; absent when nobody holds the size, as when it left with none of the owner's windows to take it). Sent on every change of size or of sizer, the same size included. An owner without `sizer` (an older host) names the subscriber that resized |
 | `status` | `status, exitCode?` |
-| `attention` | `state, message?, source?, kind?, options?[{label, input}]` (see Attention) |
+| `attention` | `state, message?, source?, kind?, options?[{label, input}], id?` (see Attention; `id` names the question, absent with the empty state and from an older owner) |
+| `answer_ok` | `requestId` — the owner took the `answer` of that `reqId`: its keys are written, or its line accepted |
 | `activity` | `at, type, by?, byName?, message?, url?, to?, tool?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the six event types (see Events). The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type, a quiet connection (`hello.chatOnly`, a run chat's) left out. `link` is the share link's label. |
-| `error` | `code, message, requestId?` — `requestId` names the chat post (its nonce) or send (its ref) the error answers |
+| `error` | `code, message, requestId?` — `requestId` names the chat post (its nonce), send (its ref) or answer (its `reqId`) the error answers |
 | `pong` | `ts` |
 | `chat` | `id, at, scope, kind, by{id, name, role}, text?, ref?, to?, on?, event?, nonce?, options?, quote?` — one message of the chat (see Chat), live: `kind` `message` with `text` and, for a comment on lines, `quote`; `system` with `event` `join` or `leave` about `by`, or `answered` with `ref` the question `by` answered; `sent_to_agent` with `ref` (the message typed) and `to` (a run's member, else the session's agent); `question` from the agent (`by` `{id: "agent", name: the agent id, role: "agent"}`) as the session goes `needs_input`, its `text` the question and `options[{label, input}]` its choices (at most 6), `on` the member in a run's chat. `by` is otherwise the sender's subscription as the roster lists it; `nonce` the sender's own id, echoed |
 | `chat_history` | `scope, messages[], more?` — the kept chat replayed to a new viewer right after the activity replay, oldest first, in frames of at most 8 KiB; `more` on every frame but the last; the session's series, then the run's (scope `run`) when the session is a member |
@@ -70,7 +72,9 @@ Error codes: `read_only`, `slow_consumer`, `bad_frame`, `hello_timeout`,
 chat's `chat_send` whose member could not take the text, the message saying
 why; or a `submit`, a `chat` to the agent or a `chat_send` while the agent's
 trust question shows, the message saying so: its Enter would pick whatever
-the dialog highlights, and the question's own choices answer it).
+the dialog highlights, and the question's own choices answer it),
+`question_answered` (an `answer` whose question no longer waits: another
+reply answered it first, or it went; nothing was written).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
 error, `4401` unauthorized, `4403` link revoked or expired, `4404` unknown
@@ -156,8 +160,11 @@ choices) is kept and sent as a `question` message from the agent, and the
 input that answers it (a choice typed, a line submitted, a key in the
 terminal) is followed by a `system` line with `event` `answered` naming the
 question and who answered; a run's member says the same in the run's chat,
-on the member. Answering from the chat takes the paths a page has: the
-choice's keys into the session, or into the member.
+on the member. The question's message has the question's own `id` (the
+attention's `id`, in the run's chat too), so answering from the chat
+takes the paths a page has, naming the question as every quick reply
+does (`answer`): the choice's keys into the session, or into the member,
+refused once the question no longer waits.
 
 A crew run has a chat of its own, one thread across every member: the run
 engine keeps it (the last 500 messages) and every member session is made
@@ -277,7 +284,7 @@ server for a link's viewer (see the host control connection) and heard
 nothing at all for 2 minutes. After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
-View-role INPUT, FILE_WRITE, `resize`, `submit`, `chat_send` and the `nvim_*` messages are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent. A control connection's FILE_WRITE is carried, so the editor's saves work on the relay the same as a file read does (the editor's Neovim is the owner's own window only, so a link's controller edits with the editor's keys and saves).
+View-role INPUT, FILE_WRITE, `resize`, `submit`, `answer`, `chat_send` and the `nvim_*` messages are dropped by the server before they reach the host (`read_only`; the host refuses a view-role `answer` itself too, `error{read_only, requestId}`, for an older server that passes it); a `chat` post passes for every role, and the host refuses one that is also for the agent. A control connection's FILE_WRITE is carried, so the editor's saves work on the relay the same as a file read does (the editor's Neovim is the owner's own window only, so a link's controller edits with the editor's keys and saves).
 
 The host types a viewer's `submit`, `chat` to the agent and `chat_send`
 (over the data channel or the relay alike) one at a time, in the order the
@@ -313,6 +320,14 @@ the viewer goes, the keys that wait are dropped. The editor's `nvim_input`,
 order sent, at most 400 behind the one Neovim handles (past them the
 `nvim_event` error is `too_many_requests`).
 
+A viewer's `answer` waits as what it carries does: its `input` among the
+viewer's INPUT frames (its 10 s, the same bounds, `too_many_requests` naming
+its `reqId`), its `text` among the submissions (the typing queue). Whatever
+waited before it, of this viewer or another, its question is looked at as
+the session's writer takes it: of two viewers' answers to one question the
+first written is taken (`answer_ok`) and the other refused
+(`question_answered`), nothing of it written.
+
 ## Host control connection
 
 `GET /ws/host?token=…` (host token or workbench token; on a switchyard with
@@ -332,7 +347,11 @@ agent's id or else the program's name, never an argument; `cwd` the folder's las
 and no `branch`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?}`,
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?}`
+(`id` the id the host's session gave the change, which the server keeps,
+only as 1–32 bytes of printable ASCII, so that an answer from its listings
+names the question the host holds; an older server ignores it; a question
+asked again with the same words is sent again, its `id` new),
 `activity{sessionId,entry,state?}`,
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
@@ -548,7 +567,7 @@ gone five minutes, and is ended (`registered.links` leaves it out).
 
 ## Attention
 
-Each session carries `attention{state, message, source, since, kind?, options?}`
+Each session carries `attention{state, message, source, since, kind?, options?, id?}`
 in its `Info`. States: `""` (nothing), `working`, `needs_input`, `done`.
 Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `pattern` (the
 screen-pattern detector, below), `trust` (the agent's workspace-trust
@@ -562,14 +581,22 @@ prompt on the screen, which shows over it whether it came first or after
 another change (an agent's report, an admin's clear) is recorded in the
 activity log, with its state, and not shown. A key that ends the hold
 without answering such a question leaves the question showing, and the
-submissions it refuses refused.
+submissions it refuses refused. `id` names the
+change as `since` stamps it: 16 hex characters, new with every change that
+shows a state (the same words again change nothing, the id included), none
+with the empty state. A hosted session's is its host's, as the host reports
+it; a change the server makes for a hosted session (a report through its
+routes) has none in the server's listings until the host reports it back with
+its own, except one the host keeps as it is (see Answering a question,
+below).
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
 expected), `done` (the agent finished its turn), or empty when unknown.
 `options` is at most 6 entries of `{label, input}`: `label` is shown on a
-button (≤ 60 runes) and `input` (≤ 48 bytes) is sent verbatim as an INPUT
-frame when the human picks it. Clearing the state drops `kind` and `options`.
+button (≤ 60 runes) and `input` (≤ 48 bytes) is what is written when the
+human picks it: an `answer`'s `input`, naming the question (see Answering a
+question), or, to an owner that predates `answer`, an INPUT frame. Clearing the state drops `kind` and `options`.
 `conductor notify --state needs_input --message "…" --choices "a|b|c"` (at most
 6 choices of 40 bytes) reports `kind:"prompt"` with one option per choice whose
 `input` is the choice and a CR, so a click types it as a line; the agent is
@@ -887,6 +914,30 @@ highlighted Yes); the same dialog with "No, continue without running it
 again" choice Yes and No alone, and any other of Codex's approvals with the
 same footer (network access: "Do you want to approve network access to
 …?", "Yes, just this once (y)") its `y` and Escape.
+
+### Answering a question
+
+A reply to a `needs_input` question names it: every quick reply (a choice
+clicked or keyed with 1–9, a line typed in a reply box, a choice in the
+chat) is sent as `answer` with the `id` of the question the page showed as
+the person acted, to an owner whose `welcome` says `answer`. The owner (the
+server for its sessions, the host for its own; the same code) looks at the
+question as the reply is asked for and again as the session's writer takes
+its keys, after every write queued before it: it is taken only while that
+question is the session's `needs_input` and nothing written since was made
+to answer it, and then noted as answered in the same step. Every write that
+answers a question notes it so as the writer takes it: an `answer`'s keys or
+line, a key typed into a terminal (as a controller's input clears a question,
+above), a `submit`'s text or its Enter, Conductor's own Enter. So of two
+replies to one question, from two people clicking together or one whose click
+arrives after the program has moved on, the first is written and the second
+refused with `error{question_answered}` naming its `reqId`, nothing of it
+written: a late click never lands on the question that came next (Codex's
+next queued approval, Claude Code's next permission dialog), which stays
+waiting for its own reply. The page says so: "Already answered: the question
+was answered before your reply arrived. Nothing was sent." A reply with no
+`id` (a question from an older owner, a page that predates `answer`) goes as
+before, as INPUT or `submit`, and answers whatever shows.
 
 ## Events
 
