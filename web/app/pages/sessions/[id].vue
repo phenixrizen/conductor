@@ -6,7 +6,7 @@ import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorTab } from '~/components/SessionInspector.vue'
 import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
-import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
+import { keepQuestionId, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { QUESTION_ANSWERED } from '~/utils/protocol'
 
 const route = useRoute()
@@ -150,7 +150,8 @@ const copy = useCopy()
 watch(
   () => stored.value?.attention,
   (a) => {
-    if (a) attention.value = a
+    // A listing that lacks the question's id (a server older than the host) keeps the one the terminal's connection reported.
+    if (a) attention.value = keepQuestionId(a, attention.value)
   },
   { deep: true },
 )

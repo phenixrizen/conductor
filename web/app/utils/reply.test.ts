@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_QUESTION_ID } from './protocol'
-import { answerMessage, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
+import { answerMessage, keepQuestionId, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -31,6 +31,22 @@ describe('answerMessage', () => {
   })
 })
 
+describe('keepQuestionId', () => {
+  const shown = { state: 'needs_input' as const, message: 'Allow?', options: [{ label: 'Yes', input: 'y' }], id: '0123456789abcdef' }
+
+  it('keeps the id the terminal reported when a listing without one shows the same question', () => {
+    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?', options: [{ label: 'Yes', input: 'y' }] }, shown).id).toBe('0123456789abcdef')
+  })
+
+  it('takes the listing as it is for another question, one with its own id, or nothing shown', () => {
+    expect(keepQuestionId({ state: 'needs_input', message: 'Allow Edit?', options: [{ label: 'Yes', input: 'y' }] }, shown).id).toBeUndefined()
+    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?', options: [{ label: 'No', input: 'n' }] }, shown).id).toBeUndefined()
+    expect(keepQuestionId({ state: 'done', message: 'Allow?' }, shown).id).toBeUndefined()
+    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?', options: [{ label: 'Yes', input: 'y' }], id: 'fedcba9876543210' }, shown).id).toBe('fedcba9876543210')
+    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?' }, undefined).id).toBeUndefined()
+  })
+})
+
 describe('repliedQuestions', () => {
   it('lets one reply per question go from a page: a double click or a digit pressed twice is one answer', () => {
     const replied = repliedQuestions()
@@ -58,6 +74,11 @@ describe('replyFailure', () => {
     const refused = new ReplyError('question_answered', 'this question was already answered: nothing was sent')
     expect(replyFailure(refused, 'fix-auth')).toEqual({ title: 'Already answered', description: "fix-auth's question was answered before your reply arrived. Nothing was sent.", color: 'warning' })
     expect(replyFailure(refused).description).toBe('This question was answered before your reply arrived. Nothing was sent.')
+  })
+
+  it('says a reply that could not name its question was not sent', () => {
+    expect(replyFailure(new ReplyError('no_question', 'x'))).toMatchObject({ title: 'Not sent', color: 'warning' })
+    expect(replyFailure(new ReplyError('no_question', 'x')).description).toContain('nothing was sent')
   })
 
   it('says a terminal not connected, and any other failure with its own words', () => {

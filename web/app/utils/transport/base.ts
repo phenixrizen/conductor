@@ -22,7 +22,7 @@ import {
   type TransportKind,
   type Welcome,
 } from '../protocol'
-import { answerMessage, ReplyError, type QuestionReply } from '../reply'
+import { answerMessage, NO_QUESTION, ReplyError, type QuestionReply } from '../reply'
 import { rttFromPong } from './rtt'
 import type { CloseInfo, TerminalTransport, TransportState } from './types'
 
@@ -87,18 +87,20 @@ export abstract class BaseTransport implements TerminalTransport {
   /**
    * Replies to an agent's question. To an owner whose welcome said `answer`, a reply naming its question goes as `answer` and settles
    * with the owner's word: true once taken, a ReplyError with the owner's code when refused (`question_answered`: the question no
-   * longer waits, nothing was sent), the connection's end, or no word in ANSWER_TIMEOUT_MS. Otherwise (an older owner, a question
-   * with no id) it goes as keys or a submit, as before, and settles false at once: nothing will say whether it was taken.
+   * longer waits, nothing was sent), the connection's end, or no word in ANSWER_TIMEOUT_MS; one that names no question it could
+   * take is not sent (`no_question`): unguarded keys could land on another question. To an older owner it goes as keys or a submit,
+   * as before, and settles false at once: nothing will say whether it was taken.
    */
   answer(reply: QuestionReply): Promise<boolean> {
     if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
-    const reqId = `a${(++this.reqCounter).toString(36)}`
-    const msg = this.takesAnswers ? answerMessage(reply, reqId) : null
-    if (!msg) {
+    if (!this.takesAnswers) {
       if ('input' in reply) this.sendInput(encodeText(reply.input))
       else this.submit(reply.text)
       return Promise.resolve(false)
     }
+    const reqId = `a${(++this.reqCounter).toString(36)}`
+    const msg = answerMessage(reply, reqId)
+    if (!msg) return Promise.reject(new ReplyError(NO_QUESTION, 'the page does not know which question this reply is for'))
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         this.answers.delete(reqId)

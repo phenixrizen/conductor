@@ -184,21 +184,26 @@ describe('BaseTransport.answer', () => {
     expect(seen).toHaveBeenCalledTimes(1)
   })
 
-  it('to an older owner, or with no question, goes as keys or a submit and settles false at once', async () => {
+  it('to an older owner goes as keys or a submit and settles false at once', async () => {
     const old = welcomed(false)
     const keys = track(old.answer({ question: 'q1', input: 'y' }))
-    const line = track(old.answer({ question: 'q1', text: 'Postgres' }))
+    const line = track(old.answer({ text: 'Postgres' }))
     await vi.advanceTimersByTimeAsync(0)
     expect(keys.value).toBe(false)
     expect(line.value).toBe(false)
     expect(old.sent[0]![0]).toBe(FrameType.Input)
     expect(new TextDecoder().decode(old.sent[0]!.subarray(1))).toBe('y')
     expect(sentControl(old, 1)).toEqual({ t: 'submit', text: 'Postgres' })
+  })
+
+  it('to an owner that takes answers, a reply that names no question is not sent: unguarded keys could land on another', async () => {
     const t = welcomed(true)
     const plain = track(t.answer({ input: '1' }))
+    const unnamed = track(t.answer({ question: 'not an id', text: 'Postgres' }))
     await vi.advanceTimersByTimeAsync(0)
-    expect(plain.value).toBe(false)
-    expect(t.sent[0]![0]).toBe(FrameType.Input)
+    expect((plain.error as ReplyError).code).toBe('no_question')
+    expect((unnamed.error as ReplyError).code).toBe('no_question')
+    expect(t.sent).toHaveLength(0)
   })
 
   it('a connection that closes, or no word in time, ends the wait with a ReplyError; one not open refuses at once', async () => {

@@ -12,6 +12,19 @@ export function questionOf(att: Pick<Attention, 'state' | 'id'> | null | undefin
   return att?.state === 'needs_input' && att.id ? att.id : undefined
 }
 
+/**
+ * The attention a page shows when a listing without the question's id (a server older than the host, or one the host has not
+ * told yet) reports what its own connection to the owner reported with one: the same question, keeping that id. Anything else
+ * shown is `next` as it is.
+ */
+export function keepQuestionId(next: Attention, shown: Attention | null | undefined): Attention {
+  if (next.id || !shown?.id || next.state !== shown.state || (next.message ?? '') !== (shown.message ?? '')) return next
+  const a = next.options ?? []
+  const b = shown.options ?? []
+  if (a.length !== b.length || a.some((o, i) => o.label !== b[i]!.label || o.input !== b[i]!.input)) return next
+  return { ...next, id: shown.id }
+}
+
 /** A question's or a request's id as the owner takes it: printable ASCII, no space, within its bound. */
 function wireId(id: string, max: number): boolean {
   return id.length > 0 && id.length <= max && /^[\x21-\x7e]+$/.test(id)
@@ -54,7 +67,14 @@ export function repliedQuestions() {
   }
 }
 
-/** A reply that did not go: the owner's refusal (its error code), or the page's own (`not_connected`, `no_word`). */
+/**
+ * The page's refusal of a reply that names no question to an owner that takes answers (a hosted session's question the server
+ * listed before its host said its id, or a server older than its host): nothing is sent, for keys that name nothing could land
+ * on another question.
+ */
+export const NO_QUESTION = 'no_question'
+
+/** A reply that did not go: the owner's refusal (its error code), or the page's own (`not_connected`, `no_word`, `no_question`). */
 export class ReplyError extends Error {
   readonly code: string
   constructor(code: string, message: string) {
@@ -69,6 +89,9 @@ export function replyFailure(e: unknown, name?: string): { title: string; descri
   const code = (e as { code?: unknown } | null)?.code
   if (code === QUESTION_ANSWERED) {
     return { title: 'Already answered', description: `${name ? `${name}'s` : 'This'} question was answered before your reply arrived. Nothing was sent.`, color: 'warning' }
+  }
+  if (code === NO_QUESTION) {
+    return { title: 'Not sent', description: 'This page could not tell the session which question your reply was for, so nothing was sent. Try again in a moment, or answer in the terminal.', color: 'warning' }
   }
   if (code === 'not_connected') return { title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' }
   return { title: name ? `Reply to ${name} failed` : 'Reply failed', description: (e as Error | null)?.message, color: 'error' }
