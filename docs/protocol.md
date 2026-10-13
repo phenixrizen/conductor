@@ -941,9 +941,15 @@ background-server question never reaches its update question, where 1 runs
 that took the screen's text before an answer and fires after it asks
 nothing (weighed under the lock that sets the question); the startup
 question asked is the one drawn last in the output the watcher keeps; keys
-that pick an answer of the startup question the screen shows, asked yet or
-not, put its screen behind and answer it, the one the session shows read
-again as they are written: one of its choices, an Enter, and, where a digit
+that pick an answer of the startup question the session shows put its
+screen behind and answer it, the one it shows read again as they are
+written; keys that pick an answer of one drawn and not asked yet (the
+watcher asks once the screen is quiet) hold it answered by its words, asked
+so, nothing put behind, until the screen shows it gone or the next takes
+its place, for the program may not have read them (Codex discards what was
+typed before its question's screen took input, right after drawing it; a
+question asked has had its screen quiet since). They pick one of its
+answers by one of its choices, an Enter, and, where a digit
 picks at once (one of its choices is a digit alone), the digit of one of
 its numbered items as the output the watcher keeps shows them (with them
 not read, its heading gone from that output, only its choices), offered as

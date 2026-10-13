@@ -2068,6 +2068,34 @@ func TestAnEraseFromTheFirstCellSettlesAResizedScreen(t *testing.T) {
 	}
 }
 
+// Codex draws its update question, then discards what was typed before it
+// took input: a 3 typed as the question is drawn, before the session asks
+// it, may never be read. The question is still asked, held answered (a
+// reply to it refused), and holds a submission back, whose Enter would run
+// the update; the screen showing Codex's prompt lets it go. (Codex's review,
+// twenty-ninth pass, finding 1.)
+func TestAKeyBeforeAStartupQuestionIsAskedClearsNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
+	if err := s.InputWaiting(t.Context(), nater, []byte("3")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the question held: %v", err)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	p.outW.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything\x1b[?2026l"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+}
+
 // A key held down at Codex's trust question: the protocol's repeat of Enter
 // (ESC [ 1 3 ; 1 : 2 u), which Codex's trust question ignores, puts it
 // behind (a program may take a repeat) but clears nothing: the question

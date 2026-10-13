@@ -1785,6 +1785,22 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				}
 			}
 		}
+		if startupOnScreen && !startupAnswer && !(answersQuestion && own) {
+			s.mu.Lock()
+			att := s.info.Attention
+			asked := att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && att.Message == CleanMessage(startupWords)
+			s.mu.Unlock()
+			if !asked {
+				// Drawn and not asked yet (the watcher asks once the screen
+				// is quiet): the program may not have read the key, for
+				// Codex discards what came before its question's screen took
+				// input. It is held answered by its words and asked so,
+				// nothing put behind, until the screen shows it gone or the
+				// next takes its place. A question asked has had its screen
+				// quiet since it was drawn, the discard long done.
+				startupOnScreen, onScreenHeld = false, true
+			}
+		}
 		if (heldAnswer || onScreenHeld) && !startupAnswer && !startupOnScreen && !(answersQuestion && own) {
 			// Only the Escape held may answer it: the startup question
 			// showing (or, not asked yet, the one the screen shows, by its
