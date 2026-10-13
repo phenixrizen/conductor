@@ -123,7 +123,14 @@ async function tryHold(page: Page, api: Api, browser: Browser, home: string, rep
   await expect
     .poll(() => stub.typedSince(mark) || guestEnter() !== undefined, { timeout: 10_000, intervals: [20], message: 'the guest line is typed' })
     .toBe(true)
-  if (reply) await bar.locator('input').press('Enter')
+  if (reply && guestEnter() === undefined) {
+    // Bounded: the guest's Enter, come meanwhile, answers the question and takes the bar away; the rule below decides then
+    // (held, the reply's box is empty: it was sent).
+    await bar
+      .locator('input')
+      .press('Enter', { timeout: 2_000 })
+      .catch(() => {})
+  }
   const revokeAsked = Date.now()
   await api.ok('DELETE', `/api/sessions/${s.id}/links/${link.id}`)
   // Held, or the guest's Enter was taken.
