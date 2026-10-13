@@ -69,9 +69,12 @@
 # $HOME/.stub-sessions/<id>.line; Ctrl+U clears it, Backspace erases, the
 # terminal's reports, the mouse's and the paste markers are dropped (the
 # mouse reports read counted in <id>.mouse), and Enter answers the line
-# (one entered while it spins once it is done). The files let a test read
-# what the stub holds whatever the browser draws the terminal with: with
-# WebGL the screen is a canvas and holds no text.
+# (one entered while it spins once it is done), each Enter taken appended
+# to <id>.entered as a line "<when, in microseconds since the epoch>
+# <the line>". The files let a test read what the stub holds whatever the
+# browser draws the terminal with: with WebGL the screen is a canvas and
+# holds no text. Each is written whole (a new file renamed over it) or
+# appended to, so a reader never sees one half written.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -411,12 +414,17 @@ update_question() {
 tui= tui_line= mice= spinning=
 tui_queue=()
 
-# tui_save writes the line not yet entered, and the mouse reports read, for
-# a test to read.
-tui_save() {
-	printf '%s' "$tui_line" >"$transcripts/$id.line"
-	printf '%s\n' "${mice:-0}" >"$transcripts/$id.mouse"
+# put writes $2 into the file $1 whole, for a test to read: a new file
+# renamed over it, so a reader sees the old or the new, never a part.
+put() {
+	printf '%s' "$2" >"$1.new"
+	mv -f -- "$1.new" "$1"
 }
+
+# tui_save writes the line not yet entered; tui_save_mice the mouse reports
+# read.
+tui_save() { put "$transcripts/$id.line" "$tui_line"; }
+tui_save_mice() { put "$transcripts/$id.mouse" "${mice:-0}"$'\n'; }
 
 # tui_read reads one byte (a character) of input into byte, within $1
 # seconds if given; it fails when none came. A read whose timer runs out as
@@ -468,10 +476,10 @@ tui_key() {
 				tui_next || true
 				tui_next || true
 				mice=$((${mice:-0} + 1))
-				tui_save
+				tui_save_mice
 			elif [[ $seq == '<'*[Mm] ]]; then
 				mice=$((${mice:-0} + 1))
-				tui_save
+				tui_save_mice
 			fi
 			;;
 		O) tui_next || true ;;
@@ -488,6 +496,7 @@ tui_key() {
 		;;
 	$'\r' | $'\n')
 		local l=$tui_line
+		printf '%s %s\n' "${EPOCHREALTIME/[.,]/}" "$l" >>"$transcripts/$id.entered"
 		tui_line=
 		tui_save
 		printf '\n'
@@ -527,7 +536,7 @@ spin() {
 	local end=$((SECONDS + $1)) next left t l st
 	local -a queued
 	spinning=1
-	printf 'spinning\n' >"$transcripts/$id.spin"
+	put "$transcripts/$id.spin" $'spinning\n'
 	while ((SECONDS < end)); do
 		st=
 		IFS= read -r st <"$transcripts/$id.spin" || true
@@ -548,7 +557,7 @@ spin() {
 		done
 	done
 	printf '\n'
-	printf 'done\n' >"$transcripts/$id.spin"
+	put "$transcripts/$id.spin" $'done\n'
 	spinning=
 	queued=(${tui_queue[@]+"${tui_queue[@]}"})
 	tui_queue=()
@@ -663,6 +672,7 @@ handle_line() {
 		printf '\e[?1003h\e[?1006h'
 		stty -icanon -echo min 1 time 0
 		tui=1
+		tui_save_mice
 		tui_save
 	elif [[ -n ${line//[[:space:]]/} ]]; then
 		answer "$line"

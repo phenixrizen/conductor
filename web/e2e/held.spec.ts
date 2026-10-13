@@ -35,6 +35,18 @@ function stubFiles(home: string, s: Session) {
     mice: () => Number(file('.mouse')().trim() || '0'),
     /** "spinning" while the stub draws, "done" once it is. */
     spin: () => file('.spin')().trim(),
+    /** The Enters the stub has taken, oldest first: when (ms since the epoch, on this machine's clock) and the line's text. */
+    enters: () => {
+      const log = file('.entered')()
+      return log
+        .slice(0, log.lastIndexOf('\n') + 1)
+        .split('\n')
+        .filter((l) => l !== '')
+        .map((l) => {
+          const sp = l.indexOf(' ')
+          return { at: Number(l.slice(0, sp)) / 1000, line: l.slice(sp + 1) }
+        })
+    },
   }
 }
 
@@ -48,20 +60,21 @@ type Held = { s: Session; bar: Locator; terminal: Locator; guestCtx: BrowserCont
  * turn.
  *
  * The revoke has to come between the text and its Enter, which Conductor writes once it has looked at the screen: a quarter
- * of a second and at most two more while the stub draws. A machine too busy to revoke in that time (a test's own wait, not
- * Conductor's) sees the Enter first; that session is put aside and the setup done again, three times at most. Once held, every
- * check is made.
+ * of a second and at most two more while the stub draws. A machine too busy to revoke in that time sees the Enter first: when
+ * the stub had taken the guest's Enter before the revoke was asked for (its log's time against the test's, one clock), that
+ * session is put aside and the setup done again, three times at most; an Enter taken any later fails the test, for it may have
+ * been written after the revoke. Once held, every check is made.
  */
 async function holdOne(page: Page, api: Api, browser: Browser, home: string, reply?: string): Promise<Held> {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const held = await tryHold(page, api, browser, home, reply)
     if (held) return held
-    test.info().annotations.push({ type: 'setup again', description: `try ${attempt}: the guest's Enter was written, the turn not held` })
+    test.info().annotations.push({ type: 'setup again', description: `try ${attempt}: the guest's Enter was taken before the revoke was asked for` })
   }
-  throw new Error("three tries, and each time the guest's Enter was written and the turn not held: the revoke came too late, or a revoked link's line was entered")
+  throw new Error("three tries, and each time the guest's Enter was taken before the revoke was asked for: the machine is too slow for the setup")
 }
 
-/** tryHold is one try of holdOne: null when the guest's Enter came before the revoke (the session stopped). */
+/** tryHold is one try of holdOne: null when the guest's Enter was taken before the revoke was asked for (the session stopped). */
 async function tryHold(page: Page, api: Api, browser: Browser, home: string, reply?: string): Promise<Held | null> {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'held line' })
   const stub = stubFiles(home, s)
@@ -102,13 +115,16 @@ async function tryHold(page: Page, api: Api, browser: Browser, home: string, rep
   // Enter, nothing slow in between.
   await expect.poll(stub.pending, { timeout: 10_000, intervals: [20], message: 'the guest line is typed' }).not.toBe('')
   if (reply) await bar.locator('input').press('Enter')
+  const revokeAsked = Date.now()
   await api.ok('DELETE', `/api/sessions/${s.id}/links/${link.id}`)
-  // Held, or the Enter came first: the stub has the line no longer (its Enter took it).
-  const typing = (p: string) => p !== '' && 'guest line'.startsWith(p)
+  // Held, or the guest's Enter was taken.
+  const guestEnter = () => stub.enters().find((e) => e.line === 'guest line')
   const outcome = async () =>
-    (await page.locator('[data-quick-reply][data-held="true"]').count()) > 0 ? 'held' : typing(stub.pending()) ? 'waiting' : 'entered'
+    (await page.locator('[data-quick-reply][data-held="true"]').count()) > 0 ? 'held' : guestEnter() ? 'entered' : 'waiting'
   await expect.poll(outcome, { timeout: 10_000, message: 'the turn is held' }).not.toBe('waiting')
   if ((await outcome()) !== 'held') {
+    const at = guestEnter()!.at
+    expect(at, "the guest's Enter was taken after the revoke was asked for: it may have been written after it").toBeLessThan(revokeAsked)
     await guestCtx.close()
     await api.stopSession(s.id)
     return null
@@ -156,6 +172,7 @@ test('a line typed for a link that is let go holds the session: the view says so
     await page.keyboard.press('Enter')
     await expect.poll(() => stub.entered('after'), { timeout: 30_000, message: 'the typed line was entered' }).toBe(true)
     expect(stub.typedLines()).not.toContain('guest line')
+    expect(stub.enters().map((e) => e.line)).not.toContain('guest line')
   } finally {
     await guestCtx.close()
     await api.stopSession(s.id)
@@ -181,6 +198,7 @@ test('a reply waiting for the held turn goes once someone types in the terminal,
     await expect(page.getByText(HELD)).toHaveCount(0, { timeout: 10_000 })
     await expect.poll(() => stub.entered('owner line'), { timeout: 30_000, message: 'the reply was entered' }).toBe(true)
     expect(stub.typedLines()).not.toContain('guest line')
+    expect(stub.enters().map((e) => e.line)).not.toContain('guest line')
   } finally {
     await guestCtx.close()
     await api.stopSession(s.id)
