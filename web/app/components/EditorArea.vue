@@ -324,7 +324,7 @@ watch(
   (paths) => {
     const bridge = props.nvim
     if (!bridge) return
-    for (const o of bridge.holds.orphans(paths)) if (o.id) bridge.close(o.id, true)
+    for (const o of bridge.holds.orphans(paths)) if (!o.lost) bridge.close(o.id, true)
   },
   { flush: 'post' },
 )

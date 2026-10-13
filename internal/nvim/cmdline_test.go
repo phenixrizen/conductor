@@ -274,12 +274,14 @@ func TestCommandLinesWorkAsInNeovim(t *testing.T) {
 	}
 }
 
-// A Neovim that dies is told to the page after every change it sent, though
-// the client's notifications are still on their way (slow here) when a key
-// finds it gone: the page keeps the text Neovim last held, so a change told
-// after the end would be lost. And told at once, with no key needed.
-func TestNeovimEndingIsToldAfterWhatItSent(t *testing.T) {
-	for _, key := range []bool{true, false} {
+// A Neovim that dies is told at once, with no key needed, and the changes it
+// sent before still reach the handler, though the client may deliver them
+// after the end (slowly here: its notifications run on a goroutine of their
+// own, which says nothing once it has run them all). The page keeps the text
+// a lost Neovim last held, so none may be dropped. A key after the end finds
+// it gone and tells nothing more.
+func TestANeovimThatDiesIsToldAtOnceAndItsChangesStillCome(t *testing.T) {
+	for _, key := range []bool{false, true} {
 		t.Run(fmt.Sprintf("a key after the end %v", key), func(t *testing.T) {
 			e, r := cmdlineEditor(t, "one\n", "")
 			var pid int
@@ -309,29 +311,43 @@ func TestNeovimEndingIsToldAfterWhatItSent(t *testing.T) {
 				defer r.mu.Unlock()
 				t.Fatalf("no end told; the events: %q", r.events)
 			}
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				r.mu.Lock()
+				n := len(r.changes)
+				last := ""
+				if n > 0 {
+					last = r.changes[n-1]
+				}
+				r.mu.Unlock()
+				if last == `0:1 ["onexy"]` {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the last change never came: %q", last)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			last, exited := -1, -1
-			for i, ev := range r.events {
-				switch {
-				case ev == "lines":
-					last = i
-				case strings.HasPrefix(ev, "exited"):
-					exited = i
+			n := 0
+			for _, ev := range r.events {
+				if strings.HasPrefix(ev, "exited") {
+					n++
+					if !strings.HasPrefix(ev, "exited error: ") {
+						t.Fatalf("the end: %q", ev)
+					}
 				}
 			}
-			if exited < last || r.events[exited] != "exited error: neovim ended" {
-				t.Fatalf("the end told before the changes, or not as the end: %q", r.events)
-			}
-			if got := r.changes[len(r.changes)-1]; got != `0:1 ["onexy"]` {
-				t.Fatalf("the last change told: %q", got)
+			if n != 1 {
+				t.Fatalf("%d ends told: %q", n, r.events)
 			}
 		})
 	}
 }
 
 // Neovim's own quit is told once, as a quit: the end of its output after it
-// tells nothing more.
+// (the client's reading ends) tells nothing more.
 func TestAQuitIsToldOnceAsAQuit(t *testing.T) {
 	e, r := cmdlineEditor(t, "one\n", "")
 	k := &typist{t: t, e: e, r: r}

@@ -1004,6 +1004,50 @@ func TestAnEditorEndedAsItOpensSaysItClosed(t *testing.T) {
 	}
 }
 
+// A Neovim that died may have sent changes the client delivers after its
+// end is told: they still reach the page, which keeps the text a lost
+// Neovim last held; the end is told once. A close the page asked for (or the
+// connection going) stops its frames.
+func TestALostNeovimsLastChangesComeAfterItsEnd(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &nvimEditor{id: "e1", cancel: func() {}, endWait: time.Second}
+	e.ready.Store(true)
+	h := &nvimHandler{s: s, sub: sub, e: e}
+	h.Exited("error: neovim ended")
+	h.Exited("error: msgpack/rpc: session closed")
+	h.Lines(0, 1, []string{"late"})
+	from := 0
+	evs := nvimEvents(t, sink, &from, proto.NvimLines, 5*time.Second)
+	var kinds []string
+	for _, ev := range evs {
+		kinds = append(kinds, ev.Kind)
+	}
+	if strings.Join(kinds, " ") != "closed lines" || evs[0].Reason != "error: neovim ended" || evs[1].Lines[0] != "late" {
+		t.Fatalf("the events: %+v", evs)
+	}
+	// Closed by the page: nothing more.
+	q := &nvimEditor{id: "e2", cancel: func() {}, endWait: time.Second}
+	q.ready.Store(true)
+	sub.nvimMu.Lock()
+	sub.nvims = map[string]*nvimEditor{"e2": q}
+	sub.nvimMu.Unlock()
+	s.NvimClose(sub, proto.NvimClose{T: proto.CtlNvimClose, ID: "e2"})
+	(&nvimHandler{s: s, sub: sub, e: q}).Lines(0, 1, []string{"after the close"})
+	time.Sleep(100 * time.Millisecond)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, f := range sink.frames[from:] {
+		if strings.Contains(string(f), "after the close") {
+			t.Fatal("a closed editor's frame was sent")
+		}
+	}
+}
+
 // A wrapper that leaves Neovim running as it exits: the editor's end lets
 // Neovim leave in its own time (its quit hook done), its connection kept
 // until it has, rather than killing it as soon as the wrapper is gone.

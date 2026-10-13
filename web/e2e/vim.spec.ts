@@ -269,7 +269,8 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
     await area.locator('[data-editor-unfold]').click()
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await expect(lines).toContainText('alphaxx')
-    // other.txt's Neovim is lost while its tab is not in front, its change not written: kept the same way.
+    // other.txt's Neovim, its change not written, changes its text while its tab is not in front (as a plugin may), then dies: the
+    // tab is kept the same way, with that last change.
     await tab('other.txt').click()
     await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
     await lines.click()
@@ -277,16 +278,16 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
     await page.keyboard.press('Escape')
     await expect(lines).toContainText('betayy', { timeout: 15_000 })
     await expect(tab('other.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
-    await page.keyboard.type(':preserve')
-    await page.keyboard.press('Enter')
-    await page.keyboard.type(`:lua vim.defer_fn(function() ${die} end, 1500)`)
+    await page.keyboard.type(`:lua vim.defer_fn(function() vim.api.nvim_buf_set_lines(0, 0, 1, false, {'betayy later'}) vim.cmd('preserve') ${die} end, 1500)`)
     await page.keyboard.press('Enter')
     await tab('notes.txt').click()
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await page.waitForTimeout(3000)
     await tab('other.txt').click()
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
-    await expect(lines).toContainText('betayy')
+    await expect(lines).toContainText('betayy later')
+    await lost.locator('[data-nvim-lost-copy]').click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 15_000 }).toContain('betayy later')
     // Reopen notes.txt: a new Neovim finds the lost one's swap file (it has left by now) and offers its change.
     await tab('notes.txt').click()
     await expect(lost).toBeVisible({ timeout: 15_000 })

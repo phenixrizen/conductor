@@ -121,6 +121,8 @@ function setText(text: string) {
   tellDirty()
 }
 let nvimId: string | null = null
+// The Neovim lost (utils/nvimLost) whose text this tab shows: the changes it sent before its end, which can come after it, still apply.
+let lostId: string | null = null
 let unsubscribe: (() => void) | null = null
 // The local echo (round 13, G5): plain characters typed in insert mode show at once, Neovim's acknowledgement settles them.
 let echo: NvimEcho | null = null
@@ -155,20 +157,22 @@ async function startNvim() {
   if (held?.state.lost && !freshModel) {
     // Lost (utils/nvimLost) while away, or before the tab was last left: its text stays, read only, until Reopen or a close.
     Object.assign(nvimState, held.state)
+    lostId = held.id
+    unsubscribe = bridge.subscribe(onNvimEvent)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
     editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
     tellNvim()
     tellDirty()
     return
   }
-  if (held && held.id && !freshModel) {
+  if (held && !held.state.lost && !freshModel) {
     nvimId = held.id
     Object.assign(nvimState, held.state)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
     editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
   } else {
     // Its model is gone with the text it mirrored: that Neovim ends as a lost connection ends it, its swap file keeping the changes.
-    if (held?.id) bridge.close(held.id)
+    if (held && !held.state.lost) bridge.close(held.id)
     try {
       const opened = await bridge.open(props.path)
       if (!editor) return
@@ -273,8 +277,40 @@ function listenForText(bridge: NvimBridge) {
     stopText = null
   }
 }
+/**
+ * While the tab is not in front (its Neovim held, or lost), its Neovim's changes still reach its text: a change on its way as the tab
+ * was left, one a plugin makes later, the last ones a lost Neovim sent, which can come after its end. Its word on changes not written
+ * goes to the held state. The holds stop it as the Neovim leaves them (taken back, its tab closed).
+ */
+function follow(bridge: NvimBridge, id: string): () => void {
+  const m = model
+  const monaco = monacoRef
+  const path = props.path
+  return bridge.subscribe((ev) => {
+    if (ev.id !== id || !m || !monaco || m.isDisposed()) return
+    const h = bridge.holds.peek(path)
+    if (ev.kind === 'lines') {
+      const edit = linesEdit({ first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }, m.getLineCount(), (n) => m.getLineLength(n))
+      m.applyEdits([{ range: new monaco.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
+      if (h?.id === id && h.state.lost) h.state.modified = true
+    } else if (ev.kind === 'modified' && h?.id === id) {
+      h.state.modified = h.state.lost ? h.state.modified || !!ev.modified : !!ev.modified
+    }
+  })
+}
 function onNvimEvent(ev: NvimEvent) {
-  if (!nvimId || ev.id !== nvimId || !editor || !model || !monacoRef) return
+  if (!editor || !model || !monacoRef) return
+  if (lostId && ev.id === lostId) {
+    // A lost Neovim's change that came after its end: the tab's text takes it.
+    if (ev.kind === 'lines' || (ev.kind === 'modified' && ev.modified)) {
+      if (ev.kind === 'lines') applyLinesEvent({ first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] })
+      nvimState.modified = true
+      tellNvim()
+      tellDirty()
+    }
+    return
+  }
+  if (!nvimId || ev.id !== nvimId) return
   const monaco = monacoRef
   switch (ev.kind) {
     case 'lines': {
@@ -357,15 +393,17 @@ function onNvimEvent(ev: NvimEvent) {
       // What Neovim sent and the echo held is shown first, with the characters typed it never acknowledged.
       const pending = closedByQuit(ev.reason) ? false : (echo?.finish() ?? false)
       nvimId = null
-      unsubscribe?.()
-      unsubscribe = null
       stopText?.()
       stopEcho()
       if (closedByQuit(ev.reason)) {
+        unsubscribe?.()
+        unsubscribe = null
         emit('nvimClosed')
         break
       }
-      // Lost, not quit: the tab stays with the text Neovim last held (read only, which Monaco is here), and the area says so.
+      // Lost, not quit: the tab stays with the text Neovim last held (read only, which Monaco is here), and the area says so. Its
+      // subscription stays: the changes it sent before its end can come after it.
+      lostId = ev.id ?? null
       nvimState.lost = ev.reason ?? 'error'
       nvimState.modified = lostHoldsChanges(nvimState.modified, pending, model.getValue(), props.text)
       nvimState.cmdline = ''
@@ -448,17 +486,20 @@ watch(
 onMounted(mount)
 onBeforeUnmount(() => {
   if (nvimId && props.nvim) {
-    // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends.
+    // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends. What
+    // the echo holds is shown first, and its changes from now on are followed into the tab's text.
     if (nvimState.modified) {
+      echo?.finish()
       const at = editor?.getPosition()
-      props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
+      props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, stop: follow(props.nvim, nvimId) })
     } else props.nvim.close(nvimId)
-  } else if (props.nvim && nvimState.lost) {
+  } else if (props.nvim && nvimState.lost && lostId) {
     // Neovim lost: its text stays the tab's for the next showing (a tab switched, the area folded), until Reopen or a close.
     const at = editor?.getPosition()
-    props.nvim.holds.hold(props.path, { id: '', state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
+    props.nvim.holds.hold(props.path, { id: lostId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, stop: follow(props.nvim, lostId) })
   }
   nvimId = null
+  lostId = null
   unsubscribe?.()
   unsubscribe = null
   stopText?.()
@@ -520,6 +561,9 @@ function answerConfirm(key: string) {
 /** Lets a lost Neovim's text go (Reopen, the person's choice): this editor leaves keeping nothing, and the next starts Neovim anew. */
 function releaseLost() {
   nvimState.lost = undefined
+  lostId = null
+  unsubscribe?.()
+  unsubscribe = null
 }
 defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite, releaseLost })
 </script>

@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -23,7 +22,10 @@ import (
 )
 
 // Handler receives what the editor reports. Its methods run on the client's
-// goroutine, one at a time; they must not block on the editor.
+// goroutine, one at a time; they must not block on the editor. Exited also
+// comes from elsewhere (a key that finds Neovim gone, the client's reading
+// as it ends) and may come before the last changes a Neovim that died sent,
+// which still come after it.
 type Handler interface {
 	// Lines says the buffer lines [first, last) became lines (0-based; last
 	// -1 means to the end, used when the whole buffer is sent).
@@ -120,14 +122,10 @@ func childEnv(parent []string) []string {
 type Editor struct {
 	v *nvim.Nvim
 	// cmd is the Neovim process; served is closed once the client's
-	// reading of it has ended, with how it ended in serveErr; reaping waits
-	// for both, once (reap).
-	cmd      *exec.Cmd
-	served   chan struct{}
-	serveErr *error
-	reaping  sync.Once
-	// output is Neovim's output as the client reads it (endReader).
-	output *endReader
+	// reading of it has ended; reaping waits for both, once (reap).
+	cmd     *exec.Cmd
+	served  chan struct{}
+	reaping sync.Once
 	// out is the read end of Neovim's output, the editor's own: closed
 	// last, as it is reaped, and as its context ends.
 	out *os.File
@@ -201,19 +199,31 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		return nil, err
 	}
 	served := make(chan struct{})
-	serveErr := new(error)
-	output := &endReader{r: out}
-	v, err := nvim.New(output, in, in, func(string, ...interface{}) {})
+	v, err := nvim.New(out, in, in, func(string, ...interface{}) {})
 	if err != nil {
 		close(served)
 		in.Close()
-		e := &Editor{cmd: cmd, served: served, serveErr: serveErr, out: out}
+		e := &Editor{cmd: cmd, served: served, out: out}
 		e.end()
 		return nil, err
 	}
+	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
 	go func() {
 		defer close(served)
-		*serveErr = v.Serve()
+		err := v.Serve()
+		// The client's reading ended with no close and no quit: Neovim is
+		// gone (it died; its output was cut), and is said so at once rather
+		// than at the next key. Its own quit is told before its output ends
+		// (conductor_leaving is a request it waits on); a close, or the
+		// context's end, which kills it, is the editor's own.
+		if isDone(ctx.Done()) || !e.closed.CompareAndSwap(false, true) {
+			return
+		}
+		reason := "error: neovim ended"
+		if err != nil {
+			reason = "error: " + err.Error()
+		}
+		h.Exited(reason)
 	}()
 	// Its context's end closes the editor's connection too, at once, and
 	// Neovim's output: what waits on Neovim (its start, keys, a close) is
@@ -223,7 +233,6 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		_ = v.Close()
 		_ = out.Close()
 	})
-	e := &Editor{v: v, h: h, cmd: cmd, served: served, serveErr: serveErr, output: output, out: out, ended: ctx.Done()}
 	fail := func(err error) (*Editor, error) {
 		e.end()
 		return nil, err
@@ -239,7 +248,9 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 	for _, cmd := range []string{
 		fmt.Sprintf("autocmd CursorMoved,CursorMovedI * call rpcnotify(%d, 'conductor_cursor', line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", ch),
 		fmt.Sprintf("autocmd BufWritePost * call rpcnotify(%d, 'conductor_written', expand('<afile>:p'))", ch),
-		fmt.Sprintf("autocmd VimLeavePre * call rpcnotify(%d, 'conductor_leaving')", ch),
+		// A request, which Neovim waits on: its quit is told before its
+		// output ends, so the client's end (Open) never takes it for a loss.
+		fmt.Sprintf("autocmd VimLeavePre * silent! call rpcrequest(%d, 'conductor_leaving')", ch),
 		fmt.Sprintf("autocmd BufModifiedSet * if str2nr(expand('<abuf>')) == bufnr() | call rpcnotify(%d, 'conductor_modified', &modified) | endif", ch),
 		// Another editor's swap file: open read-only instead of asking (the
 		// question would block the open), and say whose it is.
@@ -494,19 +505,11 @@ func (e *Editor) register() error {
 	}); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler("conductor_end", func(args ...interface{}) {
-		// Neovim's output ended (endReader), after everything it sent:
-		// Neovim is gone. Its own quit said so first (conductor_leaving).
-		if e.output.ended.Load() && e.closed.CompareAndSwap(false, true) {
-			e.h.Exited("error: neovim ended")
-		}
-	}); err != nil {
-		return err
-	}
-	return v.RegisterHandler("conductor_leaving", func(args ...interface{}) {
+	return v.RegisterHandler("conductor_leaving", func(args ...interface{}) error {
 		if e.closed.CompareAndSwap(false, true) {
 			e.h.Exited("quit")
 		}
+		return nil
 	})
 }
 
@@ -582,7 +585,9 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 		return ErrClosed
 	}
 	if _, err := e.v.Input(keys); err != nil {
-		e.lost(err)
+		if e.closed.CompareAndSwap(false, true) {
+			e.h.Exited("error: " + err.Error())
+		}
 		return ErrClosed
 	}
 	// A command waiting for its next key (the second g of gg, f's
@@ -600,66 +605,6 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 		e.h.Cursor(toInt(pos[0]), toInt(pos[1]), fmt.Sprint(pos[2]), toInt(pos[3]), toInt(pos[4]))
 	}
 	return nil
-}
-
-// endWait bounds how long a request that failed waits for the client's
-// reading to end (lost): Neovim gone, its output may still be held open (a
-// descendant of it), and the end is then reported without it.
-const endWait = time.Second
-
-// lost reports Neovim gone, from a request to it that failed (err). When its
-// output ended as a file does, the client read endNote after everything
-// Neovim wrote and the end is reported there, after all of it (the
-// conductor_end handler); otherwise (the client stopped reading on an error,
-// or its output is held open, or the editor's context ended) it is here.
-func (e *Editor) lost(err error) {
-	select {
-	case <-e.served:
-		if *e.serveErr == nil && e.output.ended.Load() {
-			return
-		}
-	case <-time.After(endWait):
-	}
-	if e.closed.CompareAndSwap(false, true) {
-		e.h.Exited("error: " + err.Error())
-	}
-}
-
-// endNote is the notification endReader adds where Neovim's output ends:
-// [2, "conductor_end", []] in MessagePack.
-var endNote = []byte{0x93, 0x02, 0xad, 'c', 'o', 'n', 'd', 'u', 'c', 't', 'o', 'r', '_', 'e', 'n', 'd', 0x90}
-
-// endReader is Neovim's output as the client reads it, with endNote after
-// its last byte. The client runs the notifications it reads on a goroutine
-// of its own, which says nothing once it has run them all; endNote, read
-// after everything Neovim wrote, runs after all of it, so a Neovim that
-// ended is reported (the conductor_end handler) after the last changes it
-// sent, never before them. Only an end of file adds it: the editor closing
-// that output (its context's end, reaping) does not.
-type endReader struct {
-	r     io.Reader
-	tail  []byte
-	ended atomic.Bool
-}
-
-func (r *endReader) Read(p []byte) (int, error) {
-	if !r.ended.Load() {
-		n, err := r.r.Read(p)
-		if err != io.EOF {
-			return n, err
-		}
-		r.tail = endNote
-		r.ended.Store(true)
-		if n > 0 {
-			return n, nil
-		}
-	}
-	if len(r.tail) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, r.tail)
-	r.tail = r.tail[n:]
-	return n, nil
 }
 
 // Report tells the handler the cursor and the mode now (the first showing).

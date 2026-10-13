@@ -45,6 +45,13 @@ type nvimEditor struct {
 	// Neovim's own exit); set under the subscription's nvimMu, so that an
 	// open still under way either sees it or is seen by whoever ends it.
 	gone atomic.Bool
+	// quiet stops its frames: the page closed it (NvimClose), or its
+	// connection is going (closeNvims). Neovim's own end (Exited) does not:
+	// a Neovim that died may have sent changes the client delivers after its
+	// end is told, and the page keeps the text it last held.
+	quiet atomic.Bool
+	// told says its end (`closed`) was sent, once.
+	told atomic.Bool
 	// ready gates the frames: nothing before `opened` is sent. It is set
 	// under the subscription's nvimMu, as Exited reads it.
 	ready atomic.Bool
@@ -250,10 +257,12 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	lost := e.lost
 	sub.nvimMu.Unlock()
 	if lost != "" {
-		// Neovim ended between taking its place and `opened` (its client
-		// lost it): its Exited, which ends the editor, could tell no one.
+		// Neovim ended between taking its place and `opened`: its Exited,
+		// which ends the editor, could tell no one.
 		stop()
-		sub.send(proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, ID: id, Kind: proto.NvimClosed, Reason: lost}))
+		if e.told.CompareAndSwap(false, true) {
+			sub.send(proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, ID: id, Kind: proto.NvimClosed, Reason: lost}))
+		}
 		return nil
 	}
 	if lines, err := ed.Lines(); err == nil {
@@ -340,6 +349,7 @@ func (s *Local) NvimClose(sub *Subscription, req proto.NvimClose) {
 	started := false
 	if e != nil {
 		e.gone.Store(true)
+		e.quiet.Store(true)
 		started = e.ed != nil
 	}
 	sub.nvimMu.Unlock()
@@ -361,6 +371,7 @@ func (s *Local) closeNvims(sub *Subscription) {
 	sub.nvimsClosed = true
 	for _, e := range sub.nvims {
 		e.gone.Store(true)
+		e.quiet.Store(true)
 		started := e.ed != nil
 		go func() {
 			e.end(false)
@@ -393,7 +404,7 @@ type nvimHandler struct {
 }
 
 func (h *nvimHandler) emit(ev proto.NvimEvent) {
-	if h.e.gone.Load() || !h.e.ready.Load() {
+	if h.e.quiet.Load() || !h.e.ready.Load() {
 		return
 	}
 	ev.T, ev.ID = proto.CtlNvimEvent, h.e.id
@@ -449,7 +460,7 @@ func (h *nvimHandler) Exited(reason string) {
 		h.e.lost = reason
 	}
 	h.sub.nvimMu.Unlock()
-	if ready {
+	if ready && h.e.told.CompareAndSwap(false, true) {
 		h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})
 	}
 	h.sub.nvimMu.Lock()
