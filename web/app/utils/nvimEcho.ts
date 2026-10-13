@@ -84,9 +84,9 @@ export class NvimEcho {
   /** Neovim is gone (markLost). */
   private lost = false
   /**
-   * The keys sent that Neovim has not confirmed it had: not said done (settled), nor followed by a guess its line holds where it was
-   * typed (keys are done in order). Every key, whatever the mode the page last knew (keys typed before Neovim's word on the mode came
-   * are not classified wrongly), kept apart from what shows, so none goes without a trace.
+   * The keys sent that Neovim has not said it has done (settled): every key, whatever the mode the page last knew (keys typed before
+   * Neovim's word on the mode came are not classified wrongly), kept apart from what shows, so none goes without a trace. Only that
+   * word retires them: a line that holds what was typed may have been made of fewer keys (a mapping that expands one).
    */
   private typed: Guess[] = []
 
@@ -98,12 +98,6 @@ export class NvimEcho {
     return this.lost ? this.typed.map((g) => g.text).join('') : ''
   }
 
-  /** Neovim's line holds these guesses where they were typed: they, and every key before them, are confirmed. */
-  private confirm(gs: Guess[]) {
-    if (!gs.length) return
-    const upTo = Math.max(...gs.map((g) => g.seq))
-    this.typed = this.typed.filter((g) => g.seq > upTo)
-  }
 
   /** Neovim is gone: what it may never have had is kept aside from here on (unconfirmed). */
   markLost(): void {
@@ -187,7 +181,6 @@ export class NvimEcho {
       this.most = 0
       return
     }
-    this.confirm(held)
     this.guesses = rest
     this.most = 0
     if (!rest.length) {
@@ -338,7 +331,6 @@ export class NvimEcho {
   private relay(base: { line: number; col: number; text: string } | null, stands: boolean): boolean {
     if (base && this.guesses.length && !stands) {
       const k = this.holds(base)
-      if (k > 0) this.confirm(this.guesses.slice(0, k))
       const rest = k < 0 ? [] : this.guesses.slice(k)
       if (rest.length) {
         const done = this.guesses
@@ -402,7 +394,6 @@ export class NvimEcho {
       .slice(0, held)
       .map((g) => g.text)
       .join('')
-    this.confirm(this.guesses.slice(0, held))
     this.guesses = this.guesses.slice(held)
     if (!this.guesses.length) {
       this.base = null

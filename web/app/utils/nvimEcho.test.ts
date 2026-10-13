@@ -411,14 +411,18 @@ describe('the local echo when Neovim is lost', () => {
     expect(d2.text).toEqual(['alpha()'])
     e2.markLost()
     expect(e2.unconfirmed).toBe('a')
-    // What Neovim's line held where it was typed is confirmed, and not kept aside.
+    // A line holding what was typed confirms nothing (a mapping may make x into xy, y never sent on): only the word that keys are
+    // done does.
     const d3 = doc('alpha')
     const e3 = inInsert(d3)
     e3.send('x', { line: 1, col: 6 })
     e3.send('y', { line: 1, col: 7 })
-    e3.lines({ first: 0, last: 1, lines: ['alphax'] })
+    e3.lines({ first: 0, last: 1, lines: ['alphaxy'] })
     e3.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)
     e3.markLost()
+    expect(d3.text).toEqual(['alphaxy'])
+    expect(e3.unconfirmed).toBe('xy')
+    e3.noteSettled(1)
     expect(e3.unconfirmed).toBe('y')
   })
 

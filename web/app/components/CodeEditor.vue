@@ -161,6 +161,7 @@ function echoDoc(m: MonacoEditor.ITextModel): EchoDoc {
 }
 const nvimState: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: false }
 function tellNvim() {
+  nvimState.unsettled = !!echo?.unsettled
   emit('nvim', { ...nvimState })
 }
 async function startNvim() {
@@ -241,6 +242,7 @@ function sendKeys(bridge: NvimBridge, keys: string) {
     markGuesses()
     tellDirty()
   }
+  if (r.seq && !nvimState.unsettled) tellNvim()
 }
 
 // Text with no key press (round 13, G4): an input method's composed word, a dead key's character, dictation. Taken on the way down to
@@ -442,6 +444,7 @@ function onNvimEvent(ev: NvimEvent) {
       break
     case 'settled':
       echo?.noteSettled(ev.ack ?? 0)
+      if (nvimState.unsettled && !echo?.unsettled) tellNvim()
       // What it held is shown now: its wait for an acknowledgement is over.
       if (echo && !echo.holding && holdTimer) {
         clearTimeout(holdTimer)

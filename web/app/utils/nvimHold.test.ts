@@ -120,6 +120,20 @@ describe('NvimHolds', () => {
     ])
   })
 
+  it('says whether a kept Neovim, not lost, has keys it has not said it has done', () => {
+    const h = new NvimHolds()
+    const text = ['alpha']
+    const echo = new NvimEcho({ line: (n) => text[n - 1] ?? '', setLine: (n, t) => void (text[n - 1] = t), applyLines: () => {} })
+    echo.send('j', { line: 1, col: 1 })
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 }, echo })
+    expect(h.busy()).toBe(true)
+    echo.noteSettled(1)
+    expect(h.busy()).toBe(false)
+    echo.send('k', { line: 1, col: 1 })
+    h.ended('e1', 'error: neovim ended')
+    expect(h.busy()).toBe(false)
+  })
+
   it('stops following what it clears, and what another hold of the same path replaces', () => {
     const h = new NvimHolds()
     const a = stopper()

@@ -267,6 +267,7 @@ onMounted(() => {
   keymap.value = readKeymap(typeof localStorage === 'undefined' ? null : localStorage)
 })
 function setKeymap(k: Keymap) {
+  if (keymapBusy.value) return
   keymap.value = k
   writeKeymap(typeof localStorage === 'undefined' ? null : localStorage, k)
 }
@@ -307,9 +308,16 @@ function answerConfirm(key: string) {
 function answerSwap(choice: NvimSwapChoice) {
   ;(editorRef.value as { answerSwap?: (c: NvimSwapChoice) => void } | null)?.answerSwap?.(choice)
 }
+// Keys on their way to a Neovim (in front, or kept for a tab): the keymap waits for them, since what they make is Neovim's to show.
+const holdsTick = ref(0)
+const keymapBusy = computed(() => {
+  void holdsTick.value
+  return keymap.value === 'nvim' && (!!nvimState.value?.unsettled || !!props.nvim?.holds.busy())
+})
 const keymapTip = computed(() => {
   // Each keymap keeps its own text (Neovim's buffer, Monaco's model): switching with changes not written would lose them.
   if (dirty.size) return 'Save or discard the changes first: the other keymap would not have them'
+  if (keymapBusy.value) return 'Neovim is still taking keys: a moment'
   if (keymap.value === 'nvim') return nvimWhy.value ? `${nvimWhy.value} · Monaco's keys meanwhile · click for Monaco's keys` : "Neovim keys: the real Neovim on the session's machine holds the file · click for Monaco's keys"
   return "Monaco's keys · click for Neovim keys (the real Neovim on the session's machine)"
 })
@@ -381,6 +389,7 @@ watch(
     stopListening?.()
     stopListening =
       holds?.listen((path, held) => {
+        holdsTick.value++
         const t = tabs.value.tabs.find((x) => x.kind === 'file' && x.path === path)
         if (!t) return
         // Held, its editor is not up, though its tab may be in front (the area folded); let go as the tab in front comes up again, its
@@ -627,7 +636,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         </div>
         <div class="flex flex-none items-center gap-0.5 px-1">
           <UTooltip v-if="nvim" :text="keymapTip">
-            <UButton :disabled="dirty.size > 0" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
+            <UButton :disabled="dirty.size > 0 || keymapBusy" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
           </UTooltip>
           <UTooltip text="Terminal only (T · Alt+T in the terminal)">
             <UButton icon="i-lucide-panel-bottom" size="xs" color="neutral" variant="ghost" aria-label="Terminal only" data-editor-fold @click="tabs = toggleFold(tabs)" />

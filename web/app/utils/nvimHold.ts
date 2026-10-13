@@ -102,6 +102,11 @@ export class NvimHolds {
     }
     return out
   }
+  /** Whether a Neovim kept for a tab, not lost, has keys it has not said it has done. */
+  busy(): boolean {
+    for (const h of this.held.values()) if (!h.state.lost && h.echo?.unsettled) return true
+    return false
+  }
   clear(): void {
     for (const h of this.held.values()) h.stop?.()
     this.held.clear()
