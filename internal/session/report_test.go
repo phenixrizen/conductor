@@ -111,7 +111,8 @@ func TestAnEndedSessionNeedsNothing(t *testing.T) {
 // Only the terminal's reports, of any kind, mixed and of any number, type
 // nothing; a key among them, or after them, is typing; a report a write
 // begins and the next finishes types nothing either, and what a write
-// begins is carried to the next; the Escape key alone is a key.
+// begins is carried to the next; the Escape key alone is told by the next
+// write.
 func TestTypesSomething(t *testing.T) {
 	many := strings.Repeat("\x1b[<35;10;10M", 30) // 360 bytes
 	for in, want := range map[string]bool{
@@ -128,8 +129,8 @@ func TestTypesSomething(t *testing.T) {
 		"\x1b[<35;1":                      false, // begun, the rest to come
 		"k":                               true,
 		"\x15":                            true,
-		"\x1b":                            true, // Escape
-		"\x1b[A":                          true, // an arrow key
+		"\x1b":                            false, // Escape, or a report begun: the next write tells
+		"\x1b[A":                          true,  // an arrow key
 		"\x1b[<35;10;10Mk":                true,
 		many + "k":                        true,
 		"\x1b[M\x01**":                    true,
@@ -151,5 +152,35 @@ func TestTypesSomething(t *testing.T) {
 	}
 	if typed, _ := typesSomething(nil, []byte("0;10M")); !typed {
 		t.Fatal("what looks like a report's rest, with none begun, types")
+	}
+	if typed, _ := typesSomething([]byte("\x1b"), []byte("k")); !typed {
+		t.Fatal("Escape, then a key, types")
+	}
+}
+
+// Every report the terminal sends by itself, cut between two writes at any
+// byte, types nothing in either: the first's end is carried, and the second
+// finishes it.
+func TestAReportCutAnywhereTypesNothing(t *testing.T) {
+	for _, r := range []string{
+		"\x1b[24;80R", "\x1b[?24;80R", "\x1b[0n", "\x1b[?62;22c", "\x1b[>0;276;0c", "\x1b[?2004;2$y",
+		"\x1b[8;24;80t", "\x1b[I", "\x1b[O",
+		"\x1b]11;rgb:ffff/ffff/ffff\x07", "\x1b]10;rgb:0000/0000/0000\x1b\\", "\x1b]4;1;rgb:cd00/0000/0000\x07",
+		"\x1bP>|xterm(380)\x1b\\", "\x1bP1$r0m\x1b\\",
+		"\x1b[<35;10;10M", "\x1b[<0;3;4m", "\x1b[35;10;10M", "\x1b[M#**",
+	} {
+		if typed, rest := typesSomething(nil, []byte(r)); typed || rest != nil {
+			t.Errorf("%q whole: typed %v, rest %q", r, typed, rest)
+		}
+		for k := 1; k < len(r); k++ {
+			typed, rest := typesSomething(nil, []byte(r[:k]))
+			if typed || string(rest) != r[:k] {
+				t.Errorf("%q cut at %d: typed %v, rest %q", r, k, typed, rest)
+				continue
+			}
+			if typed, rest := typesSomething(rest, []byte(r[k:])); typed || rest != nil {
+				t.Errorf("%q cut at %d, its rest: typed %v, rest %q", r, k, typed, rest)
+			}
+		}
 	}
 }

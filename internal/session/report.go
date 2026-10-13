@@ -45,9 +45,15 @@ var oneReport = regexp.MustCompile(`^(?:` + terminalReports +
 var legacyMouse = []byte("\x1b[M")
 
 // reportBegun matches the start of a report that data ends before it is
-// done: the rest comes with the connection's next write (a read of a
-// terminal of the person's own cut it there). A lone ESC is the Escape key.
-var reportBegun = regexp.MustCompile(`^\x1b(?:\[[<?>]?[\d;$]{0,24}|\][\d;]{0,8}(?:rgb:[0-9a-fA-F/]{0,64})?|P[>!|0-9$+]{0,4}[^\x1b]{0,128})$`)
+// done, cut anywhere: the rest comes with the connection's next write (a
+// read of a terminal of the person's own cut it there). A lone ESC may be
+// the Escape key, or a report's first byte: it is taken as begun, and the
+// next write tells (a key after it is typing).
+var reportBegun = regexp.MustCompile(`^\x1b(?:` +
+	`\[[<?>]?[\d;]{0,24}\$?` + // CSI: CPR, DSR, DA, DECRPM, window, focus; SGR and urxvt mouse
+	`|\][\d;]{0,8}(?:r(?:g(?:b(?::[0-9a-fA-F/]{0,64}\x1b?)?)?)?)?` + // OSC colour reply, its ST begun
+	`|P[>!|0-9$+]{0,4}[^\x1b]{0,128}\x1b?` + // DCS reply, its ST begun
+	`)?$`)
 
 // maxReportCarry bounds what of a report begun a write leaves for the next.
 const maxReportCarry = 160
@@ -66,16 +72,15 @@ func reportLen(data []byte) int {
 // typesSomething reports whether data, written after carry (a report the
 // connection's last write began and did not finish), holds anything a
 // person typed: anything but a terminal's own reports and its mouse reports
-// (the pointer, moved or clicked, types nothing), whole, or begun at its end;
-// any number of them, mixed. rest is the report data ends before it is done,
-// for the next write's carry (nil for none). It looks at no more than the
-// write, at most proto.MaxInput bytes.
+// (the pointer, moved or clicked, types nothing), whole, or begun at its end
+// (a lone ESC among them, the Escape key or a report's first byte, which the
+// next write tells apart); any number of them, mixed. rest is the report data
+// ends before it is done, for the next write's carry (nil for none). It looks
+// at no more than the write, at most proto.MaxInput bytes.
 func typesSomething(carry, data []byte) (typed bool, rest []byte) {
 	buf := data
 	if len(carry) > 0 {
 		buf = append(append(make([]byte, 0, len(carry)+len(data)), carry...), data...)
-	} else if len(data) == 1 && data[0] == 0x1b {
-		return true, nil // the Escape key
 	}
 	for len(buf) > 0 {
 		if buf[0] != 0x1b {

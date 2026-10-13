@@ -304,6 +304,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		s.typedEntry(sub, text, st)
 	}
 	res, err = s.enter(ctx, sub, res, st)
+	err = st.withdrawnTyped(res, err)
 	if res.Typed && !res.Entered && errors.Is(err, ErrRevoked) {
 		// Its text is typed and its link no longer opens the session: no
 		// Enter, and the turn held for a person (holdTyped).
@@ -392,10 +393,26 @@ func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
 	if errors.Is(err, errEnterLater) {
 		res, err = s.pressEnterHeld(sub, res, st)
 	}
+	err = st.withdrawnTyped(res, err)
 	s.finished(sub, res, err)
 	if res.Typed && !res.Entered && errors.Is(err, ErrRevoked) {
 		s.holdTyped()
 	}
+}
+
+// withdrawnTyped is err for a submission that ended with res, err, its
+// sender's link looked at once more when its text is typed and its Enter
+// was left out with no error (a prompt come meanwhile, a dialog drawn on
+// the screen): why the link no longer opens the session then, so that the
+// turn is held for a person as for any typed text whose link went, rather
+// than given to the next line, which would join the text.
+func (st submitState) withdrawnTyped(res SubmitResult, err error) error {
+	if err == nil && res.Typed && !res.Entered {
+		if why := st.wait.withdrawn(); why != nil {
+			return why
+		}
+	}
+	return err
 }
 
 // holdTyped holds the session's turn, which its caller holds and gives

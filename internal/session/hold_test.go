@@ -170,7 +170,8 @@ func TestThePointerDoesNotEndTheHold(t *testing.T) {
 	heldShows(t, s)
 	next := submitAsync(s, Submission{Text: "second", ByName: "run"})
 	for _, report := range []string{"\x1b[<35;10;10M", "\x1b[<0;3;4M\x1b[<0;3;4m", "\x1b[35;10;10M", "\x1b[M#**",
-		"\x1b[I\x1b[<35;10;10M", strings.Repeat("\x1b[<35;10;10M", 30), "\x1b[<35;1", "0;10M\x1b[O"} {
+		"\x1b[I\x1b[<35;10;10M", strings.Repeat("\x1b[<35;10;10M", 30), "\x1b[<35;1", "0;10M\x1b[O",
+		"\x1b]11;rg", "b:ffff/ffff/ffff\x1b", "\\"} {
 		if err := s.Input(owner, []byte(report)); err != nil {
 			t.Fatal(err)
 		}
@@ -431,6 +432,34 @@ func TestAStartupQuestionShowsOverTheHold(t *testing.T) {
 			heldCleared(t, s)
 		})
 	}
+}
+
+// A dialog drawn in a line's pause leaves its Enter out; its link revoked
+// meanwhile, the turn is held all the same, so that once the dialog goes
+// (answered by the pointer, say) no line joins the text.
+func TestADialogInThePauseOfALineWhoseLinkWentHoldsTheTurn(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond, Questions: approvalQuestions()}))
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	got := returnsWithin(t, 10*time.Second, "the submission", func() submitted { return <-done })
+	if !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("result %+v, %v; want typed, not entered, revoked", got.res, got.err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !s.Held() {
+		if time.Now().After(deadline) {
+			t.Fatal("the turn was never held")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
 }
 
 // A question answered while the turn is still held (keys typed before the
