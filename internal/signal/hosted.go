@@ -707,6 +707,20 @@ func (h *HostedSession) Connected() bool {
 	return h.conn != nil
 }
 
+// ViewersWaiting is how many of the viewers' messages wait in line for room
+// in the host connection's queue (sendFrom); 0 with no connection.
+func (h *HostedSession) ViewersWaiting() int {
+	h.mu.Lock()
+	conn := h.conn
+	h.mu.Unlock()
+	if conn == nil {
+		return 0
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	return len(conn.waiting)
+}
+
 // AddViewer registers a browser and notifies the host. linkLabel travels to
 // the host for its roster; the link token never does. See AddViewerWith.
 func (h *HostedSession) AddViewer(id string, role session.Role, linkID, linkLabel string) (*Viewer, error) {

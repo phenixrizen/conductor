@@ -272,16 +272,23 @@ func stallWaitingViewer(t *testing.T, e *testEnv) waitingViewer {
 			sent.Add(int64(len(frame)))
 		}
 	}()
-	// The viewers' share of the host's queue holds 7 MiB: the server
-	// reads the viewer at least that far before it stops. A pause short of
-	// it is a loaded machine's, and the test waits on.
+	// The server stops reading the viewer once a frame of its waits in line
+	// for room in the host's queue, the viewers' share of it (7 MiB) full:
+	// the test waits for that wait, and the viewer has sent the share by
+	// then. (A pause in what the viewer sends says less: a loaded machine
+	// pauses short of it.)
 	deadline := time.Now().Add(30 * time.Second)
-	for last := int64(-1); last != sent.Load() || last < 7<<20; {
+	for hs.ViewersWaiting() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("the server stopped reading after %d bytes", sent.Load())
+			t.Fatalf("no frame of the viewer's came to wait for the host after %d bytes", sent.Load())
 		}
-		last = sent.Load()
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
+	}
+	for sent.Load() < 7<<20 { // the writer counts a frame once its write returns
+		if time.Now().After(deadline) {
+			t.Fatalf("a frame waited for the host after %d bytes, short of the viewers' share", sent.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return waitingViewer{hc: hc, hs: hs, v: v, viewerID: viewerID}
 }
