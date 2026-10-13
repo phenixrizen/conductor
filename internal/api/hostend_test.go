@@ -299,6 +299,52 @@ func TestAPublishedSessionsLinkViewerGetsItsLastOutputThenItsEnd(t *testing.T) {
 	}
 }
 
+// The publishing server's revoke of its ended session's link, once the
+// publication has handed the end on, still stops what the rendezvous writes
+// the link's viewer: the publication outlasts the session's end for as long
+// as the rendezvous may be writing, and carries the revoke there.
+func TestAPublishersRevokeAfterTheEndStopsWhatTheRendezvousStillWrites(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	writes := newHoldWrites(t)
+	rendezvous.srv.viewerSeam = writes.seam()
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	start := filepath.Join(t.TempDir(), "go")
+	id := local.launch("sh", []string{"-c", lastWords, "sh", start, "2000"})["id"].(string)
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	hostedID := local.srv.publishedOf(id).ID()
+	resp, out := local.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view", "label": "guest"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, out)
+	}
+	linkID := out["link"].(map[string]any)["id"].(string)
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	guest := dialViewer(t, rendezvous, hostedID, token)
+	joinRelay(t, guest)
+
+	writes.hold.Store(true)
+	if err := os.WriteFile(start, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkLetGo(t, rendezvous, hostedID, linkID)
+	// The publication has handed on what it had by now (its settle takes
+	// milliseconds here).
+	time.Sleep(time.Second)
+	if resp, out := local.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d %v", resp.StatusCode, out)
+	}
+	writes.let()
+	if end := readTheEnd(t, guest, 10*time.Second); end.outputs > 1 {
+		t.Fatalf("%d output frames were written after the revoke, the one being written at most", end.outputs)
+	}
+}
+
 // A server session's link viewer on a slow network is given what the
 // session printed before it ended, then its end, as a hosted one is: the
 // output still queued for it as its link ends with the session is written

@@ -443,15 +443,19 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 		// An ended session took its links with it: revoking one a dialog
 		// still shows is done. Its viewers may still be written what the
 		// session's end owed them (for closeWait at most): the revoke stops
-		// that, here and at the rendezvous, which forgot the link too.
+		// that, here, and at the rendezvous while the publication outlasts
+		// the end for as long (hostagent's endLinger); one it cannot carry
+		// there then says so.
 		if d, ok := s.registry.Get(id); ok && d.Info().Status.Ended() {
 			d.DisconnectLink(linkID)
-			if pub := s.publishedOf(id); pub != nil {
-				s.track(func() {
-					ctx, cancel := context.WithTimeout(context.Background(), closeWait)
-					defer cancel()
-					_ = pub.Revoke(ctx, linkID)
-				})
+			if pub := s.publishedOf(id); pub != nil && !ended(pub.Done()) {
+				ctx, cancel := context.WithTimeout(r.Context(), closeWait)
+				err := pub.Revoke(ctx, linkID)
+				cancel()
+				if err != nil && !strings.Contains(err.Error(), "not_found") {
+					writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not revoke the link: "+err.Error())
+					return
+				}
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -463,6 +467,16 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 		s.recordLink(id, "link revoked: "+linkLabelOr(label))
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ended says whether done is closed.
+func ended(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 // hasRemoteLink says whether session id's current publication holds linkID.

@@ -975,6 +975,12 @@ func (a *agent) watchStatus(ctx context.Context, w *controlWriter) {
 // (handViewersTheEnd).
 const endDrain = 2 * time.Second
 
+// endLinger is how long a publication outlasts its session's end: as long
+// as the rendezvous may still write the viewers of the session's links what
+// it relayed them last (the api's closeWait), during which a revoke of one
+// of those links is still carried there (Published.Revoke).
+const endLinger = 5 * time.Second
+
 // handViewersTheEnd waits, at most endDrain, until the session's last
 // frames for its viewers, its final status entry among them, have been
 // handed to their transports, and the WebRTC viewers' data channels have
