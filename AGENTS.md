@@ -100,9 +100,11 @@ went.
   only when the owner sets it aside or it is a feature of its own.
 - **The board follows the work.** A card moves to In progress when its
   branch starts and In review when the pull request that finishes it
-  opens. That pull request's body says `Fixes #N`, so its merge closes the
-  issue, and the card goes to Done (`scripts/board.py N Done` if the board
-  has not moved it). A pull request that does only part of the work says
+  opens. That pull request's body says `Fixes #N`, so its merge into
+  `main` closes the issue, and the card goes to Done (`scripts/board.py N
+  Done` if the board has not moved it). GitHub acts on `Fixes #N` only for
+  a merge into `main`: a pull request into another branch closes nothing,
+  and its issue stays open, In review, until the change reaches `main`. A pull request that does only part of the work says
   `Part of #N`, which closes nothing: the issue stays open and its card In
   progress until the pull request that finishes it merges. An issue that
   is finished but was not closed by a merge (its pull request said neither)
