@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -133,42 +134,84 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 	}
 
 	var output atomic.Int64
-	readerEnded := readAll(ctx, reader, &output)
+	var told atomic.Value // the last error code the reader was sent
+	readerEnded := make(chan error, 1)
+	go func() {
+		for {
+			_, data, err := reader.c.Read(ctx)
+			if err != nil {
+				readerEnded <- err
+				return
+			}
+			f, err := proto.Decode(data)
+			switch {
+			case err != nil:
+			case f.Type == proto.TypeOutput:
+				output.Add(int64(len(f.Payload)))
+			case f.Type == proto.TypeControl:
+				var m struct{ T, Code string }
+				if json.Unmarshal(f.Payload, &m) == nil && m.T == proto.CtlError {
+					told.Store(m.Code)
+				}
+			}
+		}
+	}()
 	// The stalled viewer reads nothing from now on; a write of the host's
-	// was given 15 s, so the watch runs past that.
+	// was given 15 s, so the watch runs past that, the reader sent output
+	// all along. Then it runs on until the server has let the stalled
+	// viewer go, once its socket is full and a write to it has waited its
+	// time, or its queue is past its bound: the slower the output comes, the
+	// later, and on a loaded machine (where it comes at a third of an idle
+	// one's) past the 20 s. Read before then, the stalled viewer's socket
+	// would empty, and it might never be let go. The reader is watched
+	// throughout, but past the 20 s its host may let it go too, as a slow
+	// consumer: on a loaded machine the host's program prints faster than
+	// what the host relays to two viewers, and a viewer that falls a
+	// megabyte behind is let go, by design. Any other end fails, as does a
+	// reader sent no output for 2 s while it is on.
 	watch := time.After(20 * time.Second)
+	giveUp := time.After(2 * time.Minute)
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
+	look := time.NewTicker(50 * time.Millisecond)
+	defer look.Stop()
 	var last int64
-	for watching := true; watching; {
+	readerOn := true
+	for watched, letGo := false, false; !watched || !letGo; {
 		select {
 		case err := <-readerEnded:
-			t.Fatalf("the reading viewer lost the session: %v (host disconnects: %d)", err, strings.Count(logs.String(), "host disconnected"))
-		case <-tick.C:
-			n := output.Load()
-			if n == last {
-				t.Fatalf("the reading viewer was sent no output for 2 s (%d bytes in all)", n)
+			if code, _ := told.Load().(string); !watched || code != proto.ErrCodeSlowConsumer {
+				t.Fatalf("the reading viewer lost the session: %v, told %q (host disconnects: %d)", err, code, strings.Count(logs.String(), "host disconnected"))
 			}
-			last = n
+			t.Logf("the host let the reader go as a slow consumer, %d bytes in", output.Load())
+			readerOn = false
+		case <-tick.C:
+			if n := output.Load(); readerOn && n == last {
+				t.Fatalf("the reading viewer was sent no output for 2 s (%d bytes in all)", n)
+			} else {
+				last = n
+			}
 		case <-watch:
-			watching = false
-		}
-	}
-	if n := strings.Count(logs.String(), "host disconnected"); n != 0 {
-		t.Fatalf("the host's connection closed %d times", n)
-	}
-	// The server lets the stalled viewer go once its socket is full and a
-	// write to it has waited its time, or its queue is past its bound: the
-	// slower the output comes, the later, and on a loaded machine (where it
-	// comes at a third of an idle one's) past the watch. Read before then,
-	// its socket would empty, and it might never be let go.
-	for giveUp := time.Now().Add(2 * time.Minute); hosted.LinkViewers()[stalledLink] != 0; time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(giveUp) {
+			watched = true
+		case <-look.C:
+			letGo = hosted.LinkViewers()[stalledLink] == 0
+		case <-giveUp:
 			t.Fatalf("the stalled viewer was never let go (%d bytes of output to the reader)", output.Load())
 		}
 	}
 	if n := strings.Count(logs.String(), "host disconnected"); n != 0 {
 		t.Fatalf("the host's connection closed %d times", n)
+	}
+	// The reader, still on, goes on being sent the output.
+	for at, fresh := output.Load(), time.Now().Add(10*time.Second); readerOn && output.Load() == at; time.Sleep(10 * time.Millisecond) {
+		select {
+		case err := <-readerEnded:
+			t.Fatalf("the reading viewer lost the session as the stalled one was let go: %v", err)
+		default:
+		}
+		if time.Now().After(fresh) {
+			t.Fatal("the reading viewer was sent nothing after the stalled one was let go")
+		}
 	}
 	// The stalled viewer was let go: what it reads now ends in a close.
 	rctx, rcancel := context.WithTimeout(t.Context(), 20*time.Second)
