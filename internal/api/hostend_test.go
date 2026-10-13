@@ -571,6 +571,55 @@ func guestThrough(t *testing.T, e *testEnv, host *fakeHost, token string) (*wsCl
 	}
 }
 
+// A switchyard that could not delete its file of a link as the session's end
+// took the link still has the host's revoke delete it later; that revoke
+// also stops what the end still writes the link's viewers.
+func TestAHostsRevokeOfALinkWhoseFileStayedStopsTheEndsDrain(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("needs a directory whose mode keeps its owner from deleting in it")
+	}
+	dir := filepath.Join(t.TempDir(), "data")
+	e := keptSwitchyard(t, dir, nil)
+	writes := newHoldWrites(t)
+	e.srv.viewerSeam = writes.seam()
+	hi, hs := instanceHost(e, "instance-secret-0123456789", "1")
+	host, _ := dialFakeHostWith(t, e, hi, hs, "")
+	linkID, token := mintHostLink(t, host, "r1")
+	guest, viewerID := guestThrough(t, e, host, token)
+	writes.hold.Store(true)
+	for i := range 20 {
+		relayOutput(t, host, viewerID, fmt.Sprintf("line %d\r\n", i))
+	}
+	links := filepath.Join(dir, "links")
+	if err := os.Chmod(links, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(links, 0o700) })
+	host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+	linkLetGo(t, e, host.sessionID, linkID)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := e.srv.links.Get(linkID); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the link never left with its session")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.Chmod(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv", LinkID: linkID})
+	if m := linkAnswer(t, host, "rv"); m["t"] != proto.HostLinkRevoked {
+		t.Fatalf("the revoke once its file can go: %v", m)
+	}
+	writes.let()
+	if end := readTheEnd(t, guest, 10*time.Second); end.outputs > 1 {
+		t.Fatalf("%d output frames were written after the revoke, the one being written at most", end.outputs)
+	}
+}
+
 // A host that reports the end and then leaves, as every host does: a revoke
 // of the link after that still stops what the end writes its viewer, though
 // the host's leaving let the viewer go from the session.

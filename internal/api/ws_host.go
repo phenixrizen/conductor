@@ -403,13 +403,14 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		}
 		// One the switchyard no longer holds whose file waits to be
 		// deleted is still its host's to revoke: the delete is tried again.
+		// A session that ended took its links with it, and its viewers may
+		// still be written what its end owed them: the revoke stops that,
+		// whatever the switchyard still keeps of the link.
+		if hs.Info().Status.Ended() {
+			hs.DisconnectLink(m.LinkID)
+		}
 		if !found {
 			found = s.retryUndeleted(m.LinkID, hs.Owner())
-		}
-		// A session that ended took its links with it, and its viewers may
-		// still be written what its end owed them: the revoke stops that.
-		if !found && hs.Info().Status.Ended() {
-			hs.DisconnectLink(m.LinkID)
 		}
 		switch {
 		case !found:
