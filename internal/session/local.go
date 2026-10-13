@@ -2475,8 +2475,10 @@ func anyKey(keys [][]byte, ok func(k []byte) bool) bool {
 const maxKeyCarry = 32
 
 // keyReader splits the writes to a program, in order, into the keys it
-// reads from them: an escape sequence (CSI, ESC [ … final byte; SS3, ESC O
-// x) is one key, as is a control string (OSC ESC ], DCS ESC P, SOS ESC X,
+// reads from them: a terminal's report or a mouse report is one key, read
+// by reportLen as typesSomething reads it (one grammar: what is a report
+// here is one there), an escape sequence (CSI, ESC [ … final byte; SS3,
+// ESC O x) is one key, as is a control string (OSC ESC ], DCS ESC P, SOS ESC X,
 // PM ESC ^, APC ESC _, through its BEL or ST: a terminal's colour or
 // version report), an Escape not starting one is a key, a bracketed paste
 // is text and no key, every other byte is a key. A paste, a control string
@@ -2762,6 +2764,10 @@ func (r *keyReader) keys(data []byte) [][]byte {
 			r.pasting = false
 			continue
 		}
+		report := 0
+		if data[i] == 0x1b && i+1 < len(data) {
+			report = reportLen(data[i:])
+		}
 		switch {
 		case data[i] != 0x1b:
 			keys = append(keys, data[i:i+1])
@@ -2771,16 +2777,19 @@ func (r *keyReader) keys(data []byte) [][]byte {
 			// whether it began a sequence (escHeld).
 			r.carry, r.escHeld, r.escAt = []byte{0x1b}, true, time.Now()
 			return keys
-		case data[i+1] == '[' && i+2 < len(data) && data[i+2] == 'M':
-			// An X10 mouse report: ESC [ M and three bytes (the button
-			// and the cell, each a byte), one key, its bytes no keys of
-			// their own; cut, carried to the next write.
-			if i+6 > len(data) {
-				cut(i)
-				return keys
-			}
-			keys = append(keys, data[i:i+6])
-			i += 6
+		case report > 0:
+			// A terminal's report or a mouse report, read as
+			// typesSomething reads it (one grammar for both): one key,
+			// its bytes none of their own.
+			keys = append(keys, data[i:i+report])
+			i += report
+		case legacyBegun(data[i:]):
+			// An X10 mouse report (ESC [ M and three bytes of 32 or more:
+			// the button and the cell) cut short: carried to the next
+			// write. With a byte under 32 among them it is no mouse
+			// report: CSI M, and that byte a key.
+			cut(i)
+			return keys
 		case data[i+1] == '[':
 			j := i + 2
 			for j < len(data) && (data[j] < 0x40 || data[j] > 0x7e) {

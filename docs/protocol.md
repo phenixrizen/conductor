@@ -1038,9 +1038,12 @@ that still shows. That screen is kept for a session with startup
 questions too, until its first prompt is entered, whether it has questions
 asked during the work or not. A dialog it may answer is cleared once the screen shows it gone, or
 another in its place. For 50 ms after it an `answer` is refused as
-`input_failed` (the program could read the two as one key). An X10 mouse
-report (`ESC [ M` and three bytes, the button and the cell) is one key, cut
-or not: its bytes are no keys of their own.
+`input_failed` (the program could read the two as one key). A terminal's report or a mouse report
+(SGR, urxvt, or X10: `ESC [ M` and three bytes of 32 or more, the button
+and the cell) is one key, read by the grammar that tells a person's typing
+from the terminal's for a held turn (above), cut or not: its bytes are no
+keys of their own; `ESC [ M` with a byte under 32 after it is no mouse
+report.
 While what was written before is unfinished (another
 connection's paste, a sequence), an `answer` is refused as `input_failed`,
 nothing written and its question not noted: its key would be read as part

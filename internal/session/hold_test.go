@@ -643,3 +643,65 @@ func TestAHeldTurnEndsWithTheSession(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// A question on the screen over a held turn (#172) and the replies that
+// name it: a reply's line is a submission, and waits for the turn as every
+// other does (it would join the text left in the program's input); a
+// reply's choice answers the question without ending the hold (no person
+// at the terminal dealt with that text), and the hold shows again; a
+// reply naming the hold itself is refused, nothing written.
+func TestRepliesToAQuestionOverAHeldTurn(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond,
+		TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), TrustAnswers: []Option{{Label: "Yes", Input: "\r"}}})
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	owner := ownerOf(t, s)
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	untilIdle(t, s)
+	p.outW.Write([]byte("\r\nTrust this folder?\r\n› 1. Yes\r\n"))
+	waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	<-done
+	deadline := time.Now().Add(5 * time.Second)
+	for !s.Held() {
+		if time.Now().After(deadline) {
+			t.Fatal("the turn was never held")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	q := s.Info().Attention
+	if q.Source != SourceTrust || q.ID == "" {
+		t.Fatalf("attention %+v, want the question over the hold", q)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	_, err := s.Submit(ctx, Submission{Text: "yes", By: owner, Question: q.ID})
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a reply's line while held: %v", err)
+	}
+	nothingWritten(t, p, 100*time.Millisecond)
+
+	if err := s.AnswerInput(context.Background(), owner, q.ID, []byte("\r")); err != nil {
+		t.Fatalf("a reply's choice: %v", err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	heldShows(t, s)
+	hold := s.Info().Attention
+	if hold.ID == "" || hold.ID == q.ID {
+		t.Fatalf("the hold shown again: %+v", hold)
+	}
+	if err := s.AnswerInput(context.Background(), owner, hold.ID, []byte("\r")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply naming the hold: %v", err)
+	}
+	nothingWritten(t, p, 100*time.Millisecond)
+	if !s.Held() {
+		t.Fatal("a reply ended the hold")
+	}
+}
