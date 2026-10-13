@@ -138,7 +138,20 @@ type Scanner struct {
 	state   scanState
 	param   []byte // OSC number and payload, bounded
 	dropped bool
+	// carried says the last Scan's first event ends a sequence begun
+	// before it; through, that the sequence it left unfinished began
+	// before it (Carried, Through).
+	carried, through bool
 }
+
+// Carried reports whether the first event the last Scan returned ends a
+// sequence begun in an earlier one (an OSC notification split between two
+// reads).
+func (s *Scanner) Carried() bool { return s.carried }
+
+// Through reports whether the last Scan ended inside a sequence begun in
+// an earlier one: none of its bytes ended it.
+func (s *Scanner) Through() bool { return s.through }
 
 type scanState int
 
@@ -155,7 +168,20 @@ const maxOSCCapture = 256
 // Scan consumes p and returns any events found in it.
 func (s *Scanner) Scan(p []byte) []Event {
 	var events []Event
+	// carry: the sequence under way began before p and has not ended.
+	carry := s.state != scanText
+	s.carried = false
+	finish := func() {
+		n := len(events)
+		events = s.finishOSC(events)
+		if carry && len(events) > n {
+			s.carried = true
+		}
+	}
 	for _, b := range p {
+		if s.state == scanText {
+			carry = false
+		}
 		switch s.state {
 		case scanText:
 			switch b {
@@ -183,7 +209,7 @@ func (s *Scanner) Scan(p []byte) []Event {
 		case scanOSC:
 			switch b {
 			case 0x07:
-				events = s.finishOSC(events)
+				finish()
 			case 0x1b:
 				s.state = scanOSCEsc
 			default:
@@ -195,14 +221,16 @@ func (s *Scanner) Scan(p []byte) []Event {
 			}
 		case scanOSCEsc:
 			if b == '\\' {
-				events = s.finishOSC(events)
+				finish()
 			} else {
 				// Not a string terminator; treat ESC as the start of a new sequence.
 				s.state = scanEsc
 				s.param = s.param[:0]
+				carry = false
 			}
 		}
 	}
+	s.through = carry && s.state != scanText
 	return events
 }
 

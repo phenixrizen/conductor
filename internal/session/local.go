@@ -139,6 +139,10 @@ type Options struct {
 // matched against Options.Pattern.
 const patternQuiet = 500 * time.Millisecond
 
+// bellPace is the least time between two changes the bell or OSC
+// notifications make (bellPaced): a burst of bells makes one.
+const bellPace = 500 * time.Millisecond
+
 // Local owns a PTY process and serves attached clients. It is used by the
 // server for server-hosted sessions and by `conductor host` for hosted ones.
 type Local struct {
@@ -202,12 +206,27 @@ type Local struct {
 	askedQuestions []StartupQuestion
 	askedKeys      map[string]bool
 	typedAtAsked   *typedAt
-	lastBell       time.Time
-	// turnEnded says a done was reported and no Enter has been written
-	// since (Input, Submit): the turn it ended is still the last one, and a
-	// bell or OSC notification now is that turn's own (unlessTurnEnded).
+	// lastBell is when the bell or an OSC notification last changed the
+	// attention (bellPaced); zero once a new turn has begun (beginTurn).
 	// Guarded by mu.
-	turnEnded      bool
+	lastBell time.Time
+	// turnEnded says a done was reported and neither an Enter has been
+	// written since (Input, Submit) nor another state shown: the turn it
+	// ended is still the last one, and a bell or OSC notification now is
+	// that turn's own (unlessTurnEnded). Guarded by mu.
+	turnEnded bool
+	// turn counts the turns begun after a done (beginTurn), changed under
+	// mu: output read before one began, and scanned after, is the ended
+	// turn's own (scanOutput). The pump takes it as soon as a read
+	// returns, before anything else can hold it up.
+	turn atomic.Uint64
+	// scanBegun is turn as the chunk was read in which the escape sequence
+	// the scanner has under way began (scanOutput); the pump's own.
+	scanBegun uint64
+	// beforeScan, a test's hook, runs with each chunk read between the
+	// read (and the turn taken with it) and everything the pump does with
+	// it.
+	beforeScan     atomic.Pointer[func(chunk []byte)]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -320,9 +339,16 @@ func (s *Local) pump() {
 	buf := make([]byte, proto.MaxOutput)
 	for {
 		n, err := s.proc.Read(buf)
+		// The turn the output was read in: taken at once, so that a turn
+		// begun while the pump waits for the lock below leaves it the
+		// ended turn's (scanOutput).
+		turn := s.turn.Load()
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
+			if hook := s.beforeScan.Load(); hook != nil {
+				(*hook)(chunk)
+			}
 			// Output that only sets the window title (a spinner in it) does
 			// not count as output for the quiet the run engine and the
 			// trust watcher wait for.
@@ -335,7 +361,7 @@ func (s *Local) pump() {
 			}
 			s.mu.Unlock()
 			s.paste.feed(chunk)
-			s.scanOutput(chunk)
+			s.scanOutput(chunk, turn)
 			if s.pattern != nil {
 				s.pattern.Feed(chunk)
 			}
@@ -514,8 +540,9 @@ func (s *Local) notifyChange() {
 }
 
 // scanOutput looks for bell/OSC signals in a chunk of terminal output. A
-// burst of bells produces at most one change per 500 ms. They are the
-// session's own observations and spend no token of the event bucket.
+// burst of bells makes at most one change per bellPace (bellPaced). They
+// are the session's own observations and spend no token of the event
+// bucket.
 //
 // A bare bell says only that something waits: a session that waits already
 // keeps what it waits on (a question's words and choices, a hook's report),
@@ -523,21 +550,29 @@ func (s *Local) notifyChange() {
 // OSC notification has words of its own and replaces a wait that has none
 // to answer it with, but never a question with its choices or one the
 // session holds (unlessChoices). Neither undoes a done until the next Enter
-// (unlessTurnEnded): it is the ended turn's own, as Codex's bell is.
-func (s *Local) scanOutput(chunk []byte) {
-	for _, ev := range s.scanner.Scan(chunk) {
-		s.mu.Lock()
-		if time.Since(s.lastBell) < 500*time.Millisecond {
-			s.mu.Unlock()
-			continue
-		}
-		s.lastBell = time.Now()
-		s.mu.Unlock()
+// (unlessTurnEnded): it is the ended turn's own, as Codex's bell is. Nor
+// does one read during the ended turn (turn, the count of turns begun as
+// the chunk was read; for a notification begun in an earlier chunk, that
+// chunk's) and looked at once the next has begun: a done and an Enter that
+// come between the read and the look leave it the last turn's. Only the
+// pump calls it.
+func (s *Local) scanOutput(chunk []byte, turn uint64) {
+	begun := s.scanBegun
+	events := s.scanner.Scan(chunk)
+	if !s.scanner.Through() {
+		// A sequence left unfinished began in this chunk.
+		s.scanBegun = turn
+	}
+	for i, ev := range events {
 		msg, rule := ev.Message, unlessChoices
 		if msg == "" {
 			msg, rule = "terminal bell", unlessWaiting
 		}
-		s.setAttention(AttentionNeedsInput, msg, ev.Source, "", nil, rule|unlessTurnEnded)
+		read := turn
+		if i == 0 && s.scanner.Carried() {
+			read = begun
+		}
+		s.setAttentionRead(AttentionNeedsInput, msg, ev.Source, "", nil, rule|unlessTurnEnded|bellPaced, read)
 	}
 }
 
@@ -757,6 +792,13 @@ const (
 	// unlessStartup changes nothing while the session holds a startup
 	// question (source trust): the program shows that one.
 	unlessStartup
+	// bellPaced changes nothing within bellPace of the last change the
+	// bell or an OSC notification made (lastBell), and stamps the change
+	// it applies as the last: a burst of bells makes at most one change
+	// per bellPace. Only a change is stamped: a bell that changes nothing
+	// (its ended turn's own, or one at a wait that stays) has nothing to
+	// pace, and must not keep the next turn's bell from asking.
+	bellPaced
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -767,6 +809,17 @@ const (
 // entry reaches OnActivity. An invalid state changes nothing and spends
 // nothing.
 func (s *Local) setAttention(state AttentionState, message, source, kind string, options []Option, rules attentionRules) error {
+	return s.setAttentionRead(state, message, source, kind, options, rules, anyTurn)
+}
+
+// anyTurn is the turn of a change that is not output read (setAttentionRead).
+const anyTurn = ^uint64(0)
+
+// setAttentionRead is setAttention for what output read during turn (the
+// count of turns begun after a done as it was read, Local.turn) says: it
+// changes nothing once another turn has begun, the turn that ended asking
+// nothing more. anyTurn is setAttention's.
+func (s *Local) setAttentionRead(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn uint64) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -796,7 +849,9 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
 	turnsOwn := rules&unlessTurnEnded != 0 && cur.State == AttentionDone && s.turnEnded
 	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
-	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup {
+	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
+	lastTurns := turn != anyTurn && turn != s.turn.Load()
+	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns {
 		s.mu.Unlock()
 		return nil
 	}
@@ -808,6 +863,15 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		s.mu.Unlock()
 		return nil
+	}
+	if state != AttentionDone {
+		// Another state after a done (a working report: the agent went on
+		// by itself, a question, a clear) begins the next turn, as an
+		// Enter does.
+		s.beginTurn()
+	}
+	if rules&bellPaced != 0 {
+		s.lastBell = time.Now()
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
 	if state != AttentionNone {
@@ -1471,8 +1535,27 @@ func listKey(data []byte) bool {
 // behind, and a bell is a question again (unlessTurnEnded).
 func (s *Local) nextTurn() {
 	s.mu.Lock()
-	s.turnEnded = false
+	s.beginTurn()
 	s.mu.Unlock()
+}
+
+// beginTurn begins the next turn after a done, whichever comes first: an
+// Enter (nextTurn) or another state shown (setAttention). Nothing when no
+// done ended the last one. The new turn's bells are no burst of the last
+// turn's: the pace starts again (bellPaced), so that its first bell asks
+// however soon it rings after one of the last turn's (Codex's can ring
+// before its done, and a crew's next prompt follows the done at once).
+// What was read before it is the last turn's (turn). An Enter with no
+// done before it in its turn (an answer, a line typed during the turn)
+// keeps the pace: a burst's tail does not ask again. The caller holds
+// s.mu.
+func (s *Local) beginTurn() {
+	if !s.turnEnded {
+		return
+	}
+	s.turnEnded = false
+	s.lastBell = time.Time{}
+	s.turn.Add(1)
 }
 
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText

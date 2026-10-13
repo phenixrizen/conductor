@@ -45,6 +45,32 @@ func TestScannerEvents(t *testing.T) {
 	}
 }
 
+// The scanner tells a notification that ends a sequence begun in an earlier
+// chunk (Carried), and a chunk that ends inside one begun before it
+// (Through), so that the session can give the notification the turn its
+// sequence began in.
+func TestScannerTellsSequencesBegunBefore(t *testing.T) {
+	var s Scanner
+	for i, c := range []struct {
+		chunk            string
+		events           int
+		carried, through bool
+	}{
+		{"x\x1b]9;one", 0, false, false},         // begun here
+		{" two", 0, false, true},                 // through
+		{" three\a\a\x1b]9;new", 2, true, false}, // ends it, a bell, begins another
+		{"er\a", 1, true, false},                 // ends the one begun before
+		{"\x1b]9;whole\a", 1, false, false},      // begun and ended here
+		{"\x1b]9;a\x1bX", 0, false, false},       // abandoned for another sequence, begun here
+		{"\x1b]9;b\a", 1, false, false},          // a new one, begun here
+	} {
+		got := s.Scan([]byte(c.chunk))
+		if len(got) != c.events || s.Carried() != c.carried || s.Through() != c.through {
+			t.Fatalf("chunk %d %q: %d events, carried %v, through %v", i, c.chunk, len(got), s.Carried(), s.Through())
+		}
+	}
+}
+
 func TestCleanMessage(t *testing.T) {
 	if got := CleanMessage("  hi\x00there\x1b[0m  "); got != "hithere[0m" {
 		t.Fatalf("got %q", got)
