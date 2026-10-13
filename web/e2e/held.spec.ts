@@ -32,6 +32,9 @@ test('a line typed for a link that is let go waits for the terminal, and a reply
     await expect(rows).toContainText('conductor e2e stub', { timeout: 30_000 })
     const terminal = page.locator('.terminal-host .xterm-helper-textarea').first()
     await terminal.focus()
+    // Mouse tracking on, as the agents turn it on: the pointer over the terminal sends reports.
+    await page.keyboard.type('stub mouse on')
+    await page.keyboard.press('Enter')
     await page.keyboard.type('stub spin 12')
     await page.keyboard.press('Enter')
     await expect(rows).toContainText('.....', { timeout: 10_000 })
@@ -62,10 +65,14 @@ test('a line typed for a link that is let go waits for the terminal, and a reply
     await expect(row.locator('[data-row-prompt]')).toHaveText(HELD, { timeout: 10_000 })
     await expect(row.locator('[data-row-reply] input, input[data-row-reply]').first()).toBeDisabled()
 
+    // The pointer moved over the terminal types nothing: the hold, its words and the queued reply's wait stay.
+    const box = (await page.locator('.terminal-host .xterm-screen').first().boundingBox())!
+    for (let i = 0; i < 6; i++) await page.mouse.move(box.x + 40 + i * 30, box.y + 40 + i * 10, { steps: 4 })
     // The queued reply waits: nothing of it is typed.
     await page.waitForTimeout(1_000)
     await expect(rows).not.toContainText('owner line')
     await expect(bar).toContainText(HELD)
+    await expect(bar).toHaveAttribute('data-held', 'true')
 
     // Typing in the terminal (Ctrl+U, the leftover line killed) clears the words, and the waiting reply goes.
     await terminal.focus()

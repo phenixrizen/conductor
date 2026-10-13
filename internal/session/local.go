@@ -1456,10 +1456,11 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		}
 	}
 	o.before = func() {
-		if !isTerminalReport(data) {
+		if !isTerminalReport(data) && !isMouseReport(data) {
 			// A person types into the terminal: a submission's text typed
 			// without its Enter no longer holds the session's turn
 			// (holdTyped), and what comes next is written after these keys.
+			// The pointer, moved or clicked, types nothing.
 			s.endHold()
 		}
 		if answersQuestion && s.trust != nil {
@@ -1537,6 +1538,15 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time
 			// Look at the screen again even if the program draws nothing:
 			// a dialog the key did not take away is asked again.
 			s.asked.Poke()
+		}
+	}
+	if isMouseReport(data) {
+		s.mu.Lock()
+		hold := s.info.Attention.Source == SourceSubmit && s.info.Attention.Since == promptSince
+		s.mu.Unlock()
+		if hold {
+			// The pointer typed nothing: the hold's words stay with it.
+			return
 		}
 	}
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)

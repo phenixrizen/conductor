@@ -107,3 +107,27 @@ func TestAnEndedSessionNeedsNothing(t *testing.T) {
 		t.Fatal("the activity log lost the prompt")
 	}
 }
+
+// A mouse report, alone or with others, in each of the three encodings is
+// one; keys, a terminal's own report, or keys after a report are not.
+func TestIsMouseReport(t *testing.T) {
+	for in, want := range map[string]bool{
+		"\x1b[<35;10;10M":                 true, // SGR motion
+		"\x1b[<0;3;4M\x1b[<0;3;4m":        true, // SGR press and release
+		"\x1b[<64;1;1M":                   true, // SGR wheel
+		"\x1b[35;10;10M":                  true, // urxvt
+		"\x1b[M#**":                       true, // legacy motion
+		"\x1b[M\x20\xf0\xf0\x1b[<35;1;1M": true,
+		"":                                false,
+		"k":                               false,
+		"\x1b[3;1R":                       false, // a cursor position report
+		"\x1b[<35;10;10Mk":                false,
+		"\x1b[M#*":                        false,
+		"\x1b[M\x01**":                    false,
+		"\x15":                            false,
+	} {
+		if got := isMouseReport([]byte(in)); got != want {
+			t.Errorf("isMouseReport(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

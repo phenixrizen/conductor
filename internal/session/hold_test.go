@@ -148,6 +148,46 @@ func TestALineTypedBeforeItsLinkIsLetGoHoldsTheTurnUntilAPersonTypes(t *testing.
 	}
 }
 
+// The pointer, moved or clicked over a program with a mouse mode on, types
+// nothing: its reports, in each encoding, are written, and the hold, its
+// words and the next submission's wait stay; a key then ends it.
+func TestThePointerDoesNotEndTheHold(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	owner := ownerOf(t, s)
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	untilIdle(t, s)
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	<-done
+	heldShows(t, s)
+	next := submitAsync(s, Submission{Text: "second", ByName: "run"})
+	for _, report := range []string{"\x1b[<35;10;10M", "\x1b[<0;3;4M\x1b[<0;3;4m", "\x1b[35;10;10M", "\x1b[M#**"} {
+		if err := s.Input(owner, []byte(report)); err != nil {
+			t.Fatal(err)
+		}
+		if got := written(t, p); got != report {
+			t.Fatalf("written %q", got)
+		}
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
+	heldShows(t, s)
+	if err := s.Input(owner, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\x15", "second", "\r"} {
+		if got := written(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	<-next
+	heldCleared(t, s)
+}
+
 // A submission whose sender only goes once its text is typed (a reply box
 // closes its connection once it has sent) is finished: its Enter, and no
 // hold.

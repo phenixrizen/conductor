@@ -1,6 +1,9 @@
 package session
 
-import "regexp"
+import (
+	"bytes"
+	"regexp"
+)
 
 // maxReport bounds what Input looks at to tell a terminal's automatic report
 // from typing: a longer write is typing.
@@ -28,4 +31,35 @@ var terminalReport = regexp.MustCompile(`^(?:` +
 // isTerminalReport reports whether data is only terminal reports.
 func isTerminalReport(data []byte) bool {
 	return len(data) > 0 && len(data) <= maxReport && data[0] == 0x1b && terminalReport.Match(data)
+}
+
+// oneMouseReport matches a mouse report that starts data: SGR's
+// (ESC[<b;x;y then M or m) or urxvt's (ESC[b;x;yM).
+var oneMouseReport = regexp.MustCompile(`^\x1b\[(?:<\d{1,4};\d{1,5};\d{1,5}[Mm]|\d{1,4};\d{1,5};\d{1,5}M)`)
+
+// legacyMouse starts a legacy mouse report: three bytes of 32 or more
+// follow (button, column, row).
+var legacyMouse = []byte("\x1b[M")
+
+// isMouseReport reports whether data is only mouse reports, what a terminal
+// sends for the pointer while the program has a mouse mode on: SGR's,
+// urxvt's and the legacy ones, one or several. A pointer moved, or clicked,
+// types nothing into the terminal: it does not end the hold of a session's
+// turn for a typed text, nor clear its words (holdTyped).
+func isMouseReport(data []byte) bool {
+	if len(data) == 0 || len(data) > maxReport {
+		return false
+	}
+	for len(data) > 0 {
+		if bytes.HasPrefix(data, legacyMouse) && len(data) >= 6 && data[3] >= 32 && data[4] >= 32 && data[5] >= 32 {
+			data = data[6:]
+			continue
+		}
+		loc := oneMouseReport.FindIndex(data)
+		if loc == nil {
+			return false
+		}
+		data = data[loc[1]:]
+	}
+	return true
 }

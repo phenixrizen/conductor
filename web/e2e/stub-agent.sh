@@ -55,7 +55,9 @@
 # 100 ms for about N seconds without reading, as an agent draws while it
 # works: what is typed meanwhile waits in the terminal (which echoes it),
 # and a submission's Enter waits for a quiet screen as long as Conductor's
-# look does. It reports nothing and goes into no transcript.
+# look does. It reports nothing and goes into no transcript. A line
+# `stub mouse on` turns any-event mouse tracking on (SGR reports), as
+# Claude Code and Codex do: the pointer over the terminal then sends INPUT.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -500,6 +502,9 @@ while IFS= read -r line; do
 	line=${line%$'\r'}
 	if [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
 		spin "${BASH_REMATCH[1]}"
+	elif [[ $line == 'stub mouse on' ]]; then
+		# Any-event mouse tracking in SGR, as Claude Code and Codex turn on.
+		printf '\e[?1003h\e[?1006h'
 	elif [[ -n ${line//[[:space:]]/} ]]; then
 		answer "$line"
 	fi
