@@ -2553,11 +2553,22 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || att.Message == words) {
 		s.markAnswered(att)
 		held.id = att.ID
+		if prev := s.heldAnswer; prev.id == att.ID {
+			// Held already: by who held it first, the screen at least as
+			// large as either asked for (a key typed at a smaller size
+			// asks no less), output after this key.
+			held.by, held.name = prev.by, prev.name
+			held.cols, held.rows = max(held.cols, prev.cols), max(held.rows, prev.rows)
+		}
 		s.heldAnswer = held
 		return
 	}
 	if words != "" {
 		held.words = CleanMessage(words)
+		if prev := s.heldAnswer; prev.words == held.words {
+			held.by, held.name = prev.by, prev.name
+			held.cols, held.rows = max(held.cols, prev.cols), max(held.rows, prev.rows)
+		}
 		s.heldAnswer = held
 	}
 }

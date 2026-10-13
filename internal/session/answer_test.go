@@ -1926,14 +1926,22 @@ func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
 	// After the resize, before a look: nothing; the end of a synchronized
 	// update begun before it, which draws nothing at the new size; an
 	// empty frame; a redraw at the new size that cuts the question short
-	// (Codex's review, twenty-fourth pass, finding 1; twenty-fifth). Made
-	// as wide as it was again, the screen showing Codex's prompt, the
-	// question goes.
-	for _, c := range []struct{ name, before, after string }{
-		{"nothing", "", ""},
-		{"a frame begun before", "\x1b[?2026h", "\x1b[?2026l"},
-		{"an empty frame", "", "\x1b[?2026h\x1b[?2026l"},
-		{"a redraw that cuts it", "", "\x1b[?2026h\x1b[2J\x1b[H› 1. Update now\x1b[?2026l"},
+	// (Codex's review, twenty-fourth pass, finding 1; twenty-fifth); that
+	// redraw, then another split Escape, then output (twenty-sixth,
+	// finding 2); that redraw, then the terminal made as wide as before,
+	// nothing drawn since (twenty-sixth, finding 1). Made as wide as it
+	// was again, the screen showing Codex's prompt, the question goes.
+	cut := "\x1b[?2026h\x1b[2J\x1b[H› 1. Update now\x1b[?2026l"
+	for _, c := range []struct {
+		name, before, after string
+		again, widen        bool
+	}{
+		{"nothing", "", "", false, false},
+		{"a frame begun before", "\x1b[?2026h", "\x1b[?2026l", false, false},
+		{"an empty frame", "", "\x1b[?2026h\x1b[?2026l", false, false},
+		{"a redraw that cuts it", "", cut, false, false},
+		{"a redraw that cuts it, then another Escape", "", cut, true, false},
+		{"a redraw that cuts it, then as wide again", "", cut, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
@@ -1957,6 +1965,23 @@ func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
 			}
 			if c.after != "" {
 				p.outW.Write([]byte(c.after))
+			}
+			if c.again {
+				time.Sleep(100 * time.Millisecond)
+				for _, part := range []string{"\x1b", "z"} {
+					if err := s.Input(nater, []byte(part)); err != nil {
+						t.Fatal(err)
+					}
+					nextWrite(t, p)
+				}
+				p.outW.Write([]byte("\x1b[24;1Hstatus: ready"))
+			}
+			if c.widen {
+				time.Sleep(100 * time.Millisecond)
+				if err := s.ResizeWith(nater, 80, 24, true); err != nil {
+					t.Fatal(err)
+				}
+				p.outW.Write([]byte("\x1b[24;1Hstatus: ready"))
 			}
 			time.Sleep(2 * patternQuiet)
 			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {

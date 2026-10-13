@@ -67,10 +67,11 @@ type Screen struct {
 	// not ended it: a terminal shows the frame before it until it ends,
 	// and this screen holds half of the next.
 	syncing bool
-	// clipped says the screen was made smaller with something on it, and
-	// the program has not erased it all since (ED 2; in a synchronized
-	// update, once that ends: unclipAtEnd): what it showed is cut, not
-	// gone. A frame that erases nothing, or only some rows, leaves it so.
+	// clipped says the screen was resized with something on it, and the
+	// program has not erased it all since (ED 2; in a synchronized update,
+	// once that ends: unclipAtEnd): what it shows was drawn at another
+	// size (cut, or laid out narrower), and what it lacks is not gone. A
+	// frame that erases nothing, or only some rows, leaves it so.
 	clipped, unclipAtEnd bool
 
 	st      screenState
@@ -114,9 +115,10 @@ func (s *Screen) Resize(cols, rows int) {
 		cols, rows = 80, 24
 	}
 	cols, rows = min(cols, maxScreenCols), min(rows, maxScreenRows)
-	if (cols < s.cols || rows < s.rows) && strings.TrimSpace(s.text(len(s.cells))) != "" {
-		// What the screen showed is clipped until the program erases it
-		// all and draws it again (Settled).
+	if (cols != s.cols || rows != s.rows) && strings.TrimSpace(s.text(len(s.cells))) != "" {
+		// What the screen shows was drawn at another size (cut, or laid
+		// out narrower) until the program erases it all and draws it again
+		// (Settled).
 		s.clipped, s.unclipAtEnd = true, false
 	}
 	// Rows leave at the top when the cursor would fall off the bottom.
@@ -576,9 +578,9 @@ const maxLookRows = 80
 
 // Settled reports whether the screen is a whole frame: no synchronized
 // update (2026) begun and not ended, which a terminal would not show yet,
-// and nothing clipped by a smaller size that the program has not erased
-// whole since (a resize clips what showed; the program erases and redraws
-// it).
+// and nothing drawn at another size that the program has not erased whole
+// since (a resize keeps what showed, cut or as laid out before; the
+// program erases and redraws it).
 func (s *Screen) Settled() bool { return !s.syncing && !s.clipped }
 
 // Size returns the screen's columns and rows.
