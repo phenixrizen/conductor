@@ -939,7 +939,11 @@ that took the screen's text before an answer and fires after it asks
 nothing (weighed under the lock that sets the question); the startup
 question asked is the one drawn last in the output the watcher keeps; keys
 that pick an answer of the startup question the screen shows, asked yet or
-not, put its screen behind. Every write that
+not, put its screen behind and answer it, the one the session shows read
+again as they are written. A startup question answered and drawn again
+before another takes its place (the program slow to move on) is asked
+answered, a reply to it refused; one answered never keeps the next from
+being asked. Every write that
 answers a question notes it so as the writer takes it: an `answer`'s keys or
 line, a key typed into a terminal (as a controller's input clears a question,
 above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed

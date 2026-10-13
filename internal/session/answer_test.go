@@ -801,6 +801,65 @@ func TestAStartupAnswerTypedBeforeItIsAskedLeavesTheNextAskable(t *testing.T) {
 	}
 }
 
+// The background-server question answered, then drawn again by the program
+// before it moves on (it is slow to take the key): asked again, it is
+// answered, and a second 1 is refused, nothing written; the update question
+// drawn after takes its place and its own reply. (Codex's review, eleventh
+// pass, finding 1.)
+func TestAStartupQuestionDrawnAgainAfterItsAnswerStaysAnswered(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexBackgroundScreen))
+	again := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != first.ID })
+	if err := s.AnswerInput(t.Context(), jane, again.ID, []byte("1")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a second 1 for the question drawn again: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool {
+		return a.Source == SourceTrust && strings.Contains(a.Message, "Update available")
+	})
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); err != nil {
+		t.Fatalf("the update question's own answer: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A startup question noted answered while it still shows (published as a
+// key was being written, between the write's look and its answer) never
+// keeps the next startup question from being asked: the update question
+// takes its place. (Codex's review, eleventh pass, finding 2.)
+func TestAnAnsweredStartupQuestionNeverHoldsTheNextBack(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	// Noted answered, still showing: what the race leaves.
+	s.mu.Lock()
+	s.markAnswered(s.info.Attention)
+	s.mu.Unlock()
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != first.ID })
+	if !strings.Contains(update.Message, "Update available") {
+		t.Fatalf("the question asked: %+v", update)
+	}
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); err != nil {
+		t.Fatalf("the update question's own answer: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
+	}
+}
+
 // A look of the startup questions' watcher older than an answer is weighed
 // as the question is set, under the lock that sets it: one that comes in
 // after the answer, though it began before, sets nothing. (Codex's review,

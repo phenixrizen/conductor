@@ -217,6 +217,11 @@ type Local struct {
 	// asks nothing (fireTrust). Guarded by mu.
 	startupAnswered   bool
 	startupAnsweredAt uint64
+	// startupAnsweredWords are the words of the startup question last
+	// answered, until another startup question takes its place: asked
+	// again meanwhile (the program draws it again before it moves on), it
+	// is asked answered, with an id no reply is taken for. Guarded by mu.
+	startupAnsweredWords string
 
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
@@ -940,7 +945,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
 	staleLook := rules&startupLook != 0 && s.startupAnswered && look <= s.startupAnsweredAt
-	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook {
+	// A startup question answered and still shown (its write not made yet,
+	// or the session slow to clear it) waits on nothing: the next startup
+	// question takes its place.
+	answeredStartup := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && cur.ID != "" && cur.ID == s.answered
+	if (rules&unlessWaiting != 0 && waiting && !answeredStartup) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook {
 		s.mu.Unlock()
 		return nil
 	}
@@ -977,6 +986,17 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// The dialog last answered, asked before it has gone (sameDialog): its
 	// question is answered, whatever id it shows with.
 	stillAnswered := rules&sameDialog != 0 && state == AttentionNeedsInput && s.dialogAnswered != "" && s.dialogAnswered == message
+	// The startup question last answered, asked again before another
+	// startup question took its place (the program draws it again before
+	// it moves on), is asked answered too; another startup question asked
+	// ends that.
+	if rules&startupLook != 0 && state == AttentionNeedsInput {
+		if s.startupAnsweredWords != "" && s.startupAnsweredWords == message {
+			stillAnswered = true
+		} else {
+			s.startupAnsweredWords = ""
+		}
+	}
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		if stillAnswered && cur.ID != "" {
 			s.answered = cur.ID
@@ -1656,16 +1676,34 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// that pick one of its answers answer it, and its screen goes
 		// behind, so that the watcher asks only what is drawn after.
 		startupOnScreen := false
+		var startupWords string
 		if s.trust != nil && !quiet && !isTerminalReport(data) && s.trust.Watching() {
-			if q, _ := s.lastStartupQ(s.trust.Text()); q != nil && picksChoice(CleanOptions(q.Answers), data, keys) {
-				startupOnScreen = true
+			if q, words := s.lastStartupQ(s.trust.Text()); q != nil && picksChoice(CleanOptions(q.Answers), data, keys) {
+				startupOnScreen, startupWords = true, words
 			}
 		}
 		if (answersQuestion && own || startupSince != nil || startupOnScreen) && s.trust != nil {
-			// The answered screen behind, and a look that took its text
-			// before now asking nothing as it fires (fireTrust).
+			// The answered screen behind, a look that took its text before
+			// now asking nothing as it fires (fireTrust), and the question
+			// answered, asked again before another takes its place, asked
+			// answered. The question the session shows now is read again
+			// in the same step: one asked since the keys were looked at
+			// (shown) is the one they answer, noted and cleared once
+			// written.
 			s.mu.Lock()
 			s.startupAnswered, s.startupAnsweredAt = true, s.trust.Fed()
+			if startupWords == "" && shown.Source == SourceTrust {
+				startupWords = shown.Message
+			}
+			if startupWords != "" {
+				s.startupAnsweredWords = startupWords
+			}
+			if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (startupWords == "" || att.Message == startupWords) {
+				s.markAnswered(att)
+				if startupSince == nil {
+					startupSince = att.Since
+				}
+			}
 			s.mu.Unlock()
 			s.trust.Reset()
 		}
@@ -1962,8 +2000,11 @@ func (s *Local) claimQuestion(id string) error {
 // (dialogAnswered). The caller holds s.mu.
 func (s *Local) markAnswered(att Attention) {
 	s.answered = att.ID
-	if att.Source == SourceQuestion {
+	switch att.Source {
+	case SourceQuestion:
 		s.noteDialogAnswered(att.Message)
+	case SourceTrust:
+		s.startupAnsweredWords = att.Message
 	}
 }
 
