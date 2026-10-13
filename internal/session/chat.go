@@ -580,10 +580,25 @@ func (r *ChatRoom) History() []ChatMessage {
 	return r.ring.snapshot()
 }
 
-func (r *ChatRoom) replayFrames() [][]byte {
+// roomReplayed, when set, runs as a client of a run's member has been sent
+// the run chat's replay, before it is on the session's hub: tests post to
+// the run there.
+var roomReplayed func()
+
+// attach sends sub the kept chat and puts it on its session's hub, under
+// the room's lock, which post keeps a message under: a message posted
+// meanwhile is in the replay, or is sent once sub is on the hub. Called with
+// the session's lock held.
+func (r *ChatRoom) attach(sub *Subscription, hub *Hub) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return chatReplayFrames(proto.ChatScopeRun, r.ring.snapshot())
+	for _, f := range chatReplayFrames(proto.ChatScopeRun, r.ring.snapshot()) {
+		sub.send(f)
+	}
+	if roomReplayed != nil {
+		roomReplayed()
+	}
+	hub.add(sub)
 }
 
 func (r *ChatRoom) find(id string) (ChatMessage, bool) {

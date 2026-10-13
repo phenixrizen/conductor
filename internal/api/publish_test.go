@@ -1022,12 +1022,19 @@ func TestALateRunUpdateLeavesAMemberThatLeftOutOfReach(t *testing.T) {
 
 // runScript is what a scriptedPublisher's publications do with a run's
 // members: each group they are sent, by link_run or link_run_update, goes
-// on calls, and the updates are answered by answers in turn (nil once they
-// run out).
+// on calls with when it was sent, and the updates are answered by answers
+// in turn (nil once they run out).
 type runScript struct {
 	mu      sync.Mutex
 	answers []error
-	calls   chan proto.RunGroup
+	calls   chan sentGroup
+}
+
+// sentGroup is a group a publication was sent, and when: as the server
+// sent it, not as the test came to read it.
+type sentGroup struct {
+	proto.RunGroup
+	at time.Time
 }
 
 func (sc *runScript) answer(err error) {
@@ -1037,14 +1044,14 @@ func (sc *runScript) answer(err error) {
 }
 
 // next is the next group sent, or fails the test after wait.
-func (sc *runScript) next(t *testing.T, wait time.Duration) proto.RunGroup {
+func (sc *runScript) next(t *testing.T, wait time.Duration) sentGroup {
 	t.Helper()
 	select {
 	case g := <-sc.calls:
 		return g
 	case <-time.After(wait):
 		t.Fatalf("no group sent within %v", wait)
-		return proto.RunGroup{}
+		return sentGroup{}
 	}
 }
 
@@ -1063,12 +1070,12 @@ type scriptedPublication struct {
 }
 
 func (p *scriptedPublication) RunLink(_ context.Context, role string, _ time.Duration, label string, g proto.RunGroup) (proto.LinkCreated, error) {
-	p.sc.calls <- g
+	p.sc.calls <- sentGroup{g, time.Now()}
 	return proto.LinkCreated{LinkID: fmt.Sprintf("link-%d", g.Revision), Role: role, Label: label, RunID: g.ID, URL: p.Base() + "/join/token"}, nil
 }
 
 func (p *scriptedPublication) RunLinkUpdate(_ context.Context, g proto.RunGroup) error {
-	p.sc.calls <- g
+	p.sc.calls <- sentGroup{g, time.Now()}
 	p.sc.mu.Lock()
 	defer p.sc.mu.Unlock()
 	if len(p.sc.answers) == 0 {
@@ -1084,7 +1091,7 @@ func (p *scriptedPublication) RunLinkUpdate(_ context.Context, g proto.RunGroup)
 // clock on.
 func TestARunsMembersGoOutWithRisingRevisions(t *testing.T) {
 	local := newTestEnv(t, nil)
-	sc := &runScript{calls: make(chan proto.RunGroup, 64)}
+	sc := &runScript{calls: make(chan sentGroup, 64)}
 	local.srv.SetPublisher(scriptedPublisher{sc})
 	start := time.Now().UnixMilli()
 	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
@@ -1123,7 +1130,7 @@ func TestARunSyncThatFailedIsMadeAgain(t *testing.T) {
 	local.srv.pubMu.Lock()
 	local.srv.runSyncRetry = first
 	local.srv.pubMu.Unlock()
-	sc := &runScript{calls: make(chan proto.RunGroup, 64)}
+	sc := &runScript{calls: make(chan sentGroup, 64)}
 	local.srv.SetPublisher(scriptedPublisher{sc})
 	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
 	waitMembersPublished(t, local, runID, 1)
@@ -1154,20 +1161,20 @@ func TestARunSyncThatFailedIsMadeAgain(t *testing.T) {
 	}
 	resend()
 	local.srv.syncRunLinks(runID)
-	var last proto.RunGroup
-	var lastAt time.Time
+	// Each try's time is when the server made it: the test may come to read
+	// one late and the next at once.
+	var last sentGroup
 	for i := range len(failures) + 1 {
 		g := sc.next(t, 10*time.Second)
-		now := time.Now()
 		if i > 0 {
 			if g.Revision <= last.Revision {
 				t.Fatalf("try %d: revision %d after %d", i, g.Revision, last.Revision)
 			}
-			if wait := first << (i - 1); now.Sub(lastAt) < wait {
-				t.Fatalf("try %d came %v after the one before, before its wait of %v", i, now.Sub(lastAt), wait)
+			if wait := first << (i - 1); g.at.Sub(last.at) < wait {
+				t.Fatalf("try %d came %v after the one before, before its wait of %v", i, g.at.Sub(last.at), wait)
 			}
 		}
-		last, lastAt = g, now
+		last = g
 	}
 	quiet("after the sync that landed", time.Second)
 	local.srv.pubMu.Lock()

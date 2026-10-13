@@ -998,6 +998,14 @@ func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
 	for _, typing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("typing=%v", typing), func(t *testing.T) {
 			e := newTestEnv(t, nil)
+			// The viewer the host's going closed is cut closeWait (5 s) on,
+			// and the typing reader waits for the drain writeTimeout at most
+			// and then closes under it, as for a viewer that reads slowly:
+			// this one reads 16 MiB a frame at a time, which a loaded machine
+			// takes longer than either to do. The test is of the order of
+			// what it is written, not of those bounds.
+			e.srv.viewerCloseWait = 2 * time.Minute
+			e.srv.hostGoneWait = 2 * time.Minute
 			host := dialFakeHost(t, e, "hosted-agent-token")
 			events := e.sse(t)
 			v := dialViewer(t, e, host.sessionID, adminToken)
@@ -1259,11 +1267,18 @@ func TestChatRateLimitLeavesTheConnectionOpen(t *testing.T) {
 	c := dialViewer(t, e, id, adminToken)
 	c.hello(0, 0)
 	c.expectControl(proto.CtlReady)
-	for i := range proto.ChatBurst + 3 {
+	// The connection's bucket holds ChatBurst posts as its first is taken
+	// and earns ChatRatePerSecond more: the first refused is past the burst,
+	// and past it by no more than the bucket earned while the posts were
+	// read, which on a loaded machine is a post or more.
+	start := time.Now()
+	for i := range proto.ChatBurst + 40 {
 		c.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Text: strconv.Itoa(i), Nonce: strconv.Itoa(i)}))
 	}
-	if m := c.expectControl(proto.CtlError); m["code"] != proto.ErrCodeTooManyRequests || m["requestId"] != strconv.Itoa(proto.ChatBurst) {
-		t.Fatalf("limit: %v", m)
+	m := c.expectControl(proto.CtlError)
+	earned := int(time.Since(start).Seconds() * proto.ChatRatePerSecond)
+	if first, err := strconv.Atoi(fmt.Sprint(m["requestId"])); m["code"] != proto.ErrCodeTooManyRequests || err != nil || first < proto.ChatBurst || first > proto.ChatBurst+earned {
+		t.Fatalf("limit (%d earned): %v", earned, m)
 	}
 	c.send(proto.MustControl(proto.Ping{T: proto.CtlPing, TS: 7}))
 	if m := c.expectControl(proto.CtlPong); m["ts"] != float64(7) {
@@ -1421,6 +1436,10 @@ func TestNvimOverTheViewerWebSocket(t *testing.T) {
 		t.Fatalf("a view link: %v", ev)
 	}
 	owner.send(proto.MustControl(proto.NvimClose{T: proto.CtlNvimClose, ID: nid}))
+	// The editor ends on a goroutine of its own, and Neovim writes its state
+	// in the test's directories as it leaves: they go only once it has.
+	d, _ := e.srv.registry.Get(id)
+	d.(*session.Local).WaitEditors()
 }
 
 // A save over the viewer WebSocket (design round 12, F6): the read carries

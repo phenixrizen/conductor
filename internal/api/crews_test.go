@@ -1767,6 +1767,10 @@ func TestRunChatReachesAQuietConnectionOnAnotherMember(t *testing.T) {
 	nate := dialViewer(t, e, reviewID, adminToken)
 	nate.send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Client: "test", Name: "Nate"}))
 	nate.expectControl(proto.CtlReady)
+	// The ready marker comes ahead of the chat's replay: a post made before
+	// the replay is taken comes in it, not live. Nate hears the run live once
+	// the roster his attach sends has come, behind the replay.
+	nate.expectControl(proto.CtlViewers)
 	// Priya posts from her quiet connection; Nate posts; both see both.
 	priya.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "hi back"}))
 	if m := nate.expectChat(proto.ChatKindMessage); m["text"] != "hi back" {

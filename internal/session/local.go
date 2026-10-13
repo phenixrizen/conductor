@@ -1164,18 +1164,18 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	// The kept chat, after the activity replay and before the hub holds the
 	// viewer: a message posted meanwhile reaches it live, never twice. The
-	// run's chat follows the session's; a run message posted meanwhile may
-	// arrive twice (the room posts without this lock), which clients take
-	// once by id.
+	// run's chat follows the session's. The room posts without this lock: its
+	// replay and the hub's add are made under the room's (attach), so a run
+	// message posted meanwhile reaches the viewer in the replay or live, or
+	// both, which clients take once by id; never neither.
 	for _, f := range chatReplayFrames(proto.ChatScopeSession, s.chat.snapshot()) {
 		sub.send(f)
 	}
 	if room != nil {
-		for _, f := range room.replayFrames() {
-			sub.send(f)
-		}
+		room.attach(sub, s.hub)
+	} else {
+		s.hub.add(sub)
 	}
-	s.hub.add(sub)
 	if replacing {
 		// Its slot is this client's now, for every later check too.
 		if s.passedOn == nil {

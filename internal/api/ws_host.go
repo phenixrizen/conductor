@@ -239,6 +239,9 @@ type byteBucket struct {
 	// takes so far owe.
 	tokens float64
 	last   time.Time
+	// waits counts the takes that had to wait: a test's way to tell what
+	// the bound slowed from what a busy machine did.
+	waits int
 }
 
 func newByteBucket(bytesPerSecond, burst int) *byteBucket {
@@ -272,6 +275,9 @@ func (b *byteBucket) take(ctx context.Context, n int) error {
 	b.refill(time.Now())
 	b.tokens -= float64(n)
 	owed := -b.tokens
+	if owed > 0 {
+		b.waits++
+	}
 	b.mu.Unlock()
 	if owed <= 0 {
 		return nil

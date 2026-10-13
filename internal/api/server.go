@@ -53,6 +53,14 @@ type Server struct {
 	// relayBurstFloor is the least burst of a relay bound (relayBurst; the
 	// package's relayBurstFloor when the server was made).
 	relayBurstFloor int
+	// hostGoneWait is how long a hosted viewer's reader waits for Pump to
+	// write what a host that left still owed the viewer (hostGone):
+	// writeTimeout, which a test whose viewer reads slowly may lengthen.
+	hostGoneWait time.Duration
+	// viewerCloseWait is how long a viewer the session closed is kept while
+	// it is written what it is owed (wsSink.Closing): closeWait, which a
+	// test whose viewer reads slowly may lengthen.
+	viewerCloseWait time.Duration
 	// viewerSeam is nil but in tests (see viewerSeam).
 	viewerSeam *viewerSeam
 	// keeper keeps the links a switchyard mints across its restarts
@@ -249,6 +257,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		relayed:     newRelayMeter(nil),
 	}
 	s.relayBurstFloor = relayBurstFloor
+	s.hostGoneWait = writeTimeout
+	s.viewerCloseWait = closeWait
 	s.runSyncRetry = runSyncRetry
 	s.selfLimits = newSelfCounters()
 	s.writeCatalog = func(ov catalog.Overlay) error { return st.Save(catalogFile, ov) }

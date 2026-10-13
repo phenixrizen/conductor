@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -87,9 +89,17 @@ func readAll(ctx context.Context, v *wsClient, output *atomic.Int64) <-chan erro
 }
 
 // Two viewers of a host's session are relayed through the server while the
-// session prints fast, and one of them stops reading: the server lets that
-// one go alone. The host's connection stays, and the other viewer goes on
-// being sent the output, past the time a write of the host's may take.
+// session prints steadily, and one of them stops reading: the server lets
+// that one go alone. The host's connection stays, and the other viewer goes
+// on being sent the output, past the time a write of the host's may take
+// and past the stalled viewer's going.
+//
+// The session prints about 100 KB/s, which the host relays to two viewers
+// with room to spare on a loaded machine (where a session that prints as
+// fast as it can outruns the relay, and its host lets a viewer that falls a
+// megabyte behind go, by design). The stalled viewer's socket holds little
+// at either end, so it is full at once and the server lets the viewer go
+// once a write to it has waited its time (15 s), whatever the output's rate.
 func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 	logs := &logBuffer{}
 	e := newTestEnvLogging(t, nil, slog.New(slog.NewTextHandler(logs, nil)))
@@ -101,8 +111,8 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 		defer close(ran)
 		_, _ = hostagent.Run(ctx, hostagent.Options{
 			ServerURL: e.http.URL, Token: "test-host-token", Name: "printer", HostName: "laptop", RelayOnly: true,
-			// About 3 MB/s.
-			Argv: []string{"/bin/sh", "-c", "while :; do head -c 32768 /dev/zero; sleep 0.01; done"},
+			// About 100 KB/s.
+			Argv: []string{"/bin/sh", "-c", "while :; do head -c 4096 /dev/zero; sleep 0.04; done"},
 			Dir:  e.root, Log: slog.New(slog.DiscardHandler),
 			Registered: func(id, _ string) { registered <- id },
 		})
@@ -116,18 +126,41 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 	}
 	reader := dialViewer(t, e, id, adminToken)
 	joinRelay(t, reader)
-	stalled := dialViewer(t, e, id, adminToken)
+	// The stalled viewer comes through a link of its own, whose count of
+	// viewers says when the server has let it go, and through a door of the
+	// server's whose connections have small send buffers, with a small
+	// receive buffer of its own.
+	resp, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "control"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, lo)
+	}
+	stalledLink := lo["link"].(map[string]any)["id"].(string)
+	door := httptest.NewUnstartedServer(e.srv.Handler())
+	door.Listener = smallBufListener{door.Listener}
+	door.Start()
+	t.Cleanup(door.Close)
+	stalled := dialSmallReader(t, door.URL, id, lo["token"].(string))
 	joinRelay(t, stalled)
+	hosted, ok := e.srv.hosts.Get(id)
+	if !ok {
+		t.Fatal("no hosted session")
+	}
 
 	var output atomic.Int64
 	readerEnded := readAll(ctx, reader, &output)
 	// The stalled viewer reads nothing from now on; a write of the host's
-	// was given 15 s, so the watch runs past that.
+	// was given 15 s, so the watch runs past that, and on until the server
+	// has let the stalled viewer go (2 minutes at most). Read before then,
+	// the stalled viewer's socket would empty, and it might never be let
+	// go. The reader is sent output every 2 s all the while.
 	watch := time.After(20 * time.Second)
+	giveUp := time.After(2 * time.Minute)
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
+	look := time.NewTicker(50 * time.Millisecond)
+	defer look.Stop()
 	var last int64
-	for watching := true; watching; {
+	for watched, letGo := false, false; !watched || !letGo; {
 		select {
 		case err := <-readerEnded:
 			t.Fatalf("the reading viewer lost the session: %v (host disconnects: %d)", err, strings.Count(logs.String(), "host disconnected"))
@@ -138,11 +171,26 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 			}
 			last = n
 		case <-watch:
-			watching = false
+			watched = true
+		case <-look.C:
+			letGo = hosted.LinkViewers()[stalledLink] == 0
+		case <-giveUp:
+			t.Fatalf("the stalled viewer was never let go (%d bytes of output to the reader)", output.Load())
 		}
 	}
 	if n := strings.Count(logs.String(), "host disconnected"); n != 0 {
 		t.Fatalf("the host's connection closed %d times", n)
+	}
+	// The reader stays, and goes on being sent the output.
+	for at, fresh := output.Load(), time.Now().Add(10*time.Second); output.Load() == at; time.Sleep(10 * time.Millisecond) {
+		select {
+		case err := <-readerEnded:
+			t.Fatalf("the reading viewer lost the session as the stalled one was let go: %v", err)
+		default:
+		}
+		if time.Now().After(fresh) {
+			t.Fatal("the reading viewer was sent nothing after the stalled one was let go")
+		}
 	}
 	// The stalled viewer was let go: what it reads now ends in a close.
 	rctx, rcancel := context.WithTimeout(t.Context(), 20*time.Second)
@@ -155,6 +203,28 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 			break
 		}
 	}
+}
+
+// dialSmallReader is dialViewer through the server at base, the client's
+// socket given a small receive buffer.
+func dialSmallReader(t *testing.T, base, sessionID, token string) *wsClient {
+	t.Helper()
+	dialer := &net.Dialer{Control: func(_, _ string, rc syscall.RawConn) error {
+		var serr error
+		_ = rc.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4096) })
+		return serr
+	}}
+	client := &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}
+	url := strings.Replace(base, "http://", "ws://", 1) + "/ws/sessions/" + sessionID + "?token=" + token
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPClient: client})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	c.SetReadLimit(proto.MaxFrame)
+	t.Cleanup(func() { c.CloseNow() })
+	return &wsClient{t: t, c: c}
 }
 
 // readFiles has v read path over and over, inflight requests at a time,

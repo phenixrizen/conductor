@@ -103,8 +103,8 @@ func TestAKeptLinkGoesWithItsSessionOrItsRevoke(t *testing.T) {
 		t.Fatalf("a revoked link's file stays: %v", err)
 	}
 	// The host goes away and the hub forgets the session: the link stays.
-	host.c.Close(websocket.StatusNormalClosure, "")
-	<-host.done
+	// The hub forgets only a session whose host it has seen go.
+	leave(t, e, host)
 	e.srv.hosts.Expire(time.Now().Add(time.Hour))
 	if code, _ := joinStatus(t, e, token); code != http.StatusServiceUnavailable {
 		t.Fatalf("a host away: %d", code)

@@ -41,6 +41,8 @@ type holdWrites struct {
 	hold    atomic.Bool
 	release chan struct{}
 	once    sync.Once
+	// held counts the frames that came to wait.
+	held atomic.Int32
 }
 
 func newHoldWrites(t *testing.T) *holdWrites {
@@ -52,6 +54,7 @@ func newHoldWrites(t *testing.T) *holdWrites {
 func (h *holdWrites) seam() *viewerSeam {
 	return &viewerSeam{write: func() error {
 		if h.hold.Load() {
+			h.held.Add(1)
 			<-h.release
 		}
 		return nil
@@ -386,8 +389,13 @@ func TestARevokedHostedLinkViewerIsWrittenNothingMore(t *testing.T) {
 	if err := os.WriteFile(start, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Some of the output reaches the server and waits there for the guest.
-	time.Sleep(300 * time.Millisecond)
+	// Some of the output reaches the server and waits there for the guest:
+	// a frame of it is held as it is written.
+	for deadline := time.Now().Add(10 * time.Second); writes.held.Load() == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no output came to be written to the guest")
+		}
+	}
 	if resp, _ := e.do("DELETE", "/api/sessions/"+id+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke: %d", resp.StatusCode)
 	}

@@ -75,8 +75,12 @@ func TestAnswerPasteConnectsAViewerWithNoSignaling(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("the data channel did not open")
 	}
-	if !pp.Connected() {
-		t.Fatal("the peer does not see the channel")
+	// The viewer's side opens as it sends the channel's open; the peer
+	// sees the channel once that open has reached it.
+	for seen := time.Now().Add(10 * time.Second); !pp.Connected(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(seen) {
+			t.Fatal("the peer does not see the channel")
+		}
 	}
 	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 100, Rows: 40, Name: "guest"}))
 	deadline := time.After(10 * time.Second)

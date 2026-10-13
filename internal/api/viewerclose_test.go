@@ -185,9 +185,12 @@ func TestAWebSocketThatStopsReadingDoesNotStallTheSession(t *testing.T) {
 	healthy.reset()
 	_, before, _ := healthy.stats()
 
-	// For a second and a half after, while its connection waits on the browser.
+	// For three seconds after, while its connection waits on the browser
+	// (writeTimeout, 15 s): a session that waited with it would send the
+	// healthy viewer nothing all that while, where a loaded machine pauses
+	// the healthy viewer's output for half a second now and then.
 	var slowest time.Duration
-	for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+	for end := time.Now().Add(3 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
 		for name, fn := range map[string]func(){
 			"Info":  func() { _ = local.Info() },
 			"Input": func() { _ = local.Input(hsub, []byte("k")) },
@@ -208,7 +211,7 @@ func TestAWebSocketThatStopsReadingDoesNotStallTheSession(t *testing.T) {
 		gap = since
 	}
 	t.Logf("after the drop: the healthy viewer's longest gap %v, %d bytes more; Info and Input at most %v", gap.Round(time.Millisecond), after-before, slowest.Round(time.Millisecond))
-	if gap > 500*time.Millisecond {
+	if gap > 1500*time.Millisecond {
 		t.Errorf("the healthy viewer's output stalled for %v", gap)
 	}
 	if after == before {

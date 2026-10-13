@@ -272,12 +272,23 @@ func stallWaitingViewer(t *testing.T, e *testEnv) waitingViewer {
 			sent.Add(int64(len(frame)))
 		}
 	}()
-	for last := int64(-1); last != sent.Load(); {
-		last = sent.Load()
-		time.Sleep(300 * time.Millisecond)
+	// The server stops reading the viewer once a frame of its waits in line
+	// for room in the host's queue, the viewers' share of it (7 MiB) full:
+	// the test waits for that wait, and the viewer has sent the share by
+	// then. (A pause in what the viewer sends says less: a loaded machine
+	// pauses short of it.)
+	deadline := time.Now().Add(30 * time.Second)
+	for hs.ViewersWaiting() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no frame of the viewer's came to wait for the host after %d bytes", sent.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if sent.Load() < 7<<20 {
-		t.Fatalf("the server stopped reading after %d bytes", sent.Load())
+	for sent.Load() < 7<<20 { // the writer counts a frame once its write returns
+		if time.Now().After(deadline) {
+			t.Fatalf("a frame waited for the host after %d bytes, short of the viewers' share", sent.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return waitingViewer{hc: hc, hs: hs, v: v, viewerID: viewerID}
 }
@@ -646,8 +657,12 @@ func TestAViewerThatComesBackFindsItsBudgetSpent(t *testing.T) {
 	tok := host.link("control", "")
 	tap := tapRelays(t, host)
 	const burst = 512 << 10
+	rate := float64(e.srv.cfg.ViewerRelayKBps << 10)
 	first := dialViewer(t, e, host.sessionID, tok)
 	idFirst := joinRelayed(t, host, first)
+	bucket := budgetOf(t, e, "127.0.0.1")
+	// The bucket holds its burst at most now; the first connection spends it.
+	spent := time.Now()
 	go flood(t.Context(), first, burst)
 	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idFirst) >= burst }) {
 		t.Fatalf("the first connection got %d of %d bytes through", tap.inputBytes(idFirst), burst)
@@ -656,13 +671,33 @@ func TestAViewerThatComesBackFindsItsBudgetSpent(t *testing.T) {
 	host.expect(proto.HostViewerLeave)
 	again := dialViewer(t, e, host.sessionID, tok)
 	idAgain := joinRelayed(t, host, again)
+	// Back, the address has its bucket as it was: what it holds is what the
+	// time since it was spent is worth, and no more, where a fresh one holds
+	// a burst. Once that time is worth a burst, the two are alike: a machine
+	// that slow to come back leaves nothing to tell.
 	start := time.Now()
+	cameBack := start.Sub(spent)
+	if cameBack.Seconds()*rate >= burst {
+		t.Skipf("the connection came back %v after the burst was spent, when the bucket has earned a burst again", cameBack)
+	}
+	if b := budgetOf(t, e, "127.0.0.1"); b != bucket {
+		t.Fatal("the address that came back has a bucket of its own, not the one it spent")
+	}
+	if held, earned := heldNow(bucket), time.Since(spent).Seconds()*rate; held > earned+1 {
+		t.Fatalf("the bucket holds %.0f bytes %v after it was spent, more than the %.0f the time earned", held, time.Since(spent), earned)
+	}
+	// And what comes through shows it: the second connection has at once
+	// only what the bucket earned since the first began, and waits for the
+	// rest of its burst at the rate. (Coming back takes up to a second on a
+	// loaded machine: a fixed least time would take that second for none.)
+	// A millisecond is left for the bucket's rounding of its waits.
 	go flood(t.Context(), again, burst)
 	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idAgain) >= burst }) {
 		t.Fatalf("the second connection got %d of %d bytes through", tap.inputBytes(idAgain), burst)
 	}
-	if took := time.Since(start); took < 1500*time.Millisecond {
-		t.Fatalf("a connection that came back sent a whole burst in %v", took)
+	least := time.Duration((burst - cameBack.Seconds()*rate) / rate * float64(time.Second))
+	if took := time.Since(start); took < least-time.Millisecond {
+		t.Fatalf("a connection that came back %v after its address's burst began sent a whole burst in %v, the bucket allowing %v at least", cameBack, took, least)
 	}
 }
 
@@ -685,17 +720,52 @@ func TestAnotherAddressKeepsItsOwnViewerBudget(t *testing.T) {
 	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idA) >= 640<<10 }) {
 		t.Fatalf("the flood got %d bytes through", tap.inputBytes(idA))
 	}
-	// The other address's whole burst goes at once; one bucket for both
-	// would take two seconds over it.
+	// The other address sends a frame less than a burst: under a bucket of
+	// its own none of it waits, however long it takes to come through (a
+	// second on a loaded machine); under one bucket for both, which the
+	// first address keeps spent, it would wait two seconds.
 	const burst = 512 << 10
-	start := time.Now()
-	go flood(t.Context(), b, burst)
-	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idB) >= burst }) {
-		t.Fatalf("the other address got %d of %d bytes through", tap.inputBytes(idB), burst)
+	if budgetOf(t, e, "127.0.0.2") == budgetOf(t, e, "127.0.0.1") {
+		t.Fatal("the two addresses share a bucket")
 	}
-	if took := time.Since(start); took > time.Second {
-		t.Fatalf("another address's burst took %v behind the first address's flood", took)
+	go flood(t.Context(), b, burst-proto.MaxInput)
+	if !waitFor(10*time.Second, func() bool { return tap.inputBytes(idB) >= burst-proto.MaxInput }) {
+		t.Fatalf("the other address got %d of %d bytes through", tap.inputBytes(idB), burst-proto.MaxInput)
 	}
+	if n := budgetWaits(t, e, "127.0.0.2"); n != 0 {
+		t.Fatalf("the other address's budget held its burst back %d times behind the first address's flood", n)
+	}
+}
+
+// budgetOf is the bucket that bounds what the viewers of addr send their
+// hosts, held while one of them is connected.
+func budgetOf(t *testing.T, e *testEnv, addr string) *byteBucket {
+	t.Helper()
+	e.srv.viewerRelay.mu.Lock()
+	defer e.srv.viewerRelay.mu.Unlock()
+	sb := e.srv.viewerRelay.held[addr]
+	if sb == nil {
+		t.Fatalf("no budget held for %s", addr)
+	}
+	return sb.bucket
+}
+
+// budgetWaits is how many of what the viewers of addr sent their hosts
+// waited for the address's budget (byteBucket.waits).
+func budgetWaits(t *testing.T, e *testEnv, addr string) int {
+	t.Helper()
+	b := budgetOf(t, e, addr)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.waits
+}
+
+// heldNow is what b holds, refilled to now.
+func heldNow(b *byteBucket) float64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill(time.Now())
+	return b.tokens
 }
 
 // What a person sends goes through at once under the default budget, in
@@ -727,15 +797,17 @@ func TestOrdinaryViewerTrafficPassesUnderTheDefaultBudget(t *testing.T) {
 			for i := 0; i < 3; i++ {
 				want = append(want, proto.Encode(proto.TypeInput, bytes.Repeat([]byte("q"), proto.MaxInput)))
 			}
-			start := time.Now()
 			for _, f := range want {
 				v.send(f)
 			}
 			if !waitFor(5*time.Second, func() bool { return len(tap.from(id)) >= len(want) }) {
 				t.Fatalf("the host got %d of %d frames", len(tap.from(id)), len(want))
 			}
-			if took := time.Since(start); took > time.Second {
-				t.Fatalf("ordinary traffic took %v", took)
+			// At once: the address's budget held none of it back. (A time
+			// says less: a loaded machine takes a second over it, as long as
+			// the budget's rate would.)
+			if n := budgetWaits(t, e, "127.0.0.1"); n != 0 {
+				t.Fatalf("the budget held ordinary traffic back %d times", n)
 			}
 			for i, f := range tap.from(id) {
 				if !bytes.Equal(proto.Encode(f.Type, f.Payload), want[i]) {
