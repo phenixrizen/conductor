@@ -985,14 +985,23 @@ sequence cut longer than 32 bytes is skipped through its final byte), and a writ
 paste's text, a choice's key among it, or the rest of a terminal's own
 report (a sequence's, a control string's), answers nothing, a question the
 session does not hold included, and stamps nobody typing. An Escape that
-ends a write outside a paste waits for the next write, at most 50 ms (a
-terminal's read can cut a report right after its ESC): one that goes on
-with a sequence makes it that sequence's start, else it is the Escape key.
-Meanwhile it puts behind the question it may answer (a reply to it is
-refused, the safer mistake) but clears none: a startup question, or a
-prompt whose choice is Escape, is cleared once the Escape is known to be
-the key, so that no submission's Enter reaches a startup question that
-still shows. While what was written before is unfinished (another
+ends a page's frame or a reply, outside a paste, is the Escape key: a page
+sends whole keys. One that ends a terminal's read (a host's own terminal,
+which forwards its reads as they come) may be the Escape key and may be the
+start of a report the next read goes on with, and nothing tells which (the
+program may read both reads as one, however late the second): a next write
+that goes on with a sequence makes it that sequence's start, and either way
+it puts behind the question it may answer (a reply to it is refused, the
+safer mistake) but clears none, puts no screen behind, and keeps no
+question from being asked. A startup question it may answer, asked or not
+yet, is held answered until the screen the questions asked during the work
+are read from shows no startup question (the program took the Escape and
+moved on: then it is cleared, or never asked), a key surely answers it, or
+the next startup question takes its place, so that no submission's Enter
+reaches a startup question that still shows; a session without that screen
+keeps it until one of the others. For 50 ms after it an `answer` is
+refused as `input_failed` (the program could read the two as one key).
+While what was written before is unfinished (another
 connection's paste, a sequence), an `answer` is refused as `input_failed`,
 nothing written and its question not noted: its key would be read as part
 of it. It can be sent again. A startup question

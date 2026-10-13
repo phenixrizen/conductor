@@ -223,6 +223,12 @@ type Local struct {
 	// again meanwhile (the program draws it again before it moves on), it
 	// is asked answered, with an id no reply is taken for. Guarded by mu.
 	startupAnsweredWords string
+	// heldAnswer is the startup question an Escape a terminal's read ended
+	// with may have answered (holdStartupAnswered): its id once asked, its
+	// words while not asked yet, and who typed it. Held answered, it is
+	// cleared once the screen shows no startup question (escGone). Guarded
+	// by mu.
+	heldAnswer heldStartup
 
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
@@ -643,7 +649,16 @@ func (s *Local) firePattern(line string) {
 // question (startupLook).
 func (s *Local) fireTrust(text string) {
 	if q, words := s.lastStartupQ(text); q != nil {
+		if s.asked != nil && s.heldGone(words, s.asked.Text()) {
+			// An Escape typed at it before it was asked took it away.
+			return
+		}
 		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt())
+		if s.asked != nil {
+			// One held answered that the screen no longer shows (the
+			// program took the Escape) is cleared.
+			s.escGone(s.asked.Text())
+		}
 	}
 }
 
@@ -660,6 +675,7 @@ func (s *Local) fireTrust(text string) {
 // dialog with other words than the one last answered is that one gone
 // (dialogAnswered); one with its words is that question still (sameDialog).
 func (s *Local) fireAsked(text string) {
+	s.escGone(text)
 	for _, q := range s.askedQuestions {
 		if words := q.words(text); words != "" {
 			look := s.asked.LookedAt()
@@ -683,7 +699,8 @@ func (s *Local) fireAsked(text string) {
 // not offer (d, a click) or one it did that the program took late. Without
 // such a key it stays: the dialog cannot have been answered, and a held
 // question keeps every Enter from the screen.
-func (s *Local) missAsked(string) {
+func (s *Local) missAsked(text string) {
+	s.escGone(text)
 	look := s.asked.LookedAt()
 	s.mu.Lock()
 	s.dialogGone(look)
@@ -999,16 +1016,30 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// startup question took its place (the program draws it again before
 	// it moves on), is asked answered too; another startup question asked
 	// ends that.
+	// The startup question an Escape a terminal's read ended with may have
+	// answered before it was asked (heldAnswer's words): asked answered,
+	// and held so until the screen shows it gone (escGone).
+	heldAsked := false
 	if rules&startupLook != 0 && state == AttentionNeedsInput {
 		if s.startupAnsweredWords != "" && s.startupAnsweredWords == message {
 			stillAnswered = true
 		} else {
 			s.startupAnsweredWords = ""
 		}
+		if s.heldAnswer.words != "" {
+			if s.heldAnswer.words == message {
+				stillAnswered, heldAsked = true, true
+			} else {
+				s.heldAnswer.words = ""
+			}
+		}
 	}
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		if stillAnswered && cur.ID != "" {
 			s.answered = cur.ID
+			if heldAsked {
+				s.heldAnswer.id, s.heldAnswer.words = cur.ID, ""
+			}
 		}
 		s.mu.Unlock()
 		return nil
@@ -1029,6 +1060,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		att.ID = NewID()
 		if stillAnswered {
 			s.answered = att.ID
+			if heldAsked {
+				s.heldAnswer.id, s.heldAnswer.words = att.ID, ""
+			}
 		}
 	}
 	s.info.Attention = att
@@ -1482,7 +1516,7 @@ func (s *Local) InputContext(ctx context.Context, sub *Subscription, data []byte
 // host's): it waits for the program to read, however long it has not, as
 // a terminal does, until ctx ends.
 func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, "", data, writeWait{})
+	return s.input(ctx, sub, "", data, writeWait{reads: true})
 }
 
 // input is Input waiting as o says, until ctx ends; with question, the
@@ -1578,18 +1612,18 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// stamps the startup question showing then that the keys answer
 	// (whatever prompt they were typed at), cleared once they are written.
 	//
-	// An Escape that ends the write is held (keysWritten): until the next
-	// write or escWait says it is the Escape key, it may be one and may be
-	// a sequence's start. It counts for what puts a question behind (a
-	// reply to it refused, the safer mistake), never for what clears one:
-	// a startup question it answers is cleared once it is known to be the
-	// Escape key (escSince), as is the prompt whose choice it is
-	// (escPrompt), so that no submission's Enter reaches a question that
-	// still shows.
+	// An Escape that ends a terminal's read is held (keysWritten): it may
+	// be the Escape key and may be the start of a report the next read goes
+	// on with, and nothing tells which. It counts for what puts a question
+	// behind (a reply to it refused, the safer mistake), never for what
+	// clears one, puts its screen behind or keeps it from being asked: a
+	// startup question it may answer is held answered (escAnswered) until
+	// the screen shows it gone (escGone), a key surely answers it, or the
+	// next startup question takes its place, so that no submission's Enter
+	// reaches a question that still shows.
 	typedEnter := enter
 	var quiet bool
-	var startupSince, escSince, escPrompt *time.Time
-	var heldSeq uint64
+	var startupSince *time.Time
 	o.from, o.anyEnd = sub, true
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
@@ -1651,15 +1685,14 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
-		keys, unkeyed, held := s.keysWritten(data)
-		heldSeq = held
+		keys, unkeyed, held := s.keysWritten(data, o.reads)
 		// The keys that may answer: keys, and the Escape held.
 		maybe := keys
-		if held != 0 {
+		if held {
 			maybe = append(keys[:len(keys):len(keys)], []byte{0x1b})
 		}
 		own := ownKeys(data, keys)
-		quiet = unkeyed || allReports(keys) && held == 0
+		quiet = unkeyed || allReports(keys) && !held
 		s.mu.Lock()
 		shown := s.info.Attention
 		s.mu.Unlock()
@@ -1667,9 +1700,6 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			typedEnter = anyKey(keys, func(k []byte) bool {
 				return string(k) == "\r" || isChoice(shown, k) || shown.Source == SourceQuestion && listKey(k)
 			})
-			if held != 0 && !typedEnter && isChoice(shown, []byte{0x1b}) {
-				escPrompt = promptSince
-			}
 		}
 		if quiet {
 			typedEnter = false
@@ -1686,11 +1716,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				onScreen = readDialog(q, words, screen)
 			}
 		}
-		// A startup question the keys answer is put behind; cleared once
-		// written when a key that is surely one answers it (startupSince),
-		// once the Escape held is known to be the Escape key when only
-		// that may (escSince).
-		startupAnswer := false
+		// A startup question a key surely answers is put behind, its screen
+		// too, and cleared once written (startupSince); one only the Escape
+		// held may answer is held answered (heldAnswer).
+		startupAnswer, heldAnswer := false, false
 		if !isTerminalReport(data) && !quiet {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
@@ -1702,11 +1731,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// its choice alone answers it: its screen behind now, the
 			// question cleared once written.
 			if shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.startupPicks(shown, data, maybe) {
-				startupAnswer = true
 				if s.startupPicks(shown, data, keys) {
-					startupSince = shown.Since
+					startupAnswer, startupSince = true, shown.Since
 				} else {
-					escSince = shown.Since
+					heldAnswer = true
 				}
 			}
 		}
@@ -1714,14 +1742,24 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// asked or not yet (the watcher asks once the screen is quiet): keys
 		// that pick one of its answers (picksStartup) answer it, and its screen goes
 		// behind, so that the watcher asks only what is drawn after.
-		startupOnScreen, onScreenSure := false, false
+		startupOnScreen, onScreenHeld := false, false
 		var startupWords string
 		if s.trust != nil && !quiet && !isTerminalReport(data) && s.trust.Watching() {
 			text := s.trust.Text()
 			if q, words := s.lastStartupQ(text); q != nil && picksStartup(CleanOptions(q.Answers), startupItems(q, text), data, maybe) {
-				startupOnScreen, startupWords = true, words
-				onScreenSure = picksStartup(CleanOptions(q.Answers), startupItems(q, text), data, keys)
+				startupWords = words
+				if picksStartup(CleanOptions(q.Answers), startupItems(q, text), data, keys) {
+					startupOnScreen = true
+				} else {
+					onScreenHeld = true
+				}
 			}
+		}
+		if (heldAnswer || onScreenHeld) && !startupAnswer && !startupOnScreen && !(answersQuestion && own) {
+			// Only the Escape held may answer it: the startup question
+			// showing (or, not asked yet, the one the screen shows, by its
+			// words) is held answered, nothing else done.
+			s.holdStartupAnswered(startupWords, sub)
 		}
 		if (answersQuestion && own || startupAnswer || startupOnScreen) && s.trust != nil {
 			// The answered screen behind, a look that took its text before
@@ -1741,12 +1779,8 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			}
 			if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (startupWords == "" || att.Message == startupWords) {
 				s.markAnswered(att)
-				switch {
-				case startupSince != nil || escSince != nil:
-				case answersQuestion && own || startupOnScreen && onScreenSure:
+				if startupSince == nil {
 					startupSince = att.Since
-				default:
-					escSince = att.Since
 				}
 			}
 			s.mu.Unlock()
@@ -1786,13 +1820,6 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if startupSince != nil {
 			s.answer(startupSince, sub.ID, sub.Name, true, true)
 		}
-		s.afterEscape(heldSeq, func() {
-			for _, since := range []*time.Time{escSince, escPrompt} {
-				if since != nil {
-					s.answer(since, sub.ID, sub.Name, true, true)
-				}
-			}
-		})
 	}
 	landed, err := s.writeProc(ctx, data, o)
 	if err != nil {
@@ -1806,8 +1833,6 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				case werr := <-landed:
 					if werr == nil {
 						written()
-					} else {
-						s.afterEscape(heldSeq, nil)
 					}
 				case <-s.ended:
 				}
@@ -2311,51 +2336,25 @@ func isAnswer(answers []Option, data []byte) bool {
 // began (a terminal's report cut across its reads), or the start of one the
 // next ends. Every write made goes through it once, in order.
 //
-// held is not 0 when data ends in an Escape the reader keeps (keyReader's
-// escHeld): the next write, or escWait without one, says what it is
-// (heldEscape). Meanwhile it may be the Escape key, and data is no quiet
-// write.
-func (s *Local) keysWritten(data []byte) (keys [][]byte, quiet bool, held uint64) {
+// reads says data is a terminal's read (writeWait.reads): an Escape that
+// ends it is held (keyReader.escHeld), and held says so. That Escape may be
+// the Escape key and may be the start of a report the next read goes on
+// with; nothing tells which (the program may read both reads at once), so
+// it may answer a question but never surely does. data is no quiet write
+// then.
+func (s *Local) keysWritten(data []byte, reads bool) (keys [][]byte, quiet, held bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	keys = s.keysIn.keys(data)
+	keys = s.keysIn.keys(data, reads)
 	held = s.keysIn.escHeld
-	return keys, len(keys) == 0 && !s.keysIn.pasted && held == 0, held
+	return keys, len(keys) == 0 && !s.keysIn.pasted && !held, held
 }
 
-// escWait is how long an Escape that ends a write waits for the next write
-// to say whether it began a sequence (a terminal's read cut a report right
-// after its ESC: the rest comes at once) before it is the Escape key.
+// escWait is how long an Escape a terminal's read ended with stays
+// unfinished for a reply (inputBusy): a report its read cut comes on at
+// once, and a reply written right after it could be read with it as one
+// key.
 const escWait = 50 * time.Millisecond
-
-// heldEscape reports whether the Escape the key reader kept as seq
-// (keysWritten's held) is the Escape key: no write came after it, so it
-// began nothing. It is forgotten then, the reader's place cleared. False
-// when a write after it read it (as a sequence's start, or as the Escape
-// key that write's keys hold).
-func (s *Local) heldEscape(seq uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if seq == 0 || s.keysIn.escHeld != seq {
-		return false
-	}
-	s.keysIn.carry, s.keysIn.escHeld = nil, 0
-	return true
-}
-
-// afterEscape waits escWait after a write that ended in the Escape held as
-// seq has been made, and runs escaped when that Escape is the Escape key
-// (heldEscape); nil escaped only clears the reader's place.
-func (s *Local) afterEscape(seq uint64, escaped func()) {
-	if seq == 0 {
-		return
-	}
-	time.AfterFunc(escWait, func() {
-		if s.heldEscape(seq) && escaped != nil {
-			escaped()
-		}
-	})
-}
 
 // ErrInputBusy refuses a reply to a question while what was written to the
 // session before it is unfinished (a paste, an escape sequence another
@@ -2367,6 +2366,11 @@ var ErrInputBusy = errors.New("another connection's paste or key is being writte
 // inputBusy reports whether a write before the next left something
 // unfinished (keyReader). The caller holds s.mu.
 func (s *Local) inputBusy() bool {
+	if s.keysIn.escHeld && time.Since(s.keysIn.escAt) > escWait {
+		// An Escape a terminal's read ended with, long enough ago to have
+		// been read alone.
+		return false
+	}
 	return s.keysIn.pasting || s.keysIn.inString || s.keysIn.inCSI || len(s.keysIn.carry) > 0
 }
 
@@ -2414,12 +2418,13 @@ const maxKeyCarry = 32
 // paste goes on, inString a control string (its bytes no keys), carry is
 // the unfinished end of the last write (at most maxKeyCarry bytes).
 //
-// An Escape that ends a write outside a paste is kept too (escHeld, the
-// carry its ESC): a terminal's read can cut a report right after its ESC,
-// the rest coming in the next. The next write says what it was: the start
-// of the sequence that write goes on with, else the Escape key, read as
-// that write's first key; with no write after it, the Escape key
-// (heldEscape).
+// An Escape that ends a terminal's read outside a paste is kept too
+// (escHeld, the carry its ESC): a read can cut a report right after its
+// ESC, the rest coming in the next. The next write that goes on with a
+// sequence makes it that sequence's start; one that does not leaves it no
+// key of its own (keysWritten counted it as one that may be, for the read
+// it ended). An Escape that ends a page's frame or a reply is the Escape
+// key: those carry whole keys.
 type keyReader struct {
 	pasting  bool
 	inString bool
@@ -2429,9 +2434,10 @@ type keyReader struct {
 	carry []byte
 	// pasted says the last write held a paste's text.
 	pasted bool
-	// escHeld is the number of the Escape kept at the end of the last
-	// write, 0 when none; escs counts them.
-	escHeld, escs uint64
+	// escHeld says the last write, a terminal's read, ended in an Escape
+	// kept, at escAt.
+	escHeld bool
+	escAt   time.Time
 }
 
 // stringEnd returns the index just past the BEL or ST that ends a control
@@ -2454,13 +2460,111 @@ func stringEnd(data []byte, i int) (end, cutAt int) {
 	return -1, -1
 }
 
-// keys returns the keys of data, the next write.
-func (r *keyReader) keys(data []byte) [][]byte {
+// heldStartup is a startup question an Escape a terminal's read ended with
+// may have answered: its id (asked) or its words (not asked yet), and who
+// typed it.
+type heldStartup struct {
+	id, words, by, name string
+}
+
+// holdStartupAnswered notes the startup question showing, or (words, not
+// asked yet) the one the screen shows, as one an Escape a terminal's read
+// ended with may have answered, typed by sub: held answered (a reply to it
+// refused), not cleared, its screen not put behind, until the screen shows
+// it gone (escGone), a key surely answers it, or the next startup question
+// takes its place.
+func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	att := s.info.Attention
+	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || att.Message == words) {
+		s.markAnswered(att)
+		s.heldAnswer = heldStartup{id: att.ID, by: sub.ID, name: sub.Name}
+		return
+	}
+	if words != "" {
+		s.heldAnswer = heldStartup{words: CleanMessage(words), by: sub.ID, name: sub.Name}
+	}
+}
+
+// escGone clears the startup question held answered (heldAnswer) once the
+// screen (screen, the screen's text, Screen.Text) shows no startup
+// question: the program took the Escape and moved on. Its answer is sure
+// then, and its screen is put behind as a sure answer's is (startupGone).
+// Asked at each look of the screen the questions asked during the work are
+// read from, and as a startup question is asked; a session without that
+// screen has nothing to tell it by, and keeps the question until a key
+// surely answers it or the next takes its place.
+func (s *Local) escGone(screen string) {
+	if s.lastStartup(screen) != "" {
+		return
+	}
+	s.mu.Lock()
+	att, held := s.info.Attention, s.heldAnswer
+	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust {
+		s.mu.Unlock()
+		return
+	}
+	s.startupGone(att.Message)
+	s.mu.Unlock()
+	s.trust.Reset()
+	s.answer(att.Since, held.by, held.name, true, true)
+}
+
+// heldGone reports whether the startup question with words, about to be
+// asked, is the one an Escape a terminal's read ended with may have
+// answered before it was asked (heldAnswer's words), and the screen
+// (screen, Screen.Text) shows no startup question: the program took the
+// Escape and moved on, and it is not asked; its screen is put behind
+// (startupGone).
+func (s *Local) heldGone(words, screen string) bool {
+	if s.lastStartup(screen) != "" {
+		return false
+	}
+	s.mu.Lock()
+	if s.heldAnswer.words == "" || s.heldAnswer.words != CleanMessage(words) {
+		s.mu.Unlock()
+		return false
+	}
+	s.startupGone(s.heldAnswer.words)
+	s.mu.Unlock()
+	s.trust.Reset()
+	return true
+}
+
+// startupGone notes the startup question with words, held answered by an
+// Escape a terminal's read ended with, as surely answered: a look of the
+// startup questions' watcher that took its text before now asks nothing,
+// and the question asked again before another takes its place is asked
+// answered (as a key that surely answers one does in input). The caller
+// holds s.mu, and resets the watcher's text once it has let go.
+func (s *Local) startupGone(words string) {
+	s.heldAnswer = heldStartup{}
+	s.startupAnswered, s.startupAnsweredAt = true, s.trust.Fed()
+	s.startupAnsweredWords = words
+}
+
+// continuesSequence reports whether b, after an ESC, makes it the start of
+// an escape sequence or a control string the key reader reads as one key.
+func continuesSequence(b byte) bool {
+	switch b {
+	case '[', 'O', ']', 'P', 'X', '^', '_':
+		return true
+	}
+	return false
+}
+
+// keys returns the keys of data, the next write; reads says it is a
+// terminal's read.
+func (r *keyReader) keys(data []byte, reads bool) [][]byte {
+	// An Escape held from the read before: the start of the sequence data
+	// goes on with, else no key here.
+	heldIn := r.escHeld
 	if len(r.carry) > 0 {
 		data = append(r.carry, data...)
 		r.carry = nil
 	}
-	r.pasted, r.escHeld = false, 0
+	r.pasted, r.escHeld = false, false
 	var keys [][]byte
 	i := 0
 	cut := func(from int) {
@@ -2515,12 +2619,19 @@ func (r *keyReader) keys(data []byte) [][]byte {
 		case data[i] != 0x1b:
 			keys = append(keys, data[i:i+1])
 			i++
-		case i+1 == len(data):
-			// An Escape last: kept until the next write says whether it
-			// began a sequence (escHeld).
-			r.escs++
-			r.carry, r.escHeld = []byte{0x1b}, r.escs
+		case i == 0 && heldIn && (i+1 == len(data) || !continuesSequence(data[i+1])):
+			// The Escape held from the read before, which this write does
+			// not go on with: counted for that read, no key here.
+			i++
+		case i+1 == len(data) && reads:
+			// An Escape that ends a terminal's read: kept until the next
+			// write says whether it began a sequence (escHeld).
+			r.carry, r.escHeld, r.escAt = []byte{0x1b}, true, time.Now()
 			return keys
+		case i+1 == len(data):
+			// An Escape that ends a page's frame or a reply: the Escape key.
+			keys = append(keys, data[i:i+1])
+			i++
 		case data[i+1] == '[':
 			j := i + 2
 			for j < len(data) && (data[j] < 0x40 || data[j] > 0x7e) {

@@ -295,7 +295,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		textWait := st.wait
 		textWait.guard = s.textGuard(sub)
 		textWait.before = func() {
-			keys, _, _ := s.keysWritten([]byte(data))
+			keys, _, _ := s.keysWritten([]byte(data), false)
 			s.noteAnswering(promptSince, []byte(data), keys, nil)
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
@@ -679,7 +679,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		if sub.BeforeEnter != nil {
 			sub.BeforeEnter()
 		}
-		keys, _, _ := s.keysWritten([]byte{'\r'})
+		keys, _, _ := s.keysWritten([]byte{'\r'}, false)
 		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil)
 		s.nextTurn()
 	}
@@ -907,7 +907,7 @@ func (s *Local) enterAgain(ctx context.Context) bool {
 	// meanwhile is answered by it.
 	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: s.enterGuard(func(att Attention) bool {
 		return att.State == AttentionNeedsInput
-	}), before: func() { s.keysWritten([]byte{'\r'}) }}
+	}), before: func() { s.keysWritten([]byte{'\r'}, false) }}
 	if _, err := s.writeProc(ctx, []byte{'\r'}, again); err != nil {
 		return false
 	}
