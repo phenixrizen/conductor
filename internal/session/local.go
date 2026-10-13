@@ -2742,7 +2742,7 @@ func (r *keyReader) keys(data []byte) [][]byte {
 			}
 			if seq := data[i : j+1]; string(seq) == pasteStart {
 				r.pasting = true
-			} else if key, encoded := encodedKey(seq); encoded {
+			} else if key, maybe, encoded := encodedKey(seq); encoded {
 				// A key the terminal encodes (CSI u): the key it is, a
 				// release none.
 				if key != nil {
@@ -2750,6 +2750,9 @@ func (r *keyReader) keys(data []byte) [][]byte {
 				}
 			} else {
 				keys = append(keys, seq)
+				if maybe != nil {
+					r.maybe = append(r.maybe, maybe)
+				}
 			}
 			i = j + 1
 		case data[i+1] == 'O':
@@ -2812,16 +2815,17 @@ var keypadKeys = map[int]byte{
 // capital, or the shifted key the
 // terminal names), Ctrl and a letter its control byte (not Ctrl+H, I, J or
 // M, whose bytes are other keys'); a release is no key (nil). encoded is
-// false for anything else (an arrow, Shift+Enter, Ctrl+M, a
-// terminal's report such as CSI ? flags u): seq stays the key it is. Caps
-// Lock and Num Lock change nothing.
-func encodedKey(seq []byte) (key []byte, encoded bool) {
+// false for anything else (an arrow, Shift+Enter, Ctrl+M, a terminal's
+// report such as CSI ? flags u): seq stays the key it is, and maybe is the
+// key alone a program may read one with modifiers as (Enter for
+// Shift+Enter). Caps Lock and Num Lock change nothing.
+func encodedKey(seq []byte) (key, maybe []byte, encoded bool) {
 	if len(seq) < 4 || seq[0] != 0x1b || seq[1] != '[' {
-		return nil, false
+		return nil, nil, false
 	}
 	params, final := string(seq[2:len(seq)-1]), seq[len(seq)-1]
 	if strings.Trim(params, "0123456789:;") != "" || params == "" {
-		return nil, false
+		return nil, nil, false
 	}
 	fields := strings.Split(params, ";")
 	field := func(i int) []string {
@@ -2847,17 +2851,17 @@ func encodedKey(seq []byte) (key []byte, encoded bool) {
 		code, shifted = number(codes, 0, -1), number(codes, 1, -1)
 		mods, event = number(mod, 0, 1), number(mod, 1, 1)
 	default:
-		return nil, false
+		return nil, nil, false
 	}
 	if code < 0 || mods < 1 || event < 1 {
-		return nil, false
+		return nil, nil, false
 	}
 	switch event {
 	case 1, 2:
 	case 3:
-		return nil, true
+		return nil, nil, true
 	default:
-		return nil, false
+		return nil, nil, false
 	}
 	const shift, ctrl, locks = 1, 4, 64 | 128
 	printable := func(c int) bool { return c >= ' ' && c <= '~' }
@@ -2868,19 +2872,26 @@ func encodedKey(seq []byte) (key []byte, encoded bool) {
 	}
 	switch m := (mods - 1) &^ locks; {
 	case m == 0 && (code == 27 || code == '\r' || code == '\t' || code == 0x7f || printable(code)):
-		return []byte{byte(code)}, true
+		return []byte{byte(code)}, nil, true
 	case m == shift && printable(shifted):
-		return []byte{byte(shifted)}, true
+		return []byte{byte(shifted)}, nil, true
 	case m == shift && code >= 'a' && code <= 'z':
-		return []byte{byte(code - 'a' + 'A')}, true
+		return []byte{byte(code - 'a' + 'A')}, nil, true
 	case m == ctrl && code >= 'a' && code <= 'z' && !strings.ContainsRune("hijm", rune(code)):
 		// Ctrl and a letter, its control byte, but for those whose byte
 		// is another key's (Backspace, Tab, a line feed, Enter): the
 		// protocol sends those keys as their own codes, and Codex's
 		// crossterm reads Ctrl+M as Ctrl and m, never Enter.
-		return []byte{byte(code - 'a' + 1)}, true
+		return []byte{byte(code - 'a' + 1)}, nil, true
 	}
-	return nil, false
+	if code == 27 || code == '\r' || code == '\t' || code == 0x7f || printable(code) {
+		// A key with modifiers read as no other (Shift+Enter, Ctrl+M,
+		// Ctrl+3): a program may read it as its key alone (a handler that
+		// looks at the key, not the modifiers), which maybe is, counted
+		// where that is the safer mistake.
+		return nil, []byte{byte(code)}, false
+	}
+	return nil, nil, false
 }
 
 // numberedLine matches a numbered line of a dialog's list ("› 1. Yes,

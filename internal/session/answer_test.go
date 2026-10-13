@@ -1754,6 +1754,37 @@ func TestAnEncodedCtrlMIsNoEnter(t *testing.T) {
 	}
 }
 
+// A key with modifiers the protocol encodes and that reads as no other key
+// (Shift+Enter, Ctrl+3) may be read by a program as its key alone (a
+// handler that looks at the key, not its modifiers): at Codex's update
+// question it puts the question behind, a reply refused, and clears
+// nothing, a submission still held back.
+func TestAModifiedEncodedKeyOnlyPutsTheQuestionBehind(t *testing.T) {
+	for _, key := range []string{"\x1b[13;2u", "\x1b[51;5u"} {
+		t.Run(fmt.Sprintf("%q", key), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(codexUpdateScreen))
+			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			if err := s.InputWaiting(t.Context(), nater, []byte(key)); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+				t.Fatalf("the key cleared the question: %+v", a)
+			}
+			if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("a reply after the key: %v", err)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a submission at the question: %v", err)
+			}
+			noWrite(t, p, 100*time.Millisecond)
+		})
+	}
+}
+
 // Codex's update question answered (3), drawn again before Codex took the
 // key, then left for Codex's prompt with no other startup question: asked
 // again answered, it goes once the screen shows no startup question, and a

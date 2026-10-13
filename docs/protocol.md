@@ -982,7 +982,10 @@ read as the key it encodes) is the key it stands for (Escape is
 `ESC[27u`, Ctrl+C `ESC[99;5u`; a keypad key its digit or its Enter (KP_1
 `ESC[57400u`), as Codex reads it; Enter, a character, Shift or Ctrl and a
 letter, but Ctrl+H, I, J and M, which stay keys of their own, Codex reading
-Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing) and its release no key, an ESC
+Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing) and its release no key; one
+with modifiers it reads as no other key (Shift+Enter, Ctrl+3) stays a key
+of its own, its key alone counting only as one it may be read as (a
+program's handler may look at the key, not its modifiers); an ESC
 and a key at once are one key, that key with Alt (a page's xterm sends
 Alt+z as `ESC z`, which Codex reads as one key and its questions ignore),
 never the Escape key, the key alone counting only as one it may be read as
