@@ -157,7 +157,8 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.lines({ first: 1, last: 2, lines: ['end -- from Neovim'] })).toBe(true)
     expect(e.finish()).toBe(true)
     expect(d.text).toEqual(['alphaxy', 'end -- from Neovim'])
-    expect(e.showing).toBe(false)
+    // y is still a guess, for the line changes that may come after; nothing is held.
+    expect(e.range()).toEqual({ line: 1, from: 7, to: 8 })
     expect(e.holding).toBe(false)
   })
 
@@ -186,6 +187,34 @@ describe('the local echo when Neovim is lost', () => {
     e.lines({ first: 0, last: 1, lines: ['alpha'] })
     expect(e.finish()).toBe(false)
     expect(d.text).toEqual(['alpha'])
+  })
+
+  it('reconciles the guesses it kept with line changes that come after the end', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    // The end comes before any line: both guesses stay.
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // Neovim's line for x comes after: x is Neovim's now, y stays laid after it.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // Its line for y: nothing left to guess.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphaxy'] })).toBe(false)
+    expect(d.text).toEqual(['alphaxy'])
+    // After that, a late change is Neovim's text as it is.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphaxyz'] })).toBe(false)
+    expect(d.text).toEqual(['alphaxyz'])
+  })
+
+  it('lays no kept guess over a late line that is not the one they were laid on', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    expect(e.finish()).toBe(true)
+    expect(e.lateLines({ first: 0, last: 1, lines: ['something else'] })).toBe(false)
+    expect(d.text).toEqual(['something else'])
   })
 
   it('does nothing with no guesses and nothing held', () => {

@@ -148,16 +148,32 @@ export class NvimEcho {
   }
 
   /**
-   * Neovim is gone (lost, not quit) and will acknowledge nothing more: every line change it sent and the echo held is shown, and the
-   * guesses its line does not hold stay laid over it (the person typed them; Neovim may never have had them), as long as its line is
-   * still the one they were laid on and no key that is not a plain character followed them (a Backspace, an Escape: what Neovim made
-   * of those keys is its text, which stands). Returns whether any guess stays. The echo holds nothing after it.
+   * Neovim will acknowledge nothing more (lost, not quit; or its tab is no longer in front): every line change it sent and the echo
+   * held is shown, and the guesses its line does not hold stay laid over it (the person typed them; Neovim may never have had them), as
+   * long as its line is still the one they were laid on and no key that is not a plain character followed them (a Backspace, an
+   * Escape: what Neovim made of those keys is its text, which stands). Returns whether any guess stays; those that do are reconciled
+   * again with each line change that comes after (lateLines).
    */
   finish(): boolean {
     const base = this.base
     this.unshow()
     for (const ev of this.held.splice(0)) this.doc.applyLines(ev)
-    let left = false
+    return this.relay(base)
+  }
+
+  /**
+   * A line change that comes after finish (a lost Neovim's last ones can come after its end): shown, and the guesses that stay laid
+   * again over Neovim's new line, less those it now holds. Returns whether any guess stays.
+   */
+  lateLines(ev: EchoLines): boolean {
+    const base = this.base
+    this.unshow()
+    this.doc.applyLines(ev)
+    return this.relay(base)
+  }
+
+  /** Neovim's text changed under the guesses (finish, lateLines): those its line holds go, the rest is laid again over it. */
+  private relay(base: { line: number; col: number; text: string } | null): boolean {
     if (base && this.guesses.length && !this.barrier) {
       const now = this.doc.line(base.line)
       for (let k = this.guesses.length; k >= 0; k--) {
@@ -167,17 +183,16 @@ export class NvimEcho {
           .join('')
         if (now !== base.text.slice(0, base.col - 1) + done + base.text.slice(base.col - 1)) continue
         const rest = this.guesses.slice(k)
-        if (rest.length) {
-          this.base = { line: base.line, col: base.col + done.length, text: now }
-          this.guesses = rest
-          this.show()
-          left = true
-        }
-        break
+        if (!rest.length) break
+        this.base = { line: base.line, col: base.col + done.length, text: now }
+        this.guesses = rest
+        this.held = []
+        this.show()
+        return true
       }
     }
     this.reset()
-    return left
+    return false
   }
 
   /** Forgets everything (the editor closes, the keymap changes). */

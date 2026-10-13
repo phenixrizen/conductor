@@ -309,6 +309,51 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
   }
 })
 
+// Characters typed in insert mode show at once (the local echo); Neovim, slow here (its config busy-waits 300 ms on each), dies before
+// it has them. The tab keeps them: the text Neovim last held with what was typed laid over it, and its changes that come after its end
+// reconciled with it rather than written over it.
+test('a Neovim lost while typed characters wait for it keeps them in its tab', async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(join(config, 'init.lua'), "local uv = vim.uv or vim.loop\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() local t = uv.hrtime() while uv.hrtime() - t < 3e8 do end end })\n")
+  const cwd = join(state.root, 'files-vim-lost-typed')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-lost-typed', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    await lines.click()
+    // Neovim's process, from its own word.
+    await page.keyboard.type(':echo getpid()')
+    await page.keyboard.press('Enter')
+    const message = status.locator('[data-nvim-message]')
+    await expect(message).toHaveText(/^\d+$/, { timeout: 15_000 })
+    const pid = Number(await message.textContent())
+    await page.keyboard.type('A')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await page.keyboard.type('xyz')
+    await expect(lines).toContainText('alphaxyz', { timeout: 250 })
+    process.kill(pid, 'SIGKILL')
+    await expect(area.locator('[data-nvim-lost]')).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
+    await page.waitForTimeout(1000)
+    await expect(lines).toContainText('alphaxyz')
+    await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible()
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover

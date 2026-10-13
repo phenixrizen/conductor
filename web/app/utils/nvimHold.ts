@@ -1,3 +1,4 @@
+import type { NvimEcho } from './nvimEcho'
 import type { NvimViewState } from './nvimSwap'
 import { closedByQuit } from './nvimLost'
 
@@ -5,13 +6,15 @@ import { closedByQuit } from './nvimLost'
  * A Neovim kept for a tab not in front: its editor id, what its status line showed, and where its cursor was. A Neovim lost (not quit,
  * `utils/nvimLost`) is kept too, `state.lost` its reason: its tab's text is what it last held, until Reopen or a close. `stop` ends the
  * following of its changes into the tab's text while it is held (the editor's `follow`): a change on its way as the tab was left, one a
- * plugin makes later, a lost Neovim's last ones, which can come after its end.
+ * plugin makes later, a lost Neovim's last ones, which can come after its end. `echo` is the local echo as it left, finished: the
+ * characters typed that Neovim had not acknowledged, laid over its text and reconciled with each of those changes (NvimEcho.lateLines).
  */
 export interface HeldNvim {
   id: string
   state: NvimViewState
   cursor: { line: number; col: number }
   stop?: () => void
+  echo?: NvimEcho | null
 }
 
 /**
@@ -40,7 +43,7 @@ export class NvimHolds {
     const h = this.held.get(path)
     this.held.delete(path)
     h?.stop?.()
-    return h ? { id: h.id, state: h.state, cursor: h.cursor } : undefined
+    return h ? { id: h.id, state: h.state, cursor: h.cursor, echo: h.echo } : undefined
   }
   /**
    * Neovim id ended on its own: quit, nothing to take back; lost (reason `error: …`), its tab keeps what it held, as lost, still
