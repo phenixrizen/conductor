@@ -445,6 +445,9 @@ func (h *nvimHandler) Ack(seq uint32, line, col int, mode string, vl, vc int) {
 func (h *nvimHandler) Modified(modified bool) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimModified, Modified: modified})
 }
+func (h *nvimHandler) Settled(seq uint32) {
+	h.emit(proto.NvimEvent{Kind: proto.NvimSettled, Ack: seq})
+}
 func (h *nvimHandler) Swap(sw nvim.Swap) {
 	info := &proto.NvimSwapInfo{File: sw.File, Pid: sw.Pid, Running: sw.Running, User: sw.User, Host: sw.Host, Modified: sw.Modified}
 	if sw.Mtime > 0 {

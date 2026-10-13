@@ -346,6 +346,39 @@ func TestANeovimThatDiesIsToldAtOnceAndItsChangesStillCome(t *testing.T) {
 	}
 }
 
+// Keys are told settled once Neovim has done them, with nothing pending,
+// after the changes they made; their acknowledgement can come before those
+// changes (here a plugin's vim.wait in InsertCharPre lets Neovim answer in
+// the middle of the key), so the page waits for this word before it takes a
+// tab's Neovim for clean.
+func TestKeysAreSettledAfterTheirChangesThoughAcknowledgedBefore(t *testing.T) {
+	e, r := cmdlineEditor(t, "one\n", "vim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(800) end })\n")
+	k := &typist{t: t, e: e, r: r}
+	k.key("A")
+	r.waitExact(t, "settled 1")
+	x := k.key("x")
+	r.waitExact(t, fmt.Sprintf("settled %d", x))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ack, lines, settled := -1, -1, -1
+	for i, ev := range r.events {
+		switch {
+		case strings.HasPrefix(ev, fmt.Sprintf("ack %d ", x)):
+			ack = i
+		case ev == "lines":
+			lines = i
+		case ev == fmt.Sprintf("settled %d", x):
+			settled = i
+		}
+	}
+	if !(ack >= 0 && ack < lines && lines < settled) {
+		t.Fatalf("want the acknowledgement before the change and settled after it: %q", r.events)
+	}
+	if got := r.changes[len(r.changes)-1]; got != `0:1 ["onex"]` {
+		t.Fatalf("the change: %q", got)
+	}
+}
+
 // Neovim's own quit is told once, as a quit: the end of its output after it
 // (the client's reading ends) tells nothing more.
 func TestAQuitIsToldOnceAsAQuit(t *testing.T) {

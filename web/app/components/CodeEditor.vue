@@ -5,6 +5,7 @@ import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { ECHO_HOLD_MS, NvimEcho, type EchoDoc, type EchoLines } from '~/utils/nvimEcho'
+import { heldChanges, type HeldNvim } from '~/utils/nvimHold'
 import { closedByQuit, lostHoldsChanges } from '~/utils/nvimLost'
 import { hasModel, isDirty, markSaved, noteVersion } from '~/utils/editorModels'
 
@@ -101,8 +102,9 @@ async function mount() {
 // read-only, so nothing is typed into the text except by Neovim.
 let contentSub: { dispose: () => void } | null = null
 function tellDirty() {
-  // Under the Neovim keymap Neovim's buffer is the one with changes or none (its `modified` event); the model only mirrors it.
-  if (props.nvim) emit('dirty', nvimState.modified)
+  // Under the Neovim keymap Neovim's buffer is the one with changes or none (its `modified` event); the model only mirrors it. Characters
+  // typed that it has not had yet (the local echo's guesses) are changes too: the dot, and a close asks.
+  if (props.nvim) emit('dirty', nvimState.modified || !!echo?.showing)
   else if (model) emit('dirty', isDirty(props.path, model.getAlternativeVersionId()))
 }
 /** The text now, for a save. */
@@ -190,18 +192,7 @@ async function startNvim() {
     // Its model is gone with the text it mirrored: that Neovim ends as a lost connection ends it, its swap file keeping the changes.
     if (held && !held.state.lost) bridge.close(held.id)
     try {
-      let opened: NvimEvent
-      try {
-        opened = await bridge.open(props.path)
-      } catch (err) {
-        // As many Neovims as a window may keep: those kept for tabs not in front that hold nothing to lose go, and the open is asked
-        // again (their keys on their way may be dropped, as a clean tab's are when it is left).
-        if ((err as { code?: string }).code !== 'too_many_requests' || !editor) throw err
-        const freed = bridge.holds.releaseClean()
-        if (!freed.length) throw err
-        for (const f of freed) bridge.close(f.id)
-        opened = await bridge.open(props.path)
-      }
+      const opened = await bridge.open(props.path)
       if (!editor) return
       nvimId = opened.id ?? null
     } catch (err) {
@@ -248,6 +239,7 @@ function sendKeys(bridge: NvimBridge, keys: string) {
   if (r.cursor && editor) {
     editor.setPosition({ lineNumber: r.cursor.line, column: r.cursor.col })
     markGuesses()
+    tellDirty()
   }
 }
 
@@ -311,6 +303,13 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
   const m = model
   const monaco = monacoRef
   const path = props.path
+  // Kept only for keys on their way: once Neovim has done them (settled), with no change and nothing typed left to have, it goes, as a
+  // clean tab's Neovim goes when the tab is left.
+  const letGoIfClean = (h: HeldNvim) => {
+    if (h.state.lost || heldChanges(h) || h.echo?.unsettled) return
+    bridge.holds.take(path)
+    bridge.close(id)
+  }
   return bridge.subscribe((ev) => {
     if (ev.id !== id || !m || !monaco || m.isDisposed()) return
     const h = bridge.holds.peek(path)
@@ -324,16 +323,18 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
         const edit = linesEdit(lev, m.getLineCount(), (n) => m.getLineLength(n))
         m.applyEdits([{ range: new monaco.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
       }
-      if (h.state.lost && !h.state.modified) {
-        h.state.modified = true
-        bridge.holds.changed(path)
-      }
+      if (h.state.lost && !h.state.modified) h.state.modified = true
+      bridge.holds.changed(path)
     } else if (ev.kind === 'modified') {
       h.state.modified = h.state.lost ? h.state.modified || !!ev.modified : !!ev.modified
       bridge.holds.changed(path)
     } else if (ev.kind === 'cursor' && ev.ack) {
-      // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done, so nothing more.
+      // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done.
       echoAsLeft?.noteAck(ev.ack)
+      bridge.holds.changed(path)
+    } else if (ev.kind === 'settled' && ev.ack) {
+      echoAsLeft?.noteSettled(ev.ack)
+      letGoIfClean(h)
     }
   })
 }
@@ -365,6 +366,7 @@ function onNvimEvent(ev: NvimEvent) {
           holdTimer = undefined
           echo?.timeout()
           markGuesses()
+          tellDirty()
         }, ECHO_HOLD_MS)
         break
       }
@@ -380,6 +382,7 @@ function onNvimEvent(ev: NvimEvent) {
         holdTimer = undefined
       }
       markGuesses()
+      if (ev.ack) tellDirty()
       const line = Math.max(1, Math.min(ev.line ?? 1, model.getLineCount()))
       const col = toUtf16(line, ev.col ?? 1)
       if (echo && !shown) {
@@ -426,6 +429,9 @@ function onNvimEvent(ev: NvimEvent) {
       nvimState.modified = !!ev.modified
       tellNvim()
       tellDirty()
+      break
+    case 'settled':
+      echo?.noteSettled(ev.ack ?? 0)
       break
     case 'swap':
       // Another editor's swap file: the file opened read-only (round 13, G3).
@@ -533,10 +539,10 @@ onMounted(mount)
 onBeforeUnmount(() => {
   if (nvimId && props.nvim) {
     // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends. Keys
-    // not acknowledged yet may be making some, Neovim's word not come: they keep it too, and so do characters typed that its text does
-    // not hold yet (Neovim answers in the middle of a key, a plugin's vim.wait: their acknowledgement can come before their change).
-    // What the echo holds is shown first, and its changes from now on are followed into the tab's text.
-    if (nvimState.modified || echo?.waiting || echo?.showing) {
+    // Neovim has not said it has done may be making some, its word not come: they keep it too (their acknowledgement is no sign: it
+    // answers in the middle of a key, a plugin's vim.wait), and so do characters typed that its text does not hold yet. What the echo
+    // holds is shown first, and its changes from now on are followed into the tab's text, until it is done and clean.
+    if (nvimState.modified || echo?.showing || echo?.unsettled) {
       // The echo goes with it whole (the numbers of its keys, the characters Neovim has not had): its next editor goes on with it.
       echo?.finish()
       const asLeft = echo

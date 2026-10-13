@@ -647,12 +647,13 @@ export interface NvimSwapInfo {
   modified?: boolean
   mtime?: string
 }
-export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error' | 'swap' | 'modified'
+export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error' | 'swap' | 'modified' | 'settled'
 /**
  * What the editor reports. `kind` says which fields are set: `opened` (reqId on the first, path), `lines` (the buffer lines [first, last) become
  * `lines`, last -1 to the end, `truncated` when a line was cut), `cursor` (1-based line and col, the mode, the other end of a visual selection),
  * `mode`, `cmdline` (show, content, pos, prompt), `message` (text, messageKind), `written` (path), `closed` (reason), `error` (reqId, code, message),
- * `modified` (modified: the buffer holds changes not written, or no longer does).
+ * `modified` (modified: the buffer holds changes not written, or no longer does), `settled` (ack: Neovim has done the keys numbered up to it, nothing
+ * pending, every change they made sent; a cursor's ack can come before those changes).
  */
 export interface NvimEvent {
   t: 'nvim_event'

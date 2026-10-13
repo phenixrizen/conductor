@@ -1021,13 +1021,14 @@ func TestALostNeovimsLastChangesComeAfterItsEnd(t *testing.T) {
 	h.Exited("error: neovim ended")
 	h.Exited("error: msgpack/rpc: session closed")
 	h.Lines(0, 1, []string{"late"})
+	h.Settled(7)
 	from := 0
-	evs := nvimEvents(t, sink, &from, proto.NvimLines, 5*time.Second)
+	evs := nvimEvents(t, sink, &from, proto.NvimSettled, 5*time.Second)
 	var kinds []string
 	for _, ev := range evs {
 		kinds = append(kinds, ev.Kind)
 	}
-	if strings.Join(kinds, " ") != "closed lines" || evs[0].Reason != "error: neovim ended" || evs[1].Lines[0] != "late" {
+	if strings.Join(kinds, " ") != "closed lines settled" || evs[0].Reason != "error: neovim ended" || evs[1].Lines[0] != "late" || evs[2].Ack != 7 {
 		t.Fatalf("the events: %+v", evs)
 	}
 	// Closed by the page: nothing more.

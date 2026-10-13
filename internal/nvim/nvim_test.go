@@ -57,7 +57,8 @@ func (r *recorder) Buffer(path string)        { r.add("buffer " + filepath.Base(
 func (r *recorder) Ack(seq uint32, line, col int, mode string, vl, vc int) {
 	r.add(fmt.Sprintf("ack %d %d:%d %s", seq, line, col, mode))
 }
-func (r *recorder) Modified(m bool) { r.add(fmt.Sprintf("modified %v", m)) }
+func (r *recorder) Modified(m bool)    { r.add(fmt.Sprintf("modified %v", m)) }
+func (r *recorder) Settled(seq uint32) { r.add(fmt.Sprintf("settled %d", seq)) }
 func (r *recorder) Swap(sw Swap) {
 	r.mu.Lock()
 	r.swaps = append(r.swaps, sw)

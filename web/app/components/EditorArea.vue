@@ -3,6 +3,7 @@ import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge, Nvim
 import { swapChoices, swapWords, type NvimViewState } from '~/utils/nvimSwap'
 import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
 import { lostWords } from '~/utils/nvimLost'
+import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
@@ -324,11 +325,34 @@ watch(
   (paths) => {
     const bridge = props.nvim
     if (!bridge) return
-    // Its changes are dropped only when it had some (the close asked); one kept for keys on their way ends keeping what it may have.
-    for (const o of bridge.holds.orphans(paths)) if (!o.lost) bridge.close(o.id, o.modified)
+    for (const o of bridge.holds.orphans(paths)) {
+      if (o.lost) continue
+      // Its changes go when it had some: the close asked, and the person said Don't save.
+      if (o.asked) bridge.close(o.id, true)
+      // Kept for keys on their way: it ends once it has done them, keeping what they made (its swap file), as a lost connection does.
+      else if (o.unsettled) closeOnceSettled(bridge, o.id, o.seq)
+      else bridge.close(o.id)
+    }
   },
   { flush: 'post' },
 )
+/** Ends Neovim id once it has done the keys up to seq (its `settled`), or has ended, or after half a minute (a question it waits on). */
+function closeOnceSettled(bridge: NvimBridge, id: string, seq: number) {
+  let off: () => void = () => {}
+  const end = () => {
+    clearTimeout(timer)
+    off()
+    bridge.close(id)
+  }
+  const timer = setTimeout(end, 30_000)
+  off = bridge.subscribe((ev) => {
+    if (ev.id !== id) return
+    if (ev.kind === 'closed') {
+      clearTimeout(timer)
+      off()
+    } else if (ev.kind === 'settled' && (ev.ack ?? 0) >= seq) end()
+  })
+}
 // A tab whose editor is not up (not in front, or the area folded) wears its unsaved dot as its held Neovim says (Neovim's word coming
 // after the tab was left, a loss): the close then asks. An editor that is up says it itself.
 let stopListening: (() => void) | null = null
@@ -342,7 +366,7 @@ watch(
         if (!t) return
         // Held, its editor is not up, though its tab may be in front (the area folded); let go as the tab in front comes up again, its
         // editor says.
-        if (held) setDirty(t.id, held.state.modified)
+        if (held) setDirty(t.id, heldChanges(held))
         else if (t.id !== active.value?.id) setDirty(t.id, false)
       }) ?? null
   },

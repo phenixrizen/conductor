@@ -76,8 +76,9 @@ export function shiftedLine(line: number, ev: EchoLines): number {
 export class NvimEcho {
   /** The last number given to keys. */
   seq = 0
-  /** The last number Neovim acknowledged. */
+  /** The last number Neovim acknowledged, and the last it said it has done (settled). */
   private acked = 0
+  private settledSeq = 0
   private mode = 'n'
   private paused = false // a guess went wrong: none until insert mode is left
   private barrier = 0 // keys that end the guesses: nothing guessed until they are acknowledged
@@ -108,9 +109,22 @@ export class NvimEcho {
     return this.held.length > 0
   }
 
-  /** Whether keys were sent that Neovim has not acknowledged: their changes, and its word on them, are still on their way. */
+  /** Whether keys were sent that Neovim has not acknowledged. */
   get waiting(): boolean {
     return this.seq > this.acked
+  }
+
+  /**
+   * Whether keys were sent that Neovim has not said it has done (`settled`): their changes, and its word on them, may still be on their
+   * way. Their acknowledgement is no sign of it: Neovim answers in the middle of a key (a plugin's vim.wait).
+   */
+  get unsettled(): boolean {
+    return this.seq > this.settledSeq
+  }
+
+  /** Neovim has done the keys numbered up to seq (the `settled` event). */
+  noteSettled(seq: number): void {
+    this.settledSeq = Math.max(this.settledSeq, seq)
   }
 
   /**

@@ -55,6 +55,12 @@ type Handler interface {
 	// Modified says the buffer now holds changes not written (true) or no
 	// longer does (false: written, undone back, or another file shown).
 	Modified(modified bool)
+	// Settled says Neovim has done the keys of InputSeq's seq and every one
+	// before, with nothing left pending (SafeState after their Ack): every
+	// change they made, and its word on changes not written, has been
+	// reported. An Ack alone does not say so: Neovim answers requests in
+	// the middle of a key (a plugin's vim.wait), so it can come first.
+	Settled(seq uint32)
 }
 
 // Swap is another editor's swap file for the file opened, as swapinfo()
@@ -142,6 +148,9 @@ type Editor struct {
 	// (promptKinds). Like cmdContent it is the client's notification
 	// goroutine's alone (onRedraw, the acknowledgement).
 	asking bool
+	// acked is the last seq acknowledged and settled the last one reported
+	// settled (conductor_safe); the notification goroutine's alone too.
+	acked, settled uint32
 	// swap is the last swap file found, for SwapChoice; guarded by mu.
 	swap *Swap
 	// ch is the client's channel in Neovim, which rpcnotify answers on.
@@ -252,6 +261,9 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		// output ends, so the client's end (Open) never takes it for a loss.
 		fmt.Sprintf("autocmd VimLeavePre * silent! call rpcrequest(%d, 'conductor_leaving')", ch),
 		fmt.Sprintf("autocmd BufModifiedSet * if str2nr(expand('<abuf>')) == bufnr() | call rpcnotify(%d, 'conductor_modified', &modified) | endif", ch),
+		// Nothing pending, about to wait for a key: the keys acknowledged
+		// before it are done (Settled).
+		fmt.Sprintf("autocmd SafeState * call rpcnotify(%d, 'conductor_safe')", ch),
 		// Another editor's swap file: open read-only instead of asking (the
 		// question would block the open), and say whose it is.
 		fmt.Sprintf("autocmd SwapExists * let v:swapchoice = 'o' | call rpcnotify(%d, 'conductor_swap', v:swapname, swapinfo(v:swapname))", ch),
@@ -489,7 +501,11 @@ func (e *Editor) register() error {
 			e.asking = false
 			e.h.Message("", "clear")
 		}
-		e.h.Ack(uint32(toInt(args[0])), toInt(args[1]), toInt(args[2]), fmt.Sprint(args[3]), toInt(args[4]), toInt(args[5]))
+		seq := uint32(toInt(args[0]))
+		if seq > e.acked {
+			e.acked = seq
+		}
+		e.h.Ack(seq, toInt(args[1]), toInt(args[2]), fmt.Sprint(args[3]), toInt(args[4]), toInt(args[5]))
 	}); err != nil {
 		return err
 	}
@@ -502,6 +518,16 @@ func (e *Editor) register() error {
 		e.swap = &sw
 		e.mu.Unlock()
 		e.h.Swap(sw)
+	}); err != nil {
+		return err
+	}
+	if err := v.RegisterHandler("conductor_safe", func(args ...interface{}) {
+		// The keys were in Neovim's input before their acknowledgement was
+		// asked for: nothing pending now, they are done.
+		if e.acked > e.settled {
+			e.settled = e.acked
+			e.h.Settled(e.settled)
+		}
 	}); err != nil {
 		return err
 	}

@@ -281,6 +281,19 @@ describe('the local echo when Neovim is lost', () => {
     expect(d2.text).toEqual(['alphax'])
   })
 
+  it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.noteAck(2)
+    expect(e.waiting).toBe(false)
+    expect(e.unsettled).toBe(true)
+    e.noteSettled(1)
+    expect(e.unsettled).toBe(true)
+    e.noteSettled(2)
+    expect(e.unsettled).toBe(false)
+  })
+
   it('goes on in another editor over the same text, its guesses kept', () => {
     const d = doc('alpha')
     const e = inInsert(d)
