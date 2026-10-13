@@ -662,7 +662,9 @@ func TestLeavingTheServerStopsWhatTheSessionsEndStillWrites(t *testing.T) {
 func TestALinkExpiringStopsWhatTheSessionsEndStillWrites(t *testing.T) {
 	s, p := newLocal(t, t.TempDir())
 	sink := &endSink{gate: make(chan struct{})}
-	until := time.Now().Add(time.Second)
+	// The link lives long enough for the session's end to come first, on
+	// a loaded machine too (the end is checked to have).
+	until := time.Now().Add(3 * time.Second)
 	sub, err := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "L", Name: "v",
 		Authorize: func() (Grant, error) { return Grant{Role: RoleView, Until: until}, nil }}, sink)
 	if err != nil {
@@ -692,7 +694,10 @@ func TestALinkExpiringStopsWhatTheSessionsEndStillWrites(t *testing.T) {
 	if !waitFor(time.Second, func() bool { return sub.Reason() != nil }) || !errors.Is(sub.Reason(), ErrSessionEnded) {
 		t.Fatalf("the end closed the viewer with %v", sub.Reason())
 	}
-	if !waitFor(3*time.Second, sub.revoked.Load) {
+	if sub.revoked.Load() || !time.Now().Before(until) {
+		t.Fatalf("the link expired before the end closed its viewer (%v past its expiry)", time.Since(until))
+	}
+	if !waitFor(time.Until(until)+3*time.Second, sub.revoked.Load) {
 		t.Fatal("the link's expiry did not reach the viewer the end closed")
 	}
 	close(sink.gate)
