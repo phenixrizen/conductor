@@ -99,11 +99,14 @@ went.
   so the board shows it until its fix merges. An issue waits in Backlog
   only when the owner sets it aside or it is a feature of its own.
 - **The board follows the work.** A card moves to In progress when its
-  branch starts, In review when its pull request opens, and Done when the
-  pull request merges. The pull request's body names its issue with
-  `Fixes #N` (or `Part of #N` when it does not finish it), so the merge
-  closes it; an issue that a merge did not close is closed by hand, naming
-  the pull request that fixed it.
+  branch starts and In review when the pull request that finishes it
+  opens. That pull request's body says `Fixes #N`, so its merge closes the
+  issue, and the card goes to Done (`scripts/board.py N Done` if the board
+  has not moved it). A pull request that does only part of the work says
+  `Part of #N`, which closes nothing: the issue stays open and its card In
+  progress until the pull request that finishes it merges. An issue that
+  is finished but was not closed by a merge (its pull request said neither)
+  is closed by hand, naming the pull request that finished it.
 - **Security findings are the exception.** A security finding never
   becomes an issue, a card, a pull request text or a commit message until
   its fix has shipped (see Reviews): it stays in the owner's private
