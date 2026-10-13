@@ -109,7 +109,9 @@ went.
   the issue stays open, In progress, until the finishing pull request
   opens. An issue whose fix reached `main` without closing it (its pull
   request said neither) is closed by hand, naming that pull request; never
-  before the fix is on `main`.
+  closed as fixed before the fix is on `main`. An issue closes otherwise
+  only as a duplicate (naming the issue it repeats) or as not planned when
+  the owner drops it, its comment saying why.
 - **Security findings are the exception.** A security finding never
   becomes an issue, a card, a pull request text or a commit message until
   its fix has shipped (see Reviews): it stays in the owner's private
