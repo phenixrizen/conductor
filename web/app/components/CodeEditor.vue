@@ -5,6 +5,7 @@ import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { ECHO_HOLD_MS, NvimEcho, type EchoLines } from '~/utils/nvimEcho'
+import { closedByQuit } from '~/utils/nvimLost'
 import { hasModel, isDirty, markSaved, noteVersion } from '~/utils/editorModels'
 
 /**
@@ -349,7 +350,16 @@ function onNvimEvent(ev: NvimEvent) {
       unsubscribe = null
       stopText?.()
       stopEcho()
-      emit('nvimClosed')
+      if (closedByQuit(ev.reason)) {
+        emit('nvimClosed')
+        break
+      }
+      // Lost, not quit: the tab stays with the text Neovim last held (read only, which Monaco is here), and the area says so.
+      nvimState.lost = ev.reason ?? 'error'
+      nvimState.cmdline = ''
+      nvimState.message = 'Neovim ended'
+      nvimState.messageKind = 'emsg'
+      tellNvim()
       break
     case 'error':
       nvimState.message = ev.message ?? ev.code ?? 'error'

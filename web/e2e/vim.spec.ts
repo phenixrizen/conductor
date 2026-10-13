@@ -214,6 +214,58 @@ test('in the Neovim keymap / and ? search, and :s///gc asks on the status line u
   }
 })
 
+// Neovim lost, not quit: its connection can no longer be read (as the substitute's preview once made it). The tab stays with the text
+// Neovim last held, its change not written among it, and says so; Reopen starts Neovim again, which finds the lost one's swap file:
+// Recover brings the change back, :w writes it. Before, the tab closed with no word and its text went with it.
+test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its change from the swap file', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-vim-lost')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-lost', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    await lines.click()
+    await page.keyboard.type('Axx')
+    await page.keyboard.press('Escape')
+    await expect(lines).toContainText('alphaxx', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    // Neovim sends the bridge's client a message it cannot read.
+    await page.keyboard.type(":lua vim.rpcnotify(vim.api.nvim_list_uis()[1].chan, 'nvim_buf_changedtick_event', 'x', 'y')")
+    await page.keyboard.press('Enter')
+    const lost = area.locator('[data-nvim-lost]')
+    await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
+    await expect(lines).toContainText('alphaxx')
+    // Reopen: a new Neovim finds the lost one's swap file (it has left by now) and offers its change.
+    await page.waitForTimeout(1000)
+    await lost.locator('[data-nvim-reopen]').click()
+    await expect(lost).toHaveCount(0)
+    const banner = area.locator('[data-editor-swap]')
+    await expect(banner).toBeVisible({ timeout: 30_000 })
+    await expect(banner).toHaveAttribute('data-swap-running', 'false')
+    await banner.locator('[data-swap-choice="recover"]').click()
+    await expect(lines).toContainText('alphaxx', { timeout: 15_000 })
+    await lines.click()
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alphaxx\n')
+    await banner.locator('[data-swap-choice="delete"]').click()
+    await expect(banner).toHaveCount(0)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover

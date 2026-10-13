@@ -942,6 +942,69 @@ func TestAnEditorWhoseWrapperExitedFirstIsEndedWithNeovim(t *testing.T) {
 	}
 }
 
+// The editor loses Neovim (its client can no longer read it) after it took
+// its place and before its opened event: the page is told it opened and
+// then that it closed, with why, never left with an editor that answers
+// nothing.
+func TestAnEditorLostAsItOpensSaysItClosed(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nvimStarted = func(ed *nvim.Editor) {
+		// A message the client cannot read: it ends its connection.
+		_ = ed.Input(":lua vim.rpcnotify(vim.api.nvim_list_uis()[1].chan, 'nvim_buf_changedtick_event', 'x', 'y')<CR>")
+		// Its end is reported (the editor's place marked gone) before the open goes on.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			sub.nvimMu.Lock()
+			ended := true
+			for _, e := range sub.nvims {
+				if e.ed == ed && !e.gone.Load() {
+					ended = false
+				}
+			}
+			sub.nvimMu.Unlock()
+			if ended {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Error("the lost connection was never reported")
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	t.Cleanup(func() { nvimStarted = nil })
+	err = returnsWithin(t, 10*time.Second, "the open", func() error {
+		return s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	})
+	if err != nil {
+		t.Fatalf("the open: %v", err)
+	}
+	from := 0
+	evs := nvimEvents(t, sink, &from, proto.NvimClosed, 10*time.Second)
+	if evs[0].Kind != proto.NvimOpened {
+		t.Fatalf("the events: %+v", evs)
+	}
+	if closed := evs[len(evs)-1]; !strings.HasPrefix(closed.Reason, "error: ") || closed.ID != evs[0].ID {
+		t.Fatalf("closed: %+v", closed)
+	}
+}
+
 // A wrapper that leaves Neovim running as it exits: the editor's end lets
 // Neovim leave in its own time (its quit hook done), its connection kept
 // until it has, rather than killing it as soon as the wrapper is gone.

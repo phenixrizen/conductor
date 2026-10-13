@@ -2,6 +2,7 @@
 import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge, NvimSwapChoice } from '~/utils/protocol'
 import { swapChoices, swapWords, type NvimViewState } from '~/utils/nvimSwap'
 import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
+import { lostWords } from '~/utils/nvimLost'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
@@ -273,10 +274,15 @@ const fileReadOnly = computed(() => (active.value?.kind === 'file' ? fileReadOnl
 const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) || fileReadOnly.value : 'Neovim is not offered on this page'))
 const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
 const nvimState = ref<NvimViewState | null>(null)
+// Reopen after Neovim was lost (utils/nvimLost): a new editor, and with it a new Neovim, for the tab in front.
+const nvimEpoch = ref(0)
+function reopenNvim() {
+  nvimEpoch.value++
+}
 // Neovim's status is the editor's in front: another tab, or the other keymap, starts it empty until that editor reports (round 14: the
 // last tab's mode, banner or question stayed over the next tab's file, and a test typed into the new tab before its Neovim listened).
 watch(
-  () => `${active.value?.id ?? ''}:${nvimOn.value}`,
+  () => `${active.value?.id ?? ''}:${nvimOn.value}:${nvimEpoch.value}`,
   () => (nvimState.value = null),
 )
 /** Neovim's own question and its choices, when one shows (round 13, G3). */
@@ -606,6 +612,12 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <span class="min-w-0 flex-1 text-highlighted" :title="nvimState.swap.file">{{ swapWords(nvimState.swap, nvimState.recovered) }}</span>
         <UButton v-for="c in swapChoices(nvimState.swap, nvimState.recovered)" :key="c.choice" :label="c.label" size="xs" :color="c.choice === 'delete' ? 'warning' : 'neutral'" variant="soft" :data-swap-choice="c.choice" @click="answerSwap(c.choice)" />
       </div>
+      <!-- Neovim lost, not quit (utils/nvimLost): the tab keeps the text it last held, read only; Reopen starts it again. -->
+      <div v-if="nvimOn && nvimState?.lost && active?.kind === 'file'" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-nvim-lost>
+        <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" />
+        <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}</span>
+        <UButton label="Reopen" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" data-nvim-reopen @click="reopenNvim" />
+      </div>
       <!-- Neovim asks (:confirm q, a write over a file changed outside): the question and its choices as buttons. -->
       <div v-if="nvimConfirm" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-nvim-confirm>
         <UIcon name="i-lucide-message-circle-question" class="size-3.5 flex-none text-primary" />
@@ -644,7 +656,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
         <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
         <DiffEditor v-else-if="activeCompare" :key="`${active!.id}:compare`" :path="active!.path" :original="activeCompare.disk" :modified="activeCompare.mine" :inline="false" data-editor-compare-view />
-        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" @selection="onSelection" />
+        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? `nvim:${nvimEpoch}` : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" @selection="onSelection" />
         <DiffEditor v-else-if="view.state === 'diff'" :key="active!.id" :path="active!.path" :original="view.original ?? ''" :modified="view.modified ?? ''" :inline="inlineDiff" />
         <div v-else-if="view.state === 'image'" class="flex h-full items-center justify-center overflow-auto p-4 [background-image:linear-gradient(45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(-45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--ui-bg-elevated)_75%),linear-gradient(-45deg,transparent_75%,var(--ui-bg-elevated)_75%)] [background-size:16px_16px] [background-position:0_0,0_8px,8px_-8px,-8px_0]">
           <img :src="view.imageSrc" alt="" class="max-h-full max-w-full" />
@@ -689,7 +701,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <div class="flex w-full justify-end gap-2">
           <UButton label="Cancel" color="neutral" variant="ghost" @click="closing = null" />
           <UButton label="Don't save" color="error" variant="soft" data-editor-discard @click="closingDiscard" />
-          <UButton v-if="closingOne" label="Save" color="primary" :loading="saving" data-editor-close-save @click="closingSave" />
+          <UButton v-if="closingOne && !nvimState?.lost" label="Save" color="primary" :loading="saving" data-editor-close-save @click="closingSave" />
         </div>
       </template>
     </UModal>

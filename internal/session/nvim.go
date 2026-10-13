@@ -45,8 +45,12 @@ type nvimEditor struct {
 	// Neovim's own exit); set under the subscription's nvimMu, so that an
 	// open still under way either sees it or is seen by whoever ends it.
 	gone atomic.Bool
-	// ready gates the frames: nothing before `opened` is sent.
+	// ready gates the frames: nothing before `opened` is sent. It is set
+	// under the subscription's nvimMu, as Exited reads it.
 	ready atomic.Bool
+	// lost is why Neovim ended before the editor was ready (Exited), told
+	// once `opened` is: set under the subscription's nvimMu.
+	lost string
 	// ending ends Neovim once, however many ways ask (end).
 	ending sync.Once
 	// endWait is nvimEndWait as the editor opened.
@@ -241,7 +245,17 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 		nvimStarted(ed)
 	}
 	sub.send(proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, ID: id, Kind: proto.NvimOpened, ReqID: req.ReqID, Path: target}))
+	sub.nvimMu.Lock()
 	e.ready.Store(true)
+	lost := e.lost
+	sub.nvimMu.Unlock()
+	if lost != "" {
+		// Neovim ended between taking its place and `opened` (its client
+		// lost it): its Exited, which ends the editor, could tell no one.
+		stop()
+		sub.send(proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, ID: id, Kind: proto.NvimClosed, Reason: lost}))
+		return nil
+	}
 	if lines, err := ed.Lines(); err == nil {
 		h.Lines(0, -1, lines)
 	}
@@ -428,7 +442,16 @@ func (h *nvimHandler) Swap(sw nvim.Swap) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimSwapFound, Swap: info})
 }
 func (h *nvimHandler) Exited(reason string) {
-	h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})
+	h.sub.nvimMu.Lock()
+	ready := h.e.ready.Load()
+	if !ready && h.e.lost == "" {
+		// Before `opened`: the open tells it once it has (NvimOpen).
+		h.e.lost = reason
+	}
+	h.sub.nvimMu.Unlock()
+	if ready {
+		h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})
+	}
 	h.sub.nvimMu.Lock()
 	h.e.gone.Store(true)
 	started := h.e.ed != nil

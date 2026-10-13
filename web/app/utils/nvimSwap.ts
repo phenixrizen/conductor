@@ -10,6 +10,8 @@ export interface NvimViewState {
   recovered: boolean
   /** The buffer holds changes not written: the tab wears its dot, and closing it asks first. */
   modified: boolean
+  /** Why Neovim ended when the person did not quit it (`utils/nvimLost`): the tab stays, read only, with Reopen. */
+  lost?: string
 }
 
 /**
