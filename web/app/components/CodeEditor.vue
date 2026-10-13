@@ -188,6 +188,7 @@ async function startNvim() {
   if (held && !held.state.lost && !freshModel) {
     resumed = held.echo ?? null
     nvimId = held.id
+    nvimPath = held.path ?? null
     // Keys refused while away are said now, on the status line (the state's message), and no longer kept for it.
     Object.assign(nvimState, held.state, { refused: undefined })
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
@@ -332,6 +333,9 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       }
       if (h.state.lost && !h.state.modified) h.state.modified = true
       bridge.holds.changed(path)
+    } else if (ev.kind === 'opened' && ev.path) {
+      // Another file in its Neovim (:e): a write of that one is the tab's now.
+      h.path = ev.path
     } else if (ev.kind === 'modified') {
       h.state.modified = h.state.lost ? h.state.modified || !!ev.modified : !!ev.modified
       bridge.holds.changed(path)
@@ -588,7 +592,7 @@ onBeforeUnmount(() => {
       echo?.finish()
       const asLeft = echo
       const at = editor?.getPosition()
-      props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: asLeft, stop: follow(props.nvim, nvimId, asLeft) })
+      props.nvim.holds.hold(props.path, { id: nvimId, path: nvimPath ?? undefined, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: asLeft, stop: follow(props.nvim, nvimId, asLeft) })
     } else props.nvim.close(nvimId)
   } else if (props.nvim && nvimState.lost && lostId) {
     // Neovim lost: its text stays the tab's for the next showing (a tab switched, the area folded), until Reopen or a close.
@@ -645,8 +649,9 @@ function nvimWrite(): Promise<boolean> {
     let wrote = false
     let seq = 0
     let settled = false
+    // And the buffer clean then: a write that came from an earlier :w, before later changes, is not this one's.
     const check = () => {
-      if (wrote && (!seq || settled)) done(true)
+      if (wrote && (!seq || settled) && !nvimState.modified) done(true)
     }
     off = bridge.subscribe((ev) => {
       if (ev.id !== id) return
@@ -656,7 +661,12 @@ function nvimWrite(): Promise<boolean> {
       } else if (ev.kind === 'settled' && seq && (ev.ack ?? 0) >= seq) {
         settled = true
         check()
-      } else if ((ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') done(false)
+      } else if (ev.kind === 'modified') {
+        check()
+      } else if ((ev.kind === 'error' && seq && ev.ack === seq) || (ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') {
+        // Its keys refused (all or their end), the write failed, or Neovim is gone: not saved.
+        done(false)
+      }
     })
     // After the keys on their way, in order, so what they change is written too; <C-\\><C-n> first ends whatever waits (an operator's
     // motion, insert mode). Numbered, so its own keys are waited for too.
