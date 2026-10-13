@@ -295,7 +295,8 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		textWait := st.wait
 		textWait.guard = s.textGuard(sub)
 		textWait.before = func() {
-			s.noteAnswering(promptSince, []byte(data), s.keysWritten([]byte(data)), nil)
+			keys, _ := s.keysWritten([]byte(data))
+			s.noteAnswering(promptSince, []byte(data), keys, nil)
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
@@ -678,7 +679,8 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		if sub.BeforeEnter != nil {
 			sub.BeforeEnter()
 		}
-		s.noteAnswering(promptSince, []byte{'\r'}, s.keysWritten([]byte{'\r'}), nil)
+		keys, _ := s.keysWritten([]byte{'\r'})
+		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil)
 		s.nextTurn()
 	}
 	enterAt := time.Now().UTC()

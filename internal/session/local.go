@@ -1514,12 +1514,17 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// time run out, a stall, a connection gone): noted is set then, and
 	// read once the write is made.
 	var noted bool
-	// Set as the writer takes the keys: pastedOnly says the write is all
-	// text of a paste (no key, as keysWritten reads it), which answers
-	// nothing; startupSince stamps the startup question showing then that
-	// the keys answer (whatever prompt they were typed at), cleared once
-	// they are written.
-	var pastedOnly bool
+	// Set as the writer takes the keys, as keysWritten reads them (a paste
+	// or an escape sequence a write before left unfinished carried in):
+	// typedEnter says they answer the prompt they were typed at as answer
+	// takes it (enter, when the write is its own keys, else read from its
+	// keys: a paste's text is none); quiet that they are no key a person
+	// typed (the rest of a terminal's report, or of a sequence not ended
+	// yet), which answer nothing and stamp nobody typing; startupSince
+	// stamps the startup question showing then that the keys answer
+	// (whatever prompt they were typed at), cleared once they are written.
+	typedEnter := enter
+	var quiet bool
 	var startupSince *time.Time
 	o.from, o.anyEnd = sub, true
 	// Whether a person typed anything here, or only the terminal reported
@@ -1582,8 +1587,20 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
-		keys := s.keysWritten(data)
-		pastedOnly = len(keys) == 0 && len(data) > 0
+		keys, cut := s.keysWritten(data)
+		own := ownKeys(data, keys)
+		quiet = len(keys) == 0 && cut || allReports(keys)
+		s.mu.Lock()
+		shown := s.info.Attention
+		s.mu.Unlock()
+		if !own {
+			typedEnter = anyKey(keys, func(k []byte) bool {
+				return string(k) == "\r" || isChoice(shown, k) || shown.Source == SourceQuestion && listKey(k)
+			})
+		}
+		if quiet {
+			typedEnter = false
+		}
 		// The dialog the screen the dialogs are read from shows as keys
 		// are written that may answer one (any key but an escape sequence:
 		// a paste alone, an arrow alone, do not read it).
@@ -1596,7 +1613,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				onScreen = readDialog(q, words, screen)
 			}
 		}
-		if !isTerminalReport(data) {
+		if !isTerminalReport(data) && !quiet {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
 			s.noteAnswering(promptSince, data, keys, onScreen)
@@ -1605,21 +1622,22 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// then its digit; keys typed before it showed) is answered as
 			// its choice alone answers it: its screen behind now, the
 			// question cleared once written.
-			s.mu.Lock()
-			att := s.info.Attention
-			s.mu.Unlock()
-			if att.State == AttentionNeedsInput && att.Source == SourceTrust && picksChoice(att.Options, data, keys) {
-				startupSince = att.Since
+			if shown.State == AttentionNeedsInput && shown.Source == SourceTrust && picksChoice(shown.Options, data, keys) {
+				startupSince = shown.Since
 			}
 		}
-		if (answersQuestion && !pastedOnly || startupSince != nil) && s.trust != nil {
+		if (answersQuestion && own || startupSince != nil) && s.trust != nil {
 			s.trust.Reset()
 		}
 		if enter {
 			// The turn a done ended is behind as the Enter is written.
 			s.nextTurn()
 		}
-		if words != "" && (enter || s.askedKeys[string(data)] || listKey(data)) {
+		answering := enter || s.askedKeys[string(data)] || listKey(data)
+		if !own {
+			answering = anyKey(keys, func(k []byte) bool { return string(k) == "\r" || s.askedKeys[string(k)] || listKey(k) })
+		}
+		if words != "" && answering {
 			// A key that answers a dialog on the screen: the look before a
 			// submission does not ask the dialog again before the program
 			// draws what follows (the look at the end of a quiet period
@@ -1634,10 +1652,13 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 	}
 	// written is what follows the keys once written: the prompt they were
-	// typed at answered (a paste's text answers no held question), and the
-	// startup question they answered as the writer took them.
+	// typed at answered (as their keys answer it: a paste's text answers no
+	// held question, the rest of a report nothing), and the startup
+	// question they answered as the writer took them.
 	written := func() {
-		s.typedKeys(sub, data, promptSince, enter && !pastedOnly, noted, typed)
+		if !quiet {
+			s.typedKeys(sub, data, promptSince, typedEnter, noted, typed)
+		}
 		if startupSince != nil {
 			s.answer(startupSince, sub.ID, sub.Name, true, true)
 		}
@@ -1857,6 +1878,9 @@ func (s *Local) claimQuestion(id string) error {
 	if err := s.waitsLocked(id); err != nil {
 		return err
 	}
+	if s.inputBusy() {
+		return ErrInputBusy
+	}
 	s.markAnswered(s.info.Attention)
 	return nil
 }
@@ -1961,7 +1985,7 @@ type dialogView struct {
 // nothing; with none read, every digit counts). A bracketed paste is text,
 // no key.
 func (v *dialogView) picks(answers []Option, data []byte, keys [][]byte) bool {
-	if len(keys) > 0 && isAnswer(answers, data) {
+	if ownKeys(data, keys) && isAnswer(answers, data) {
 		return true
 	}
 	for _, k := range keys {
@@ -1973,11 +1997,12 @@ func (v *dialogView) picks(answers []Option, data []byte, keys [][]byte) bool {
 }
 
 // picksChoice reports whether data, whose keys are keys, picks one of a
-// question's choices (answers) or presses Enter: data is one, or one of its
-// keys is an Enter or a choice. A write that is all paste text (no key) is
-// none.
+// question's choices (answers) or presses Enter: data is one (when its
+// keys are its own, ownKeys), or one of its keys is an Enter or a choice. A
+// write that is all paste text (no key), or the rest of a sequence a write
+// before began, is none.
 func picksChoice(answers []Option, data []byte, keys [][]byte) bool {
-	if len(keys) > 0 && isAnswer(answers, data) {
+	if ownKeys(data, keys) && isAnswer(answers, data) {
 		return true
 	}
 	for _, k := range keys {
@@ -2031,12 +2056,56 @@ func isAnswer(answers []Option, data []byte) bool {
 
 // keysWritten returns the keys the program reads from data, a write the
 // writer is taking (its before), whatever a write before it left
-// unfinished (a paste, an escape sequence) carried in. Every write made
+// unfinished (a paste, an escape sequence) carried in, and whether data
+// leaves an escape sequence unfinished (the rest to come). Every write made
 // goes through it once, in order.
-func (s *Local) keysWritten(data []byte) [][]byte {
+func (s *Local) keysWritten(data []byte) (keys [][]byte, cut bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.keysIn.keys(data)
+	keys = s.keysIn.keys(data)
+	return keys, len(s.keysIn.carry) > 0 && !s.keysIn.pasting
+}
+
+// ErrInputBusy refuses a reply to a question while what was written to the
+// session before it is unfinished (a paste, an escape sequence another
+// connection's terminal began): its keys would be read as part of it.
+// Nothing was written, and the question was not noted; it can be tried
+// again.
+var ErrInputBusy = errors.New("another connection's paste or key is being written to the session: try again in a moment")
+
+// inputBusy reports whether a write before the next left something
+// unfinished (keyReader). The caller holds s.mu.
+func (s *Local) inputBusy() bool {
+	return s.keysIn.pasting || len(s.keysIn.carry) > 0
+}
+
+// ownKeys reports whether keys, as keysWritten read them from data, are
+// data's own bytes and all of them: nothing carried in, nothing left
+// unfinished, no paste. Only then is data matched whole (a choice's input
+// of several keys).
+func ownKeys(data []byte, keys [][]byte) bool {
+	return len(keys) > 0 && bytes.Equal(bytes.Join(keys, nil), data)
+}
+
+// allReports reports whether every key is a terminal's own report
+// (isTerminalReport): one cut across writes, read whole.
+func allReports(keys [][]byte) bool {
+	for _, k := range keys {
+		if !isTerminalReport(k) {
+			return false
+		}
+	}
+	return len(keys) > 0
+}
+
+// anyKey reports whether one of keys is one ok says.
+func anyKey(keys [][]byte, ok func(k []byte) bool) bool {
+	for _, k := range keys {
+		if ok(k) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxKeyCarry bounds the end of a write a keyReader keeps for the next: an
@@ -2214,6 +2283,8 @@ func AnswerResult(reqID string, err error) []byte {
 		code, msg = proto.ErrCodeBadFrame, err.Error()
 	case errors.Is(err, ErrInputStalled), errors.Is(err, context.DeadlineExceeded):
 		msg = ErrInputStalled.Error()
+	case errors.Is(err, ErrInputBusy):
+		msg = ErrInputBusy.Error()
 	}
 	return proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: code, Message: msg, RequestID: reqID})
 }

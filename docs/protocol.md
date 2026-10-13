@@ -950,7 +950,14 @@ key the program reads: an escape sequence is one key and a bracketed paste
 is text, no key, so an arrow then y answers a dialog and a pasted y does
 not; a paste or an escape sequence one write leaves unfinished goes on in
 the next (a terminal's reads cut them anywhere), and a write that is all a
-paste's text, a choice's key among it, answers nothing. A startup question
+paste's text, a choice's key among it, or the rest of a terminal's own
+report, answers nothing. An Escape that ends a write outside a paste is
+read as the Escape key: should the next read go on with the rest of a
+sequence, the dialog is held answered until the watcher sees it go, which
+is the safer mistake. While what was written before is unfinished (another
+connection's paste, a sequence), an `answer` is refused as `input_failed`,
+nothing written and its question not noted: its key would be read as part
+of it. It can be sent again. A startup question
 is answered the same way by one of several keys (an arrow, then its digit),
 or by keys typed before it showed: cleared once they are written as its
 choice alone clears it, so that the next startup question is asked. A dialog asked during the work with the words of the one last

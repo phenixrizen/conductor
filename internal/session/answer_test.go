@@ -720,6 +720,66 @@ func TestAPasteOrASequenceCutInTwoAnswersNothing(t *testing.T) {
 	}
 }
 
+// A terminal's own report cut across two writes (xterm answering a mode
+// query, its final y in the second) is no key a person typed: it answers
+// no dialog, which still waits and takes a click. (Codex's review, eighth
+// pass, finding 1.)
+func TestAReportCutBeforeItsFinalByteAnswersNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	q := waitAttention(t, s, asked)
+	for _, w := range []string{"\x1b[?2004;1$", "y"} {
+		if err := s.InputWaiting(t.Context(), nater, []byte(w)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	if a := s.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the report's end cleared the dialog: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); err != nil {
+		t.Fatalf("a click after a report cut in two: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A reply that comes while another connection's paste is being written
+// (its start written, its end not yet) is refused, nothing written and the
+// question not noted, for its key would be read as the paste's text; once
+// the paste has ended it is taken. (Codex's review, eighth pass, finding 2.)
+func TestAReplyDuringAnotherConnectionsPasteWaitsForItsEnd(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	q := waitAttention(t, s, asked)
+	if err := s.InputWaiting(t.Context(), nater, []byte("\x1b[200~notes from ")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); !errors.Is(err, ErrInputBusy) {
+		t.Fatalf("a click during a paste: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	if err := s.InputWaiting(t.Context(), nater, []byte("the meeting\x1b[201~")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); err != nil {
+		t.Fatalf("a click once the paste ended: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	if m := decodeControl(t, AnswerResult("r", ErrInputBusy)); m["code"] != "input_failed" || m["message"] != ErrInputBusy.Error() {
+		t.Fatalf("the busy word: %v", m)
+	}
+}
+
 // A look of the screen's watcher that took its text before a key answered
 // the dialog (its miss runs after) does not see the answered dialog go: the
 // dialog, asked after, is asked answered. (Codex's review, fifth pass,
