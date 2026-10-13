@@ -2044,6 +2044,30 @@ func TestAResizeInsideAFrameSettlesNothing(t *testing.T) {
 	noWrite(t, p, 100*time.Millisecond)
 }
 
+// The terminal widened while Codex's update question shows, the question
+// answered by an Escape, then Codex's frame that clears the screen from its
+// first cell (ESC [ H, ESC [ J: erase to the end, as Codex clears) and
+// draws its prompt: the screen is erased whole, so the question goes, and
+// a submission is typed. (Codex's review, twenty-eighth pass.)
+func TestAnEraseFromTheFirstCellSettlesAResizedScreen(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.ResizeWith(nater, 100, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Input(nater, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write([]byte("\x1b[?2026h\x1b[H\x1b[J\x1b[2;3H› Ask Codex to do anything\x1b[?2026l"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); err != nil {
+		t.Fatalf("a submission once the question has gone: %v", err)
+	}
+}
+
 // A key held down at Codex's trust question: the protocol's repeat of Enter
 // (ESC [ 1 3 ; 1 : 2 u), which Codex's trust question ignores, puts it
 // behind (a program may take a repeat) but clears nothing: the question

@@ -68,8 +68,8 @@ type Screen struct {
 	// and this screen holds half of the next.
 	syncing bool
 	// clipped says the screen was resized with something on it, and the
-	// program has not erased it all since (ED 2; in a synchronized update,
-	// once that ends: unclipAtEnd): what it shows was drawn at another
+	// program has not erased it all since (ED 2, or ED 0 from its first
+	// cell; in a synchronized update, once that ends: unclipAtEnd): what it shows was drawn at another
 	// size (cut, or laid out narrower), and what it lacks is not gone. A
 	// frame that erases nothing, or only some rows, leaves it so.
 	clipped, unclipAtEnd bool
@@ -473,22 +473,23 @@ func (s *Screen) csi(final byte) {
 			for r := s.y + 1; r < s.rows; r++ {
 				s.erase(r, 0, s.cols)
 			}
+			if s.x == 0 && s.y == 0 {
+				// From the first cell: the whole screen (Codex clears so).
+				s.erasedWhole()
+			}
 		case 1:
 			for r := 0; r < s.y; r++ {
 				s.erase(r, 0, s.cols)
 			}
 			s.erase(s.y, 0, s.x+1)
+			if s.x >= s.cols-1 && s.y >= s.rows-1 {
+				s.erasedWhole()
+			}
 		case 2:
 			for r := 0; r < s.rows; r++ {
 				s.erase(r, 0, s.cols)
 			}
-			// Erased whole: what follows is drawn at this size (in a
-			// synchronized update, once it ends).
-			if s.syncing {
-				s.unclipAtEnd = true
-			} else {
-				s.clipped = false
-			}
+			s.erasedWhole()
 		}
 		// 3 erases the scrollback, which a Screen does not keep.
 	case 'K':
@@ -579,6 +580,16 @@ func (s *Screen) Text() string { return s.text(len(s.cells)) }
 // of what a TUI draws, and a look at a screen of hundreds of wide rows would
 // cost a regular expression tens of milliseconds for nothing.
 const maxLookRows = 80
+
+// erasedWhole notes the screen erased whole: what follows is drawn at its
+// size now (in a synchronized update, once it ends).
+func (s *Screen) erasedWhole() {
+	if s.syncing {
+		s.unclipAtEnd = true
+	} else {
+		s.clipped = false
+	}
+}
 
 // Settled reports whether the screen is a whole frame: no synchronized
 // update (2026) begun and not ended, which a terminal would not show yet,
