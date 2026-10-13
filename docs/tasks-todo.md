@@ -121,6 +121,36 @@ each reproduced with a Go test (round 15); none is fixed yet.
   A crew member's Activity says "crew answered: <its prompt>" for the
   prompt the crew typed. The sidebar's run block says "stopped 09:47"
   where the crew's Runs list says "today 09:44 AM" for the same run.
+- **The Explorer's filter takes no path, and stays on after a folder is
+  clicked.** The owner, 2026-10-13, on a session's Files tab (the
+  Explorer, `FileBrowser.vue`, which the Yard and a link's join page show
+  too):
+  - **A path in the box filters nothing.** For a session started in
+    `/home/nater`, `go/src` should narrow the tree to that folder and
+    what is below it. A slash makes the box take what it holds as a path
+    to open with Enter (`looksLikePath`, `utils/fileTree.ts`), never as a
+    filter: the tree matches each name on its own (`matches`), which holds
+    no slash, so no row shows, and the find that reaches folders not
+    opened yet (`internal/session/find.go`) is not asked, and matches file
+    names only. Expected: a query with a slash filters by the path from
+    the working directory (a row shows when its path from there holds the
+    query, its folders opened), over what is loaded and through the find
+    (matching that path, folders included), while Enter still opens a
+    typed `path:line`.
+  - **Clicking a folder keeps the filter.** A folder clicked while the
+    box holds a filter opens or closes and the filter stays, so the tree
+    goes on showing only the matches, which reads as if the folder held
+    nothing else; with a filter, a closed folder's loaded matches even
+    stay drawn (`visibleRows` walks every loaded folder). Expected:
+    clicking a folder clears the box and shows the whole tree with that
+    folder opened, scrolled to it.
+
+  Both rules hold for every file browser with a filter; today the Explorer
+  is the only one (the launch dialog's folder field and the folder picker
+  complete a typed path by its prefix, `utils/dirInput.ts`). Tests: vitest
+  for the path match and the clear (`fileTree.test.ts`), Go for the find
+  by path, Playwright on the Files tab (a session whose folder holds
+  `go/src/…`: `go/src` shows that folder, clicking it empties the box).
 
 ## Features
 
