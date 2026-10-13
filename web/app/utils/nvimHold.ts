@@ -85,16 +85,15 @@ export class NvimHolds {
   }
   /**
    * The held Neovims whose file has no tab open now, no longer held: the caller ends them, but for a lost one, which has none to end.
-   * `asked`: it had changes the close asked about (said by Neovim, or characters typed it had not had), which the person dropped;
-   * `seq`: keys up to it were sent, which it may not have done yet (its echo's last number; 0 when none).
+   * `seq`: keys up to it were sent, which it may not have done yet (`unsettled`; its echo's last number, 0 when none).
    */
-  orphans(open: Iterable<string>): Array<{ path: string; id: string; lost: boolean; asked: boolean; seq: number; unsettled: boolean }> {
+  orphans(open: Iterable<string>): Array<{ path: string; id: string; lost: boolean; seq: number; unsettled: boolean }> {
     const keep = new Set(open)
-    const out: Array<{ path: string; id: string; lost: boolean; asked: boolean; seq: number; unsettled: boolean }> = []
+    const out: Array<{ path: string; id: string; lost: boolean; seq: number; unsettled: boolean }> = []
     for (const [path, h] of this.held) {
       if (keep.has(path)) continue
       h.stop?.()
-      out.push({ path, id: h.id, lost: !!h.state.lost, asked: heldChanges(h), seq: h.echo?.seq ?? 0, unsettled: !!h.echo?.unsettled })
+      out.push({ path, id: h.id, lost: !!h.state.lost, seq: h.echo?.seq ?? 0, unsettled: !!h.echo?.unsettled })
       this.held.delete(path)
     }
     return out

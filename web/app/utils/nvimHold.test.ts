@@ -47,7 +47,7 @@ describe('NvimHolds', () => {
     h.ended('e1', 'quit')
     expect(h.peek('/w/a.txt')?.state.lost).toBe('error: neovim ended')
     // Its tab closed: handed back as lost (nothing to end), no longer followed.
-    expect(h.orphans([])).toEqual([{ path: '/w/a.txt', id: 'e1', lost: true, asked: true, seq: 0, unsettled: false }])
+    expect(h.orphans([])).toEqual([{ path: '/w/a.txt', id: 'e1', lost: true, seq: 0, unsettled: false }])
     expect(f.calls).toBe(1)
   })
 
@@ -83,18 +83,18 @@ describe('NvimHolds', () => {
     }
     h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })
     h.hold('/w/b.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
-    expect(h.orphans(['/w/b.txt', '/w/c.txt'])).toEqual([{ path: '/w/a.txt', id: 'e1', lost: false, asked: true, seq: 0, unsettled: false }])
+    expect(h.orphans(['/w/b.txt', '/w/c.txt'])).toEqual([{ path: '/w/a.txt', id: 'e1', lost: false, seq: 0, unsettled: false }])
     expect(h.peek('/w/a.txt')).toBeUndefined()
     expect(h.orphans(['/w/b.txt'])).toEqual([])
-    // A character typed it has not had: a change the close asked about. A key it has not done: it ends once it has.
+    // Keys it has not done: it ends once it has (a character typed among them, or not).
     h.hold('/w/typed.txt', { id: 'e3', state: clean, cursor: { line: 1, col: 1 }, echo: echo('x') })
     h.hold('/w/moved.txt', { id: 'e4', state: clean, cursor: { line: 1, col: 1 }, echo: echo('j') })
     h.hold('/w/done.txt', { id: 'e5', state: clean, cursor: { line: 1, col: 1 }, echo: echo('j', 1) })
     expect(h.orphans([])).toEqual([
-      { path: '/w/b.txt', id: 'e2', lost: false, asked: true, seq: 0, unsettled: false },
-      { path: '/w/typed.txt', id: 'e3', lost: false, asked: true, seq: 1, unsettled: true },
-      { path: '/w/moved.txt', id: 'e4', lost: false, asked: false, seq: 1, unsettled: true },
-      { path: '/w/done.txt', id: 'e5', lost: false, asked: false, seq: 1, unsettled: false },
+      { path: '/w/b.txt', id: 'e2', lost: false, seq: 0, unsettled: false },
+      { path: '/w/typed.txt', id: 'e3', lost: false, seq: 1, unsettled: true },
+      { path: '/w/moved.txt', id: 'e4', lost: false, seq: 1, unsettled: true },
+      { path: '/w/done.txt', id: 'e5', lost: false, seq: 1, unsettled: false },
     ])
     expect(h.size).toBe(0)
   })

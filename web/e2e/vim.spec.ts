@@ -364,11 +364,11 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
   mkdirSync(config, { recursive: true })
   writeFileSync(
     join(config, 'init.lua'),
-    "local uv = vim.uv or vim.loop\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(1500) end })\nvim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\nvim.keymap.set('n', 'j', function() local t = uv.hrtime() while uv.hrtime() - t < 2e9 do end return 'j' end, { expr = true })\n",
+    "local uv = vim.uv or vim.loop\nvim.o.timeoutlen = 1000\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(1500) end })\nvim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\nvim.keymap.set('n', 'j', function() local t = uv.hrtime() while uv.hrtime() - t < 2e9 do end return 'j' end, { expr = true })\nvim.keymap.set('n', 'kk', 'k')\n",
   )
   const cwd = join(state.root, 'files-vim-waiting')
   mkdirSync(cwd, { recursive: true })
-  const names = ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt', 'edit.txt', 'fold.txt', 'normal.txt', 'quick.txt', 'other.txt']
+  const names = ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt', 'edit.txt', 'fold.txt', 'normal.txt', 'quick.txt', 'saved.txt', 'other.txt']
   for (const n of names) writeFileSync(join(cwd, n), `${n}\nsecond\n`)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-waiting', cwd })
   try {
@@ -428,6 +428,14 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     await expect(question).toContainText('Save quick.txt?')
     await question.locator('[data-editor-discard]').click()
     await expect(tab('quick.txt')).toHaveCount(0)
+    // Closed right after typing, and Save chosen: the character is waited for, then written, then the tab closes.
+    await open('saved.txt')
+    await typeInto()
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(question).toContainText('Save saved.txt?')
+    await question.locator('[data-editor-close-save]').click()
+    await expect(tab('saved.txt')).toHaveCount(0, { timeout: 15_000 })
+    expect(readFileSync(join(cwd, 'saved.txt'), 'utf8')).toBe('saved.txtx\nsecond\n')
     // The area folded while x is on its way: once Neovim has it, the folded tab says so, and Close all asks.
     await open('fold.txt')
     await typeInto()
@@ -440,12 +448,13 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
     await question.getByRole('button', { name: 'Cancel' }).click()
     await expect(lines).toContainText('fold.txtx', { timeout: 15_000 })
     await discard('fold.txt')
-    // Four clean tabs left each with a j on its way (other.txt's, clean and done, went as it was left): kept until their j is done,
-    // then gone, so a fifth opens.
-    for (const n of ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt']) {
+    // Four clean tabs left each with a key on its way (other.txt's, clean and done, went as it was left): a j Neovim is busy with, a k
+    // that waits for a second k (the kk mapping) until it times out with no key after it. Kept until their key is done, then gone, so
+    // a fifth opens.
+    for (const [n, key] of [['f1.txt', 'j'], ['f2.txt', 'j'], ['f3.txt', 'k'], ['f4.txt', 'k']] as const) {
       await open(n)
       await lines.click()
-      await page.keyboard.type('j')
+      await page.keyboard.type(key)
     }
     await page.waitForTimeout(3000)
     await open('f5.txt')

@@ -317,6 +317,8 @@ function closeActive() {
   // Neovim's :q: Neovim kept its own buffer, nothing to ask.
   if (active.value) closeNow([active.value.id])
 }
+// The paths whose tabs the person closed with Don't save: their held Neovims drop their changes as they end (the orphans below).
+const dropConsented = new Set<string>()
 // A tab not in front keeps its Neovim while its buffer holds changes not written (the bridge's holds); once its tab is closed, its
 // changes go with it (the close asked first: Don't save), and its swap file with them. After the render: a tab closing in front hands
 // its Neovim over as its editor leaves.
@@ -326,9 +328,10 @@ watch(
     const bridge = props.nvim
     if (!bridge) return
     for (const o of bridge.holds.orphans(paths)) {
+      const dropped = dropConsented.delete(o.path)
       if (o.lost) continue
-      // Its changes go when it had some: the close asked, and the person said Don't save.
-      if (o.asked) bridge.close(o.id, true)
+      // Its changes go when the person said so (Don't save); any it made after, or that the close did not ask about, stay (its swap file).
+      if (dropped) bridge.close(o.id, true)
       // Kept for keys on their way: it ends once it has done them, keeping what they made (its swap file), as a lost connection does.
       else if (o.unsettled) closeOnceSettled(bridge, o.id, o.seq)
       else bridge.close(o.id)
@@ -533,6 +536,11 @@ async function closingSave() {
 function closingDiscard() {
   const ids = closing.value?.ids ?? []
   closing.value = null
+  // The person said Don't save: their Neovims drop what they hold as they end (the orphans), and only theirs.
+  for (const id of ids) {
+    const t = tabs.value.tabs.find((x) => x.id === id)
+    if (t?.kind === 'file') dropConsented.add(t.path)
+  }
   closeNow(ids)
 }
 

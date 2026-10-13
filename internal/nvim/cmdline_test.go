@@ -379,6 +379,18 @@ func TestKeysAreSettledAfterTheirChangesThoughAcknowledgedBefore(t *testing.T) {
 	}
 }
 
+// A key that leaves Neovim waiting for the next (j, the prefix of a jj
+// mapping) is not acknowledged then, since asking would cancel the wait;
+// once the mapping times out and j is done, with no key after it, it is
+// acknowledged and settled all the same.
+func TestAKeyThatWaitsForAMappingIsSettledOnceItTimesOut(t *testing.T) {
+	e, r := cmdlineEditor(t, "one\ntwo\n", "vim.o.timeoutlen = 300\nvim.keymap.set('n', 'jj', 'j')\n")
+	k := &typist{t: t, e: e, r: r}
+	j := k.key("j")
+	r.waitExact(t, fmt.Sprintf("settled %d", j))
+	r.wait(t, fmt.Sprintf("ack %d 2:1 n", j))
+}
+
 // Neovim's own quit is told once, as a quit: the end of its output after it
 // (the client's reading ends) tells nothing more.
 func TestAQuitIsToldOnceAsAQuit(t *testing.T) {

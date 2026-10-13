@@ -151,6 +151,15 @@ type Editor struct {
 	// acked is the last seq acknowledged and settled the last one reported
 	// settled (conductor_safe); the notification goroutine's alone too.
 	acked, settled uint32
+	// inputMu keeps a key's input, the mode asked after it and its
+	// acknowledgement together (InputSeq, watchDeferred): an acknowledgement
+	// asked for while Neovim waits for a command's next key cancels it.
+	inputMu sync.Mutex
+	// deferred is the last seq whose acknowledgement waits for Neovim to
+	// stop waiting for a key (a mapping's prefix, an operator's motion);
+	// watching says watchDeferred runs. Guarded by inputMu.
+	deferred uint32
+	watching bool
 	// swap is the last swap file found, for SwapChoice; guarded by mu.
 	swap *Swap
 	// ch is the client's channel in Neovim, which rpcnotify answers on.
@@ -610,6 +619,8 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
 	if _, err := e.v.Input(keys); err != nil {
 		if e.closed.CompareAndSwap(false, true) {
 			e.h.Exited("error: " + err.Error())
@@ -619,9 +630,23 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 	// A command waiting for its next key (the second g of gg, f's
 	// character) is cancelled by an eval: nvim_get_mode is answered without
 	// touching it and says so; the autocmd reports the cursor once it moves.
-	if m, err := e.v.Mode(); err != nil || m.Blocking {
+	// These keys are acknowledged once Neovim no longer waits (a mapping's
+	// prefix times out), or with the next keys.
+	m, err := e.v.Mode()
+	if err != nil {
 		return nil
 	}
+	if m.Blocking {
+		if seq != 0 {
+			e.deferred = seq
+			if !e.watching {
+				e.watching = true
+				go e.watchDeferred()
+			}
+		}
+		return nil
+	}
+	e.deferred = 0
 	if seq != 0 {
 		_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'conductor_ack', %d, line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", e.ch, seq))
 		return nil
@@ -631,6 +656,40 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 		e.h.Cursor(toInt(pos[0]), toInt(pos[1]), fmt.Sprint(pos[2]), toInt(pos[3]), toInt(pos[4]))
 	}
 	return nil
+}
+
+// deferPoll is how often watchDeferred asks whether Neovim still waits.
+const deferPoll = 100 * time.Millisecond
+
+// watchDeferred acknowledges the keys whose acknowledgement waited for
+// Neovim to stop waiting for a key (InputSeq) once it has: a mapping's prefix
+// that timed out ends with no key after it, and its keys are then done like
+// any. It asks every deferPoll (nvim_get_mode, which disturbs no wait), and
+// ends with the editor, or once later keys were acknowledged instead.
+func (e *Editor) watchDeferred() {
+	for {
+		time.Sleep(deferPoll)
+		e.inputMu.Lock()
+		if e.closed.Load() || e.deferred == 0 {
+			e.watching = false
+			e.inputMu.Unlock()
+			return
+		}
+		m, err := e.v.Mode()
+		if err != nil {
+			e.watching = false
+			e.inputMu.Unlock()
+			return
+		}
+		if !m.Blocking {
+			seq := e.deferred
+			e.deferred, e.watching = 0, false
+			_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'conductor_ack', %d, line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", e.ch, seq))
+			e.inputMu.Unlock()
+			return
+		}
+		e.inputMu.Unlock()
+	}
 }
 
 // Report tells the handler the cursor and the mode now (the first showing).

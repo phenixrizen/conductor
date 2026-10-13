@@ -589,21 +589,32 @@ function nvimWrite(): Promise<boolean> {
   const bridge = props.nvim
   const id = nvimId
   if (!bridge || !id) return Promise.resolve(false)
-  if (!nvimState.modified) return Promise.resolve(true)
+  // Keys still on their way (a character typed that Neovim has not had) are waited for first: what they change is written too.
+  const target = echo?.unsettled ? echo.seq : 0
+  if (!target && !nvimState.modified) return Promise.resolve(true)
   return new Promise((resolve) => {
     let off: () => void = () => {}
+    let writing = false
     const done = (ok: boolean) => {
       clearTimeout(timer)
       off()
       resolve(ok)
     }
+    const write = () => {
+      if (!nvimState.modified) return done(true)
+      writing = true
+      bridge.input(id, '<C-\\><C-n>:w<CR>')
+    }
     const timer = setTimeout(() => done(false), 10_000)
     off = bridge.subscribe((ev) => {
       if (ev.id !== id) return
-      if (ev.kind === 'modified' && !ev.modified) done(true)
+      if (!writing && ev.kind === 'settled' && (ev.ack ?? 0) >= target) {
+        // Its word on changes not written comes before this one (onNvimEvent has it by now).
+        queueMicrotask(write)
+      } else if (writing && ev.kind === 'modified' && !ev.modified) done(true)
       else if ((ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') done(false)
     })
-    bridge.input(id, '<C-\\><C-n>:w<CR>')
+    if (!target) write()
   })
 }
 /** Answers Neovim's confirm question with its choice's key; the question goes. */
