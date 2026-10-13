@@ -1514,9 +1514,13 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// time run out, a stall, a connection gone): noted is set then, and
 	// read once the write is made.
 	var noted bool
-	// keyAnswers says, once the writer has taken the keys, that one of them
-	// (not the write whole) answers the startup question showing.
-	var keyAnswers bool
+	// Set as the writer takes the keys: pastedOnly says the write is all
+	// text of a paste (no key, as keysWritten reads it), which answers
+	// nothing; startupSince stamps the startup question showing then that
+	// the keys answer (whatever prompt they were typed at), cleared once
+	// they are written.
+	var pastedOnly bool
+	var startupSince *time.Time
 	o.from, o.anyEnd = sub, true
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
@@ -1579,6 +1583,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
 		keys := s.keysWritten(data)
+		pastedOnly = len(keys) == 0 && len(data) > 0
 		// The dialog the screen the dialogs are read from shows as keys
 		// are written that may answer one (any key but an escape sequence:
 		// a paste alone, an arrow alone, do not read it).
@@ -1595,17 +1600,19 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
 			s.noteAnswering(promptSince, data, keys, onScreen)
-			// A startup question answered by one key of several (an arrow
-			// then its digit) is answered as its choice alone answers it:
-			// the screen behind, and the question cleared once written.
+			// The startup question showing as the keys are written, when
+			// they pick one of its answers (one key of several, an arrow
+			// then its digit; keys typed before it showed) is answered as
+			// its choice alone answers it: its screen behind now, the
+			// question cleared once written.
 			s.mu.Lock()
 			att := s.info.Attention
 			s.mu.Unlock()
-			if !answersQuestion && att.State == AttentionNeedsInput && att.Source == SourceTrust && att.Since == promptSince && picksChoice(att.Options, data, keys) {
-				answersQuestion, keyAnswers = true, true
+			if att.State == AttentionNeedsInput && att.Source == SourceTrust && picksChoice(att.Options, data, keys) {
+				startupSince = att.Since
 			}
 		}
-		if answersQuestion && s.trust != nil {
+		if (answersQuestion && !pastedOnly || startupSince != nil) && s.trust != nil {
 			s.trust.Reset()
 		}
 		if enter {
@@ -1626,6 +1633,15 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			noted = true
 		}
 	}
+	// written is what follows the keys once written: the prompt they were
+	// typed at answered (a paste's text answers no held question), and the
+	// startup question they answered as the writer took them.
+	written := func() {
+		s.typedKeys(sub, data, promptSince, enter && !pastedOnly, noted, typed)
+		if startupSince != nil {
+			s.answer(startupSince, sub.ID, sub.Name, true, true)
+		}
+	}
 	landed, err := s.writeProc(ctx, data, o)
 	if err != nil {
 		if landed != nil && !errors.Is(err, ErrSessionEnded) {
@@ -1637,7 +1653,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				select {
 				case werr := <-landed:
 					if werr == nil {
-						s.typedKeys(sub, data, promptSince, enter || keyAnswers, noted, typed)
+						written()
 					}
 				case <-s.ended:
 				}
@@ -1645,7 +1661,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		return err
 	}
-	s.typedKeys(sub, data, promptSince, enter || keyAnswers, noted, typed)
+	written()
 	return nil
 }
 
@@ -1945,7 +1961,7 @@ type dialogView struct {
 // nothing; with none read, every digit counts). A bracketed paste is text,
 // no key.
 func (v *dialogView) picks(answers []Option, data []byte, keys [][]byte) bool {
-	if isAnswer(answers, data) {
+	if len(keys) > 0 && isAnswer(answers, data) {
 		return true
 	}
 	for _, k := range keys {
@@ -1957,11 +1973,11 @@ func (v *dialogView) picks(answers []Option, data []byte, keys [][]byte) bool {
 }
 
 // picksChoice reports whether data, whose keys are keys, picks one of a
-// question's choices (answers) or presses Enter: data is one, holds an
-// Enter (in a paste too, which a startup question may take as one), or one
-// of its keys is a choice.
+// question's choices (answers) or presses Enter: data is one, or one of its
+// keys is an Enter or a choice. A write that is all paste text (no key) is
+// none.
 func picksChoice(answers []Option, data []byte, keys [][]byte) bool {
-	if isAnswer(answers, data) || bytes.IndexByte(data, '\r') >= 0 {
+	if len(keys) > 0 && isAnswer(answers, data) {
 		return true
 	}
 	for _, k := range keys {

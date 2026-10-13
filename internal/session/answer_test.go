@@ -633,6 +633,57 @@ func TestAStartupQuestionAnsweredByOneKeyOfSeveral(t *testing.T) {
 	noWrite(t, p, 200*time.Millisecond)
 }
 
+// A key typed before a startup question showed and written once it shows
+// (it waited behind another write) answers that question: refused to a
+// click after it, the question cleared once the key is written, and the
+// next startup question, of other words, asked and answered in its turn.
+// (Codex's review, seventh pass, finding 2.)
+func TestAKeyQueuedBeforeAStartupQuestionAnswersAndClearsIt(t *testing.T) {
+	upd := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
+	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{{
+		Pattern: regexp.MustCompile(`(?i)update\s*now\s*\(\s*runs`),
+		Words:   regexp.MustCompile(`(?i)(update\s*available)\W*?(\d+(?:\.\d+)+\s*(?:→|->)\s*\d+(?:\.\d+)+)`),
+		Answers: upd,
+	}, {
+		Pattern: regexp.MustCompile(`(?i)start the background server\?`),
+		Answers: []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}},
+	}}}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	release := blockFirstWrite(p)
+	defer release()
+	go s.Input(nater, []byte("x"))
+	writing(t, s)
+	typed := make(chan error, 1)
+	go func() { typed <- s.Input(nater, []byte("3")) }()
+	queued(t, s, 1)
+	p.outW.Write([]byte(codexUpdateScreen))
+	q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	release()
+	for _, want := range []string{"x", "3"} {
+		if got := nextWrite(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	if err := <-typed; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("\x1b")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click after the key: %v", err)
+	}
+	if a := waitAttention(t, s, func(a Attention) bool { return a.ID != q.ID }); a.State != AttentionNone {
+		t.Fatalf("the question the key answered: %+v", a)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[HStart the background server?\r\n› 1. Yes\r\n  2. No"))
+	next := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != q.ID })
+	if err := s.AnswerInput(t.Context(), jane, next.ID, []byte("1")); err != nil {
+		t.Fatalf("the next startup question: %v", err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+}
+
 // A paste, or an escape sequence, a terminal's reads cut in two is still
 // no key in its second part: a y inside the paste, the digit of a cut
 // sequence, answer no dialog, which still takes a click. (Codex's review,
@@ -644,6 +695,8 @@ func TestAPasteOrASequenceCutInTwoAnswersNothing(t *testing.T) {
 	}{
 		{"a paste", []string{"\x1b[200~hello ", "y there\x1b[201~"}},
 		{"a sequence", []string{"\x1b[", "1;5A"}},
+		// A paste of a choice's key alone, its markers apart (Codex's review, seventh pass, finding 1).
+		{"a paste around a choice", []string{"\x1b[200~", "y", "\x1b[201~"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))

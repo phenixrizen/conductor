@@ -949,9 +949,11 @@ terminal's read, the host's own terminal forwards what it reads) are each a
 key the program reads: an escape sequence is one key and a bracketed paste
 is text, no key, so an arrow then y answers a dialog and a pasted y does
 not; a paste or an escape sequence one write leaves unfinished goes on in
-the next (a terminal's reads cut them anywhere). A startup question is
-answered the same way by one of several keys (an arrow, then its digit),
-cleared once they are written as its choice alone clears it. A dialog asked during the work with the words of the one last
+the next (a terminal's reads cut them anywhere), and a write that is all a
+paste's text, a choice's key among it, answers nothing. A startup question
+is answered the same way by one of several keys (an arrow, then its digit),
+or by keys typed before it showed: cleared once they are written as its
+choice alone clears it, so that the next startup question is asked. A dialog asked during the work with the words of the one last
 answered, asked again before the screen's watcher has seen that one go (a
 quiet screen with no dialog) or another dialog take its place, is that
 question still, for the program may not have taken the key yet: it is asked
