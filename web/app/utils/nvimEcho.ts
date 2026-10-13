@@ -84,25 +84,25 @@ export class NvimEcho {
   /** Neovim is gone (markLost). */
   private lost = false
   /**
-   * The characters typed in insert mode that Neovim has not confirmed: not said done (settled), nor seen in its line where they were
-   * typed. Kept apart from what shows, whatever happens to the guesses (a change that is not theirs, a timeout), so none goes without
-   * a trace.
+   * The keys sent that Neovim has not confirmed it had: not said done (settled), nor followed by a guess its line holds where it was
+   * typed (keys are done in order). Every key, whatever the mode the page last knew (keys typed before Neovim's word on the mode came
+   * are not classified wrongly), kept apart from what shows, so none goes without a trace.
    */
   private typed: Guess[] = []
 
   /**
-   * Once Neovim is gone: the characters typed that it never confirmed, which its text may not hold (a mapping took some keys, it died
-   * in the middle). Shown to the person beside the text, never laid into it, since where they belong is then unknown.
+   * Once Neovim is gone: the keys sent that it never confirmed, in Neovim's notation, which its text may not hold (it died before
+   * them, a mapping took some). Shown to the person beside the text, never laid into it, since what they would have done is unknown.
    */
   get unconfirmed(): string {
     return this.lost ? this.typed.map((g) => g.text).join('') : ''
   }
 
-  /** Neovim's line holds these guesses where they were typed: confirmed. */
+  /** Neovim's line holds these guesses where they were typed: they, and every key before them, are confirmed. */
   private confirm(gs: Guess[]) {
     if (!gs.length) return
-    const seqs = new Set(gs.map((g) => g.seq))
-    this.typed = this.typed.filter((g) => !seqs.has(g.seq))
+    const upTo = Math.max(...gs.map((g) => g.seq))
+    this.typed = this.typed.filter((g) => g.seq > upTo)
   }
 
   /** Neovim is gone: what it may never have had is kept aside from here on (unconfirmed). */
@@ -220,7 +220,7 @@ export class NvimEcho {
   send(keys: string, at: EchoPos): { seq: number; cursor?: EchoPos } {
     const seq = ++this.seq
     const ch = guessable(keys)
-    if (ch && isInsert(this.mode)) this.typed.push({ seq, text: ch })
+    this.typed.push({ seq, text: keys })
     if (!ch || !isInsert(this.mode) || this.paused || this.barrier) {
       if (this.guesses.length || ch === null) this.barrier = seq
       return { seq }

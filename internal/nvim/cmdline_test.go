@@ -413,6 +413,36 @@ func TestAQuestionAnsweredWithoutANumberSettlesTheKeyThatAskedIt(t *testing.T) {
 	}
 }
 
+// Neovim ended by a signal (SIGTERM, SIGHUP) runs VimLeavePre too, with
+// v:dying set: it is told as a loss, not as the person's quit, so its tab is
+// kept with what it held.
+func TestNeovimEndedByASignalIsALossNotAQuit(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) {
+			e, r := cmdlineEditor(t, "one\n", "")
+			var pid int
+			if err := e.v.Eval("getpid()", &pid); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Kill(pid, sig); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-r.done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("no end told")
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for _, ev := range r.events {
+				if strings.HasPrefix(ev, "exited") && ev != "exited error: neovim was ended by a signal" {
+					t.Fatalf("the end: %q", ev)
+				}
+			}
+		})
+	}
+}
+
 // Neovim's own quit is told once, as a quit: the end of its output after it
 // (the client's reading ends) tells nothing more.
 func TestAQuitIsToldOnceAsAQuit(t *testing.T) {

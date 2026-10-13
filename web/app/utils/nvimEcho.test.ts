@@ -422,6 +422,19 @@ describe('the local echo when Neovim is lost', () => {
     expect(e3.unconfirmed).toBe('y')
   })
 
+  it('keeps every key Neovim never confirmed, typed before its word on the mode came too', () => {
+    const d = doc('alpha')
+    const e = new NvimEcho(d)
+    // Normal mode as far as the page knows: A, then x y z before Neovim's word that it is in insert mode.
+    for (const k of ['A', 'x', 'y', 'z', '<Esc>']) e.send(k, { line: 1, col: 1 })
+    expect(d.text).toEqual(['alpha'])
+    e.markLost()
+    expect(e.unconfirmed).toBe('Axyz<Esc>')
+    // Those Neovim said it has done are no longer kept aside.
+    e.noteSettled(2)
+    expect(e.unconfirmed).toBe('yz<Esc>')
+  })
+
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
     const e = inInsert(doc('alpha'))
     e.send('x', { line: 1, col: 6 })

@@ -268,7 +268,7 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		fmt.Sprintf("autocmd BufWritePost * call rpcnotify(%d, 'conductor_written', expand('<afile>:p'))", ch),
 		// A request, which Neovim waits on: its quit is told before its
 		// output ends, so the client's end (Open) never takes it for a loss.
-		fmt.Sprintf("autocmd VimLeavePre * silent! call rpcrequest(%d, 'conductor_leaving')", ch),
+		fmt.Sprintf("autocmd VimLeavePre * silent! call rpcrequest(%d, 'conductor_leaving', v:dying)", ch),
 		fmt.Sprintf("autocmd BufModifiedSet * if str2nr(expand('<abuf>')) == bufnr() | call rpcnotify(%d, 'conductor_modified', &modified) | endif", ch),
 		// Nothing pending, about to wait for a key: the keys acknowledged
 		// before it are done (Settled).
@@ -541,8 +541,16 @@ func (e *Editor) register() error {
 		return err
 	}
 	return v.RegisterHandler("conductor_leaving", func(args ...interface{}) error {
+		// v:dying: Neovim is leaving on a signal (SIGTERM, SIGHUP), not
+		// the person's quit, and its tab is kept as for a loss.
+		reason := "quit"
+		if len(args) > 0 {
+			if n, ok := intArg(args[0]); ok && n > 0 {
+				reason = "error: neovim was ended by a signal"
+			}
+		}
 		if e.closed.CompareAndSwap(false, true) {
-			e.h.Exited("quit")
+			e.h.Exited(reason)
 		}
 		return nil
 	})

@@ -339,6 +339,22 @@ watch(
   },
   { flush: 'post' },
 )
+// The Neovim keymap turned off by its button (no tab holds changes then: it waits for them): every Neovim kept for a tab goes, those with keys
+// on their way once they are done, keeping what those make (their swap file), so no Neovim writes into a text Monaco's keys now edit.
+// After the render, as the editor in front has handed its own over.
+watch(
+  keymap,
+  (k) => {
+    const bridge = props.nvim
+    if (k === 'nvim' || !bridge) return
+    for (const o of bridge.holds.orphans([])) {
+      if (o.lost) continue
+      if (o.unsettled) closeOnceSettled(bridge, o.id, o.seq)
+      else bridge.close(o.id)
+    }
+  },
+  { flush: 'post' },
+)
 /** Ends Neovim id once it has done the keys up to seq (its `settled`), or has ended, or after half a minute (a question it waits on). */
 function closeOnceSettled(bridge: NvimBridge, id: string, seq: number) {
   let off: () => void = () => {}
@@ -679,7 +695,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
            session's machine is away: no editor is up then, and the banner comes back with it. -->
       <div v-if="nvimOn && nvimState?.lost && active?.kind === 'file' && !hostAway" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-nvim-lost>
         <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" />
-        <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}<template v-if="nvimState.unconfirmed"> Typed, and maybe never had by Neovim: <code class="rounded bg-elevated px-1 font-mono" data-nvim-unconfirmed>{{ nvimState.unconfirmed }}</code></template></span>
+        <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}<template v-if="nvimState.unconfirmed"> Keys typed that Neovim may never have had: <code class="rounded bg-elevated px-1 font-mono" data-nvim-unconfirmed>{{ nvimState.unconfirmed }}</code></template></span>
         <UButton label="Copy the text" icon="i-lucide-copy" size="xs" color="neutral" variant="soft" data-nvim-lost-copy @click="copyLostText" />
         <UButton label="Reopen" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" data-nvim-reopen @click="reopenNvim" />
       </div>

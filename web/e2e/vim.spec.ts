@@ -580,6 +580,44 @@ test('Save writes with an operator waiting; a key a mapping takes leaves no chan
   }
 })
 
+// The keymap turned back to Monaco's while a key is still on its way to Neovim (its x waits 1.5 s here): Neovim lets go of the text,
+// so what Monaco's keys type then is not written over when the key's change comes.
+test("Monaco's keys taken back while a Neovim key is on its way: Neovim does not write over them", async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(join(config, 'init.lua'), "vim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\n")
+  const cwd = join(state.root, 'files-vim-keymap')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-keymap', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    await expect(lines).toContainText('alpha', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(area.locator('[data-nvim-status]')).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('0x')
+    // Monaco's keys again, at once, and typed with.
+    await area.locator('[data-editor-keymap]').click()
+    await expect(area.locator('[data-editor-keymap]')).toHaveAttribute('data-editor-keymap', 'default')
+    await lines.click()
+    await page.keyboard.press('Control+Home')
+    await page.keyboard.type('MY ')
+    await expect(lines).toContainText('MY alpha')
+    await page.waitForTimeout(3000)
+    await expect(lines).toContainText('MY alpha')
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover
