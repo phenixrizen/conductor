@@ -232,7 +232,11 @@ func TestALinkThatStopsOpeningTheSessionStopsWhatItsViewersAreOwed(t *testing.T)
 		hs.mu.Lock()
 		lapse := v.lapse
 		hs.mu.Unlock()
-		lapse.Reset(0)
+		// Still set after the end: an end that stopped it would leave the
+		// link's expiry never reaching the viewer it is draining.
+		if !lapse.Reset(0) {
+			t.Fatal("the session's end stopped its link's expiry")
+		}
 		for deadline := time.Now().Add(5 * time.Second); !v.revoked.Load(); time.Sleep(time.Millisecond) {
 			if time.Now().After(deadline) {
 				t.Fatal("the link's expiry never reached the viewer")
