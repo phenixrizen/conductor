@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"sync"
 	"testing"
 	"time"
 )
@@ -244,4 +246,77 @@ func TestABurstOfBellsMakesOneChange(t *testing.T) {
 		}
 		return true
 	})
+	// The same in a turn the agent began by itself after a done (a working
+	// report, no Enter): its answer is no new turn either (Codex's review).
+	withinPace(t, func() bool {
+		s, p := newLocalWith(t, quiet(Options{}))
+		sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.TrySetAttentionFull(AttentionDone, "done", SourceAPI, KindDone, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		p.outW.Write([]byte("\a"))
+		first := waitAttention(t, s, isBell)
+		if err := s.Input(sub, []byte("\r")); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+		p.outW.Write([]byte("\a"))
+		flushed(p)
+		a := s.Info().Attention
+		if time.Since(*first.Since) >= bellPace {
+			return false
+		}
+		if a.State != AttentionNone {
+			t.Fatalf("the burst's tail asked again after its answer, in the turn a working report began: %+v", a)
+		}
+		return true
+	})
+}
+
+// Bells read during a turn and looked at only once a done and an Enter
+// have begun the next are the ended turn's own: they ask nothing, however
+// many the chunk holds (Codex's review: the second of two bells, looked at
+// after the turn changed, asked as the new turn's). The next turn's own
+// bell then asks.
+func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	read, look := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	s.beforeScan = func(chunk []byte) {
+		if bytes.Contains(chunk, []byte("\a")) {
+			once.Do(func() {
+				close(read)
+				<-look
+			})
+		}
+	}
+	go p.outW.Write([]byte("\a\a"))
+	<-read
+	if err := s.TrySetAttentionFull(AttentionDone, "HTTP/2 200", SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	close(look)
+	flushed(p)
+	if a := s.Info().Attention; a.State != AttentionDone {
+		t.Fatalf("the ended turn's bells asked in the next: %+v", a)
+	}
+	p.outW.Write([]byte("\a"))
+	waitAttention(t, s, isBell)
 }
