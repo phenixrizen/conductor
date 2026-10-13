@@ -529,11 +529,20 @@ func TestARunMessagePostedAsAViewerAttachesReachesIt(t *testing.T) {
 	}
 	t.Cleanup(func() { roomReplayed = nil })
 	late := newChanSink(false)
-	if _, err := b.AttachWith(AttachOptions{Role: RoleControl, Name: "Jane", Cols: 80, Rows: 24}, late); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-posted; err != nil {
-		t.Fatal(err)
+	attached := make(chan error, 1)
+	go func() {
+		_, err := b.AttachWith(AttachOptions{Role: RoleControl, Name: "Jane", Cols: 80, Rows: 24}, late)
+		attached <- err
+	}()
+	for what, ch := range map[string]chan error{"the attach": attached, "the post": posted} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never ended", what)
+		}
 	}
 	if waitControl(late, func(m map[string]any) bool {
 		if m["t"] == proto.CtlChat {
