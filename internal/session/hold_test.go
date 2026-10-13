@@ -476,6 +476,49 @@ func TestAReportBegunAfterKeysBeforeTheHoldEndsNothingAfter(t *testing.T) {
 	<-next
 }
 
+// An Escape typed before the hold, which the next write tells from a
+// report, is no key typed once the hold began: the terminal's reports
+// after it end nothing.
+func TestAnEscapeBeforeTheHoldEndsNothingAfter(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	owner := ownerOf(t, s)
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	untilIdle(t, s)
+	if err := s.Input(owner, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	<-done
+	heldShows(t, s)
+	next := submitAsync(s, Submission{Text: "second", ByName: "run"})
+	for _, report := range []string{"\x1b[I", "\x1b[3;1R", "\x1b[<35;1;1M"} {
+		if err := s.Input(owner, []byte(report)); err != nil {
+			t.Fatal(err)
+		}
+		if got := written(t, p); got != report {
+			t.Fatalf("written %q", got)
+		}
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
+	heldShows(t, s)
+	if err := s.Input(owner, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\x15", "second", "\r"} {
+		if got := written(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	<-next
+}
+
 // A dialog drawn in a line's pause leaves its Enter out; its link revoked
 // meanwhile, the turn is held all the same, so that once the dialog goes
 // (answered by the pointer, say) no line joins the text.

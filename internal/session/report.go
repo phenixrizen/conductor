@@ -160,41 +160,49 @@ scan:
 // person typed: anything but a terminal's own reports and its mouse reports
 // (the pointer, moved or clicked, types nothing), whole, or begun at its end
 // (a lone ESC among them, the Escape key or a report's first byte, which the
-// next write tells apart); any number of them, mixed. rest is the report data
-// ends before it is done, for the next write's carry (nil for none). It looks
-// at no more than the write, at most proto.MaxInput bytes.
+// next write tells apart); any number of them, mixed. What the last write
+// carried and turns out to be no report (an Escape) was typed then, not by
+// this write. rest is the report data ends before it is done, for the next
+// write's carry (nil for none). It looks at no more than the write, at most
+// proto.MaxInput bytes.
 func typesSomething(carry, data []byte) (typed bool, rest []byte) {
 	buf := data
-	if len(carry) > 0 {
-		buf = append(append(make([]byte, 0, len(carry)+len(data)), carry...), data...)
+	carried := len(carry)
+	if carried > 0 {
+		buf = append(append(make([]byte, 0, carried+len(data)), carry...), data...)
 	}
 	// The whole write is read, also past what was typed, so that a report
 	// begun at its end is carried whatever came before it.
-	for len(buf) > 0 {
-		if buf[0] == 0x1b {
-			if n := reportLen(buf); n > 0 {
-				buf = buf[n:]
+	for pos := 0; pos < len(buf); {
+		if buf[pos] == 0x1b {
+			if n := reportLen(buf[pos:]); n > 0 {
+				pos += n
 				continue
 			}
-			if len(buf) <= maxReportCarry && (reportBegun.Match(buf) || legacyBegun(buf)) {
-				return typed, bytes.Clone(buf)
+			if len(buf)-pos <= maxReportCarry && (reportBegun.Match(buf[pos:]) || legacyBegun(buf[pos:])) {
+				return typed, bytes.Clone(buf[pos:])
 			}
 		}
-		// A byte a person typed: any but a report's, the ESC of a key's
-		// sequence among them.
-		typed = true
-		buf = buf[1:]
-		if len(buf) > maxReportCarry {
-			// Typed: all that is left to tell is whether a report begins
-			// in the last bytes, which an ESC there starts (a report's
-			// body holds none but its terminator's).
-			buf = buf[len(buf)-maxReportCarry:]
+		// Not a report's byte: one a person typed, the ESC of a key's
+		// sequence among them; unless it came with the last write (an
+		// Escape typed then, which no report followed), which this one
+		// does not type again.
+		if pos >= carried {
+			typed = true
 		}
-		i := bytes.IndexByte(buf, 0x1b)
+		pos++
+		if !typed {
+			continue
+		}
+		// Typed: all that is left to tell is whether a report begins in
+		// the last bytes, which an ESC there starts (a report's body holds
+		// none but its terminator's).
+		pos = max(pos, len(buf)-maxReportCarry)
+		i := bytes.IndexByte(buf[pos:], 0x1b)
 		if i < 0 {
 			return true, nil
 		}
-		buf = buf[i:]
+		pos += i
 	}
 	return typed, nil
 }

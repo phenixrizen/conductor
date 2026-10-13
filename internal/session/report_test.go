@@ -156,6 +156,13 @@ func TestTypesSomething(t *testing.T) {
 	if typed, _ := typesSomething([]byte("\x1b"), []byte("k")); !typed {
 		t.Fatal("Escape, then a key, types")
 	}
+	// Escape typed with the last write, then reports alone: this write
+	// types nothing.
+	for _, reports := range []string{"\x1b[I", "\x1b[3;1R", "\x1b[<35;1;1M", "\x1b[I\x1b[<35;1;1M\x1b[O"} {
+		if typed, rest := typesSomething([]byte("\x1b"), []byte(reports)); typed || rest != nil {
+			t.Errorf("Escape, then %q: typed %v, rest %q", reports, typed, rest)
+		}
+	}
 	// A key, then a report begun: typed, and the report carried all the same.
 	typed, rest = typesSomething(nil, []byte("k\x1b[3;"))
 	if !typed || string(rest) != "\x1b[3;" {
