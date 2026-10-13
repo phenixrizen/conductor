@@ -400,7 +400,16 @@ update_question() {
 	while IFS= read -rsn1 key; do
 		case $key in
 		'' | $'\r' | 1) answer=update ;;
-		$'\e' | 2) answer=skip ;;
+		$'\e')
+			# ESC and a key at once (Alt+z, an arrow) is one key, as
+			# Codex's crossterm reads it, and the question ignores it; an
+			# ESC alone skips.
+			if IFS= read -rsn1 -t 0.05 _; then
+				continue
+			fi
+			answer=skip
+			;;
+		2) answer=skip ;;
 		3) answer=skip-version ;;
 		*) continue ;;
 		esac

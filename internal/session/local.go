@@ -1690,13 +1690,16 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
-		keys, unkeyed, held := s.keysWritten(data, o.reads)
-		// The keys that may answer: keys, and the Escape held.
+		keys, unkeyed, extra := s.keysWritten(data, o.reads)
+		// The keys that may answer: keys, and those the write may hold
+		// besides (the Escape held, an Alt chord's key alone). A write
+		// with those is never matched whole: Alt and Enter is no Enter.
+		held := len(extra) > 0
 		maybe := keys
 		if held {
-			maybe = append(keys[:len(keys):len(keys)], []byte{0x1b})
+			maybe = append(keys[:len(keys):len(keys)], extra...)
 		}
-		own := ownKeys(data, keys)
+		own := ownKeys(data, keys) && !held
 		quiet = unkeyed || allReports(keys) && !held
 		s.mu.Lock()
 		shown := s.info.Attention
@@ -2347,12 +2350,18 @@ func isAnswer(answers []Option, data []byte) bool {
 // with; nothing tells which (the program may read both reads at once), so
 // it may answer a question but never surely does. data is no quiet write
 // then.
-func (s *Local) keysWritten(data []byte, reads bool) (keys [][]byte, quiet, held bool) {
+//
+// maybe are the keys data may hold besides keys, never surely: the Escape
+// held, and the keys an Alt chord's (ESC and a key) may be read as alone.
+func (s *Local) keysWritten(data []byte, reads bool) (keys [][]byte, quiet bool, maybe [][]byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keys = s.keysIn.keys(data, reads)
-	held = s.keysIn.escHeld
-	return keys, len(keys) == 0 && !s.keysIn.pasted && !held, held
+	maybe = s.keysIn.maybe
+	if s.keysIn.escHeld {
+		maybe = append(maybe, []byte{0x1b})
+	}
+	return keys, len(keys) == 0 && !s.keysIn.pasted && len(maybe) == 0, maybe
 }
 
 // escWait is how long an Escape a terminal's read ended with stays
@@ -2443,6 +2452,8 @@ type keyReader struct {
 	// kept, at escAt.
 	escHeld bool
 	escAt   time.Time
+	// maybe are the keys the last write's Alt chords may be read as alone.
+	maybe [][]byte
 }
 
 // stringEnd returns the index just past the BEL or ST that ends a control
@@ -2600,7 +2611,7 @@ func (r *keyReader) keys(data []byte, reads bool) [][]byte {
 		data = append(r.carry, data...)
 		r.carry = nil
 	}
-	r.pasted, r.escHeld = false, false
+	r.pasted, r.escHeld, r.maybe = false, false, nil
 	var keys [][]byte
 	i := 0
 	cut := func(from int) {
@@ -2714,9 +2725,21 @@ func (r *keyReader) keys(data []byte, reads bool) [][]byte {
 			}
 			keys = append(keys, data[i:end])
 			i = end
-		default:
+		case data[i+1] == 0x1b:
+			// Two ESCs at once: the Escape key, as the program reads them
+			// (Codex's crossterm: Esc).
 			keys = append(keys, data[i:i+1])
-			i++
+			i += 2
+		default:
+			// ESC and a key at once: one key, the key with Alt (a page's
+			// xterm sends Alt+z as ESC z; Codex's crossterm reads one Alt
+			// chord, which its questions ignore), never the Escape key.
+			// The key alone is one it may be read as (a program that
+			// ignores Alt), counted where that is the safer mistake.
+			_, size := utf8.DecodeRune(data[i+1:])
+			keys = append(keys, data[i:i+1+size])
+			r.maybe = append(r.maybe, data[i+1:i+1+size])
+			i += 1 + size
 		}
 	}
 	return keys

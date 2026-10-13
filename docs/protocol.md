@@ -977,7 +977,12 @@ version report), a key the terminal encodes once the program asks it to tell
 keys apart (the kitty keyboard protocol's `CSI … u`, which Codex asks for, and
 xterm's modifyOtherKeys `CSI 27 ; … ~`) is the key it stands for (Escape is
 `ESC[27u`, Ctrl+C `ESC[99;5u`; Enter, a character, Shift or Ctrl and a
-letter; Caps and Num Lock change nothing) and its release no key, and a
+letter; Caps and Num Lock change nothing) and its release no key, an ESC
+and a key at once are one key, that key with Alt (a page's xterm sends
+Alt+z as `ESC z`, which Codex reads as one key and its questions ignore),
+never the Escape key, the key alone counting only as one it may be read as
+(it may put a question behind, never clears one), two ESCs at once are the
+Escape key, and a
 bracketed paste is text, no key, so an arrow then y
 answers a dialog and a pasted y, or a report's Escapes, do not; a paste, a control string or an escape sequence one write leaves
 unfinished goes on in the next (a terminal's reads cut them anywhere; a

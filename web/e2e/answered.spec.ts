@@ -71,6 +71,56 @@ test("a 2 typed in Codex's terminal answers its background-server question, and 
   })
 })
 
+// Alt+Z pressed in the session's terminal at Codex's update question: xterm sends ESC z, which Codex reads as one Alt chord
+// and ignores (the stub too). It is no Escape: the question stays, and holds the member's prompt back, whose Enter would run
+// the update; its own answer then takes it. (Codex's review, seventeenth pass.)
+test("an Alt chord typed at Codex's update question never lets the member's prompt answer it", async ({ page, api, state }) => {
+  const dir = join(state.home, '.codex')
+  mkdirSync(dir, { recursive: true })
+  const mark = join(dir, 'stub-update')
+  const answerFile = join(dir, 'stub-update-answer')
+  const answered = () => (existsSync(answerFile) ? readFileSync(answerFile, 'utf8').trim() : '')
+  writeFileSync(mark, '')
+  rmSync(answerFile, { force: true })
+  const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e answered alt',
+    goal: 'answered',
+    cwd: '',
+    where: 'server',
+    isolation: 'none',
+    openAfterLaunch: false,
+    yolo: false,
+    members: [{ name: 'solo', agentId: 'codex', prompt: 'say hello', start: { when: 'immediately' } }],
+  })
+  try {
+    const run = await api.launchCrew(crew.crew.id)
+    runs.push(run.id)
+    let id = ''
+    const asked = async () => {
+      id = member(await api.run(run.id), 'solo').sessionId ?? ''
+      return id ? ((await api.session(id)).attention ?? { state: '' }) : { state: '' }
+    }
+    await expect.poll(async () => (await asked()).message ?? '', { timeout: 45_000, message: 'the update question is asked' }).toMatch(/^Update available/)
+    const first = await asked()
+
+    await page.goto(`/sessions/${encodeURIComponent(id)}`)
+    await page.locator('.terminal-host .xterm-screen').first().click()
+    await page.keyboard.press('Alt+z')
+    await page.waitForTimeout(2_000)
+    expect(answered(), 'the update question got no answer').toBe('')
+    const waiting = await asked()
+    expect(waiting.state).toBe('needs_input')
+    expect(waiting.id).toBe(first.id)
+
+    // Its own answer takes it.
+    await page.locator('[data-quick-reply]').getByRole('button', { name: /Skip until next version/ }).click()
+    await expect.poll(answered, { timeout: 15_000 }).toBe('skip-version')
+  } finally {
+    for (const m of [mark, answerFile]) rmSync(m, { force: true })
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
+  }
+})
+
 type StartupCtx = {
   priya: Page
   id: string

@@ -1302,6 +1302,12 @@ func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 		"\x1b[A":         {"\x1b[A"},
 		"y\x1b[27u2":     {"y", "\x1b", "2"},
 		"\x1b[99999999u": {"\x1b[99999999u"},
+		// ESC and a key at once is one Alt chord, two ESCs the Escape key.
+		"\x1bz":        {"\x1bz"},
+		"\x1b\r":       {"\x1b\r"},
+		"\x1b\xc3\xa9": {"\x1b\xc3\xa9"},
+		"\x1b\x1b":     {"\x1b"},
+		"y\x1b\x1b[A":  {"y", "\x1b", "[", "A"},
 	} {
 		var r keyReader
 		var got []string
@@ -1576,6 +1582,48 @@ func TestAStaleLookOfTheScreenNeverClearsAHeldStartupQuestion(t *testing.T) {
 		t.Fatalf("a submission at the question: %v", err)
 	}
 	noWrite(t, p, 100*time.Millisecond)
+}
+
+// An Alt chord pressed in a page's terminal at Codex's update question
+// (xterm sends Alt+z as ESC z, which Codex reads as one key and ignores)
+// is no Escape: the question still shows, and holds a submission back,
+// whose Enter would run npm install. A chord whose key alone answers it
+// (Alt+3, Alt+Enter: a program may ignore the Alt) puts it behind, a reply
+// refused, and clears nothing; one whose key does not (Alt+z) leaves it
+// waiting for its reply. (Codex's review, seventeenth pass.)
+func TestAnAltChordNeverClearsAStartupQuestion(t *testing.T) {
+	for _, chord := range []string{"\x1bz", "\x1b3", "\x1b\r"} {
+		t.Run(fmt.Sprintf("%q", chord), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(codexUpdateScreen))
+			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			if err := s.Input(nater, []byte(chord)); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+			time.Sleep(100 * time.Millisecond)
+			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+				t.Fatalf("the chord cleared the question: %+v", a)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a submission at the question: %v", err)
+			}
+			noWrite(t, p, 100*time.Millisecond)
+			err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3"))
+			if chord == "\x1bz" {
+				if err != nil {
+					t.Fatalf("the reply after Alt+z: %v", err)
+				}
+				if got := nextWrite(t, p); got != "3" {
+					t.Fatalf("written %q", got)
+				}
+			} else if !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("the reply after %q: %v", chord, err)
+			}
+		})
+	}
 }
 
 // An Escape alone from a page (a key pressed in its terminal, or its quick
