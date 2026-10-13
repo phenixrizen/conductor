@@ -663,8 +663,9 @@ function nvimWrite(): Promise<boolean> {
         check()
       } else if (ev.kind === 'modified') {
         check()
-      } else if ((ev.kind === 'error' && seq && ev.ack === seq) || (ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') {
-        // Its keys refused (all or their end), the write failed, or Neovim is gone: not saved.
+      } else if ((ev.kind === 'error' && ev.ack) || (ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') {
+        // Keys refused while it saves (its own, or edits before it: what is written is not what was typed), the write failed, or
+        // Neovim is gone: not saved, and the tab stays, its status line saying which keys did not reach Neovim.
         done(false)
       }
     })
