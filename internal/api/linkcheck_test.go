@@ -405,6 +405,9 @@ func TestALinkThatExpiresClosesItsViewers(t *testing.T) {
 	if early := time.Until(at); early > 100*time.Millisecond {
 		t.Fatalf("closed %v before the link expired", early)
 	}
+	// The token opens nothing once the link has expired by the wall clock,
+	// which the store reads: the close may come that little before it.
+	time.Sleep(time.Until(at))
 	dialViewer(t, e, id, token).expectClose(proto.CloseUnauthorized)
 
 	late, at := expiresIn(t, e, id, "view")
