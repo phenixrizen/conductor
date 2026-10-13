@@ -382,6 +382,18 @@ func (w *PatternWatcher) Text() string {
 	return w.tracker.Last()
 }
 
+// Whole returns all the text the watcher keeps: a screen watcher's whole
+// screen (Screen.Text, every row, where Text is its last rows), the others'
+// Text. What tells that something is no longer on the screen reads this.
+func (w *PatternWatcher) Whole() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		return sc.Text()
+	}
+	return w.tracker.Last()
+}
+
 // Feed adds a chunk of the stream and restarts the quiet period. It never
 // waits for a fire.
 func (w *PatternWatcher) Feed(chunk []byte) {

@@ -1752,6 +1752,31 @@ func TestAStartupQuestionAskedAgainAnsweredGoesWithTheScreen(t *testing.T) {
 	}
 }
 
+// In a terminal 120 rows tall, Codex's update question at its top and a
+// footer at its bottom: more than the 80 rows a watcher looks at apart.
+// Held by an Escape, the question is not taken for gone when the footer
+// is drawn again: the whole screen still shows it, and a submission is
+// still held back. (Codex's review, twenty-first pass.)
+func TestAHeldStartupQuestionAboveTheLastRowsIsNotGone(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 120}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen + "\x1b[120;1Hstatus: ready"))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.Input(nater, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write([]byte("\x1b[120;1Hstatus: still ready"))
+	time.Sleep(2 * patternQuiet)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("a question on the screen was taken for gone: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}
+
 // An X10 mouse report (ESC [ M and three bytes: the button and the cell),
 // a click in a terminal at Codex's update question, whole or cut anywhere:
 // its bytes are no keys (a column of 1 is the byte '1', which would pick

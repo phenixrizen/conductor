@@ -2573,7 +2573,7 @@ func (s *Local) escGone() {
 	s.mu.Lock()
 	att, held := s.info.Attention, s.heldAnswer
 	s.mu.Unlock()
-	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust || fed <= held.fed || s.lastStartup(s.asked.Text()) != "" {
+	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust || fed <= held.fed || s.lastStartup(s.asked.Whole()) != "" {
 		s.feedMu.Unlock()
 		return
 	}
@@ -2608,7 +2608,7 @@ func (s *Local) heldGone(words string) bool {
 	s.mu.Lock()
 	held := s.heldAnswer
 	s.mu.Unlock()
-	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || s.lastStartup(s.asked.Text()) != "" {
+	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || s.lastStartup(s.asked.Whole()) != "" {
 		return false
 	}
 	s.mu.Lock()
