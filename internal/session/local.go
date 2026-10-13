@@ -195,16 +195,14 @@ type Local struct {
 	// made to answer, set as the writer takes the write (claimQuestion,
 	// noteAnswering): until the write is made and answer clears the
 	// question, it still shows, and a reply to it that comes after is
-	// refused (ErrQuestionAnswered). answeredWords and answeredSource are
-	// that question's; answeredScreen is the text of the screen the
-	// questions asked during the work are read from as that write was
-	// taken, "" when not known: a dialog with its words asked again while
-	// the screen is still that text is that question still (setAttention,
-	// sameDialog). Guarded by mu.
+	// refused (ErrQuestionAnswered). dialogAnswered is the words of the
+	// dialog asked during the work that a write was last made to answer,
+	// published or not yet, until the screen's watcher sees it go (a quiet
+	// look with no dialog, missAsked) or another dialog in its place: a
+	// dialog with those words asked meanwhile is that question still,
+	// answered (sameDialog). Guarded by mu.
 	answered       string
-	answeredWords  string
-	answeredSource string
-	answeredScreen string
+	dialogAnswered string
 
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
@@ -633,26 +631,35 @@ func (s *Local) fireTrust(text string) {
 // a report, with choices of its own or none, a done, its own question with
 // other words (the next of a queue). The dialog on the screen is what the
 // program waits on now, and its choices are the only safe answer: typed
-// text, or another question's choice, would reach the dialog's keys.
+// text, or another question's choice, would reach the dialog's keys. A
+// dialog with other words than the one last answered is that one gone
+// (dialogAnswered); one with its words is that question still (sameDialog).
 func (s *Local) fireAsked(text string) {
 	for _, q := range s.askedQuestions {
 		if words := q.words(text); words != "" {
-			s.setAttentionAt(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog, anyTurn, text)
+			s.mu.Lock()
+			if s.dialogAnswered != words {
+				s.dialogAnswered = ""
+			}
+			s.mu.Unlock()
+			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog)
 			return
 		}
 	}
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
-// the questions. A question asked during the work that is still held then
-// gives way, as answered, when a person typed into the session while a
-// question with the same words showed (asked again, as after a key the
-// program was slow to answer, it is the same dialog): the dialog went with
-// a key Conductor does not offer (d, a click) or one it did that the
-// program took late. Without such a key it stays: the dialog cannot have
-// been answered, and a held question keeps every Enter from the screen.
+// the questions: the dialog last answered has gone (dialogAnswered). A
+// question asked during the work that is still held then gives way, as
+// answered, when a person typed into the session while a question with the
+// same words showed (asked again, as after a key the program was slow to
+// answer, it is the same dialog): the dialog went with a key Conductor does
+// not offer (d, a click) or one it did that the program took late. Without
+// such a key it stays: the dialog cannot have been answered, and a held
+// question keeps every Enter from the screen.
 func (s *Local) missAsked(string) {
 	s.mu.Lock()
+	s.dialogAnswered = ""
 	att, typed := s.info.Attention, s.typedAtAsked
 	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && typed.words == att.Message
 	s.mu.Unlock()
@@ -828,16 +835,13 @@ const (
 	// attention, which keys that ended the hold before it showed, or the
 	// session's end, must not leave behind.
 	whileHeld
-	// sameDialog (a dialog asked during the work, fireAsked, with the
-	// screen it was read from): a dialog with the words of the last
-	// question a write answered, asked again while the screen is still
-	// the text it was as that write was taken (the program is slow to take
-	// the key, or draws nothing but cursor moves), is that question still:
-	// it keeps its id, answered, so that no reply to it is written twice.
-	// Once the screen's text has changed since (the answer's line above
-	// the dialog, the dialog gone and drawn anew), a dialog with those
-	// words is a question of its own, with an id of its own, the one still
-	// showing included. A screen not known keeps the question answered.
+	// sameDialog (a dialog asked during the work, fireAsked): a dialog with
+	// the words of the one a write was last made to answer
+	// (dialogAnswered), asked before the screen's watcher has seen that one
+	// go or another dialog take its place, is that question still: the
+	// program may not have taken the key yet (it is slow, or draws only
+	// what leaves the dialog as it was). It is asked answered, with an id
+	// no reply is taken for, so that no reply to it is written twice.
 	sameDialog
 )
 
@@ -860,12 +864,6 @@ const anyTurn = ^uint64(0)
 // changes nothing once another turn has begun, the turn that ended asking
 // nothing more. anyTurn is setAttention's.
 func (s *Local) setAttentionRead(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn uint64) error {
-	return s.setAttentionAt(state, message, source, kind, options, rules, turn, "")
-}
-
-// setAttentionAt is setAttentionRead for a dialog read from screen, the
-// text of the screen it shows on (sameDialog), "" when not known.
-func (s *Local) setAttentionAt(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn uint64, screen string) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -942,13 +940,13 @@ func (s *Local) setAttentionAt(state AttentionState, message, source, kind strin
 		// last turn's): the turn it reports has ended.
 		s.turnEnded = true
 	}
-	// A dialog with the words of the question last answered (sameDialog):
-	// the same one while the screen is the one its answer was written at,
-	// a new one once the screen has changed.
-	answeredDialog := rules&sameDialog != 0 && state == AttentionNeedsInput && s.answered != "" && s.answeredSource == source && s.answeredWords == message
-	drawnSince := s.answeredScreen != "" && screen != "" && screen != s.answeredScreen
-	asksAnew := answeredDialog && cur.ID == s.answered && drawnSince
-	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && !asksAnew {
+	// The dialog last answered, asked before it has gone (sameDialog): its
+	// question is answered, whatever id it shows with.
+	stillAnswered := rules&sameDialog != 0 && state == AttentionNeedsInput && s.dialogAnswered != "" && s.dialogAnswered == message
+	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
+		if stillAnswered && cur.ID != "" {
+			s.answered = cur.ID
+		}
 		s.mu.Unlock()
 		return nil
 	}
@@ -966,8 +964,8 @@ func (s *Local) setAttentionAt(state AttentionState, message, source, kind strin
 		now := time.Now().UTC()
 		att.Since = &now
 		att.ID = NewID()
-		if answeredDialog && !drawnSince {
-			att.ID = s.answered
+		if stillAnswered {
+			s.answered = att.ID
 		}
 	}
 	s.info.Attention = att
@@ -1560,15 +1558,19 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// answered (answer).
 			s.endHold()
 		}
+		// The screen the dialogs are read from as keys that can answer a
+		// dialog are written (an Enter, a dialog's key, a digit, Ctrl+C),
+		// and the dialog it shows; for other keys, typing, it is not read.
+		var screen, words string
+		var onScreen *StartupQuestion
+		if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
+			screen = s.asked.Text()
+			onScreen, words = s.askedIn(screen)
+		}
 		if !isTerminalReport(data) {
-			// Keys that answer the question showing put it behind for the
-			// replies queued after them, with the screen they were written
-			// at (sameDialog).
-			var screen string
-			if s.asked != nil {
-				screen = s.asked.Text()
-			}
-			s.noteAnswering(promptSince, data, screen)
+			// Keys that answer the question showing, or the dialog on the
+			// screen, put it behind for the replies queued after them.
+			s.noteAnswering(promptSince, data, screen, onScreen, words)
 		}
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
@@ -1577,20 +1579,18 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// The turn a done ended is behind as the Enter is written.
 			s.nextTurn()
 		}
-		if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
+		if words != "" {
 			// A key that answers a dialog on the screen: the look before a
 			// submission does not ask the dialog again before the program
 			// draws what follows (the look at the end of a quiet period
 			// still does). The key is noted against the dialog, also one
 			// not yet asked: the dialog asked later, before the program
 			// took it away, gives way to it (missAsked).
-			if words := s.askedOnScreen(); words != "" {
-				s.mu.Lock()
-				s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
-				s.mu.Unlock()
-				s.asked.Hold()
-				noted = true
-			}
+			s.mu.Lock()
+			s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
+			s.mu.Unlock()
+			s.asked.Hold()
+			noted = true
 		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
@@ -1662,16 +1662,15 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
 }
 
-// askedOnScreen returns the words of the question asked during the work
-// that the screen shows now, "" when it shows none.
-func (s *Local) askedOnScreen() string {
-	text := s.asked.Text()
-	for _, q := range s.askedQuestions {
-		if words := q.words(text); words != "" {
-			return words
+// askedIn returns the question asked during the work that text (the
+// screen's) shows, and its words; nil and "" when it shows none.
+func (s *Local) askedIn(text string) (*StartupQuestion, string) {
+	for i := range s.askedQuestions {
+		if words := s.askedQuestions[i].words(text); words != "" {
+			return &s.askedQuestions[i], words
 		}
 	}
-	return ""
+	return nil, ""
 }
 
 // typedAt is who typed into the session while a question asked during the
@@ -1788,16 +1787,18 @@ func (s *Local) claimQuestion(id string) error {
 	if err := s.waitsLocked(id); err != nil {
 		return err
 	}
-	// The screen is noted as the write's before runs (noteAnswering).
-	s.markAnswered(s.info.Attention, "")
+	s.markAnswered(s.info.Attention)
 	return nil
 }
 
 // markAnswered notes att's question as the one a write is being made to
-// answer (answered), with the screen as the write is taken ("" not
-// known). The caller holds s.mu.
-func (s *Local) markAnswered(att Attention, screen string) {
-	s.answered, s.answeredWords, s.answeredSource, s.answeredScreen = att.ID, att.Message, att.Source, screen
+// answer (answered), and a dialog asked during the work by its words
+// (dialogAnswered). The caller holds s.mu.
+func (s *Local) markAnswered(att Attention) {
+	s.answered = att.ID
+	if att.Source == SourceQuestion {
+		s.dialogAnswered = att.Message
+	}
 }
 
 // noteAnswering notes, as the writer takes a write of data, that the
@@ -1806,36 +1807,86 @@ func (s *Local) markAnswered(att Attention, screen string) {
 // write is made and answer clears it. A question the session holds (a
 // startup question, a dialog asked during the work) is answered by keys
 // that pick one of its answers: an Enter, one of its choices, or for a
-// dialog Ctrl+C or a digit of one of its choices' lines (a digit past them
-// does nothing, and the dialog still waits). That is so for whatever
-// question shows as they are written: keys typed before it showed and
-// written once it shows (they waited behind another write) reach it. A
-// prompt the session does not hold is answered by any key typed while it
-// showed (promptSince), as answer takes it. Keys typed into the terminal,
-// a reply box's line and Conductor's own Enter put a question behind as a
-// reply to it does. screen is the text of the screen the dialogs are read
-// from (asked) as the write is taken, "" when not known, read by the
-// caller before the session's lock.
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, screen string) {
+// dialog Ctrl+C or a digit of one of its numbered lines (dialogPicks).
+// That is so for whatever question shows as they are written: keys typed
+// before it showed and written once it shows (they waited behind another
+// write) reach it. A prompt the session does not hold is answered by any
+// key typed while it showed (promptSince), as answer takes it. Keys typed
+// into the terminal, a reply box's line and Conductor's own Enter put a
+// question behind as a reply to it does.
+//
+// screen is the text of the screen the dialogs asked during the work are
+// read from, as the write is taken ("" when not known), and onScreen the
+// dialog it shows then, if any (its words, nil without one), read by the
+// caller before the session's lock: keys that pick one of its answers
+// answer it whether the session has asked it yet or not (the watcher asks
+// a dialog once the screen is quiet), and a dialog with its words asked
+// later, before it has gone, is answered already (sameDialog).
+func (s *Local) noteAnswering(promptSince *time.Time, data []byte, screen string, onScreen *StartupQuestion, words string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if onScreen != nil && words != "" && dialogPicks(CleanOptions(onScreen.Answers), data, screen) {
+		s.dialogAnswered = words
+	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
-	picks := bytes.IndexByte(data, '\r') >= 0 || isChoice(att, data) || att.Source == SourceQuestion && dialogKey(att, data)
+	var picks bool
+	if att.Source == SourceQuestion {
+		picks = dialogPicks(att.Options, data, screen)
+	} else {
+		picks = bytes.IndexByte(data, '\r') >= 0 || isChoice(att, data)
+	}
 	typedAt := att.Since == promptSince && !heldSource(att.Source)
 	if !picks && !typedAt {
 		return
 	}
-	s.markAnswered(att, screen)
+	s.markAnswered(att)
 }
 
-// dialogKey reports whether data is a key of a dialog's list that answers
-// att: Ctrl+C, or a digit of one of its choices' lines (1 to the number of
-// its choices).
-func dialogKey(att Attention, data []byte) bool {
-	return len(data) == 1 && (data[0] == 0x03 || data[0] >= '1' && int(data[0]-'0') <= len(att.Options))
+// dialogPicks reports whether data picks one of the answers of a dialog
+// whose choices are answers, on screen: an Enter (the highlighted line),
+// one of its choices' keys, Ctrl+C (cancel), or a digit of one of its
+// numbered lines as the screen shows them (a digit past them does nothing;
+// with no numbered line read, every digit counts).
+func dialogPicks(answers []Option, data []byte, screen string) bool {
+	if bytes.IndexByte(data, '\r') >= 0 {
+		return true
+	}
+	for _, o := range answers {
+		if o.Input != "" && o.Input == string(data) {
+			return true
+		}
+	}
+	if len(data) != 1 {
+		return false
+	}
+	switch d := data[0]; {
+	case d == 0x03:
+		return true
+	case d >= '1' && d <= '9':
+		n := dialogLines(screen)
+		return n == 0 || int(d-'0') <= n
+	}
+	return false
+}
+
+// numberedLine matches a numbered line of a dialog's list ("› 1. Yes,
+// proceed (y)", "  2. No, …"): its number.
+var numberedLine = regexp.MustCompile(`^\s*(?:[›❯>]\s*)?([1-9])\.\s`)
+
+// dialogLines returns the highest number of the numbered lines in the
+// last rows of screen, where a dialog is drawn; 0 when there is none.
+func dialogLines(screen string) int {
+	rows := strings.Split(screen, "\n")
+	n := 0
+	for _, row := range rows[max(0, len(rows)-16):] {
+		if m := numberedLine.FindStringSubmatch(row); m != nil {
+			n = max(n, int(m[1][0]-'0'))
+		}
+	}
+	return n
 }
 
 // ErrBadAnswer refuses an answer message out of its bounds

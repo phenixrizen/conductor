@@ -88,7 +88,11 @@ export class ReplyError extends Error {
 export function replyFailure(e: unknown, name?: string): { title: string; description?: string; color: 'warning' | 'error' } {
   const code = (e as { code?: unknown } | null)?.code
   if (code === QUESTION_ANSWERED) {
-    return { title: 'Already answered', description: `${name ? `${name}'s` : 'This'} question was answered before your reply arrived. Nothing was sent.`, color: 'warning' }
+    return {
+      title: 'Already answered',
+      description: `${name ? `${name}'s` : 'This'} question was answered before your reply arrived. Nothing was sent. If the agent still asks, answer it in its terminal.`,
+      color: 'warning',
+    }
   }
   if (code === NO_QUESTION) {
     return { title: 'Not sent', description: 'This page could not tell the session which question your reply was for, so nothing was sent. Try again in a moment, or answer in the terminal.', color: 'warning' }

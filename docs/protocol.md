@@ -584,8 +584,9 @@ without answering such a question leaves the question showing, and the
 submissions it refuses refused. `id` names the
 change as `since` stamps it: 16 hex characters, new with every change that
 shows a state (the same words again change nothing, the id included; a
-dialog asked again as the same question keeps its id, see Answering a
-question), none with the empty state. A hosted session's is its host's, as the host reports
+dialog asked again as the question just answered is asked answered, see
+Answering a question), none with the empty state. A hosted session's is its
+host's, as the host reports
 it; a change the server makes for a hosted session (a report through its
 routes) has none in the server's listings until the host reports it back with
 its own, except one the host keeps as it is (see Answering a question,
@@ -932,26 +933,28 @@ line, a key typed into a terminal (as a controller's input clears a question,
 above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
 before a question showed and written once it shows (they waited behind
 another write) when they pick one of its answers (an Enter, one of its
-choices, Ctrl+C or a digit of one of its choices' lines in a dialog), for
-the program takes them as its answer; a digit past a dialog's lines does
-nothing, and the dialog, asked again, still waits for a reply. A dialog
-asked during the work and drawn again with the words of the question just
-answered while the screen is still the text it was as that answer was
-written (a program slow to take the key leaves the dialog on the screen;
-output that changes nothing on it, a cursor shown, is no sign the key was
-taken) is that question still: asked again, it keeps its `id`, answered, and
-a reply to it is refused. Once the screen's text has changed (the decision's
-line above the next approval, the dialog gone and drawn anew, also while the
-key was being written), a dialog with those words is a question of its own,
-with a new `id`. A next dialog that changes nothing on the screen cannot be
-told from the one answered: it is answered in the terminal. So of two
+choices, and in a dialog Ctrl+C or a digit of one of its numbered lines as
+the screen shows them; a digit past them does nothing, and the dialog, asked
+again, still waits for a reply). Keys that pick an answer of a dialog on the
+screen that the session has not asked yet (it asks once the screen is quiet)
+answer it too. A dialog asked during the work with the words of the one last
+answered, asked again before the screen's watcher has seen that one go (a
+quiet screen with no dialog) or another dialog take its place, is that
+question still, for the program may not have taken the key yet: it is asked
+answered, with an `id` no reply is taken for. Nothing else on the screen
+counts: output that changes nothing, a status line above the dialog, the
+dialog drawn again under the decision's line. A next dialog of the same
+words that never leaves the screen therefore cannot be told from the one
+answered, and is answered in the terminal; once the dialog has gone, one of
+those words is a question of its own. So of two
 replies to one question, from two people clicking together or one whose click
 arrives after the program has moved on, the first is written and the second
 refused with `error{question_answered}` naming its `reqId`, nothing of it
 written: a late click never lands on the question that came next (Codex's
 next queued approval, Claude Code's next permission dialog), which stays
 waiting for its own reply. The page says so: "Already answered: the question
-was answered before your reply arrived. Nothing was sent." A reply with no
+was answered before your reply arrived. Nothing was sent. If the agent still
+asks, answer it in its terminal." A reply with no
 `id` (a question from an older owner, a page that predates `answer`) goes as
 before, as INPUT or `submit`, and answers whatever shows; to an owner that
 takes `answer`, a page sends no reply that names no question (a hosted

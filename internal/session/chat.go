@@ -190,12 +190,9 @@ func (s *Local) askInChat(att Attention) (ChatMessage, string) {
 		at = *att.Since
 	}
 	// The question's line is the question's own id (Attention.ID), so that a
-	// choice clicked in the chat names the question it was shown for. A
-	// dialog asked again that is still the question answered (sameDialog)
-	// keeps the id its line has already: its line again has one of its
-	// own, which no reply names, as no reply to it is taken.
+	// choice clicked in the chat names the question it was shown for.
 	id := att.ID
-	if _, kept := s.chat.find(id); id == "" || kept {
+	if id == "" {
 		id = NewID()
 	}
 	q := ChatMessage{ID: id, At: at, Scope: proto.ChatScopeSession, Kind: proto.ChatKindQuestion, By: ChatBy{ID: "agent", Name: s.info.AgentID, Role: RoleAgent}, Text: text, Options: append([]Option(nil), att.Options...)}

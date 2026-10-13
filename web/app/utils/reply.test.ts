@@ -72,8 +72,12 @@ describe('repliedQuestions', () => {
 describe('replyFailure', () => {
   it('says a question was answered already, nothing sent, naming the session where the page lists several', () => {
     const refused = new ReplyError('question_answered', 'this question was already answered: nothing was sent')
-    expect(replyFailure(refused, 'fix-auth')).toEqual({ title: 'Already answered', description: "fix-auth's question was answered before your reply arrived. Nothing was sent.", color: 'warning' })
-    expect(replyFailure(refused).description).toBe('This question was answered before your reply arrived. Nothing was sent.')
+    expect(replyFailure(refused, 'fix-auth')).toEqual({
+      title: 'Already answered',
+      description: "fix-auth's question was answered before your reply arrived. Nothing was sent. If the agent still asks, answer it in its terminal.",
+      color: 'warning',
+    })
+    expect(replyFailure(refused).description).toMatch(/^This question was answered before your reply arrived\. Nothing was sent\./)
   })
 
   it('says a reply that could not name its question was not sent', () => {

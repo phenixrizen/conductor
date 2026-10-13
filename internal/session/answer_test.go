@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -282,19 +283,22 @@ func TestAKeyQueuedBeforeAQuestionShowedPutsItBehind(t *testing.T) {
 }
 
 // approvalDecided is the line Codex writes above its overlay as an approval
-// is decided, before the next queued one: the screen changes, whatever the
-// dialog below shows next.
+// is decided, before the next queued one.
 func approvalDecided(cmd string) string {
 	return "\x1b[5;1H\x1b[K✔ You approved codex to run " + cmd
 }
 
-// A dialog answered by a choice and drawn again while the screen is still
-// the one its answer was written at (the program is slow to take the key)
-// is the same dialog: asked again, it keeps its id, answered, and a click on
-// it is refused, nothing written. Once the screen has changed (the
-// decision's line above the next approval, of the same words), a dialog with
-// those words is a question of its own, and takes its reply. (Codex's
-// review of this change, first pass, finding 3.)
+// A dialog answered by a choice and asked again before the screen's watcher
+// has seen it go (the program is slow to take the key) is the same dialog:
+// asked answered, a click on it is refused, nothing written. Neither output
+// that changes nothing on the screen (the cursor shown again), nor a change
+// above the dialog (a status line), nor the dialog drawn again with the
+// decision's line above it is a sign the key was taken: a next approval of
+// the same words that never leaves the screen cannot be told from the one
+// answered, and is answered in the terminal. Once the watcher has seen a
+// quiet screen with no dialog, a dialog with those words is a question of its
+// own, and takes its reply. (Codex's review of this change: first pass,
+// finding 3; second pass, finding 1; third pass, finding 1.)
 func TestADialogAskedAgainBeforeTheProgramDrewIsStillAnswered(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
@@ -309,19 +313,31 @@ func TestADialogAskedAgainBeforeTheProgramDrewIsStillAnswered(t *testing.T) {
 	if err := s.AnswerInput(t.Context(), jane, again.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
 		t.Fatalf("a click on the dialog asked again before the program drew: %v", err)
 	}
-	// Output that changes nothing on the screen (the cursor shown again)
-	// is no sign the key was taken: still the same dialog, still answered.
+	// stillRefused waits a look of the watcher, then checks that the dialog
+	// it shows is answered: a click on it is refused, nothing written.
+	stillRefused := func(what string) {
+		t.Helper()
+		time.Sleep(patternQuiet + 200*time.Millisecond)
+		a := s.Info().Attention
+		if !asked(a) {
+			t.Fatalf("%s: the dialog is not asked: %+v", what, a)
+		}
+		if err := s.AnswerInput(t.Context(), jane, a.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+			t.Fatalf("%s: a click on the dialog: %v", what, err)
+		}
+		noWrite(t, p, 100*time.Millisecond)
+	}
 	p.outW.Write([]byte("\x1b[?25h"))
-	time.Sleep(patternQuiet + 200*time.Millisecond)
-	if a := s.Info().Attention; asked(a) && a.ID != first.ID && a.ID != again.ID {
-		t.Fatalf("output that changed nothing gave the dialog a new id: %+v", a)
-	}
-	if err := s.AnswerInput(t.Context(), jane, s.Info().Attention.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
-		t.Fatalf("a click after output that changed nothing: %v", err)
-	}
-	noWrite(t, p, 200*time.Millisecond)
-	// The program decides it and shows the next approval, of the same words: a question of its own.
+	stillRefused("output that changed nothing")
+	p.outW.Write([]byte("\x1b[3;1H\x1b[KWorking (12s)"))
+	stillRefused("a status line above the dialog")
 	p.outW.Write([]byte(approvalDecided("curl -sI https://example.com") + approvalDialog("curl -sI https://example.com")))
+	stillRefused("the same dialog drawn again under the decision's line")
+	// The dialog goes, and the watcher sees the screen without it: the
+	// same approval drawn after is a question of its own.
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com\r\n")))
+	time.Sleep(patternQuiet + 200*time.Millisecond)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
 	fresh := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != again.ID && a.ID != first.ID })
 	if err := s.AnswerInput(t.Context(), jane, fresh.ID, []byte("y")); err != nil {
 		t.Fatalf("the approval drawn anew: %v", err)
@@ -331,10 +347,10 @@ func TestADialogAskedAgainBeforeTheProgramDrewIsStillAnswered(t *testing.T) {
 	}
 }
 
-// The next approval drawn while the answer's key is still being written
-// (the program takes it and draws before the write returns) is a question
-// of its own: the screen it is read from is not the one the key was
-// written at. (Codex's review, second pass, finding 3.)
+// The next approval, of other words, drawn while the answer's key is still
+// being written (the program takes it and draws before the write returns)
+// is a question of its own, and takes its reply. (Codex's review, second
+// pass, finding 3.)
 func TestTheNextDialogDrawnAsTheKeyIsWrittenIsAQuestionOfItsOwn(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
@@ -344,14 +360,16 @@ func TestTheNextDialogDrawnAsTheKeyIsWrittenIsAQuestionOfItsOwn(t *testing.T) {
 	var once sync.Once
 	p.onWrite = func() {
 		once.Do(func() {
-			p.outW.Write([]byte(approvalDecided("curl -sI https://example.com") + approvalDialog("curl -sI https://example.com")))
+			p.outW.Write([]byte(approvalDecided("curl -sI https://example.com") + approvalDialog("rm -rf build")))
 		})
 	}
 	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
 		t.Fatal(err)
 	}
 	nextWrite(t, p)
-	next := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID })
+	next := waitAttention(t, s, func(a Attention) bool {
+		return asked(a) && a.ID != first.ID && strings.Contains(a.Message, "rm -rf build")
+	})
 	if err := s.AnswerInput(t.Context(), jane, next.ID, []byte("y")); err != nil {
 		t.Fatalf("the next approval: %v", err)
 	}
@@ -360,23 +378,69 @@ func TestTheNextDialogDrawnAsTheKeyIsWrittenIsAQuestionOfItsOwn(t *testing.T) {
 	}
 }
 
-// A digit past the dialog's lines does nothing: the dialog, asked again,
-// still waits, and a click on it is written. (Codex's review, second
-// pass, finding 2.)
-func TestADigitPastTheDialogsLinesLeavesItAnswerable(t *testing.T) {
+// A key that answers a dialog typed before the session has asked it (the
+// watcher asks once the screen is quiet) answers it: the dialog asked
+// after, before the program took it away, is asked answered, and a click
+// on it is refused. (Codex's review, third pass, finding 2.)
+func TestAKeyTypedBeforeTheDialogIsAskedClaimsIt(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
 	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
-	first := waitAttention(t, s, asked)
-	s.Input(nater, []byte("9"))
-	nextWrite(t, p)
-	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
-	if err := s.AnswerInput(t.Context(), jane, again.ID, []byte("y")); err != nil {
-		t.Fatalf("a click on the dialog a digit left: %v", err)
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if err := s.Input(nater, []byte("y")); err != nil {
+		t.Fatal(err)
 	}
-	if got := nextWrite(t, p); got != "y" {
-		t.Fatalf("written %q", got)
+	nextWrite(t, p)
+	a := waitAttention(t, s, asked)
+	if err := s.AnswerInput(t.Context(), jane, a.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the dialog a key answered before it was asked: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A digit answers a dialog only on one of its numbered lines, as the screen
+// shows them, whatever choices the session offers for it: past them it does
+// nothing, and the dialog, asked again, still waits and takes a click; on
+// one of them it answers, and a click after it is refused. Codex's deny
+// approval has two numbered lines and three choices (Escape among them),
+// its network approval three lines and two choices. (Codex's review: second
+// pass, finding 2; third pass, finding 3.)
+func TestADigitAnswersADialogOnlyOnItsNumberedLines(t *testing.T) {
+	deny := "\x1b[14;3HWould you like to run the following command?\x1b[16;3H$ git push --force\x1b[18;1H› 1. Yes, proceed (y)\x1b[19;3H2. No, continue without running it (d)\x1b[21;3HPress enter to confirm or esc to cancel"
+	network := "\x1b[14;3HDo you want to approve network access to \"example.com\"?\x1b[16;1H› 1. Yes, just this once (y)\x1b[17;3H2. Yes, and allow this host in the future (p)\x1b[18;3H3. No, and block this host in the future (d)\x1b[20;3HPress enter to confirm or esc to cancel"
+	for _, tc := range []struct {
+		name, screen, digit string
+		answers             bool
+	}{
+		{"past the lines", approvalDialog("curl -sI https://example.com"), "9", false},
+		{"deny, past its two lines", deny, "3", false},
+		{"network, its third line", network, "3", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(tc.screen))
+			first := waitAttention(t, s, asked)
+			s.Input(nater, []byte(tc.digit))
+			nextWrite(t, p)
+			again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+			err := s.AnswerInput(t.Context(), jane, again.ID, []byte("y"))
+			if tc.answers {
+				if !errors.Is(err, ErrQuestionAnswered) {
+					t.Fatalf("a click after the digit answered: %v", err)
+				}
+				noWrite(t, p, 200*time.Millisecond)
+				return
+			}
+			if err != nil {
+				t.Fatalf("a click on the dialog the digit left: %v", err)
+			}
+			if got := nextWrite(t, p); got != "y" {
+				t.Fatalf("written %q", got)
+			}
+		})
 	}
 }
 
