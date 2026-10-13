@@ -265,6 +265,22 @@ func TestALinkThatStopsOpeningTheSessionStopsWhatItsViewersAreOwed(t *testing.T)
 		}
 		hs.RemoveViewer(ended)
 	})
+	// One let go (its reader ended first) is found by no revoke or expiry
+	// after: it is written nothing more.
+	t.Run("removed as the end's close is written", func(t *testing.T) {
+		hub := NewHub(session.NewRegistry(4), nil)
+		hs, conn := register(t, hub)
+		drainHost(t, conn)
+		v := queued(t, hs, time.Time{})
+		hs.HostStatus(session.StatusExited, nil)
+		hs.EndLink("l1")
+		hs.RemoveViewer(v)
+		sink := &pumpSink{}
+		v.Pump(sink)
+		if !errors.Is(sink.reason, session.ErrSessionEnded) || sink.written() != 0 {
+			t.Fatalf("closed with %v after %d frames", sink.reason, sink.written())
+		}
+	})
 	t.Run("the session left the server after its host", func(t *testing.T) {
 		hub := NewHub(session.NewRegistry(4), nil)
 		hs, conn := register(t, hub)

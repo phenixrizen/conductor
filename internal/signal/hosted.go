@@ -830,7 +830,9 @@ func (h *HostedSession) sendJoin(conn *HostConn, v *Viewer, msg proto.ViewerJoin
 // as the viewer's join did, within the viewers' share of the host's queue
 // (charged with the join): it waits for room until the host's connection
 // closes, and is never dropped, for the host would keep a viewer it was not
-// told left. A viewer whose join never went sends none.
+// told left. A viewer whose join never went sends none. A viewer let go is
+// written nothing more, whatever it was still owed (the session's end, its
+// host's going): no revoke or expiry of its link would find it after.
 func (h *HostedSession) RemoveViewer(v *Viewer) {
 	h.mu.Lock()
 	_, present := h.viewers[v.ID]
@@ -840,6 +842,7 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 	if v.lapse != nil {
 		v.lapse.Stop()
 	}
+	v.revoked.Store(true)
 	h.mu.Unlock()
 	v.close(nil)
 	if !present {
