@@ -465,6 +465,64 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
   }
 })
 
+// Don't save drops what the closed tabs' Neovims hold, that once: a file closed with it, opened again, edited and closed before Neovim
+// says so (its x waits 1.5 s here) does not ask, and its Neovim ends keeping the change, which the next open offers from its swap file.
+test("Don't save holds for its own close only: a later close keeps a change still on its way", async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(join(config, 'init.lua'), "vim.keymap.set('n', 'x', function() vim.wait(1500) return 'x' end, { expr = true })\n")
+  const cwd = join(state.root, 'files-vim-consent')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'dirty.txt'), 'dirty\n')
+  writeFileSync(join(cwd, 'clean.txt'), 'clean\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-consent', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const question = page.locator('[role="dialog"]')
+    const open = async (name: string) => {
+      await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
+      await expect(lines).toContainText(name.replace('.txt', ''), { timeout: 30_000 })
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    }
+    await pane.locator(`[data-file-node="${cwd}/clean.txt"]`).click()
+    await expect(lines).toContainText('clean', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await open('dirty.txt')
+    await lines.click()
+    await page.keyboard.type('Ayy')
+    await page.keyboard.press('Escape')
+    await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    // Close all, Don't save: both tabs go.
+    await area.locator('[data-editor-close-all]').first().click()
+    await question.locator('[data-editor-discard]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(0)
+    // clean.txt again: an x on its way as its tab closes, which does not ask (no change said yet).
+    await open('clean.txt')
+    await lines.click()
+    await page.keyboard.type('0x')
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(0)
+    await page.waitForTimeout(3000)
+    // Its Neovim ended keeping the change: the next open offers it from the swap file.
+    await pane.locator(`[data-file-node="${cwd}/clean.txt"]`).click()
+    const banner = area.locator('[data-editor-swap]')
+    await expect(banner).toContainText('with changes not written', { timeout: 30_000 })
+    await banner.locator('[data-swap-choice="recover"]').click()
+    await expect(lines).toContainText('lean', { timeout: 15_000 })
+    await expect(lines).not.toContainText('clean')
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover

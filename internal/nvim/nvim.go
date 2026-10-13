@@ -646,6 +646,11 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 		}
 		return nil
 	}
+	// Keys without a number (the page's answer to a question, its :w)
+	// that end a wait acknowledge the numbered ones that waited.
+	if seq == 0 {
+		seq = e.deferred
+	}
 	e.deferred = 0
 	if seq != 0 {
 		_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'conductor_ack', %d, line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", e.ch, seq))

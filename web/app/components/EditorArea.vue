@@ -533,15 +533,18 @@ async function closingSave() {
     closeNow(ids)
   }
 }
-function closingDiscard() {
+async function closingDiscard() {
   const ids = closing.value?.ids ?? []
   closing.value = null
-  // The person said Don't save: their Neovims drop what they hold as they end (the orphans), and only theirs.
+  // The person said Don't save: their Neovims drop what they hold as they end (the orphans, once the tabs have gone), and only
+  // theirs, this once: the word goes with this close, whatever it found.
   for (const id of ids) {
     const t = tabs.value.tabs.find((x) => x.id === id)
     if (t?.kind === 'file') dropConsented.add(t.path)
   }
   closeNow(ids)
+  await nextTick()
+  dropConsented.clear()
 }
 
 function onKeydown(e: KeyboardEvent) {

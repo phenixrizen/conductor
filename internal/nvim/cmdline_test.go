@@ -391,6 +391,28 @@ func TestAKeyThatWaitsForAMappingIsSettledOnceItTimesOut(t *testing.T) {
 	r.wait(t, fmt.Sprintf("ack %d 2:1 n", j))
 }
 
+// A numbered key that opens a question (:confirm q's Enter) waits with it;
+// the page's own answer, sent with no number (its Cancel button), ends the
+// wait and acknowledges that key, so it settles without another key.
+func TestAQuestionAnsweredWithoutANumberSettlesTheKeyThatAskedIt(t *testing.T) {
+	e, r := cmdlineEditor(t, "one\n", "")
+	k := &typist{t: t, e: e, r: r}
+	k.key("A")
+	k.key("x")
+	esc := k.key("<Esc>")
+	r.waitExact(t, fmt.Sprintf("settled %d", esc))
+	k.cmdline(chars(":confirm q")...)
+	enter := k.key("<CR>")
+	r.wait(t, "message confirm:")
+	if err := e.Input("c"); err != nil {
+		t.Fatal(err)
+	}
+	r.waitExact(t, fmt.Sprintf("settled %d", enter))
+	if r.has("exited") {
+		t.Fatal("Cancel ended the editor")
+	}
+}
+
 // Neovim's own quit is told once, as a quit: the end of its output after it
 // (the client's reading ends) tells nothing more.
 func TestAQuitIsToldOnceAsAQuit(t *testing.T) {
