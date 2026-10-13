@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"time"
 
@@ -37,7 +38,8 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests")
 		return
 	}
-	c, err := websocket.Accept(w, r, s.acceptOptions())
+	hk := &hijackKeeper{ResponseWriter: w}
+	c, err := websocket.Accept(hk, r, s.acceptOptions())
 	if err != nil {
 		s.log.Debug("websocket accept failed", "err", err)
 		return
@@ -58,22 +60,22 @@ func (s *Server) handleViewerWS(w http.ResponseWriter, r *http.Request) {
 	check := s.attachCheck(p, id)
 	switch drv := d.(type) {
 	case *session.Local:
-		s.serveLocalViewer(r.Context(), c, drv, role, p.linkID(), p.admin, check)
+		s.serveLocalViewer(r.Context(), c, hk.conn, drv, role, p.linkID(), p.admin, check)
 	case *signal.HostedSession:
-		s.serveHostedViewer(r.Context(), c, drv, role, p.linkID(), check, clientKey(r))
+		s.serveHostedViewer(r.Context(), c, hk.conn, drv, role, p.linkID(), check, clientKey(r))
 	default:
 		c.Close(websocket.StatusInternalError, "unsupported session kind")
 	}
 }
 
 // owner is the workbench's own connection (the admin token), the only one
-// offered the editor's Neovim.
-func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, local *session.Local, role session.Role, linkID string, owner bool, check func() (session.Grant, error)) {
+// offered the editor's Neovim. raw is c's socket (nil when not known).
+func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, local *session.Local, role session.Role, linkID string, owner bool, check func() (session.Grant, error)) {
 	hello, err := s.readHello(ctx, c)
 	if err != nil {
 		return
 	}
-	sink := newWSSink(c)
+	sink := newWSSinkOn(c, raw)
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
 		Authorize: check,
@@ -340,8 +342,8 @@ func (s *Server) linkLabel(linkID string) string {
 // read loop is done. The connection's failure ends the read loop's waits
 // (the budget, the join, room in the host's queue): the frame that waited is
 // dropped, and with it whatever the viewer sent after it.
-func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
-	sink := newWSSink(c)
+func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
+	sink := newWSSinkOn(c, raw)
 	defer sink.cancel()
 	// waits is what the read loop's waits wait under: it ends when the
 	// viewer's connection fails, or its writer ends.
@@ -458,6 +460,15 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, hs *s
 			s.viewerSeam.ended()
 		}
 		endWaits()
+	}()
+	// Once closed, the viewer is written what it is owed, its error and its
+	// close within closeWait, or cut off (wsSink.Closing).
+	go func() {
+		select {
+		case <-v.Done():
+			sink.Closing()
+		case <-pumped:
+		}
 	}()
 	// A failed connection is left open for the read loop, the writer having
 	// given up on it: it is closed once the read loop is done. (A connection

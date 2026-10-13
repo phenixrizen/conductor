@@ -1120,10 +1120,12 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		s.passedOn[r] = struct{}{}
 	}
 	// A credential that lapses closes the client as it lapses, one that
-	// attached a moment before included (at once when that moment has passed).
+	// attached a moment before included (at once when that moment has
+	// passed); one closed before (the session's end) is written nothing
+	// more from then on (Subscription.expire), until its transport closes.
 	var lapse *time.Timer
 	if !until.IsZero() {
-		lapse = time.AfterFunc(time.Until(until), func() { sub.closeWith(ErrExpired) })
+		lapse = time.AfterFunc(time.Until(until), sub.expire)
 	}
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
@@ -1145,12 +1147,12 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	go func() {
 		<-sub.done
-		if lapse != nil {
-			lapse.Stop()
-		}
 		s.Detach(sub)
 		// Detach keeps it among the closing until its transport has closed.
 		<-sub.closed
+		if lapse != nil {
+			lapse.Stop()
+		}
 		s.mu.Lock()
 		delete(s.closing, sub)
 		delete(s.passedOn, sub)
@@ -1607,32 +1609,50 @@ func (s *Local) Stop(ctx context.Context) error {
 	return err
 }
 
-// DisconnectLink evicts every subscription created through linkID: as
-// revoked, or, once the session has ended (its links go with it), as the
-// session's end, so that a viewer whose status frame the close overtakes
-// still learns which. It ends them under the lock AttachWith registers them
-// under, so a caller that marked the link first (a revoke) misses none: one
-// that attaches after this finds the mark (AttachOptions.Authorize); and
-// nothing broadcast after reaches them. It returns once their transports
-// have closed, which they do together, each on its own goroutine, holding no
-// lock: as long as the slowest takes. That includes the link's clients that
-// had ended already (a slow consumer, an earlier revoke) and whose transport
-// still closes.
-func (s *Local) DisconnectLink(linkID string) {
-	reason := ErrRevoked
+// DisconnectLink evicts every subscription created through linkID as
+// revoked, whether or not the session has ended (a run's link keeps its
+// viewers on a member that ended, until it is revoked): each is written
+// nothing more that was queued for it. It ends them under the lock
+// AttachWith registers them under, so a caller that marked the link first
+// (a revoke) misses none: one that attaches after this finds the mark
+// (AttachOptions.Authorize); and nothing broadcast after reaches them. It
+// returns once their transports have closed, which they do together, each
+// on its own goroutine, holding no lock: as long as the slowest takes. That
+// includes the link's clients that had ended already (a slow consumer, an
+// earlier revoke, the session's end) and whose transport still closes: what
+// the session's end still writes them stops (Subscription.revoke).
+func (s *Local) DisconnectLink(linkID string) { s.closeLink(linkID, true) }
+
+// EndLink evicts every subscription created through linkID, one of the
+// session's own links, as the session's end, which ends its links with it
+// (the caller marks the link first, as a revoke does): each is still
+// written what was queued for it, the session's last output and its
+// status, before its close (Subscription.owed). Otherwise it is
+// DisconnectLink.
+func (s *Local) EndLink(linkID string) { s.closeLink(linkID, false) }
+
+// closeLink is DisconnectLink (revoked) and EndLink. A revoke also stops
+// what the session's end still writes the link's clients
+// (Subscription.revoke), should it have closed them first.
+func (s *Local) closeLink(linkID string, revoked bool) {
+	end := func(sub *Subscription) {
+		if revoked {
+			sub.revoke()
+		} else {
+			sub.closeWith(ErrSessionEnded)
+		}
+	}
 	var hit []*Subscription
 	s.mu.Lock()
-	if s.info.Status.Ended() {
-		reason = ErrSessionEnded
-	}
 	s.hub.Each(func(sub *Subscription) {
 		if sub.LinkID == linkID {
-			sub.closeWith(reason)
+			end(sub)
 			hit = append(hit, sub)
 		}
 	})
 	for sub := range s.closing {
 		if sub.LinkID == linkID {
+			end(sub)
 			hit = append(hit, sub)
 		}
 	}
@@ -1643,14 +1663,19 @@ func (s *Local) DisconnectLink(linkID string) {
 // Retire is the session leaving the server's registry, which only an ended
 // session does: every client is closed as at the session's end, and none
 // attaches after (ErrSessionEnded). Whoever closes a link's clients finds
-// them through the registry, so none may stay where it no longer looks.
+// them through the registry, so none may stay where it no longer looks:
+// none is written anything more, whatever it was owed (the session's end
+// of its links may still be writing theirs), as a revoke would stop it.
 // It does not wait: each client's transport closes on the client's own
 // goroutine, and its editors go as it detaches, so one that does not read
 // holds up only its own.
 func (s *Local) Retire() {
 	s.mu.Lock()
 	s.retired = true
-	s.hub.Each(func(sub *Subscription) { sub.closeWith(ErrSessionEnded) })
+	s.hub.Each(func(sub *Subscription) { sub.retire() })
+	for sub := range s.closing {
+		sub.retire()
+	}
 	s.mu.Unlock()
 	if s.folder != nil {
 		// A file request under way finishes or fails; none comes after.

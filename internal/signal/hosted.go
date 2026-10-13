@@ -277,9 +277,15 @@ type Viewer struct {
 	stopOnce sync.Once
 	// failed is set by ConnFailed before it closes stop.
 	failed atomic.Bool
+	// revoked says its link no longer opens the session, revoked
+	// (closeLink) or expired (lapse), which may come after the viewer was
+	// closed for another reason: what it is still owed is dropped from then
+	// on (finish).
+	revoked atomic.Bool
 	// lapse closes the viewer when its link expires (ViewerOptions'
-	// Authorize gave a Grant with Until); set by AddViewerWith, stopped by
-	// RemoveViewer, both under the session's mu.
+	// Authorize gave a Grant with Until), and drops what it is still owed
+	// should it have been closed before (revoked); set by AddViewerWith,
+	// stopped by RemoveViewer, both under the session's mu.
 	lapse *time.Timer
 	// charge is ViewerOptions.Charge.
 	charge func(n int) error
@@ -372,15 +378,22 @@ func (v *Viewer) halt() { v.stopOnce.Do(func() { close(v.stop) }) }
 // serves it lets it go, having read what the connection still held.
 //
 // What becomes of the frames still queued when the viewer is closed depends on
-// the reason. They are dropped when the link was revoked, when the viewer's own
-// queue overflowed (ErrSlowViewer) and when the viewer left (a nil reason). For
-// every other reason, the host going away, asking for the close or reporting an
-// error for the viewer, they are written first: at most as many as the queue
-// holds, and up to the first frame that cannot be written. They are the host's
-// last words, the session's final status among them, and the viewer would
-// otherwise be told the host is gone without being told why. A viewer that the
-// host evicted as too slow (the host asks for the close) is in that second
-// group and is drained too.
+// the reason. They are dropped when the link was revoked (or expired), when the
+// viewer's own queue overflowed (ErrSlowViewer) and when the viewer left (a nil
+// reason). For every other reason, the session's end (its links end with it,
+// EndLink), the host going
+// away, asking for the close or reporting an error for the viewer, they are
+// written first: at most as many as the queue holds, and up to the first frame
+// that cannot be written. They are the session's last output, its final status
+// among them, which the host relayed before it reported the end, and the
+// viewer would otherwise be told the session ended, or the host is gone,
+// without what it printed last. A viewer that the host evicted as too slow
+// (the host asks for the close) is in that second group and is drained too.
+// A revoke or the expiry of the viewer's link that lands meanwhile stops
+// them (closeLink, lapse), as does the session's leaving the server
+// (Retire), which writes them nothing at all.
+// Whoever serves the viewer bounds how long that may take: a viewer that reads
+// too little is cut off (the sink's write fails, and Pump ends).
 //
 // The close is looked at before each frame, but it does not stop a frame that
 // is being written, or one that is picked just as the close lands: a revoked
@@ -417,6 +430,11 @@ func (v *Viewer) finish(sink session.Sink) {
 	if framesOwed(reason) {
 	owed:
 		for {
+			// A revoke of its link that lands meanwhile stops it: the
+			// frame being written is the last.
+			if v.revoked.Load() {
+				break
+			}
 			select {
 			case frame := <-v.Out:
 				v.queued.Add(-int64(len(frame)))
@@ -432,8 +450,9 @@ func (v *Viewer) finish(sink session.Sink) {
 }
 
 // framesOwed reports whether a viewer closed for reason is still sent the frames
-// queued for it: it is unless the link was revoked, the viewer's own queue
-// overflowed or the viewer left.
+// queued for it: it is unless the link was revoked (or expired), the viewer's
+// own queue overflowed or the viewer left. A viewer the session's end closed
+// (session.ErrSessionEnded) is.
 func framesOwed(reason error) bool {
 	switch {
 	case reason == nil, errors.Is(reason, session.ErrRevoked), errors.Is(reason, ErrSlowViewer):
@@ -483,6 +502,11 @@ type HostedSession struct {
 	hasAgentToken  bool
 	conn           *HostConn
 	viewers        map[string]*Viewer
+	// gone are the viewers its host's leaving let go (HostDisconnected),
+	// until whoever serves each removes it (RemoveViewer): a revoke of a
+	// link still finds them, and stops what they are still written
+	// (closeLink).
+	gone           map[*Viewer]struct{}
 	disconnectedAt time.Time
 	maxViewers     int
 	// retired says the session left the server's registry (Retire): no
@@ -523,11 +547,26 @@ func (h *HostedSession) Stop(ctx context.Context) error {
 	return nil
 }
 
-// DisconnectLink closes viewers attached through linkID. It finds them
-// under the lock AddViewerWith registers them under, so a caller that
-// marked the link first (a revoke) misses none: a viewer added after this
-// finds the mark (ViewerOptions.Authorize).
-func (h *HostedSession) DisconnectLink(linkID string) {
+// DisconnectLink closes the viewers attached through linkID as revoked,
+// whether or not the session has ended (a run's link keeps its viewers on a
+// member that ended, until it is revoked): each is written nothing more
+// (Pump). It finds them under the lock AddViewerWith registers them under,
+// so a caller that marked the link first (a revoke) misses none: a viewer
+// added after this finds the mark (ViewerOptions.Authorize).
+func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true) }
+
+// EndLink closes the viewers attached through linkID, one of the session's
+// own links, as the session's end, which ends its links with it (the
+// caller marks the link first, as a revoke does), as a server session's
+// are (session.Local.EndLink): each is still written what was queued for
+// it, the session's last output, and then told the session ended (Pump).
+// Otherwise it is DisconnectLink.
+func (h *HostedSession) EndLink(linkID string) { h.closeLink(linkID, false) }
+
+// closeLink is DisconnectLink (revoked) and EndLink. A revoke also stops
+// what the session's end still writes the link's viewers, should it have
+// closed them first (finish).
+func (h *HostedSession) closeLink(linkID string, revoked bool) {
 	h.mu.Lock()
 	var hit []*Viewer
 	for _, v := range h.viewers {
@@ -535,9 +574,19 @@ func (h *HostedSession) DisconnectLink(linkID string) {
 			hit = append(hit, v)
 		}
 	}
+	for v := range h.gone {
+		if v.LinkID == linkID {
+			hit = append(hit, v)
+		}
+	}
 	h.mu.Unlock()
 	for _, v := range hit {
-		v.close(session.ErrRevoked)
+		if revoked {
+			v.revoked.Store(true)
+			v.close(session.ErrRevoked)
+		} else {
+			v.close(session.ErrSessionEnded)
+		}
 	}
 }
 
@@ -727,7 +776,10 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	v.charge = o.Charge
 	h.viewers[o.ID] = v
 	if !until.IsZero() {
-		v.lapse = time.AfterFunc(time.Until(until), func() { v.close(session.ErrExpired) })
+		v.lapse = time.AfterFunc(time.Until(until), func() {
+			v.revoked.Store(true)
+			v.close(session.ErrExpired)
+		})
 	}
 	conn := h.conn
 	h.mu.Unlock()
@@ -778,15 +830,19 @@ func (h *HostedSession) sendJoin(conn *HostConn, v *Viewer, msg proto.ViewerJoin
 // as the viewer's join did, within the viewers' share of the host's queue
 // (charged with the join): it waits for room until the host's connection
 // closes, and is never dropped, for the host would keep a viewer it was not
-// told left. A viewer whose join never went sends none.
+// told left. A viewer whose join never went sends none. A viewer let go is
+// written nothing more, whatever it was still owed (the session's end, its
+// host's going): no revoke or expiry of its link would find it after.
 func (h *HostedSession) RemoveViewer(v *Viewer) {
 	h.mu.Lock()
 	_, present := h.viewers[v.ID]
 	delete(h.viewers, v.ID)
+	delete(h.gone, v)
 	conn := h.conn
 	if v.lapse != nil {
 		v.lapse.Stop()
 	}
+	v.revoked.Store(true)
 	h.mu.Unlock()
 	v.close(nil)
 	if !present {
@@ -1125,7 +1181,9 @@ func (h *HostedSession) HostResize(cols, rows uint16) {
 	h.mu.Unlock()
 }
 
-// HostDisconnected detaches the control connection and closes every viewer.
+// HostDisconnected detaches the control connection and closes every viewer,
+// keeping them where a revoke of a link still finds them (gone) until each
+// is removed.
 func (h *HostedSession) HostDisconnected(conn *HostConn) {
 	h.mu.Lock()
 	if h.conn != conn {
@@ -1138,8 +1196,12 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 		h.info.Status = session.StatusHostDisconnected
 	}
 	viewers := make([]*Viewer, 0, len(h.viewers))
+	if h.gone == nil {
+		h.gone = map[*Viewer]struct{}{}
+	}
 	for _, v := range h.viewers {
 		viewers = append(viewers, v)
+		h.gone[v] = struct{}{}
 	}
 	h.viewers = map[string]*Viewer{}
 	h.mu.Unlock()
@@ -1156,16 +1218,23 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 // Retire is the session leaving the server's registry: every viewer is
 // closed as at the session's end, and none is added after
 // (session.ErrSessionEnded). Whoever closes a link's viewers finds them
-// through the registry, so none may stay where it no longer looks.
+// through the registry, so none may stay where it no longer looks: none is
+// written anything more, whatever it was owed (the session's end of its
+// links, or its host's going, may still be writing theirs), as a revoke
+// would stop it.
 func (h *HostedSession) Retire() {
 	h.mu.Lock()
 	h.retired = true
-	viewers := make([]*Viewer, 0, len(h.viewers))
+	viewers := make([]*Viewer, 0, len(h.viewers)+len(h.gone))
 	for _, v := range h.viewers {
+		viewers = append(viewers, v)
+	}
+	for v := range h.gone {
 		viewers = append(viewers, v)
 	}
 	h.mu.Unlock()
 	for _, v := range viewers {
+		v.revoked.Store(true)
 		v.close(session.ErrSessionEnded)
 	}
 }

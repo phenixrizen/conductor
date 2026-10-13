@@ -456,6 +456,15 @@ export class ChunkAssembler {
   }
 }
 
+/**
+ * Whether a close says the session ended: 4410 `session ended`, after its `session_ended` error, which a viewer attached through a
+ * link is closed with as the session ends (its links end with it), its last output first, on a server session and a hosted one
+ * alike; not a host that went away (4410 `host disconnected`), nor a link revoked or expired (4403).
+ */
+export function closedByTheEnd(code: number, reason: string): boolean {
+  return code === CloseCode.SessionEnded && reason === 'session ended'
+}
+
 export function closeReason(code: number, reason: string): string {
   switch (code) {
     case CloseCode.Normal:

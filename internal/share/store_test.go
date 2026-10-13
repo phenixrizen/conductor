@@ -247,6 +247,43 @@ func TestRevokeSaysWhetherItRevoked(t *testing.T) {
 	}
 }
 
+// A session's end marks its link revoked as a revoke does, so nothing opens
+// with it after, but tells no hook: whoever ends the session closes the
+// link's viewers as its end. Another session's link, or a run's, is not its.
+func TestEndMarksASessionsLinkAndTellsNoHook(t *testing.T) {
+	s := NewStore()
+	told := 0
+	s.OnRevoke = func(string, string) { told++ }
+	s.OnRevokeRun = func(string, string) { told++ }
+	link, tok, _ := s.Create("sess", session.RoleView, "", 0)
+	run, _, _ := s.CreateRunLink("run", session.RoleView, "", 0)
+	if s.End("other", link.ID) || s.End("sess", run.ID) {
+		t.Fatal("ended a link that is not the session's")
+	}
+	if !s.End("sess", link.ID) {
+		t.Fatal("the session's link was not found")
+	}
+	if _, err := s.Resolve(tok); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("resolve after the end: %v", err)
+	}
+	if _, err := s.Live(link.ID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("live after the end: %v", err)
+	}
+	if told != 0 {
+		t.Fatalf("the end told the hooks %d times", told)
+	}
+	if s.End("sess", link.ID) {
+		t.Fatal("a second end took the link again")
+	}
+	// A link revoked first is the revoke's to close, whose hook may still be
+	// on its way: the end does not take it.
+	revoked, _, _ := s.Create("sess", session.RoleView, "", 0)
+	s.Revoke("sess", revoked.ID)
+	if s.End("sess", revoked.ID) {
+		t.Fatal("the end took a link revoked before it")
+	}
+}
+
 // A switchyard's group links: indexed by owner and run, kept current by
 // their owner alone, revoked by it alone, and found by the sessions they name.
 func TestGroupLinks(t *testing.T) {

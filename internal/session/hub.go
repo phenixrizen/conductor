@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,17 @@ import (
 type Sink interface {
 	WriteFrame(frame []byte) error
 	Close(reason error)
+}
+
+// A closingSink is a Sink told the moment its subscription ends
+// (closeWith), whoever ends it and before the subscription's own goroutine
+// has seen it: a transport that bounds how long a client it was told to
+// close may still take (a server's WebSocket) starts its clock there, so
+// that nothing waiting on the close (DisconnectLink, EndLink) waits past
+// it, whatever the goroutine serving the client is doing. Closing must
+// return at once: it may be called under any lock.
+type closingSink interface {
+	Closing()
 }
 
 // HighWaterMark is the number of queued bytes after which a subscriber is
@@ -53,6 +65,11 @@ type Subscription struct {
 	closed chan struct{}
 	once   sync.Once
 	reason error
+	// revoked says its link no longer opens the session, revoked (revoke)
+	// or expired (expire), which may come after the subscription ended for
+	// another reason: what it is still owed at the session's end is dropped
+	// from then on (owed).
+	revoked atomic.Bool
 
 	inflight atomic.Int32 // file requests in progress
 
@@ -113,7 +130,8 @@ func (s *Subscription) Info() proto.ViewerInfo {
 // run is the subscription's own goroutine: it hands the queued frames to the
 // sink, in order, until the subscription ends, and then closes the sink, once,
 // with the reason, which is set before done is closed. The frames still queued
-// then are dropped, and nothing reaches the sink after its Close.
+// then are dropped, but for a subscription the session's end closed (owed),
+// and nothing reaches the sink after its Close.
 func (s *Subscription) run() {
 	defer close(s.closed)
 	defer func() { s.sink.Close(s.reason) }()
@@ -122,11 +140,13 @@ func (s *Subscription) run() {
 		// at random between the two.
 		select {
 		case <-s.done:
+			s.owed()
 			return
 		default:
 		}
 		select {
 		case <-s.done:
+			s.owed()
 			return
 		case frame := <-s.queue:
 			s.queued.Add(-int64(len(frame)))
@@ -136,6 +156,39 @@ func (s *Subscription) run() {
 				s.closeWith(err)
 				return
 			}
+		}
+	}
+}
+
+// owed writes a subscription the session's end closed (ErrSessionEnded: its
+// link ended with it, EndLink) the frames still queued for it, in order, up to the first that cannot be
+// written: the session's last output, its final status among them, which
+// its viewer is given before it is told the session ended. Nothing is
+// queued after the end (send). A subscription that ended for any other
+// reason (revoked, a slow consumer, a viewer that left) is owed nothing,
+// and a revoke of its link that comes as it is written them ends it
+// (revoke). Its transport bounds the wait (closingSink): a server cuts a connection that
+// reads too little (api's closeWait).
+func (s *Subscription) owed() {
+	if !errors.Is(s.reason, ErrSessionEnded) {
+		return
+	}
+	for {
+		// A revoke that lands meanwhile stops it: the frame being written
+		// is the last.
+		if s.revoked.Load() {
+			return
+		}
+		select {
+		case frame := <-s.queue:
+			s.queued.Add(-int64(len(frame)))
+			err := s.sink.WriteFrame(frame)
+			s.unsent.Add(-1)
+			if err != nil {
+				return
+			}
+		default:
+			return
 		}
 	}
 }
@@ -174,15 +227,40 @@ func (s *Subscription) drained() bool {
 }
 
 // closeWith ends the subscription: the first reason given is kept and done
-// is closed, and nothing more is queued. It does no more, so any goroutine
-// may call it under any lock (a broadcast under the session's lock drops a
-// slow consumer): the sink is closed by the subscription's own goroutine
-// (run), which Closed waits for.
+// is closed, and nothing more is queued; a closingSink is told. It does no
+// more, so any goroutine may call it under any lock (a broadcast under the
+// session's lock drops a slow consumer): the sink is closed by the
+// subscription's own goroutine (run), which Closed waits for.
 func (s *Subscription) closeWith(reason error) {
 	s.once.Do(func() {
 		s.reason = reason
 		close(s.done)
+		if c, ok := s.sink.(closingSink); ok {
+			c.Closing()
+		}
 	})
+}
+
+// revoke ends the subscription as its link's revoke: as revoked, or, when
+// it ended already (the session's end), by dropping what it is still owed
+// from then on.
+func (s *Subscription) revoke() {
+	s.revoked.Store(true)
+	s.closeWith(ErrRevoked)
+}
+
+// expire is revoke for a link that reached its expiry (ErrExpired).
+func (s *Subscription) expire() {
+	s.revoked.Store(true)
+	s.closeWith(ErrExpired)
+}
+
+// retire is revoke for the session leaving the server (Local.Retire): the
+// close says the session ended (ErrSessionEnded), and nothing more is
+// written.
+func (s *Subscription) retire() {
+	s.revoked.Store(true)
+	s.closeWith(ErrSessionEnded)
 }
 
 // Done is closed when the subscription ends.

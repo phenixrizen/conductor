@@ -80,15 +80,30 @@ switchyard's (`4401`): a session published there is opened by the links its
 publishing machine had minted.
 
 A client that a session's owner (the server for its own sessions, a host
-for its session) closes, revoked, expired, a slow consumer or at the
-session's end, is sent nothing more that was queued for it: the frame being
-written as it is closed is the last, then its `error` frame and the close.
-What it sends from then on is not acted on, and until its connection has
-closed it still counts toward the session's viewer limit (`4409`). Each
-client's connection is written and closed apart from the session and
-the other clients, so one that stops reading holds up nobody else. On a
-server session a revoke answers once the connections of the link's viewers
-have closed.
+for its session) closes, revoked, expired or a slow consumer, is sent
+nothing more that was queued for it: the frame being written as it is
+closed is the last, then its `error` frame and the close. One closed at the
+session's end (the viewers attached through its links, which end with it,
+on a server session and a hosted one alike, a session published to a
+switchyard included), or a hosted session's viewer as its host goes, is
+first sent what was queued for it before: the session's last output and its
+`status`, then its `error`
+(`session_ended`, or `host_disconnected`) and `4410`, whatever link it came
+through; a revoke or the expiry of its link that lands meanwhile (its host
+gone or not) stops that, at the frame being written, as does the session
+leaving the server (removed, or past its retention), which closes every
+viewer as its end (`4410`) and writes none anything more; a link revoked
+before the end is not the end's to close.
+A server gives a connection it closes, for any of these reasons, 5 s from
+the close to be written all of it, and then cuts its socket, a close
+handshake under way included: a viewer that reads too little, or does not
+answer the close, is let go then, with what it had not taken. What it sends
+from then on is not acted on, and until its connection has closed it still
+counts toward the session's viewer limit (`4409`). Each client's connection
+is written and closed apart from the session and the other clients, so one
+that stops reading holds up nobody else. On a server session a revoke (and
+the session's end, of its links) answers once the connections of the link's
+viewers have closed.
 
 A share link is checked when its token is presented and again as the viewer
 attaches (on a server session, after its `hello`), under the lock a revoke
@@ -221,10 +236,15 @@ connection goes one message at a time: its own messages (its status,
 attention and activity, the answers and candidates for its WebRTC viewers,
 its link requests) ahead of the frames it relays, and those viewer by
 viewer in turn, each viewer's in order; but the `status` that says the
-session ended, and a `link_revoke` sent once it has (a publishing server
-ends its session's links then), wait at most 2 s for the viewers' last
-frames to go first, since ending a link ends its viewers with what was not
-relayed to them yet. A `link_revoke` while the session runs goes at once. A relayed frame that waits more than
+session ended, and a `link_revoke` sent once it has, wait at most 2 s for
+the viewers' last frames to go first, the WebRTC viewers' acknowledged by
+their data channels: the server ends an ended session's links, and closes
+the viewers attached through them as the session's end once they have what
+was relayed to them, but a browser on WebRTC lets go of its data channel
+as that connection closes. A `link_revoke` while the session runs goes at
+once. A publishing server does not revoke its session's links at the
+switchyard as the session ends: the switchyard ends them as it hears the
+`status`, which a revocation sent then could overtake. A relayed frame that waits more than
 30 s for its turn is never sent: that viewer alone is let go
 (`slow_consumer`, then `viewer_closed`), as a WebRTC viewer is whose data
 channel stays full; one of the host's own messages that waits more than 15 s
@@ -336,7 +356,9 @@ when none; an older server sends no field, which says nothing),
 `conductor://<host>/join/<token>` with `?http=1` for a plain-http base,
 which the desktop app opens itself), `link_revoked{requestId, linkId}`
 (the link is revoked and its viewers closed; `error{not_found, requestId}`
-for a link the server does not hold; `error{store_unavailable, requestId}`
+for a link the server does not hold, which, once the session has ended and
+taken its links, still stops what its end writes their viewers;
+`error{store_unavailable, requestId}`
 from a switchyard that revoked it but could not yet delete what it keeps
 of it on disk, which the host's next revoke of it, or the switchyard's
 sweep, tries again; until then `registered.links` still lists it, so the
@@ -406,6 +428,10 @@ lesser `register` above, it sends no `chat` and no `activity`, and
 switchyard ends the publication, not the process: the server sends
 `status{stopped}`, closes the viewers' peers and the connection, and the
 session runs on, its next Share publishing it again under another `localId`.
+When the session ends, its publication sends the `status` and keeps the
+connection 5 s more, as long as the switchyard may still write the viewers
+of the session's links what it relayed them last, so that a revoke of one
+of those links is still carried there (`link_revoke`).
 A switchyard drops the `chat` and `activity` a host sends. `conductor host`
 publishes to the owner's own server: it sends everything and obeys `stop`.
 
@@ -1082,7 +1108,7 @@ its run, and on no other.
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
 | `GET /api/sessions/{id}/links` | admin | share links of a session (`{links, published?, republish?}`), each with `active` viewers; with a switchyard configured, `published` says the session is published there now, and `republish: true` that the publication the switchyard ended has not been made again, which the next link does (the Share dialog makes a link anew then, and in place of one it made here while the session was not published, once it is); for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records; an ended session lists none |
 | `POST /api/sessions/{id}/links` | admin | create a share link (`403 switchyard` on a switchyard, where the publishing machine mints a session's links over its own connection, `link`): `{role, label?, ttlSeconds?}`, reply `201 {link, token, url, invite}` (`invite` is the same link as `conductor://<host>/join/<token>`, which the desktop app opens itself); for a session published to a rendezvous the link is minted there over the host connection and the reply is `201 {link{id, role, label, expiresAt, sessionId, remote: true}, url, invite, remote: true}` with the rendezvous's URL and no `token` (`502 rendezvous_unavailable` when it does not answer within 15 s); while that session's publication is still being made the request waits up to 10 s for it, and when it failed or is not there the link is made here and the reply adds `rendezvous: {server, error}` (why the session is not at the switchyard); `url` is `<base>/join/<token>`, where the base is `publicUrl` when it names another machine, and otherwise (unset, or localhost, as the default is) the address the request came through: `X-Forwarded-Proto` and `X-Forwarded-Host` when a reverse proxy sets them, else the request's scheme and `Host` (a malformed host falls back to `publicUrl`) |
-| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, those minted at the rendezvous revoked there; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`; a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
+| `DELETE /api/sessions/{id}/links/{linkId}` | admin | revoke a share link, which closes every viewer attached through it (`4403`); `204`; revoking a revoked link answers `204`, records nothing and closes any viewer still attached through it; a session that ended took its links with it (local ones revoked and dropped, their viewers closed as the session's end, `4410`; those minted at the rendezvous forgotten here and ended there by the session's end, which the rendezvous hears from the publication; a hosted session's at its end too), so they are no longer listed and a revoke of one answers `204`, and stops what the session's end still writes their viewers (here, and at the rendezvous over the publication, which outlasts the session's end by 5 s for it: `502 rendezvous_unavailable` when the rendezvous does not answer then); a link minted at the rendezvous is revoked there over the host connection (`link_revoke`), `204` also when the rendezvous no longer holds it, `502 rendezvous_unavailable` when it does not answer|
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
@@ -1310,7 +1336,9 @@ the viewer WebSocket, `GET /api/sessions/{id}` and the file route take its
 token as they take a session link's for its session, and `GET
 /api/join/{token}` answers the run and its members. A run link is listed,
 capped at 100 and revoked through its run alone; revoking it closes the
-viewers attached through it on every session (`4403`). Creating and revoking
+viewers attached through it on every session (`4403`), a member's whose
+session ended included (a run link keeps its viewers there until then):
+they are written nothing more. Creating and revoking
 one are noted in the run log; revoking a revoked link answers `204`, logs
 nothing and closes any viewer still attached through it. When the server
 forgets the run (past 100 runs, the oldest with nothing running), its links

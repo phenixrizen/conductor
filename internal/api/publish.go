@@ -397,32 +397,30 @@ func (s *Server) localActivity(id string, e session.ActivityEntry, state session
 	}
 }
 
-// endLinks takes a session's links with it when it ends: there is nothing
-// left to share. Its links here are revoked (closing whoever used them) and
-// forgotten; those minted at the rendezvous are revoked there, in the
-// background and within a few seconds each, and forgotten here whatever the
-// rendezvous answers. Calling it again finds nothing to do.
+// endLinks takes a session's links with it when it ends, a server
+// session's (localChange) or a hosted one's (the hub's OnChange): there is
+// nothing left to share. Its links here are marked revoked and forgotten,
+// and whoever used them is closed as the session's end (EndLink), written
+// what was queued for them first, not as revoked (a revoke writes nothing
+// more). Those minted at the rendezvous are forgotten here and not revoked
+// there: the rendezvous ends them itself, the same way, as it hears the
+// session ended (the publication's status), where a revocation from here
+// could reach it first and cut their viewers off as revoked. Calling it
+// again finds nothing to do.
 func (s *Server) endLinks(id string) {
+	d, _ := s.registry.Get(id)
 	for _, l := range s.links.ListBySession(id) {
-		s.links.Revoke(id, l.ID)
+		if s.links.End(id, l.ID) && d != nil {
+			d.EndLink(l.ID)
+		}
 	}
-	s.links.DeleteSession(id, true)
+	for _, lid := range s.links.DeleteSession(id, true) {
+		s.dropLinkFile(lid)
+	}
 	s.pubMu.Lock()
-	pub := s.published[id]
-	remote := s.remoteLinks[id]
 	delete(s.remoteLinks, id)
 	delete(s.pubStopped, id)
 	s.pubMu.Unlock()
-	if pub == nil || len(remote) == 0 {
-		return
-	}
-	s.track(func() {
-		for lid := range remote {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = pub.Revoke(ctx, lid)
-			cancel()
-		}
-	})
 }
 
 // publicationWait is how long a link request waits for a publication under

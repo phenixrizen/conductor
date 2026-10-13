@@ -92,8 +92,8 @@ type Published struct {
 	there atomic.Bool
 }
 
-// Done is closed once the publication has ended: Stop, the session's end,
-// or a stop the switchyard sent (StoppedThere).
+// Done is closed once the publication has ended: Stop, the session's end
+// (endLinger after it), or a stop the switchyard sent (StoppedThere).
 func (p *Published) Done() <-chan struct{} { return p.done }
 
 // StoppedThere says the switchyard ended the publication with a stop of its
@@ -195,6 +195,17 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 		select {
 		case <-local.Ended():
 			a.settle(runCtx)
+			// The rendezvous may write the viewers of the session's links
+			// what it relayed them last for a while yet (its closeWait):
+			// the publication lasts as long, so that a revoke of one of
+			// those links from here reaches it meanwhile, unless Stop
+			// comes first.
+			a.closeAllPeers()
+			select {
+			case <-time.After(endLinger):
+			case <-stopped:
+			case <-runCtx.Done():
+			}
 		case <-stopped:
 			// Stop, or the switchyard's own stop: the session goes on here;
 			// for the rendezvous it is over. Tell it so, rather than leave it
