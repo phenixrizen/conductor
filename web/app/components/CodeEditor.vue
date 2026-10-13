@@ -4,7 +4,7 @@ import type { NvimBridge, NvimEvent, NvimSwapChoice } from '~/utils/protocol'
 import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
-import { ECHO_HOLD_MS, NvimEcho, type EchoLines } from '~/utils/nvimEcho'
+import { ECHO_HOLD_MS, NvimEcho, type EchoDoc, type EchoLines } from '~/utils/nvimEcho'
 import { closedByQuit, lostHoldsChanges } from '~/utils/nvimLost'
 import { hasModel, isDirty, markSaved, noteVersion } from '~/utils/editorModels'
 
@@ -147,6 +147,16 @@ function stopEcho() {
   guessMarks?.clear()
   guessMarks = null
 }
+/** The editor's text as the local echo reaches it. */
+function echoDoc(m: MonacoEditor.ITextModel): EchoDoc {
+  return {
+    line: (n) => (n >= 1 && n <= m.getLineCount() ? m.getLineContent(n) : ''),
+    setLine: (n, text) => {
+      if (n >= 1 && n <= m.getLineCount() && monacoRef) m.applyEdits([{ range: new monacoRef.Range(n, 1, n, m.getLineMaxColumn(n)), text }])
+    },
+    applyLines: applyLinesEvent,
+  }
+}
 const nvimState: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: false }
 function tellNvim() {
   emit('nvim', { ...nvimState })
@@ -161,6 +171,7 @@ async function startNvim() {
     Object.assign(nvimState, held.state)
     lostId = held.id
     lostEcho = held.echo ?? null
+    lostEcho?.rebind(echoDoc(model))
     unsubscribe = bridge.subscribe(onNvimEvent)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
     editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
@@ -168,7 +179,9 @@ async function startNvim() {
     tellDirty()
     return
   }
+  let resumed: NvimEcho | null = null
   if (held && !held.state.lost && !freshModel) {
+    resumed = held.echo ?? null
     nvimId = held.id
     Object.assign(nvimState, held.state)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
@@ -188,16 +201,14 @@ async function startNvim() {
     }
   }
   if (!nvimId) return
-  const m = model
-  echo = new NvimEcho({
-    line: (n) => (n >= 1 && n <= m.getLineCount() ? m.getLineContent(n) : ''),
-    setLine: (n, text) => {
-      if (n >= 1 && n <= m.getLineCount() && monacoRef) m.applyEdits([{ range: new monacoRef.Range(n, 1, n, m.getLineMaxColumn(n)), text }])
-    },
-    applyLines: applyLinesEvent,
-  })
+  // The echo it had as the tab was left goes on, its characters not acknowledged yet still guesses; else a new one.
+  if (resumed) {
+    echo = resumed
+    echo.rebind(echoDoc(model))
+  } else echo = new NvimEcho(echoDoc(model))
   echo.setMode(nvimState.mode)
   guessMarks = editor.createDecorationsCollection()
+  markGuesses()
   unsubscribe = bridge.subscribe(onNvimEvent)
   editor.updateOptions({ cursorStyle: cursorStyleFor(nvimState.mode), cursorBlinking: 'solid' })
   editor.onKeyDown((e) => {
@@ -504,9 +515,10 @@ watch(
 onMounted(mount)
 onBeforeUnmount(() => {
   if (nvimId && props.nvim) {
-    // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends. What
-    // the echo holds is shown first, and its changes from now on are followed into the tab's text.
-    if (nvimState.modified) {
+    // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends. Keys
+    // not acknowledged yet may be making some, Neovim's word not come: they keep it too. What the echo holds is shown first, and its
+    // changes from now on are followed into the tab's text.
+    if (nvimState.modified || echo?.waiting) {
       const finished = echo?.finish() ? echo : null
       const at = editor?.getPosition()
       props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: finished, stop: follow(props.nvim, nvimId, finished) })

@@ -217,6 +217,64 @@ describe('the local echo when Neovim is lost', () => {
     expect(d.text).toEqual(['something else'])
   })
 
+  it('follows the guesses’ line through lines inserted or removed above it, among lines that read the same', () => {
+    const d = doc('alpha', 'alpha')
+    const e = new NvimEcho(d)
+    e.cursor({ line: 2, col: 6, mode: 'i', ack: 0 }, ascii)
+    e.send('x', { line: 2, col: 6 })
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alpha', 'alphax'])
+    // A line inserted above: x goes down with its line.
+    expect(e.lateLines({ first: 0, last: 0, lines: ['alpha'] })).toBe(true)
+    expect(d.text).toEqual(['alpha', 'alpha', 'alphax'])
+    // Neovim's line for x, now the third: nothing left to guess, nothing doubled.
+    expect(e.lateLines({ first: 2, last: 3, lines: ['alphax'] })).toBe(false)
+    expect(d.text).toEqual(['alpha', 'alpha', 'alphax'])
+  })
+
+  it('follows the guesses’ line up when a line above goes, and while Neovim still answers', () => {
+    const d = doc('top', 'alpha')
+    const e = new NvimEcho(d)
+    e.cursor({ line: 2, col: 6, mode: 'i', ack: 0 }, ascii)
+    e.send('x', { line: 2, col: 6 })
+    e.send('y', { line: 2, col: 7 })
+    expect(d.text).toEqual(['top', 'alphaxy'])
+    // Held for x's acknowledgement: the first line removed, then x's line (now the first).
+    expect(e.lines({ first: 0, last: 1, lines: [] })).toBe(true)
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)).toEqual({ line: 1, col: 8 })
+    expect(d.text).toEqual(['alphaxy'])
+  })
+
+  it('says keys are waiting until Neovim acknowledges the last of them', () => {
+    const e = inInsert(doc('alpha'))
+    expect(e.waiting).toBe(false)
+    e.send('x', { line: 1, col: 6 })
+    e.send('<Esc>', { line: 1, col: 7 })
+    expect(e.waiting).toBe(true)
+    e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)
+    expect(e.waiting).toBe(true)
+    e.cursor({ line: 1, col: 6, mode: 'n', ack: 2 }, ascii)
+    expect(e.waiting).toBe(false)
+  })
+
+  it('goes on in another editor over the same text, its guesses kept', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    expect(e.finish()).toBe(true)
+    // The tab shown again: a new editor over the same text, which Neovim's lines reach.
+    const again = doc(...d.text)
+    e.rebind(again)
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)).toEqual({ line: 1, col: 8 })
+    expect(again.text).toEqual(['alphaxy'])
+    // And if Neovim is lost then, y stays.
+    expect(e.finish()).toBe(true)
+    expect(again.text).toEqual(['alphaxy'])
+  })
+
   it('does nothing with no guesses and nothing held', () => {
     const d = doc('alpha')
     const e = inInsert(d)

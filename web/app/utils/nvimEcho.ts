@@ -61,9 +61,23 @@ export function guessable(keys: string): string | null {
   return keys
 }
 
+/**
+ * Where line (1-based) of Neovim's text is after a lines event: moved by the lines it inserted or removed above it; within the lines it
+ * replaced, at the same place among the new ones (the last of them when fewer came), the text there then telling whether it is still
+ * the line the guesses were laid on.
+ */
+export function shiftedLine(line: number, ev: EchoLines): number {
+  const at = line - 1
+  if (at < ev.first) return line
+  if (ev.last >= 0 && at >= ev.last) return line + ev.lines.length - (ev.last - ev.first)
+  return ev.first + Math.min(at - ev.first, Math.max(0, ev.lines.length - 1)) + 1
+}
+
 export class NvimEcho {
   /** The last number given to keys. */
   seq = 0
+  /** The last number Neovim acknowledged. */
+  private acked = 0
   private mode = 'n'
   private paused = false // a guess went wrong: none until insert mode is left
   private barrier = 0 // keys that end the guesses: nothing guessed until they are acknowledged
@@ -73,6 +87,17 @@ export class NvimEcho {
 
   constructor(private doc: EchoDoc) {}
 
+  /** The echo goes on in another editor over the same text (its tab shown again): what it shows and reconciles goes there. */
+  rebind(doc: EchoDoc): void {
+    this.doc = doc
+  }
+
+  /** Applies a lines event of Neovim's under the guesses (unshown), and follows their line through it. */
+  private apply(ev: EchoLines, base: { line: number; col: number; text: string } | null) {
+    this.doc.applyLines(ev)
+    return base ? { ...base, line: shiftedLine(base.line, ev) } : null
+  }
+
   /** Whether guesses show (the editor marks them, and keeps its cursor after them). */
   get showing(): boolean {
     return this.guesses.length > 0
@@ -81,6 +106,11 @@ export class NvimEcho {
   /** Whether line changes wait for an acknowledgement. */
   get holding(): boolean {
     return this.held.length > 0
+  }
+
+  /** Whether keys were sent that Neovim has not acknowledged: their changes, and its word on them, are still on their way. */
+  get waiting(): boolean {
+    return this.seq > this.acked
   }
 
   /** The guesses' range on screen, for the editor's marking. */
@@ -125,6 +155,7 @@ export class NvimEcho {
       // A move Neovim reports on its own: while guesses show, the cursor stays after them.
       return this.guesses.length ? null : { line: ev.line, col: toUtf16(ev.line, ev.col) }
     }
+    this.acked = Math.max(this.acked, ev.ack)
     this.settle(ev.ack)
     if (this.barrier && ev.ack >= this.barrier) this.barrier = 0
     if (!isInsert(this.mode)) this.drop()
@@ -155,9 +186,9 @@ export class NvimEcho {
    * again with each line change that comes after (lateLines).
    */
   finish(): boolean {
-    const base = this.base
+    let base = this.base
     this.unshow()
-    for (const ev of this.held.splice(0)) this.doc.applyLines(ev)
+    for (const ev of this.held.splice(0)) base = this.apply(ev, base)
     return this.relay(base)
   }
 
@@ -166,9 +197,9 @@ export class NvimEcho {
    * again over Neovim's new line, less those it now holds. Returns whether any guess stays.
    */
   lateLines(ev: EchoLines): boolean {
-    const base = this.base
+    let base = this.base
     this.unshow()
-    this.doc.applyLines(ev)
+    base = this.apply(ev, base)
     return this.relay(base)
   }
 
@@ -205,9 +236,9 @@ export class NvimEcho {
   }
 
   private settle(ack: number) {
-    const base = this.base
+    let base = this.base
     this.unshow()
-    for (const ev of this.held.splice(0)) this.doc.applyLines(ev)
+    for (const ev of this.held.splice(0)) base = this.apply(ev, base)
     if (!base) return
     if (this.barrier && ack >= this.barrier) {
       // Keys that end the guesses are handled: Neovim's text and cursor stand.
