@@ -73,8 +73,9 @@
 # to <id>.entered as a line "<when, in microseconds since the epoch>
 # <the line>". The files let a test read what the stub holds whatever the
 # browser draws the terminal with: with WebGL the screen is a canvas and
-# holds no text. Each is written whole (a new file renamed over it) or
-# appended to, so a reader never sees one half written.
+# holds no text. .line and .mouse are appended a record a line, the last
+# whole one what is now; .spin is written whole (a new file renamed over
+# it): a reader never sees one half written.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -410,21 +411,25 @@ update_question() {
 
 # The TUI mode (`stub tui on`): tui is set once it is on, tui_line is the
 # line typed and not yet entered, tui_queue the lines entered while the stub
-# spins, mice the mouse reports read; spinning is set while it spins.
-tui= tui_line= mice= spinning=
+# spins, mice the mouse reports read; spinning is set while it spins; us
+# is now_us's.
+tui= tui_line= mice= spinning= us=
 tui_queue=()
 
-# put writes $2 into the file $1 whole, for a test to read: a new file
-# renamed over it, so a reader sees the old or the new, never a part.
+# put writes $2 into the file $1 whole, for a test to read (the spin's
+# state): a new file renamed over it, so a reader sees the old or the new,
+# never a part.
 put() {
 	printf '%s' "$2" >"$1.new"
 	mv -f -- "$1.new" "$1"
 }
 
-# tui_save writes the line not yet entered; tui_save_mice the mouse reports
-# read.
-tui_save() { put "$transcripts/$id.line" "$tui_line"; }
-tui_save_mice() { put "$transcripts/$id.mouse" "${mice:-0}"$'\n'; }
+# tui_save appends the line not yet entered to <id>.line, tui_save_mice the
+# mouse reports read to <id>.mouse: a record a line, the last whole one
+# what is now. Appended in one write, never rewritten: a reader never sees
+# one half written, and no file is made for each key.
+tui_save() { printf '%s\n' "$tui_line" >>"$transcripts/$id.line"; }
+tui_save_mice() { printf '%s\n' "${mice:-0}" >>"$transcripts/$id.mouse"; }
 
 # tui_read reads one byte (a character) of input into byte, within $1
 # seconds if given; it fails when none came. A read whose timer runs out as
@@ -448,6 +453,24 @@ tui_next() {
 		tui_read
 	else
 		tui_read 0.5
+	fi
+}
+
+# tui_keys_now takes the keys whose bytes are there now, waiting for none.
+tui_keys_now() {
+	while read -t 0; do
+		tui_read
+		tui_key "$byte"
+	done
+}
+
+# now_us sets us to the time in microseconds since the epoch: bash 5's
+# EPOCHREALTIME, or GNU date's on an older bash (the stub needs bash 4).
+now_us() {
+	if [[ -n ${EPOCHREALTIME:-} ]]; then
+		us=${EPOCHREALTIME/[.,]/}
+	else
+		us=$(date +%s%6N)
 	fi
 }
 
@@ -496,7 +519,8 @@ tui_key() {
 		;;
 	$'\r' | $'\n')
 		local l=$tui_line
-		printf '%s %s\n' "${EPOCHREALTIME/[.,]/}" "$l" >>"$transcripts/$id.entered"
+		now_us
+		printf '%s %s\n' "$us" "$l" >>"$transcripts/$id.entered"
 		tui_line=
 		tui_save
 		printf '\n'
@@ -533,7 +557,7 @@ tui_key() {
 # keys between the dots (a line entered is answered once it is done),
 # otherwise it reads nothing.
 spin() {
-	local end=$((SECONDS + $1)) next left t l st
+	local end=$((SECONDS + $1)) l st
 	local -a queued
 	spinning=1
 	put "$transcripts/$id.spin" $'spinning\n'
@@ -546,15 +570,13 @@ spin() {
 			sleep 0.1
 			continue
 		fi
-		next=$((${EPOCHREALTIME/[.,]/} + 100000))
-		while :; do
-			left=$((next - ${EPOCHREALTIME/[.,]/}))
-			((left > 0)) || break
-			printf -v t '%d.%06d' $((left / 1000000)) $((left % 1000000))
-			if tui_read "$t"; then
-				tui_key "$byte"
-			fi
-		done
+		# The keys typed meanwhile: those there now, then any within the
+		# 100 ms to the next dot.
+		tui_keys_now
+		if tui_read 0.1; then
+			tui_key "$byte"
+			tui_keys_now
+		fi
 	done
 	printf '\n'
 	put "$transcripts/$id.spin" $'done\n'

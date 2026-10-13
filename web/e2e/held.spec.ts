@@ -19,6 +19,13 @@ const HELD = 'Text from a link that was let go was typed and not entered: type i
 function stubFiles(home: string, s: Session) {
   const path = (ext: string) => join(home, '.stub-sessions', `${s.agentSession?.id ?? ''}${ext}`)
   const file = (ext: string) => () => (existsSync(path(ext)) ? readFileSync(path(ext), 'utf8') : '')
+  /** The whole lines of a file the stub appends to (a last one still being written left out). */
+  const records = (ext: string) => {
+    const log = file(ext)()
+    return log.slice(0, log.lastIndexOf('\n') + 1).split('\n').slice(0, -1)
+  }
+  /** The last whole record of a file the stub appends one to as what it says changes: what is now ('' before any). */
+  const now = (ext: string) => () => records(ext).at(-1) ?? ''
   const typed = file('.txt')
   return {
     /** Whether the stub reads as a TUI (its line's file is there). */
@@ -30,23 +37,17 @@ function stubFiles(home: string, s: Session) {
     /** Whether the lines entered hold line, the whole of one. */
     entered: (line: string) => typed().split('\n').includes(line),
     /** The line typed into the stub and not yet entered. */
-    pending: file('.line'),
+    pending: now('.line'),
     /** How many mouse reports the stub has read. */
-    mice: () => Number(file('.mouse')().trim() || '0'),
+    mice: () => Number(now('.mouse')() || '0'),
     /** "spinning" while the stub draws, "done" once it is. */
     spin: () => file('.spin')().trim(),
     /** The Enters the stub has taken, oldest first: when (ms since the epoch, on this machine's clock) and the line's text. */
-    enters: () => {
-      const log = file('.entered')()
-      return log
-        .slice(0, log.lastIndexOf('\n') + 1)
-        .split('\n')
-        .filter((l) => l !== '')
-        .map((l) => {
-          const sp = l.indexOf(' ')
-          return { at: Number(l.slice(0, sp)) / 1000, line: l.slice(sp + 1) }
-        })
-    },
+    enters: () =>
+      records('.entered').map((l) => {
+        const sp = l.indexOf(' ')
+        return { at: Number(l.slice(0, sp)) / 1000, line: l.slice(sp + 1) }
+      }),
   }
 }
 
