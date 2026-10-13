@@ -384,16 +384,28 @@ func (w *PatternWatcher) Text() string {
 
 // Whole returns all the text the watcher keeps: a screen watcher's whole
 // screen (Screen.Text, every row, where Text is its last rows), the others'
-// Text; and whether that is a whole frame, as a terminal shows it (a
-// screen's Settled; always for the others). What tells that something is no
-// longer on the screen reads this, and decides nothing on half a frame.
-func (w *PatternWatcher) Whole() (text string, settled bool) {
+// Text; whether that is a whole frame, as a terminal shows it (a screen's
+// Settled; always for the others); and a screen's size (0 by 0 for the
+// others). What tells that something is no longer on the screen reads
+// this, and decides nothing on half a frame.
+func (w *PatternWatcher) Whole() (text string, settled bool, cols, rows int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if sc, ok := w.tracker.(*Screen); ok {
-		return sc.Text(), sc.Settled()
+		cols, rows = sc.Size()
+		return sc.Text(), sc.Settled(), cols, rows
 	}
-	return w.tracker.Last(), true
+	return w.tracker.Last(), true, 0, 0
+}
+
+// Size returns a screen watcher's screen size, 0 by 0 for the others.
+func (w *PatternWatcher) Size() (cols, rows int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		return sc.Size()
+	}
+	return 0, 0
 }
 
 // Feed adds a chunk of the stream and restarts the quiet period. It never

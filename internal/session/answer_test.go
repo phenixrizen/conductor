@@ -1923,11 +1923,19 @@ func TestAKeypadKeyAnswersAsItsDigit(t *testing.T) {
 // before that redraw takes nothing for gone, and a submission is still
 // held back. (Codex's review, twenty-third pass, finding 1.)
 func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
-	// In a frame: a synchronized update begun before the resize and ended
-	// after it, drawing nothing at the new size, settles nothing.
-	// (Codex's review, twenty-fourth pass, finding 1.)
-	for _, inFrame := range []bool{false, true} {
-		t.Run(fmt.Sprintf("in a frame %v", inFrame), func(t *testing.T) {
+	// After the resize, before a look: nothing; the end of a synchronized
+	// update begun before it, which draws nothing at the new size; an
+	// empty frame; a redraw at the new size that cuts the question short
+	// (Codex's review, twenty-fourth pass, finding 1; twenty-fifth). Made
+	// as wide as it was again, the screen showing Codex's prompt, the
+	// question goes.
+	for _, c := range []struct{ name, before, after string }{
+		{"nothing", "", ""},
+		{"a frame begun before", "\x1b[?2026h", "\x1b[?2026l"},
+		{"an empty frame", "", "\x1b[?2026h\x1b[?2026l"},
+		{"a redraw that cuts it", "", "\x1b[?2026h\x1b[2J\x1b[H› 1. Update now\x1b[?2026l"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
 			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 			p.outW.Write([]byte(codexUpdateScreen))
@@ -1938,11 +1946,7 @@ func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
 				}
 				nextWrite(t, p)
 			}
-			begin, end := "", ""
-			if inFrame {
-				begin, end = "\x1b[?2026h", "\x1b[?2026l"
-			}
-			p.outW.Write([]byte(begin + "\x1b[24;1Hstatus: ready"))
+			p.outW.Write([]byte(c.before + "\x1b[24;1Hstatus: ready"))
 			fed := s.asked.Fed()
 			deadline := time.Now().Add(3 * time.Second)
 			for s.asked.Fed() == fed && time.Now().Before(deadline) {
@@ -1951,7 +1955,9 @@ func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
 			if err := s.ResizeWith(nater, 16, 24, true); err != nil {
 				t.Fatal(err)
 			}
-			p.outW.Write([]byte(end))
+			if c.after != "" {
+				p.outW.Write([]byte(c.after))
+			}
 			time.Sleep(2 * patternQuiet)
 			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
 				t.Fatalf("a clipped question was taken for gone: %+v", a)
@@ -1960,6 +1966,11 @@ func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
 				t.Fatalf("a submission at the question: %v", err)
 			}
 			noWrite(t, p, 100*time.Millisecond)
+			if err := s.ResizeWith(nater, 80, 24, true); err != nil {
+				t.Fatal(err)
+			}
+			p.outW.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything\x1b[?2026l"))
+			waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 		})
 	}
 }

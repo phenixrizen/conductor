@@ -68,11 +68,10 @@ type Screen struct {
 	// and this screen holds half of the next.
 	syncing bool
 	// clipped says the screen was made smaller with something on it, and
-	// the program has not drawn it whole since (erased it all, ED 2,
-	// outside a synchronized update, or ended a synchronized update begun
-	// after it): what it showed is cut, not gone. clippedInSync says a
-	// synchronized update under way as it was clipped began before.
-	clipped, clippedInSync bool
+	// the program has not erased it all since (ED 2; in a synchronized
+	// update, once that ends: unclipAtEnd): what it showed is cut, not
+	// gone. A frame that erases nothing, or only some rows, leaves it so.
+	clipped, unclipAtEnd bool
 
 	st      screenState
 	params  []byte
@@ -116,10 +115,9 @@ func (s *Screen) Resize(cols, rows int) {
 	}
 	cols, rows = min(cols, maxScreenCols), min(rows, maxScreenRows)
 	if (cols < s.cols || rows < s.rows) && strings.TrimSpace(s.text(len(s.cells))) != "" {
-		// What the screen showed is clipped until the program draws it
-		// again (Settled): a synchronized update under way began before,
-		// and its end draws nothing at the new size.
-		s.clipped, s.clippedInSync = true, s.syncing
+		// What the screen showed is clipped until the program erases it
+		// all and draws it again (Settled).
+		s.clipped, s.unclipAtEnd = true, false
 	}
 	// Rows leave at the top when the cursor would fall off the bottom.
 	shift := max(0, s.y-rows+1)
@@ -433,15 +431,11 @@ func (s *Screen) csi(final byte) {
 				case 1049, 1047, 47:
 					s.altScreen(final == 'h', m == 1049)
 				case 2026:
-					switch {
-					case final == 'h':
-						// A frame begun at the size the screen is now.
-						s.clippedInSync = false
-					case s.syncing && !s.clippedInSync:
-						// The end of a frame begun since.
+					if final == 'l' && s.syncing && s.unclipAtEnd {
+						// The end of a frame that erased the screen whole.
 						s.clipped = false
 					}
-					s.syncing = final == 'h'
+					s.syncing, s.unclipAtEnd = final == 'h', false
 				}
 			}
 		}
@@ -482,9 +476,11 @@ func (s *Screen) csi(final byte) {
 			for r := 0; r < s.rows; r++ {
 				s.erase(r, 0, s.cols)
 			}
-			if !s.syncing {
-				// Erased whole: what follows is drawn at this size (in a
-				// synchronized update, once it ends).
+			// Erased whole: what follows is drawn at this size (in a
+			// synchronized update, once it ends).
+			if s.syncing {
+				s.unclipAtEnd = true
+			} else {
 				s.clipped = false
 			}
 		}
@@ -580,9 +576,13 @@ const maxLookRows = 80
 
 // Settled reports whether the screen is a whole frame: no synchronized
 // update (2026) begun and not ended, which a terminal would not show yet,
-// and nothing clipped by a smaller size that the program has not drawn
-// again (a resize clips what showed; the program redraws it).
+// and nothing clipped by a smaller size that the program has not erased
+// whole since (a resize clips what showed; the program erases and redraws
+// it).
 func (s *Screen) Settled() bool { return !s.syncing && !s.clipped }
+
+// Size returns the screen's columns and rows.
+func (s *Screen) Size() (cols, rows int) { return s.cols, s.rows }
 
 // Last is what a PatternWatcher matches: Text, its last maxLookRows rows.
 func (s *Screen) Last() string { return s.text(maxLookRows) }

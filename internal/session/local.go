@@ -2512,6 +2512,9 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 		// answered): who typed it stays.
 	case startupStill:
 		held := heldStartup{id: id, fed: s.startupAnsweredFed}
+		if s.asked != nil {
+			held.cols, held.rows = s.asked.Size()
+		}
 		if last := s.info.LastAnswer; last != nil && last.Message == words {
 			held.by, held.name = last.By, last.ByName
 		}
@@ -2526,6 +2529,10 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 type heldStartup struct {
 	id, words, by, name string
 	fed                 uint64
+	// cols and rows are that screen's size then: on a smaller one the
+	// question may not read as itself (cut, or drawn narrower), and what
+	// it shows proves nothing gone.
+	cols, rows int
 }
 
 // holdStartupAnswered notes the startup question showing, or (words, not
@@ -2537,18 +2544,21 @@ type heldStartup struct {
 func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var fed uint64
+	held := heldStartup{by: sub.ID, name: sub.Name}
 	if s.asked != nil {
-		fed = s.asked.Fed()
+		held.fed = s.asked.Fed()
+		held.cols, held.rows = s.asked.Size()
 	}
 	att := s.info.Attention
 	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || att.Message == words) {
 		s.markAnswered(att)
-		s.heldAnswer = heldStartup{id: att.ID, by: sub.ID, name: sub.Name, fed: fed}
+		held.id = att.ID
+		s.heldAnswer = held
 		return
 	}
 	if words != "" {
-		s.heldAnswer = heldStartup{words: CleanMessage(words), by: sub.ID, name: sub.Name, fed: fed}
+		held.words = CleanMessage(words)
+		s.heldAnswer = held
 	}
 }
 
@@ -2573,7 +2583,7 @@ func (s *Local) escGone() {
 	s.mu.Lock()
 	att, held := s.info.Attention, s.heldAnswer
 	s.mu.Unlock()
-	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust || fed <= held.fed || !s.screenShowsNoStartup() {
+	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust || fed <= held.fed || !s.screenShowsNoStartup(held) {
 		s.feedMu.Unlock()
 		return
 	}
@@ -2593,10 +2603,12 @@ func (s *Local) escGone() {
 // screenShowsNoStartup reports whether the screen the questions asked
 // during the work are read from, whole, shows no startup question, and is
 // a whole frame (no synchronized update under way, which a terminal would
-// still show the frame before). The caller holds feedMu.
-func (s *Local) screenShowsNoStartup() bool {
-	text, settled := s.asked.Whole()
-	return settled && s.lastStartup(text) == ""
+// still show the frame before; nothing clipped), at least the size it was
+// when the question was held (held): smaller, the question may not read
+// as itself. The caller holds feedMu.
+func (s *Local) screenShowsNoStartup(held heldStartup) bool {
+	text, settled, cols, rows := s.asked.Whole()
+	return settled && cols >= held.cols && rows >= held.rows && s.lastStartup(text) == ""
 }
 
 // heldGone reports whether the startup question with words, about to be
@@ -2617,7 +2629,7 @@ func (s *Local) heldGone(words string) bool {
 	s.mu.Lock()
 	held := s.heldAnswer
 	s.mu.Unlock()
-	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || !s.screenShowsNoStartup() {
+	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || !s.screenShowsNoStartup(held) {
 		return false
 	}
 	s.mu.Lock()

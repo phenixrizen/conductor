@@ -1016,9 +1016,11 @@ during the work are read from shows no startup question, looked at whole
 (every row, not only the last rows a watcher matches) as it is then, a
 whole frame (no synchronized update, `ESC[?2026h`, begun and not ended:
 a terminal still shows the frame before it; nothing clipped by a smaller
-size the program has not drawn again since, by erasing it all outside a
-synchronized update or ending one begun after the resize: a question cut
-short is not gone), after output drawn
+size the program has not erased whole since, `ESC[2J`, in a synchronized
+update once it ends: a question cut short is not gone, and a frame that
+erases nothing settles nothing), at least the size it was when the
+question was held (smaller, it may be drawn so that it does not read as
+itself), after output drawn
 since the
 Escape, with no output let in
 meanwhile (the program took the Escape and moved on: then it is cleared,
