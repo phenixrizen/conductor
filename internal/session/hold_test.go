@@ -580,6 +580,39 @@ func TestTheHoldShowsAgainOnceAQuestionIsAnswered(t *testing.T) {
 	nothingWritten(t, p, 100*time.Millisecond)
 }
 
+// A burst of bells and OSC notifications while the turn is held is paced
+// as ever: it records an entry or two, not one each, and the hold shows on.
+func TestABurstOfBellsWhileHeldIsPaced(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	untilIdle(t, s)
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	<-done
+	heldShows(t, s)
+	attentionEntries := func() int {
+		n := 0
+		for _, e := range s.Activity() {
+			if e.Type == ActivityAttention {
+				n++
+			}
+		}
+		return n
+	}
+	before := attentionEntries()
+	p.outW.Write([]byte(strings.Repeat("\a", 200) + strings.Repeat("\x1b]9;look here\x07", 50)))
+	time.Sleep(300 * time.Millisecond)
+	if added := attentionEntries() - before; added > 2 {
+		t.Fatalf("the burst recorded %d attention entries", added)
+	}
+	heldShows(t, s)
+}
+
 // The hold ends with the session: the next submission is told the session
 // ended, the turn is given back and nothing shows.
 func TestAHeldTurnEndsWithTheSession(t *testing.T) {

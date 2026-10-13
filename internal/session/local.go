@@ -861,27 +861,6 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 		s.mu.Unlock()
 		return nil
 	}
-	if s.held != nil && source != SourceSubmit && !heldSource(source) {
-		// The session's turn is held for a typed text (holdTyped): the hold
-		// is what shows, until a person types into the terminal, but for a
-		// question on the screen, whose answer ends the hold too. Another
-		// change is recorded, as the report it is, and not shown; its turn
-		// is kept as a change shown keeps it.
-		if state == AttentionDone {
-			s.turnEnded = true
-		} else {
-			s.beginTurn()
-		}
-		s.mu.Unlock()
-		if state != AttentionNone {
-			label := message
-			if label == "" {
-				label = string(state)
-			}
-			s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: label}, state)
-		}
-		return nil
-	}
 	cur := s.info.Attention
 	// The hold's words give way to a question drawn on the screen (a
 	// startup question's unlessWaiting): the program waits on that one now.
@@ -899,6 +878,31 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
 	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns {
 		s.mu.Unlock()
+		return nil
+	}
+	if s.held != nil && source != SourceSubmit && !heldSource(source) {
+		// The session's turn is held for a typed text (holdTyped): the hold
+		// is what shows, until a person types into the terminal, but for a
+		// question on the screen, whose answer ends the hold too. Another
+		// change, past the rules above (the bell's pace among them), is
+		// recorded, as the report it is, and not shown; its turn and pace
+		// are kept as a change shown keeps them.
+		if state == AttentionDone {
+			s.turnEnded = true
+		} else {
+			s.beginTurn()
+		}
+		if rules&bellPaced != 0 {
+			s.lastBell = time.Now()
+		}
+		s.mu.Unlock()
+		if state != AttentionNone {
+			label := message
+			if label == "" {
+				label = string(state)
+			}
+			s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: label}, state)
+		}
 		return nil
 	}
 	if state == AttentionDone {
