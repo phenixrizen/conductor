@@ -71,9 +71,9 @@ func relayAgent(t *testing.T, gate *joinGate, maxViewers int) *agent {
 	return a
 }
 
-// viewersSettle waits until the session holds want viewers, and fails with
+// waitViewers waits until the session holds want viewers, and fails with
 // how many it holds when it does not within a second.
-func viewersSettle(t *testing.T, local *session.Local, want int) {
+func waitViewers(t *testing.T, local *session.Local, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for local.Viewers() != want {
@@ -140,7 +140,7 @@ func TestAnAttachUnderWayOnTheChannelGivesWayToTheRelays(t *testing.T) {
 	}
 	// Time for the channel's attach to finish after it.
 	time.Sleep(300 * time.Millisecond)
-	viewersSettle(t, a.local, 1)
+	waitViewers(t, a.local, 1)
 	if !holdsSub(p) {
 		t.Fatal("the viewer holds no subscription on the relay")
 	}
@@ -151,7 +151,7 @@ func TestAnAttachUnderWayOnTheChannelGivesWayToTheRelays(t *testing.T) {
 	mu.Unlock()
 
 	p.close()
-	viewersSettle(t, a.local, 0)
+	waitViewers(t, a.local, 0)
 }
 
 // A viewer that leaves while its attach is under way leaves nothing
@@ -187,7 +187,7 @@ func TestAViewerThatLeavesWhileItsAttachIsUnderWayLeavesNothingAttached(t *testi
 	case <-time.After(10 * time.Second):
 		t.Fatal("the attach never finished")
 	}
-	viewersSettle(t, a.local, 0)
+	waitViewers(t, a.local, 0)
 	if holdsSub(p) {
 		t.Fatal("the viewer that left holds a subscription")
 	}
