@@ -2063,7 +2063,7 @@ func (s *Local) keysWritten(data []byte) (keys [][]byte, cut bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keys = s.keysIn.keys(data)
-	return keys, len(s.keysIn.carry) > 0 && !s.keysIn.pasting
+	return keys, (len(s.keysIn.carry) > 0 || s.keysIn.inString) && !s.keysIn.pasting
 }
 
 // ErrInputBusy refuses a reply to a question while what was written to the
@@ -2076,7 +2076,7 @@ var ErrInputBusy = errors.New("another connection's paste or key is being writte
 // inputBusy reports whether a write before the next left something
 // unfinished (keyReader). The caller holds s.mu.
 func (s *Local) inputBusy() bool {
-	return s.keysIn.pasting || len(s.keysIn.carry) > 0
+	return s.keysIn.pasting || s.keysIn.inString || len(s.keysIn.carry) > 0
 }
 
 // ownKeys reports whether keys, as keysWritten read them from data, are
@@ -2114,14 +2114,38 @@ const maxKeyCarry = 32
 
 // keyReader splits the writes to a program, in order, into the keys it
 // reads from them: an escape sequence (CSI, ESC [ … final byte; SS3, ESC O
-// x) is one key, an Escape not starting one is a key, a bracketed paste is
-// text and no key, every other byte is a key. A paste or an escape
-// sequence one write begins and a later one ends (a terminal's reads cut
-// them anywhere) is carried over: pasting says a paste goes on, carry is
+// x) is one key, as is a control string (OSC ESC ], DCS ESC P, SOS ESC X,
+// PM ESC ^, APC ESC _, through its BEL or ST: a terminal's colour or
+// version report), an Escape not starting one is a key, a bracketed paste
+// is text and no key, every other byte is a key. A paste, a control string
+// or an escape sequence one write begins and a later one ends (a
+// terminal's reads cut them anywhere) is carried over: pasting says a
+// paste goes on, inString a control string (its bytes no keys), carry is
 // the unfinished end of the last write (at most maxKeyCarry bytes).
 type keyReader struct {
-	pasting bool
-	carry   []byte
+	pasting  bool
+	inString bool
+	carry    []byte
+}
+
+// stringEnd returns the index just past the BEL or ST that ends a control
+// string in data from i, -1 when data ends first (cutAt says where an ESC
+// of a cut ST begins then, -1 when none).
+func stringEnd(data []byte, i int) (end, cutAt int) {
+	for j := i; j < len(data); j++ {
+		switch data[j] {
+		case 0x07:
+			return j + 1, -1
+		case 0x1b:
+			if j+1 == len(data) {
+				return -1, j
+			}
+			if data[j+1] == '\\' {
+				return j + 2, -1
+			}
+		}
+	}
+	return -1, -1
 }
 
 // keys returns the keys of data, the next write.
@@ -2138,6 +2162,18 @@ func (r *keyReader) keys(data []byte) [][]byte {
 		}
 	}
 	for i < len(data) {
+		if r.inString {
+			end, cutAt := stringEnd(data, i)
+			if end < 0 {
+				if cutAt >= 0 {
+					cut(cutAt)
+				}
+				return keys
+			}
+			i = end
+			r.inString = false
+			continue
+		}
 		if r.pasting {
 			end := bytes.Index(data[i:], []byte(pasteEnd))
 			if end < 0 {
@@ -2185,6 +2221,19 @@ func (r *keyReader) keys(data []byte) [][]byte {
 			}
 			keys = append(keys, data[i:i+3])
 			i += 3
+		case data[i+1] == ']' || data[i+1] == 'P' || data[i+1] == 'X' || data[i+1] == '^' || data[i+1] == '_':
+			end, cutAt := stringEnd(data, i+2)
+			if end < 0 {
+				// Its end comes in a later write: its bytes are no keys
+				// until then.
+				r.inString = true
+				if cutAt >= 0 {
+					cut(cutAt)
+				}
+				return keys
+			}
+			keys = append(keys, data[i:end])
+			i = end
 		default:
 			keys = append(keys, data[i:i+1])
 			i++

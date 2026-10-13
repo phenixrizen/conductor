@@ -597,6 +597,11 @@ func TestTheKeysOfWritesCarryWhatOneLeavesUnfinished(t *testing.T) {
 		{"\x1bO", ""},
 		{"Pq", "\x1bOP|q"},
 		{"\x1b", "\x1b"},
+		{"\x1b]11;rgb:1/2/3\ay", "\x1b]11;rgb:1/2/3\a|y"},
+		{"\x1bP>|xterm\x1b\\\x1b[B", "\x1bP>|xterm\x1b\\|\x1b[B"},
+		{"\x1b]10;rgb:f", ""},
+		{"f/f/f\x1b", ""},
+		{"\\y", "y"},
 	} {
 		if got := read(step.write); got != step.keys {
 			t.Fatalf("keys of %q: %q, want %q", step.write, got, step.keys)
@@ -744,6 +749,42 @@ func TestAReportCutBeforeItsFinalByteAnswersNothing(t *testing.T) {
 	}
 	if got := nextWrite(t, p); got != "y" {
 		t.Fatalf("written %q", got)
+	}
+}
+
+// A terminal's colour or version report (an OSC or DCS string, ended by
+// BEL or ST), written with an arrow, or cut across writes, answers no
+// dialog: its Escapes are the string's, not the Escape key, and the dialog
+// still takes a click. (Codex's review, ninth pass.)
+func TestAColourOrVersionReportAnswersNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		writes []string
+	}{
+		{"a colour report and an arrow", []string{"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[B"}},
+		{"a version report and an arrow", []string{"\x1bP>|xterm.js(6.0.0)\x1b\\\x1b[A"}},
+		{"a colour report cut in its ST", []string{"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b", "\\"}},
+		{"a colour report cut in its body", []string{"\x1b]10;rgb:ff", "ff/ffff/ffff\a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+			q := waitAttention(t, s, asked)
+			for _, w := range tc.writes {
+				if err := s.InputWaiting(t.Context(), nater, []byte(w)); err != nil {
+					t.Fatal(err)
+				}
+				nextWrite(t, p)
+			}
+			if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); err != nil {
+				t.Fatalf("a click after %s: %v", tc.name, err)
+			}
+			if got := nextWrite(t, p); got != "y" {
+				t.Fatalf("written %q", got)
+			}
+		})
 	}
 }
 

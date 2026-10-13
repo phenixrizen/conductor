@@ -946,9 +946,10 @@ Keys that pick an answer of a dialog on the screen that the session has not
 asked yet (it asks once the screen is quiet) answer that dialog, also while
 the session still shows the one answered before it. Keys written at once (a
 terminal's read, the host's own terminal forwards what it reads) are each a
-key the program reads: an escape sequence is one key and a bracketed paste
-is text, no key, so an arrow then y answers a dialog and a pasted y does
-not; a paste or an escape sequence one write leaves unfinished goes on in
+key the program reads: an escape sequence is one key, as is a control
+string through its BEL or ST (OSC, DCS, SOS, PM, APC: a terminal's colour or
+version report), and a bracketed paste is text, no key, so an arrow then y
+answers a dialog and a pasted y, or a report's Escapes, do not; a paste or an escape sequence one write leaves unfinished goes on in
 the next (a terminal's reads cut them anywhere), and a write that is all a
 paste's text, a choice's key among it, or the rest of a terminal's own
 report, answers nothing. An Escape that ends a write outside a paste is
