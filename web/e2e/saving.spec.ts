@@ -221,21 +221,33 @@ test('Enter after a word the editor suggests breaks the line', async ({ page, ap
   }
 })
 
-/** While window.__holdWrittenMs is set, a FILE frame answering a save as written reaches the page that much later, as through a slow relay. */
+type Held = { __holdWritten?: boolean; __releaseWritten?: () => void }
+
+/**
+ * While window.__holdWritten is set, a FILE frame answering a save as written
+ * is held back, as through a slow relay, until window.__releaseWritten hands
+ * the page what was held, in order, and stops holding: what the test means to
+ * happen before the answer lands does, whatever the machine's speed.
+ */
 async function holdWrittenAnswers(page: Page) {
   await page.addInitScript(() => {
+    const w = window as unknown as Held
+    const held: Array<() => void> = []
+    w.__releaseWritten = () => {
+      w.__holdWritten = false
+      for (const deliver of held.splice(0)) deliver()
+    }
     const Native = window.WebSocket
     class Holding extends Native {
       override set onmessage(fn: ((ev: MessageEvent) => void) | null) {
         super.onmessage = fn && ((ev: MessageEvent) => {
-          const hold = (window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs
-          if (hold && ev.data instanceof ArrayBuffer) {
+          if (w.__holdWritten && ev.data instanceof ArrayBuffer) {
             const b = new Uint8Array(ev.data)
             if (b[0] === 0x06 && b.length > 13) {
               const len = new DataView(ev.data).getUint32(9)
               const header = JSON.parse(new TextDecoder().decode(b.subarray(13, 13 + len))) as { kind?: string }
               if (header.kind === 'written') {
-                setTimeout(() => fn.call(this, ev), hold)
+                held.push(() => fn.call(this, ev))
                 return
               }
             }
@@ -249,6 +261,10 @@ async function holdWrittenAnswers(page: Page) {
     }
     window.WebSocket = Holding
   })
+  return {
+    hold: () => page.evaluate(() => { (window as unknown as Held).__holdWritten = true }),
+    release: () => page.evaluate(() => (window as unknown as Held).__releaseWritten?.()),
+  }
 }
 
 // A save whose answer is slow (a relayed one slowed on its way) is not given
@@ -265,7 +281,7 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
   const other = join(cwd, 'other.txt')
   writeFileSync(other, 'one\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving late', cwd })
-  await holdWrittenAnswers(page)
+  const written = await holdWrittenAnswers(page)
   const area = page.locator('[data-editor-area]')
   const lines = area.locator('.monaco-editor .view-lines')
   const typeAtEnd = async (text: string) => {
@@ -280,14 +296,15 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await pane.locator('[data-files-section="explorer"]').click()
     await pane.locator(`[data-file-node="${file}"]`).click()
     await expect(lines).toBeVisible({ timeout: 30_000 })
-    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 22_000))
+    await written.hold()
     await typeAtEnd('beta\n')
     await page.keyboard.press('Control+s')
-    // Written at once on the session's machine; the page hears nothing for 22 s.
+    // Written at once on the session's machine; the page hears nothing until
+    // the test lets the answer through.
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\n')
     // After 20 s the bar says the save goes on, and nothing says it failed.
     const slow = area.locator('[data-editor-save-slow]')
-    await expect(slow).toBeVisible({ timeout: 25_000 })
+    await expect(slow).toBeVisible({ timeout: 40_000 })
     await expect(slow).toContainText('Still saving')
     await expect(area.locator('[data-editor-save-error]')).toHaveCount(0)
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
@@ -300,6 +317,7 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\n')
     // The answer lands: saved, the bar gone; what was typed meanwhile is
     // still there, and still unsaved.
+    await written.release()
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     await expect(slow).toHaveCount(0)
     await expect(area.locator('[data-editor-save-busy]')).toHaveCount(0)
@@ -308,7 +326,6 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await expect(lines).toContainText('more')
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
     // The tab took the new hash: the next save is no conflict.
-    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
     await page.keyboard.press('Control+s')
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
     await expect(area.locator('[data-editor-conflict]')).toHaveCount(0)
@@ -322,12 +339,13 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await expect(tabOf(other).locator('[data-editor-dirty]')).toHaveCount(1)
     await tabOf(file).locator('button').first().click()
     await expect(lines).toContainText('more', { timeout: 15_000 })
-    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 3_000))
+    await written.hold()
     await typeAtEnd('gamma\n')
     await page.keyboard.press('Control+s')
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\nmore\ngamma\n')
     await tabOf(other).locator('button').first().click()
     await expect(lines).toContainText('two', { timeout: 15_000 })
+    await written.release()
     await expect(tabOf(file).locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
     await page.waitForTimeout(500)
     await expect(tabOf(other).locator('[data-editor-dirty]')).toHaveCount(1)
@@ -338,23 +356,24 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await tabOf(file).locator('button').first().click()
     await expect(lines).toContainText('gamma', { timeout: 15_000 })
     writeFileSync(file, 'outside\n')
-    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
     await typeAtEnd('delta\n')
     await page.keyboard.press('Control+s')
     await expect(area.locator('[data-editor-conflict]')).toBeVisible({ timeout: 15_000 })
     await area.locator('[data-editor-compare]').click()
     await expect(area.locator('[data-editor-comparing]')).toBeVisible({ timeout: 15_000 })
-    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 3_000))
+    await written.hold()
     await area.locator('[data-editor-save-anyway]').click()
     await area.getByRole('button', { name: 'Back to editing' }).click()
     await typeAtEnd('epsilon\n')
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\nmore\ngamma\ndelta\n')
+    await written.release()
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     await page.waitForTimeout(500)
     await expect(lines).toContainText('epsilon')
     await expect(tabOf(file).locator('[data-editor-dirty]')).toHaveCount(1)
     // Saved, typed on, and closed with Don't save before the answer lands:
     // what was typed is gone, and the file opens again as it is on disk.
+    await written.hold()
     await typeAtEnd('zeta\n')
     await page.keyboard.press('Control+s')
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toContain('zeta')
@@ -364,7 +383,8 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
     await expect(prompt).toBeVisible()
     await prompt.locator('[data-editor-discard]').click()
     await expect(tabOf(file)).toHaveCount(0)
-    await page.waitForTimeout(4_000)
+    await written.release()
+    await page.waitForTimeout(500)
     await pane.locator(`[data-file-node="${file}"]`).click()
     await expect(lines).toContainText('zeta', { timeout: 30_000 })
     await page.waitForTimeout(500)
@@ -385,7 +405,7 @@ test('a save asked for while another is on its way says so, and the next one sav
   const file = join(cwd, 'again.txt')
   writeFileSync(file, 'one\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving again', cwd })
-  await holdWrittenAnswers(page)
+  const written = await holdWrittenAnswers(page)
   const area = page.locator('[data-editor-area]')
   const lines = area.locator('.monaco-editor .view-lines')
   const typeAtEnd = async (text: string) => {
@@ -400,7 +420,7 @@ test('a save asked for while another is on its way says so, and the next one sav
     await pane.locator('[data-files-section="explorer"]').click()
     await pane.locator(`[data-file-node="${file}"]`).click()
     await expect(lines).toBeVisible({ timeout: 30_000 })
-    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 4_000))
+    await written.hold()
     await typeAtEnd('two\n')
     await page.keyboard.press('Control+s')
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('one\ntwo\n')
@@ -412,10 +432,10 @@ test('a save asked for while another is on its way says so, and the next one sav
     await expect(busy).toContainText('still on its way')
     expect(readFileSync(file, 'utf8')).toBe('one\ntwo\n')
     // Answered: the note goes, what was typed since is still unsaved, and the next save saves it.
+    await written.release()
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     await expect(busy).toHaveCount(0)
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
-    await page.evaluate(() => ((window as unknown as { __holdWrittenMs?: number }).__holdWrittenMs = 0))
     await page.keyboard.press('Control+s')
     await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('one\ntwo\nthree\n')
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
