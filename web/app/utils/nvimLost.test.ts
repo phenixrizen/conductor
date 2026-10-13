@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { closedByQuit, lostWords } from './nvimLost'
+import { closedByQuit, lostHoldsChanges, lostWords } from './nvimLost'
+
+describe('lostHoldsChanges', () => {
+  it('holds changes when Neovim said so, a guess shows, or the text is not the file as read', () => {
+    expect(lostHoldsChanges(true, false, 'a', 'a')).toBe(true)
+    expect(lostHoldsChanges(false, true, 'a', 'a')).toBe(true)
+    expect(lostHoldsChanges(false, false, 'ax', 'a')).toBe(true)
+    expect(lostHoldsChanges(false, false, 'a', 'a')).toBe(false)
+  })
+})
 
 describe('closedByQuit', () => {
   it('is the person’s own quit, or no reason at all', () => {

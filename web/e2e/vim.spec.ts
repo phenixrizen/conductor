@@ -214,18 +214,18 @@ test('in the Neovim keymap / and ? search, and :s///gc asks on the status line u
   }
 })
 
-// Neovim lost, not quit: its connection can no longer be read (as the substitute's preview once made it). The tab stays with the text
-// Neovim last held, its change not written among it, and says so, across a tab switched and the area folded; a Neovim lost while its
-// tab is not in front is kept the same way. Reopen starts Neovim again, which finds the lost one's swap file: Recover brings the change
-// back, :w writes it. Before, the tab closed as on :q, with no word, and its text went with it.
+// Neovim lost, not quit: here it dies (killed, once :preserve has written its swap file), and the next key finds it gone. The tab
+// stays with the text Neovim last held, its change not written among it, and says so, across a tab switched and the area folded; a
+// Neovim that dies while its tab is not in front is kept the same way. Reopen starts Neovim again, which finds the lost one's swap
+// file: Recover brings the change back, :w writes it. Before, the tab closed as on :q, with no word, and its text went with it.
 test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its change from the swap file', async ({ page, api, state }) => {
   const cwd = join(state.root, 'files-vim-lost')
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
   writeFileSync(join(cwd, 'other.txt'), 'beta\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-lost', cwd })
-  // Neovim sends the bridge's client a message it cannot read, at once or after a while.
-  const unreadable = "vim.rpcnotify(vim.api.nvim_list_uis()[1].chan, 'nvim_buf_changedtick_event', 'x', 'y')"
+  // Neovim dies, at once or after a while.
+  const die = "vim.uv.kill(vim.fn.getpid(), 'sigkill')"
   try {
     await page.goto(`/sessions/${s.id}`)
     await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
@@ -245,8 +245,11 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
     await page.keyboard.press('Escape')
     await expect(lines).toContainText('alphaxx', { timeout: 15_000 })
     await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
-    await page.keyboard.type(`:lua ${unreadable}`)
+    await page.keyboard.type(':preserve')
     await page.keyboard.press('Enter')
+    await page.keyboard.type(`:lua ${die}`)
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('j')
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await expect(lost.locator('[data-nvim-lost-copy]')).toBeVisible()
     await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
@@ -272,12 +275,17 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
     await page.keyboard.press('Escape')
     await expect(lines).toContainText('betayy', { timeout: 15_000 })
     await expect(tab('other.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
-    await page.keyboard.type(`:lua vim.defer_fn(function() ${unreadable} end, 1500)`)
+    await page.keyboard.type(':preserve')
+    await page.keyboard.press('Enter')
+    await page.keyboard.type(`:lua vim.defer_fn(function() ${die} end, 1500)`)
     await page.keyboard.press('Enter')
     await tab('notes.txt').click()
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await page.waitForTimeout(3000)
     await tab('other.txt').click()
+    await expect(lines).toContainText('betayy', { timeout: 15_000 })
+    await lines.click()
+    await page.keyboard.type('j')
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await expect(lines).toContainText('betayy')
     // Reopen notes.txt: a new Neovim finds the lost one's swap file (it has left by now) and offers its change.

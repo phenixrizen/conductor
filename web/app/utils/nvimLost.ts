@@ -11,6 +11,15 @@ export function closedByQuit(reason?: string): boolean {
   return !reason || reason === 'quit'
 }
 
+/**
+ * Whether a lost Neovim's text holds changes not written, as far as the page can tell: Neovim said so, a character typed that it never
+ * acknowledged shows, or the text is not the file as the tab read it (Neovim may have written it since: the page cannot tell, and keeps
+ * it). The tab then wears its dot and closing it asks.
+ */
+export function lostHoldsChanges(modified: boolean, pending: boolean, text: string, read: string): boolean {
+  return modified || pending || text !== read
+}
+
 /** The banner's words for a Neovim lost, with its reason. */
 export function lostWords(reason: string): string {
   const why = reason.replace(/^error:\s*/, '').trim()

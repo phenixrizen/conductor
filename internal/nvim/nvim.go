@@ -22,9 +22,7 @@ import (
 )
 
 // Handler receives what the editor reports. Its methods run on the client's
-// goroutine, one at a time, but for Exited, which may also come from the
-// caller's keys (Input) or the client's reading as it fails, and the cursor
-// Input and Report tell on the caller's; they must not block on the editor.
+// goroutine, one at a time; they must not block on the editor.
 type Handler interface {
 	// Lines says the buffer lines [first, last) became lines (0-based; last
 	// -1 means to the end, used when the whole buffer is sent).
@@ -206,17 +204,9 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		e.end()
 		return nil, err
 	}
-	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
 	go func() {
 		defer close(served)
-		// The client ends its connection on a message it cannot read (a
-		// preview's lines once were one): Neovim is lost to the editor then,
-		// which says so at once rather than at the next key. Its own exit and
-		// a close end the connection without an error; the context's end,
-		// which kills Neovim, may cut a message short.
-		if err := v.Serve(); err != nil && !isDone(ctx.Done()) && e.closed.CompareAndSwap(false, true) {
-			h.Exited("error: " + err.Error())
-		}
+		_ = v.Serve()
 	}()
 	// Its context's end closes the editor's connection too, at once, and
 	// Neovim's output: what waits on Neovim (its start, keys, a close) is
@@ -226,6 +216,7 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		_ = v.Close()
 		_ = out.Close()
 	})
+	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
 	fail := func(err error) (*Editor, error) {
 		e.end()
 		return nil, err
@@ -344,21 +335,50 @@ func isDone(done <-chan struct{}) bool {
 	}
 }
 
-// register wires the client's notifications to the handler.
+// register wires the client's notifications to the handler. Every handler
+// takes its arguments as they come (interface{}) and reads them itself: the
+// client ends its connection, and the editor loses Neovim, on a message whose
+// arguments do not decode into a handler's types (a preview's lines, whose
+// changedtick is v:null, once did), so a notification of an unexpected shape
+// is passed over instead.
 func (e *Editor) register() error {
 	v := e.v
 	if err := v.RegisterHandler("redraw", e.onRedraw); err != nil {
 		return err
 	}
-	// The changedtick is v:null in the lines of a preview ('inccommand'):
+	// [buf, changedtick, firstline, lastline, linedata, more]. The
+	// changedtick is v:null in the lines of a preview ('inccommand'):
 	// Neovim's screen showing what a substitute would do, not the buffer,
-	// and undone with no change reported. It is decoded as a pointer, since
-	// a client that cannot read a message ends its connection, and the
-	// preview is never relayed: the page's text is the buffer's alone.
-	if err := v.RegisterHandler(nvim.EventBufLines, func(buf nvim.Buffer, tick *int64, first, last int64, lines [][]byte, more bool) {
-		if tick == nil {
+	// and undone with no change reported. It is never relayed: the page's
+	// text is the buffer's alone.
+	if err := v.RegisterHandler(nvim.EventBufLines, func(args ...interface{}) {
+		if len(args) < 5 {
+			return
+		}
+		buf, ok := args[0].(nvim.Buffer)
+		if !ok {
+			return
+		}
+		if args[1] == nil {
 			e.previews.Add(1)
 			return
+		}
+		first, ok1 := intArg(args[2])
+		last, ok2 := intArg(args[3])
+		raw, ok3 := args[4].([]interface{})
+		if !ok1 || !ok2 || !ok3 {
+			return
+		}
+		ss := make([]string, len(raw))
+		for i, l := range raw {
+			switch l := l.(type) {
+			case string:
+				ss[i] = l
+			case []byte:
+				ss[i] = string(l)
+			default:
+				return
+			}
 		}
 		e.mu.Lock()
 		cur := e.buf
@@ -366,21 +386,21 @@ func (e *Editor) register() error {
 		if buf != cur {
 			return
 		}
-		ss := make([]string, len(lines))
-		for i, l := range lines {
-			ss[i] = string(l)
-		}
-		e.h.Lines(int(first), int(last), ss)
+		e.h.Lines(first, last, ss)
 	}); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufChangedtick, func(buf nvim.Buffer, tick *int64) {}); err != nil {
+	if err := v.RegisterHandler(nvim.EventBufChangedtick, func(args ...interface{}) {}); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufDetach, func(buf nvim.Buffer) {
+	if err := v.RegisterHandler(nvim.EventBufDetach, func(args ...interface{}) {
 		// Neovim stops following a buffer it reloads (:e!, :recover): the
 		// one on screen is followed again and sent whole.
-		if e.closed.Load() {
+		if e.closed.Load() || len(args) < 1 {
+			return
+		}
+		buf, ok := args[0].(nvim.Buffer)
+		if !ok {
 			return
 		}
 		e.mu.Lock()
@@ -669,8 +689,9 @@ func (e *Editor) Discard() {
 
 // onRedraw reads the UI events the bridge cares about: the mode, the
 // command line and the messages.
-func (e *Editor) onRedraw(updates ...[]interface{}) {
-	for _, u := range updates {
+func (e *Editor) onRedraw(updates ...interface{}) {
+	for _, update := range updates {
+		u, _ := update.([]interface{})
 		if len(u) < 2 {
 			continue
 		}
@@ -727,6 +748,15 @@ func chunksText(v interface{}) string {
 		}
 	}
 	return b.String()
+}
+
+// intArg is a notification's integer argument, and whether it is one.
+func intArg(v interface{}) (int, bool) {
+	switch v.(type) {
+	case int64, int, uint64, int32, uint32, int8, uint8, int16, uint16:
+		return toInt(v), true
+	}
+	return 0, false
 }
 
 func toInt(v interface{}) int {

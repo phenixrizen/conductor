@@ -147,6 +147,38 @@ export class NvimEcho {
     this.base = null
   }
 
+  /**
+   * Neovim is gone (lost, not quit) and will acknowledge nothing more: every line change it sent and the echo held is shown, and the
+   * guesses its line does not hold stay laid over it (the person typed them; Neovim may never have had them), as long as its line is
+   * still the one they were laid on. Returns whether any guess stays. The echo holds nothing after it.
+   */
+  finish(): boolean {
+    const base = this.base
+    this.unshow()
+    for (const ev of this.held.splice(0)) this.doc.applyLines(ev)
+    let left = false
+    if (base && this.guesses.length) {
+      const now = this.doc.line(base.line)
+      for (let k = this.guesses.length; k >= 0; k--) {
+        const done = this.guesses
+          .slice(0, k)
+          .map((g) => g.text)
+          .join('')
+        if (now !== base.text.slice(0, base.col - 1) + done + base.text.slice(base.col - 1)) continue
+        const rest = this.guesses.slice(k)
+        if (rest.length) {
+          this.base = { line: base.line, col: base.col + done.length, text: now }
+          this.guesses = rest
+          this.show()
+          left = true
+        }
+        break
+      }
+    }
+    this.reset()
+    return left
+  }
+
   /** Forgets everything (the editor closes, the keymap changes). */
   reset(): void {
     this.guesses = []

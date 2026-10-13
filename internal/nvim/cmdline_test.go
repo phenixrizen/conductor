@@ -273,26 +273,33 @@ func TestCommandLinesWorkAsInNeovim(t *testing.T) {
 	}
 }
 
-// A message the client cannot read ends its connection, and Neovim with it:
-// the editor says so at once, not at the next key (the substitute's preview
-// was such a message, and the page saw nothing until it typed again).
-func TestAMessageTheClientCannotReadEndsTheEditorAtOnce(t *testing.T) {
+// A notification whose arguments are not of the shape the bridge expects
+// (the preview's lines once were one, with a changedtick of v:null) is
+// passed over: the client goes on reading, and the editor with it. Before,
+// the client ended its connection on it and the editor lost Neovim.
+func TestANotificationOfAnUnexpectedShapeIsPassedOver(t *testing.T) {
 	e, r := cmdlineEditor(t, "one\n", "")
-	// The request itself fails as the connection goes.
-	_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'nvim_buf_changedtick_event', 'not a buffer', 'not a tick')", e.ch))
-	select {
-	case <-r.done:
-	case <-time.After(10 * time.Second):
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		t.Fatalf("no exit reported; the events: %q", r.events)
+	for _, args := range []string{
+		"'nvim_buf_changedtick_event', 'not a buffer', 'not a tick'",
+		"'nvim_buf_lines_event', 'not a buffer', v:null, 'a', 'b', 'c', v:false",
+		"'nvim_buf_lines_event', 1, 2, 'a', 'b', [1, 2], v:false",
+		"'nvim_buf_detach_event', 'not a buffer'",
+		"'redraw', 'not an update', ['msg_show']",
+	} {
+		if err := e.v.Command(fmt.Sprintf("call rpcnotify(%d, %s)", e.ch, args)); err != nil {
+			t.Fatalf("after %s: %v", args, err)
+		}
 	}
-	if !r.has("exited error: ") {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		t.Fatalf("the exit: %q", r.events)
+	k := &typist{t: t, e: e, r: r}
+	k.key("A")
+	k.key("x")
+	esc := k.key("<Esc>")
+	r.wait(t, fmt.Sprintf("ack %d 1:4 n", esc))
+	bufferIs(t, e, "onex")
+	if got := r.changesNow(); len(got) == 0 || got[len(got)-1] != `0:1 ["onex"]` {
+		t.Fatalf("the page was told of %q", got)
 	}
-	if err := e.Input("x"); err != ErrClosed {
-		t.Fatalf("input after the end: %v", err)
+	if r.has("exited") {
+		t.Fatal("the editor ended")
 	}
 }

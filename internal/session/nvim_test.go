@@ -942,11 +942,11 @@ func TestAnEditorWhoseWrapperExitedFirstIsEndedWithNeovim(t *testing.T) {
 	}
 }
 
-// The editor loses Neovim (its client can no longer read it) after it took
-// its place and before its opened event: the page is told it opened and
-// then that it closed, with why, never left with an editor that answers
-// nothing.
-func TestAnEditorLostAsItOpensSaysItClosed(t *testing.T) {
+// Neovim ends after the editor took its place and before its opened event
+// (here it quits, as a config may as it starts): the page is told it opened
+// and then that it closed, with why, never left with an editor that answers
+// nothing. Its end, reported before the editor was ready, was told to no one.
+func TestAnEditorEndedAsItOpensSaysItClosed(t *testing.T) {
 	if !nvim.Available() {
 		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
 	}
@@ -965,8 +965,7 @@ func TestAnEditorLostAsItOpensSaysItClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	nvimStarted = func(ed *nvim.Editor) {
-		// A message the client cannot read: it ends its connection.
-		_ = ed.Input(":lua vim.rpcnotify(vim.api.nvim_list_uis()[1].chan, 'nvim_buf_changedtick_event', 'x', 'y')<CR>")
+		_ = ed.Input(":qa!<CR>")
 		// Its end is reported (the editor's place marked gone) before the open goes on.
 		deadline := time.Now().Add(10 * time.Second)
 		for {
@@ -982,7 +981,7 @@ func TestAnEditorLostAsItOpensSaysItClosed(t *testing.T) {
 				return
 			}
 			if time.Now().After(deadline) {
-				t.Error("the lost connection was never reported")
+				t.Error("the end was never reported")
 				return
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -1000,7 +999,7 @@ func TestAnEditorLostAsItOpensSaysItClosed(t *testing.T) {
 	if evs[0].Kind != proto.NvimOpened {
 		t.Fatalf("the events: %+v", evs)
 	}
-	if closed := evs[len(evs)-1]; !strings.HasPrefix(closed.Reason, "error: ") || closed.ID != evs[0].ID {
+	if closed := evs[len(evs)-1]; closed.Reason != "quit" || closed.ID != evs[0].ID {
 		t.Fatalf("closed: %+v", closed)
 	}
 }

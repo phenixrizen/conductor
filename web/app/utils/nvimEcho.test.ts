@@ -144,3 +144,43 @@ describe('the local echo', () => {
     expect(d.text).toEqual(['aend', 'new'])
   })
 })
+
+describe('the local echo when Neovim is lost', () => {
+  it('shows the line changes it held, and keeps the guesses Neovim never acknowledged laid over them', () => {
+    const d = doc('alpha', 'end')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    expect(d.text).toEqual(['alphaxy', 'end'])
+    // Neovim had x, and changed line 2 too; both held for an acknowledgement that never comes.
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.lines({ first: 1, last: 2, lines: ['end -- from Neovim'] })).toBe(true)
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphaxy', 'end -- from Neovim'])
+    expect(e.showing).toBe(false)
+    expect(e.holding).toBe(false)
+  })
+
+  it('keeps no guess Neovim had, and none over a line that is no longer the one they were laid on', () => {
+    const had = doc('alpha')
+    const e1 = inInsert(had)
+    e1.send('x', { line: 1, col: 6 })
+    e1.lines({ first: 0, last: 1, lines: ['alphax'] })
+    expect(e1.finish()).toBe(false)
+    expect(had.text).toEqual(['alphax'])
+
+    const other = doc('alpha')
+    const e2 = inInsert(other)
+    e2.send('x', { line: 1, col: 6 })
+    e2.lines({ first: 0, last: 1, lines: ['something else'] })
+    expect(e2.finish()).toBe(false)
+    expect(other.text).toEqual(['something else'])
+  })
+
+  it('does nothing with no guesses and nothing held', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    expect(e.finish()).toBe(false)
+    expect(d.text).toEqual(['alpha'])
+  })
+})

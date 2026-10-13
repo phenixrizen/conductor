@@ -16,7 +16,7 @@ export interface HeldNvim {
  * tab is in front: the editor hands it here as it leaves and takes it back when its tab is in front again, so the changes stay where
  * they were typed. Closing it instead ended it as a lost connection does, and the next open of the file stumbled on its swap file.
  * A tab that closes takes its held Neovim with it (`orphans`: the person said Don't save, or Neovim kept nothing). Keyed by the
- * file's path; one per page connection (`useEditorBridge`). A Neovim lost holding changes not written stays held as lost, in front
+ * file's path; one per page connection (`useEditorBridge`). A Neovim lost stays held as lost, whether it was in front
  * (its editor hands it here as it leaves, a tab switched or the area folded) or not (`ended`), so the next showing keeps its text.
  */
 export class NvimHolds {

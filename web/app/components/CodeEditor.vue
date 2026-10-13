@@ -5,7 +5,7 @@ import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { ECHO_HOLD_MS, NvimEcho, type EchoLines } from '~/utils/nvimEcho'
-import { closedByQuit } from '~/utils/nvimLost'
+import { closedByQuit, lostHoldsChanges } from '~/utils/nvimLost'
 import { hasModel, isDirty, markSaved, noteVersion } from '~/utils/editorModels'
 
 /**
@@ -353,7 +353,9 @@ function onNvimEvent(ev: NvimEvent) {
       nvimState.recovered = false
       tellNvim()
       break
-    case 'closed':
+    case 'closed': {
+      // What Neovim sent and the echo held is shown first, with the characters typed it never acknowledged.
+      const pending = closedByQuit(ev.reason) ? false : (echo?.finish() ?? false)
       nvimId = null
       unsubscribe?.()
       unsubscribe = null
@@ -365,11 +367,14 @@ function onNvimEvent(ev: NvimEvent) {
       }
       // Lost, not quit: the tab stays with the text Neovim last held (read only, which Monaco is here), and the area says so.
       nvimState.lost = ev.reason ?? 'error'
+      nvimState.modified = lostHoldsChanges(nvimState.modified, pending, model.getValue(), props.text)
       nvimState.cmdline = ''
       nvimState.message = 'Neovim ended'
       nvimState.messageKind = 'emsg'
       tellNvim()
+      tellDirty()
       break
+    }
     case 'error':
       nvimState.message = ev.message ?? ev.code ?? 'error'
       nvimState.messageKind = 'emsg'
@@ -448,8 +453,8 @@ onBeforeUnmount(() => {
       const at = editor?.getPosition()
       props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
     } else props.nvim.close(nvimId)
-  } else if (props.nvim && nvimState.lost && nvimState.modified) {
-    // Neovim lost with changes not written: its text stays the tab's for the next showing (a tab switched, the area folded).
+  } else if (props.nvim && nvimState.lost) {
+    // Neovim lost: its text stays the tab's for the next showing (a tab switched, the area folded), until Reopen or a close.
     const at = editor?.getPosition()
     props.nvim.holds.hold(props.path, { id: '', state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
   }
