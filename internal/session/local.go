@@ -2191,7 +2191,7 @@ var ErrInputBusy = errors.New("another connection's paste or key is being writte
 // inputBusy reports whether a write before the next left something
 // unfinished (keyReader). The caller holds s.mu.
 func (s *Local) inputBusy() bool {
-	return s.keysIn.pasting || s.keysIn.inString || len(s.keysIn.carry) > 0
+	return s.keysIn.pasting || s.keysIn.inString || s.keysIn.inCSI || len(s.keysIn.carry) > 0
 }
 
 // ownKeys reports whether keys, as keysWritten read them from data, are
@@ -2240,7 +2240,10 @@ const maxKeyCarry = 32
 type keyReader struct {
 	pasting  bool
 	inString bool
-	carry    []byte
+	// inCSI says an escape sequence cut longer than maxKeyCarry goes on:
+	// its bytes are skipped, no key, through its final byte.
+	inCSI bool
+	carry []byte
 	// pasted says the last write held a paste's text.
 	pasted bool
 }
@@ -2280,6 +2283,17 @@ func (r *keyReader) keys(data []byte) [][]byte {
 		}
 	}
 	for i < len(data) {
+		if r.inCSI {
+			for i < len(data) && (data[i] < 0x40 || data[i] > 0x7e) {
+				i++
+			}
+			if i == len(data) {
+				return keys
+			}
+			i++ // its final byte
+			r.inCSI = false
+			continue
+		}
 		if r.inString {
 			end, cutAt := stringEnd(data, i)
 			if end < 0 {
@@ -2326,6 +2340,11 @@ func (r *keyReader) keys(data []byte) [][]byte {
 				j++
 			}
 			if j == len(data) {
+				if len(data)-i > maxKeyCarry {
+					// Too long to carry: skipped through its final byte.
+					r.inCSI = true
+					return keys
+				}
 				cut(i)
 				return keys
 			}

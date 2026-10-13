@@ -962,8 +962,9 @@ terminal's read, the host's own terminal forwards what it reads) are each a
 key the program reads: an escape sequence is one key, as is a control
 string through its BEL or ST (OSC, DCS, SOS, PM, APC: a terminal's colour or
 version report), and a bracketed paste is text, no key, so an arrow then y
-answers a dialog and a pasted y, or a report's Escapes, do not; a paste or an escape sequence one write leaves unfinished goes on in
-the next (a terminal's reads cut them anywhere), and a write that is all a
+answers a dialog and a pasted y, or a report's Escapes, do not; a paste, a control string or an escape sequence one write leaves
+unfinished goes on in the next (a terminal's reads cut them anywhere; a
+sequence cut longer than 32 bytes is skipped through its final byte), and a write that is all a
 paste's text, a choice's key among it, or the rest of a terminal's own
 report (a sequence's, a control string's), answers nothing, a question the
 session does not hold included, and stamps nobody typing. An Escape that ends a write outside a paste is

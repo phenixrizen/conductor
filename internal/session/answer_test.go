@@ -603,6 +603,8 @@ func TestTheKeysOfWritesCarryWhatOneLeavesUnfinished(t *testing.T) {
 		{"\x1b]10;rgb:f", ""},
 		{"f/f/f\x1b", ""},
 		{"\\y", "y"},
+		{"\x1b[?" + strings.Repeat("1;", 20), ""},
+		{"1;1c2", "2"},
 	} {
 		if got := read(step.write); got != step.keys {
 			t.Fatalf("keys of %q: %q, want %q", step.write, got, step.keys)
@@ -1006,6 +1008,8 @@ func TestAColourOrVersionReportAnswersNothing(t *testing.T) {
 		{"a version report and an arrow", []string{"\x1bP>|xterm.js(6.0.0)\x1b\\\x1b[A"}},
 		{"a colour report cut in its ST", []string{"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b", "\\"}},
 		{"a colour report cut in its body", []string{"\x1b]10;rgb:ff", "ff/ffff/ffff\a"}},
+		// A device report cut past the reader's carry: its rest is no key either (Codex's review, twelfth pass).
+		{"a long report cut past the carry", []string{"\x1b[?" + strings.Repeat("1;", 16), "1c"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
