@@ -337,7 +337,13 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	if !ok {
 		return ErrTooManyRequests
 	}
-	return ed.InputSeq(req.Keys, req.Seq)
+	if err := ed.InputSeq(req.Keys, req.Seq); err != nil {
+		if errors.Is(err, nvim.ErrInputFull) {
+			return ErrTooManyRequests
+		}
+		return err
+	}
+	return nil
 }
 
 // NvimClose ends one of sub's editors: with Discard as `:qa!` does (the
@@ -497,9 +503,24 @@ func truncateRunes(s string, n int) string {
 	return s[:n]
 }
 
+// NvimInputRefused is the nvim_event of kind error for keys that did not
+// reach editor id's Neovim (the bounds, its input full, the editor gone): with
+// the editor's id and the keys' seq as its ack, so the page knows which.
+func NvimInputRefused(id string, seq uint32, err error) []byte {
+	ev := refusal(err)
+	ev.ID, ev.Ack = id, seq
+	return proto.MustControl(ev)
+}
+
 // NvimRefused is the nvim_event of kind error for a refused request: the
 // code names the reason (nvim_unavailable, too_many_requests, file_denied).
 func NvimRefused(reqID string, err error) []byte {
+	ev := refusal(err)
+	ev.ReqID = reqID
+	return proto.MustControl(ev)
+}
+
+func refusal(err error) proto.NvimEvent {
 	code := proto.ErrCodeFileDenied
 	switch {
 	case errors.Is(err, ErrNvimUnavailable):
@@ -507,5 +528,5 @@ func NvimRefused(reqID string, err error) []byte {
 	case errors.Is(err, ErrTooManyRequests):
 		code = proto.ErrCodeTooManyRequests
 	}
-	return proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, Kind: proto.NvimError, ReqID: reqID, Code: code, Message: err.Error()})
+	return proto.NvimEvent{T: proto.CtlNvimEvent, Kind: proto.NvimError, Code: code, Message: err.Error()}
 }

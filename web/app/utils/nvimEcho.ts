@@ -79,6 +79,8 @@ export class NvimEcho {
   /** The last number Neovim acknowledged, and the last it said it has done (settled). */
   private acked = 0
   private settledSeq = 0
+  /** The numbers of keys refused on their way (noteRefused). */
+  private refused = new Set<number>()
   /** The most guesses Neovim's line has been seen to hold since they were laid (tookBack). */
   private most = 0
   /** Neovim is gone (markLost). */
@@ -143,13 +145,23 @@ export class NvimEcho {
    * way. Their acknowledgement is no sign of it: Neovim answers in the middle of a key (a plugin's vim.wait).
    */
   get unsettled(): boolean {
-    return this.seq > this.settledSeq
+    for (let s = this.settledSeq + 1; s <= this.seq; s++) if (!this.refused.has(s)) return true
+    return false
+  }
+
+  /**
+   * The keys numbered seq did not reach Neovim (refused: too many at once, its input full): they will never be done, and its later
+   * word that keys are done does not cover them. Returns them, as sent, for the person to be told.
+   */
+  noteRefused(seq: number): string {
+    this.refused.add(seq)
+    return this.typed.find((g) => g.seq === seq)?.text ?? ''
   }
 
   /** Neovim has done the keys numbered up to seq (the `settled` event). */
   noteSettled(seq: number): void {
     this.settledSeq = Math.max(this.settledSeq, seq)
-    this.typed = this.typed.filter((g) => g.seq > seq)
+    this.typed = this.typed.filter((g) => g.seq > seq || this.refused.has(g.seq))
     if (!this.base || !this.guesses.length || this.guesses[0]!.seq > seq) return
     // Neovim has done the keys of these guesses and sent every change they made: what its text holds of them it holds, and those it
     // does not it made nothing of (a mapping that took the key). The guesses after them stay, laid after what it holds.

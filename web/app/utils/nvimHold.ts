@@ -99,6 +99,7 @@ export class NvimHolds {
       h.stop?.()
       out.push({ path, id: h.id, lost: !!h.state.lost, seq: h.echo?.seq ?? 0, unsettled: !!h.echo?.unsettled })
       this.held.delete(path)
+      this.tell(path)
     }
     return out
   }
@@ -108,8 +109,10 @@ export class NvimHolds {
     return false
   }
   clear(): void {
+    const paths = [...this.held.keys()]
     for (const h of this.held.values()) h.stop?.()
     this.held.clear()
+    for (const path of paths) this.tell(path)
   }
   get size(): number {
     return this.held.size

@@ -439,6 +439,25 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.unconfirmed).toBe('yz<Esc>')
   })
 
+  it('counts a refused key as never coming: not unsettled, not covered by a later settle, and kept among what Neovim never had', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    // y, the last key, refused: only x is waited for.
+    expect(e.noteRefused(2)).toBe('y')
+    expect(e.unsettled).toBe(true)
+    e.noteSettled(1)
+    expect(e.unsettled).toBe(false)
+    // A refused key in the middle: a later key's settle does not take it for done.
+    e.send('z', { line: 1, col: 8 })
+    e.send('w', { line: 1, col: 9 })
+    e.noteRefused(3)
+    e.noteSettled(4)
+    expect(e.unsettled).toBe(false)
+    e.markLost()
+    expect(e.unconfirmed).toBe('yz')
+  })
+
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
     const e = inInsert(doc('alpha'))
     e.send('x', { line: 1, col: 6 })

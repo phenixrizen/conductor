@@ -443,6 +443,33 @@ func TestNeovimEndedByASignalIsALossNotAQuit(t *testing.T) {
 	}
 }
 
+// Keys sent faster than Neovim reads them fill its input buffer, which then
+// takes only part of what it is given: the rest is given again once it has
+// room, and keys it still has no room for are refused (ErrInputFull), never
+// taken for sent. Here a plugin's vim.wait in InsertCharPre lets Neovim
+// answer between the keys it reads, slowly, so the buffer fills.
+func TestKeysNeovimHasNoRoomForAreRefusedNotDropped(t *testing.T) {
+	e, r := cmdlineEditor(t, "\n", "vim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(20) end })\n")
+	k := &typist{t: t, e: e, r: r}
+	k.key("i")
+	r.waitExact(t, "settled 1")
+	keys := strings.Repeat("x", 250)
+	sent, full := 0, false
+	for i := 0; i < 200 && !full; i++ {
+		switch err := e.InputSeq(keys, uint32(i+2)); err {
+		case nil:
+			sent += len(keys)
+		case ErrInputFull:
+			full = true
+		default:
+			t.Fatal(err)
+		}
+	}
+	if !full {
+		t.Fatalf("Neovim took all %d keys: the test filled nothing", sent)
+	}
+}
+
 // Neovim's own quit is told once, as a quit: the end of its output after it
 // (the client's reading ends) tells nothing more.
 func TestAQuitIsToldOnceAsAQuit(t *testing.T) {

@@ -1008,6 +1008,27 @@ func TestAnEditorEndedAsItOpensSaysItClosed(t *testing.T) {
 // end is told: they still reach the page, which keeps the text a lost
 // Neovim last held; the end is told once. A close the page asked for (or the
 // connection going) stops its frames.
+func TestARefusedInputNamesItsEditorAndItsKeys(t *testing.T) {
+	f, err := proto.Decode(NvimInputRefused("e1", 7, ErrTooManyRequests))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev proto.NvimEvent
+	if err := json.Unmarshal(f.Payload, &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != proto.NvimError || ev.ID != "e1" || ev.Ack != 7 || ev.Code != proto.ErrCodeTooManyRequests {
+		t.Fatalf("the refusal: %+v", ev)
+	}
+	// A refused open still carries its request's id alone.
+	f, _ = proto.Decode(NvimRefused("r1", ErrNvimUnavailable))
+	ev = proto.NvimEvent{}
+	_ = json.Unmarshal(f.Payload, &ev)
+	if ev.ReqID != "r1" || ev.ID != "" || ev.Code != proto.ErrCodeNvimUnavailable {
+		t.Fatalf("the open's refusal: %+v", ev)
+	}
+}
+
 func TestALostNeovimsLastChangesComeAfterItsEnd(t *testing.T) {
 	s, _ := newLocal(t, t.TempDir())
 	sink := newChanSink(false)

@@ -120,6 +120,17 @@ describe('NvimHolds', () => {
     ])
   })
 
+  it('tells its listeners of the holds its orphans and clear let go', () => {
+    const h = new NvimHolds()
+    const told: string[] = []
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })
+    h.hold('/w/b.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
+    h.listen((path, held) => told.push(`${path} ${held ? 'held' : 'gone'}`))
+    h.orphans(['/w/b.txt'])
+    h.clear()
+    expect(told).toEqual(['/w/a.txt gone', '/w/b.txt gone'])
+  })
+
   it('says whether a kept Neovim, not lost, has keys it has not said it has done', () => {
     const h = new NvimHolds()
     const text = ['alpha']

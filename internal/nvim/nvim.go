@@ -171,6 +171,17 @@ type Editor struct {
 // ErrClosed is returned by Input once the editor is gone.
 var ErrClosed = errors.New("nvim: the editor has exited")
 
+// ErrInputFull is returned by Input when Neovim's input buffer stayed full:
+// the keys (the rest of them) did not reach it.
+var ErrInputFull = errors.New("nvim: neovim's input is full; keys were not taken")
+
+// inputTries and inputWait bound how long Input gives Neovim's full input
+// buffer to make room: tries times, waiting inputWait when none was taken.
+const (
+	inputTries = 50
+	inputWait  = 20 * time.Millisecond
+)
+
 // exitWait is how long Close lets Neovim leave on its own once its
 // connection is closed, before it is ended (the client's own wait was the
 // same).
@@ -629,11 +640,26 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 	}
 	e.inputMu.Lock()
 	defer e.inputMu.Unlock()
-	if _, err := e.v.Input(keys); err != nil {
-		if e.closed.CompareAndSwap(false, true) {
-			e.h.Exited("error: " + err.Error())
+	// Neovim takes what its input buffer has room for and says how much: the
+	// rest is given again once it has read some, or the keys are refused.
+	for rest, tries := keys, 0; rest != ""; tries++ {
+		n, err := e.v.Input(rest)
+		if err != nil {
+			if e.closed.CompareAndSwap(false, true) {
+				e.h.Exited("error: " + err.Error())
+			}
+			return ErrClosed
 		}
-		return ErrClosed
+		if n >= len(rest) {
+			break
+		}
+		if tries >= inputTries {
+			return ErrInputFull
+		}
+		rest = rest[n:]
+		if n == 0 {
+			time.Sleep(inputWait)
+		}
 	}
 	// A command waiting for its next key (the second g of gg, f's
 	// character) is cancelled by an eval: nvim_get_mode is answered without

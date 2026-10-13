@@ -344,16 +344,16 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 			// done with what it runs.
 			p.edit(sub, len(m.Keys), func() {
 				if err := p.a.local.NvimInput(sub, m); err != nil {
-					p.a.local.Send(sub, session.NvimRefused("", err))
+					p.a.local.Send(sub, session.NvimInputRefused(m.ID, m.Seq, err))
 				}
-			})
+			}, session.NvimInputRefused(m.ID, m.Seq, session.ErrTooManyRequests))
 		case proto.CtlNvimClose:
 			var m proto.NvimClose
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
 			// Ending Neovim waits for it to exit.
-			p.edit(sub, 0, func() { p.a.local.NvimClose(sub, m) })
+			p.edit(sub, 0, func() { p.a.local.NvimClose(sub, m) }, nil)
 		case proto.CtlNvimSwap:
 			var m proto.NvimSwap
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -363,7 +363,7 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 				if err := p.a.local.NvimSwap(sub, m); err != nil {
 					p.a.local.Send(sub, session.NvimRefused("", err))
 				}
-			})
+			}, nil)
 		case proto.CtlFileGet:
 			var m proto.FileGet
 			if json.Unmarshal(f.Payload, &m) != nil {
@@ -429,9 +429,12 @@ func (p *peer) keyIn(sub *session.Subscription, data []byte) {
 // edit queues one of the editor's requests for sub (keys, a swap answer, a
 // close) on the viewer's editing queue: off the frame loop, in the order
 // sent. A full queue refuses it at once (too_many_requests).
-func (p *peer) edit(sub *session.Subscription, size int, run func()) {
+func (p *peer) edit(sub *session.Subscription, size int, run func(), refused []byte) {
 	if !p.editing.add(request{size: size, run: run, live: p.attached(sub)}) {
-		p.a.local.Send(sub, session.NvimRefused("", session.ErrTooManyRequests))
+		if refused == nil {
+			refused = session.NvimRefused("", session.ErrTooManyRequests)
+		}
+		p.a.local.Send(sub, refused)
 	}
 }
 

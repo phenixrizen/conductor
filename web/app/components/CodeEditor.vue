@@ -335,6 +335,9 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done.
       echoAsLeft?.noteAck(ev.ack)
       bridge.holds.changed(path)
+    } else if (ev.kind === 'error' && ev.ack) {
+      echoAsLeft?.noteRefused(ev.ack)
+      bridge.holds.changed(path)
     } else if (ev.kind === 'settled' && ev.ack) {
       echoAsLeft?.noteSettled(ev.ack)
       if (echoAsLeft) h.state.unconfirmed = echoAsLeft.unconfirmed || undefined
@@ -489,11 +492,15 @@ function onNvimEvent(ev: NvimEvent) {
       tellDirty()
       break
     }
-    case 'error':
-      nvimState.message = ev.message ?? ev.code ?? 'error'
+    case 'error': {
+      // Keys refused on their way (their number as ack): they never reached Neovim, and the person is told which.
+      const refused = ev.ack && echo ? echo.noteRefused(ev.ack) : ''
+      nvimState.message = refused ? `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${refused}` : (ev.message ?? ev.code ?? 'error')
       nvimState.messageKind = 'emsg'
       tellNvim()
+      tellDirty()
       break
+    }
   }
 }
 
