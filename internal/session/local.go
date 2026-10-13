@@ -1438,6 +1438,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if err := s.questionWaits(question); err != nil {
 			return err
 		}
+		if err := s.stillOnScreen(question); err != nil {
+			return err
+		}
 	}
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter (a page's choice, a paste): look at the
@@ -1543,6 +1546,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 					return err
 				}
 			}
+			if err := s.stillOnScreen(question); err != nil {
+				return err
+			}
 			return s.claimQuestion(question)
 		}
 	}
@@ -1558,19 +1564,23 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// answered (answer).
 			s.endHold()
 		}
-		// The screen the dialogs are read from as keys that can answer a
-		// dialog are written (an Enter, a dialog's key, a digit, Ctrl+C),
-		// and the dialog it shows; for other keys, typing, it is not read.
-		var screen, words string
-		var onScreen *StartupQuestion
-		if s.asked != nil && (enter || s.askedKeys[string(data)] || listKey(data)) && !isTerminalReport(data) {
-			screen = s.asked.Text()
-			onScreen, words = s.askedIn(screen)
+		// The dialog the screen the dialogs are read from shows as keys
+		// that can answer one are written (an Enter, a single key: a
+		// dialog's shortcut, a digit, Ctrl+C); for others (a paste, an
+		// arrow) it is not read.
+		var words string
+		var onScreen *dialogView
+		if s.asked != nil && (enter || len(data) == 1) && !isTerminalReport(data) {
+			screen := s.asked.Text()
+			var q *StartupQuestion
+			if q, words = s.askedIn(screen); q != nil {
+				onScreen = readDialog(q, words, screen)
+			}
 		}
 		if !isTerminalReport(data) {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
-			s.noteAnswering(promptSince, data, screen, onScreen, words)
+			s.noteAnswering(promptSince, data, onScreen)
 		}
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
@@ -1579,7 +1589,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// The turn a done ended is behind as the Enter is written.
 			s.nextTurn()
 		}
-		if words != "" {
+		if words != "" && (enter || s.askedKeys[string(data)] || listKey(data)) {
 			// A key that answers a dialog on the screen: the look before a
 			// submission does not ask the dialog again before the program
 			// draws what follows (the look at the end of a quiet period
@@ -1777,6 +1787,27 @@ func (s *Local) waitsLocked(id string) error {
 	return nil
 }
 
+// stillOnScreen reports, for a reply to the question named id when that is
+// a dialog asked during the work, whether the screen it is read from still
+// shows it: ErrQuestionAnswered when the screen shows another dialog, not
+// asked yet (the watcher asks once the screen is quiet), or none, for its
+// keys would reach what took its place. nil for any other question.
+func (s *Local) stillOnScreen(id string) error {
+	if s.asked == nil {
+		return nil
+	}
+	s.mu.Lock()
+	att := s.info.Attention
+	s.mu.Unlock()
+	if att.ID != id || att.Source != SourceQuestion {
+		return nil
+	}
+	if _, words := s.askedIn(s.asked.Text()); words != att.Message {
+		return ErrQuestionAnswered
+	}
+	return nil
+}
+
 // claimQuestion is questionWaits, and notes the question as answered in the
 // same critical section: asked as the writer takes the reply's write, the
 // last of its checks (writeWait.guard), so that the write is made when it
@@ -1815,27 +1846,33 @@ func (s *Local) markAnswered(att Attention) {
 // into the terminal, a reply box's line and Conductor's own Enter put a
 // question behind as a reply to it does.
 //
-// screen is the text of the screen the dialogs asked during the work are
-// read from, as the write is taken ("" when not known), and onScreen the
-// dialog it shows then, if any (its words, nil without one), read by the
-// caller before the session's lock: keys that pick one of its answers
-// answer it whether the session has asked it yet or not (the watcher asks
-// a dialog once the screen is quiet), and a dialog with its words asked
-// later, before it has gone, is answered already (sameDialog).
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, screen string, onScreen *StartupQuestion, words string) {
+// onScreen is what the screen the dialogs asked during the work are read
+// from shows as the write is taken, when it shows one (nil otherwise, or
+// when the screen was not read), read by the caller before the session's
+// lock: keys that pick one of its answers answer it whether the session
+// has asked it yet or not (the watcher asks a dialog once the screen is
+// quiet), and a dialog with its words asked later, before it has gone, is
+// answered already (sameDialog). It is the dialog the keys reach: a
+// question the session still shows with other words (one answered and
+// asked again, before the watcher has seen the next) is not what they
+// answer.
+func (s *Local) noteAnswering(promptSince *time.Time, data []byte, onScreen *dialogView) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if onScreen != nil && words != "" && dialogPicks(CleanOptions(onScreen.Answers), data, screen) {
-		s.dialogAnswered = words
+	if onScreen != nil && onScreen.picks(onScreen.answers, data) {
+		s.dialogAnswered = onScreen.words
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
 	var picks bool
-	if att.Source == SourceQuestion {
-		picks = dialogPicks(att.Options, data, screen)
-	} else {
+	switch {
+	case att.Source == SourceQuestion && onScreen != nil && onScreen.words != att.Message:
+		return
+	case att.Source == SourceQuestion:
+		picks = onScreen.picks(att.Options, data)
+	default:
 		picks = bytes.IndexByte(data, '\r') >= 0 || isChoice(att, data)
 	}
 	typedAt := att.Since == promptSince && !heldSource(att.Source)
@@ -1845,12 +1882,24 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, screen string
 	s.markAnswered(att)
 }
 
-// dialogPicks reports whether data picks one of the answers of a dialog
-// whose choices are answers, on screen: an Enter (the highlighted line),
-// one of its choices' keys, Ctrl+C (cancel), or a digit of one of its
-// numbered lines as the screen shows them (a digit past them does nothing;
-// with no numbered line read, every digit counts).
-func dialogPicks(answers []Option, data []byte, screen string) bool {
+// dialogView is a dialog asked during the work as the screen shows it: its
+// words, its question's choices (answers), and what its own rows offer:
+// the keys they name ("(y)", "(p)", "(esc)", "esc to cancel") and how many
+// numbered lines they have (0 when none were read).
+type dialogView struct {
+	words   string
+	answers []Option
+	keys    map[string]bool
+	lines   int
+}
+
+// picks reports whether data picks an answer of the dialog v shows (a nil
+// v: one whose rows were not read) whose choices are answers: an Enter
+// (the highlighted line), one of its choices' keys, a key its rows name
+// (in either case), Ctrl+C (cancel), or a digit of one of its numbered
+// lines (a digit past them does nothing; with none read, every digit
+// counts).
+func (v *dialogView) picks(answers []Option, data []byte) bool {
 	if bytes.IndexByte(data, '\r') >= 0 {
 		return true
 	}
@@ -1862,12 +1911,15 @@ func dialogPicks(answers []Option, data []byte, screen string) bool {
 	if len(data) != 1 {
 		return false
 	}
-	switch d := data[0]; {
+	d := data[0]
+	if v != nil && (v.keys[string(d)] || v.keys[strings.ToLower(string(d))]) {
+		return true
+	}
+	switch {
 	case d == 0x03:
 		return true
 	case d >= '1' && d <= '9':
-		n := dialogLines(screen)
-		return n == 0 || int(d-'0') <= n
+		return v == nil || v.lines == 0 || int(d-'0') <= v.lines
 	}
 	return false
 }
@@ -1876,17 +1928,52 @@ func dialogPicks(answers []Option, data []byte, screen string) bool {
 // proceed (y)", "  2. No, …"): its number.
 var numberedLine = regexp.MustCompile(`^\s*(?:[›❯>]\s*)?([1-9])\.\s`)
 
-// dialogLines returns the highest number of the numbered lines in the
-// last rows of screen, where a dialog is drawn; 0 when there is none.
-func dialogLines(screen string) int {
+// namedKey matches a key a dialog's row names at its end: "(y)", "(esc)".
+var namedKey = regexp.MustCompile(`\(\s*([A-Za-z]{1,3})\s*\)\s*$`)
+
+// escToCancel matches a dialog's footer that names Escape.
+var escToCancel = regexp.MustCompile(`(?i)\besc\b`)
+
+// readDialog is the dialog view of words, the question q's, as screen (its
+// text, rows joined by line breaks) shows it: its numbered lines and the
+// keys its rows name are read from its own rows, the run of rows without a
+// blank one that holds the last numbered line, and the rows below it (the
+// footer); numbered lines elsewhere (a list in the output above) are not
+// its own.
+func readDialog(q *StartupQuestion, words, screen string) *dialogView {
+	v := &dialogView{words: words, answers: CleanOptions(q.Answers), keys: map[string]bool{}}
 	rows := strings.Split(screen, "\n")
-	n := 0
-	for _, row := range rows[max(0, len(rows)-16):] {
-		if m := numberedLine.FindStringSubmatch(row); m != nil {
-			n = max(n, int(m[1][0]-'0'))
+	last := -1
+	for i := len(rows) - 1; i >= 0 && last < 0; i-- {
+		if numberedLine.MatchString(rows[i]) {
+			last = i
 		}
 	}
-	return n
+	if last < 0 {
+		return v
+	}
+	first := last
+	for first > 0 && strings.TrimSpace(rows[first-1]) != "" {
+		first--
+	}
+	for _, row := range rows[first:] {
+		if m := numberedLine.FindStringSubmatch(row); m != nil {
+			v.lines = max(v.lines, int(m[1][0]-'0'))
+		}
+		if m := namedKey.FindStringSubmatch(row); m != nil {
+			key := strings.ToLower(m[1])
+			if key == "esc" {
+				key = "\x1b"
+			}
+			if len(key) == 1 {
+				v.keys[key] = true
+			}
+		}
+		if escToCancel.MatchString(row) {
+			v.keys["\x1b"] = true
+		}
+	}
+	return v
 }
 
 // ErrBadAnswer refuses an answer message out of its bounds

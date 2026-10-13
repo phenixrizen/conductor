@@ -927,17 +927,24 @@ server for its sessions, the host for its own; the same code) looks at the
 question as the reply is asked for and again as the session's writer takes
 its keys, after every write queued before it: it is taken only while that
 question is the session's `needs_input` and nothing written since was made
-to answer it, and then noted as answered in the same step. Every write that
+to answer it, and then noted as answered in the same step; a reply to a
+dialog asked during the work is taken only while the screen still shows that
+dialog, too (a next dialog drawn over it and not asked yet, or none, refuses
+it), for its keys reach whatever the screen shows. Every write that
 answers a question notes it so as the writer takes it: an `answer`'s keys or
 line, a key typed into a terminal (as a controller's input clears a question,
 above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
 before a question showed and written once it shows (they waited behind
 another write) when they pick one of its answers (an Enter, one of its
-choices, and in a dialog Ctrl+C or a digit of one of its numbered lines as
-the screen shows them; a digit past them does nothing, and the dialog, asked
-again, still waits for a reply). Keys that pick an answer of a dialog on the
-screen that the session has not asked yet (it asks once the screen is quiet)
-answer it too. A dialog asked during the work with the words of the one last
+choices, and in a dialog Ctrl+C, a key its rows name, "(p)", "(d)", "esc to
+cancel", whether offered as a choice or not, or a digit of one of its
+numbered lines; a digit past them does nothing, and the dialog, asked again,
+still waits for a reply). A dialog's rows are read from the screen as the
+key is written: the run of rows that holds its last numbered line and the
+footer below, so that a numbered list in the output above is not counted.
+Keys that pick an answer of a dialog on the screen that the session has not
+asked yet (it asks once the screen is quiet) answer that dialog, also while
+the session still shows the one answered before it. A dialog asked during the work with the words of the one last
 answered, asked again before the screen's watcher has seen that one go (a
 quiet screen with no dialog) or another dialog take its place, is that
 question still, for the program may not have taken the key yet: it is asked

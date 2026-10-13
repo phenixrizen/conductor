@@ -416,6 +416,8 @@ func TestADigitAnswersADialogOnlyOnItsNumberedLines(t *testing.T) {
 		{"past the lines", approvalDialog("curl -sI https://example.com"), "9", false},
 		{"deny, past its two lines", deny, "3", false},
 		{"network, its third line", network, "3", true},
+		// A numbered list in the output above is not the dialog's (Codex's review, fourth pass, finding 3).
+		{"deny, under a list of three", "\x1b[8;1H1. Build it\x1b[9;1H2. Test it\x1b[10;1H3. Deploy the build" + deny, "3", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
@@ -441,6 +443,91 @@ func TestADigitAnswersADialogOnlyOnItsNumberedLines(t *testing.T) {
 				t.Fatalf("written %q", got)
 			}
 		})
+	}
+}
+
+// A key typed at the next dialog the screen shows, before the session has
+// asked it, while it still shows the one answered before (asked again,
+// answered): the key reaches the dialog on the screen and answers it, and
+// that dialog, asked after, is asked answered. (Codex's review, fourth
+// pass, finding 1.)
+func TestAKeyAtTheNextDialogAnswersItNotTheOneStillShown(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	first := waitAttention(t, s, asked)
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	// The next approval drawn over the first, and a y typed at it at once.
+	p.outW.Write([]byte(approvalNext("rm -rf build")))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if err := s.Input(jane, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	next := waitAttention(t, s, func(a Attention) bool { return asked(a) && strings.Contains(a.Message, "rm -rf build") })
+	if err := s.AnswerInput(t.Context(), nater, next.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the next approval a key answered before it was asked: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A shortcut a dialog's rows name answers it although the session offers
+// no choice for it: Codex's network approval shows (p) and (d) and is
+// offered Yes and Cancel; p or d typed in its terminal answers it, and a
+// click after is refused. (Codex's review, fourth pass, finding 2.)
+func TestAShortcutTheDialogNamesAnswersIt(t *testing.T) {
+	network := "\x1b[14;3HDo you want to approve network access to \"example.com\"?\x1b[16;1H› 1. Yes, just this once (y)\x1b[17;3H2. Yes, and allow this host in the future (p)\x1b[18;3H3. No, and block this host in the future (d)\x1b[20;3HPress enter to confirm or esc to cancel"
+	for _, key := range []string{"p", "d"} {
+		t.Run(key, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(network))
+			q := waitAttention(t, s, asked)
+			if isChoice(q, []byte(key)) {
+				t.Fatalf("%q is offered as a choice: the test needs one that is not", key)
+			}
+			if err := s.Input(nater, []byte(key)); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+			if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("a click after %q: %v", key, err)
+			}
+			noWrite(t, p, 200*time.Millisecond)
+		})
+	}
+}
+
+// A reply to the dialog the session shows, sent once the screen shows the
+// next one but before the session has asked it (it asks once the screen is
+// quiet), is refused: its key would reach the next dialog. The dialog
+// asked after takes its own reply.
+func TestAReplyToADialogTheScreenNoLongerShowsIsRefused(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	first := waitAttention(t, s, asked)
+	p.outW.Write([]byte(approvalNext("rm -rf build")))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if a := s.Info().Attention; a.ID != first.ID {
+		t.Fatalf("the next dialog was asked already: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the dialog the screen no longer shows: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	next := waitAttention(t, s, func(a Attention) bool { return asked(a) && strings.Contains(a.Message, "rm -rf build") })
+	if err := s.AnswerInput(t.Context(), jane, next.ID, []byte("y")); err != nil {
+		t.Fatalf("the next dialog's own reply: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
 	}
 }
 
