@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -200,7 +201,10 @@ func TestALateReplyNeverLandsOnTheNextQuestion(t *testing.T) {
 	if got := nextWrite(t, p); got != "\x1b" {
 		t.Fatalf("written %q", got)
 	}
-	if a := s.Info(); a.Attention.State != AttentionNone || a.LastAnswer == nil || a.LastAnswer.ByName != "jane" {
+	// An Escape last in a write is the Escape key once no write goes on
+	// with it (escWait): the question is cleared then.
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	if a := s.Info(); a.LastAnswer == nil || a.LastAnswer.ByName != "jane" {
 		t.Fatalf("the next question's own reply: %+v %+v", a.Attention, a.LastAnswer)
 	}
 }
@@ -597,8 +601,13 @@ func TestTheKeysOfWritesCarryWhatOneLeavesUnfinished(t *testing.T) {
 		{"1;5Ay", "\x1b[1;5A|y"},
 		{"\x1bO", ""},
 		{"Pq", "\x1bOP|q"},
-		{"\x1b", "\x1b"},
-		{"\x1b]11;rgb:1/2/3\ay", "\x1b]11;rgb:1/2/3\a|y"},
+		// An Escape last waits for the next write: the Escape key when
+		// that goes on with no sequence, the start of the one it goes on
+		// with otherwise.
+		{"\x1b", ""},
+		{"\x1b]11;rgb:1/2/3\ay", "\x1b|\x1b]11;rgb:1/2/3\a|y"},
+		{"y\x1b", "y"},
+		{"[3;1R", "\x1b[3;1R"},
 		{"\x1bP>|xterm\x1b\\\x1b[B", "\x1bP>|xterm\x1b\\|\x1b[B"},
 		{"\x1b]10;rgb:f", ""},
 		{"f/f/f\x1b", ""},
@@ -1375,6 +1384,91 @@ func TestADigitThatMovesTheHighlightAnswersNothing(t *testing.T) {
 	}
 	if got := nextWrite(t, p); got != "3\r" {
 		t.Fatalf("written %q", got)
+	}
+}
+
+// Codex's update question whose heading and first item have gone from the
+// text the startup questions' watcher keeps (the program redrew a line of
+// it many times): its items are not read, so a digit it offers no reply
+// for (7, which does nothing) answers nothing, and the question still
+// holds a submission back, whose Enter would run npm install. (Codex's
+// review, fourteenth pass, finding 1.)
+func TestAnUnreadDigitNeverClearsAStartupQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	p.outW.Write([]byte(strings.Repeat("\x1b[6;6HSkip", 300)))
+	time.Sleep(200 * time.Millisecond)
+	if text := s.trust.Text(); strings.Contains(text, "Update") {
+		t.Fatalf("the heading is still in the text kept: %q", text[:80])
+	}
+	if err := s.Input(nater, []byte("7")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("a digit not read cleared the question: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A terminal's report cut in two by the host's reads, at any byte (right
+// after its ESC too), while Codex's update question shows: Escape and 3
+// are among its answers, and neither the ESC nor the report's digits clear
+// it; a submission is still held back, nothing written but the report.
+// The ESC alone waits for the next write, which goes on with the report.
+// (Codex's review, fourteenth pass, finding 2.)
+func TestAReportCutAnywhereNeverClearsAStartupQuestion(t *testing.T) {
+	const report = "\x1b[3;1R"
+	for cut := 1; cut < len(report); cut++ {
+		t.Run(fmt.Sprintf("cut at %d", cut), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			p.outW.Write([]byte(codexUpdateScreen))
+			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			for _, part := range []string{report[:cut], report[cut:]} {
+				if err := s.Input(nater, []byte(part)); err != nil {
+					t.Fatal(err)
+				}
+				if got := nextWrite(t, p); got != part {
+					t.Fatalf("written %q", got)
+				}
+			}
+			time.Sleep(2 * escWait)
+			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+				t.Fatalf("the report cleared the question: %+v", a)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a submission at the question: %v", err)
+			}
+			noWrite(t, p, 100*time.Millisecond)
+		})
+	}
+}
+
+// An Escape alone, a person's key (a page's quick reply "Skip this
+// update" too), is the Escape key once no write goes on with it: the
+// update question is cleared then, and the next submission is typed.
+func TestALoneEscapeAnswersAStartupQuestionOnceNothingFollows(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.AnswerInput(t.Context(), nater, update.ID, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a second reply while the Escape waits: %v", err)
+	}
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	if a := s.Info(); a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
+		t.Fatalf("answered by %+v", a.LastAnswer)
 	}
 }
 

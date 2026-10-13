@@ -945,7 +945,9 @@ that pick an answer of the startup question the screen shows, asked yet or
 not, put its screen behind and answer it, the one the session shows read
 again as they are written: one of its choices, an Enter, and, where a digit
 picks at once (one of its choices is a digit alone), the digit of one of
-its numbered items, offered as a choice or not (Codex's background-server
+its numbered items as the output the watcher keeps shows them (with them
+not read, its heading gone from that output, only its choices), offered as
+a choice or not (Codex's background-server
 question takes `2`, to restart; its hooks review, whose digit only moves the
 highlight, is answered by its Enter). A startup question answered and drawn again
 before another takes its place (the program slow to move on) is asked
@@ -982,10 +984,15 @@ unfinished goes on in the next (a terminal's reads cut them anywhere; a
 sequence cut longer than 32 bytes is skipped through its final byte), and a write that is all a
 paste's text, a choice's key among it, or the rest of a terminal's own
 report (a sequence's, a control string's), answers nothing, a question the
-session does not hold included, and stamps nobody typing. An Escape that ends a write outside a paste is
-read as the Escape key: should the next read go on with the rest of a
-sequence, the dialog is held answered until the watcher sees it go, which
-is the safer mistake. While what was written before is unfinished (another
+session does not hold included, and stamps nobody typing. An Escape that
+ends a write outside a paste waits for the next write, at most 50 ms (a
+terminal's read can cut a report right after its ESC): one that goes on
+with a sequence makes it that sequence's start, else it is the Escape key.
+Meanwhile it puts behind the question it may answer (a reply to it is
+refused, the safer mistake) but clears none: a startup question, or a
+prompt whose choice is Escape, is cleared once the Escape is known to be
+the key, so that no submission's Enter reaches a startup question that
+still shows. While what was written before is unfinished (another
 connection's paste, a sequence), an `answer` is refused as `input_failed`,
 nothing written and its question not noted: its key would be read as part
 of it. It can be sent again. A startup question

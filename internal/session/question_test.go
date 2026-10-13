@@ -238,9 +238,8 @@ func TestTheSameApprovalAnsweredThenShownAgainIsAskedAgain(t *testing.T) {
 	if got := nextWrite(t, p); got != "\x1b" {
 		t.Fatalf("written %q", got)
 	}
-	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("Escape did not answer: %q", st)
-	}
+	// The Escape key once no write goes on with it (escWait).
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
 // A person who answers the dialog in its terminal before the session has
