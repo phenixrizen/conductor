@@ -52,12 +52,26 @@
 # That turn ends as Codex's does while its terminal is not focused: a bell
 # after its done ("bell: after done" in the transcript).
 # A line `stub spin N` (N seconds, 1 to 99) makes the stub draw a dot every
-# 100 ms for about N seconds without reading, as an agent draws while it
-# works: what is typed meanwhile waits in the terminal (which echoes it),
-# and a submission's Enter waits for a quiet screen as long as Conductor's
-# look does. It reports nothing and goes into no transcript. A line
-# `stub mouse on` turns any-event mouse tracking on (SGR reports), as
-# Claude Code and Codex do: the pointer over the terminal then sends INPUT.
+# 100 ms for about N seconds and answer nothing, as an agent draws while it
+# works: what is typed meanwhile waits (the terminal echoes it, or the stub
+# in its TUI mode), and a submission's Enter waits for a quiet screen as
+# long as Conductor's look does. It reports nothing and goes into no
+# transcript; $HOME/.stub-sessions/<id>.spin says "spinning" from its first
+# dot and "done" after its last, and anything else written into it (a
+# test's "stop") ends the spin at the next dot: a test ends it once what
+# it does meanwhile is done, rather than guessing how long that takes on a
+# slow machine.
+# A line `stub tui on` makes the stub read as Claude Code's and Codex's
+# TUIs do from then on: any-event mouse tracking on (SGR reports: the
+# pointer over the terminal sends INPUT), and the terminal's own line
+# editing off, the stub reading key by key, also while it spins. It echoes
+# what is typed and keeps the line not yet entered in
+# $HOME/.stub-sessions/<id>.line; Ctrl+U clears it, Backspace erases, the
+# terminal's reports, the mouse's and the paste markers are dropped (the
+# mouse reports read counted in <id>.mouse), and Enter answers the line
+# (one entered while it spins once it is done). The files let a test read
+# what the stub holds whatever the browser draws the terminal with: with
+# WebGL the screen is a canvas and holds no text.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -391,14 +405,156 @@ update_question() {
 	fi
 }
 
-# spin draws a dot every 100 ms for about $1 seconds, reading nothing.
+# The TUI mode (`stub tui on`): tui is set once it is on, tui_line is the
+# line typed and not yet entered, tui_queue the lines entered while the stub
+# spins, mice the mouse reports read; spinning is set while it spins.
+tui= tui_line= mice= spinning=
+tui_queue=()
+
+# tui_save writes the line not yet entered, and the mouse reports read, for
+# a test to read.
+tui_save() {
+	printf '%s' "$tui_line" >"$transcripts/$id.line"
+	printf '%s\n' "${mice:-0}" >"$transcripts/$id.mouse"
+}
+
+# tui_read reads one byte (a character) of input into byte, within $1
+# seconds if given; it fails when none came. A read whose timer runs out as
+# it takes a byte (a busy machine) says it timed out and keeps the byte:
+# that byte is read all the same.
+tui_read() {
+	byte=
+	if [[ -n ${1:-} ]]; then
+		IFS= read -rsn1 -d '' -t "$1" byte || [[ -n $byte ]]
+	else
+		IFS= read -rsn1 -d '' byte
+	fi
+}
+
+# tui_next reads the next byte of an escape sequence begun into byte: at
+# once when it is there (read -t 0 asks without a timer, which a busy
+# machine can run out before the read is made), else within half a second
+# (a lone ESC is the Escape key); it fails when none came.
+tui_next() {
+	if read -t 0; then
+		tui_read
+	else
+		tui_read 0.5
+	fi
+}
+
+# tui_key takes the key whose first byte is $1, reading the rest of an
+# escape sequence: a CSI (a report, the mouse's, a paste marker, a key with
+# a sequence) to its final byte, an SS3 key, an OSC to its BEL or ST; all
+# dropped, a mouse report counted. Enter enters the line, Ctrl+U clears
+# it, Backspace erases, other control characters are dropped, the rest is
+# typed into the line and echoed.
+tui_key() {
+	local k=$1 seq= code
+	case $k in
+	'') ;;
+	$'\e')
+		tui_next || return 0
+		case $byte in
+		'[')
+			while tui_next; do
+				seq+=$byte
+				printf -v code '%d' "'$byte"
+				((code >= 64)) && break
+			done
+			if [[ $seq == M ]]; then
+				# A legacy mouse report: three bytes follow.
+				tui_next || true
+				tui_next || true
+				tui_next || true
+				mice=$((${mice:-0} + 1))
+				tui_save
+			elif [[ $seq == '<'*[Mm] ]]; then
+				mice=$((${mice:-0} + 1))
+				tui_save
+			fi
+			;;
+		O) tui_next || true ;;
+		']')
+			while tui_next; do
+				[[ $byte == $'\a' ]] && break
+				if [[ $byte == $'\e' ]]; then
+					tui_next || true
+					break
+				fi
+			done
+			;;
+		esac
+		;;
+	$'\r' | $'\n')
+		local l=$tui_line
+		tui_line=
+		tui_save
+		printf '\n'
+		if [[ -n $spinning ]]; then
+			tui_queue+=("$l")
+		else
+			handle_line "$l"
+			printf '> %s' "$tui_line"
+		fi
+		;;
+	$'\x15')
+		tui_line=
+		tui_save
+		printf '\r\e[2K> '
+		;;
+	$'\x7f' | $'\b')
+		if [[ -n $tui_line ]]; then
+			tui_line=${tui_line%?}
+			printf '\b \b'
+		fi
+		tui_save
+		;;
+	[[:cntrl:]]) ;;
+	*)
+		tui_line+=$k
+		printf '%s' "$k"
+		tui_save
+		;;
+	esac
+}
+
+# spin draws a dot every 100 ms for about $1 seconds, or until its file
+# says other than "spinning", answering nothing: in the TUI mode it takes
+# keys between the dots (a line entered is answered once it is done),
+# otherwise it reads nothing.
 spin() {
-	local end=$((SECONDS + $1))
+	local end=$((SECONDS + $1)) next left t l st
+	local -a queued
+	spinning=1
+	printf 'spinning\n' >"$transcripts/$id.spin"
 	while ((SECONDS < end)); do
+		st=
+		IFS= read -r st <"$transcripts/$id.spin" || true
+		[[ $st == spinning ]] || break
 		printf .
-		sleep 0.1
+		if [[ -z $tui ]]; then
+			sleep 0.1
+			continue
+		fi
+		next=$((${EPOCHREALTIME/[.,]/} + 100000))
+		while :; do
+			left=$((next - ${EPOCHREALTIME/[.,]/}))
+			((left > 0)) || break
+			printf -v t '%d.%06d' $((left / 1000000)) $((left % 1000000))
+			if tui_read "$t"; then
+				tui_key "$byte"
+			fi
+		done
 	done
 	printf '\n'
+	printf 'done\n' >"$transcripts/$id.spin"
+	spinning=
+	queued=(${tui_queue[@]+"${tui_queue[@]}"})
+	tui_queue=()
+	for l in ${queued[@]+"${queued[@]}"}; do
+		handle_line "$l"
+	done
 }
 
 # answer answers one line.
@@ -495,18 +651,39 @@ if [[ -n ${STUB_CHOICES:-} ]]; then
 	printf '%s [%s]\n' "${STUB_ASK:-Which one?}" "$STUB_CHOICES"
 	report --state needs_input --message "${STUB_ASK:-Which one?}" --choices "$STUB_CHOICES"
 fi
-printf '\e[?2004h> '
-while IFS= read -r line; do
-	line=${line//"$paste_start"/}
-	line=${line//"$paste_end"/}
-	line=${line%$'\r'}
+# handle_line takes one line entered: the stub's own lines, or a line to
+# answer.
+handle_line() {
+	local line=$1
 	if [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
 		spin "${BASH_REMATCH[1]}"
-	elif [[ $line == 'stub mouse on' ]]; then
-		# Any-event mouse tracking in SGR, as Claude Code and Codex turn on.
+	elif [[ $line == 'stub tui on' ]]; then
+		# Any-event mouse tracking in SGR, and keys read one by one with the
+		# terminal's line editing and echo off, as Claude Code and Codex do.
 		printf '\e[?1003h\e[?1006h'
+		stty -icanon -echo min 1 time 0
+		tui=1
+		tui_save
 	elif [[ -n ${line//[[:space:]]/} ]]; then
 		answer "$line"
 	fi
-	printf '> '
+}
+
+printf '\e[?2004h> '
+while :; do
+	if [[ -n $tui ]]; then
+		tui_read || break
+		tui_key "$byte"
+		continue
+	fi
+	IFS= read -r line || break
+	line=${line//"$paste_start"/}
+	line=${line//"$paste_end"/}
+	line=${line%$'\r'}
+	handle_line "$line"
+	if [[ -n $tui ]]; then
+		printf '> %s' "$tui_line"
+	else
+		printf '> '
+	fi
 done
