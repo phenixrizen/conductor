@@ -1,4 +1,29 @@
+import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
+
+/**
+ * Presses lowercase letters in turn as a person typing them quickly does:
+ * the browser is handed every key at once and passes each to the page as
+ * soon as the page has taken the one before. page.keyboard.press waits for
+ * each key's answer before it sends the next, and on a loaded machine that
+ * round trip took up to a second: G's letter then came after the page's
+ * chord had stopped waiting for it (800 ms), and the chord was lost.
+ */
+async function pressInTurn(page: Page, ...keys: string[]) {
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    const sends: Array<Promise<unknown>> = []
+    for (const key of keys) {
+      const code = `Key${key.toUpperCase()}`
+      const windowsVirtualKeyCode = key.toUpperCase().charCodeAt(0)
+      sends.push(cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, text: key, unmodifiedText: key, windowsVirtualKeyCode }))
+      sends.push(cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode }))
+    }
+    await Promise.all(sends)
+  } finally {
+    await cdp.detach()
+  }
+}
 
 // The page chords go by each page's initial: G then Y the Yard, G then R the
 // Roundhouse, G then C Crews (A Agents and E Events as before). The shortcuts
@@ -7,14 +32,11 @@ import { expect, test } from './fixtures'
 test('G then Y, R and C go to the Yard, the Roundhouse and Crews; the modal shows three columns', async ({ page }) => {
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
-  await page.keyboard.press('g')
-  await page.keyboard.press('y')
+  await pressInTurn(page, 'g', 'y')
   await expect(page).toHaveURL(/\/yard/)
-  await page.keyboard.press('g')
-  await page.keyboard.press('r')
+  await pressInTurn(page, 'g', 'r')
   await expect(page).toHaveURL(/\/roundhouse/)
-  await page.keyboard.press('g')
-  await page.keyboard.press('c')
+  await pressInTurn(page, 'g', 'c')
   await expect(page).toHaveURL(/\/crews/)
 
   await page.keyboard.press('?')
