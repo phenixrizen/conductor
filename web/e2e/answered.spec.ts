@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { BrowserContext, Page } from '@playwright/test'
-import { expect, member, test, type Session } from './fixtures'
+import type { Browser, BrowserContext, Locator, Page } from '@playwright/test'
+import { expect, member, test, type Api, type Session } from './fixtures'
 
 // Two people answer the same question: Codex's command approval, with the
 // next approval queued behind it (the stub's `stub approvals a|b`). Nate
@@ -45,12 +45,58 @@ test.afterAll(async ({ api }) => {
 // update, where 1 runs npm install -g @openai/codex: a 1 meant for the first,
 // clicked late from a page that still shows it, must never reach the second.
 test("a late click on Codex's background-server question never reaches its update question", async ({ page, browser, api, state }) => {
+  await startupChain({ page, browser, api, state }, async ({ priya, row, answered, asked }) => {
+    // Nate's 1: the stub runs without the daemon and asks whether to update.
+    await row(page).locator('[data-row-choice="1"]').click()
+    await expect.poll(() => answered('background'), { timeout: 15_000 }).toBe('1')
+    await expect.poll(async () => (await asked()).message ?? '', { timeout: 15_000, message: 'the update question is asked' }).toMatch(/^Update available/)
+    return { next: await asked() }
+  })
+})
+
+// Codex's background-server question also takes 2 (restart with these settings), which no quick reply offers: typed in the
+// terminal, it answers the question, so a 1 clicked late from a page that still shows it is refused and never reaches the update
+// question, which is asked with an id of its own. (Codex's review, thirteenth pass, finding 2.)
+test("a 2 typed in Codex's terminal answers its background-server question, and a late click never reaches the update", async ({ page, browser, api, state }) => {
+  await startupChain({ page, browser, api, state }, async ({ id, first, answered, asked }) => {
+    await page.goto(`/sessions/${encodeURIComponent(id)}`)
+    await page.locator('.terminal-host .xterm-screen').first().click()
+    await page.keyboard.press('2')
+    await expect.poll(() => answered('background'), { timeout: 15_000 }).toBe('2')
+    await expect.poll(async () => (await asked()).message ?? '', { timeout: 15_000, message: 'the update question is asked' }).toMatch(/^Update available/)
+    const next = await asked()
+    expect(next.id).not.toBe(first.id)
+    await page.goto('/crews')
+    return { next }
+  })
+})
+
+type StartupCtx = {
+  priya: Page
+  id: string
+  first: { id?: string }
+  row: (p: Page) => Locator
+  answered: (which: 'background' | 'update') => string
+  asked: () => Promise<{ state: string; message?: string; source?: string; id?: string }>
+}
+
+/**
+ * Codex's startup chain (the stub's background-server question, then its update question) in a crew of one, shown on Nate's
+ * page and on Priya's, whose stream is held back at the background-server question. `answer` answers the first question the
+ * way the test says and returns the update question asked then; Priya then clicks the first question's 1, which is refused
+ * and never reaches the update question, and the update question takes its own answer.
+ */
+async function startupChain(
+  { page, browser, api, state }: { page: Page; browser: Browser; api: Api; state: { home: string; token: string } },
+  answer: (ctx: StartupCtx) => Promise<{ next: { id?: string } }>,
+) {
   const dir = join(state.home, '.codex')
   mkdirSync(dir, { recursive: true })
   const marks = ['stub-background', 'stub-update'].map((m) => join(dir, m))
-  const [background, update] = ['stub-background-answer', 'stub-update-answer'].map((m) => join(dir, m)) as [string, string]
+  const files = { background: join(dir, 'stub-background-answer'), update: join(dir, 'stub-update-answer') }
+  const answered = (which: 'background' | 'update') => (existsSync(files[which]) ? readFileSync(files[which], 'utf8').trim() : '')
   for (const m of marks) writeFileSync(m, '')
-  for (const a of [background, update]) rmSync(a, { force: true })
+  for (const a of Object.values(files)) rmSync(a, { force: true })
   const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
     name: 'e2e answered startup',
     goal: 'answered',
@@ -85,18 +131,14 @@ test("a late click on Codex's background-server question never reaches its updat
       await expect(row(p).locator('[data-row-choice="1"]')).toContainText('Run without the daemon this time')
     }
 
-    // Nate's 1: the stub runs without the daemon and asks whether to update.
-    await row(page).locator('[data-row-choice="1"]').click()
-    await expect.poll(() => (existsSync(background) ? readFileSync(background, 'utf8').trim() : ''), { timeout: 15_000 }).toBe('1')
-    await expect.poll(async () => (await asked()).message ?? '', { timeout: 15_000, message: 'the update question is asked' }).toMatch(/^Update available/)
-    const next = await asked()
+    const { next } = await answer({ priya, id, first, row, answered, asked })
 
     // Priya's page still shows the first question; her 1 names it and is refused, so it never runs the update.
     await row(priya).locator('[data-row-choice="1"]').click()
     const toast = priya.locator('li').filter({ hasText: 'Already answered' }).last()
     await expect(toast).toBeVisible({ timeout: 15_000 })
     await priya.waitForTimeout(1_500)
-    expect(existsSync(update), 'the update question got no answer').toBe(false)
+    expect(answered('update'), 'the update question got no answer').toBe('')
     const waiting = await asked()
     expect(waiting.state).toBe('needs_input')
     expect(waiting.id).toBe(next.id)
@@ -104,13 +146,13 @@ test("a late click on Codex's background-server question never reaches its updat
     // The update question takes its own answer.
     await expect(row(page).locator('[data-row-prompt]')).toContainText('Update available', { timeout: 15_000 })
     await row(page).getByRole('button', { name: /Skip until next version/ }).click()
-    await expect.poll(() => (existsSync(update) ? readFileSync(update, 'utf8').trim() : ''), { timeout: 15_000 }).toBe('skip-version')
+    await expect.poll(() => answered('update'), { timeout: 15_000 }).toBe('skip-version')
   } finally {
     await late?.close()
-    for (const m of [...marks, background, update]) rmSync(m, { force: true })
+    for (const m of [...marks, ...Object.values(files)]) rmSync(m, { force: true })
     await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
   }
-})
+}
 
 /**
  * A second person's workbench whose live stream is held at what the server listed when `listed` was read: every read of the

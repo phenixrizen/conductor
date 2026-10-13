@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -631,7 +632,9 @@ func (s *Local) firePattern(line string) {
 // questions (the workspace-trust question, then Options.Questions) is on
 // the screen, text its last ScreenTail. The session needs input, with the
 // words of the question drawn last in that tail (one that keeps what came
-// before, lastStartup) and its answers, unless it waits already. A look
+// before, lastStartup) and its answers, unless it waits already (on
+// anything but a startup question answered, or one the screen has left for
+// this one). A look
 // that took its text before a startup question was answered (Reset does
 // not wait for one under way) saw the answered screen, and asks nothing:
 // asked again, the question would take a second answer, which the next
@@ -949,7 +952,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// or the session slow to clear it) waits on nothing: the next startup
 	// question takes its place.
 	answeredStartup := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && cur.ID != "" && cur.ID == s.answered
-	if (rules&unlessWaiting != 0 && waiting && !answeredStartup) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook {
+	// A startup question still waiting that the screen has left for
+	// another (drawn after it, lastStartupQ: the program took an answer not
+	// read as one) waits on nothing either: the question the screen shows
+	// takes its place, with an id of its own, and a reply naming the one
+	// left is refused.
+	movedOn := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && state == AttentionNeedsInput && source == SourceTrust && message != cur.Message
+	if (rules&unlessWaiting != 0 && waiting && !answeredStartup && !movedOn) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook {
 		s.mu.Unlock()
 		return nil
 	}
@@ -1663,22 +1672,24 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// screen, put it behind for the replies queued after them.
 			s.noteAnswering(promptSince, data, keys, onScreen)
 			// The startup question showing as the keys are written, when
-			// they pick one of its answers (one key of several, an arrow
-			// then its digit; keys typed before it showed) is answered as
+			// they pick one of its answers (picksStartup: a digit of its
+			// items it offers no reply for too; one key of several, an
+			// arrow then its digit; keys typed before it showed) is answered as
 			// its choice alone answers it: its screen behind now, the
 			// question cleared once written.
-			if shown.State == AttentionNeedsInput && shown.Source == SourceTrust && picksChoice(shown.Options, data, keys) {
+			if shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.startupPicks(shown, data, keys) {
 				startupSince = shown.Since
 			}
 		}
 		// The startup question the screen shows as the keys are written,
 		// asked or not yet (the watcher asks once the screen is quiet): keys
-		// that pick one of its answers answer it, and its screen goes
+		// that pick one of its answers (picksStartup) answer it, and its screen goes
 		// behind, so that the watcher asks only what is drawn after.
 		startupOnScreen := false
 		var startupWords string
 		if s.trust != nil && !quiet && !isTerminalReport(data) && s.trust.Watching() {
-			if q, words := s.lastStartupQ(s.trust.Text()); q != nil && picksChoice(CleanOptions(q.Answers), data, keys) {
+			text := s.trust.Text()
+			if q, words := s.lastStartupQ(text); q != nil && picksStartup(CleanOptions(q.Answers), startupItems(q, text), data, keys) {
 				startupOnScreen, startupWords = true, words
 			}
 		}
@@ -1707,8 +1718,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			s.mu.Unlock()
 			s.trust.Reset()
 		}
-		if enter {
-			// The turn a done ended is behind as the Enter is written.
+		if typedEnter {
+			// The turn a done ended is behind as the Enter is written (an
+			// encoded one too).
 			s.nextTurn()
 		}
 		answering := enter || s.askedKeys[string(data)] || listKey(data)
@@ -2126,6 +2138,83 @@ func picksChoice(answers []Option, data []byte, keys [][]byte) bool {
 	return false
 }
 
+// takesDigit reports whether a startup question whose answers are answers
+// picks one of its numbered items on a digit at once: one of its answers is
+// a digit alone (Codex's background-server and update questions). One whose
+// digit only moves the highlight (Codex's hooks review: its answers are a
+// digit and an Enter) does not.
+func takesDigit(answers []Option) bool {
+	for _, o := range answers {
+		if len(o.Input) == 1 && o.Input[0] >= '1' && o.Input[0] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// startupItem matches a numbered item of a startup question in the text the
+// startup questions' watcher keeps (ScreenTail: its rows run together, each
+// run of white space or control one space): "1. ", "› 2. ".
+var startupItem = regexp.MustCompile(`(?:^|\s)([1-9])\.\s`)
+
+// startupItems returns how many numbered items the startup question q shows
+// in text (the watcher's): items 1, 2, … in order from its heading on (the
+// last match of its words or of its pattern, whichever begins first; the
+// update question's pattern is in its first item); 0 when none is read.
+func startupItems(q *StartupQuestion, text string) int {
+	start := -1
+	if m := q.Pattern.FindAllStringIndex(text, -1); len(m) > 0 {
+		start = m[len(m)-1][0]
+	}
+	if start < 0 {
+		return 0
+	}
+	if q.Words != nil {
+		if m := q.Words.FindAllStringIndex(text, -1); len(m) > 0 && m[len(m)-1][0] < start {
+			start = m[len(m)-1][0]
+		}
+	}
+	n := 0
+	for _, m := range startupItem.FindAllStringSubmatch(text[start:], -1) {
+		if d := int(m[1][0] - '0'); d == n+1 {
+			n = d
+		}
+	}
+	return n
+}
+
+// picksStartup reports whether data, whose keys are keys, answers a startup
+// question whose answers are answers and that shows items numbered items (0
+// when they were not read): one of its answers, or an Enter (picksChoice),
+// or, when a digit picks at once (takesDigit), the digit of one of its
+// items (any digit when none was read). Codex's background-server question
+// takes 2, to restart, though no quick reply offers it.
+func picksStartup(answers []Option, items int, data []byte, keys [][]byte) bool {
+	if picksChoice(answers, data, keys) {
+		return true
+	}
+	if !takesDigit(answers) {
+		return false
+	}
+	return anyKey(keys, func(k []byte) bool {
+		return len(k) == 1 && k[0] >= '1' && k[0] <= '9' && (items == 0 || int(k[0]-'0') <= items)
+	})
+}
+
+// startupPicks is picksStartup for the startup question att shows, its
+// items read from the text the startup questions' watcher keeps while that
+// still shows it.
+func (s *Local) startupPicks(att Attention, data []byte, keys [][]byte) bool {
+	items := 0
+	if s.trust != nil {
+		text := s.trust.Text()
+		if q, words := s.lastStartupQ(text); q != nil && words == att.Message {
+			items = startupItems(q, text)
+		}
+	}
+	return picksStartup(att.Options, items, data, keys)
+}
+
 // picksKey is picks for one key.
 func (v *dialogView) picksKey(answers []Option, key []byte) bool {
 	if isAnswer(answers, key) {
@@ -2350,6 +2439,12 @@ func (r *keyReader) keys(data []byte) [][]byte {
 			}
 			if seq := data[i : j+1]; string(seq) == pasteStart {
 				r.pasting = true
+			} else if key, encoded := encodedKey(seq); encoded {
+				// A key the terminal encodes (CSI u): the key it is, a
+				// release none.
+				if key != nil {
+					keys = append(keys, key)
+				}
 			} else {
 				keys = append(keys, seq)
 			}
@@ -2380,6 +2475,81 @@ func (r *keyReader) keys(data []byte) [][]byte {
 		}
 	}
 	return keys
+}
+
+// encodedKey reads seq, one escape sequence a terminal sent, as a key the
+// terminal encodes once a program asks it to tell keys apart: the kitty
+// keyboard protocol's CSI u (CSI code[:alternates] ; mods[:event] ; text u,
+// which Codex asks for: Escape is ESC [ 2 7 u, Ctrl+C ESC [ 9 9 ; 5 u) and
+// xterm's modifyOtherKeys (CSI 27 ; mods ; code ~). A press or a repeat of a
+// key read the same unencoded is that key: Escape, Enter, Tab, Backspace, a
+// character (Shift and a letter its capital, or the shifted key the
+// terminal names), Ctrl and a letter its control byte; a release is no key
+// (nil). encoded is false for anything else (an arrow, Shift+Enter, a
+// terminal's report such as CSI ? flags u): seq stays the key it is. Caps
+// Lock and Num Lock change nothing.
+func encodedKey(seq []byte) (key []byte, encoded bool) {
+	if len(seq) < 4 || seq[0] != 0x1b || seq[1] != '[' {
+		return nil, false
+	}
+	params, final := string(seq[2:len(seq)-1]), seq[len(seq)-1]
+	if strings.Trim(params, "0123456789:;") != "" || params == "" {
+		return nil, false
+	}
+	fields := strings.Split(params, ";")
+	field := func(i int) []string {
+		if i < len(fields) {
+			return strings.Split(fields[i], ":")
+		}
+		return nil
+	}
+	number := func(subs []string, j, def int) int {
+		if j >= len(subs) || subs[j] == "" {
+			return def
+		}
+		n, err := strconv.Atoi(subs[j])
+		if err != nil || n > 0x10ffff {
+			return -1
+		}
+		return n
+	}
+	var code, shifted, mods, event int
+	switch final {
+	case 'u':
+		codes, mod := field(0), field(1)
+		code, shifted = number(codes, 0, -1), number(codes, 1, -1)
+		mods, event = number(mod, 0, 1), number(mod, 1, 1)
+	case '~':
+		if len(fields) != 3 || fields[0] != "27" {
+			return nil, false
+		}
+		code, shifted, mods, event = number(field(2), 0, -1), -1, number(field(1), 0, 1), 1
+	default:
+		return nil, false
+	}
+	if code < 0 || mods < 1 || event < 1 {
+		return nil, false
+	}
+	switch event {
+	case 1, 2:
+	case 3:
+		return nil, true
+	default:
+		return nil, false
+	}
+	const shift, ctrl, locks = 1, 4, 64 | 128
+	printable := func(c int) bool { return c >= ' ' && c <= '~' }
+	switch m := (mods - 1) &^ locks; {
+	case m == 0 && (code == 27 || code == '\r' || code == '\t' || code == 0x7f || printable(code)):
+		return []byte{byte(code)}, true
+	case m == shift && printable(shifted):
+		return []byte{byte(shifted)}, true
+	case m == shift && code >= 'a' && code <= 'z':
+		return []byte{byte(code - 'a' + 'A')}, true
+	case m == ctrl && code >= 'a' && code <= 'z':
+		return []byte{byte(code - 'a' + 1)}, true
+	}
+	return nil, false
 }
 
 // numberedLine matches a numbered line of a dialog's list ("› 1. Yes,

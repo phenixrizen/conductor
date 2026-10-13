@@ -41,7 +41,7 @@ func TestATerminalReportAnswersNothing(t *testing.T) {
 	}
 	s.SetAttention(AttentionNeedsInput, "READY", SourceAPI)
 	for _, report := range []string{"\x1b[12;40R", "\x1b[?12;40;1R", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b[0n", "\x1b[I", "\x1b[O",
-		"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\", "\x1b]10;rgb:ffff/ffff/ffff\a", "\x1bP>|xterm.js(6.0.0)\x1b\\", "\x1b[12;40R\x1b[I"} {
+		"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\", "\x1b]10;rgb:ffff/ffff/ffff\a", "\x1bP>|xterm.js(6.0.0)\x1b\\", "\x1b[12;40R\x1b[I", "\x1b[?1u"} {
 		if err := s.Input(sub, []byte(report)); err != nil {
 			t.Fatal(err)
 		}
@@ -61,7 +61,8 @@ func TestATerminalReportAnswersNothing(t *testing.T) {
 	}
 	for in, want := range map[string]bool{"\x1b[A": false, "\x1b[12;40Ry": false, "y\x1b[12;40R": false, "": false,
 		strings.Repeat("\x1b[1;1R", 50): false, strings.Repeat("\x1b[1;1R", 30): true,
-		"\x1b[?12;40;1R\x1b[I": true, "\x1b[12;40;1R": false, "\x1b[?12;40;1;1R": false} {
+		"\x1b[?12;40;1R\x1b[I": true, "\x1b[12;40;1R": false, "\x1b[?12;40;1;1R": false,
+		"\x1b[?13u": true, "\x1b[27u": false, "\x1b[99;5u": false} {
 		if got := isTerminalReport([]byte(in)); got != want {
 			t.Errorf("isTerminalReport(%q) = %v", in, got)
 		}

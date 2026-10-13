@@ -877,7 +877,7 @@ func TestAnOlderStartupLookSetsNothingOnceAnAnswerCame(t *testing.T) {
 	}
 	nextWrite(t, p)
 	// The look's question set only now, after the answer.
-	s.setAttentionLooked(AttentionNeedsInput, first.Message, SourceTrust, KindPrompt, first.Options, unlessWaiting|startupLook, look)
+	s.setAttentionLooked(AttentionNeedsInput, first.Message, SourceTrust, KindPrompt, first.Options, unlessWaiting|startupLook, anyTurn, look)
 	if a := s.Info().Attention; a.State != AttentionNone {
 		t.Fatalf("an older look set the answered question again: %+v", a)
 	}
@@ -1192,5 +1192,215 @@ func TestAnswerResultFrames(t *testing.T) {
 	long := "0123456789abcdef0123456789abcdef0"
 	if m := decodeControl(t, AnswerResult(long, ErrBadAnswer)); m["requestId"] != nil {
 		t.Fatalf("a request id past its bound was named: %v", m)
+	}
+}
+
+// A terminal Codex asked to tell its keys apart (the kitty keyboard
+// protocol, a host's own terminal) sends Escape as ESC [ 2 7 u and Ctrl+C
+// as ESC [ 9 9 ; 5 u (xterm's modifyOtherKeys: ESC [ 2 7 ; 5 ; 9 9 ~):
+// each cancels the approval dialog as the plain key does, and puts the
+// question behind for a reply queued after it, nothing more written.
+// (Codex's review, thirteenth pass, finding 1.)
+func TestAnEncodedEscapeOrCtrlCPutsTheQuestionBehind(t *testing.T) {
+	for _, key := range []string{"\x1b[27u", "\x1b[99;5u", "\x1b[27;129u", "\x1b[27;5;99~"} {
+		t.Run(strings.ReplaceAll(key, "\x1b", "ESC"), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+			q := waitAttention(t, s, asked)
+			release := blockFirstWrite(p)
+			defer release()
+			go s.Input(nater, []byte("\x1b[B"))
+			writing(t, s)
+			typed := make(chan error, 1)
+			go func() { typed <- s.Input(nater, []byte(key)) }()
+			queued(t, s, 1)
+			replied := make(chan error, 1)
+			go func() { replied <- s.AnswerInput(t.Context(), jane, q.ID, []byte("y")) }()
+			queued(t, s, 2)
+			release()
+			nextWrite(t, p)
+			if got := nextWrite(t, p); got != key {
+				t.Fatalf("written %q", got)
+			}
+			if err := <-typed; err != nil {
+				t.Fatal(err)
+			}
+			if err := <-replied; !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("the reply after the encoded key: %v", err)
+			}
+			noWrite(t, p, 200*time.Millisecond)
+		})
+	}
+}
+
+// A key's release (ESC [ 2 7 ; 1 : 3 u), and the terminal's reply to the
+// protocol's query (ESC [ ? 1 u), are no keys: they answer nothing, and a
+// reply to the dialog after them is written.
+func TestAKeysReleaseAnswersNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	q := waitAttention(t, s, asked)
+	for _, in := range []string{"\x1b[27;1:3u", "\x1b[?1u"} {
+		if err := s.Input(nater, []byte(in)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); err != nil {
+		t.Fatalf("the reply after a release: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// The key reader reads what a terminal encodes as the key it is: a press or
+// a repeat (Escape, Enter, a character, Shift and a letter, Ctrl and a
+// letter, Caps or Num Lock on or not), a release as no key; what reads
+// otherwise unencoded (Shift+Enter, an arrow, a report) stays the
+// sequence it is; one cut across two writes is read whole.
+func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
+	for in, want := range map[string][]string{
+		"\x1b[27u":       {"\x1b"},
+		"\x1b[27;1:2u":   {"\x1b"},
+		"\x1b[27;1:3u":   nil,
+		"\x1b[99;5u":     {"\x03"},
+		"\x1b[99;133u":   {"\x03"},
+		"\x1b[99;5:3u":   nil,
+		"\x1b[49u":       {"1"},
+		"\x1b[121u":      {"y"},
+		"\x1b[97:65;2u":  {"A"},
+		"\x1b[97;2u":     {"A"},
+		"\x1b[13u":       {"\r"},
+		"\x1b[13;2u":     {"\x1b[13;2u"},
+		"\x1b[99;7u":     {"\x1b[99;7u"},
+		"\x1b[57399u":    {"\x1b[57399u"},
+		"\x1b[27;5;99~":  {"\x03"},
+		"\x1b[2~":        {"\x1b[2~"},
+		"\x1b[?1u":       {"\x1b[?1u"},
+		"\x1b[A":         {"\x1b[A"},
+		"y\x1b[27u2":     {"y", "\x1b", "2"},
+		"\x1b[99999999u": {"\x1b[99999999u"},
+	} {
+		var r keyReader
+		var got []string
+		for _, k := range r.keys([]byte(in)) {
+			got = append(got, string(k))
+		}
+		if strings.Join(got, "|") != strings.Join(want, "|") || len(got) != len(want) {
+			t.Errorf("keys(%q) = %q, want %q", in, got, want)
+		}
+	}
+	var r keyReader
+	if got := r.keys([]byte("\x1b[2")); len(got) != 0 {
+		t.Fatalf("the start of a cut sequence: %q", got)
+	}
+	if got := r.keys([]byte("7u")); len(got) != 1 || string(got[0]) != "\x1b" {
+		t.Fatalf("its end: %q", got)
+	}
+}
+
+// Codex's background-server question takes 2 (restart with these
+// settings), which no quick reply offers: typed in a terminal, it answers
+// the question as its offered choices do, so a 1 queued behind it is
+// refused, nothing written, and the update question drawn after is asked
+// and takes its own reply. A digit past its items answers nothing.
+// (Codex's review, thirteenth pass, finding 2.)
+func TestADigitNoReplyOffersAnswersAStartupQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.Input(nater, []byte("7")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if err := s.questionWaits(first.ID); err != nil {
+		t.Fatalf("a digit past its items answered the question: %v", err)
+	}
+	release := blockFirstWrite(p)
+	defer release()
+	go s.Input(nater, []byte("\x1b[B"))
+	writing(t, s)
+	typed := make(chan error, 1)
+	go func() { typed <- s.Input(nater, []byte("2")) }()
+	queued(t, s, 1)
+	replied := make(chan error, 1)
+	go func() { replied <- s.AnswerInput(t.Context(), jane, first.ID, []byte("1")) }()
+	queued(t, s, 2)
+	release()
+	nextWrite(t, p)
+	if got := nextWrite(t, p); got != "2" {
+		t.Fatalf("written %q", got)
+	}
+	if err := <-typed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replied; !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("the 1 after the 2: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool {
+		return a.Source == SourceTrust && strings.Contains(a.Message, "Update available")
+	})
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); err != nil {
+		t.Fatalf("the update question's own answer: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A startup question whose digit only moves the highlight (Codex's hooks
+// review: an Enter picks) is not answered by a digit: its reply is still
+// written after one.
+func TestADigitThatMovesTheHighlightAnswersNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte("Hooks need review\r\n7 hooks are new or changed.\r\n› 1. Review hooks\r\n  2. Trust all and continue\r\n  3. Continue without trusting (hooks won't run)"))
+	hooks := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.Input(nater, []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if err := s.AnswerInput(t.Context(), jane, hooks.ID, []byte("3\r")); err != nil {
+		t.Fatalf("the reply after a digit that moved the highlight: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3\r" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A startup question the program left without an answer read as one (it
+// moved on by itself, or took a key not read) gives way to the next drawn
+// after it: the update question is asked with an id of its own and takes
+// its own reply, and a reply naming the question left is refused.
+// (Codex's review, thirteenth pass, finding 2.)
+func TestAStartupQuestionTheScreenLeftGivesWayToTheNext(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != first.ID })
+	if !strings.Contains(update.Message, "Update available") {
+		t.Fatalf("the question asked: %+v", update)
+	}
+	if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("1")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the question left: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); err != nil {
+		t.Fatalf("the update question's own answer: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
 	}
 }

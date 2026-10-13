@@ -16,6 +16,7 @@ const terminalReports = `\x1b\[(?:\??\d{1,4};\d{1,4}|\?\d{1,4};\d{1,4};\d{1,4})R
 	`|\x1b\[\??\d{1,5};\d{1,2}\$y` + // DECRPM
 	`|\x1b\[\d{1,2}(?:;\d{1,5}){0,2}t` + // window reports
 	`|\x1b\[[IO]` + // focus in, out
+	`|\x1b\[\?\d{1,3}u` + // kitty keyboard flags
 	`|\x1b\](?:4;\d{1,3}|1[0-2]);rgb:[0-9a-fA-F/]{1,64}(?:\x07|\x1b\\)` + // colour replies
 	`|\x1bP[>!|0-9$+]{1,4}[^\x1b]{0,128}\x1b\\` // DCS replies
 
@@ -24,7 +25,9 @@ const terminalReports = `\x1b\[(?:\??\d{1,4};\d{1,4}|\?\d{1,4};\d{1,4};\d{1,4})R
 // page DECXCPR may end with: ESC[?r;c;pR), a status report, the
 // device attributes (DA1, DA2), a mode report (DECRPM), a window report, a
 // colour query's reply (OSC 4, 10, 11, 12), a DCS reply (XTVERSION, DECRQSS),
-// and the focus in and out reports. One write may carry several. A write of
+// the focus in and out reports, and the kitty keyboard protocol's flags
+// (CSI ? flags u, its reply to the CSI ? u Codex asks before it turns the
+// protocol on). One write may carry several. A write of
 // nothing else does not answer the prompt a session waits on (Input): xterm
 // answers Codex's cursor position query after every turn. A mouse report is
 // a person's click and is not one of them.
@@ -75,7 +78,7 @@ func reportLen(data []byte) int {
 }
 
 // csiReportLen is reportLen for data that starts ESC [: oneReport's CSI
-// alternatives, the terminal's (CPR, DSR, DA, DECRPM, window, focus) and
+// alternatives, the terminal's (CPR, DSR, DA, DECRPM, window, focus, kitty keyboard flags) and
 // the SGR and urxvt mouse reports, read by hand, for the pattern costs some
 // microseconds a report and a write may hold thousands
 // (TestCSIReportLenIsThePatterns keeps the two the same).
@@ -146,6 +149,10 @@ scan:
 		}
 	case 'I', 'O': // focus in, out
 		if lead == 0 && params == 0 {
+			return i + 1
+		}
+	case 'u': // kitty keyboard flags
+		if lead == '?' && within(3) {
 			return i + 1
 		}
 	case 'M', 'm': // SGR mouse; urxvt's, M alone

@@ -126,7 +126,8 @@ resize. Attaching as a controller applies the client's size immediately, unless 
 `hello` says `0, 0`: a viewer that shows the session scaled at the session's
 own size (the view-only run tiles, a quick reply) follows the size and never
 resets it. A terminal's automatic reports (a cursor position report, device
-attributes, focus in and out, colour replies; at most 256 bytes, nothing else
+attributes, focus in and out, colour replies, the kitty keyboard protocol's
+flags; at most 256 bytes, nothing else
 in the frame) are written to the process like any INPUT but do not answer the
 prompt the session waits on. When a session's process ends, its attention is
 cleared in the same change that sets `exited` or `stopped`.
@@ -647,7 +648,9 @@ and clears nothing, nor stamps its viewer as typing: a cursor position report
 device attributes (`ESC[?…c`, `ESC[>…c`), a mode report (`ESC[?<mode>;<n>$y`),
 a window report (`ESC[<n>;…t`), a colour query's reply (`ESC]4;…`, `ESC]10;`
 to `ESC]12;` with `rgb:…`, ended by BEL or ST), a DCS reply such as XTVERSION
-(`ESC P >|… ESC \`), or focus in and out (`ESC[I`, `ESC[O`): a browser's xterm
+(`ESC P >|… ESC \`), focus in and out (`ESC[I`, `ESC[O`), or the kitty
+keyboard protocol's flags (`ESC[?<flags>u`, the reply to the `ESC[?u` Codex
+asks before it turns the protocol on): a browser's xterm
 answers Codex's cursor position query after every turn, and that answer is not
 a person answering Codex. A trust question (`source:"trust"`), and a question
 asked during the work (`source:"question"`), is cleared only by an input with
@@ -940,10 +943,17 @@ nothing (weighed under the lock that sets the question); the startup
 question asked is the one drawn last in the output the watcher keeps; keys
 that pick an answer of the startup question the screen shows, asked yet or
 not, put its screen behind and answer it, the one the session shows read
-again as they are written. A startup question answered and drawn again
+again as they are written: one of its choices, an Enter, and, where a digit
+picks at once (one of its choices is a digit alone), the digit of one of
+its numbered items, offered as a choice or not (Codex's background-server
+question takes `2`, to restart; its hooks review, whose digit only moves the
+highlight, is answered by its Enter). A startup question answered and drawn again
 before another takes its place (the program slow to move on) is asked
 answered, a reply to it refused; one answered never keeps the next from
-being asked. Every write that
+being asked, and nor does one still waiting that the screen has left for
+another drawn after it (the program took an answer not read as one): the
+question drawn last is asked with an `id` of its own, and a reply naming the
+one left is refused. Every write that
 answers a question notes it so as the writer takes it: an `answer`'s keys or
 line, a key typed into a terminal (as a controller's input clears a question,
 above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
@@ -961,7 +971,12 @@ the session still shows the one answered before it. Keys written at once (a
 terminal's read, the host's own terminal forwards what it reads) are each a
 key the program reads: an escape sequence is one key, as is a control
 string through its BEL or ST (OSC, DCS, SOS, PM, APC: a terminal's colour or
-version report), and a bracketed paste is text, no key, so an arrow then y
+version report), a key the terminal encodes once the program asks it to tell
+keys apart (the kitty keyboard protocol's `CSI … u`, which Codex asks for, and
+xterm's modifyOtherKeys `CSI 27 ; … ~`) is the key it stands for (Escape is
+`ESC[27u`, Ctrl+C `ESC[99;5u`; Enter, a character, Shift or Ctrl and a
+letter; Caps and Num Lock change nothing) and its release no key, and a
+bracketed paste is text, no key, so an arrow then y
 answers a dialog and a pasted y, or a report's Escapes, do not; a paste, a control string or an escape sequence one write leaves
 unfinished goes on in the next (a terminal's reads cut them anywhere; a
 sequence cut longer than 32 bytes is skipped through its final byte), and a write that is all a
