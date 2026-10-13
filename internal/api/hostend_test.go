@@ -716,3 +716,70 @@ func TestAViewerThatDoesNotAnswerTheCloseIsCutAtCloseWait(t *testing.T) {
 		t.Fatal("the guest was never let go")
 	}
 }
+
+// slowStop is a publication whose Stop waits for its gate, as a
+// publication's end does for what it still has to send.
+type slowStop struct {
+	*gatedPublication
+	stopping chan struct{}
+	stopOnce sync.Once
+}
+
+func (p *slowStop) Stop() {
+	p.stopOnce.Do(func() { close(p.stopping) })
+	<-p.gate
+}
+
+type slowStopPublisher struct{ p *slowStop }
+
+func (sp slowStopPublisher) Publish(context.Context, *session.Local) (PublishedSession, error) {
+	return sp.p, nil
+}
+func (slowStopPublisher) Server() string { return "https://rendezvous.example.net" }
+
+// A session leaving the server closes its viewers first, before its
+// publication's end, which can take a while: a run link's revoke looks for
+// them in the registry the session has left, so none may still be written
+// anything meanwhile.
+func TestALeavingSessionsViewersGoBeforeItsPublication(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var mu sync.Mutex
+	pub := &slowStop{gatedPublication: &gatedPublication{id: "there", gate: make(chan struct{}), applied: &[]string{}, mu: &mu, done: make(chan struct{})}, stopping: make(chan struct{})}
+	t.Cleanup(func() {
+		select {
+		case <-pub.gate:
+		default:
+			close(pub.gate)
+		}
+	})
+	e.srv.SetPublisher(slowStopPublisher{pub})
+	id := e.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for e.srv.publishedOf(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("not published")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	v := dialViewer(t, e, id, adminToken)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlReady)
+	if resp, _ := e.do("DELETE", "/api/sessions/"+id, adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d", resp.StatusCode)
+	}
+	e.waitEnded(id)
+	removed := make(chan struct{})
+	go func() {
+		e.do("DELETE", "/api/sessions/"+id, adminToken, nil)
+		close(removed)
+	}()
+	select {
+	case <-pub.stopping:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the publication was never stopped")
+	}
+	// The publication's end still waits; the viewer was let go already.
+	v.expectClose(proto.CloseSessionEnded)
+	close(pub.gate)
+	<-removed
+}
