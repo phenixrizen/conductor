@@ -706,6 +706,10 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if s.trust != nil {
 		// A trust question comes before the first prompt, never after.
 		s.trust.Stop()
+		if s.asked != nil && len(s.askedQuestions) == 0 {
+			// The screen kept for the startup questions alone.
+			s.asked.Stop()
+		}
 	}
 	if sub.By != nil {
 		s.stampTyping(sub.By)

@@ -378,8 +378,16 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 		// the fire tells which one shows.
 		s.trust = NewScreenWatcher(anyOf(s.questions), patternQuiet, s.fireTrust)
 	}
-	if len(s.askedQuestions) > 0 {
-		s.asked = NewScreenModelWatcher(anyOf(s.askedQuestions), patternQuiet, int(info.Cols), int(info.Rows), s.fireAsked, s.missAsked)
+	if len(s.askedQuestions) > 0 || len(s.questions) > 0 {
+		// The screen the questions asked during the work are read from. It
+		// is also what tells a startup question held answered gone
+		// (escGone): with startup questions alone it is kept for that,
+		// matching nothing, until the startup questions' watch ends.
+		re := matchNothing
+		if len(s.askedQuestions) > 0 {
+			re = anyOf(s.askedQuestions)
+		}
+		s.asked = NewScreenModelWatcher(re, patternQuiet, int(info.Cols), int(info.Rows), s.fireAsked, s.missAsked)
 		s.askedKeys = map[string]bool{}
 		for _, q := range s.askedQuestions {
 			for _, a := range q.Answers {
@@ -736,6 +744,9 @@ func (s *Local) missAsked(string) {
 // question it asks during its work. Typed text is refused while one shows
 // (Submit), and only its choice or an Enter answers it (Input).
 func heldSource(src string) bool { return src == SourceTrust || src == SourceQuestion }
+
+// matchNothing is a pattern no text matches.
+var matchNothing = regexp.MustCompile(`[^\s\S]`)
 
 // anyOf is one pattern for the questions together: a watcher's, whose fire
 // tells which one shows.
@@ -2447,8 +2458,8 @@ const maxKeyCarry = 32
 // the rest coming in the next, and two writes (a page's frames, ESC then
 // z) can reach the program as one read (Alt+z). The next write that goes
 // on with a sequence makes it that sequence's start; one that does not
-// leaves it no key of its own (keysWritten counted it as one that may be,
-// for the write it ended).
+// makes it, with that write's first key, one Alt chord (the key alone one
+// it may be read as), and an ESC after it the Escape key.
 type keyReader struct {
 	pasting  bool
 	inString bool
@@ -2496,6 +2507,9 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 	switch {
 	case heldAsked:
 		s.heldAnswer.id, s.heldAnswer.words = id, ""
+	case s.heldAnswer.id == id:
+		// Held already (an Escape put it behind, which noted its words
+		// answered): who typed it stays.
 	case startupStill:
 		held := heldStartup{id: id, fed: s.startupAnsweredFed}
 		if last := s.info.LastAnswer; last != nil && last.Message == words {
@@ -2623,21 +2637,12 @@ func (s *Local) startupGone(words string) {
 	}
 }
 
-// continuesSequence reports whether b, after an ESC, makes it the start of
-// an escape sequence or a control string the key reader reads as one key.
-func continuesSequence(b byte) bool {
-	switch b {
-	case '[', 'O', ']', 'P', 'X', '^', '_':
-		return true
-	}
-	return false
-}
-
 // keys returns the keys of data, the next write.
 func (r *keyReader) keys(data []byte) [][]byte {
-	// An Escape held from the write before: the start of the sequence data
-	// goes on with, else no key here.
-	heldIn := r.escHeld
+	// An Escape held from the write before is read with data as one write
+	// is: the start of the sequence data goes on with, the Escape key with
+	// an ESC after it, else an Alt chord with data's first key (the program
+	// may read the two writes as one).
 	if len(r.carry) > 0 {
 		data = append(r.carry, data...)
 		r.carry = nil
@@ -2696,10 +2701,6 @@ func (r *keyReader) keys(data []byte) [][]byte {
 		switch {
 		case data[i] != 0x1b:
 			keys = append(keys, data[i:i+1])
-			i++
-		case i == 0 && heldIn && (i+1 == len(data) || !continuesSequence(data[i+1])):
-			// The Escape held from the write before, which this write does
-			// not go on with: counted for that write, no key here.
 			i++
 		case i+1 == len(data):
 			// An Escape that ends a write: kept until the next write says
@@ -2763,10 +2764,11 @@ func (r *keyReader) keys(data []byte) [][]byte {
 			keys = append(keys, data[i:end])
 			i = end
 		case data[i+1] == 0x1b:
-			// Two ESCs at once: the Escape key, as the program reads them
-			// (Codex's crossterm: Esc).
+			// An ESC another follows: the Escape key, however the program
+			// reads them (Codex's crossterm reads two at once as Esc); the
+			// second is read as it goes on (a report's start, an Alt chord).
 			keys = append(keys, data[i:i+1])
-			i += 2
+			i++
 		default:
 			// ESC and a key at once: one key, the key with Alt (a page's
 			// xterm sends Alt+z as ESC z; Codex's crossterm reads one Alt

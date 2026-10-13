@@ -602,17 +602,17 @@ func TestTheKeysOfWritesCarryWhatOneLeavesUnfinished(t *testing.T) {
 		{"1;5Ay", "\x1b[1;5A|y"},
 		{"\x1bO", ""},
 		{"Pq", "\x1bOP|q"},
-		// An Escape that ends a write is held: the start of the sequence
-		// the next write goes on with, else no key there (it was counted,
-		// as one that may be, for the write it ended).
+		// An Escape that ends a write is held, and read with the next as
+		// one write: the start of the sequence it goes on with, an Alt
+		// chord with its first key, the Escape key with an ESC after it.
 		{"y\x1b", "y"},
 		{"[3;1R", "\x1b[3;1R"},
 		{"\x1b", ""},
-		{"q", "q"},
+		{"q", "\x1bq"},
 		{"\x1b", ""},
-		{"\x1b]11;rgb:1/2/3\ay", "\x1b]11;rgb:1/2/3\a|y"},
+		{"\x1b]11;rgb:1/2/3\ay", "\x1b|\x1b]11;rgb:1/2/3\a|y"},
 		{"\x1b", ""},
-		{"\x1b[A", "\x1b[A"},
+		{"\x1b[A", "\x1b|\x1b[A"},
 		// An X10 mouse report is one key, cut anywhere.
 		{"\x1b[M 1!y", "\x1b[M 1!|y"},
 		{"\x1b[M", ""},
@@ -1310,7 +1310,7 @@ func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 		"\x1b\r":       {"\x1b\r"},
 		"\x1b\xc3\xa9": {"\x1b\xc3\xa9"},
 		"\x1b\x1b":     {"\x1b"},
-		"y\x1b\x1b[A":  {"y", "\x1b", "[", "A"},
+		"y\x1b\x1b[A":  {"y", "\x1b", "\x1b[A"},
 	} {
 		var r keyReader
 		var got []string
@@ -1511,7 +1511,7 @@ func TestAnEscapeBeforeAStartupQuestionIsAskedKeepsItAskable(t *testing.T) {
 func TestAnEscapeEndingATerminalsReadHoldsTheQuestionUntilItGoes(t *testing.T) {
 	for _, asked := range []bool{true, false} {
 		t.Run(fmt.Sprintf("asked %v", asked), func(t *testing.T) {
-			s, p := newLocalWith(t, quiet(Options{Questions: append(startupQuestions(), approvalQuestions()...)}))
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
 			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
 			p.outW.Write([]byte(codexUpdateScreen))
@@ -1593,19 +1593,34 @@ func TestAStaleLookOfTheScreenNeverClearsAHeldStartupQuestion(t *testing.T) {
 // whose Enter would run npm install. A chord whose key alone answers it
 // (Alt+3, Alt+Enter: a program may ignore the Alt) puts it behind, a reply
 // refused, and clears nothing; one whose key does not (Alt+z) leaves it
-// waiting for its reply. (Codex's review, seventeenth pass.)
+// waiting for its reply. The same written as two writes, the ESC and then
+// its key (a page's frames the program may read as one), but for Alt+z:
+// its ESC alone may have been the Escape key, and puts the question
+// behind. (Codex's review, seventeenth pass; twentieth, finding 1.)
 func TestAnAltChordNeverClearsAStartupQuestion(t *testing.T) {
-	for _, chord := range []string{"\x1bz", "\x1b3", "\x1b\r"} {
-		t.Run(fmt.Sprintf("%q", chord), func(t *testing.T) {
+	for _, c := range []struct {
+		chord string
+		split bool
+	}{{"\x1bz", false}, {"\x1b3", false}, {"\x1b\r", false}, {"\x1bz", true}, {"\x1b3", true}, {"\x1b\r", true}} {
+		chord := c.chord
+		t.Run(fmt.Sprintf("%q split %v", chord, c.split), func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
 			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
 			p.outW.Write([]byte(codexUpdateScreen))
 			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
-			if err := s.Input(nater, []byte(chord)); err != nil {
-				t.Fatal(err)
+			// Split, the ESC and its key come as two writes (a page's two
+			// frames), which the program may read as one.
+			parts := []string{chord}
+			if c.split {
+				parts = []string{chord[:1], chord[1:]}
 			}
-			nextWrite(t, p)
+			for _, part := range parts {
+				if err := s.Input(nater, []byte(part)); err != nil {
+					t.Fatal(err)
+				}
+				nextWrite(t, p)
+			}
 			time.Sleep(100 * time.Millisecond)
 			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
 				t.Fatalf("the chord cleared the question: %+v", a)
@@ -1615,7 +1630,7 @@ func TestAnAltChordNeverClearsAStartupQuestion(t *testing.T) {
 			}
 			noWrite(t, p, 100*time.Millisecond)
 			err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3"))
-			if chord == "\x1bz" {
+			if chord == "\x1bz" && !c.split {
 				if err != nil {
 					t.Fatalf("the reply after Alt+z: %v", err)
 				}
@@ -1640,7 +1655,7 @@ func TestAnAltChordNeverClearsAStartupQuestion(t *testing.T) {
 func TestAnEscapeFromAPageHoldsTheQuestionUntilItGoes(t *testing.T) {
 	for _, reply := range []bool{true, false} {
 		t.Run(fmt.Sprintf("reply %v", reply), func(t *testing.T) {
-			s, p := newLocalWith(t, quiet(Options{Questions: append(startupQuestions(), approvalQuestions()...)}))
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
 			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
 			p.outW.Write([]byte(codexUpdateScreen))
@@ -1716,7 +1731,7 @@ func TestAnEncodedCtrlMIsNoEnter(t *testing.T) {
 // again answered, it goes once the screen shows no startup question, and a
 // submission is typed then. (Codex's review, nineteenth pass, finding 2.)
 func TestAStartupQuestionAskedAgainAnsweredGoesWithTheScreen(t *testing.T) {
-	s, p := newLocalWith(t, quiet(Options{Questions: append(startupQuestions(), approvalQuestions()...)}))
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
 	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
 	p.outW.Write([]byte(codexUpdateScreen))
