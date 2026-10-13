@@ -225,10 +225,15 @@ type Local struct {
 	startupAnsweredWords string
 	// heldAnswer is the startup question an Escape a terminal's read ended
 	// with may have answered (holdStartupAnswered): its id once asked, its
-	// words while not asked yet, and who typed it. Held answered, it is
-	// cleared once the screen shows no startup question (escGone). Guarded
-	// by mu.
+	// words while not asked yet, who typed it, and how much output the
+	// screen had been fed then. Held answered, it is cleared once the
+	// screen shows no startup question (escGone). Guarded by mu.
 	heldAnswer heldStartup
+	// feedMu is held while output is fed to the startup questions' watcher
+	// and the screen's (pump), and while escGone and heldGone look at the
+	// screen and put the startup output behind: what they look at is all
+	// that has been fed, and none is put behind unseen. Taken before mu.
+	feedMu sync.Mutex
 
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
@@ -413,12 +418,14 @@ func (s *Local) pump() {
 			if s.pattern != nil {
 				s.pattern.Feed(chunk)
 			}
+			s.feedMu.Lock()
 			if s.trust != nil && !title {
 				s.trust.Feed(chunk)
 			}
 			if s.asked != nil && !title {
 				s.asked.Feed(chunk)
 			}
+			s.feedMu.Unlock()
 		}
 		if err != nil {
 			break
@@ -649,16 +656,14 @@ func (s *Local) firePattern(line string) {
 // question (startupLook).
 func (s *Local) fireTrust(text string) {
 	if q, words := s.lastStartupQ(text); q != nil {
-		if s.asked != nil && s.heldGone(words, s.asked.Text()) {
+		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
 			return
 		}
 		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt())
-		if s.asked != nil {
-			// One held answered that the screen no longer shows (the
-			// program took the Escape) is cleared.
-			s.escGone(s.asked.Text())
-		}
+		// One held answered that the screen no longer shows (the program
+		// took the Escape) is cleared.
+		s.escGone()
 	}
 }
 
@@ -675,7 +680,7 @@ func (s *Local) fireTrust(text string) {
 // dialog with other words than the one last answered is that one gone
 // (dialogAnswered); one with its words is that question still (sameDialog).
 func (s *Local) fireAsked(text string) {
-	s.escGone(text)
+	s.escGone()
 	for _, q := range s.askedQuestions {
 		if words := q.words(text); words != "" {
 			look := s.asked.LookedAt()
@@ -699,8 +704,8 @@ func (s *Local) fireAsked(text string) {
 // not offer (d, a click) or one it did that the program took late. Without
 // such a key it stays: the dialog cannot have been answered, and a held
 // question keeps every Enter from the screen.
-func (s *Local) missAsked(text string) {
-	s.escGone(text)
+func (s *Local) missAsked(string) {
+	s.escGone()
 	look := s.asked.LookedAt()
 	s.mu.Lock()
 	s.dialogGone(look)
@@ -2461,10 +2466,12 @@ func stringEnd(data []byte, i int) (end, cutAt int) {
 }
 
 // heldStartup is a startup question an Escape a terminal's read ended with
-// may have answered: its id (asked) or its words (not asked yet), and who
-// typed it.
+// may have answered: its id (asked) or its words (not asked yet), who typed
+// it, and how many Feeds the screen the questions asked during the work are
+// read from had seen as it was written (fed).
 type heldStartup struct {
 	id, words, by, name string
+	fed                 uint64
 }
 
 // holdStartupAnswered notes the startup question showing, or (words, not
@@ -2476,57 +2483,86 @@ type heldStartup struct {
 func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var fed uint64
+	if s.asked != nil {
+		fed = s.asked.Fed()
+	}
 	att := s.info.Attention
 	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || att.Message == words) {
 		s.markAnswered(att)
-		s.heldAnswer = heldStartup{id: att.ID, by: sub.ID, name: sub.Name}
+		s.heldAnswer = heldStartup{id: att.ID, by: sub.ID, name: sub.Name, fed: fed}
 		return
 	}
 	if words != "" {
-		s.heldAnswer = heldStartup{words: CleanMessage(words), by: sub.ID, name: sub.Name}
+		s.heldAnswer = heldStartup{words: CleanMessage(words), by: sub.ID, name: sub.Name, fed: fed}
 	}
 }
 
 // escGone clears the startup question held answered (heldAnswer) once the
-// screen (screen, the screen's text, Screen.Text) shows no startup
-// question: the program took the Escape and moved on. Its answer is sure
-// then, and its screen is put behind as a sure answer's is (startupGone).
-// Asked at each look of the screen the questions asked during the work are
-// read from, and as a startup question is asked; a session without that
-// screen has nothing to tell it by, and keeps the question until a key
-// surely answers it or the next takes its place.
-func (s *Local) escGone(screen string) {
-	if s.lastStartup(screen) != "" {
+// screen the questions asked during the work are read from shows no
+// startup question, as it is now and after output fed since the Escape was
+// written: the program took the Escape and moved on. Its answer is sure
+// then, and the startup output is put behind as a sure answer's is
+// (startupGone). The look and that are made with no output fed meanwhile
+// (feedMu): a look that took its text earlier (a watcher's, its callback
+// late) is never what decides, and no startup question drawn since is put
+// behind unseen. Asked at each look of that screen, and as a startup
+// question is asked; a session without that screen has nothing to tell it
+// by, and keeps the question until a key surely answers it or the next
+// takes its place.
+func (s *Local) escGone() {
+	if s.asked == nil {
+		return
+	}
+	s.feedMu.Lock()
+	fed := s.asked.Fed()
+	s.mu.Lock()
+	att, held := s.info.Attention, s.heldAnswer
+	s.mu.Unlock()
+	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust || fed <= held.fed || s.lastStartup(s.asked.Text()) != "" {
+		s.feedMu.Unlock()
 		return
 	}
 	s.mu.Lock()
-	att, held := s.info.Attention, s.heldAnswer
-	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust {
+	if s.heldAnswer != held || s.info.Attention.ID != held.id {
 		s.mu.Unlock()
+		s.feedMu.Unlock()
 		return
 	}
 	s.startupGone(att.Message)
 	s.mu.Unlock()
 	s.trust.Reset()
+	s.feedMu.Unlock()
 	s.answer(att.Since, held.by, held.name, true, true)
 }
 
 // heldGone reports whether the startup question with words, about to be
 // asked, is the one an Escape a terminal's read ended with may have
-// answered before it was asked (heldAnswer's words), and the screen
-// (screen, Screen.Text) shows no startup question: the program took the
-// Escape and moved on, and it is not asked; its screen is put behind
-// (startupGone).
-func (s *Local) heldGone(words, screen string) bool {
-	if s.lastStartup(screen) != "" {
+// answered before it was asked (heldAnswer's words), and the screen the
+// questions asked during the work are read from shows no startup question,
+// as it is now and after output fed since the Escape was written: the
+// program took the Escape and moved on, and it is not asked; the startup
+// output is put behind (startupGone). Made as escGone's is, with no output
+// fed meanwhile.
+func (s *Local) heldGone(words string) bool {
+	if s.asked == nil {
+		return false
+	}
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	fed := s.asked.Fed()
+	s.mu.Lock()
+	held := s.heldAnswer
+	s.mu.Unlock()
+	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || s.lastStartup(s.asked.Text()) != "" {
 		return false
 	}
 	s.mu.Lock()
-	if s.heldAnswer.words == "" || s.heldAnswer.words != CleanMessage(words) {
+	if s.heldAnswer != held {
 		s.mu.Unlock()
 		return false
 	}
-	s.startupGone(s.heldAnswer.words)
+	s.startupGone(held.words)
 	s.mu.Unlock()
 	s.trust.Reset()
 	return true

@@ -995,8 +995,10 @@ it puts behind the question it may answer (a reply to it is refused, the
 safer mistake) but clears none, puts no screen behind, and keeps no
 question from being asked. A startup question it may answer, asked or not
 yet, is held answered until the screen the questions asked during the work
-are read from shows no startup question (the program took the Escape and
-moved on: then it is cleared, or never asked), a key surely answers it, or
+are read from shows no startup question, looked at as it is then, after
+output drawn since the Escape, with no output let in meanwhile (the program
+took the Escape and moved on: then it is cleared, or never asked; a look
+taken earlier decides nothing), a key surely answers it, or
 the next startup question takes its place, so that no submission's Enter
 reaches a startup question that still shows; a session without that screen
 keeps it until one of the others. For 50 ms after it an `answer` is

@@ -1543,6 +1543,41 @@ func TestAnEscapeEndingATerminalsReadHoldsTheQuestionUntilItGoes(t *testing.T) {
 	}
 }
 
+// A look of the screen that took its text before the update question was
+// drawn (a blank screen), its callback late, comes after the question is
+// asked and held answered by an Escape that ends a terminal's read, the
+// program having drawn more since: it decides nothing, the screen as it is
+// now (the question still on it) does, and the question still holds a
+// submission back. (Codex's review, sixteenth pass.)
+func TestAStaleLookOfTheScreenNeverClearsAHeldStartupQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: append(startupQuestions(), approvalQuestions()...)}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.InputWaiting(t.Context(), nater, []byte("\x1b")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	// The program redraws the footer: the question is still on the screen.
+	fed := s.asked.Fed()
+	p.outW.Write([]byte("\x1b[9;3H\x1b[1menter\x1b[22m continue"))
+	deadline := time.Now().Add(3 * time.Second)
+	for s.asked.Fed() == fed && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The late callback of a look that saw a blank screen.
+	s.asked.fireMu.Lock()
+	s.missAsked("")
+	s.asked.fireMu.Unlock()
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("a stale look cleared the question: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}
+
 // An Escape alone from a page (a key pressed in its terminal, or its quick
 // reply "Skip this update") is the Escape key: a page's frames carry whole
 // keys. The update question is cleared at once, and a second reply to it
