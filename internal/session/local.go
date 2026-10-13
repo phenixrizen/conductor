@@ -2809,16 +2809,17 @@ var keypadKeys = map[int]byte{
 // keyboard protocol's CSI u (CSI code[:alternates] ; mods[:event] ; text u,
 // which Codex asks for: Escape is ESC [ 2 7 u, Ctrl+C ESC [ 9 9 ; 5 u).
 // xterm's modifyOtherKeys (CSI 27 ; mods ; code ~) is not decoded: Codex's
-// crossterm does not read it as the key it encodes. A press or a repeat of a
-// key read the same unencoded is that key: Escape, Enter, Tab, Backspace, a
+// crossterm does not read it as the key it encodes. A press of a key read
+// the same unencoded is that key: Escape, Enter, Tab, Backspace, a
 // keypad key (its digit, its Enter), a character (Shift and a letter its
 // capital, or the shifted key the
 // terminal names), Ctrl and a letter its control byte (not Ctrl+H, I, J or
 // M, whose bytes are other keys'); a release is no key (nil). encoded is
-// false for anything else (an arrow, Shift+Enter, Ctrl+M, a terminal's
-// report such as CSI ? flags u): seq stays the key it is, and maybe is the
-// key alone a program may read one with modifiers as (Enter for
-// Shift+Enter). Caps Lock and Num Lock change nothing.
+// false for anything else (a repeat, an arrow, Shift+Enter, Ctrl+M, a
+// terminal's report such as CSI ? flags u): seq stays the key it is, and
+// maybe is the key a program may read it as (Enter for a repeated Enter,
+// or for Shift+Enter: a handler may take repeats, or look at the key, not
+// its modifiers). Caps Lock and Num Lock change nothing.
 func encodedKey(seq []byte) (key, maybe []byte, encoded bool) {
 	if len(seq) < 4 || seq[0] != 0x1b || seq[1] != '[' {
 		return nil, nil, false
@@ -2870,19 +2871,29 @@ func encodedKey(seq []byte) (key, maybe []byte, encoded bool) {
 		// Codex's crossterm reads it (its digits, its Enter).
 		code = int(k)
 	}
+	var pressed []byte
 	switch m := (mods - 1) &^ locks; {
 	case m == 0 && (code == 27 || code == '\r' || code == '\t' || code == 0x7f || printable(code)):
-		return []byte{byte(code)}, nil, true
+		pressed = []byte{byte(code)}
 	case m == shift && printable(shifted):
-		return []byte{byte(shifted)}, nil, true
+		pressed = []byte{byte(shifted)}
 	case m == shift && code >= 'a' && code <= 'z':
-		return []byte{byte(code - 'a' + 'A')}, nil, true
+		pressed = []byte{byte(code - 'a' + 'A')}
 	case m == ctrl && code >= 'a' && code <= 'z' && !strings.ContainsRune("hijm", rune(code)):
 		// Ctrl and a letter, its control byte, but for those whose byte
 		// is another key's (Backspace, Tab, a line feed, Enter): the
 		// protocol sends those keys as their own codes, and Codex's
 		// crossterm reads Ctrl+M as Ctrl and m, never Enter.
-		return []byte{byte(code - 'a' + 1)}, nil, true
+		pressed = []byte{byte(code - 'a' + 1)}
+	}
+	if pressed != nil {
+		if event == 2 {
+			// A repeat (a key held down): a program may take it as the
+			// key or ignore it (Codex's trust question ignores repeats),
+			// so it is the key only maybe.
+			return nil, pressed, false
+		}
+		return pressed, nil, true
 	}
 	if code == 27 || code == '\r' || code == '\t' || code == 0x7f || printable(code) {
 		// A key with modifiers read as no other (Shift+Enter, Ctrl+M,

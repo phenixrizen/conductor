@@ -1309,7 +1309,7 @@ func TestAKeysReleaseAnswersNothing(t *testing.T) {
 func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 	for in, want := range map[string][]string{
 		"\x1b[27u":        {"\x1b"},
-		"\x1b[27;1:2u":    {"\x1b"},
+		"\x1b[27;1:2u":    {"\x1b[27;1:2u"},
 		"\x1b[27;1:3u":    nil,
 		"\x1b[99;5u":      {"\x03"},
 		"\x1b[99;133u":    {"\x03"},
@@ -1923,25 +1923,70 @@ func TestAKeypadKeyAnswersAsItsDigit(t *testing.T) {
 // before that redraw takes nothing for gone, and a submission is still
 // held back. (Codex's review, twenty-third pass, finding 1.)
 func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
-	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
-	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
-	p.outW.Write([]byte(codexUpdateScreen))
-	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
-	for _, part := range []string{"\x1b", "z"} {
-		if err := s.Input(nater, []byte(part)); err != nil {
-			t.Fatal(err)
-		}
-		nextWrite(t, p)
+	// In a frame: a synchronized update begun before the resize and ended
+	// after it, drawing nothing at the new size, settles nothing.
+	// (Codex's review, twenty-fourth pass, finding 1.)
+	for _, inFrame := range []bool{false, true} {
+		t.Run(fmt.Sprintf("in a frame %v", inFrame), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			p.outW.Write([]byte(codexUpdateScreen))
+			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			for _, part := range []string{"\x1b", "z"} {
+				if err := s.Input(nater, []byte(part)); err != nil {
+					t.Fatal(err)
+				}
+				nextWrite(t, p)
+			}
+			begin, end := "", ""
+			if inFrame {
+				begin, end = "\x1b[?2026h", "\x1b[?2026l"
+			}
+			p.outW.Write([]byte(begin + "\x1b[24;1Hstatus: ready"))
+			fed := s.asked.Fed()
+			deadline := time.Now().Add(3 * time.Second)
+			for s.asked.Fed() == fed && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if err := s.ResizeWith(nater, 16, 24, true); err != nil {
+				t.Fatal(err)
+			}
+			p.outW.Write([]byte(end))
+			time.Sleep(2 * patternQuiet)
+			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+				t.Fatalf("a clipped question was taken for gone: %+v", a)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a submission at the question: %v", err)
+			}
+			noWrite(t, p, 100*time.Millisecond)
+		})
 	}
-	p.outW.Write([]byte("\x1b[24;1Hstatus: ready"))
-	if err := s.ResizeWith(nater, 16, 24, true); err != nil {
+}
+
+// A key held down at Codex's trust question: the protocol's repeat of Enter
+// (ESC [ 1 3 ; 1 : 2 u), which Codex's trust question ignores, puts it
+// behind (a program may take a repeat) but clears nothing: the question
+// still holds a submission back, whose Enter would grant trust. (Codex's
+// review, twenty-fourth pass, finding 2.)
+func TestARepeatedKeyOnlyPutsTheQuestionBehind(t *testing.T) {
+	trust := []Option{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}}
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), TrustAnswers: trust}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Yes, continue\r\n  2. No, quit\r\n"))
+	q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.InputWaiting(t.Context(), nater, []byte("\x1b[13;1:2u")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(2 * patternQuiet)
-	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
-		t.Fatalf("a clipped question was taken for gone: %+v", a)
+	nextWrite(t, p)
+	if a := s.Info().Attention; a.ID != q.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("a repeat cleared the question: %+v", a)
 	}
-	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("\r")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply after the repeat: %v", err)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); !errors.Is(err, ErrTrustQuestion) {
 		t.Fatalf("a submission at the question: %v", err)
 	}
 	noWrite(t, p, 100*time.Millisecond)

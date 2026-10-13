@@ -68,9 +68,11 @@ type Screen struct {
 	// and this screen holds half of the next.
 	syncing bool
 	// clipped says the screen was made smaller with something on it, and
-	// the program has not drawn it whole since (erased it all, ED 2, or
-	// ended a synchronized update): what it showed is cut, not gone.
-	clipped bool
+	// the program has not drawn it whole since (erased it all, ED 2,
+	// outside a synchronized update, or ended a synchronized update begun
+	// after it): what it showed is cut, not gone. clippedInSync says a
+	// synchronized update under way as it was clipped began before.
+	clipped, clippedInSync bool
 
 	st      screenState
 	params  []byte
@@ -115,8 +117,9 @@ func (s *Screen) Resize(cols, rows int) {
 	cols, rows = min(cols, maxScreenCols), min(rows, maxScreenRows)
 	if (cols < s.cols || rows < s.rows) && strings.TrimSpace(s.text(len(s.cells))) != "" {
 		// What the screen showed is clipped until the program draws it
-		// again (Settled).
-		s.clipped = true
+		// again (Settled): a synchronized update under way began before,
+		// and its end draws nothing at the new size.
+		s.clipped, s.clippedInSync = true, s.syncing
 	}
 	// Rows leave at the top when the cursor would fall off the bottom.
 	shift := max(0, s.y-rows+1)
@@ -430,10 +433,15 @@ func (s *Screen) csi(final byte) {
 				case 1049, 1047, 47:
 					s.altScreen(final == 'h', m == 1049)
 				case 2026:
-					s.syncing = final == 'h'
-					if final == 'l' {
+					switch {
+					case final == 'h':
+						// A frame begun at the size the screen is now.
+						s.clippedInSync = false
+					case s.syncing && !s.clippedInSync:
+						// The end of a frame begun since.
 						s.clipped = false
 					}
+					s.syncing = final == 'h'
 				}
 			}
 		}
@@ -474,7 +482,11 @@ func (s *Screen) csi(final byte) {
 			for r := 0; r < s.rows; r++ {
 				s.erase(r, 0, s.cols)
 			}
-			s.clipped = false
+			if !s.syncing {
+				// Erased whole: what follows is drawn at this size (in a
+				// synchronized update, once it ends).
+				s.clipped = false
+			}
 		}
 		// 3 erases the scrollback, which a Screen does not keep.
 	case 'K':

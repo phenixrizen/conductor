@@ -982,7 +982,10 @@ read as the key it encodes) is the key it stands for (Escape is
 `ESC[27u`, Ctrl+C `ESC[99;5u`; a keypad key its digit or its Enter (KP_1
 `ESC[57400u`), as Codex reads it; Enter, a character, Shift or Ctrl and a
 letter, but Ctrl+H, I, J and M, which stay keys of their own, Codex reading
-Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing) and its release no key; one
+Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing), its
+release no key, and its repeat (a key held down) a key of its own, the key
+counting only as one it may be read as (Codex's trust question ignores
+repeats); one
 with modifiers it reads as no other key (Shift+Enter, Ctrl+3) stays a key
 of its own, its key alone counting only as one it may be read as (a
 program's handler may look at the key, not its modifiers); an ESC
@@ -1013,8 +1016,9 @@ during the work are read from shows no startup question, looked at whole
 (every row, not only the last rows a watcher matches) as it is then, a
 whole frame (no synchronized update, `ESC[?2026h`, begun and not ended:
 a terminal still shows the frame before it; nothing clipped by a smaller
-size the program has not drawn again since, by erasing it all or ending a
-synchronized update: a question cut short is not gone), after output drawn
+size the program has not drawn again since, by erasing it all outside a
+synchronized update or ending one begun after the resize: a question cut
+short is not gone), after output drawn
 since the
 Escape, with no output let in
 meanwhile (the program took the Escape and moved on: then it is cleared,
