@@ -91,6 +91,129 @@ test('the Neovim keymap is off until its button, then keys reach the real Neovim
   }
 })
 
+// The owner, 2026-10-13: the command line took `:%s/foo` and nothing after it. Neovim previews a substitute as its replacement
+// begins (inccommand), and the change it reports for the preview carries no changedtick, which the bridge could not read: it lost
+// Neovim. Now every key of the command line shows, the substitution lands as Neovim has it, Esc on a half-typed one leaves the text
+// as it was (the preview is never the page's text, nor a change to save), and u undoes the substitution.
+test('the command line takes a substitute: :%s/foo/bar/g lands, Esc on a half-typed one changes nothing, u undoes it', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-vim-subst')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'foo one\nfoo two foo\nbaz\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-subst', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    const cmdline = status.locator('[data-nvim-cmdline]')
+    const dirtyDot = area.locator('[data-editor-tab-active] [data-editor-dirty]')
+    await lines.click()
+    // Half-typed, past the replacement's start (where the preview begins): every key shows; Esc leaves the text as it was.
+    await page.keyboard.type(':%s/foo/x')
+    await expect(cmdline).toHaveText(':%s/foo/x', { timeout: 15_000 })
+    // The preview's change comes before the command line it is for: it would show by now.
+    await expect(lines).toContainText('foo two foo')
+    await expect(lines).not.toContainText('x one')
+    await page.keyboard.press('Escape')
+    await expect(cmdline).toHaveCount(0, { timeout: 15_000 })
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/)
+    await expect(lines).toContainText('foo one')
+    await expect(lines).toContainText('foo two foo')
+    await expect(dirtyDot).toHaveCount(0)
+    // The whole substitute: every key shows, Enter runs it, the text reads as Neovim has it.
+    await page.keyboard.type(':%s/foo/bar/g')
+    await expect(cmdline).toHaveText(':%s/foo/bar/g', { timeout: 15_000 })
+    await page.keyboard.press('Enter')
+    await expect(lines).toContainText('bar two bar', { timeout: 15_000 })
+    await expect(lines).toContainText('bar one')
+    await expect(lines).not.toContainText('foo')
+    await expect(status.locator('[data-nvim-message]')).toContainText('3 substitutions on 2 lines')
+    await expect(dirtyDot).toBeVisible()
+    // u undoes it, and the substitution again, then :w writes it.
+    await page.keyboard.type('u')
+    await expect(lines).toContainText('foo two foo', { timeout: 15_000 })
+    await expect(lines).not.toContainText('bar')
+    await page.keyboard.type(':%s/foo/bar/g')
+    await expect(cmdline).toHaveText(':%s/foo/bar/g', { timeout: 15_000 })
+    await page.keyboard.press('Enter')
+    await expect(lines).toContainText('bar two bar', { timeout: 15_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('bar one\nbar two bar\nbaz\n')
+    await expect(dirtyDot).toHaveCount(0, { timeout: 15_000 })
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// The page's own single keys are / (the filter) and ? (the shortcuts): in the editor under the Neovim keymap they are Neovim's, a search
+// each. A substitute's c flag asks at each match on the status line, takes its answers as keys, and the question goes once answered.
+test('in the Neovim keymap / and ? search, and :s///gc asks on the status line until answered', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-vim-search')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'top\nfoo a\nmid\nfoo a\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-search', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    const cmdline = status.locator('[data-nvim-cmdline]')
+    const pos = area.locator('[data-editor-pos]')
+    await lines.click()
+    await page.keyboard.type('gg')
+    await expect(pos).toHaveText('Ln 1, Col 1', { timeout: 15_000 })
+    // / searches forward, n again; ? backward. Neither the page's filter nor its shortcuts open.
+    await page.keyboard.type('/foo')
+    await expect(cmdline).toHaveText('/foo', { timeout: 15_000 })
+    await page.keyboard.press('Enter')
+    await expect(pos).toHaveText('Ln 2, Col 1', { timeout: 15_000 })
+    await page.keyboard.type('n')
+    await expect(pos).toHaveText('Ln 4, Col 1', { timeout: 15_000 })
+    await page.keyboard.type('?foo')
+    await expect(cmdline).toHaveText('?foo', { timeout: 15_000 })
+    await page.keyboard.press('Enter')
+    await expect(pos).toHaveText('Ln 2, Col 1', { timeout: 15_000 })
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    // :%s/a/b/gc asks at each match; y, n, then the question goes.
+    await page.keyboard.type(':%s/a/b/gc')
+    await expect(cmdline).toHaveText(':%s/a/b/gc', { timeout: 15_000 })
+    await page.keyboard.press('Enter')
+    const message = status.locator('[data-nvim-message]')
+    await expect(message).toContainText('replace with b', { timeout: 15_000 })
+    await page.keyboard.type('y')
+    await page.keyboard.type('n')
+    await expect(lines).toContainText('foo b', { timeout: 15_000 })
+    await expect(message).toHaveCount(0, { timeout: 15_000 })
+    await expect(lines).toContainText('foo a')
+    // :g/foo/d deletes both lines; u brings them back.
+    await page.keyboard.type(':g/foo/d')
+    await expect(cmdline).toHaveText(':g/foo/d', { timeout: 15_000 })
+    await page.keyboard.press('Enter')
+    await expect(lines).not.toContainText('foo', { timeout: 15_000 })
+    await expect(lines).toContainText('mid')
+    await page.keyboard.type('u')
+    await expect(lines).toContainText('foo b', { timeout: 15_000 })
+    await expect(lines).toContainText('foo a')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover

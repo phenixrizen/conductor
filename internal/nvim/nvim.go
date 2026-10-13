@@ -22,7 +22,9 @@ import (
 )
 
 // Handler receives what the editor reports. Its methods run on the client's
-// goroutine, one at a time; they must not block on the editor.
+// goroutine, one at a time, but for Exited, which may also come from the
+// caller's keys (Input) or the client's reading as it fails, and the cursor
+// Input and Report tell on the caller's; they must not block on the editor.
 type Handler interface {
 	// Lines says the buffer lines [first, last) became lines (0-based; last
 	// -1 means to the end, used when the whole buffer is sent).
@@ -135,10 +137,16 @@ type Editor struct {
 	closed atomic.Bool
 	// cmdline keeps the last shown command line for cmdline_pos events.
 	cmdContent, cmdPrompt string
+	// asking says the last message shown is one of Neovim's questions
+	// (promptKinds). Like cmdContent it is the client's notification
+	// goroutine's alone (onRedraw, the acknowledgement).
+	asking bool
 	// swap is the last swap file found, for SwapChoice; guarded by mu.
 	swap *Swap
 	// ch is the client's channel in Neovim, which rpcnotify answers on.
 	ch int
+	// previews counts the lines of previews not relayed (the tests read it).
+	previews atomic.Int64
 }
 
 // ErrClosed is returned by Input once the editor is gone.
@@ -198,9 +206,17 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		e.end()
 		return nil, err
 	}
+	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
 	go func() {
 		defer close(served)
-		_ = v.Serve()
+		// The client ends its connection on a message it cannot read (a
+		// preview's lines once were one): Neovim is lost to the editor then,
+		// which says so at once rather than at the next key. Its own exit and
+		// a close end the connection without an error; the context's end,
+		// which kills Neovim, may cut a message short.
+		if err := v.Serve(); err != nil && !isDone(ctx.Done()) && e.closed.CompareAndSwap(false, true) {
+			h.Exited("error: " + err.Error())
+		}
 	}()
 	// Its context's end closes the editor's connection too, at once, and
 	// Neovim's output: what waits on Neovim (its start, keys, a close) is
@@ -210,7 +226,6 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		_ = v.Close()
 		_ = out.Close()
 	})
-	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
 	fail := func(err error) (*Editor, error) {
 		e.end()
 		return nil, err
@@ -231,6 +246,13 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		// Another editor's swap file: open read-only instead of asking (the
 		// question would block the open), and say whose it is.
 		fmt.Sprintf("autocmd SwapExists * let v:swapchoice = 'o' | call rpcnotify(%d, 'conductor_swap', v:swapname, swapinfo(v:swapname))", ch),
+		// No live preview of a substitute (after the person's config, which
+		// has run by now): Neovim shows it by changing the buffer for as long
+		// as the command line is open and undoing it with no change reported,
+		// and its split form opens a window the page has no place for. The
+		// page shows the buffer alone; a preview turned on again later (a
+		// plugin) is not relayed either (the lines event).
+		"set inccommand=",
 	} {
 		if err := v.Command(cmd); err != nil {
 			return fail(err)
@@ -328,7 +350,16 @@ func (e *Editor) register() error {
 	if err := v.RegisterHandler("redraw", e.onRedraw); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufLines, func(buf nvim.Buffer, tick int64, first, last int64, lines [][]byte, more bool) {
+	// The changedtick is v:null in the lines of a preview ('inccommand'):
+	// Neovim's screen showing what a substitute would do, not the buffer,
+	// and undone with no change reported. It is decoded as a pointer, since
+	// a client that cannot read a message ends its connection, and the
+	// preview is never relayed: the page's text is the buffer's alone.
+	if err := v.RegisterHandler(nvim.EventBufLines, func(buf nvim.Buffer, tick *int64, first, last int64, lines [][]byte, more bool) {
+		if tick == nil {
+			e.previews.Add(1)
+			return
+		}
 		e.mu.Lock()
 		cur := e.buf
 		e.mu.Unlock()
@@ -343,7 +374,7 @@ func (e *Editor) register() error {
 	}); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufChangedtick, func(buf nvim.Buffer, tick int64) {}); err != nil {
+	if err := v.RegisterHandler(nvim.EventBufChangedtick, func(buf nvim.Buffer, tick *int64) {}); err != nil {
 		return err
 	}
 	if err := v.RegisterHandler(nvim.EventBufDetach, func(buf nvim.Buffer) {
@@ -411,6 +442,14 @@ func (e *Editor) register() error {
 	if err := v.RegisterHandler("conductor_ack", func(args ...interface{}) {
 		if len(args) < 6 {
 			return
+		}
+		// Neovim acknowledges no keys while it waits on a question
+		// (InputSeq): one now has been answered. Neovim leaves the question
+		// shown with nothing saying so (the last `replace with` of a
+		// `:s///c`), and the page would go on asking it.
+		if e.asking {
+			e.asking = false
+			e.h.Message("", "clear")
 		}
 		e.h.Ack(uint32(toInt(args[0])), toInt(args[1]), toInt(args[2]), fmt.Sprint(args[3]), toInt(args[4]), toInt(args[5]))
 	}); err != nil {
@@ -660,14 +699,22 @@ func (e *Editor) onRedraw(updates ...[]interface{}) {
 			case "msg_show":
 				// [kind, content, replace_last]
 				if len(args) >= 2 {
-					e.h.Message(chunksText(args[1]), fmt.Sprint(args[0]))
+					kind := fmt.Sprint(args[0])
+					e.asking = promptKinds[kind]
+					e.h.Message(chunksText(args[1]), kind)
 				}
 			case "msg_clear":
+				e.asking = false
 				e.h.Message("", "clear")
 			}
 		}
 	}
 }
+
+// promptKinds are the kinds of the messages that are Neovim's questions,
+// shown while it waits for their answer: `:confirm`'s, a substitute's
+// `replace with ...?` (its c flag), and the hit-enter prompt.
+var promptKinds = map[string]bool{"confirm": true, "confirm_sub": true, "return_prompt": true}
 
 // chunksText joins the text of UI content chunks ([[attr_id, text], ...]).
 func chunksText(v interface{}) string {
