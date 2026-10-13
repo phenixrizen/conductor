@@ -2000,6 +2000,50 @@ func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
 	}
 }
 
+// A resize in the middle of a synchronized frame that has erased the
+// screen (blank for the moment): the frame's erase was made at the size
+// before, and its end, drawing the question cut short at that size,
+// settles nothing; the held question is not taken for gone. (Codex's
+// review, twenty-seventh pass.)
+func TestAResizeInsideAFrameSettlesNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	for _, part := range []string{"\x1b", "z"} {
+		if err := s.Input(nater, []byte(part)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	fedNow := func() uint64 { return s.asked.Fed() }
+	feed := func(out string) {
+		t.Helper()
+		fed := fedNow()
+		p.outW.Write([]byte(out))
+		deadline := time.Now().Add(3 * time.Second)
+		for fedNow() == fed && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if err := s.ResizeWith(nater, 16, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	feed("\x1b[?2026h\x1b[2J\x1b[H")
+	if err := s.ResizeWith(nater, 80, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	feed("› 1. Update now\x1b[?2026l")
+	time.Sleep(2 * patternQuiet)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("a frame begun at another size settled the screen: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}
+
 // A key held down at Codex's trust question: the protocol's repeat of Enter
 // (ESC [ 1 3 ; 1 : 2 u), which Codex's trust question ignores, puts it
 // behind (a program may take a repeat) but clears nothing: the question

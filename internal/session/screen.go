@@ -115,11 +115,15 @@ func (s *Screen) Resize(cols, rows int) {
 		cols, rows = 80, 24
 	}
 	cols, rows = min(cols, maxScreenCols), min(rows, maxScreenRows)
-	if (cols != s.cols || rows != s.rows) && strings.TrimSpace(s.text(len(s.cells))) != "" {
-		// What the screen shows was drawn at another size (cut, or laid
-		// out narrower) until the program erases it all and draws it again
-		// (Settled).
-		s.clipped, s.unclipAtEnd = true, false
+	if cols != s.cols || rows != s.rows {
+		if s.syncing || strings.TrimSpace(s.text(len(s.cells))) != "" {
+			// What the screen shows, or the frame under way, was drawn at
+			// another size (cut, or laid out narrower) until the program
+			// erases it all and draws it again (Settled).
+			s.clipped = true
+		}
+		// An erase before the resize settles nothing after it.
+		s.unclipAtEnd = false
 	}
 	// Rows leave at the top when the cursor would fall off the bottom.
 	shift := max(0, s.y-rows+1)
