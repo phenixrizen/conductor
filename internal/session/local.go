@@ -294,6 +294,11 @@ type Local struct {
 	// (Holding). Under mu.
 	held     chan struct{}
 	heldNext chan struct{}
+	// heldOver is the question the hold of the turn took the place of as
+	// it showed (an agent's, waiting on a line: the held text was typed
+	// for it), shown again when a person's keys end the hold without
+	// answering it (endHoldTyped); empty when none. Under mu.
+	heldOver Attention
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.
@@ -1024,6 +1029,12 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		if rules&bellPaced != 0 {
 			s.lastBell = time.Now()
 		}
+		// The agent reports another state (at work, done, another
+		// question): the question the hold took the place of waits no
+		// longer, and does not show again as the hold ends.
+		if o := s.heldOver; o.ID != "" && !(state == o.State && message == o.Message && source == o.Source && kind == o.Kind && sameOptions(options, o.Options)) {
+			s.heldOver = Attention{}
+		}
 		s.mu.Unlock()
 		if state != AttentionNone {
 			label := message
@@ -1082,6 +1093,16 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.lastBell = time.Now()
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
+	if source == SourceSubmit {
+		// The hold of the turn shows (holdTyped): the question it takes the
+		// place of, one the agent asked and not a question on the screen
+		// (which shows over the hold), shows again when a person's keys
+		// end the hold without answering it (endHoldTyped).
+		s.heldOver = Attention{}
+		if cur.State == AttentionNeedsInput && cur.ID != "" && cur.Source != SourceSubmit && !heldSource(cur.Source) {
+			s.heldOver = cur
+		}
+	}
 	if state != AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
@@ -1699,17 +1720,6 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 	}
 	o.before = func() {
-		if typed && question == "" {
-			// A person types into the terminal: a submission's text typed
-			// without its Enter no longer holds the session's turn
-			// (holdTyped), and what comes next is written after these keys.
-			// The terminal's reports, the pointer's among them, type nothing.
-			// A reply's choice (an answer to a question on the screen over
-			// the hold) is no person at the terminal: the text still waits
-			// there, and the hold shows again once the question is
-			// answered (answer).
-			s.endHold()
-		}
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
 		keys, unkeyed, extra := s.keysWritten(data)
@@ -1720,6 +1730,19 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		maybe := keys
 		if held {
 			maybe = append(keys[:len(keys):len(keys)], extra...)
+		}
+		if typed && question == "" {
+			// A person types into the terminal: a submission's text typed
+			// without its Enter no longer holds the session's turn
+			// (holdTyped), and what comes next is written after these keys.
+			// The terminal's reports, the pointer's among them, type nothing.
+			// A reply's choice (an answer to a question on the screen over
+			// the hold) is no person at the terminal: the text still waits
+			// there, and the hold shows again once the question is
+			// answered (answer). Keys that answer nothing (Ctrl+U, the
+			// text killed) leave the question the hold took the place of
+			// waiting still: it shows again (endHoldTyped).
+			s.endHoldTyped(data, maybe)
 		}
 		own := ownKeys(data, keys) && !held
 		quiet = unkeyed || allReports(keys) && !held

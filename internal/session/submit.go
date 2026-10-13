@@ -453,6 +453,7 @@ func (s *Local) holdTyped() {
 	}
 	held := make(chan struct{})
 	s.held = held
+	s.heldOver = Attention{}
 	if s.heldNext != nil {
 		close(s.heldNext)
 		s.heldNext = nil
@@ -482,14 +483,35 @@ func (s *Local) holdTyped() {
 	}
 }
 
-// endHold ends the hold of the session's turn for a typed text, if one
-// stands (holdTyped): a person types into the terminal.
-func (s *Local) endHold() {
+// endHoldTyped ends the hold of the session's turn for a typed text, if
+// one stands, as a person's keys (data, read as maybe) are written: the
+// question the hold took the place of (heldOver), still waiting unless the
+// keys answer it (an Enter, one of its choices), shows again, with its id,
+// and the claim the held text made on it (answered) is let go, so that a
+// reply to it waiting for the turn (Submit, its Question) answers it.
+func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.held != nil {
-		close(s.held)
-		s.held = nil
+	if s.held == nil {
+		s.mu.Unlock()
+		return
+	}
+	close(s.held)
+	s.held = nil
+	over := s.heldOver
+	s.heldOver = Attention{}
+	cur := s.info.Attention
+	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended() && !picksChoice(over.Options, data, maybe)
+	if restore {
+		s.info.Attention = over
+		if s.answered == over.ID {
+			s.answered = ""
+		}
+		s.signalAttention()
+		s.hub.Broadcast(proto.MustControl(attentionMessage(over)))
+	}
+	s.mu.Unlock()
+	if restore {
+		s.notifyChange()
 	}
 }
 

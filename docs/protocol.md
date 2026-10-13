@@ -582,7 +582,12 @@ prompt on the screen, which shows over it whether it came first or after
 another change (an agent's report, an admin's clear) is recorded in the
 activity log, with its state, and not shown. A key that ends the hold
 without answering such a question leaves the question showing, and the
-submissions it refuses refused. `id` names the
+submissions it refuses refused. The question the hold took the place of
+as it showed (one the agent reported, which the held text may have been
+typed for) shows again, with its `id`, when the keys that end the hold do
+not answer it (no Enter, none of its choices: Ctrl+U, the text killed),
+and an `answer` to it waiting for the turn is taken; once the agent has
+reported another state during the hold, it does not. `id` names the
 change as `since` stamps it: 16 hex characters, new with every change that
 shows a state (the same words again change nothing, the id included; a
 dialog asked again as the question just answered is asked answered, see

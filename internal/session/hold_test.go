@@ -705,3 +705,79 @@ func TestRepliesToAQuestionOverAHeldTurn(t *testing.T) {
 		t.Fatal("a reply ended the hold")
 	}
 }
+
+// The hold takes the place of the question the held text was typed for
+// (an agent's, reported, with an id): a reply to it sent meanwhile waits
+// for the turn. A person's keys that answer it not (Ctrl+U, the text
+// killed) end the hold and the question waits still: it shows again, its
+// id the same, and the reply answers it, a line of its own. An Enter (the
+// text entered as its answer), or the agent reporting it went on, leaves
+// it answered: the reply is refused, nothing written.
+func TestAQuestionTheHoldTookThePlaceOfShowsAgainUnlessAnswered(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		keys   string
+		wentOn bool
+		reply  bool
+	}{
+		{"the text killed", "\x15", false, true},
+		{"the text entered", "\r", false, false},
+		{"the agent went on", "\x15", true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
+			var linkRevoked atomic.Bool
+			guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+			owner := ownerOf(t, s)
+			if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			q := s.Info().Attention
+			if q.ID == "" {
+				t.Fatalf("attention %+v", q)
+			}
+			done := submitAsync(s, Submission{Text: "guest line", By: guest, Question: q.ID})
+			if got := written(t, p); got != "guest line" {
+				t.Fatalf("written %q", got)
+			}
+			untilIdle(t, s)
+			linkRevoked.Store(true)
+			s.DisconnectLink(guest.LinkID)
+			if got := <-done; !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+				t.Fatalf("the guest's line: %+v, %v", got.res, got.err)
+			}
+			heldShows(t, s)
+			reply := submitAsync(s, Submission{Text: "owner line", By: owner, Question: q.ID})
+			nothingWritten(t, p, 300*time.Millisecond)
+			if c.wentOn {
+				if err := s.TrySetAttentionFull(AttentionDone, "finished the task", SourceAPI, KindDone, nil); err != nil {
+					t.Fatal(err)
+				}
+				heldShows(t, s)
+			}
+			if err := s.Input(owner, []byte(c.keys)); err != nil {
+				t.Fatal(err)
+			}
+			if got := written(t, p); got != c.keys {
+				t.Fatalf("written %q", got)
+			}
+			got := returnsWithin(t, 5*time.Second, "the reply", func() submitted { return <-reply })
+			if c.reply {
+				for _, want := range []string{"owner line", "\r"} {
+					if w := written(t, p); w != want {
+						t.Fatalf("written %q, want %q", w, want)
+					}
+				}
+				if got.err != nil || !got.res.Entered {
+					t.Fatalf("the reply: %+v, %v", got.res, got.err)
+				}
+			} else {
+				if !errors.Is(got.err, ErrQuestionAnswered) {
+					t.Fatalf("the reply: %+v, %v", got.res, got.err)
+				}
+				nothingWritten(t, p, 100*time.Millisecond)
+			}
+			heldCleared(t, s)
+		})
+	}
+}
