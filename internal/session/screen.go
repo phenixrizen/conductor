@@ -67,6 +67,10 @@ type Screen struct {
 	// not ended it: a terminal shows the frame before it until it ends,
 	// and this screen holds half of the next.
 	syncing bool
+	// clipped says the screen was made smaller with something on it, and
+	// the program has not drawn it whole since (erased it all, ED 2, or
+	// ended a synchronized update): what it showed is cut, not gone.
+	clipped bool
 
 	st      screenState
 	params  []byte
@@ -109,6 +113,11 @@ func (s *Screen) Resize(cols, rows int) {
 		cols, rows = 80, 24
 	}
 	cols, rows = min(cols, maxScreenCols), min(rows, maxScreenRows)
+	if (cols < s.cols || rows < s.rows) && strings.TrimSpace(s.text(len(s.cells))) != "" {
+		// What the screen showed is clipped until the program draws it
+		// again (Settled).
+		s.clipped = true
+	}
 	// Rows leave at the top when the cursor would fall off the bottom.
 	shift := max(0, s.y-rows+1)
 	fit := func(old [][]rune, shift int) [][]rune {
@@ -422,6 +431,9 @@ func (s *Screen) csi(final byte) {
 					s.altScreen(final == 'h', m == 1049)
 				case 2026:
 					s.syncing = final == 'h'
+					if final == 'l' {
+						s.clipped = false
+					}
 				}
 			}
 		}
@@ -462,6 +474,7 @@ func (s *Screen) csi(final byte) {
 			for r := 0; r < s.rows; r++ {
 				s.erase(r, 0, s.cols)
 			}
+			s.clipped = false
 		}
 		// 3 erases the scrollback, which a Screen does not keep.
 	case 'K':
@@ -554,8 +567,10 @@ func (s *Screen) Text() string { return s.text(len(s.cells)) }
 const maxLookRows = 80
 
 // Settled reports whether the screen is a whole frame: no synchronized
-// update (2026) begun and not ended, which a terminal would not show yet.
-func (s *Screen) Settled() bool { return !s.syncing }
+// update (2026) begun and not ended, which a terminal would not show yet,
+// and nothing clipped by a smaller size that the program has not drawn
+// again (a resize clips what showed; the program redraws it).
+func (s *Screen) Settled() bool { return !s.syncing && !s.clipped }
 
 // Last is what a PatternWatcher matches: Text, its last maxLookRows rows.
 func (s *Screen) Last() string { return s.text(maxLookRows) }

@@ -2793,6 +2793,14 @@ func (r *keyReader) keys(data []byte) [][]byte {
 	return keys
 }
 
+// keypadKeys are the kitty keyboard protocol's codes for the keypad's keys
+// that type something (KP_0 to KP_9, the decimal point, the operators,
+// Enter, equals, the separator), and the key each types.
+var keypadKeys = map[int]byte{
+	57399: '0', 57400: '1', 57401: '2', 57402: '3', 57403: '4', 57404: '5', 57405: '6', 57406: '7', 57407: '8', 57408: '9',
+	57409: '.', 57410: '/', 57411: '*', 57412: '-', 57413: '+', 57414: '\r', 57415: '=', 57416: ',',
+}
+
 // encodedKey reads seq, one escape sequence a terminal sent, as a key the
 // terminal encodes once a program asks it to tell keys apart: the kitty
 // keyboard protocol's CSI u (CSI code[:alternates] ; mods[:event] ; text u,
@@ -2800,7 +2808,8 @@ func (r *keyReader) keys(data []byte) [][]byte {
 // xterm's modifyOtherKeys (CSI 27 ; mods ; code ~) is not decoded: Codex's
 // crossterm does not read it as the key it encodes. A press or a repeat of a
 // key read the same unencoded is that key: Escape, Enter, Tab, Backspace, a
-// character (Shift and a letter its capital, or the shifted key the
+// keypad key (its digit, its Enter), a character (Shift and a letter its
+// capital, or the shifted key the
 // terminal names), Ctrl and a letter its control byte (not Ctrl+H, I, J or
 // M, whose bytes are other keys'); a release is no key (nil). encoded is
 // false for anything else (an arrow, Shift+Enter, Ctrl+M, a
@@ -2852,6 +2861,11 @@ func encodedKey(seq []byte) (key []byte, encoded bool) {
 	}
 	const shift, ctrl, locks = 1, 4, 64 | 128
 	printable := func(c int) bool { return c >= ' ' && c <= '~' }
+	if k, ok := keypadKeys[code]; ok {
+		// A keypad key (the protocol's own codes): the key it types, as
+		// Codex's crossterm reads it (its digits, its Enter).
+		code = int(k)
+	}
 	switch m := (mods - 1) &^ locks; {
 	case m == 0 && (code == 27 || code == '\r' || code == '\t' || code == 0x7f || printable(code)):
 		return []byte{byte(code)}, true

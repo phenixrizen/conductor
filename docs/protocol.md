@@ -979,7 +979,8 @@ version report), a key the terminal encodes once the program asks it to tell
 keys apart (the kitty keyboard protocol's `CSI … u`, which Codex asks for;
 not xterm's modifyOtherKeys `CSI 27 ; … ~`, which Codex's crossterm does not
 read as the key it encodes) is the key it stands for (Escape is
-`ESC[27u`, Ctrl+C `ESC[99;5u`; Enter, a character, Shift or Ctrl and a
+`ESC[27u`, Ctrl+C `ESC[99;5u`; a keypad key its digit or its Enter (KP_1
+`ESC[57400u`), as Codex reads it; Enter, a character, Shift or Ctrl and a
 letter, but Ctrl+H, I, J and M, which stay keys of their own, Codex reading
 Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing) and its release no key, an ESC
 and a key at once are one key, that key with Alt (a page's xterm sends
@@ -1008,7 +1009,10 @@ asked or not yet, is held answered until the screen the questions asked
 during the work are read from shows no startup question, looked at whole
 (every row, not only the last rows a watcher matches) as it is then, a
 whole frame (no synchronized update, `ESC[?2026h`, begun and not ended:
-a terminal still shows the frame before it), after output drawn since the
+a terminal still shows the frame before it; nothing clipped by a smaller
+size the program has not drawn again since, by erasing it all or ending a
+synchronized update: a question cut short is not gone), after output drawn
+since the
 Escape, with no output let in
 meanwhile (the program took the Escape and moved on: then it is cleared,
 answered by whoever sent the Escape, or never asked; a look taken earlier

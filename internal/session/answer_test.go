@@ -1308,27 +1308,31 @@ func TestAKeysReleaseAnswersNothing(t *testing.T) {
 // sequence it is; one cut across two writes is read whole.
 func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 	for in, want := range map[string][]string{
-		"\x1b[27u":       {"\x1b"},
-		"\x1b[27;1:2u":   {"\x1b"},
-		"\x1b[27;1:3u":   nil,
-		"\x1b[99;5u":     {"\x03"},
-		"\x1b[99;133u":   {"\x03"},
-		"\x1b[99;5:3u":   nil,
-		"\x1b[49u":       {"1"},
-		"\x1b[121u":      {"y"},
-		"\x1b[97:65;2u":  {"A"},
-		"\x1b[97;2u":     {"A"},
-		"\x1b[13u":       {"\r"},
-		"\x1b[13;2u":     {"\x1b[13;2u"},
-		"\x1b[99;7u":     {"\x1b[99;7u"},
-		"\x1b[109;5u":    {"\x1b[109;5u"},
-		"\x1b[57399u":    {"\x1b[57399u"},
-		"\x1b[27;5;99~":  {"\x1b[27;5;99~"},
-		"\x1b[2~":        {"\x1b[2~"},
-		"\x1b[?1u":       {"\x1b[?1u"},
-		"\x1b[A":         {"\x1b[A"},
-		"y\x1b[27u2":     {"y", "\x1b", "2"},
-		"\x1b[99999999u": {"\x1b[99999999u"},
+		"\x1b[27u":        {"\x1b"},
+		"\x1b[27;1:2u":    {"\x1b"},
+		"\x1b[27;1:3u":    nil,
+		"\x1b[99;5u":      {"\x03"},
+		"\x1b[99;133u":    {"\x03"},
+		"\x1b[99;5:3u":    nil,
+		"\x1b[49u":        {"1"},
+		"\x1b[121u":       {"y"},
+		"\x1b[97:65;2u":   {"A"},
+		"\x1b[97;2u":      {"A"},
+		"\x1b[13u":        {"\r"},
+		"\x1b[13;2u":      {"\x1b[13;2u"},
+		"\x1b[99;7u":      {"\x1b[99;7u"},
+		"\x1b[109;5u":     {"\x1b[109;5u"},
+		"\x1b[57399u":     {"0"},
+		"\x1b[57400u":     {"1"},
+		"\x1b[57414u":     {"\r"},
+		"\x1b[57400;1:3u": nil,
+		"\x1b[57441u":     {"\x1b[57441u"},
+		"\x1b[27;5;99~":   {"\x1b[27;5;99~"},
+		"\x1b[2~":         {"\x1b[2~"},
+		"\x1b[?1u":        {"\x1b[?1u"},
+		"\x1b[A":          {"\x1b[A"},
+		"y\x1b[27u2":      {"y", "\x1b", "2"},
+		"\x1b[99999999u":  {"\x1b[99999999u"},
 		// ESC and a key at once is one Alt chord, two ESCs the Escape key.
 		"\x1bz":        {"\x1bz"},
 		"\x1b\r":       {"\x1b\r"},
@@ -1835,6 +1839,81 @@ func TestAHeldStartupQuestionIsNotGoneOnHalfAFrame(t *testing.T) {
 	}
 	p.outW.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything\x1b[?2026l"))
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+}
+
+// A keypad key as a terminal with the kitty protocol sends it (KP_1 is
+// ESC [ 5 7 4 0 0 u), which Codex's crossterm reads as its digit: a keypad 1
+// answers the background-server question, so a 1 queued behind it naming
+// that question is refused, nothing more written; a keypad 3 answers the
+// update question and clears it. (Codex's review, twenty-third pass,
+// finding 2.)
+func TestAKeypadKeyAnswersAsItsDigit(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	release := blockFirstWrite(p)
+	defer release()
+	go s.Input(nater, []byte("\x1b[B"))
+	writing(t, s)
+	typed := make(chan error, 1)
+	go func() { typed <- s.InputWaiting(t.Context(), nater, []byte("\x1b[57400u")) }()
+	queued(t, s, 1)
+	replied := make(chan error, 1)
+	go func() { replied <- s.AnswerInput(t.Context(), jane, first.ID, []byte("1")) }()
+	queued(t, s, 2)
+	release()
+	nextWrite(t, p)
+	if got := nextWrite(t, p); got != "\x1b[57400u" {
+		t.Fatalf("written %q", got)
+	}
+	if err := <-typed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replied; !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("the 1 after the keypad 1: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	waitAttention(t, s, func(a Attention) bool {
+		return a.Source == SourceTrust && strings.Contains(a.Message, "Update available")
+	})
+	if err := s.InputWaiting(t.Context(), nater, []byte("\x1b[57402u")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+}
+
+// A terminal made narrower clips what the screen showed: Codex's update
+// question, held by an Escape, cut to "› 1. Update now" no longer reads as
+// itself, but it is not gone (Codex redraws it at the new size): a look
+// before that redraw takes nothing for gone, and a submission is still
+// held back. (Codex's review, twenty-third pass, finding 1.)
+func TestAClippedStartupQuestionIsNotGone(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	for _, part := range []string{"\x1b", "z"} {
+		if err := s.Input(nater, []byte(part)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	p.outW.Write([]byte("\x1b[24;1Hstatus: ready"))
+	if err := s.ResizeWith(nater, 16, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * patternQuiet)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("a clipped question was taken for gone: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
 }
 
 // An X10 mouse report (ESC [ M and three bytes: the button and the cell),
