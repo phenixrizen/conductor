@@ -258,18 +258,23 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.waiting).toBe(false)
   })
 
-  it('notes an acknowledgement that comes while its tab is not in front, and drops the guesses keys ending them undid', () => {
+  it('notes an acknowledgement that comes while its tab is not in front; what Neovim made of the keys shows in their changes', () => {
     const d = doc('alpha')
     const e = inInsert(d)
     e.send('x', { line: 1, col: 6 })
     e.send('<BS>', { line: 1, col: 7 })
-    e.finish()
-    expect(d.text).toEqual(['alpha'])
-    expect(e.waiting).toBe(true)
+    // No change of Neovim's yet: x, typed, stays (Neovim may not have had it, nor the Backspace after it).
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphax'])
     e.noteAck(1)
     expect(e.waiting).toBe(true)
     e.noteAck(2)
     expect(e.waiting).toBe(false)
+    expect(d.text).toEqual(['alphax'])
+    // Its changes come: x, then the Backspace taking it back. Neovim's text stands.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alpha'] })).toBe(false)
+    expect(d.text).toEqual(['alpha'])
     // With no barrier, a kept guess stays through an acknowledgement: its line comes as a late one.
     const d2 = doc('alpha')
     const e2 = inInsert(d2)
@@ -279,6 +284,35 @@ describe('the local echo when Neovim is lost', () => {
     expect(d2.text).toEqual(['alphax'])
     expect(e2.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
     expect(d2.text).toEqual(['alphax'])
+  })
+
+  it('keeps characters typed before an Escape when Neovim had none of them as it was lost', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.send('<Esc>', { line: 1, col: 8 })
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+  })
+
+  it('retires the guesses of keys Neovim says it has done, though no change of theirs came (a mapping took the key)', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    expect(e.showing).toBe(true)
+    e.noteSettled(1)
+    expect(e.showing).toBe(false)
+    expect(d.text).toEqual(['alpha'])
+    // In front too: the acknowledgement settles nothing (the line does not hold x), the word that it is done does.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('x', { line: 1, col: 6 })
+    e2.cursor({ line: 1, col: 6, mode: 'i', ack: 1 }, ascii)
+    expect(d2.text).toEqual(['alphax'])
+    e2.noteSettled(1)
+    expect(d2.text).toEqual(['alpha'])
+    expect(e2.showing).toBe(false)
   })
 
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {

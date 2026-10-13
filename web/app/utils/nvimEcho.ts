@@ -79,6 +79,8 @@ export class NvimEcho {
   /** The last number Neovim acknowledged, and the last it said it has done (settled). */
   private acked = 0
   private settledSeq = 0
+  /** The most guesses Neovim's line has been seen to hold since they were laid (tookBack). */
+  private most = 0
   private mode = 'n'
   private paused = false // a guess went wrong: none until insert mode is left
   private barrier = 0 // keys that end the guesses: nothing guessed until they are acknowledged
@@ -125,21 +127,26 @@ export class NvimEcho {
   /** Neovim has done the keys numbered up to seq (the `settled` event). */
   noteSettled(seq: number): void {
     this.settledSeq = Math.max(this.settledSeq, seq)
+    // Neovim has done the keys of every guess, and sent every change they made: what its text holds of them it holds; the rest it
+    // made nothing of (a mapping that took the key).
+    const last = this.guesses[this.guesses.length - 1]
+    if (last && last.seq <= seq) {
+      let base = this.base
+      this.unshow()
+      for (const ev of this.held.splice(0)) base = this.apply(ev, base)
+      this.guesses = []
+      this.base = null
+      this.most = 0
+    }
   }
 
   /**
-   * An acknowledgement that comes while the echo's tab is not in front (finish, then its follower): only its number is noted, the
-   * keys up to it handled; the line changes it covers came, or come, as late ones (lateLines).
+   * An acknowledgement that comes while the echo's tab is not in front (finish, then its follower): only its number is noted. It is no
+   * sign the keys are done (Neovim answers in the middle of a key); what Neovim made of them shows in their late line changes
+   * (lateLines) and once it says it has done them (noteSettled).
    */
   noteAck(ack: number): void {
     this.acked = Math.max(this.acked, ack)
-    if (this.barrier && ack >= this.barrier) {
-      // Keys that end the guesses are handled: Neovim's text stands.
-      this.unshow()
-      this.guesses = []
-      this.base = null
-      this.barrier = 0
-    }
   }
 
   /** The guesses' range on screen, for the editor's marking. */
@@ -217,8 +224,13 @@ export class NvimEcho {
   finish(): boolean {
     let base = this.base
     this.unshow()
-    for (const ev of this.held.splice(0)) base = this.apply(ev, base)
-    return this.relay(base)
+    // Each change it sent is weighed as it came: one that holds fewer of the guesses than an earlier one took some back (a Backspace).
+    let stands = false
+    for (const ev of this.held.splice(0)) {
+      base = this.apply(ev, base)
+      stands ||= this.tookBack(base)
+    }
+    return this.relay(base, stands)
   }
 
   /**
@@ -229,23 +241,51 @@ export class NvimEcho {
     let base = this.base
     this.unshow()
     base = this.apply(ev, base)
-    return this.relay(base)
+    return this.relay(base, this.tookBack(base))
   }
 
-  /** Neovim's text changed under the guesses (finish, lateLines): those its line holds go, the rest is laid again over it. */
-  private relay(base: { line: number; col: number; text: string } | null): boolean {
-    if (base && this.guesses.length && !this.barrier) {
-      const now = this.doc.line(base.line)
-      for (let k = this.guesses.length; k >= 0; k--) {
+  /** How many of the guesses Neovim's line holds, laid where they were (-1: it is not the line they were laid on as it was). */
+  private holds(base: { line: number; col: number; text: string }): number {
+    const now = this.doc.line(base.line)
+    for (let k = this.guesses.length; k >= 0; k--) {
+      const done = this.guesses
+        .slice(0, k)
+        .map((g) => g.text)
+        .join('')
+      if (now === base.text.slice(0, base.col - 1) + done + base.text.slice(base.col - 1)) return k
+    }
+    return -1
+  }
+
+  /**
+   * Whether Neovim's line, after a change, shows it did something with the guesses beyond typing them: it is not their line any more,
+   * or it holds fewer of them than it once did. Neovim's text then stands. Notes the most it has held.
+   */
+  private tookBack(base: { line: number; col: number; text: string } | null): boolean {
+    if (!base || !this.guesses.length) return false
+    const k = this.holds(base)
+    if (k < 0 || k < this.most) return true
+    this.most = k
+    return false
+  }
+
+  /**
+   * Neovim's text changed under the guesses (finish, lateLines): those its line holds go, the rest is laid again over it, unless
+   * Neovim's text stands (tookBack). Keys that end the guesses (an Escape) do not end them here: whatever came after them in order, so
+   * did they, and Neovim's line says how far it got.
+   */
+  private relay(base: { line: number; col: number; text: string } | null, stands: boolean): boolean {
+    if (base && this.guesses.length && !stands) {
+      const k = this.holds(base)
+      const rest = k < 0 ? [] : this.guesses.slice(k)
+      if (rest.length) {
         const done = this.guesses
           .slice(0, k)
           .map((g) => g.text)
           .join('')
-        if (now !== base.text.slice(0, base.col - 1) + done + base.text.slice(base.col - 1)) continue
-        const rest = this.guesses.slice(k)
-        if (!rest.length) break
-        this.base = { line: base.line, col: base.col + done.length, text: now }
+        this.base = { line: base.line, col: base.col + done.length, text: this.doc.line(base.line) }
         this.guesses = rest
+        this.most = 0
         this.held = []
         this.show()
         return true
@@ -262,6 +302,7 @@ export class NvimEcho {
     this.held = []
     this.barrier = 0
     this.paused = false
+    this.most = 0
   }
 
   private settle(ack: number) {

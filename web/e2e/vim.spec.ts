@@ -523,6 +523,61 @@ test("Don't save holds for its own close only: a later close keeps a change stil
   }
 })
 
+// Save in the close question writes even with an operator waiting for its motion (d), which never settles by itself: the write goes in
+// order after it, ending the wait. And a key an insert mapping takes without changing the text (q here) shows at once, then goes once
+// Neovim says it is done: no change, no dot.
+test('Save writes with an operator waiting; a key a mapping takes leaves no change behind', async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(join(config, 'init.lua'), "vim.keymap.set('i', 'q', '<Nop>')\n")
+  const cwd = join(state.root, 'files-vim-pending')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'op.txt'), 'op\n')
+  writeFileSync(join(cwd, 'nop.txt'), 'nop\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-pending', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const question = page.locator('[role="dialog"]')
+    const dot = area.locator('[data-editor-tab-active] [data-editor-dirty]')
+    await pane.locator(`[data-file-node="${cwd}/op.txt"]`).click()
+    await expect(lines).toContainText('op', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('Ayy')
+    await page.keyboard.press('Escape')
+    await expect(dot).toBeVisible({ timeout: 15_000 })
+    await page.keyboard.type('d')
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(question).toContainText('Save op.txt?')
+    await question.locator('[data-editor-close-save]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 15_000 })
+    expect(readFileSync(join(cwd, 'op.txt'), 'utf8')).toBe('opyy\n')
+    // q in insert mode: shown at once, gone once Neovim is done with it, and nothing to save.
+    await pane.locator(`[data-file-node="${cwd}/nop.txt"]`).click()
+    await expect(lines).toContainText('nop', { timeout: 30_000 })
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('A')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await page.keyboard.type('q')
+    await expect(lines).not.toContainText('nopq', { timeout: 15_000 })
+    await expect(dot).toHaveCount(0)
+    await page.keyboard.press('Escape')
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 15_000 })
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover

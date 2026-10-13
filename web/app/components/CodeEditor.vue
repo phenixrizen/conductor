@@ -334,6 +334,7 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       bridge.holds.changed(path)
     } else if (ev.kind === 'settled' && ev.ack) {
       echoAsLeft?.noteSettled(ev.ack)
+      bridge.holds.changed(path)
       letGoIfClean(h)
     }
   })
@@ -432,6 +433,8 @@ function onNvimEvent(ev: NvimEvent) {
       break
     case 'settled':
       echo?.noteSettled(ev.ack ?? 0)
+      markGuesses()
+      tellDirty()
       break
     case 'swap':
       // Another editor's swap file: the file opened read-only (round 13, G3).
@@ -589,32 +592,24 @@ function nvimWrite(): Promise<boolean> {
   const bridge = props.nvim
   const id = nvimId
   if (!bridge || !id) return Promise.resolve(false)
-  // Keys still on their way (a character typed that Neovim has not had) are waited for first: what they change is written too.
-  const target = echo?.unsettled ? echo.seq : 0
-  if (!target && !nvimState.modified) return Promise.resolve(true)
+  // Nothing changed and nothing on its way: nothing to write.
+  if (!nvimState.modified && !echo?.showing && !echo?.unsettled) return Promise.resolve(true)
   return new Promise((resolve) => {
     let off: () => void = () => {}
-    let writing = false
     const done = (ok: boolean) => {
       clearTimeout(timer)
       off()
       resolve(ok)
     }
-    const write = () => {
-      if (!nvimState.modified) return done(true)
-      writing = true
-      bridge.input(id, '<C-\\><C-n>:w<CR>')
-    }
     const timer = setTimeout(() => done(false), 10_000)
     off = bridge.subscribe((ev) => {
       if (ev.id !== id) return
-      if (!writing && ev.kind === 'settled' && (ev.ack ?? 0) >= target) {
-        // Its word on changes not written comes before this one (onNvimEvent has it by now).
-        queueMicrotask(write)
-      } else if (writing && ev.kind === 'modified' && !ev.modified) done(true)
+      if (ev.kind === 'written') done(true)
       else if ((ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') done(false)
     })
-    if (!target) write()
+    // After the keys on their way, in order, so what they change is written too; <C-\><C-n> first ends whatever waits (an operator's
+    // motion, insert mode).
+    bridge.input(id, '<C-\\><C-n>:w<CR>')
   })
 }
 /** Answers Neovim's confirm question with its choice's key; the question goes. */
