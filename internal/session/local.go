@@ -223,6 +223,12 @@ type Local struct {
 	// again meanwhile (the program draws it again before it moves on), it
 	// is asked answered, with an id no reply is taken for. Guarded by mu.
 	startupAnsweredWords string
+	// startupAnsweredFed is how many Feeds the screen the questions asked
+	// during the work are read from had seen when a startup question was
+	// last answered: asked again answered (startupAnsweredWords), it is held
+	// so (heldAnswer) from then, and goes once that screen shows no startup
+	// question. Guarded by mu.
+	startupAnsweredFed uint64
 	// heldAnswer is the startup question an Escape a write ended
 	// with may have answered (holdStartupAnswered): its id once asked, its
 	// words while not asked yet, who typed it, and how much output the
@@ -1032,10 +1038,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// The startup question an Escape a write ended with may have
 	// answered before it was asked (heldAnswer's words): asked answered,
 	// and held so until the screen shows it gone (escGone).
-	heldAsked := false
+	heldAsked, startupStill := false, false
 	if rules&startupLook != 0 && state == AttentionNeedsInput {
 		if s.startupAnsweredWords != "" && s.startupAnsweredWords == message {
-			stillAnswered = true
+			stillAnswered, startupStill = true, true
 		} else {
 			s.startupAnsweredWords = ""
 		}
@@ -1050,9 +1056,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		if stillAnswered && cur.ID != "" {
 			s.answered = cur.ID
-			if heldAsked {
-				s.heldAnswer.id, s.heldAnswer.words = cur.ID, ""
-			}
+			s.holdAskedAgain(cur.ID, message, heldAsked, startupStill)
 		}
 		s.mu.Unlock()
 		return nil
@@ -1073,9 +1077,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		att.ID = NewID()
 		if stillAnswered {
 			s.answered = att.ID
-			if heldAsked {
-				s.heldAnswer.id, s.heldAnswer.words = att.ID, ""
-			}
+			s.holdAskedAgain(att.ID, message, heldAsked, startupStill)
 		}
 	}
 	s.info.Attention = att
@@ -1788,6 +1790,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// written.
 			s.mu.Lock()
 			s.startupAnswered, s.startupAnsweredAt = true, s.trust.Fed()
+			if s.asked != nil {
+				s.startupAnsweredFed = s.asked.Fed()
+			}
 			if startupWords == "" && shown.Source == SourceTrust {
 				startupWords = shown.Message
 			}
@@ -2480,6 +2485,26 @@ func stringEnd(data []byte, i int) (end, cutAt int) {
 	return -1, -1
 }
 
+// holdAskedAgain holds the startup question asked again answered as id
+// (heldAnswer), so that it goes once the screen shows no startup question
+// (escGone): one an Escape may have answered before it was asked
+// (heldAsked) keeps who typed it; one asked again after its answer
+// (startupStill: the program drew it again, then may move on without
+// another) is held from that answer, by who gave it. The caller holds
+// s.mu.
+func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
+	switch {
+	case heldAsked:
+		s.heldAnswer.id, s.heldAnswer.words = id, ""
+	case startupStill:
+		held := heldStartup{id: id, fed: s.startupAnsweredFed}
+		if last := s.info.LastAnswer; last != nil && last.Message == words {
+			held.by, held.name = last.By, last.ByName
+		}
+		s.heldAnswer = held
+	}
+}
+
 // heldStartup is a startup question an Escape a write ended with
 // may have answered: its id (asked) or its words (not asked yet), who typed
 // it, and how many Feeds the screen the questions asked during the work are
@@ -2593,6 +2618,9 @@ func (s *Local) startupGone(words string) {
 	s.heldAnswer = heldStartup{}
 	s.startupAnswered, s.startupAnsweredAt = true, s.trust.Fed()
 	s.startupAnsweredWords = words
+	if s.asked != nil {
+		s.startupAnsweredFed = s.asked.Fed()
+	}
 }
 
 // continuesSequence reports whether b, after an ESC, makes it the start of
@@ -2761,8 +2789,9 @@ func (r *keyReader) keys(data []byte) [][]byte {
 // xterm's modifyOtherKeys (CSI 27 ; mods ; code ~). A press or a repeat of a
 // key read the same unencoded is that key: Escape, Enter, Tab, Backspace, a
 // character (Shift and a letter its capital, or the shifted key the
-// terminal names), Ctrl and a letter its control byte; a release is no key
-// (nil). encoded is false for anything else (an arrow, Shift+Enter, a
+// terminal names), Ctrl and a letter its control byte (not Ctrl+H, I, J or
+// M, whose bytes are other keys'); a release is no key (nil). encoded is
+// false for anything else (an arrow, Shift+Enter, Ctrl+M, a
 // terminal's report such as CSI ? flags u): seq stays the key it is. Caps
 // Lock and Num Lock change nothing.
 func encodedKey(seq []byte) (key []byte, encoded bool) {
@@ -2823,7 +2852,11 @@ func encodedKey(seq []byte) (key []byte, encoded bool) {
 		return []byte{byte(shifted)}, true
 	case m == shift && code >= 'a' && code <= 'z':
 		return []byte{byte(code - 'a' + 'A')}, true
-	case m == ctrl && code >= 'a' && code <= 'z':
+	case m == ctrl && code >= 'a' && code <= 'z' && !strings.ContainsRune("hijm", rune(code)):
+		// Ctrl and a letter, its control byte, but for those whose byte
+		// is another key's (Backspace, Tab, a line feed, Enter): the
+		// protocol sends those keys as their own codes, and Codex's
+		// crossterm reads Ctrl+M as Ctrl and m, never Enter.
 		return []byte{byte(code - 'a' + 1)}, true
 	}
 	return nil, false

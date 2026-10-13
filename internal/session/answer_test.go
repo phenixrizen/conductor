@@ -1297,6 +1297,7 @@ func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 		"\x1b[13u":       {"\r"},
 		"\x1b[13;2u":     {"\x1b[13;2u"},
 		"\x1b[99;7u":     {"\x1b[99;7u"},
+		"\x1b[109;5u":    {"\x1b[109;5u"},
 		"\x1b[57399u":    {"\x1b[57399u"},
 		"\x1b[27;5;99~":  {"\x03"},
 		"\x1b[2~":        {"\x1b[2~"},
@@ -1673,6 +1674,66 @@ func TestAnEscapeFromAPageHoldsTheQuestionUntilItGoes(t *testing.T) {
 				t.Fatalf("answered by %+v", a.LastAnswer)
 			}
 		})
+	}
+}
+
+// Ctrl+M as a terminal with the kitty protocol sends it (ESC [ 1 0 9 ; 5 u),
+// whole or cut, at Codex's update question: crossterm reads Ctrl and m,
+// which the question ignores, never Enter, so the question still shows and
+// holds a submission back, whose Enter would pick "Update now". (Codex's
+// review, nineteenth pass, finding 1.)
+func TestAnEncodedCtrlMIsNoEnter(t *testing.T) {
+	const ctrlM = "\x1b[109;5u"
+	for cut := 0; cut < len(ctrlM); cut++ {
+		t.Run(fmt.Sprintf("cut at %d", cut), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			p.outW.Write([]byte(codexUpdateScreen))
+			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			parts := []string{ctrlM}
+			if cut > 0 {
+				parts = []string{ctrlM[:cut], ctrlM[cut:]}
+			}
+			for _, part := range parts {
+				if err := s.InputWaiting(t.Context(), nater, []byte(part)); err != nil {
+					t.Fatal(err)
+				}
+				nextWrite(t, p)
+			}
+			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+				t.Fatalf("Ctrl+M cleared the question: %+v", a)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a submission at the question: %v", err)
+			}
+			noWrite(t, p, 100*time.Millisecond)
+		})
+	}
+}
+
+// Codex's update question answered (3), drawn again before Codex took the
+// key, then left for Codex's prompt with no other startup question: asked
+// again answered, it goes once the screen shows no startup question, and a
+// submission is typed then. (Codex's review, nineteenth pass, finding 2.)
+func TestAStartupQuestionAskedAgainAnsweredGoesWithTheScreen(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: append(startupQuestions(), approvalQuestions()...)}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.AnswerInput(t.Context(), nater, update.ID, []byte("3")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	again := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != update.ID })
+	if err := s.AnswerInput(t.Context(), jane, again.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the question asked again: %v", err)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); err != nil {
+		t.Fatalf("a submission once the question has gone: %v", err)
 	}
 }
 

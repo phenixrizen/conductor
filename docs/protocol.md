@@ -951,8 +951,10 @@ a choice or not (Codex's background-server
 question takes `2`, to restart; its hooks review, whose digit only moves the
 highlight, is answered by its Enter). A startup question answered and drawn again
 before another takes its place (the program slow to move on) is asked
-answered, a reply to it refused; one answered never keeps the next from
-being asked, and nor does one still waiting that the screen has left for
+answered, a reply to it refused, and goes once the screen the questions
+asked during the work are read from shows no startup question (the
+program moved on to its prompt; looked at as a held Escape's is, below);
+one answered never keeps the next from being asked, and nor does one still waiting that the screen has left for
 another drawn after it (the program took an answer not read as one): the
 question drawn last is asked with an `id` of its own, and a reply naming the
 one left is refused. Every write that
@@ -977,7 +979,8 @@ version report), a key the terminal encodes once the program asks it to tell
 keys apart (the kitty keyboard protocol's `CSI … u`, which Codex asks for, and
 xterm's modifyOtherKeys `CSI 27 ; … ~`) is the key it stands for (Escape is
 `ESC[27u`, Ctrl+C `ESC[99;5u`; Enter, a character, Shift or Ctrl and a
-letter; Caps and Num Lock change nothing) and its release no key, an ESC
+letter, but Ctrl+H, I, J and M, which stay keys of their own, Codex reading
+Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing) and its release no key, an ESC
 and a key at once are one key, that key with Alt (a page's xterm sends
 Alt+z as `ESC z`, which Codex reads as one key and its questions ignore),
 never the Escape key, the key alone counting only as one it may be read as
