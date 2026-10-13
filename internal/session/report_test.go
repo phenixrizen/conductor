@@ -108,26 +108,48 @@ func TestAnEndedSessionNeedsNothing(t *testing.T) {
 	}
 }
 
-// A mouse report, alone or with others, in each of the three encodings is
-// one; keys, a terminal's own report, or keys after a report are not.
-func TestIsMouseReport(t *testing.T) {
+// Only the terminal's reports, of any kind, mixed and of any number, type
+// nothing; a key among them, or after them, is typing; a report a write
+// begins and the next finishes types nothing either, and what a write
+// begins is carried to the next; the Escape key alone is a key.
+func TestTypesSomething(t *testing.T) {
+	many := strings.Repeat("\x1b[<35;10;10M", 30) // 360 bytes
 	for in, want := range map[string]bool{
-		"\x1b[<35;10;10M":                 true, // SGR motion
-		"\x1b[<0;3;4M\x1b[<0;3;4m":        true, // SGR press and release
-		"\x1b[<64;1;1M":                   true, // SGR wheel
-		"\x1b[35;10;10M":                  true, // urxvt
-		"\x1b[M#**":                       true, // legacy motion
-		"\x1b[M\x20\xf0\xf0\x1b[<35;1;1M": true,
-		"":                                false,
-		"k":                               false,
-		"\x1b[3;1R":                       false, // a cursor position report
-		"\x1b[<35;10;10Mk":                false,
-		"\x1b[M#*":                        false,
-		"\x1b[M\x01**":                    false,
-		"\x15":                            false,
+		"\x1b[<35;10;10M":                 false, // SGR motion
+		"\x1b[<0;3;4M\x1b[<0;3;4m":        false, // SGR press and release
+		"\x1b[<64;1;1M":                   false, // SGR wheel
+		"\x1b[35;10;10M":                  false, // urxvt
+		"\x1b[M#**":                       false, // legacy motion
+		"\x1b[M\x20\xf0\xf0\x1b[<35;1;1M": false,
+		"\x1b[I\x1b[<35;10;10M":           false, // focus in, then the pointer
+		"\x1b[3;1R\x1b[O":                 false, // a cursor position report, focus out
+		many:                              false,
+		many + "\x1b[I":                   false,
+		"\x1b[<35;1":                      false, // begun, the rest to come
+		"k":                               true,
+		"\x15":                            true,
+		"\x1b":                            true, // Escape
+		"\x1b[A":                          true, // an arrow key
+		"\x1b[<35;10;10Mk":                true,
+		many + "k":                        true,
+		"\x1b[M\x01**":                    true,
+		"\x1b[<35;10;10M\x1bk":            true,
 	} {
-		if got := isMouseReport([]byte(in)); got != want {
-			t.Errorf("isMouseReport(%q) = %v, want %v", in, got, want)
+		if got, _ := typesSomething(nil, []byte(in)); got != want {
+			t.Errorf("typesSomething(%q) = %v, want %v", in, got, want)
 		}
+	}
+	typed, rest := typesSomething(nil, []byte("\x1b[I\x1b[<35;1"))
+	if typed || string(rest) != "\x1b[<35;1" {
+		t.Fatalf("a begun report: %v %q", typed, rest)
+	}
+	if typed, rest := typesSomething(rest, []byte("0;10M\x1b[<35;11;10M")); typed || rest != nil {
+		t.Fatalf("its rest: %v %q", typed, rest)
+	}
+	if typed, _ := typesSomething([]byte("\x1b[1;5"), []byte("A")); !typed {
+		t.Fatal("a key the last write began (Ctrl+Up) types")
+	}
+	if typed, _ := typesSomething(nil, []byte("0;10M")); !typed {
+		t.Fatal("what looks like a report's rest, with none begun, types")
 	}
 }

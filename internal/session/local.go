@@ -1435,6 +1435,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 	// read once the write is made.
 	var noted bool
 	o.from, o.anyEnd = sub, true
+	// Whether a person typed anything here, or only the terminal reported
+	// (its replies, the pointer moved or clicked), as many reports as the
+	// write holds, one the connection's last write began included.
+	typed := sub.typesSomething(data)
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter, looked at again as the writer takes
 		// them (they may have waited behind another write): a key that
@@ -1456,11 +1460,11 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		}
 	}
 	o.before = func() {
-		if !isTerminalReport(data) && !isMouseReport(data) {
+		if typed {
 			// A person types into the terminal: a submission's text typed
 			// without its Enter no longer holds the session's turn
 			// (holdTyped), and what comes next is written after these keys.
-			// The pointer, moved or clicked, types nothing.
+			// The terminal's reports, the pointer's among them, type nothing.
 			s.endHold()
 		}
 		if answersQuestion && s.trust != nil {
@@ -1497,7 +1501,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 				select {
 				case werr := <-landed:
 					if werr == nil {
-						s.typedKeys(sub, data, promptSince, enter, noted)
+						s.typedKeys(sub, data, promptSince, enter, noted, typed)
 					}
 				case <-s.ended:
 				}
@@ -1505,7 +1509,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		}
 		return err
 	}
-	s.typedKeys(sub, data, promptSince, enter, noted)
+	s.typedKeys(sub, data, promptSince, enter, noted, typed)
 	return nil
 }
 
@@ -1522,7 +1526,7 @@ func isChoice(att Attention, data []byte) bool {
 // typedKeys is what follows keys written to the program (input): sub is
 // typing, the dialog or question they answer is noted and looked at again,
 // and the prompt that showed as they were typed (promptSince) is answered.
-func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted bool) {
+func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted, typed bool) {
 	if isTerminalReport(data) {
 		return
 	}
@@ -1540,12 +1544,13 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time
 			s.asked.Poke()
 		}
 	}
-	if isMouseReport(data) {
+	if !typed {
 		s.mu.Lock()
 		hold := s.info.Attention.Source == SourceSubmit && s.info.Attention.Since == promptSince
 		s.mu.Unlock()
 		if hold {
-			// The pointer typed nothing: the hold's words stay with it.
+			// Only the terminal reported (the pointer moved, say): the
+			// hold's words stay with it.
 			return
 		}
 	}

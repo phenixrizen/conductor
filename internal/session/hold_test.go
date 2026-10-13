@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -149,8 +150,10 @@ func TestALineTypedBeforeItsLinkIsLetGoHoldsTheTurnUntilAPersonTypes(t *testing.
 }
 
 // The pointer, moved or clicked over a program with a mouse mode on, types
-// nothing: its reports, in each encoding, are written, and the hold, its
-// words and the next submission's wait stay; a key then ends it.
+// nothing: its reports, in each encoding, alone, mixed with the terminal's
+// own, by the dozen in one write or one cut between two writes, are written,
+// and the hold, its words and the next submission's wait stay; a key then
+// ends it.
 func TestThePointerDoesNotEndTheHold(t *testing.T) {
 	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
 	var linkRevoked atomic.Bool
@@ -166,7 +169,8 @@ func TestThePointerDoesNotEndTheHold(t *testing.T) {
 	<-done
 	heldShows(t, s)
 	next := submitAsync(s, Submission{Text: "second", ByName: "run"})
-	for _, report := range []string{"\x1b[<35;10;10M", "\x1b[<0;3;4M\x1b[<0;3;4m", "\x1b[35;10;10M", "\x1b[M#**"} {
+	for _, report := range []string{"\x1b[<35;10;10M", "\x1b[<0;3;4M\x1b[<0;3;4m", "\x1b[35;10;10M", "\x1b[M#**",
+		"\x1b[I\x1b[<35;10;10M", strings.Repeat("\x1b[<35;10;10M", 30), "\x1b[<35;1", "0;10M\x1b[O"} {
 		if err := s.Input(owner, []byte(report)); err != nil {
 			t.Fatal(err)
 		}
