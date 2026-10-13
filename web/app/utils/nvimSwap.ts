@@ -12,6 +12,8 @@ export interface NvimViewState {
   modified: boolean
   /** Why Neovim ended when the person did not quit it (`utils/nvimLost`): the tab stays, read only, with Reopen. */
   lost?: string
+  /** Characters typed that the lost Neovim may never have had, which its text does not hold (NvimEcho.unconfirmed): shown beside it. */
+  unconfirmed?: string
 }
 
 /**

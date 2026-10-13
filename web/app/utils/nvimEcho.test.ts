@@ -349,6 +349,44 @@ describe('the local echo when Neovim is lost', () => {
     expect(e3.showing).toBe(false)
   })
 
+  it('keeps a guess typed after a settle through a timeout that has nothing left to show', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    // The acknowledgement first (Neovim answered in the middle of the key), then its change, held, then its word that it is done.
+    e.cursor({ line: 1, col: 6, mode: 'i', ack: 1 }, ascii)
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    e.noteSettled(1)
+    expect(e.holding).toBe(false)
+    expect(d.text).toEqual(['alphax'])
+    e.send('y', { line: 1, col: 7 })
+    // The hold's timer, from before the settle, runs: nothing is held, y stays.
+    e.timeout()
+    expect(d.text).toEqual(['alphaxy'])
+    expect(e.showing).toBe(true)
+  })
+
+  it('keeps aside, once Neovim is lost, the characters typed that its text does not hold where they were typed', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('q', { line: 1, col: 6 })
+    e.send('x', { line: 1, col: 7 })
+    e.send('y', { line: 1, col: 8 })
+    e.markLost()
+    expect(e.finish()).toBe(true)
+    // An insert mapping took q and x and made x: the line is not what was typed, Neovim's text stands, the typed ones are kept aside.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    expect(d.text).toEqual(['alphax'])
+    expect(e.unconfirmed).toBe('qxy')
+    // Not lost (its tab left, Neovim alive): nothing is kept aside, its own text will come.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('q', { line: 1, col: 6 })
+    e2.finish()
+    e2.lateLines({ first: 0, last: 1, lines: ['other'] })
+    expect(e2.unconfirmed).toBe('')
+  })
+
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
     const e = inInsert(doc('alpha'))
     e.send('x', { line: 1, col: 6 })

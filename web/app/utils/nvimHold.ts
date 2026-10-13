@@ -79,7 +79,10 @@ export class NvimHolds {
       if (closedByQuit(reason)) {
         h.stop?.()
         this.held.delete(path)
-      } else this.held.set(path, { ...h, state: { ...h.state, lost: reason, cmdline: '', modified: h.state.modified || !!h.echo?.showing } })
+      } else {
+        h.echo?.markLost()
+        this.held.set(path, { ...h, state: { ...h.state, lost: reason, cmdline: '', modified: h.state.modified || !!h.echo?.showing } })
+      }
       this.tell(path)
     }
   }

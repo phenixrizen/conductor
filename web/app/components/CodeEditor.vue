@@ -319,6 +319,7 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       if (echoAsLeft) {
         // The characters typed it had not acknowledged as the tab was left stay laid over its text until its lines hold them.
         echoAsLeft.lateLines(lev)
+        if (echoAsLeft.unconfirmed) h.state.unconfirmed = echoAsLeft.unconfirmed
       } else {
         const edit = linesEdit(lev, m.getLineCount(), (n) => m.getLineLength(n))
         m.applyEdits([{ range: new monaco.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
@@ -347,7 +348,9 @@ function onNvimEvent(ev: NvimEvent) {
       if (ev.kind === 'lines') {
         const lev = { first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }
         if (lostEcho) {
-          if (!lostEcho.lateLines(lev)) lostEcho = null
+          const stays = lostEcho.lateLines(lev)
+          if (lostEcho.unconfirmed) nvimState.unconfirmed = lostEcho.unconfirmed
+          if (!stays) lostEcho = null
         } else applyLinesEvent(lev)
       }
       nvimState.modified = true
@@ -437,6 +440,11 @@ function onNvimEvent(ev: NvimEvent) {
       break
     case 'settled':
       echo?.noteSettled(ev.ack ?? 0)
+      // What it held is shown now: its wait for an acknowledgement is over.
+      if (echo && !echo.holding && holdTimer) {
+        clearTimeout(holdTimer)
+        holdTimer = undefined
+      }
       markGuesses()
       tellDirty()
       break
@@ -448,8 +456,10 @@ function onNvimEvent(ev: NvimEvent) {
       break
     case 'closed': {
       // What Neovim sent and the echo held is shown first, with the characters typed it never acknowledged.
+      if (!closedByQuit(ev.reason)) echo?.markLost()
       const pending = closedByQuit(ev.reason) ? false : (echo?.finish() ?? false)
       const finished = pending ? echo : null
+      const unconfirmed = echo?.unconfirmed ?? ''
       nvimId = null
       stopText?.()
       stopEcho()
@@ -464,6 +474,7 @@ function onNvimEvent(ev: NvimEvent) {
       lostId = ev.id ?? null
       lostEcho = finished
       nvimState.lost = ev.reason ?? 'error'
+      if (unconfirmed) nvimState.unconfirmed = unconfirmed
       nvimState.modified = lostHoldsChanges(nvimState.modified, pending, model.getValue(), props.text)
       nvimState.cmdline = ''
       nvimState.message = 'Neovim ended'
@@ -628,6 +639,7 @@ function answerConfirm(key: string) {
 /** Lets a lost Neovim's text go (Reopen, the person's choice): this editor leaves keeping nothing, and the next starts Neovim anew. */
 function releaseLost() {
   nvimState.lost = undefined
+  nvimState.unconfirmed = undefined
   lostId = null
   lostEcho = null
   unsubscribe?.()

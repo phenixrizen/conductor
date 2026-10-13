@@ -679,7 +679,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
            session's machine is away: no editor is up then, and the banner comes back with it. -->
       <div v-if="nvimOn && nvimState?.lost && active?.kind === 'file' && !hostAway" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-nvim-lost>
         <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" />
-        <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}</span>
+        <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}<template v-if="nvimState.unconfirmed"> Typed, and maybe never had by Neovim: <code class="rounded bg-elevated px-1 font-mono" data-nvim-unconfirmed>{{ nvimState.unconfirmed }}</code></template></span>
         <UButton label="Copy the text" icon="i-lucide-copy" size="xs" color="neutral" variant="soft" data-nvim-lost-copy @click="copyLostText" />
         <UButton label="Reopen" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" data-nvim-reopen @click="reopenNvim" />
       </div>

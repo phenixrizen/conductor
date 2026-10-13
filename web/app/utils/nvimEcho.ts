@@ -81,6 +81,18 @@ export class NvimEcho {
   private settledSeq = 0
   /** The most guesses Neovim's line has been seen to hold since they were laid (tookBack). */
   private most = 0
+  /** Neovim is gone (markLost). */
+  private lost = false
+  /**
+   * Characters typed that Neovim, gone, may never have had and its text does not hold where they were typed: its text stood over them
+   * (relay). Shown to the person beside the text, never laid into it.
+   */
+  unconfirmed = ''
+
+  /** Neovim is gone: what it may never have had is kept aside from here on (unconfirmed). */
+  markLost(): void {
+    this.lost = true
+  }
   private mode = 'n'
   private paused = false // a guess went wrong: none until insert mode is left
   private barrier = 0 // keys that end the guesses: nothing guessed until they are acknowledged
@@ -234,6 +246,8 @@ export class NvimEcho {
 
   /** A held change waited too long: Neovim's text as it is, the guesses gone. */
   timeout(): void {
+    // Nothing held (settled showed it meanwhile): nothing waited too long, and the guesses since stand.
+    if (!this.held.length) return
     this.unshow()
     for (const ev of this.held.splice(0)) this.doc.applyLines(ev)
     this.guesses = []
@@ -316,6 +330,14 @@ export class NvimEcho {
         this.show()
         return true
       }
+    }
+    if (this.lost && base && this.guesses.length && this.holds(base) < 0) {
+      // Neovim's text stands, and it is gone: the characters typed whose keys it never said it had done may be missing from it (a
+      // mapping took some of them, it died in the middle). They are kept aside, for the person to see.
+      this.unconfirmed += this.guesses
+        .filter((g) => g.seq > this.settledSeq)
+        .map((g) => g.text)
+        .join('')
     }
     this.reset()
     return false
