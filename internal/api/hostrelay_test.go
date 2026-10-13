@@ -135,12 +135,16 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 
 	var output atomic.Int64
 	var told atomic.Value // the last error code the reader was sent
-	readerEnded := make(chan error, 1)
+	type readerEnd struct {
+		err error
+		at  time.Time
+	}
+	readerEnded := make(chan readerEnd, 1)
 	go func() {
 		for {
 			_, data, err := reader.c.Read(ctx)
 			if err != nil {
-				readerEnded <- err
+				readerEnded <- readerEnd{err, time.Now()}
 				return
 			}
 			f, err := proto.Decode(data)
@@ -167,27 +171,38 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 	// throughout, but past the 20 s its host may let it go too, as a slow
 	// consumer: on a loaded machine the host's program prints faster than
 	// what the host relays to two viewers, and a viewer that falls a
-	// megabyte behind is let go, by design. Any other end fails, as does a
-	// reader sent no output for 2 s while it is on.
-	watch := time.After(20 * time.Second)
+	// megabyte behind is let go, by design. Any other end fails, as does an
+	// end within the 20 s (by when it came, not when the test came to see
+	// it), and a reader sent no output for 2 s while it is on.
+	watchUntil := time.Now().Add(20 * time.Second)
+	readerOn := true
+	end := func(e readerEnd) {
+		t.Helper()
+		if code, _ := told.Load().(string); e.at.Before(watchUntil) || code != proto.ErrCodeSlowConsumer {
+			t.Fatalf("the reading viewer lost the session %v into the watch: %v, told %q (host disconnects: %d)", e.at.Sub(watchUntil.Add(-20*time.Second)), e.err, code, strings.Count(logs.String(), "host disconnected"))
+		}
+		t.Logf("the host let the reader go as a slow consumer, %d bytes in", output.Load())
+		readerOn = false
+	}
+	watch := time.After(time.Until(watchUntil))
 	giveUp := time.After(2 * time.Minute)
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 	look := time.NewTicker(50 * time.Millisecond)
 	defer look.Stop()
 	var last int64
-	readerOn := true
 	for watched, letGo := false, false; !watched || !letGo; {
 		select {
-		case err := <-readerEnded:
-			if code, _ := told.Load().(string); !watched || code != proto.ErrCodeSlowConsumer {
-				t.Fatalf("the reading viewer lost the session: %v, told %q (host disconnects: %d)", err, code, strings.Count(logs.String(), "host disconnected"))
-			}
-			t.Logf("the host let the reader go as a slow consumer, %d bytes in", output.Load())
-			readerOn = false
+		case e := <-readerEnded:
+			end(e)
 		case <-tick.C:
 			if n := output.Load(); readerOn && n == last {
-				t.Fatalf("the reading viewer was sent no output for 2 s (%d bytes in all)", n)
+				select {
+				case e := <-readerEnded: // it ended meanwhile: no longer on
+					end(e)
+				default:
+					t.Fatalf("the reading viewer was sent no output for 2 s (%d bytes in all)", n)
+				}
 			} else {
 				last = n
 			}
@@ -205,11 +220,11 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 	// The reader, still on, goes on being sent the output.
 	for at, fresh := output.Load(), time.Now().Add(10*time.Second); readerOn && output.Load() == at; time.Sleep(10 * time.Millisecond) {
 		select {
-		case err := <-readerEnded:
-			t.Fatalf("the reading viewer lost the session as the stalled one was let go: %v", err)
+		case e := <-readerEnded:
+			end(e)
 		default:
 		}
-		if time.Now().After(fresh) {
+		if readerOn && time.Now().After(fresh) {
 			t.Fatal("the reading viewer was sent nothing after the stalled one was let go")
 		}
 	}
