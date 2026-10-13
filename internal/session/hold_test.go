@@ -270,6 +270,57 @@ func TestHoldingClosesAsTheTurnIsHeld(t *testing.T) {
 	}
 }
 
+// While the turn is held, at most maxTurnWaiters submissions wait for it:
+// one more is refused at once (ErrTooManyRequests), and once those waiting
+// have given up, others may wait again.
+func TestTheSubmissionsWaitingForAHeldTurnAreBounded(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond})
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	untilIdle(t, s)
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	<-done
+	heldShows(t, s)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waiting := make(chan error, maxTurnWaiters)
+	for range maxTurnWaiters {
+		go func() {
+			_, err := s.Submit(ctx, Submission{Text: "waits", ByName: "run"})
+			waiting <- err
+		}()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for s.turnWaiters.Load() != maxTurnWaiters {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("%d waiting", s.turnWaiters.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := s.Submit(context.Background(), Submission{Text: "one more", ByName: "run"}); !errors.Is(err, ErrTooManyRequests) {
+		cancel()
+		t.Fatalf("one more: %v", err)
+	}
+	cancel()
+	for range maxTurnWaiters {
+		if err := <-waiting; !errors.Is(err, context.Canceled) {
+			t.Fatalf("a waiting one: %v", err)
+		}
+	}
+	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelShort()
+	if _, err := s.Submit(short, Submission{Text: "again", ByName: "run"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("again: %v", err)
+	}
+	nothingWritten(t, p, 100*time.Millisecond)
+}
+
 // The hold ends with the session: the next submission is told the session
 // ended, the turn is given back and nothing shows.
 func TestAHeldTurnEndsWithTheSession(t *testing.T) {

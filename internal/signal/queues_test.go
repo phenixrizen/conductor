@@ -586,44 +586,43 @@ func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 	}
 }
 
+// nextToHost is the next message the server sends the host on conn.
+func nextToHost(t *testing.T, conn *HostConn) map[string]any {
+	t.Helper()
+	select {
+	case o := <-conn.Send:
+		conn.Took(o)
+		var m map[string]any
+		if err := json.Unmarshal(o.Text, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing went to the host")
+	}
+	return nil
+}
+
 // A link a viewer joined through that no longer opens the session is named
 // to the host (link_gone), ahead of the leaves of its viewers still
 // attached, and also once they have all left; a link no viewer joined
-// through is never named, nor one twice. A viewer's join carries its link's
-// expiry. (A host away is not told: it counts every link gone as it loses
-// its connection.)
+// through is never named, nor one twice. (A host away is not told: it
+// counts every link gone as it loses its connection.)
 func TestTheHostIsToldOfTheLinksItsViewersJoinedThroughGoing(t *testing.T) {
 	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
-	next := func() map[string]any {
-		t.Helper()
-		select {
-		case o := <-conn.Send:
-			conn.Took(o)
-			var m map[string]any
-			if err := json.Unmarshal(o.Text, &m); err != nil {
-				t.Fatal(err)
-			}
-			return m
-		case <-time.After(time.Second):
-			t.Fatal("nothing went to the host")
-		}
-		return nil
-	}
-	until := time.Now().Add(time.Hour).UTC()
-	attached, err := hs.AddViewerWith(ViewerOptions{ID: "aaaaaaaaaaaaaaaa", Role: session.RoleControl, LinkID: "l1", Authorize: func() (session.Grant, error) {
-		return session.Grant{Role: session.RoleControl, Until: until}, nil
-	}})
+	next := func() map[string]any { return nextToHost(t, conn) }
+	attached, err := hs.AddViewerWith(ViewerOptions{ID: "aaaaaaaaaaaaaaaa", Role: session.RoleControl, LinkID: "l1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := next(); m["t"] != proto.HostViewerJoin || !proto.JoinExpiry(m["expiresAt"].(string)).Equal(until) {
+	if m := next(); m["t"] != proto.HostViewerJoin {
 		t.Fatalf("the join: %v", m)
 	}
 	left, err := hs.AddViewerWith(ViewerOptions{ID: "bbbbbbbbbbbbbbbb", Role: session.RoleControl, LinkID: "l2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := next(); m["t"] != proto.HostViewerJoin || m["expiresAt"] != nil {
+	if m := next(); m["t"] != proto.HostViewerJoin {
 		t.Fatalf("the join: %v", m)
 	}
 	hs.RemoveViewer(left)
@@ -649,6 +648,61 @@ func TestTheHostIsToldOfTheLinksItsViewersJoinedThroughGoing(t *testing.T) {
 	case o := <-conn.Send:
 		t.Fatalf("a second revoke sent %s", o.Text)
 	default:
+	}
+}
+
+// A joined link's expiry is timed on the server: the host is told the link
+// went as it expires, also once its viewer has left (whose own lapse ended
+// with it), whatever the host's clock says.
+func TestTheHostIsToldOfAJoinedLinksExpiry(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	until := time.Now().Add(300 * time.Millisecond)
+	v, err := hs.AddViewerWith(ViewerOptions{ID: "aaaaaaaaaaaaaaaa", Role: session.RoleControl, LinkID: "l1", Authorize: func() (session.Grant, error) {
+		return session.Grant{Role: session.RoleControl, Until: until}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := nextToHost(t, conn); m["t"] != proto.HostViewerJoin {
+		t.Fatalf("the join: %v", m)
+	}
+	hs.RemoveViewer(v) // a reply box, gone once it has sent
+	if m := nextToHost(t, conn); m["t"] != proto.HostViewerLeave || m["reason"] != nil {
+		t.Fatalf("the leave: %v", m)
+	}
+	m := nextToHost(t, conn)
+	if m["t"] != proto.HostLinkGone || m["linkId"] != "l1" {
+		t.Fatalf("at the expiry: %v", m)
+	}
+	if time.Now().Before(until) {
+		t.Fatal("told before the expiry")
+	}
+}
+
+// Past maxLinksJoined links, the oldest is pushed out of what the server
+// keeps of them, and the host is told it went then: a later end of it would
+// not reach the host.
+func TestALinkPushedOutOfTheJoinedOnesIsGoneToTheHost(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	hs.mu.Lock()
+	for i := range maxLinksJoined {
+		hs.joinedThrough(fmt.Sprintf("l%d", i), time.Time{})
+	}
+	hs.mu.Unlock()
+	if _, err := hs.AddViewerWith(ViewerOptions{ID: "aaaaaaaaaaaaaaaa", Role: session.RoleControl, LinkID: "newest"}); err != nil {
+		t.Fatal(err)
+	}
+	if m := nextToHost(t, conn); m["t"] != proto.HostLinkGone || m["linkId"] != "l0" {
+		t.Fatalf("for the oldest: %v", m)
+	}
+	if m := nextToHost(t, conn); m["t"] != proto.HostViewerJoin {
+		t.Fatalf("the join: %v", m)
+	}
+	hs.mu.Lock()
+	n := len(hs.linksJoined)
+	hs.mu.Unlock()
+	if n != maxLinksJoined {
+		t.Fatalf("%d links kept", n)
 	}
 }
 

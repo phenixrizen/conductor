@@ -138,27 +138,19 @@ func holdTurn(t *testing.T, v *submitViewer) (release func()) {
 
 // A viewer that left once it had sent (a reply box), its submission still
 // waiting for the session's turn, has it withdrawn, never typed, when the
-// server says the link it joined through went (link_gone), or once its
-// link's expiry passes; with neither, it is typed in its turn, as a reply
-// box's is.
+// server says the link it joined through went (link_gone: revoked or
+// expired); without that, it is typed in its turn, as a reply box's is.
 func TestASubmissionOfAViewerThatLeftIsWithdrawnWhenItsLinkGoes(t *testing.T) {
 	for _, c := range []struct {
-		name   string
-		until  time.Duration
-		gone   bool
-		typed  bool
-		reason string
+		name  string
+		gone  bool
+		typed bool
 	}{
-		{name: "revoked", gone: true},
-		{name: "expired", until: 300 * time.Millisecond},
+		{name: "gone", gone: true},
 		{name: "standing", typed: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			var until time.Time
-			if c.until > 0 {
-				until = time.Now().Add(c.until)
-			}
-			v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1", until)
+			v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1")
 			a := v.p.a
 			release := holdTurn(t, v)
 			v.send(proto.Submit{T: proto.CtlSubmit, Text: "reply"})
@@ -171,7 +163,6 @@ func TestASubmissionOfAViewerThatLeftIsWithdrawnWhenItsLinkGoes(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			time.Sleep(c.until + 100*time.Millisecond)
 			release()
 			if c.typed {
 				if typed := v.typed(v.release(), 2); strings.Join(typed, "|") != "reply|\r" {
@@ -190,7 +181,7 @@ func TestASubmissionOfAViewerThatLeftIsWithdrawnWhenItsLinkGoes(t *testing.T) {
 // Enter to come, has no Enter when the server then says its link went: the
 // session's turn is held for a person, as for a viewer let go for its link.
 func TestATypedLineOfAViewerThatLeftHoldsTheTurnWhenItsLinkGoes(t *testing.T) {
-	v := newLinkedSubmitViewer(t, 600*time.Millisecond, "l1", time.Time{})
+	v := newLinkedSubmitViewer(t, 600*time.Millisecond, "l1")
 	a := v.p.a
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "reply"})
 	v.sync()
@@ -235,23 +226,32 @@ func TestALinksGoingReachesWhoeverStillHoldsIt(t *testing.T) {
 		t.Fatal("two viewers of a link hold two creds")
 	}
 	l.gone("l0")
+	if fresh := l.of("l0"); fresh == held || fresh.err() != nil {
+		t.Fatal("a viewer the server lets join through the link later holds the gone cred")
+	}
+	alive := l.of("alive")
 	for i := range 4096 {
 		id := fmt.Sprintf("other-%d", i)
 		_ = l.of(id)
-		l.gone(id)
+		if i%2 == 0 {
+			l.gone(id)
+		}
 	}
 	runtime.GC()
 	if !errors.Is(held.err(), session.ErrRevoked) {
 		t.Fatalf("the link's going was lost: %v", held.err())
 	}
-	// Swept, as the next viewer past the bound would have it.
+	// Swept, as the next viewer past the bound would have it: only what is
+	// held is kept.
 	l.mu.Lock()
 	l.sweep()
-	kept := len(l.m)
+	_, kept := l.m["alive"]
+	n := len(l.m)
 	l.mu.Unlock()
-	if kept != 1 {
-		t.Fatalf("%d links kept, one held", kept)
+	if !kept || n > 2 {
+		t.Fatalf("%d links kept, the held one among them %v", n, kept)
 	}
+	runtime.KeepAlive(alive)
 
 	standing := l.of("l1")
 	l.lost()
@@ -270,7 +270,7 @@ func TestALinksGoingReachesWhoeverStillHoldsIt(t *testing.T) {
 // is lost (connLost): the host is not told of the link going until it is
 // back.
 func TestASubmissionOfAViewerThatLeftIsWithdrawnWhenTheConnectionIsLost(t *testing.T) {
-	v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1", time.Time{})
+	v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1")
 	a := v.p.a
 	release := holdTurn(t, v)
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "reply"})
@@ -288,7 +288,7 @@ func TestASubmissionOfAViewerThatLeftIsWithdrawnWhenTheConnectionIsLost(t *testi
 // before the program reads again: the link's going is kept by what is under
 // way of its viewer.
 func TestALinkGoneStaysGoneForAStalledLine(t *testing.T) {
-	v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1", time.Time{})
+	v := newLinkedSubmitViewer(t, 10*time.Millisecond, "l1")
 	a := v.p.a
 	v.hold()
 	v.send(proto.Submit{T: proto.CtlSubmit, Text: "reply"})

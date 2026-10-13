@@ -1060,7 +1060,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if !role.Valid() || len(m.ViewerID) != proto.ViewerIDLen {
 			return errors.New("invalid viewer_join")
 		}
-		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel, proto.JoinExpiry(m.ExpiresAt))
+		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel)
 	case proto.HostLinkGone:
 		var m proto.LinkGone
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1431,12 +1431,11 @@ func (a *agent) tell(v any, gone <-chan struct{}) error {
 	return err
 }
 
-func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string, until time.Time) {
+func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) {
 	a.removePeer(id)
 	// A switchyard's viewer is never the owner's window, whatever else says
 	// so: its workbench is its operator's (Options.Switchyard).
 	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
-	p.until = until
 	p.cred = a.creds.of(linkID)
 	a.mu.Lock()
 	a.peers[id] = p

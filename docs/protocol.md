@@ -44,7 +44,7 @@ Client → owner:
 | `nvim_swap` | `id, choice` | Answers the swap file editor `id` found (round 13): `choice` is `edit` (leave read-only and edit), `recover` (read the swap file's text into the buffer, which is sent whole; the buffer is modified until written) or `delete` (remove that swap file, only a regular file named `*.sw?` that Neovim reported, and edit); `recover` and `delete` only once the process that wrote it is gone, else the editor's `message` of kind `emsg` says no; fixed choices mapped to fixed commands, never a command from the page. The switchyard drops it from view-role connections |
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended` |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member |
-| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports aside), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held, a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays. A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`, the link's `expiresAt`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it; keys typed into the terminal stay INPUT |
+| `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports aside), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it; keys typed into the terminal stay INPUT |
 
 Owner → client:
 
@@ -270,9 +270,9 @@ still waiting when its time runs out is refused then (`input_failed`), never
 typed late. When the viewer goes (its connection or data channel closes, or
 it moves to the relay and attaches again), what waits is dropped, and does
 not count against the 8; the one being typed is finished, unless the
-viewer's link goes (a `viewer_leave` with a reason, a `link_gone`, the link's
-`expiresAt` passing, the host's connection to the server lost), then or
-later: it is then withdrawn as on the server,
+viewer's link goes (a `viewer_leave` with a reason, a `link_gone`, the host's
+connection to the server lost), then or later: it is then withdrawn as on
+the server,
 never typed if its text was not, and with no carriage return if it was, the
 session's turn held for a person (see `submit`). The viewer's keys and
 editor requests not yet begun are dropped as it goes, whatever the reason. The viewer's `nvim_open`s start apart, at
@@ -351,26 +351,27 @@ older host sends none.
 Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServers, links}`
 (`links`: the ids of the live links the server holds for the session, `[]`
 when none; an older server sends no field, which says nothing),
-`viewer_join{viewerId, role, linkId?, linkLabel?, expiresAt?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
+`viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
-(`expiresAt`: when the viewer's link expires, RFC 3339, at most 64 bytes, none
-for a link that does not; `reason`: `revoked` when the viewer was let go for
-its link (revoked, its run forgotten, its run's session no longer named) or
-`expired` (the link reached its expiry), none for any other end (it left, its
-connection failed, it was too slow); `link_gone`: a link a viewer joined the
-session through (`linkId`, at most 64 bytes) no longer opens it, sent once,
-whether a viewer is still attached through it or not, ahead of the leaves of
-those that are; no link no viewer joined through is named, and a host away
-is not told again. The host types nothing more of what a viewer asked for
-once its link went, by any of these, also after the viewer left (see the
+(`reason`: `revoked` when the viewer was let go for its link (revoked, its
+run forgotten, its run's session no longer named) or `expired` (the link
+reached its expiry), none for any other end (it left, its connection failed,
+it was too slow); `link_gone`: a link a viewer joined the session through
+(`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
+server's clock says, its run forgotten, its run's session no longer named),
+sent once, whether a viewer is still attached through it or not, ahead of
+the leaves of those that are; no link no viewer joined through is named,
+and a host away is not told again. The server keeps at most 1024 joined
+links per session (far more than can open it at once); one pushed out is
+named gone then. The host types nothing more of what a viewer asked for
+once its link went, by either of these, also after the viewer left (see the
 host's queues below); and as it loses its connection to the server, which
 would tell it, it counts every link its viewers joined through as gone for
 what they asked for and is still under way (a viewer joining through one
-once it is back starts afresh). A host reads a reason it
-does not know, or one over 16 bytes, as none, and an `expiresAt` it cannot
-read as none; an older server sends none of these, and an older host ignores
-them, as before: each side decodes the other's messages without refusing
-unknown fields),
+once it is back starts afresh). A host reads a reason it does not know, or
+one over 16 bytes, as none; an older server sends neither, and an older
+host ignores both, as before: each side decodes the other's messages
+without refusing unknown fields),
 `attention{state,message?,source,kind?,options?}` (API-originated change to broadcast),
 `activity{entry}` (an event reported through the API, for the host to record),
 `link_created{requestId, url, invite, linkId, role, label?, expiresAt?, runId?}`

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The host and the server are built apart and may differ by a release, so the
@@ -72,33 +71,15 @@ func TestViewerLeaveWireShapeAndReasons(t *testing.T) {
 	}
 }
 
-// A viewer_join carries its link's expiry when the link has one, none
-// otherwise; a host reads one of at most MaxExpiresAt bytes in RFC 3339 and
-// nothing else. link_gone names a link alone.
-func TestViewerJoinExpiryAndLinkGoneWireShapes(t *testing.T) {
-	b, _ := json.Marshal(ViewerJoin{T: HostViewerJoin, ViewerID: "0123456789abcdef", Role: "control", LinkID: "l1"})
-	if strings.Contains(string(b), "expiresAt") {
-		t.Fatalf("a join without an expiry: %s", b)
-	}
-	at := time.Date(2026, 10, 12, 8, 30, 0, 123000000, time.UTC)
-	b, _ = json.Marshal(ViewerJoin{T: HostViewerJoin, ViewerID: "0123456789abcdef", Role: "control", LinkID: "l1", ExpiresAt: at.Format(time.RFC3339Nano)})
-	if want := `{"t":"viewer_join","viewerId":"0123456789abcdef","role":"control","linkId":"l1","expiresAt":"2026-10-12T08:30:00.123Z"}`; string(b) != want {
-		t.Fatalf("got %s want %s", b, want)
-	}
-	for in, want := range map[string]time.Time{
-		"":                          {},
-		"2026-10-12T08:30:00.123Z":  at,
-		"2026-10-12T10:30:00+02:00": time.Date(2026, 10, 12, 8, 30, 0, 0, time.UTC),
-		"tomorrow":                  {},
-		"2026-10-12T08:30:00Z" + strings.Repeat("0", MaxExpiresAt): {},
-	} {
-		if got := JoinExpiry(in); !got.Equal(want) {
-			t.Errorf("JoinExpiry(%q) = %v, want %v", in, got, want)
-		}
-	}
-	b, _ = json.Marshal(LinkGone{T: HostLinkGone, LinkID: "l1"})
+// link_gone names a link alone.
+func TestLinkGoneWireShape(t *testing.T) {
+	b, _ := json.Marshal(LinkGone{T: HostLinkGone, LinkID: "l1"})
 	if want := `{"t":"link_gone","linkId":"l1"}`; string(b) != want {
 		t.Fatalf("got %s want %s", b, want)
+	}
+	var m LinkGone
+	if err := json.Unmarshal(b, &m); err != nil || m != (LinkGone{T: HostLinkGone, LinkID: "l1"}) {
+		t.Fatalf("round trip: %+v %v", m, err)
 	}
 }
 

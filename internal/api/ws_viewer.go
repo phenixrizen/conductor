@@ -101,6 +101,8 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	defer local.Detach(sub)
 	go keepalive(sink.ctx, c, s.pingEvery)
 	var held heldTyping
+	// The viewer's slot stays taken until what it asked to type is done.
+	defer held.wait()
 	for {
 		f, err := readFrame(sink.ctx, c, 0)
 		if err != nil {
@@ -158,6 +160,8 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 		local.Send(sub, proto.NewError(proto.ErrCodeNotSent, session.QuestionWords))
 	case errors.Is(err, session.ErrInputStalled):
 		local.Send(sub, proto.NewError("input_failed", session.ErrInputStalled.Error()))
+	case errors.Is(err, session.ErrTooManyRequests):
+		local.Send(sub, proto.NewError(proto.ErrCodeTooManyRequests, "too many lines wait for the session's turn: try again once they are done"))
 	default:
 		local.Send(sub, proto.NewError("input_failed", "input could not be delivered"))
 	}
@@ -171,8 +175,16 @@ func (s *Server) sendInputError(sub *session.Subscription, local *session.Local,
 // while it waited: it then waits until a person types into the terminal,
 // and the viewer's own keys, sent after it, must reach the session to do
 // that. One at a time per connection: another while one still waits is
-// refused (too_many_requests) and the connection stays.
-type heldTyping struct{ busy atomic.Bool }
+// refused (too_many_requests) and the connection stays. A connection that
+// closes meanwhile keeps its slot among the session's viewers until the
+// request is done (wait), as one whose read loop waited for it does: what
+// waits for the turn stays bounded by the viewers a session takes.
+type heldTyping struct {
+	busy atomic.Bool
+	// done is closed once the request under way is done; nil before the
+	// first. Only the read loop's goroutine sets it.
+	done chan struct{}
+}
 
 // typeIn runs do as above, and refuse with its error; requestID names the
 // request a too_many_requests refuses (a chat's id or a chat_send's ref,
@@ -184,6 +196,7 @@ func (h *heldTyping) typeIn(sub *session.Subscription, local *session.Local, req
 		return
 	}
 	done := make(chan struct{})
+	h.done = done
 	go func() {
 		defer close(done)
 		defer h.busy.Store(false)
@@ -194,6 +207,14 @@ func (h *heldTyping) typeIn(sub *session.Subscription, local *session.Local, req
 	select {
 	case <-done:
 	case <-local.Holding():
+	}
+}
+
+// wait returns once the request under way, if any, is done. Called on the
+// read loop's goroutine as it ends.
+func (h *heldTyping) wait() {
+	if h.done != nil {
+		<-h.done
 	}
 }
 

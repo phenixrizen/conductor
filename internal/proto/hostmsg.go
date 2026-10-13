@@ -3,7 +3,6 @@ package proto
 import (
 	"errors"
 	"fmt"
-	"time"
 )
 
 // Host control messages are JSON text frames on /ws/host. Relayed terminal
@@ -148,36 +147,16 @@ type ViewerJoin struct {
 	LinkID   string `json:"linkId,omitempty"`
 	// LinkLabel is shown in the viewers roster; the host never sees the token.
 	LinkLabel string `json:"linkLabel,omitempty"`
-	// ExpiresAt is when the viewer's link expires (RFC 3339, at most
-	// MaxExpiresAt bytes), none for a link that does not: what the viewer
-	// asked for is not typed after it, also once the viewer has left. A host
-	// ignores one it cannot read; an older server sends none.
-	ExpiresAt string `json:"expiresAt,omitempty"`
-}
-
-// MaxExpiresAt bounds ViewerJoin.ExpiresAt.
-const MaxExpiresAt = 64
-
-// JoinExpiry is when a viewer_join's expiresAt says the viewer's link
-// expires: zero for none, or one over MaxExpiresAt bytes or not RFC 3339.
-func JoinExpiry(s string) time.Time {
-	if s == "" || len(s) > MaxExpiresAt {
-		return time.Time{}
-	}
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return time.Time{}
-	}
-	return t
 }
 
 // LinkGone tells the host that a link through which a viewer of its
 // session joined (ViewerJoin.LinkID) no longer opens the session: revoked,
-// its run forgotten, its run's session no longer named. It comes whether
-// or not a viewer is still attached through it, ahead of the leaves of
-// those that are, so that what a viewer of the link asked for and that is
-// still under way (one that left once it had sent) is withdrawn. LinkID is
-// at most MaxLinkID bytes; an older host ignores the message.
+// expired (on the server's clock), its run forgotten, its run's session no
+// longer named. It comes whether or not a viewer is still attached through
+// it, ahead of the leaves of those that are, so that what a viewer of the
+// link asked for and that is still under way (one that left once it had
+// sent) is withdrawn. LinkID is at most MaxLinkID bytes; an older host
+// ignores the message.
 type LinkGone struct {
 	T      string `json:"t"`
 	LinkID string `json:"linkId"`

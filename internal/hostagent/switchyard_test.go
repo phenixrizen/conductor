@@ -944,7 +944,7 @@ func TestASwitchyardsViewerIsNeverTheOwners(t *testing.T) {
 		mine, yard, owner bool
 	}{{true, false, true}, {true, true, false}, {false, true, false}, {false, false, false}} {
 		a, _ := testAgent(t, Options{ServerIsOwners: tc.mine, Switchyard: tc.yard, RelayOnly: true})
-		a.addPeer("0123456789abcdef", session.RoleControl, "", "", time.Time{})
+		a.addPeer("0123456789abcdef", session.RoleControl, "", "")
 		p := a.peer("0123456789abcdef")
 		if p == nil || p.owner != tc.owner {
 			t.Fatalf("mine %v, switchyard %v: owner %v", tc.mine, tc.yard, p != nil && p.owner)

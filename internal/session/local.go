@@ -233,8 +233,10 @@ type Local struct {
 	ended chan struct{}
 
 	// submitting holds a token while a submission runs (Submit): one at a
-	// time per session.
-	submitting chan struct{}
+	// time per session. turnWaiters counts the submissions waiting for it
+	// (awaitTurn), at most maxTurnWaiters.
+	submitting  chan struct{}
+	turnWaiters atomic.Int32
 	// held is closed by the first keys a person types into the terminal
 	// (input) while the session's turn is held for a submission's text
 	// typed without its Enter (holdTyped); nil while it is not. heldNext is

@@ -572,7 +572,7 @@ func TestAViewerWithNoLinkIsTheOwnersOnlyFromTheOwnersServer(t *testing.T) {
 		{"a switchyard's, a link", false, "l1", false},
 	} {
 		a := &agent{opts: Options{RelayOnly: true, ServerIsOwners: tc.mine}, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-		a.addPeer("0123456789abcdef", session.RoleControl, tc.linkID, "", time.Time{})
+		a.addPeer("0123456789abcdef", session.RoleControl, tc.linkID, "")
 		p := a.peers["0123456789abcdef"]
 		if p == nil || p.owner != tc.owner {
 			t.Fatalf("%s: owner %v, want %v", tc.name, p != nil && p.owner, tc.owner)

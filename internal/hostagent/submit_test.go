@@ -61,19 +61,19 @@ func newSubmitViewerWithin(t *testing.T, pause, timeout time.Duration) *submitVi
 // keystrokes inputWait from their arrival, instead of session.InputWait.
 func newSubmitViewerWaits(t *testing.T, pause, timeout, inputWait time.Duration) *submitViewer {
 	t.Helper()
-	return newSubmitViewerOf(t, pause, timeout, inputWait, "", time.Time{})
+	return newSubmitViewerOf(t, pause, timeout, inputWait, "")
 }
 
 // newLinkedSubmitViewer is newSubmitViewer whose viewer joined through
-// linkID, which expires at until (none when zero).
-func newLinkedSubmitViewer(t *testing.T, pause time.Duration, linkID string, until time.Time) *submitViewer {
+// linkID.
+func newLinkedSubmitViewer(t *testing.T, pause time.Duration, linkID string) *submitViewer {
 	t.Helper()
-	return newSubmitViewerOf(t, pause, 0, 0, linkID, until)
+	return newSubmitViewerOf(t, pause, 0, 0, linkID)
 }
 
 // newSubmitViewerOf is newSubmitViewerWaits whose viewer joined through
-// linkID, which expires at until.
-func newSubmitViewerOf(t *testing.T, pause, timeout, inputWait time.Duration, linkID string, until time.Time) *submitViewer {
+// linkID ("" for none).
+func newSubmitViewerOf(t *testing.T, pause, timeout, inputWait time.Duration, linkID string) *submitViewer {
 	t.Helper()
 	proc := sessiontest.NewFakeProc()
 	begun := new(atomic.Int32)
@@ -83,7 +83,6 @@ func newSubmitViewerOf(t *testing.T, pause, timeout, inputWait time.Duration, li
 	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout, inputWait: inputWait}
 	a.sendHook = func(v any) { out <- v }
 	p := newPeer(a, "0123456789abcdef", session.RoleControl, linkID, "", linkID == "")
-	p.until = until
 	p.cred = a.creds.of(linkID)
 	a.peers[p.id] = p
 	if err := p.startWebRTC(nil); err != nil {

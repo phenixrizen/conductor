@@ -206,20 +206,8 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if from != nil {
 		fromEnded = from.done
 	}
-	for turn := false; !turn; {
-		select {
-		case s.submitting <- struct{}{}:
-			turn = true
-		case <-ctx.Done():
-			return res, ctx.Err()
-		case <-s.ended:
-			return res, ErrSessionEnded
-		case <-fromEnded:
-			if err := revoked(from); err != nil {
-				return res, err
-			}
-			fromEnded = nil
-		}
+	if err := s.awaitTurn(ctx, from, fromEnded); err != nil {
+		return res, err
 	}
 	// The turn is given back as Submit returns, unless the submission goes
 	// on without its caller (ErrSubmitPending), which gives it back then.
@@ -337,6 +325,44 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		return res, ErrSubmitPending
 	}
 	return res, err
+}
+
+// maxTurnWaiters bounds the submissions that wait for the session's turn
+// together, every caller's: one more is refused (ErrTooManyRequests). A
+// turn held for a typed text (holdTyped) waits on a person, and what waits
+// meanwhile, a connection's that has gone among it, stays bounded.
+const maxTurnWaiters = 64
+
+// awaitTurn takes the session's turn (submitting) for a submission of from
+// (nil for Conductor's own), waiting until ctx ends, the session ends or the
+// session ends from for its link (revoked): their errors then.
+// ErrTooManyRequests when maxTurnWaiters wait already.
+func (s *Local) awaitTurn(ctx context.Context, from *Subscription, fromEnded <-chan struct{}) error {
+	select {
+	case s.submitting <- struct{}{}:
+		return nil
+	default:
+	}
+	if s.turnWaiters.Add(1) > maxTurnWaiters {
+		s.turnWaiters.Add(-1)
+		return ErrTooManyRequests
+	}
+	defer s.turnWaiters.Add(-1)
+	for {
+		select {
+		case s.submitting <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.ended:
+			return ErrSessionEnded
+		case <-fromEnded:
+			if err := revoked(from); err != nil {
+				return err
+			}
+			fromEnded = nil
+		}
+	}
 }
 
 // errEnterLater says a submission's text is typed and its Enter's write had

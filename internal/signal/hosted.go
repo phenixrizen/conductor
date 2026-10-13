@@ -508,10 +508,12 @@ type HostedSession struct {
 	// (closeLink).
 	gone map[*Viewer]struct{}
 	// linksJoined are the links viewers joined the session through, the
-	// oldest first (at most maxLinksJoined): the host is told when one of
-	// them no longer opens the session (DisconnectLink), whether a viewer
-	// is still attached through it or not. Guarded by mu.
+	// oldest first (at most maxLinksJoined), each with the timer of its
+	// expiry when it has one: the host is told when one of them no longer
+	// opens the session (DisconnectLink, linkLapsed), whether a viewer is
+	// still attached through it or not. Guarded by mu.
 	linksJoined    []string
+	linkLapse      map[string]*time.Timer
 	disconnectedAt time.Time
 	maxViewers     int
 	// retired says the session left the server's registry (Retire): no
@@ -552,20 +554,69 @@ func (h *HostedSession) Stop(ctx context.Context) error {
 	return nil
 }
 
-// maxLinksJoined bounds HostedSession.linksJoined: a link past it pushes the
-// oldest out, whose end the host is then not told of.
+// maxLinksJoined bounds HostedSession.linksJoined, far above the links that
+// can open a session at once (share.MaxLinksPerSession of its own and as
+// many of its run's): a link past it pushes the oldest out, which the host
+// is then told is gone (link_gone), so that nothing of the link's viewers is
+// typed on the host after an end it would not hear of.
 const maxLinksJoined = 1024
 
-// joinedThrough notes that a viewer joined through linkID. The caller holds
-// h.mu.
-func (h *HostedSession) joinedThrough(linkID string) {
-	if linkID == "" || slices.Contains(h.linksJoined, linkID) {
-		return
+// joinedThrough notes that a viewer joined through linkID, which expires at
+// until (none when zero): its expiry is timed here, on the server's clock
+// (linkLapsed). It returns the link pushed out to make room, "" for none.
+// The caller holds h.mu.
+func (h *HostedSession) joinedThrough(linkID string, until time.Time) (pushedOut string) {
+	if linkID == "" {
+		return ""
 	}
-	if len(h.linksJoined) >= maxLinksJoined {
-		h.linksJoined = slices.Delete(h.linksJoined, 0, 1)
+	if !slices.Contains(h.linksJoined, linkID) {
+		if len(h.linksJoined) >= maxLinksJoined {
+			pushedOut = h.linksJoined[0]
+			h.forgetLink(pushedOut)
+		}
+		h.linksJoined = append(h.linksJoined, linkID)
 	}
-	h.linksJoined = append(h.linksJoined, linkID)
+	if !until.IsZero() && h.linkLapse[linkID] == nil {
+		if h.linkLapse == nil {
+			h.linkLapse = map[string]*time.Timer{}
+		}
+		h.linkLapse[linkID] = time.AfterFunc(time.Until(until), func() { h.linkLapsed(linkID) })
+	}
+	return pushedOut
+}
+
+// forgetLink takes linkID out of linksJoined, its expiry's timer stopped,
+// and reports whether it was there. The caller holds h.mu.
+func (h *HostedSession) forgetLink(linkID string) bool {
+	if t := h.linkLapse[linkID]; t != nil {
+		t.Stop()
+		delete(h.linkLapse, linkID)
+	}
+	n := len(h.linksJoined)
+	h.linksJoined = slices.DeleteFunc(h.linksJoined, func(id string) bool { return id == linkID })
+	return len(h.linksJoined) != n
+}
+
+// linkGone tells the host, when it is connected, that linkID no longer
+// opens the session.
+func (h *HostedSession) linkGone(conn *HostConn, linkID string) {
+	if conn != nil && linkID != "" {
+		conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: linkID})
+	}
+}
+
+// linkLapsed is a joined link reaching its expiry: the host is told it is
+// gone, as for a revoke, on the server's clock, whether a viewer is still
+// attached through it or not (each one attached is closed by its own lapse,
+// with expired).
+func (h *HostedSession) linkLapsed(linkID string) {
+	h.mu.Lock()
+	joined := h.forgetLink(linkID)
+	conn := h.conn
+	h.mu.Unlock()
+	if joined {
+		h.linkGone(conn, linkID)
+	}
 }
 
 // DisconnectLink closes the viewers attached through linkID as revoked,
@@ -607,14 +658,11 @@ func (h *HostedSession) closeLink(linkID string, revoked bool) {
 			hit = append(hit, v)
 		}
 	}
-	joined := revoked && linkID != "" && slices.Contains(h.linksJoined, linkID)
-	if joined {
-		h.linksJoined = slices.DeleteFunc(h.linksJoined, func(id string) bool { return id == linkID })
-	}
+	joined := linkID != "" && h.forgetLink(linkID)
 	conn := h.conn
 	h.mu.Unlock()
-	if joined && conn != nil {
-		conn.sendJSON(proto.LinkGone{T: proto.HostLinkGone, LinkID: linkID})
+	if joined && revoked {
+		h.linkGone(conn, linkID)
 	}
 	for _, v := range hit {
 		if revoked {
@@ -825,20 +873,17 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	v := newViewer(o.ID, role, o.LinkID, o.LinkLabel)
 	v.charge = o.Charge
 	h.viewers[o.ID] = v
-	h.joinedThrough(o.LinkID)
-	join := proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel}
+	pushedOut := h.joinedThrough(o.LinkID, until)
 	if !until.IsZero() {
 		v.lapse = time.AfterFunc(time.Until(until), func() {
 			v.revoked.Store(true)
 			v.close(session.ErrExpired)
 		})
-		// The host withholds what the viewer asked for past it, also once
-		// the viewer has left.
-		join.ExpiresAt = until.UTC().Format(time.RFC3339Nano)
 	}
 	conn := h.conn
 	h.mu.Unlock()
-	h.sendJoin(conn, v, join, o.ChargeJoin)
+	h.linkGone(conn, pushedOut)
+	h.sendJoin(conn, v, proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: o.ID, Role: string(role), LinkID: o.LinkID, LinkLabel: o.LinkLabel}, o.ChargeJoin)
 	h.notifyChange()
 	return v, nil
 }
@@ -1310,6 +1355,9 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 func (h *HostedSession) Retire() {
 	h.mu.Lock()
 	h.retired = true
+	for id := range h.linkLapse {
+		h.forgetLink(id)
+	}
 	viewers := make([]*Viewer, 0, len(h.viewers)+len(h.gone))
 	for _, v := range h.viewers {
 		viewers = append(viewers, v)

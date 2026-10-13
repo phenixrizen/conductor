@@ -75,12 +75,15 @@ func (l *linkCreds) sweep() {
 	l.pruneAt = 2 * len(l.m)
 }
 
-// gone marks linkID gone (session.ErrRevoked) for whatever still holds it.
-// One nobody holds needs nothing: the server refuses a viewer through it
-// from now on.
+// gone marks linkID gone (session.ErrRevoked) for whatever still holds it,
+// and forgets it: one nobody holds needs nothing, the server refusing a
+// viewer through it from now on, and a viewer it lets join through it later
+// (one the server stopped keeping track of, and named gone to be safe)
+// starts afresh.
 func (l *linkCreds) gone(linkID string) {
 	l.mu.Lock()
 	c := l.m[linkID].Value()
+	delete(l.m, linkID)
 	l.mu.Unlock()
 	if c != nil {
 		c.goneFor(session.ErrRevoked)

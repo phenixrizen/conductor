@@ -6,7 +6,6 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -31,11 +30,9 @@ type peer struct {
 	// replaces is the subscription the viewer had before it moved to the
 	// relay, for the relay's attach to take over its slot.
 	replaces *session.Subscription
-	// until is when the viewer's link expires (its viewer_join's
-	// expiresAt), zero for none; cred is what the host knows of the link
-	// (linkCreds), nil for none. Both set before the peer is seen.
-	until time.Time
-	cred  *linkCred
+	// cred is what the host knows of the viewer's link (linkCreds), nil for
+	// none; set before the peer is seen.
+	cred *linkCred
 
 	// attaching runs the viewer's attaches one at a time (attach): a hello
 	// over the relay waits for one over the data channel still under way,
@@ -531,6 +528,8 @@ func submitError(err error) []byte {
 		code = proto.ErrCodeSessionEnded
 	case errors.Is(err, session.ErrTrustQuestion), errors.Is(err, session.ErrQuestion):
 		code = proto.ErrCodeNotSent
+	case errors.Is(err, session.ErrTooManyRequests):
+		code = proto.ErrCodeTooManyRequests
 	}
 	return proto.NewError(code, err.Error())
 }
@@ -591,11 +590,11 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 // authorize is the credential check of the viewer's subscriptions
 // (session.AttachOptions.Authorize): the viewer's role, until its link no
 // longer opens the session, and why then: the server let the viewer go for
-// it (closeFor), said the link went (link_gone; revoked), the connection to
-// the server was lost (revoked: linkCreds.lost), or the link's expiry passed
-// (expired). The session asks it again before it writes what the viewer
-// asked for (a submission's text and Enter), so what is under way of the
-// viewer's, on any of its subscriptions (one it had before a move to the
+// it (closeFor), said the link went (link_gone: revoked or expired, on the
+// server's clock), or the connection to the server was lost
+// (linkCreds.lost). The session asks it again before it writes what the
+// viewer asked for (a submission's text and Enter), so what is under way of
+// the viewer's, on any of its subscriptions (one it had before a move to the
 // relay too), also once it has left, is withdrawn then, and a text typed
 // without its Enter holds the session's turn for a person. It takes no lock.
 func (p *peer) authorize() (session.Grant, error) {
@@ -604,9 +603,6 @@ func (p *peer) authorize() (session.Grant, error) {
 	}
 	if err := p.cred.err(); err != nil {
 		return session.Grant{}, err
-	}
-	if !p.until.IsZero() && !time.Now().Before(p.until) {
-		return session.Grant{}, session.ErrExpired
 	}
 	return session.Grant{Role: p.role}, nil
 }
