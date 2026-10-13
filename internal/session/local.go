@@ -1750,6 +1750,22 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// too, and cleared once written (startupSince); one only the Escape
 		// held may answer is held answered (heldAnswer).
 		startupAnswer, heldAnswer := false, false
+		// The startup question the keys reach is the one drawn last: the
+		// one the session shows, unless another has been drawn since and
+		// not asked yet, which they reach instead (shownDrawn false): a
+		// choice of the older one is no answer to it.
+		shownDrawn := true
+		if s.trust != nil && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.trust.Watching() {
+			if _, drawn := s.lastStartupQ(s.trust.Text()); drawn != "" && CleanMessage(drawn) != shown.Message {
+				shownDrawn = false
+			}
+		}
+		ownAnswer := answersQuestion && own && shownDrawn
+		if !shownDrawn {
+			// Nor is it cleared by them: it gives way to the one drawn
+			// once that is asked, the session held meanwhile.
+			typedEnter = false
+		}
 		if !isTerminalReport(data) && !quiet {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
@@ -1760,7 +1776,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// arrow then its digit; keys typed before it showed) is answered as
 			// its choice alone answers it: its screen behind now, the
 			// question cleared once written.
-			if shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.startupPicks(shown, data, maybe) {
+			if shownDrawn && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.startupPicks(shown, data, maybe) {
 				if s.startupPicks(shown, data, keys) {
 					startupAnswer, startupSince = true, shown.Since
 				} else {
@@ -1785,7 +1801,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				}
 			}
 		}
-		if startupOnScreen && !startupAnswer && !(answersQuestion && own) {
+		if startupOnScreen && !startupAnswer && !ownAnswer {
 			s.mu.Lock()
 			att := s.info.Attention
 			asked := att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && att.Message == CleanMessage(startupWords)
@@ -1801,13 +1817,13 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				startupOnScreen, onScreenHeld = false, true
 			}
 		}
-		if (heldAnswer || onScreenHeld) && !startupAnswer && !startupOnScreen && !(answersQuestion && own) {
+		if (heldAnswer || onScreenHeld) && !startupAnswer && !startupOnScreen && !ownAnswer {
 			// Only the Escape held may answer it: the startup question
 			// showing (or, not asked yet, the one the screen shows, by its
 			// words) is held answered, nothing else done.
 			s.holdStartupAnswered(startupWords, sub)
 		}
-		if (answersQuestion && own || startupAnswer || startupOnScreen) && s.trust != nil {
+		if (ownAnswer || startupAnswer || startupOnScreen) && s.trust != nil {
 			// The answered screen behind, a look that took its text before
 			// now asking nothing as it fires (fireTrust), and the question
 			// answered, asked again before another takes its place, asked

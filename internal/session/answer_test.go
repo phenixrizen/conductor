@@ -2096,6 +2096,39 @@ func TestAKeyBeforeAStartupQuestionIsAskedClearsNothing(t *testing.T) {
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
+// Codex's background-server question asked, then its update question drawn
+// and not asked yet: a 3 (one of the background-server question's choices)
+// reaches the update question, which may discard it. It answers neither
+// surely: the background-server question gives way to the update question,
+// asked held answered, and a submission is held back all along. (Codex's
+// review, thirtieth pass, finding 1.)
+func TestAKeyAtANewerStartupQuestionAnswersNotTheOlder(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	time.Sleep(50 * time.Millisecond) // read, not yet quiet
+	if err := s.InputWaiting(t.Context(), nater, []byte("3")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; a.ID != first.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("the older question was cleared before the newer was asked: %+v", a)
+	}
+	update := waitAttention(t, s, func(a Attention) bool {
+		return a.Source == SourceTrust && strings.Contains(a.Message, "Update available")
+	})
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the update question held: %v", err)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}
+
 // A key held down at Codex's trust question: the protocol's repeat of Enter
 // (ESC [ 1 3 ; 1 : 2 u), which Codex's trust question ignores, puts it
 // behind (a program may take a repeat) but clears nothing: the question
