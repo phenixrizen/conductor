@@ -623,28 +623,19 @@ func (s *Local) firePattern(line string) {
 }
 
 // fireTrust is the trust watcher's fire: one of the agent's startup
-// questions (the workspace-trust question first, then Options.Questions) is
-// on the screen, text its last ScreenTail. The session needs input, with
-// the words of the first question found and its answers, unless it waits
-// already.
+// questions (the workspace-trust question, then Options.Questions) is on
+// the screen, text its last ScreenTail. The session needs input, with the
+// words of the question drawn last in that tail (one that keeps what came
+// before, lastStartup) and its answers, unless it waits already. A look
+// that took its text before a startup question was answered (Reset does
+// not wait for one under way) saw the answered screen, and asks nothing:
+// asked again, the question would take a second answer, which the next
+// would get (Codex's update question after its background-server one,
+// where 1 runs npm install). That is weighed under the lock that sets the
+// question (startupLook).
 func (s *Local) fireTrust(text string) {
-	// A look that took its text before a startup question was answered
-	// (Reset does not wait for one under way) saw the answered screen: asked
-	// again, the question would take a second answer, which the next
-	// question would get (Codex's update question after its background-server
-	// one, where 1 runs npm install).
-	look := s.trust.LookedAt()
-	s.mu.Lock()
-	stale := s.startupAnswered && look <= s.startupAnsweredAt
-	s.mu.Unlock()
-	if stale {
-		return
-	}
-	for _, q := range s.questions {
-		if words := q.words(text); words != "" {
-			s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting)
-			return
-		}
+	if q, words := s.lastStartupQ(text); q != nil {
+		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt())
 	}
 }
 
@@ -828,7 +819,7 @@ func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind 
 }
 
 // attentionRules say how setAttention applies a change.
-type attentionRules uint8
+type attentionRules uint16
 
 const (
 	// unlessWaiting changes nothing when the session is needs_input already.
@@ -871,6 +862,13 @@ const (
 	// what leaves the dialog as it was). It is asked answered, with an id
 	// no reply is taken for, so that no reply to it is written twice.
 	sameDialog
+	// startupLook (fireTrust): the change comes from a look of the startup
+	// questions' watcher that took its text when it had seen look Feeds;
+	// one no later than a startup answer (startupAnsweredAt) saw the
+	// answered screen, and changes nothing. Weighed under the lock that
+	// sets the change, so an answer that comes between the look and the
+	// set is not overtaken.
+	startupLook
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -892,6 +890,13 @@ const anyTurn = ^uint64(0)
 // changes nothing once another turn has begun, the turn that ended asking
 // nothing more. anyTurn is setAttention's.
 func (s *Local) setAttentionRead(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn uint64) error {
+	return s.setAttentionLooked(state, message, source, kind, options, rules, turn, 0)
+}
+
+// setAttentionLooked is setAttentionRead for a change a look of the startup
+// questions' watcher found (startupLook): look is the Feeds that look's text
+// had seen (PatternWatcher.LookedAt).
+func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -934,7 +939,8 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
-	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns {
+	staleLook := rules&startupLook != 0 && s.startupAnswered && look <= s.startupAnsweredAt
+	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook {
 		s.mu.Unlock()
 		return nil
 	}
@@ -1606,9 +1612,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
-		keys, cut := s.keysWritten(data)
+		keys, unkeyed := s.keysWritten(data)
 		own := ownKeys(data, keys)
-		quiet = len(keys) == 0 && cut || allReports(keys)
+		quiet = unkeyed || allReports(keys)
 		s.mu.Lock()
 		shown := s.info.Attention
 		s.mu.Unlock()
@@ -1645,7 +1651,17 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				startupSince = shown.Since
 			}
 		}
-		if (answersQuestion && own || startupSince != nil) && s.trust != nil {
+		// The startup question the screen shows as the keys are written,
+		// asked or not yet (the watcher asks once the screen is quiet): keys
+		// that pick one of its answers answer it, and its screen goes
+		// behind, so that the watcher asks only what is drawn after.
+		startupOnScreen := false
+		if s.trust != nil && !quiet && !isTerminalReport(data) && s.trust.Watching() {
+			if q, _ := s.lastStartupQ(s.trust.Text()); q != nil && picksChoice(CleanOptions(q.Answers), data, keys) {
+				startupOnScreen = true
+			}
+		}
+		if (answersQuestion && own || startupSince != nil || startupOnScreen) && s.trust != nil {
 			// The answered screen behind, and a look that took its text
 			// before now asking nothing as it fires (fireTrust).
 			s.mu.Lock()
@@ -1901,8 +1917,16 @@ func (s *Local) stillOnScreen(id string) error {
 // the output's tail the startup questions' watcher keeps (ScreenTail: what
 // came before stays in it), "" when it shows none.
 func (s *Local) lastStartup(text string) string {
+	_, words := s.lastStartupQ(text)
+	return words
+}
+
+// lastStartupQ is lastStartup with the question: nil and "" for none.
+func (s *Local) lastStartupQ(text string) (*StartupQuestion, string) {
+	var last *StartupQuestion
 	words, at := "", -1
-	for _, q := range s.questions {
+	for i := range s.questions {
+		q := &s.questions[i]
 		m := q.Pattern.FindAllStringIndex(text, -1)
 		if len(m) == 0 {
 			continue
@@ -1910,10 +1934,10 @@ func (s *Local) lastStartup(text string) string {
 		// The question is told by where its pattern matched last; its
 		// words (a heading drawn before what finds it) by the whole text.
 		if start := m[len(m)-1][0]; start > at {
-			words, at = q.words(text), start
+			last, words, at = q, q.words(text), start
 		}
 	}
-	return words
+	return last, words
 }
 
 // claimQuestion is questionWaits, and notes the question as answered in the
@@ -2104,14 +2128,16 @@ func isAnswer(answers []Option, data []byte) bool {
 
 // keysWritten returns the keys the program reads from data, a write the
 // writer is taking (its before), whatever a write before it left
-// unfinished (a paste, an escape sequence) carried in, and whether data
-// leaves an escape sequence unfinished (the rest to come). Every write made
-// goes through it once, in order.
-func (s *Local) keysWritten(data []byte) (keys [][]byte, cut bool) {
+// unfinished (a paste, an escape sequence, a control string) carried in,
+// and whether data is none of a person's typing: no key and no paste's text,
+// all of it the rest of a sequence or a control string a write before
+// began (a terminal's report cut across its reads), or the start of one the
+// next ends. Every write made goes through it once, in order.
+func (s *Local) keysWritten(data []byte) (keys [][]byte, quiet bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	keys = s.keysIn.keys(data)
-	return keys, (len(s.keysIn.carry) > 0 || s.keysIn.inString) && !s.keysIn.pasting
+	return keys, len(keys) == 0 && !s.keysIn.pasted
 }
 
 // ErrInputBusy refuses a reply to a question while what was written to the
@@ -2174,6 +2200,8 @@ type keyReader struct {
 	pasting  bool
 	inString bool
 	carry    []byte
+	// pasted says the last write held a paste's text.
+	pasted bool
 }
 
 // stringEnd returns the index just past the BEL or ST that ends a control
@@ -2202,6 +2230,7 @@ func (r *keyReader) keys(data []byte) [][]byte {
 		data = append(r.carry, data...)
 		r.carry = nil
 	}
+	r.pasted = false
 	var keys [][]byte
 	i := 0
 	cut := func(from int) {
@@ -2224,6 +2253,9 @@ func (r *keyReader) keys(data []byte) [][]byte {
 		}
 		if r.pasting {
 			end := bytes.Index(data[i:], []byte(pasteEnd))
+			if end != 0 {
+				r.pasted = true
+			}
 			if end < 0 {
 				// The end marker may be cut: keep what could begin it.
 				for n := min(len(pasteEnd)-1, len(data)-i); n > 0; n-- {

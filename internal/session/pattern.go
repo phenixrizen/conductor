@@ -342,6 +342,13 @@ func (w *PatternWatcher) LookedAt() uint64 {
 	return w.looked
 }
 
+// Watching reports whether the watcher still watches (not Stopped).
+func (w *PatternWatcher) Watching() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.stopped
+}
+
 // Fed returns how many Feeds have come so far.
 func (w *PatternWatcher) Fed() uint64 {
 	w.mu.Lock()

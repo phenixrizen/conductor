@@ -774,6 +774,84 @@ func TestALateOrDoubledAnswerNeverReachesTheNextStartupQuestion(t *testing.T) {
 	}
 }
 
+// A 1 typed at the background-server question before the session has asked
+// it (it asks once the screen is quiet) answers it: the update question
+// drawn after is the one asked, and takes its own reply; the answered
+// question is never asked again. (Codex's review, tenth pass, finding 1.)
+func TestAStartupAnswerTypedBeforeItIsAskedLeavesTheNextAskable(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if err := s.Input(nater, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if !strings.Contains(update.Message, "Update available") {
+		t.Fatalf("the question asked after the 1: %+v", update)
+	}
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); err != nil {
+		t.Fatalf("the update question's own answer: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A look of the startup questions' watcher older than an answer is weighed
+// as the question is set, under the lock that sets it: one that comes in
+// after the answer, though it began before, sets nothing. (Codex's review,
+// tenth pass, finding 2.)
+func TestAnOlderStartupLookSetsNothingOnceAnAnswerCame(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	look := s.trust.LookedAt() // the look that asked it, its check passed
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	// The look's question set only now, after the answer.
+	s.setAttentionLooked(AttentionNeedsInput, first.Message, SourceTrust, KindPrompt, first.Options, unlessWaiting|startupLook, look)
+	if a := s.Info().Attention; a.State != AttentionNone {
+		t.Fatalf("an older look set the answered question again: %+v", a)
+	}
+}
+
+// A terminal's colour report cut in its body (its end, with the BEL, in a
+// second write) is no key a person typed: a question an agent reported (one
+// the session does not hold, which any key typed would answer) keeps its
+// id, still waits, and takes a click. (Codex's review, tenth pass, finding
+// 3.)
+func TestAReportCutInItsBodyLeavesAReportedQuestionWaiting(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater"}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, []Option{{Label: "Yes", Input: "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	q := s.Info().Attention
+	for _, w := range []string{"\x1b]10;rgb:ff", "ff/ffff/ffff\a"} {
+		if err := s.InputWaiting(t.Context(), nater, []byte(w)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	if a := s.Info().Attention; a.ID != q.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("a report cut in two answered the question: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("1")); err != nil {
+		t.Fatalf("a click after the report: %v", err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+}
+
 // A reply to a startup question the screen no longer shows (the program has
 // drawn the next before the watcher asked it) is refused: its key would
 // reach the next question.

@@ -936,7 +936,10 @@ its keys reach whatever the screen shows: a 1 meant for Codex's
 background-server question never reaches its update question, where 1 runs
 `npm install -g @openai/codex`. A look of the startup questions' watcher
 that took the screen's text before an answer and fires after it asks
-nothing. Every write that
+nothing (weighed under the lock that sets the question); the startup
+question asked is the one drawn last in the output the watcher keeps; keys
+that pick an answer of the startup question the screen shows, asked yet or
+not, put its screen behind. Every write that
 answers a question notes it so as the writer takes it: an `answer`'s keys or
 line, a key typed into a terminal (as a controller's input clears a question,
 above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
@@ -958,7 +961,8 @@ version report), and a bracketed paste is text, no key, so an arrow then y
 answers a dialog and a pasted y, or a report's Escapes, do not; a paste or an escape sequence one write leaves unfinished goes on in
 the next (a terminal's reads cut them anywhere), and a write that is all a
 paste's text, a choice's key among it, or the rest of a terminal's own
-report, answers nothing. An Escape that ends a write outside a paste is
+report (a sequence's, a control string's), answers nothing, a question the
+session does not hold included, and stamps nobody typing. An Escape that ends a write outside a paste is
 read as the Escape key: should the next read go on with the rest of a
 sequence, the dialog is held answered until the watcher sees it go, which
 is the safer mistake. While what was written before is unfinished (another
