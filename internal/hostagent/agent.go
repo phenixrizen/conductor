@@ -722,7 +722,9 @@ func (a *agent) retryAttention() {
 
 // sameAttention says whether x and y tell the server the same.
 func sameAttention(x, y session.Attention) bool {
-	return x.State == y.State && x.Message == y.Message && x.Kind == y.Kind && len(x.Options) == len(y.Options)
+	// The source too: a switchyard is told no words, and a held turn
+	// (source submit) differs from a bell's wait by its source alone there.
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options)
 }
 
 // toServer is an attention change as the server is told it: in full to the

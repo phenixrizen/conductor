@@ -369,6 +369,27 @@ func TestARelayedViewerWhoseFramesWaitTooLongIsLetGoAlone(t *testing.T) {
 	}
 }
 
+// A change of source alone is a change the server is told: to a switchyard,
+// which hears no words, a bell's wait turning into a held turn (source
+// submit) differs by nothing else.
+func TestAnAttentionChangeOfSourceAloneIsTold(t *testing.T) {
+	a := &agent{opts: Options{Switchyard: true}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1"}
+	s, c, pc := dialHeld(t, 0)
+	close(s.read)
+	t.Cleanup(a.useConn(c, pc).stop)
+	for _, src := range []string{session.SourceBell, session.SourceSubmit} {
+		a.onLocalChange(session.Info{ID: "sess-1", Attention: session.Attention{State: session.AttentionNeedsInput, Message: "words", Source: src}})
+		select {
+		case got := <-s.got:
+			if !bytes.Contains(got, []byte(`"source":"`+src+`"`)) || bytes.Contains(got, []byte("words")) {
+				t.Fatalf("the switchyard got %q", got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the change to %s was never told", src)
+		}
+	}
+}
+
 // An attention change the server was not told (no connection, or no turn on
 // it in time) is told with the session's next change, though the attention
 // itself did not change again.
