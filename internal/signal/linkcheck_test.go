@@ -220,10 +220,24 @@ func TestALinkThatStopsOpeningTheSessionStopsWhatItsViewersAreOwed(t *testing.T)
 		hub := NewHub(session.NewRegistry(4), nil)
 		hs, conn := register(t, hub)
 		drainHost(t, conn)
-		v := queued(t, hs, time.Now().Add(200*time.Millisecond))
+		// The link expires once the end has closed the viewer: its lapse,
+		// set for an hour on, is made to fire then, not left to a clock
+		// that a slow end could outrun.
+		v := queued(t, hs, time.Now().Add(time.Hour))
 		hs.HostStatus(session.StatusExited, nil)
 		hs.EndLink("l1")
-		time.Sleep(400 * time.Millisecond) // the link expires meanwhile
+		if !errors.Is(v.Reason(), session.ErrSessionEnded) {
+			t.Fatalf("the end closed the viewer with %v", v.Reason())
+		}
+		hs.mu.Lock()
+		lapse := v.lapse
+		hs.mu.Unlock()
+		lapse.Reset(0)
+		for deadline := time.Now().Add(5 * time.Second); !v.revoked.Load(); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("the link's expiry never reached the viewer")
+			}
+		}
 		sink := &pumpSink{}
 		v.Pump(sink)
 		if !errors.Is(sink.reason, session.ErrSessionEnded) || sink.written() != 0 {
