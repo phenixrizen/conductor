@@ -98,17 +98,18 @@ went.
   that round, with its tests; it gets an issue all the same, In progress,
   so the board shows it until its fix merges. An issue waits in Backlog
   only when the owner sets it aside or it is a feature of its own.
-- **The board follows the work.** A card moves to In progress when its
-  branch starts and In review when the pull request that finishes it
-  opens. That pull request's body says `Fixes #N`, so its merge into
-  `main` closes the issue, and the card goes to Done (`scripts/board.py N
-  Done` if the board has not moved it). GitHub acts on `Fixes #N` only for
-  a merge into `main`: a pull request into another branch closes nothing,
-  and its issue stays open, In review, until the change reaches `main`. A pull request that does only part of the work says
-  `Part of #N`, which closes nothing: the issue stays open and its card In
-  progress until the pull request that finishes it merges. An issue that
-  is finished but was not closed by a merge (its pull request said neither)
-  is closed by hand, naming the pull request that finished it.
+- **The board follows the work.** A card is In progress when its branch
+  starts, In review when the pull request that finishes it opens, and Done
+  when that fix reaches `main`. The finishing pull request's body says
+  `Fixes #N`; GitHub closes the issue only when it merges into `main` (a
+  merge into another branch closes nothing, and the issue stays open, In
+  review, until the change reaches `main`), and the card then goes to Done
+  (`scripts/board.py N Done` if the board has not moved it). A pull request
+  that does only part of the work says `Part of #N`, which closes nothing:
+  the issue stays open, In progress, until the finishing pull request
+  opens. An issue whose fix reached `main` without closing it (its pull
+  request said neither) is closed by hand, naming that pull request; never
+  before the fix is on `main`.
 - **Security findings are the exception.** A security finding never
   becomes an issue, a card, a pull request text or a commit message until
   its fix has shipped (see Reviews): it stays in the owner's private
