@@ -295,6 +295,7 @@ func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
 	}
 	read, look := make(chan struct{}), make(chan struct{})
 	var once sync.Once
+	s.mu.Lock()
 	s.beforeScan = func(chunk []byte) {
 		if bytes.Contains(chunk, []byte("\a")) {
 			once.Do(func() {
@@ -303,6 +304,7 @@ func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
 			})
 		}
 	}
+	s.mu.Unlock()
 	go p.outW.Write([]byte("\a\a"))
 	<-read
 	if err := s.TrySetAttentionFull(AttentionDone, "HTTP/2 200", SourceAPI, KindDone, nil); err != nil {
@@ -319,4 +321,54 @@ func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
 	}
 	p.outW.Write([]byte("\a"))
 	waitAttention(t, s, isBell)
+}
+
+// An OSC notification begun in a turn's output and ended in a read after
+// the next turn began (an Enter, or a working report after the done) is
+// the ended turn's own too (Codex's review): it asks nothing and starts no
+// pace, and the next turn's own notification asks.
+func TestANotificationSplitAcrossTurnsIsTheEndedTurns(t *testing.T) {
+	for name, next := range map[string]func(*testing.T, *Local, *fakeProc, *Subscription){
+		"an Enter": func(t *testing.T, s *Local, p *fakeProc, sub *Subscription) {
+			if err := s.Input(sub, []byte("\r")); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+		},
+		"a working report": func(t *testing.T, s *Local, _ *fakeProc, _ *Subscription) {
+			if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{}))
+			sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			p.outW.Write([]byte("x\x1b]9;Agent turn"))
+			p.outW.Write([]byte(" complete"))
+			flushed(p)
+			if err := s.TrySetAttentionFull(AttentionDone, "HTTP/2 200", SourceAPI, KindDone, nil); err != nil {
+				t.Fatal(err)
+			}
+			next(t, s, p, sub)
+			before := s.Info().Attention
+			p.outW.Write([]byte("\a"))
+			flushed(p)
+			if a := s.Info().Attention; a.State == AttentionNeedsInput {
+				t.Fatalf("the ended turn's notification asked in the next: %+v", a)
+			} else if a.State != before.State {
+				t.Fatalf("attention moved from %+v to %+v", before, a)
+			}
+			p.outW.Write([]byte("\x1b]9;need approval\a"))
+			if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNeedsInput }); a.Source != SourceOSC || a.Message != "need approval" {
+				t.Fatalf("the next turn's notification: %+v", a)
+			}
+		})
+	}
 }

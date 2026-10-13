@@ -512,7 +512,8 @@ it follows the last turn's. That turn begins with the first Enter written
 after the `done` or the first other state shown (a `working` report: the
 agent went on by itself); an Enter within a turn (an answer) keeps the 500
 ms. Output read before the next turn began and looked at after is the ended
-turn's own: its bells ask nothing. Successful input from a
+turn's own: its bells ask nothing, nor does an OSC notification begun in it
+and ended in output read after (one split between two reads). Successful input from a
 `control` client clears the `needs_input` state that was showing when the input
 began. One raised while the input was being written (a process that answers at
 once, an echo that rings the bell) is left for the next input. An input that is

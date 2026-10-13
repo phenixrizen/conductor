@@ -219,8 +219,11 @@ type Local struct {
 	// before one began, and scanned after, is the ended turn's own
 	// (scanOutput). Guarded by mu.
 	turn uint64
-	// beforeScan, a test's hook, runs with each chunk read between the
-	// read and the look for bells (scanOutput).
+	// scanBegun is turn as the chunk was read in which the escape sequence
+	// the scanner has under way began (scanOutput); the pump's own.
+	scanBegun uint64
+	// beforeScan, a test's hook set under mu, runs with each chunk read
+	// between the read and the look for bells (scanOutput).
 	beforeScan     func(chunk []byte)
 	agentTokenHash [32]byte
 	hasAgentToken  bool
@@ -347,11 +350,11 @@ func (s *Local) pump() {
 			if !title {
 				s.lastOutput = time.Now()
 			}
-			turn := s.turn
+			turn, hook := s.turn, s.beforeScan
 			s.mu.Unlock()
 			s.paste.feed(chunk)
-			if s.beforeScan != nil {
-				s.beforeScan(chunk)
+			if hook != nil {
+				hook(chunk)
 			}
 			s.scanOutput(chunk, turn)
 			if s.pattern != nil {
@@ -544,15 +547,27 @@ func (s *Local) notifyChange() {
 // session holds (unlessChoices). Neither undoes a done until the next Enter
 // (unlessTurnEnded): it is the ended turn's own, as Codex's bell is. Nor
 // does one read during the ended turn (turn, the count of turns begun as
-// the chunk was read) and looked at once the next has begun: a done and an
-// Enter that come between the read and the look leave it the last turn's.
+// the chunk was read; for a notification begun in an earlier chunk, that
+// chunk's) and looked at once the next has begun: a done and an Enter that
+// come between the read and the look leave it the last turn's. Only the
+// pump calls it.
 func (s *Local) scanOutput(chunk []byte, turn uint64) {
-	for _, ev := range s.scanner.Scan(chunk) {
+	begun := s.scanBegun
+	events := s.scanner.Scan(chunk)
+	if !s.scanner.Through() {
+		// A sequence left unfinished began in this chunk.
+		s.scanBegun = turn
+	}
+	for i, ev := range events {
 		msg, rule := ev.Message, unlessChoices
 		if msg == "" {
 			msg, rule = "terminal bell", unlessWaiting
 		}
-		s.setAttentionRead(AttentionNeedsInput, msg, ev.Source, "", nil, rule|unlessTurnEnded|bellPaced, turn)
+		read := turn
+		if i == 0 && s.scanner.Carried() {
+			read = begun
+		}
+		s.setAttentionRead(AttentionNeedsInput, msg, ev.Source, "", nil, rule|unlessTurnEnded|bellPaced, read)
 	}
 }
 
