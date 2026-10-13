@@ -85,12 +85,14 @@ nothing more that was queued for it: the frame being written as it is
 closed is the last, then its `error` frame and the close. One closed at the
 session's end (the viewers attached through its links, which end with it,
 on a server session and a hosted one alike, a session published to a
-switchyard included; every viewer as the session leaves the server), or a
-hosted session's viewer as its host goes, is first sent what was queued for
-it before: the session's last output and its `status`, then its `error`
+switchyard included), or a hosted session's viewer as its host goes, is
+first sent what was queued for it before: the session's last output and its
+`status`, then its `error`
 (`session_ended`, or `host_disconnected`) and `4410`, whatever link it came
 through; a revoke or the expiry of its link that lands meanwhile (its host
-gone or not) stops that, at the frame being written, and a link revoked
+gone or not) stops that, at the frame being written, as does the session
+leaving the server (removed, or past its retention), which closes every
+viewer as its end (`4410`) and writes none anything more; a link revoked
 before the end is not the end's to close.
 A server gives a connection it closes, for any of these reasons, 5 s from
 the close to be written all of it, and then cuts its socket, a close

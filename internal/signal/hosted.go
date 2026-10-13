@@ -381,7 +381,7 @@ func (v *Viewer) halt() { v.stopOnce.Do(func() { close(v.stop) }) }
 // the reason. They are dropped when the link was revoked (or expired), when the
 // viewer's own queue overflowed (ErrSlowViewer) and when the viewer left (a nil
 // reason). For every other reason, the session's end (its links end with it,
-// EndLink, as does its leaving the server, Retire), the host going
+// EndLink), the host going
 // away, asking for the close or reporting an error for the viewer, they are
 // written first: at most as many as the queue holds, and up to the first frame
 // that cannot be written. They are the session's last output, its final status
@@ -389,7 +389,9 @@ func (v *Viewer) halt() { v.stopOnce.Do(func() { close(v.stop) }) }
 // viewer would otherwise be told the session ended, or the host is gone,
 // without what it printed last. A viewer that the host evicted as too slow
 // (the host asks for the close) is in that second group and is drained too.
-// A revoke of the viewer's link that lands meanwhile stops them (closeLink).
+// A revoke or the expiry of the viewer's link that lands meanwhile stops
+// them (closeLink, lapse), as does the session's leaving the server
+// (Retire), which writes them nothing at all.
 // Whoever serves the viewer bounds how long that may take: a viewer that reads
 // too little is cut off (the sink's write fails, and Pump ends).
 //
@@ -1213,16 +1215,23 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 // Retire is the session leaving the server's registry: every viewer is
 // closed as at the session's end, and none is added after
 // (session.ErrSessionEnded). Whoever closes a link's viewers finds them
-// through the registry, so none may stay where it no longer looks.
+// through the registry, so none may stay where it no longer looks: none is
+// written anything more, whatever it was owed (the session's end of its
+// links, or its host's going, may still be writing theirs), as a revoke
+// would stop it.
 func (h *HostedSession) Retire() {
 	h.mu.Lock()
 	h.retired = true
-	viewers := make([]*Viewer, 0, len(h.viewers))
+	viewers := make([]*Viewer, 0, len(h.viewers)+len(h.gone))
 	for _, v := range h.viewers {
+		viewers = append(viewers, v)
+	}
+	for v := range h.gone {
 		viewers = append(viewers, v)
 	}
 	h.mu.Unlock()
 	for _, v := range viewers {
+		v.revoked.Store(true)
 		v.close(session.ErrSessionEnded)
 	}
 }

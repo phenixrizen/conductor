@@ -161,8 +161,7 @@ func (s *Subscription) run() {
 }
 
 // owed writes a subscription the session's end closed (ErrSessionEnded: its
-// link ended with it, EndLink, or the session left the server, Retire) the
-// frames still queued for it, in order, up to the first that cannot be
+// link ended with it, EndLink) the frames still queued for it, in order, up to the first that cannot be
 // written: the session's last output, its final status among them, which
 // its viewer is given before it is told the session ended. Nothing is
 // queued after the end (send). A subscription that ended for any other
@@ -254,6 +253,14 @@ func (s *Subscription) revoke() {
 func (s *Subscription) expire() {
 	s.revoked.Store(true)
 	s.closeWith(ErrExpired)
+}
+
+// retire is revoke for the session leaving the server (Local.Retire): the
+// close says the session ended (ErrSessionEnded), and nothing more is
+// written.
+func (s *Subscription) retire() {
+	s.revoked.Store(true)
+	s.closeWith(ErrSessionEnded)
 }
 
 // Done is closed when the subscription ends.

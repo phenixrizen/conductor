@@ -634,6 +634,28 @@ func TestARevokeStopsWhatTheSessionsEndStillWrites(t *testing.T) {
 	}
 }
 
+// The session leaving the server (Retire) while its end still writes a
+// link's viewer what was queued for it stops that: a revoke, which finds
+// its clients through the server's registry, could not reach it after.
+func TestLeavingTheServerStopsWhatTheSessionsEndStillWrites(t *testing.T) {
+	sink, attached, sub := endedWithQueued(t, func(s *Local) {
+		viewer := linkSub(s, "L")
+		ended := make(chan struct{})
+		go func() { s.EndLink("L"); close(ended) }()
+		if viewer == nil || !waitFor(time.Second, func() bool { return viewer.Reason() != nil }) {
+			t.Error("the end did not close the viewer")
+		}
+		s.Retire()
+		<-ended
+	}, func(sub *Subscription) bool { return sub.revoked.Load() })
+	if !errors.Is(sub.Reason(), ErrSessionEnded) || !errors.Is(sink.reason, ErrSessionEnded) {
+		t.Fatalf("closed for %v, the transport told %v", sub.Reason(), sink.reason)
+	}
+	if n := len(sink.frames) - attached; n > 1 {
+		t.Fatalf("%d frames written after the session left, the one being written at most", n)
+	}
+}
+
 // A link that expires while the session's end still writes its viewer what
 // was queued for it stops that, as a revoke does: the frame being written
 // is the last.

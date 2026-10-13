@@ -248,6 +248,37 @@ func TestALinkThatStopsOpeningTheSessionStopsWhatItsViewersAreOwed(t *testing.T)
 			t.Fatal("a removed viewer is still kept")
 		}
 	})
+	// A revoke finds a session's viewers through the server's registry,
+	// which the session leaves as it retires: none is written more then.
+	t.Run("the session left the server", func(t *testing.T) {
+		hub := NewHub(session.NewRegistry(4), nil)
+		hs, conn := register(t, hub)
+		drainHost(t, conn)
+		ended := queued(t, hs, time.Time{})
+		hs.HostStatus(session.StatusExited, nil)
+		hs.EndLink("l1")
+		hs.Retire()
+		sink := &pumpSink{}
+		ended.Pump(sink)
+		if !errors.Is(sink.reason, session.ErrSessionEnded) || sink.written() != 0 {
+			t.Fatalf("closed with %v after %d frames", sink.reason, sink.written())
+		}
+		hs.RemoveViewer(ended)
+	})
+	t.Run("the session left the server after its host", func(t *testing.T) {
+		hub := NewHub(session.NewRegistry(4), nil)
+		hs, conn := register(t, hub)
+		drainHost(t, conn)
+		v := queued(t, hs, time.Time{})
+		hs.HostDisconnected(conn)
+		hs.Retire()
+		sink := &pumpSink{}
+		v.Pump(sink)
+		if !errors.Is(sink.reason, ErrHostGone) || sink.written() != 0 {
+			t.Fatalf("closed with %v after %d frames", sink.reason, sink.written())
+		}
+		hs.RemoveViewer(v)
+	})
 }
 
 // A grant that lapses closes the viewer as it lapses, with ErrExpired, and
