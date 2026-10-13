@@ -732,6 +732,44 @@ func TestHostActivityReachesTheEventStream(t *testing.T) {
 }
 
 // A hosted session's attention entry carries the state its host sends with it.
+// A host's question reaches the server's listings (what the sidebar and the
+// Yard read) with the id the host gave it, so that an answer from them names
+// the question the host holds; a report the server forwards to the host
+// shows none there until the host tells its own.
+func TestAHostedQuestionIsListedWithItsHostsID(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	host.send(proto.HostAttentionMsg{T: proto.HostAttention, SessionID: host.sessionID, State: "needs_input", Message: "Allow Bash?", Source: session.SourceQuestion, Kind: session.KindPermission, Options: []proto.AttentionOption{{Label: "Yes", Input: "y"}}, ID: "0123456789abcdef"})
+	listed := func() map[string]any {
+		_, out := e.do("GET", "/api/sessions/"+host.sessionID, adminToken, nil)
+		s, _ := out["session"].(map[string]any)
+		a, _ := s["attention"].(map[string]any)
+		return a
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for listed()["id"] != "0123456789abcdef" {
+		if time.Now().After(deadline) {
+			t.Fatalf("listed %v", listed())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+host.sessionID+"/attention", adminToken, map[string]any{"state": "needs_input", "message": "Which port?"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("report: %d %v", resp.StatusCode, out)
+	}
+	host.expect(proto.HostAttention)
+	if a := listed(); a["id"] != nil || a["message"] != "Which port?" {
+		t.Fatalf("a forwarded report listed %v before the host told its id", a)
+	}
+	host.send(proto.HostAttentionMsg{T: proto.HostAttention, SessionID: host.sessionID, State: "needs_input", Message: "Which port?", Source: session.SourceAdmin, ID: "fedcba9876543210"})
+	deadline = time.Now().Add(3 * time.Second)
+	for listed()["id"] != "fedcba9876543210" {
+		if time.Now().After(deadline) {
+			t.Fatalf("listed %v", listed())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestHostedAttentionEntriesCarryTheirStateOnTheEventStream(t *testing.T) {
 	e := newTestEnv(t, nil)
 	host := dialFakeHost(t, e, "hosted-agent-token")

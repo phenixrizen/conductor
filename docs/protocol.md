@@ -589,8 +589,9 @@ Answering a question), none with the empty state. A hosted session's is its
 host's, as the host reports
 it; a change the server makes for a hosted session (a report through its
 routes) has none in the server's listings until the host reports it back with
-its own, except one the host keeps as it is (see Answering a question,
-below).
+its own: the host tells its attention, with its id, after every report the
+server forwards, one its session takes as changing nothing included, so the
+listing never holds an older id or none for long.
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
@@ -928,9 +929,14 @@ question as the reply is asked for and again as the session's writer takes
 its keys, after every write queued before it: it is taken only while that
 question is the session's `needs_input` and nothing written since was made
 to answer it, and then noted as answered in the same step; a reply to a
-dialog asked during the work is taken only while the screen still shows that
-dialog, too (a next dialog drawn over it and not asked yet, or none, refuses
-it), for its keys reach whatever the screen shows. Every write that
+question read off the screen (a dialog asked during the work, a startup
+question) is taken only while the screen still shows that question, too (a
+next question drawn after it and not asked yet, or none, refuses it), for
+its keys reach whatever the screen shows: a 1 meant for Codex's
+background-server question never reaches its update question, where 1 runs
+`npm install -g @openai/codex`. A look of the startup questions' watcher
+that took the screen's text before an answer and fires after it asks
+nothing. Every write that
 answers a question notes it so as the writer takes it: an `answer`'s keys or
 line, a key typed into a terminal (as a controller's input clears a question,
 above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
@@ -987,8 +993,14 @@ takes `answer`, a page sends no reply that names no question (a hosted
 session's question the server lists before its host has told its `id`, a
 server older than its host): it says it was not sent, since keys that name
 nothing could land on another question. A session page whose listing lacks
-the `id` keeps the one its own connection to the owner reported for the same
-question. A page sends one reply per question: a double click is one answer.
+the `id` leaves the owner's own word standing while its connection to the
+owner is open; no page matches one question to another by its words. A page
+sends one reply per question: a double click is one answer. A quick reply's
+connection stays until the owner's word (`answer_ok`, or a refusal naming
+it), at most 15 s, past the owner's own waits (a host's keystroke or line
+has 10 s from its arrival): an answer queued behind another write is not
+withdrawn by the page going early, and one the owner did not confirm in time
+is said so ("Not confirmed: look at the session before you answer again").
 
 ## Events
 

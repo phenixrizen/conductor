@@ -13,16 +13,14 @@ export function questionOf(att: Pick<Attention, 'state' | 'id'> | null | undefin
 }
 
 /**
- * The attention a page shows when a listing without the question's id (a server older than the host, or one the host has not
- * told yet) reports what its own connection to the owner reported with one: the same question, keeping that id. Anything else
- * shown is `next` as it is.
+ * The attention a session page shows when the live listing reports `listed`: the listing's, unless it lacks the question's id (a
+ * server older than the host, a report the host has not told its id for yet) while the page's own connection to the owner, open,
+ * reported the attention it shows with one (`shown`): the owner's word stands, as it is, until the listing names a question. No
+ * attention is matched to another by its words: an identical question asked again is another question.
  */
-export function keepQuestionId(next: Attention, shown: Attention | null | undefined): Attention {
-  if (next.id || !shown?.id || next.state !== shown.state || (next.message ?? '') !== (shown.message ?? '')) return next
-  const a = next.options ?? []
-  const b = shown.options ?? []
-  if (a.length !== b.length || a.some((o, i) => o.label !== b[i]!.label || o.input !== b[i]!.input)) return next
-  return { ...next, id: shown.id }
+export function listedAttention(listed: Attention, shown: Attention | null | undefined, ownerOpen: boolean): Attention {
+  if (!listed.id && shown?.id && ownerOpen) return shown
+  return listed
 }
 
 /** A question's or a request's id as the owner takes it: printable ASCII, no space, within its bound. */
@@ -40,6 +38,9 @@ export function answerMessage(reply: QuestionReply, reqId: string): AnswerMsg | 
   if ('input' in reply) return reply.input ? { t: 'answer', reqId, question: q, input: reply.input } : null
   return reply.text ? { t: 'answer', reqId, question: q, text: reply.text } : null
 }
+
+/** How long a reply waits for the owner's word (`answer_ok`, or a refusal) before the page says it was not confirmed, in seconds. */
+export const ANSWER_WAIT_SECONDS = 15
 
 /** How many questions a page remembers having replied to. */
 const REMEMBERED = 64
@@ -96,6 +97,14 @@ export function replyFailure(e: unknown, name?: string): { title: string; descri
   }
   if (code === NO_QUESTION) {
     return { title: 'Not sent', description: 'This page could not tell the session which question your reply was for, so nothing was sent. Try again in a moment, or answer in the terminal.', color: 'warning' }
+  }
+  if (code === 'no_word' || code === 'closed') {
+    const when = code === 'no_word' ? `within ${ANSWER_WAIT_SECONDS} s` : 'before the connection closed'
+    return {
+      title: 'Not confirmed',
+      description: `${name ? `${name} did` : 'The session did'} not say ${when} whether it took your reply. Look at the session before you answer again.`,
+      color: 'warning',
+    }
   }
   if (code === 'not_connected') return { title: 'Not connected', description: 'Reconnect the terminal and try again.', color: 'warning' }
   return { title: name ? `Reply to ${name} failed` : 'Reply failed', description: (e as Error | null)?.message, color: 'error' }

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Page } from '@playwright/test'
 import { expect, member, test, type Session } from './fixtures'
@@ -39,6 +39,77 @@ test.afterAll(async ({ api }) => {
   await other?.close()
   for (const id of runs) await api.stopRun(id)
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+})
+
+// Codex asks whether to run without its background server, then whether to
+// update, where 1 runs npm install -g @openai/codex: a 1 meant for the first,
+// clicked late from a page that still shows it, must never reach the second.
+test("a late click on Codex's background-server question never reaches its update question", async ({ page, browser, api, state }) => {
+  const dir = join(state.home, '.codex')
+  mkdirSync(dir, { recursive: true })
+  const marks = ['stub-background', 'stub-update'].map((m) => join(dir, m))
+  const [background, update] = ['stub-background-answer', 'stub-update-answer'].map((m) => join(dir, m)) as [string, string]
+  for (const m of marks) writeFileSync(m, '')
+  for (const a of [background, update]) rmSync(a, { force: true })
+  const crew = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name: 'e2e answered startup',
+    goal: 'answered',
+    cwd: '',
+    where: 'server',
+    isolation: 'none',
+    openAfterLaunch: false,
+    yolo: false,
+    members: [{ name: 'solo', agentId: 'codex', prompt: 'say hello', start: { when: 'immediately' } }],
+  })
+  let late: BrowserContext | undefined
+  try {
+    const run = await api.launchCrew(crew.crew.id)
+    runs.push(run.id)
+    let id = ''
+    const asked = async () => {
+      id = member(await api.run(run.id), 'solo').sessionId ?? ''
+      return id ? ((await api.session(id)).attention ?? { state: '' }) : { state: '' }
+    }
+    await expect.poll(async () => (await asked()).message ?? '', { timeout: 45_000, message: 'the background-server question is asked' }).toMatch(/Background server has incompatible/)
+    const first = await asked()
+    expect(first.source).toBe('trust')
+
+    const listed = (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions
+    late = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const priya = await heldBackPage(late, state.token, listed)
+    await page.goto('/crews')
+    await priya.goto('/crews')
+    const row = (p: Page) => p.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${id}"]`).first()
+    for (const p of [page, priya]) {
+      await expect(row(p).locator('[data-row-prompt]')).toContainText('Background server', { timeout: 30_000 })
+      await expect(row(p).locator('[data-row-choice="1"]')).toContainText('Run without the daemon this time')
+    }
+
+    // Nate's 1: the stub runs without the daemon and asks whether to update.
+    await row(page).locator('[data-row-choice="1"]').click()
+    await expect.poll(() => (existsSync(background) ? readFileSync(background, 'utf8').trim() : ''), { timeout: 15_000 }).toBe('1')
+    await expect.poll(async () => (await asked()).message ?? '', { timeout: 15_000, message: 'the update question is asked' }).toMatch(/^Update available/)
+    const next = await asked()
+
+    // Priya's page still shows the first question; her 1 names it and is refused, so it never runs the update.
+    await row(priya).locator('[data-row-choice="1"]').click()
+    const toast = priya.locator('li').filter({ hasText: 'Already answered' }).last()
+    await expect(toast).toBeVisible({ timeout: 15_000 })
+    await priya.waitForTimeout(1_500)
+    expect(existsSync(update), 'the update question got no answer').toBe(false)
+    const waiting = await asked()
+    expect(waiting.state).toBe('needs_input')
+    expect(waiting.id).toBe(next.id)
+
+    // The update question takes its own answer.
+    await expect(row(page).locator('[data-row-prompt]')).toContainText('Update available', { timeout: 15_000 })
+    await row(page).getByRole('button', { name: /Skip until next version/ }).click()
+    await expect.poll(() => (existsSync(update) ? readFileSync(update, 'utf8').trim() : ''), { timeout: 15_000 }).toBe('skip-version')
+  } finally {
+    await late?.close()
+    for (const m of [...marks, background, update]) rmSync(m, { force: true })
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew.crew.id)}`)
+  }
 })
 
 /**

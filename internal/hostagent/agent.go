@@ -1178,15 +1178,18 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
-		if a.local.Held() {
-			// The session's turn is held for a typed text, which is what it
-			// shows (session.HeldWords), the change only recorded: the
-			// server, which shows the change it sent, is told so.
-			a.mu.Lock()
-			a.attentionUntold = true
-			a.mu.Unlock()
-			a.noteChange(a.local.Info())
-		}
+		// The server's listing took this report without an id (the id is
+		// the session's, given as it applies it), and one the session
+		// takes as changing nothing (the same as it shows), or records and
+		// does not show (its turn held for a typed text: it shows
+		// session.HeldWords), makes no change to tell: the host tells its
+		// attention, with its id, all the same, in its turn among its
+		// changes, so that the server never holds an id or a change the
+		// session does not show, or none.
+		a.mu.Lock()
+		a.attentionUntold = true
+		a.mu.Unlock()
+		a.noteChange(a.local.Info())
 	case proto.HostActivity:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard

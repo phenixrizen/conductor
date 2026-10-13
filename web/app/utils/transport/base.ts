@@ -22,15 +22,19 @@ import {
   type TransportKind,
   type Welcome,
 } from '../protocol'
-import { answerMessage, NO_QUESTION, ReplyError, type QuestionReply } from '../reply'
+import { ANSWER_WAIT_SECONDS, answerMessage, NO_QUESTION, ReplyError, type QuestionReply } from '../reply'
 import { rttFromPong } from './rtt'
 import type { CloseInfo, TerminalTransport, TransportState } from './types'
 
 const FILE_TIMEOUT_MS = 20000
 /** How long an nvim_open may take: Neovim loading the person's config. */
 const NVIM_OPEN_TIMEOUT_MS = 20_000
-/** How long an answer waits for the owner's word: past its own waits (a keystroke's 10 s, a line's 10 s). */
-export const ANSWER_TIMEOUT_MS = 15_000
+/**
+ * How long an answer waits for the owner's word: past the owner's own waits (a keystroke's 10 s, a line's 10 s, on a host from its
+ * arrival), so that an answer queued behind another write is not given up while the owner still has it; past it, the page says
+ * it was not confirmed.
+ */
+export const ANSWER_TIMEOUT_MS = ANSWER_WAIT_SECONDS * 1000
 
 /**
  * Shared frame handling for both transports: listener registration, the

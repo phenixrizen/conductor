@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_QUESTION_ID } from './protocol'
-import { answerMessage, keepQuestionId, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
+import { answerMessage, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -31,19 +31,25 @@ describe('answerMessage', () => {
   })
 })
 
-describe('keepQuestionId', () => {
+describe('listedAttention', () => {
   const shown = { state: 'needs_input' as const, message: 'Allow?', options: [{ label: 'Yes', input: 'y' }], id: '0123456789abcdef' }
 
-  it('keeps the id the terminal reported when a listing without one shows the same question', () => {
-    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?', options: [{ label: 'Yes', input: 'y' }] }, shown).id).toBe('0123456789abcdef')
+  it("leaves the owner's own word standing while its connection is open and the listing names no question", () => {
+    expect(listedAttention({ state: 'needs_input', message: 'Which port?' }, shown, true)).toBe(shown)
+    expect(listedAttention({ state: '' }, shown, true)).toBe(shown)
   })
 
-  it('takes the listing as it is for another question, one with its own id, or nothing shown', () => {
-    expect(keepQuestionId({ state: 'needs_input', message: 'Allow Edit?', options: [{ label: 'Yes', input: 'y' }] }, shown).id).toBeUndefined()
-    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?', options: [{ label: 'No', input: 'n' }] }, shown).id).toBeUndefined()
-    expect(keepQuestionId({ state: 'done', message: 'Allow?' }, shown).id).toBeUndefined()
-    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?', options: [{ label: 'Yes', input: 'y' }], id: 'fedcba9876543210' }, shown).id).toBe('fedcba9876543210')
-    expect(keepQuestionId({ state: 'needs_input', message: 'Allow?' }, undefined).id).toBeUndefined()
+  it('takes the listing when it names a question, when nothing named one, or with the connection closed', () => {
+    const named = { state: 'needs_input' as const, message: 'Allow?', options: [{ label: 'Yes', input: 'y' }], id: 'fedcba9876543210' }
+    expect(listedAttention(named, shown, true)).toBe(named)
+    const plain = { state: 'needs_input' as const, message: 'Allow?' }
+    expect(listedAttention(plain, { state: '' }, true)).toBe(plain)
+    expect(listedAttention(plain, shown, false)).toBe(plain)
+  })
+
+  it('never gives a listing the id of the question shown by its words: the same words asked again are another question', () => {
+    const again = { state: 'needs_input' as const, message: 'Allow?', options: [{ label: 'Yes', input: 'y' }] }
+    expect(listedAttention(again, shown, false).id).toBeUndefined()
   })
 })
 
@@ -80,6 +86,13 @@ describe('replyFailure', () => {
     expect(replyFailure(refused).description).toMatch(/^This question was answered before your reply arrived\. Nothing was sent\./)
   })
 
+  it('says a reply the session did not confirm in time, or before the connection closed, was not confirmed, and to look first', () => {
+    const late = replyFailure(new ReplyError('no_word', 'x'), 'fix-auth')
+    expect(late).toMatchObject({ title: 'Not confirmed', color: 'warning' })
+    expect(late.description).toBe('fix-auth did not say within 15 s whether it took your reply. Look at the session before you answer again.')
+    expect(replyFailure(new ReplyError('closed', 'x')).description).toBe('The session did not say before the connection closed whether it took your reply. Look at the session before you answer again.')
+  })
+
   it('says a reply that could not name its question was not sent', () => {
     expect(replyFailure(new ReplyError('no_question', 'x'))).toMatchObject({ title: 'Not sent', color: 'warning' })
     expect(replyFailure(new ReplyError('no_question', 'x')).description).toContain('nothing was sent')
@@ -100,6 +113,11 @@ describe('the sidebar row names its question', () => {
     const row = sessionRow(session({ state: 'needs_input', message: 'Allow?', options: [{ label: 'Yes', input: 'y' }], id: '0123456789abcdef' }))
     expect(row.prompt?.question).toBe('0123456789abcdef')
     expect(rowPrompt(row)?.question).toBe('0123456789abcdef')
+  })
+
+  it("a hosted session's row names the host's id, as the server lists it", () => {
+    const hosted = { ...session({ state: 'needs_input', message: 'Allow?', options: [{ label: 'Yes', input: 'y' }], id: 'fedcba9876543210' }), kind: 'hosted' } as SessionInfo
+    expect(rowPrompt(sessionRow(hosted))?.question).toBe('fedcba9876543210')
   })
 
   it('an older owner\'s question has none: the row answers as before', () => {

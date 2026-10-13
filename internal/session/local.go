@@ -210,6 +210,13 @@ type Local struct {
 	// keysIn splits what is written to the program into the keys it reads
 	// (keysWritten), every write made, in the writer's order. Guarded by mu.
 	keysIn keyReader
+	// startupAnswered says a write answered a startup question, and
+	// startupAnsweredAt how many Feeds the startup questions' watcher had
+	// seen then (Fed), as its text was put behind: a look of that watcher
+	// that took its text no later (LookedAt) saw the answered screen, and
+	// asks nothing (fireTrust). Guarded by mu.
+	startupAnswered   bool
+	startupAnsweredAt uint64
 
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
@@ -621,6 +628,18 @@ func (s *Local) firePattern(line string) {
 // the words of the first question found and its answers, unless it waits
 // already.
 func (s *Local) fireTrust(text string) {
+	// A look that took its text before a startup question was answered
+	// (Reset does not wait for one under way) saw the answered screen: asked
+	// again, the question would take a second answer, which the next
+	// question would get (Codex's update question after its background-server
+	// one, where 1 runs npm install).
+	look := s.trust.LookedAt()
+	s.mu.Lock()
+	stale := s.startupAnswered && look <= s.startupAnsweredAt
+	s.mu.Unlock()
+	if stale {
+		return
+	}
 	for _, q := range s.questions {
 		if words := q.words(text); words != "" {
 			s.setAttention(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting)
@@ -1627,6 +1646,11 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			}
 		}
 		if (answersQuestion && own || startupSince != nil) && s.trust != nil {
+			// The answered screen behind, and a look that took its text
+			// before now asking nothing as it fires (fireTrust).
+			s.mu.Lock()
+			s.startupAnswered, s.startupAnsweredAt = true, s.trust.Fed()
+			s.mu.Unlock()
 			s.trust.Reset()
 		}
 		if enter {
@@ -1848,24 +1872,48 @@ func (s *Local) waitsLocked(id string) error {
 }
 
 // stillOnScreen reports, for a reply to the question named id when that is
-// a dialog asked during the work, whether the screen it is read from still
-// shows it: ErrQuestionAnswered when the screen shows another dialog, not
-// asked yet (the watcher asks once the screen is quiet), or none, for its
-// keys would reach what took its place. nil for any other question.
+// one the session reads off the screen (a dialog asked during the work, a
+// startup question), whether the screen its watcher reads still shows it:
+// ErrQuestionAnswered when it shows another question, not asked yet (a
+// watcher asks once the screen is quiet), or none, for its keys would
+// reach what took its place. nil for any other question.
 func (s *Local) stillOnScreen(id string) error {
-	if s.asked == nil {
-		return nil
-	}
 	s.mu.Lock()
 	att := s.info.Attention
 	s.mu.Unlock()
-	if att.ID != id || att.Source != SourceQuestion {
+	if att.ID != id {
 		return nil
 	}
-	if _, words := s.askedIn(s.asked.Text()); words != att.Message {
-		return ErrQuestionAnswered
+	switch {
+	case att.Source == SourceQuestion && s.asked != nil:
+		if _, words := s.askedIn(s.asked.Text()); words != att.Message {
+			return ErrQuestionAnswered
+		}
+	case att.Source == SourceTrust && s.trust != nil:
+		if s.lastStartup(s.trust.Text()) != att.Message {
+			return ErrQuestionAnswered
+		}
 	}
 	return nil
+}
+
+// lastStartup returns the words of the startup question drawn last in text,
+// the output's tail the startup questions' watcher keeps (ScreenTail: what
+// came before stays in it), "" when it shows none.
+func (s *Local) lastStartup(text string) string {
+	words, at := "", -1
+	for _, q := range s.questions {
+		m := q.Pattern.FindAllStringIndex(text, -1)
+		if len(m) == 0 {
+			continue
+		}
+		// The question is told by where its pattern matched last; its
+		// words (a heading drawn before what finds it) by the whole text.
+		if start := m[len(m)-1][0]; start > at {
+			words, at = q.words(text), start
+		}
+	}
+	return words
 }
 
 // claimQuestion is questionWaits, and notes the question as answered in the

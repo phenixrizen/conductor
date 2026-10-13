@@ -1,6 +1,7 @@
 package hostagent
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -180,6 +181,59 @@ func TestAViewOnlyViewersAnswerIsRefused(t *testing.T) {
 	case b := <-proc.Input:
 		t.Fatalf("written %q", b)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A report the server forwards takes no id in the server's listing (the
+// session gives it its own as it applies it). The host tells the server
+// its attention, with its id, after every one: also after one its session
+// takes as changing nothing (the same as it shows: no change, no OnChange),
+// so that the server never holds none, or an older one. (The bell agent's
+// review of its own design, hosted sessions.)
+func TestTheHostTellsItsIDAfterEveryForwardedReport(t *testing.T) {
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	sent := make(chan proto.HostAttentionMsg, 16)
+	a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog}
+	a.sendHook = func(v any) {
+		if m, ok := v.(proto.HostAttentionMsg); ok {
+			sent <- m
+		}
+	}
+	a.local = session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{FileEdit: "off", Log: discardLog, OnChange: a.noteChange})
+	report := func() []byte {
+		b, _ := json.Marshal(proto.HostAttentionMsg{T: proto.HostAttention, State: "needs_input", Message: "Allow Bash?", Source: session.SourceAPI, Kind: session.KindPermission, Options: []proto.AttentionOption{{Label: "Yes", Input: "1"}}})
+		return b
+	}
+	next := func(what string) proto.HostAttentionMsg {
+		t.Helper()
+		select {
+		case m := <-sent:
+			return m
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: the host told the server nothing", what)
+			return proto.HostAttentionMsg{}
+		}
+	}
+	if err := a.handleControl(t.Context(), report()); err != nil {
+		t.Fatal(err)
+	}
+	id := a.local.Info().Attention.ID
+	if m := next("the first report"); m.ID != id || id == "" {
+		t.Fatalf("told %+v, the session's id %q", m, id)
+	}
+	for len(sent) > 0 {
+		<-sent
+	}
+	// The same report again: the session keeps what it shows, and its id.
+	if err := a.handleControl(t.Context(), report()); err != nil {
+		t.Fatal(err)
+	}
+	if a.local.Info().Attention.ID != id {
+		t.Fatal("the same report gave the question another id")
+	}
+	if m := next("the same report again"); m.ID != id || m.State != "needs_input" {
+		t.Fatalf("told %+v after the same report, the session's id %q", m, id)
 	}
 }
 

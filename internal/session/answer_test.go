@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/proto"
 )
 
@@ -687,6 +688,109 @@ func TestAKeyQueuedBeforeAStartupQuestionAnswersAndClearsIt(t *testing.T) {
 	if got := nextWrite(t, p); got != "1" {
 		t.Fatalf("written %q", got)
 	}
+}
+
+// startupQuestions are Codex's startup questions as the built-in catalog
+// entry has them (those not asked at any time): hooks review, the
+// background server, the update.
+func startupQuestions() []StartupQuestion {
+	codex, _ := catalog.Default().Get("codex")
+	var out []StartupQuestion
+	for _, q := range codex.Questions {
+		if q.Anytime {
+			continue
+		}
+		answers := make([]Option, len(q.Answers))
+		for i, a := range q.Answers {
+			answers[i] = Option{Label: a.Label, Input: a.Input}
+		}
+		sq := StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Answers: answers}
+		if q.Words != "" {
+			sq.Words = regexp.MustCompile(q.Words)
+		}
+		out = append(out, sq)
+	}
+	return out
+}
+
+// codexBackgroundScreen is Codex 0.161's background-server question as the
+// e2e stub draws it: a digit picks at once, 1 runs without the daemon.
+const codexBackgroundScreen = "Background server has incompatible feature settings\r\nThis session requires api_key_model_discovery to be enabled\r\n  1. Run without daemon this time\r\n  2. Restart with these settings\r\n> 3. Cancel\r\n"
+
+// Codex asks whether to run without its background server, then whether to
+// update, where 1 (or Enter) runs npm install -g @openai/codex. A 1 meant
+// for the first never reaches the second: a second click on the first,
+// doubled or late, is refused, nothing written, and the update question
+// waits for its own answer. A look of the startup questions' watcher that
+// took its text before the 1 was written, and fires after, does not ask the
+// answered question again with an id a click could name. (The bell agent's
+// review of its own design, the startup chain.)
+func TestALateOrDoubledAnswerNeverReachesTheNextStartupQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if !strings.Contains(first.Message, "Background server") {
+		t.Fatalf("the first question: %+v", first)
+	}
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+	if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("1")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("the doubled 1: %v", err)
+	}
+	// A look in flight since before the 1 (its text the first question's)
+	// fires only now; looks are made one at a time.
+	s.trust.fireMu.Lock()
+	s.trust.mu.Lock()
+	s.trust.looked = 0
+	s.trust.mu.Unlock()
+	s.fireTrust(codexBackgroundScreen)
+	s.trust.fireMu.Unlock()
+	if a := s.Info().Attention; a.State != AttentionNone {
+		t.Fatalf("an older look asked the answered question again: %+v", a)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != first.ID })
+	if !strings.Contains(update.Message, "Update available") {
+		t.Fatalf("the update question: %+v", update)
+	}
+	if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("1")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("the late 1: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	if a := s.Info().Attention; a.ID != update.ID {
+		t.Fatalf("the update question does not wait: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); err != nil {
+		t.Fatalf("the update question's own answer: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A reply to a startup question the screen no longer shows (the program has
+// drawn the next before the watcher asked it) is refused: its key would
+// reach the next question.
+func TestAReplyToAStartupQuestionTheScreenNoLongerShowsIsRefused(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if a := s.Info().Attention; a.ID != first.ID {
+		t.Fatalf("the update question was asked already: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("1")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a 1 for the question the screen no longer shows: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
 }
 
 // A paste, or an escape sequence, a terminal's reads cut in two is still
