@@ -158,6 +158,12 @@ export class NvimEcho {
    */
   noteRefused(seq: number, rest?: string): string {
     const i = this.typed.findIndex((t) => t.seq === seq)
+    if (i < 0 && rest) {
+      // Its entry already gone (a settle that came first): the refused end is kept all the same.
+      this.typed.push({ seq, text: rest, refused: true })
+      this.typed.sort((a, b) => a.seq - b.seq)
+      return rest
+    }
     const sent = i >= 0 ? this.typed[i]!.text : ''
     if (rest && rest.length < sent.length && sent.endsWith(rest)) {
       this.typed.splice(i, 1, { seq, text: sent.slice(0, sent.length - rest.length) }, { seq, text: rest, refused: true })

@@ -641,17 +641,17 @@ func (e *Editor) Input(keys string) error { return e.InputSeq(keys, 0) }
 // page that showed the keys at once knows which of its guesses the buffer
 // now holds. While Neovim waits for a command's next key nothing is
 // acknowledged; the next keys' Ack covers these.
-func (e *Editor) InputSeq(keys string, seq uint32) (err error) {
+func (e *Editor) InputSeq(keys string, seq uint32) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
 	e.inputMu.Lock()
 	defer e.inputMu.Unlock()
 	// Neovim takes what its input buffer has room for and says how much: the
-	// rest is given again once it has read some, or the keys are refused;
-	// those it took are acknowledged like any (below), then the refusal is
-	// returned.
-	var refused error
+	// rest is given again once it has read some, or the keys are refused,
+	// unacknowledged: the caller says which were refused first, then
+	// acknowledges those taken (Acknowledge), so that no word that they are
+	// done comes before the word that some never came.
 	for rest, tries := keys, 0; rest != ""; tries++ {
 		n, err := e.v.Input(rest)
 		if err != nil {
@@ -664,17 +664,31 @@ func (e *Editor) InputSeq(keys string, seq uint32) (err error) {
 			break
 		}
 		if tries >= inputTries {
-			refused = &InputFullError{Rest: rest[n:]}
-			break
+			return &InputFullError{Rest: rest[n:]}
 		}
 		rest = rest[n:]
 		if n == 0 {
 			time.Sleep(inputWait)
 		}
 	}
-	if refused != nil {
-		defer func() { err = refused }()
+	e.acknowledge(seq)
+	return nil
+}
+
+// Acknowledge acknowledges the keys of seq, as InputSeq does for keys it
+// gave whole: for the part of them Neovim took before refusing the rest.
+func (e *Editor) Acknowledge(seq uint32) {
+	if e.closed.Load() {
+		return
 	}
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
+	e.acknowledge(seq)
+}
+
+// acknowledge reports the keys of seq handled (Ack), or the cursor for keys
+// with no number; inputMu held.
+func (e *Editor) acknowledge(seq uint32) {
 	// A command waiting for its next key (the second g of gg, f's
 	// character) is cancelled by an eval: nvim_get_mode is answered without
 	// touching it and says so; the autocmd reports the cursor once it moves.
@@ -682,7 +696,7 @@ func (e *Editor) InputSeq(keys string, seq uint32) (err error) {
 	// prefix times out), or with the next keys.
 	m, err := e.v.Mode()
 	if err != nil {
-		return nil
+		return
 	}
 	if m.Blocking {
 		if seq != 0 {
@@ -692,7 +706,7 @@ func (e *Editor) InputSeq(keys string, seq uint32) (err error) {
 				go e.watchDeferred()
 			}
 		}
-		return nil
+		return
 	}
 	// Keys without a number (the page's answer to a question, its :w)
 	// that end a wait acknowledge the numbered ones that waited.
@@ -702,13 +716,12 @@ func (e *Editor) InputSeq(keys string, seq uint32) (err error) {
 	e.deferred = 0
 	if seq != 0 {
 		_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'conductor_ack', %d, line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", e.ch, seq))
-		return nil
+		return
 	}
 	var pos []interface{}
 	if err := e.v.Eval("[line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2]]", &pos); err == nil && len(pos) == 5 {
 		e.h.Cursor(toInt(pos[0]), toInt(pos[1]), fmt.Sprint(pos[2]), toInt(pos[3]), toInt(pos[4]))
 	}
-	return nil
 }
 
 // deferPoll is how often watchDeferred asks whether Neovim still waits.

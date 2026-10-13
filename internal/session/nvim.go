@@ -339,10 +339,16 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	}
 	if err := ed.InputSeq(req.Keys, req.Seq); err != nil {
 		var full *nvim.InputFullError
-		if errors.As(err, &full) {
-			return &RefusedKeys{Rest: full.Rest}
+		if !errors.As(err, &full) {
+			return err
 		}
-		return err
+		// The end Neovim's full input did not take is said first, then the
+		// part it took is acknowledged: no word that the keys are done
+		// comes before the word that some never came.
+		sub.send(NvimInputRefused(req.ID, req.Seq, &RefusedKeys{Rest: full.Rest}))
+		if len(full.Rest) < len(req.Keys) {
+			ed.Acknowledge(req.Seq)
+		}
 	}
 	return nil
 }

@@ -1008,6 +1008,90 @@ func TestAnEditorEndedAsItOpensSaysItClosed(t *testing.T) {
 // end is told: they still reach the page, which keeps the text a lost
 // Neovim last held; the end is told once. A close the page asked for (or the
 // connection going) stops its frames.
+// Keys Neovim's full input took only in part: the refusal of the rest is
+// sent before any word that keys up to them are done, so the page never takes
+// the refused end for done (the real Neovim, its input filled: a plugin's
+// vim.wait in InsertCharPre lets it answer between the keys it reads).
+func TestARefusalComesBeforeTheWordThatItsKeysAreDone(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	cfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "nvim", "init.lua"), []byte("vim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(20) end })\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Neovim, busy with the keys it took, is ended soon after the test.
+	old := nvimEndWait
+	nvimEndWait = 300 * time.Millisecond
+	t.Cleanup(func() { nvimEndWait = old })
+	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := openEditor(t, s, sub)
+	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: "i", Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	from := 0
+	nvimEvents(t, sink, &from, proto.NvimSettled, 10*time.Second)
+	refused := uint32(0)
+	keys := strings.Repeat("x", 250)
+	for seq := uint32(2); seq < 200 && refused == 0; seq++ {
+		if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: keys, Seq: seq}); err != nil {
+			t.Fatal(err)
+		}
+		sink.mu.Lock()
+		for _, frame := range sink.frames[from:] {
+			if f, err := proto.Decode(frame); err == nil {
+				var ev proto.NvimEvent
+				if json.Unmarshal(f.Payload, &ev) == nil && ev.Kind == proto.NvimError && ev.ID == id {
+					refused = ev.Ack
+				}
+			}
+		}
+		sink.mu.Unlock()
+	}
+	if refused == 0 {
+		t.Fatal("Neovim took every key: the test filled nothing")
+	}
+	time.Sleep(time.Second)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, frame := range sink.frames[from:] {
+		f, err := proto.Decode(frame)
+		if err != nil {
+			continue
+		}
+		var ev proto.NvimEvent
+		if json.Unmarshal(f.Payload, &ev) != nil || ev.ID != id {
+			continue
+		}
+		if ev.Kind == proto.NvimError {
+			if ev.Ack != refused || ev.Text == "" || !strings.HasSuffix(keys, ev.Text) {
+				t.Fatalf("the refusal: %+v", ev)
+			}
+			return
+		}
+		if ev.Kind == proto.NvimSettled && ev.Ack >= refused {
+			t.Fatalf("keys up to %d said done before the refusal of %d", ev.Ack, refused)
+		}
+	}
+	t.Fatal("no refusal among the frames")
+}
+
 func TestARefusedInputNamesItsEditorAndItsKeys(t *testing.T) {
 	f, err := proto.Decode(NvimInputRefused("e1", 7, ErrTooManyRequests))
 	if err != nil {

@@ -123,6 +123,8 @@ function setText(text: string) {
   tellDirty()
 }
 let nvimId: string | null = null
+// The file its Neovim shows, as Neovim names it (its `opened` events): a write of it is this tab's.
+let nvimPath: string | null = null
 // The Neovim lost (utils/nvimLost) whose text this tab shows: the changes it sent before its end, which can come after it, still apply,
 // reconciled with the characters typed that it never acknowledged (lostEcho, the local echo finished, while any stay).
 let lostId: string | null = null
@@ -197,6 +199,7 @@ async function startNvim() {
       const opened = await bridge.open(props.path)
       if (!editor) return
       nvimId = opened.id ?? null
+      nvimPath = opened.path ?? null
     } catch (err) {
       nvimState.message = err instanceof Error ? err.message : String(err)
       nvimState.messageKind = 'emsg'
@@ -353,6 +356,7 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
 }
 function onNvimEvent(ev: NvimEvent) {
   if (!editor || !model || !monacoRef) return
+  if (ev.id && ev.id === nvimId && ev.kind === 'opened' && ev.path) nvimPath = ev.path
   if (lostId && ev.id === lostId) {
     // A lost Neovim's change that came after its end: the tab's text takes it.
     if (ev.kind === 'lines' || (ev.kind === 'modified' && ev.modified)) {
@@ -628,6 +632,7 @@ function nvimWrite(): Promise<boolean> {
   if (!bridge || !id) return Promise.resolve(false)
   // Nothing changed and nothing on its way: nothing to write.
   if (!nvimState.modified && !echo?.showing && !echo?.unsettled) return Promise.resolve(true)
+  const file = nvimPath ?? props.path
   return new Promise((resolve) => {
     let off: () => void = () => {}
     const done = (ok: boolean) => {
@@ -636,14 +641,29 @@ function nvimWrite(): Promise<boolean> {
       resolve(ok)
     }
     const timer = setTimeout(() => done(false), 10_000)
+    // Done once Neovim has written this tab's file (not another buffer a hook wrote) and said the write's keys are done.
+    let wrote = false
+    let seq = 0
+    let settled = false
+    const check = () => {
+      if (wrote && (!seq || settled)) done(true)
+    }
     off = bridge.subscribe((ev) => {
       if (ev.id !== id) return
-      if (ev.kind === 'written') done(true)
-      else if ((ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') done(false)
+      if (ev.kind === 'written' && ev.path === file) {
+        wrote = true
+        check()
+      } else if (ev.kind === 'settled' && seq && (ev.ack ?? 0) >= seq) {
+        settled = true
+        check()
+      } else if ((ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') done(false)
     })
-    // After the keys on their way, in order, so what they change is written too; <C-\><C-n> first ends whatever waits (an operator's
-    // motion, insert mode).
-    bridge.input(id, '<C-\\><C-n>:w<CR>')
+    // After the keys on their way, in order, so what they change is written too; <C-\\><C-n> first ends whatever waits (an operator's
+    // motion, insert mode). Numbered, so its own keys are waited for too.
+    const keys = '<C-\\><C-n>:w<CR>'
+    const at = editor?.getPosition()
+    seq = echo ? echo.send(keys, { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }).seq : 0
+    bridge.input(id, keys, seq || undefined)
   })
 }
 /** Answers Neovim's confirm question with its choice's key; the question goes. */

@@ -471,6 +471,15 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.unconfirmed).toBe('llo')
   })
 
+  it('keeps a refused end that comes after a settle covering its keys', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('hello', { line: 1, col: 6 })
+    e.noteSettled(1)
+    expect(e.noteRefused(1, 'llo')).toBe('llo')
+    e.markLost()
+    expect(e.unconfirmed).toBe('llo')
+  })
+
   it("takes a refused key's guess off the text: Neovim never had it", () => {
     const d = doc('alpha')
     const e = inInsert(d)
