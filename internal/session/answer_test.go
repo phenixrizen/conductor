@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -566,6 +567,98 @@ func TestKeysSentAtOnceAnswerADialogWhenOneOfThemDoes(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("a click after %q, which answers nothing: %v", tc.keys, err)
+			}
+			if got := nextWrite(t, p); got != "y" {
+				t.Fatalf("written %q", got)
+			}
+		})
+	}
+}
+
+// The keys of writes in order: an escape sequence or a paste one write
+// leaves unfinished goes on in the next, whose bytes are not keys of their
+// own until it ends.
+func TestTheKeysOfWritesCarryWhatOneLeavesUnfinished(t *testing.T) {
+	var r keyReader
+	read := func(data string) string {
+		var out []string
+		for _, k := range r.keys([]byte(data)) {
+			out = append(out, string(k))
+		}
+		return strings.Join(out, "|")
+	}
+	for _, step := range []struct{ write, keys string }{
+		{"\x1b[By", "\x1b[B|y"},
+		{"\x1b[200~hello ", ""},
+		{"y there\x1b[20", ""},
+		{"1~1", "1"},
+		{"\x1b[", ""},
+		{"1;5Ay", "\x1b[1;5A|y"},
+		{"\x1bO", ""},
+		{"Pq", "\x1bOP|q"},
+		{"\x1b", "\x1b"},
+	} {
+		if got := read(step.write); got != step.keys {
+			t.Fatalf("keys of %q: %q, want %q", step.write, got, step.keys)
+		}
+	}
+}
+
+// A startup question answered by one key of several written at once (the
+// host's terminal forwards what it reads: an arrow, then the digit of
+// Codex's "Skip until next version") is answered as its choice alone
+// answers it: cleared once written, and a click after it is refused.
+// (Codex's review, sixth pass, finding 1.)
+func TestAStartupQuestionAnsweredByOneKeyOfSeveral(t *testing.T) {
+	upd := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
+	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{{
+		Pattern: regexp.MustCompile(`(?i)update\s*now\s*\(\s*runs`),
+		Words:   regexp.MustCompile(`(?i)(update\s*available)\W*?(\d+(?:\.\d+)+\s*(?:→|->)\s*\d+(?:\.\d+)+)`),
+		Answers: upd,
+	}}}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.InputWaiting(t.Context(), nater, []byte("\x1b[B3")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("\x1b")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click after the batch: %v", err)
+	}
+	if a := s.Info(); a.Attention.State != AttentionNone || a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
+		t.Fatalf("the batch did not answer the question: %+v %+v", a.Attention, a.LastAnswer)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A paste, or an escape sequence, a terminal's reads cut in two is still
+// no key in its second part: a y inside the paste, the digit of a cut
+// sequence, answer no dialog, which still takes a click. (Codex's review,
+// sixth pass, finding 2.)
+func TestAPasteOrASequenceCutInTwoAnswersNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		writes []string
+	}{
+		{"a paste", []string{"\x1b[200~hello ", "y there\x1b[201~"}},
+		{"a sequence", []string{"\x1b[", "1;5A"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+			q := waitAttention(t, s, asked)
+			for _, w := range tc.writes {
+				if err := s.InputWaiting(t.Context(), nater, []byte(w)); err != nil {
+					t.Fatal(err)
+				}
+				nextWrite(t, p)
+			}
+			if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); err != nil {
+				t.Fatalf("a click after %s cut in two: %v", tc.name, err)
 			}
 			if got := nextWrite(t, p); got != "y" {
 				t.Fatalf("written %q", got)

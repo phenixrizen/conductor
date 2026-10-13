@@ -948,7 +948,10 @@ the session still shows the one answered before it. Keys written at once (a
 terminal's read, the host's own terminal forwards what it reads) are each a
 key the program reads: an escape sequence is one key and a bracketed paste
 is text, no key, so an arrow then y answers a dialog and a pasted y does
-not. A dialog asked during the work with the words of the one last
+not; a paste or an escape sequence one write leaves unfinished goes on in
+the next (a terminal's reads cut them anywhere). A startup question is
+answered the same way by one of several keys (an arrow, then its digit),
+cleared once they are written as its choice alone clears it. A dialog asked during the work with the words of the one last
 answered, asked again before the screen's watcher has seen that one go (a
 quiet screen with no dialog) or another dialog take its place, is that
 question still, for the program may not have taken the key yet: it is asked

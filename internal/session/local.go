@@ -207,6 +207,9 @@ type Local struct {
 	answered         string
 	dialogAnswered   string
 	dialogAnsweredAt uint64
+	// keysIn splits what is written to the program into the keys it reads
+	// (keysWritten), every write made, in the writer's order. Guarded by mu.
+	keysIn keyReader
 
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
@@ -1511,6 +1514,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// time run out, a stall, a connection gone): noted is set then, and
 	// read once the write is made.
 	var noted bool
+	// keyAnswers says, once the writer has taken the keys, that one of them
+	// (not the write whole) answers the startup question showing.
+	var keyAnswers bool
 	o.from, o.anyEnd = sub, true
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
@@ -1570,12 +1576,15 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// answered (answer).
 			s.endHold()
 		}
+		// The keys the program reads from the write, a paste or an escape
+		// sequence a write before it left unfinished carried in.
+		keys := s.keysWritten(data)
 		// The dialog the screen the dialogs are read from shows as keys
 		// are written that may answer one (any key but an escape sequence:
 		// a paste alone, an arrow alone, do not read it).
 		var words string
 		var onScreen *dialogView
-		if s.asked != nil && mayAnswerDialog(data) && !isTerminalReport(data) {
+		if s.asked != nil && mayAnswerDialog(keys) && !isTerminalReport(data) {
 			screen := s.asked.Text()
 			var q *StartupQuestion
 			if q, words = s.askedIn(screen); q != nil {
@@ -1585,7 +1594,16 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if !isTerminalReport(data) {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
-			s.noteAnswering(promptSince, data, onScreen)
+			s.noteAnswering(promptSince, data, keys, onScreen)
+			// A startup question answered by one key of several (an arrow
+			// then its digit) is answered as its choice alone answers it:
+			// the screen behind, and the question cleared once written.
+			s.mu.Lock()
+			att := s.info.Attention
+			s.mu.Unlock()
+			if !answersQuestion && att.State == AttentionNeedsInput && att.Source == SourceTrust && att.Since == promptSince && picksChoice(att.Options, data, keys) {
+				answersQuestion, keyAnswers = true, true
+			}
 		}
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
@@ -1619,7 +1637,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				select {
 				case werr := <-landed:
 					if werr == nil {
-						s.typedKeys(sub, data, promptSince, enter, noted, typed)
+						s.typedKeys(sub, data, promptSince, enter || keyAnswers, noted, typed)
 					}
 				case <-s.ended:
 				}
@@ -1627,7 +1645,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		return err
 	}
-	s.typedKeys(sub, data, promptSince, enter, noted, typed)
+	s.typedKeys(sub, data, promptSince, enter || keyAnswers, noted, typed)
 	return nil
 }
 
@@ -1880,10 +1898,10 @@ func (s *Local) dialogGone(look uint64) {
 // question the session still shows with other words (one answered and
 // asked again, before the watcher has seen the next) is not what they
 // answer.
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, onScreen *dialogView) {
+func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if onScreen != nil && onScreen.picks(onScreen.answers, data) {
+	if onScreen != nil && onScreen.picks(onScreen.answers, data, keys) {
 		s.noteDialogAnswered(onScreen.words)
 	}
 	att := s.info.Attention
@@ -1895,9 +1913,9 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, onScreen *dia
 	case att.Source == SourceQuestion && onScreen != nil && onScreen.words != att.Message:
 		return
 	case att.Source == SourceQuestion:
-		picks = onScreen.picks(att.Options, data)
+		picks = onScreen.picks(att.Options, data, keys)
 	default:
-		picks = bytes.IndexByte(data, '\r') >= 0 || isChoice(att, data)
+		picks = picksChoice(att.Options, data, keys)
 	}
 	typedAt := att.Since == promptSince && !heldSource(att.Source)
 	if !picks && !typedAt {
@@ -1917,20 +1935,37 @@ type dialogView struct {
 	lines   int
 }
 
-// picks reports whether data picks an answer of the dialog v shows (a nil
-// v: one whose rows were not read) whose choices are answers: data is one
-// of its choices, or one of the keys the program reads from it (keysOf: a
-// batch of keys from a terminal, an arrow then y, is each of them) does:
-// an Enter (the highlighted line), one of its choices' keys, a key its rows
-// name (in either case), Escape where they name it, Ctrl+C (cancel), or a
-// digit of one of its numbered lines (a digit past them does nothing; with
-// none read, every digit counts). A bracketed paste is text, no key.
-func (v *dialogView) picks(answers []Option, data []byte) bool {
+// picks reports whether data, whose keys are keys (keyReader), picks an
+// answer of the dialog v shows (a nil v: one whose rows were not read)
+// whose choices are answers: data is one of its choices, or one of the
+// keys does (a batch of keys from a terminal, an arrow then y, is each of
+// them): an Enter (the highlighted line), one of its choices' keys, a key
+// its rows name (in either case), Escape where they name it, Ctrl+C
+// (cancel), or a digit of one of its numbered lines (a digit past them does
+// nothing; with none read, every digit counts). A bracketed paste is text,
+// no key.
+func (v *dialogView) picks(answers []Option, data []byte, keys [][]byte) bool {
 	if isAnswer(answers, data) {
 		return true
 	}
-	for _, k := range keysOf(data) {
+	for _, k := range keys {
 		if v.picksKey(answers, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// picksChoice reports whether data, whose keys are keys, picks one of a
+// question's choices (answers) or presses Enter: data is one, holds an
+// Enter (in a paste too, which a startup question may take as one), or one
+// of its keys is a choice.
+func picksChoice(answers []Option, data []byte, keys [][]byte) bool {
+	if isAnswer(answers, data) || bytes.IndexByte(data, '\r') >= 0 {
+		return true
+	}
+	for _, k := range keys {
+		if string(k) == "\r" || isAnswer(answers, k) {
 			return true
 		}
 	}
@@ -1957,10 +1992,10 @@ func (v *dialogView) picksKey(answers []Option, key []byte) bool {
 	return false
 }
 
-// mayAnswerDialog reports whether data holds a key that may answer a
-// dialog: one of keysOf that is not an escape sequence (a lone Escape is).
-func mayAnswerDialog(data []byte) bool {
-	for _, k := range keysOf(data) {
+// mayAnswerDialog reports whether keys hold one that may answer a dialog:
+// one that is not an escape sequence (a lone Escape is).
+func mayAnswerDialog(keys [][]byte) bool {
+	for _, k := range keys {
 		if len(k) == 1 {
 			return true
 		}
@@ -1978,35 +2013,93 @@ func isAnswer(answers []Option, data []byte) bool {
 	return false
 }
 
-// keysOf splits data, written to a program at once, into the keys it reads
-// from it: an escape sequence (CSI, ESC [ … final byte; SS3, ESC O x) is
-// one key, an Escape not starting one is a key, a bracketed paste is text
-// and no key, every other byte is a key.
-func keysOf(data []byte) [][]byte {
+// keysWritten returns the keys the program reads from data, a write the
+// writer is taking (its before), whatever a write before it left
+// unfinished (a paste, an escape sequence) carried in. Every write made
+// goes through it once, in order.
+func (s *Local) keysWritten(data []byte) [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keysIn.keys(data)
+}
+
+// maxKeyCarry bounds the end of a write a keyReader keeps for the next: an
+// escape sequence cut by a terminal's read.
+const maxKeyCarry = 32
+
+// keyReader splits the writes to a program, in order, into the keys it
+// reads from them: an escape sequence (CSI, ESC [ … final byte; SS3, ESC O
+// x) is one key, an Escape not starting one is a key, a bracketed paste is
+// text and no key, every other byte is a key. A paste or an escape
+// sequence one write begins and a later one ends (a terminal's reads cut
+// them anywhere) is carried over: pasting says a paste goes on, carry is
+// the unfinished end of the last write (at most maxKeyCarry bytes).
+type keyReader struct {
+	pasting bool
+	carry   []byte
+}
+
+// keys returns the keys of data, the next write.
+func (r *keyReader) keys(data []byte) [][]byte {
+	if len(r.carry) > 0 {
+		data = append(r.carry, data...)
+		r.carry = nil
+	}
 	var keys [][]byte
-	for i := 0; i < len(data); {
+	i := 0
+	cut := func(from int) {
+		if len(data)-from <= maxKeyCarry {
+			r.carry = bytes.Clone(data[from:])
+		}
+	}
+	for i < len(data) {
+		if r.pasting {
+			end := bytes.Index(data[i:], []byte(pasteEnd))
+			if end < 0 {
+				// The end marker may be cut: keep what could begin it.
+				for n := min(len(pasteEnd)-1, len(data)-i); n > 0; n-- {
+					if bytes.HasPrefix([]byte(pasteEnd), data[len(data)-n:]) {
+						cut(len(data) - n)
+						break
+					}
+				}
+				return keys
+			}
+			i += end + len(pasteEnd)
+			r.pasting = false
+			continue
+		}
 		switch {
 		case data[i] != 0x1b:
 			keys = append(keys, data[i:i+1])
 			i++
-		case bytes.HasPrefix(data[i:], []byte(pasteStart)):
-			end := bytes.Index(data[i+len(pasteStart):], []byte(pasteEnd))
-			if end < 0 {
-				return keys // the rest is the paste's
-			}
-			i += len(pasteStart) + end + len(pasteEnd)
-		case i+1 < len(data) && data[i+1] == '[':
+		case i+1 == len(data):
+			// An Escape last: the Escape key (a cut sequence is never
+			// only its ESC in practice).
+			keys = append(keys, data[i:i+1])
+			i++
+		case data[i+1] == '[':
 			j := i + 2
 			for j < len(data) && (data[j] < 0x40 || data[j] > 0x7e) {
 				j++
 			}
-			j = min(j+1, len(data))
-			keys = append(keys, data[i:j])
-			i = j
-		case i+1 < len(data) && data[i+1] == 'O':
-			j := min(i+3, len(data))
-			keys = append(keys, data[i:j])
-			i = j
+			if j == len(data) {
+				cut(i)
+				return keys
+			}
+			if seq := data[i : j+1]; string(seq) == pasteStart {
+				r.pasting = true
+			} else {
+				keys = append(keys, seq)
+			}
+			i = j + 1
+		case data[i+1] == 'O':
+			if i+2 >= len(data) {
+				cut(i)
+				return keys
+			}
+			keys = append(keys, data[i:i+3])
+			i += 3
 		default:
 			keys = append(keys, data[i:i+1])
 			i++
