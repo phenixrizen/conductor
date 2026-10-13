@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_QUESTION_ID } from './protocol'
-import { answerMessage, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
+import { answerMessage, draftQuestion, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -12,6 +12,31 @@ describe('questionOf', () => {
     expect(questionOf({ state: 'done', id: '0123456789abcdef' })).toBeUndefined()
     expect(questionOf({ state: '' })).toBeUndefined()
     expect(questionOf(undefined)).toBeUndefined()
+  })
+})
+
+describe('draftQuestion', () => {
+  const q1 = { state: 'needs_input' as const, id: 'q1q1q1q1q1q1q1q1' }
+  const q2 = { state: 'needs_input' as const, id: 'q2q2q2q2q2q2q2q2' }
+  it('binds a line to the question shown as its first character is typed', () => {
+    expect(draftQuestion('', 'm', undefined, q1)).toBe(q1.id)
+    expect(draftQuestion('  ', 'main', undefined, q1)).toBe(q1.id)
+  })
+  it('keeps naming that question as the line grows, whatever shows by then (someone else answered, the next came)', () => {
+    let bound = draftQuestion('', 'm', undefined, q1)
+    bound = draftQuestion('m', 'ma', bound, q2)
+    bound = draftQuestion('ma', 'main', bound, q2)
+    expect(bound).toBe(q1.id)
+  })
+  it('binds anew once the line is emptied and begun again', () => {
+    let bound = draftQuestion('', 'main', undefined, q1)
+    bound = draftQuestion('main', '', bound, q2)
+    bound = draftQuestion('', 'x', bound, q2)
+    expect(bound).toBe(q2.id)
+  })
+  it('names nothing for a line begun while no question waits, or for an older owner', () => {
+    expect(draftQuestion('', 'x', undefined, { state: 'working' })).toBeUndefined()
+    expect(draftQuestion('', 'x', undefined, { state: 'needs_input' })).toBeUndefined()
   })
 })
 

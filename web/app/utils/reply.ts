@@ -13,6 +13,21 @@ export function questionOf(att: Pick<Attention, 'state' | 'id'> | null | undefin
 }
 
 /**
+ * The question a reply line names: the one it was begun for. As its text goes from empty to something (`before` to `after`), the
+ * question the attention shown then is (questionOf); otherwise the one it was bound to (`bound`). A line typed for one question
+ * still names it once another has taken its place (someone else answered), so that the owner refuses it rather than take it for
+ * the next.
+ */
+export function draftQuestion(
+  before: string,
+  after: string,
+  bound: string | undefined,
+  att: Pick<Attention, 'state' | 'id'> | null | undefined,
+): string | undefined {
+  return after.trim() && !before.trim() ? questionOf(att) : bound
+}
+
+/**
  * The attention a session page shows when the live listing reports `listed`: the listing's, unless it lacks the question's id (a
  * server older than the host, a report the host has not told its id for yet) while the page's own connection to the owner, open,
  * reported the attention it shows with one (`shown`): the owner's word stands, as it is, until the listing names a question. No

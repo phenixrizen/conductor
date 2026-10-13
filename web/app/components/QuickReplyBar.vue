@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { TERMINAL_FIRST, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
-import { questionOf } from '~/utils/reply'
+import { draftQuestion, questionOf } from '~/utils/reply'
 
 const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean }>()
 /** Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). */
@@ -15,11 +15,19 @@ const heading = computed(() => waitingHeading(props.attention, props.agentName))
 const options = computed(() => (show.value ? (props.attention?.options ?? []) : []))
 const canReply = computed(() => props.role === 'control' && !props.busy && !held.value)
 const placeholder = computed(() => (props.role !== 'control' ? 'View only' : held.value ? TERMINAL_FIRST : `Reply to ${props.agentName}…`))
+/**
+ * The question a line was begun for (as its first character was typed): it names that one when sent, whatever the bar shows by
+ * then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next.
+ */
+const draftFor = ref<string | undefined>()
+watch(text, (now, before) => {
+  draftFor.value = draftQuestion(before, now, draftFor.value, props.attention)
+})
 
 function send() {
   const t = text.value.trim()
   if (!t || !canReply.value) return
-  emit('reply', t, questionOf(props.attention))
+  emit('reply', t, draftFor.value)
   text.value = ''
 }
 

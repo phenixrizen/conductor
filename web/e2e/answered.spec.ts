@@ -121,6 +121,38 @@ test("an Alt chord typed at Codex's update question never lets the member's prom
   }
 })
 
+// A line typed in the session's reply bar names the question it was begun for. Someone else answers that question and the next
+// one comes while it is being typed: sent, it is refused ("Already answered"), and never typed into the next question. (Codex's
+// review, twenty-ninth pass.)
+test('a reply line begun for one question is refused once that question is answered, never sent to the next', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e draft' })
+  const transcript = async () => {
+    const id = (await api.session(s.id)).agentSession?.id ?? ''
+    const file = join(state.home, '.stub-sessions', `${id}.txt`)
+    return id && existsSync(file) ? readFileSync(file, 'utf8') : ''
+  }
+  try {
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch?' })
+    await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
+    const bar = page.locator('[data-quick-reply]')
+    await expect(bar).toContainText('Which branch?', { timeout: 30_000 })
+    const field = bar.locator('input')
+    await field.fill('feature-draft')
+    // Someone else answers it, and the next question comes.
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which file?' })
+    await expect(bar).toContainText('Which file?', { timeout: 15_000 })
+    await expect(field).toHaveValue('feature-draft')
+    await field.press('Enter')
+    await expect(page.locator('li').filter({ hasText: 'Already answered' }).last()).toBeVisible({ timeout: 15_000 })
+    await page.waitForTimeout(1_500)
+    expect(await transcript(), 'the line never reached the next question').not.toContain('feature-draft')
+    expect((await api.session(s.id)).attention?.message).toBe('Which file?')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
 type StartupCtx = {
   priya: Page
   id: string
