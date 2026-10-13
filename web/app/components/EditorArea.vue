@@ -329,8 +329,8 @@ watch(
   },
   { flush: 'post' },
 )
-// A tab not in front wears its unsaved dot as its held Neovim says (Neovim's word coming after the tab was left, a loss): the close then
-// asks. The tab in front is its editor's to say.
+// A tab whose editor is not up (not in front, or the area folded) wears its unsaved dot as its held Neovim says (Neovim's word coming
+// after the tab was left, a loss): the close then asks. An editor that is up says it itself.
 let stopListening: (() => void) | null = null
 watch(
   () => props.nvim?.holds,
@@ -339,8 +339,11 @@ watch(
     stopListening =
       holds?.listen((path, held) => {
         const t = tabs.value.tabs.find((x) => x.kind === 'file' && x.path === path)
-        if (!t || t.id === active.value?.id) return
-        setDirty(t.id, !!held && held.state.modified)
+        if (!t) return
+        // Held, its editor is not up, though its tab may be in front (the area folded); let go as the tab in front comes up again, its
+        // editor says.
+        if (held) setDirty(t.id, held.state.modified)
+        else if (t.id !== active.value?.id) setDirty(t.id, false)
       }) ?? null
   },
   { immediate: true },

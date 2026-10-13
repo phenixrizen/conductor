@@ -22,8 +22,8 @@ export interface HeldNvim {
  * The Neovims of tabs not in front (the Neovim keymap). A tab whose buffer holds changes not written keeps its Neovim while another
  * tab is in front: the editor hands it here as it leaves and takes it back when its tab is in front again, so the changes stay where
  * they were typed. Closing it instead ended it as a lost connection does, and the next open of the file stumbled on its swap file.
- * A tab left while keys Neovim has not acknowledged are on their way is kept too, until they are (its follower then lets it go, clean,
- * with `release`). A tab that closes takes its held Neovim with it (`orphans`: the person said Don't save, or Neovim kept nothing).
+ * A tab left while keys Neovim has not acknowledged are on their way is kept too: they may be making a change Neovim has not said yet
+ * (it lets a clean one go only when another tab needs its place, `releaseClean`). A tab that closes takes its held Neovim with it (`orphans`: the person said Don't save, or Neovim kept nothing).
  * Keyed by the file's path; one per page connection (`useEditorBridge`). A Neovim lost stays held as lost, whether it was in front
  * (its editor hands it here as it leaves, a tab switched or the area folded) or not (`ended`), so the next showing keeps its text.
  * Whatever leaves the holds stops being followed. `listen` is told of each change to a hold (the area keeps its tab's unsaved dot).
@@ -64,9 +64,20 @@ export class NvimHolds {
     this.tell(path)
     return { id: h.id, state: h.state, cursor: h.cursor, echo: h.echo }
   }
-  /** Lets go the Neovim held for path, as its follower found it clean and settled: the caller ends it. */
-  release(path: string): HeldNvim | undefined {
-    return this.take(path)
+  /**
+   * Lets go the held Neovims that hold nothing the person would lose (no change Neovim said it has, no character typed it has not had,
+   * not lost): the caller ends them, as a clean tab's Neovim ends when it is left. For when a window has as many Neovims as it may keep
+   * and another tab wants one; an acknowledgement is no sign its keys are done (Neovim answers in the middle of one), so nothing else
+   * lets them go.
+   */
+  releaseClean(): Array<{ path: string; id: string }> {
+    const out: Array<{ path: string; id: string }> = []
+    for (const [path, h] of [...this.held]) {
+      if (h.state.lost || h.state.modified || h.echo?.showing) continue
+      this.take(path)
+      out.push({ path, id: h.id })
+    }
+    return out
   }
   /**
    * Neovim id ended on its own: quit, nothing to take back; lost (reason `error: …`), its tab keeps what it held, as lost, still

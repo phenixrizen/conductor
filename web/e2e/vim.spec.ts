@@ -354,19 +354,21 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
   }
 })
 
-// A tab left while keys Neovim has not acknowledged are on their way keeps its Neovim until they are (Neovim, slow here: 300 ms on each
-// typed character, 3 s on j). A change they make then says so on the tab not in front (the unsaved dot, and the close asks); keys that
-// change nothing let it go once handled, so tabs left that way do not use up the four Neovims a window may keep.
-test('a tab left with keys on their way keeps its Neovim until they are handled, then shows their change or lets it go', async ({ page, api, state }) => {
+// A tab left while keys Neovim has not acknowledged are on their way keeps its Neovim: they may be making a change it has not said yet.
+// Neovim is slow here, and answers in the middle of a key (its config waits 1.5 s in InsertCharPre with vim.wait, which answers
+// requests, so a key's acknowledgement comes before its change; and j busy for 2 s). The change then shows on the tab not in front, or
+// folded: the unsaved dot, and the close asks. Kept Neovims that hold nothing go only when another tab needs the place (a window keeps
+// four).
+test('a tab left with keys on their way keeps its Neovim: their change shows on it, and clean ones give way to a new tab', async ({ page, api, state }) => {
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
   writeFileSync(
     join(config, 'init.lua'),
-    "local uv = vim.uv or vim.loop\nlocal function busy(ns) local t = uv.hrtime() while uv.hrtime() - t < ns do end end\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() busy(3e8) end })\nvim.keymap.set('n', 'j', function() busy(3e9) return 'j' end, { expr = true })\n",
+    "local uv = vim.uv or vim.loop\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(1500) end })\nvim.keymap.set('n', 'j', function() local t = uv.hrtime() while uv.hrtime() - t < 2e9 do end return 'j' end, { expr = true })\n",
   )
   const cwd = join(state.root, 'files-vim-waiting')
   mkdirSync(cwd, { recursive: true })
-  const names = ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt', 'edit.txt', 'other.txt']
+  const names = ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt', 'edit.txt', 'fold.txt', 'other.txt']
   for (const n of names) writeFileSync(join(cwd, n), `${n}\nsecond\n`)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-waiting', cwd })
   try {
@@ -381,32 +383,54 @@ test('a tab left with keys on their way keeps its Neovim until they are handled,
     const open = async (name: string) => {
       await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
       await expect(lines).toContainText(name, { timeout: 30_000 })
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
     }
-    await open('edit.txt')
+    const typeInto = async () => {
+      await lines.click()
+      await page.keyboard.type('A')
+      await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+      await page.keyboard.type('x')
+    }
+    const question = page.locator('[role="dialog"]')
+    await pane.locator(`[data-file-node="${cwd}/edit.txt"]`).click()
+    await expect(lines).toContainText('edit.txt', { timeout: 30_000 })
     await area.locator('[data-editor-keymap]').click()
     await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
-    // A change on its way as the tab is left: its dot comes on the tab not in front, and closing it asks.
-    await lines.click()
-    await page.keyboard.type('A')
-    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
-    await page.keyboard.type('x')
+    // Another tab in front while x is on its way: once Neovim has it, the tab not in front wears the dot, closing it asks, and its
+    // text holds x.
+    await typeInto()
     await open('other.txt')
     await expect(tab('edit.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    await tab('edit.txt').click()
+    await expect(lines).toContainText('edit.txtx', { timeout: 15_000 })
+    await page.keyboard.press('Escape')
     await tab('edit.txt').locator('[data-editor-close]').click({ force: true })
-    const question = page.locator('[role="dialog"]', { hasText: 'Save edit.txt?' })
-    await expect(question).toBeVisible()
+    await expect(question).toContainText('Save edit.txt?')
     await question.locator('[data-editor-discard]').click()
     await expect(tab('edit.txt')).toHaveCount(0)
-    // Four clean tabs left each with a j on its way, the four Neovims a window may keep: once handled, they go, and a fifth opens.
+    // The area folded while x is on its way: once Neovim has it, the folded tab says so, and Close all asks.
+    await open('fold.txt')
+    await typeInto()
+    await area.locator('[data-editor-fold]').click()
+    await expect(area.locator('[data-editor-folded]')).toBeVisible()
+    await page.waitForTimeout(3000)
+    await area.locator('[data-editor-folded] [data-editor-close-all]').click()
+    await expect(question).toContainText('Save fold.txt?')
+    // The question brings the tab to the front, unfolded.
+    await question.getByRole('button', { name: 'Cancel' }).click()
+    await expect(lines).toContainText('fold.txtx', { timeout: 15_000 })
+    await page.keyboard.press('Escape')
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await question.locator('[data-editor-discard]').click()
+    await expect(tab('fold.txt')).toHaveCount(0)
+    // Four clean tabs left each with a j on its way: their Neovims are kept, the four a window may keep; a fifth tab still opens, the
+    // kept ones that hold nothing giving way.
     for (const n of ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt']) {
       await open(n)
-      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
       await lines.click()
       await page.keyboard.type('j')
     }
-    await page.waitForTimeout(4000)
     await open('f5.txt')
-    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
     await expect(status.locator('[data-nvim-message]')).toHaveCount(0)
   } finally {
     rmSync(join(config, 'init.lua'), { force: true })

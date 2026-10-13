@@ -96,7 +96,7 @@ describe('NvimHolds', () => {
     h.changed('/w/a.txt')
     h.changed('/w/none.txt')
     h.ended('e1', 'error: neovim ended')
-    expect(h.release('/w/a.txt')?.id).toBe('e1')
+    expect(h.take('/w/a.txt')?.id).toBe('e1')
     off()
     h.hold('/w/b.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
     expect(told).toEqual([
@@ -105,6 +105,23 @@ describe('NvimHolds', () => {
       ['/w/a.txt', true],
       ['/w/a.txt', undefined],
     ])
+  })
+
+  it('lets go, when another tab needs the place, only the Neovims that hold nothing to lose', () => {
+    const h = new NvimHolds()
+    const f = stopper()
+    const clean = { ...state, modified: false }
+    h.hold('/w/clean.txt', { id: 'e1', state: clean, cursor: { line: 1, col: 1 }, stop: f.stop })
+    h.hold('/w/changed.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
+    h.hold('/w/lost.txt', { id: 'e3', state: { ...clean, lost: 'error: neovim ended' }, cursor: { line: 1, col: 1 } })
+    const text = ['alpha']
+    const echo = new NvimEcho({ line: (n) => text[n - 1] ?? '', setLine: (n, t) => void (text[n - 1] = t), applyLines: () => {} })
+    echo.cursor({ line: 1, col: 6, mode: 'i', ack: 0 }, (_l, c) => c)
+    echo.send('x', { line: 1, col: 6 })
+    h.hold('/w/typed.txt', { id: 'e4', state: clean, cursor: { line: 1, col: 1 }, echo })
+    expect(h.releaseClean()).toEqual([{ path: '/w/clean.txt', id: 'e1' }])
+    expect(f.calls).toBe(1)
+    expect(h.size).toBe(3)
   })
 
   it('stops following what it clears, and what another hold of the same path replaces', () => {
