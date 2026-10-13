@@ -38,6 +38,10 @@ function stubFiles(home: string, s: Session) {
     entered: (line: string) => typed().split('\n').includes(line),
     /** The line typed into the stub and not yet entered. */
     pending: now('.line'),
+    /** A mark in the line's records, to look past: how many there are now. */
+    lineMark: () => records('.line').length,
+    /** Whether the line has held anything since mark (an Enter since may have taken it). */
+    typedSince: (mark: number) => records('.line').slice(mark).some((r) => r !== ''),
     /** How many mouse reports the stub has read. */
     mice: () => Number(now('.mouse')() || '0'),
     /** "spinning" while the stub draws, "done" once it is. */
@@ -111,15 +115,18 @@ async function tryHold(page: Page, api: Api, browser: Browser, home: string, rep
   const guestBar = guest.locator('[data-quick-reply]')
   await expect(guestBar).toBeVisible({ timeout: 15_000 })
   await guestBar.locator('input').fill('guest line')
+  const mark = stub.lineMark()
+  const guestEnter = () => stub.enters().find((e) => e.line === 'guest line')
   await guestBar.getByRole('button', { name: 'Send' }).click()
-  // Its text is typed: Conductor writes it at once, so the stub's first byte of it says so. The link is revoked before its
-  // Enter, nothing slow in between.
-  await expect.poll(stub.pending, { timeout: 10_000, intervals: [20], message: 'the guest line is typed' }).not.toBe('')
+  // Its text is typed: Conductor writes it at once, so the stub's first byte of it says so (or, a test too slow to see the
+  // line, the stub's taking its Enter since). The link is revoked before its Enter, nothing slow in between.
+  await expect
+    .poll(() => stub.typedSince(mark) || guestEnter() !== undefined, { timeout: 10_000, intervals: [20], message: 'the guest line is typed' })
+    .toBe(true)
   if (reply) await bar.locator('input').press('Enter')
   const revokeAsked = Date.now()
   await api.ok('DELETE', `/api/sessions/${s.id}/links/${link.id}`)
   // Held, or the guest's Enter was taken.
-  const guestEnter = () => stub.enters().find((e) => e.line === 'guest line')
   const outcome = async () =>
     (await page.locator('[data-quick-reply][data-held="true"]').count()) > 0 ? 'held' : guestEnter() ? 'entered' : 'waiting'
   await expect.poll(outcome, { timeout: 10_000, message: 'the turn is held' }).not.toBe('waiting')
