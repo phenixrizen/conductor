@@ -27,7 +27,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
 | `desktop/` | the Electron shell: starts `conductor serve` with a minted token and the settings it keeps, the handshake, health and restarts, the bridge the workbench reads the token from, WSL 2 on Windows |
 | `THIRD_PARTY_NOTICES`, `notices.go`, `scripts/notices.py` | the licences of what ships, generated (never hand-edited) from the binary's Go modules, the web bundle's npm packages (`web/build/bundledPackages.ts` lists them during the build) and the desktop app's; the root package embeds it and the server serves it at `/third-party-notices.txt` |
-| `docs/` | `protocol.md`, `architecture.md`, `features.md` (what each round decided and verified), `tasks-todo.md` (the bugs known and the features set aside, in one place), `design/brand.md` |
+| `docs/` | `protocol.md`, `architecture.md`, `features.md` (what each round decided and verified), `design/brand.md`; the bugs known and the features set aside are GitHub issues (see Issues and the project board) |
 
 `internal/session.Local` is shared by the server and the host. Anything that
 changes what a viewer sees belongs there, not in a transport. Attention
@@ -75,6 +75,59 @@ session store in `web/app/composables/useAttention.ts` (streaming fetch of
   instructions and by-hand checklists follow this; a check that would need
   such a step on WSL is done from a machine that is not WSL, or waits for the
   app. The owner has said this twice; do not raise it again.
+
+## Issues and the project board
+
+The backlog is the repository's GitHub issues, worked on the project board
+**Conductor** (https://github.com/users/phenixrizen/projects/3), a kanban whose
+Status runs Backlog → Ready → In progress → In review → Done.
+`docs/tasks-todo.md` is retired: it keeps only where each of its entries
+went.
+
+- **Every bug known and every feature set aside is an issue.** A bug says
+  how to see it (the page, the steps, the platform), what was expected and
+  what is known of its cause; a feature says what it is, who asked for it
+  and why it waits. Labels: `bug` or `enhancement`, and one area (`area:
+  sidebar`, `desktop`, `switchyard`, `crews`, `sessions`, `attention`,
+  `files`, `host`, `mobile`, `tests`). It goes on the board in Backlog;
+  Ready once the owner picks it for a round. Write the body as GitHub
+  shows it: no hard line breaks inside a paragraph (an issue shows each
+  one).
+- **A bug found while working is fixed, not parked.** A review's finding
+  outside its change, a sweep, an in-app check or a flaky test is fixed in
+  that round, with its tests; it gets an issue all the same, In progress,
+  so the board shows it until its fix merges. An issue waits in Backlog
+  only when the owner sets it aside or it is a feature of its own.
+- **The board follows the work.** A card is In progress when its branch
+  starts, In review when the pull request that finishes it opens, and Done
+  when that fix reaches `main`. The finishing pull request's body says
+  `Fixes #N`; GitHub closes the issue only when it merges into `main` (a
+  merge into another branch closes nothing, and the issue stays open, In
+  review, until the change reaches `main`), and the card then goes to Done
+  (`scripts/board.py N Done` if the board has not moved it). A pull request
+  that does only part of the work says `Part of #N`, which closes nothing:
+  the issue stays open, In progress, until the finishing pull request
+  opens. An issue whose fix reached `main` without closing it (its pull
+  request said neither) is closed by hand, naming that pull request; never
+  closed as fixed before the fix is on `main`. An issue closes otherwise
+  only as a duplicate (naming the issue it repeats) or as not planned when
+  the owner drops it, its comment saying why.
+- **Security findings are the exception.** A security finding never
+  becomes an issue, a card, a pull request text or a commit message until
+  its fix has shipped (see Reviews): it stays in the owner's private
+  security-findings document, which keeps its status (Open, Fixing,
+  Fixed). Its fix's pull request names no issue.
+- An agent that does not write to GitHub (it commits locally; another
+  pushes) reports the issues it would open, with their titles, bodies and
+  labels; whoever pushes opens them and moves the cards.
+
+```bash
+gh issue create --title "<what is wrong>" --body-file body.md --label bug --label "area: files"
+python3 scripts/board.py <issue number> Backlog   # puts it on the board; then Ready, "In progress", "In review", Done
+```
+
+The board needs a `gh` token with the `project` scope (`gh auth refresh -s
+project`, once per machine).
 
 ## Checks
 
@@ -141,13 +194,14 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   before it is fixed; one the code refutes is answered with the lines that
   refute it.
 - The pull request's body lists the findings and what became of each. One
-  outside the change's scope goes to `docs/tasks-todo.md`, never dropped
-  silently.
+  outside the change's scope becomes an issue (see Issues and the project
+  board), never dropped silently; a bug among them is fixed in the same
+  round all the same.
 - A security finding (a way to gain access, read what one should not, or
   deny service) never goes into this public repository, a pull request, a
-  commit message or the todo until its fix has shipped: it goes to the
-  owner's private security-findings document. The fix's pull request
-  describes the change, not the attack.
+  commit message, an issue or the project board until its fix has
+  shipped: it goes to the owner's private security-findings document. The
+  fix's pull request describes the change, not the attack.
 - When the review cannot run (no login, no network), the pull request says
   so: a limitation, not a pass.
 

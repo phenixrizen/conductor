@@ -47,7 +47,7 @@ a word on the screen.
 | 1 | "One of the agents is waiting for you to answer something. Find it and answer it." | The prompt is answered and the member moves on. | **Needs you** at the top, the run's block, the member asking first; the numbered choice in the row (1 Yes), or open it. |
 | 2 | "A coworker wants to watch just the tests agent, not the whole team. Get them a link." | A link for that one member is copied. | Hover the member's row → **Share** (or right-click → Share…); not the run header's Share run. |
 | 3 | "Stop everything the `users api` team is doing right now." | The live run is stopped, every member's terminal closed. | Hover the run's header in the sidebar → **Stop run**, then confirm in the row; or open the run → Stop. |
-| 4 | "Yesterday the same team ran. Open what it did yesterday." | Yesterday's run is open (its members, its output or diffs). | Not in the sidebar (exited sessions leave it after 10 minutes): Crews → `users api` → **Runs** → yesterday's row. Known: **Open** on a run kept only as a record answers 404 today (docs/tasks-todo.md, Bugs); note where they looked and stop the task there. |
+| 4 | "Yesterday the same team ran. Open what it did yesterday." | Yesterday's run is open (its members, its output or diffs). | Not in the sidebar (exited sessions leave it after 10 minutes): Crews → `users api` → **Runs** → yesterday's row. Known: **Open** on a run kept only as a record answers 404 today (issue #127); note where they looked and stop the task there. |
 | 5 | "What's the difference between `users api` on the Crews page and `users api` in the list on the left?" | They say, in their words, that one is the saved team (the plan) and the other is one time it ran. | The crew lives on the Crews page; the sidebar lists runs, the crew's name with the start time ("started 08:31 · 3 agents"). |
 
 ## What to note for each task
@@ -72,6 +72,7 @@ Ask:
 
 ## Afterwards
 
-Each finding goes in `docs/tasks-todo.md` (the step that went wrong, what
+Each finding becomes a GitHub issue, labelled `bug` and `area: sidebar`
+(AGENTS.md, Issues and the project board: the step that went wrong, what
 the person expected, how many of the two hit it); what held up goes in
 `docs/features.md` under the round that runs it.
