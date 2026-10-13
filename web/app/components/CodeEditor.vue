@@ -186,7 +186,8 @@ async function startNvim() {
   if (held && !held.state.lost && !freshModel) {
     resumed = held.echo ?? null
     nvimId = held.id
-    Object.assign(nvimState, held.state)
+    // Keys refused while away are said now, on the status line (the state's message), and no longer kept for it.
+    Object.assign(nvimState, held.state, { refused: undefined })
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
     editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
   } else {
@@ -308,7 +309,7 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
   // Kept only for keys on their way: once Neovim has done them (settled), with no change and nothing typed left to have, it goes, as a
   // clean tab's Neovim goes when the tab is left.
   const letGoIfClean = (h: HeldNvim) => {
-    if (h.state.lost || heldChanges(h) || h.echo?.unsettled) return
+    if (h.state.lost || heldChanges(h) || h.echo?.unsettled || h.state.refused) return
     bridge.holds.take(path)
     bridge.close(id)
   }
@@ -336,7 +337,11 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       echoAsLeft?.noteAck(ev.ack)
       bridge.holds.changed(path)
     } else if (ev.kind === 'error' && ev.ack) {
-      echoAsLeft?.noteRefused(ev.ack)
+      // Keys refused while the tab was not in front: said on its status line when it is, and its Neovim kept until then.
+      const keys = echoAsLeft?.noteRefused(ev.ack, ev.text) ?? ev.text ?? ''
+      h.state.refused = (h.state.refused ?? '') + keys
+      h.state.message = `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${h.state.refused}`
+      h.state.messageKind = 'emsg'
       bridge.holds.changed(path)
     } else if (ev.kind === 'settled' && ev.ack) {
       echoAsLeft?.noteSettled(ev.ack)
@@ -494,7 +499,7 @@ function onNvimEvent(ev: NvimEvent) {
     }
     case 'error': {
       // Keys refused on their way (their number as ack): they never reached Neovim, and the person is told which.
-      const refused = ev.ack && echo ? echo.noteRefused(ev.ack) : ''
+      const refused = ev.ack && echo ? echo.noteRefused(ev.ack, ev.text) : ''
       nvimState.message = refused ? `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${refused}` : (ev.message ?? ev.code ?? 'error')
       nvimState.messageKind = 'emsg'
       tellNvim()

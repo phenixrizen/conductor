@@ -1020,6 +1020,13 @@ func TestARefusedInputNamesItsEditorAndItsKeys(t *testing.T) {
 	if ev.Kind != proto.NvimError || ev.ID != "e1" || ev.Ack != 7 || ev.Code != proto.ErrCodeTooManyRequests {
 		t.Fatalf("the refusal: %+v", ev)
 	}
+	// Only the end of the keys refused, Neovim's input full: the refusal says which.
+	f, _ = proto.Decode(NvimInputRefused("e1", 8, &RefusedKeys{Rest: "yz"}))
+	ev = proto.NvimEvent{}
+	_ = json.Unmarshal(f.Payload, &ev)
+	if ev.ID != "e1" || ev.Ack != 8 || ev.Text != "yz" || ev.Code != proto.ErrCodeTooManyRequests {
+		t.Fatalf("the partial refusal: %+v", ev)
+	}
 	// A refused open still carries its request's id alone.
 	f, _ = proto.Decode(NvimRefused("r1", ErrNvimUnavailable))
 	ev = proto.NvimEvent{}

@@ -171,9 +171,16 @@ type Editor struct {
 // ErrClosed is returned by Input once the editor is gone.
 var ErrClosed = errors.New("nvim: the editor has exited")
 
-// ErrInputFull is returned by Input when Neovim's input buffer stayed full:
-// the keys (the rest of them) did not reach it.
+// ErrInputFull is what Input's InputFullError is: Neovim's input buffer
+// stayed full, and keys did not reach it.
 var ErrInputFull = errors.New("nvim: neovim's input is full; keys were not taken")
+
+// InputFullError says which of the keys Neovim's full input buffer did not
+// take (Rest, the end of them): those before it reached Neovim.
+type InputFullError struct{ Rest string }
+
+func (e *InputFullError) Error() string        { return ErrInputFull.Error() }
+func (e *InputFullError) Is(target error) bool { return target == ErrInputFull }
 
 // inputTries and inputWait bound how long Input gives Neovim's full input
 // buffer to make room: tries times, waiting inputWait when none was taken.
@@ -654,7 +661,7 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 			break
 		}
 		if tries >= inputTries {
-			return ErrInputFull
+			return &InputFullError{Rest: rest[n:]}
 		}
 		rest = rest[n:]
 		if n == 0 {

@@ -458,6 +458,15 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.unconfirmed).toBe('yz')
   })
 
+  it('keeps only the end of keys Neovim took in part (its input full), and says that end', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('hello', { line: 1, col: 6 })
+    expect(e.noteRefused(1, 'llo')).toBe('llo')
+    expect(e.unsettled).toBe(false)
+    e.markLost()
+    expect(e.unconfirmed).toBe('llo')
+  })
+
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
     const e = inInsert(doc('alpha'))
     e.send('x', { line: 1, col: 6 })

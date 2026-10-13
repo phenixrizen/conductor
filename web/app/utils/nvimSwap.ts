@@ -16,6 +16,8 @@ export interface NvimViewState {
   unconfirmed?: string
   /** Keys sent that Neovim has not said it has done: the keymap waits for them. */
   unsettled?: boolean
+  /** Keys refused on their way while the tab was not in front, not yet shown: its Neovim is kept until they are. */
+  refused?: string
 }
 
 /**

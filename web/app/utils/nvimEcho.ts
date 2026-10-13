@@ -150,12 +150,15 @@ export class NvimEcho {
   }
 
   /**
-   * The keys numbered seq did not reach Neovim (refused: too many at once, its input full): they will never be done, and its later
-   * word that keys are done does not cover them. Returns them, as sent, for the person to be told.
+   * The keys numbered seq did not reach Neovim (refused: too many at once, its input full), or only their end, rest, did not: they
+   * will never be done, and its later word that keys are done does not cover them. Returns those that did not, for the person.
    */
-  noteRefused(seq: number): string {
+  noteRefused(seq: number, rest?: string): string {
     this.refused.add(seq)
-    return this.typed.find((g) => g.seq === seq)?.text ?? ''
+    const g = this.typed.find((t) => t.seq === seq)
+    // Only their end (Neovim's input full): what came before it reached Neovim.
+    if (g && rest) g.text = rest
+    return g?.text ?? rest ?? ''
   }
 
   /** Neovim has done the keys numbered up to seq (the `settled` event). */

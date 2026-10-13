@@ -2,6 +2,7 @@ package nvim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -454,18 +455,23 @@ func TestKeysNeovimHasNoRoomForAreRefusedNotDropped(t *testing.T) {
 	k.key("i")
 	r.waitExact(t, "settled 1")
 	keys := strings.Repeat("x", 250)
-	sent, full := 0, false
-	for i := 0; i < 200 && !full; i++ {
-		switch err := e.InputSeq(keys, uint32(i+2)); err {
-		case nil:
+	sent := 0
+	var full *InputFullError
+	for i := 0; i < 200 && full == nil; i++ {
+		err := e.InputSeq(keys, uint32(i+2))
+		switch {
+		case err == nil:
 			sent += len(keys)
-		case ErrInputFull:
-			full = true
+		case errors.As(err, &full):
+			// The end it did not take is said; what came before it reached Neovim.
+			if !errors.Is(err, ErrInputFull) || !strings.HasSuffix(keys, full.Rest) || full.Rest == "" {
+				t.Fatalf("the refusal: %v, rest %d bytes", err, len(full.Rest))
+			}
 		default:
 			t.Fatal(err)
 		}
 	}
-	if !full {
+	if full == nil {
 		t.Fatalf("Neovim took all %d keys: the test filled nothing", sent)
 	}
 }

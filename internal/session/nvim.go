@@ -338,13 +338,21 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 		return ErrTooManyRequests
 	}
 	if err := ed.InputSeq(req.Keys, req.Seq); err != nil {
-		if errors.Is(err, nvim.ErrInputFull) {
-			return ErrTooManyRequests
+		var full *nvim.InputFullError
+		if errors.As(err, &full) {
+			return &RefusedKeys{Rest: full.Rest}
 		}
 		return err
 	}
 	return nil
 }
+
+// RefusedKeys is NvimInput's error when only the end of the keys (Rest) did
+// not reach Neovim, its input full: it is ErrTooManyRequests.
+type RefusedKeys struct{ Rest string }
+
+func (e *RefusedKeys) Error() string        { return "session: neovim's input is full; keys were not taken" }
+func (e *RefusedKeys) Is(target error) bool { return target == ErrTooManyRequests }
 
 // NvimClose ends one of sub's editors: with Discard as `:qa!` does (the
 // person chose to drop the changes not written; the swap file goes), else as
@@ -509,6 +517,11 @@ func truncateRunes(s string, n int) string {
 func NvimInputRefused(id string, seq uint32, err error) []byte {
 	ev := refusal(err)
 	ev.ID, ev.Ack = id, seq
+	// Only the end of them, when Neovim took the rest: its Text.
+	var some *RefusedKeys
+	if errors.As(err, &some) {
+		ev.Text = truncateRunes(some.Rest, proto.MaxNvimKeys)
+	}
 	return proto.MustControl(ev)
 }
 
