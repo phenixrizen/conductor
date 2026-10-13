@@ -324,10 +324,28 @@ watch(
   (paths) => {
     const bridge = props.nvim
     if (!bridge) return
-    for (const o of bridge.holds.orphans(paths)) if (!o.lost) bridge.close(o.id, true)
+    // Its changes are dropped only when it had some (the close asked); one kept for keys on their way ends keeping what it may have.
+    for (const o of bridge.holds.orphans(paths)) if (!o.lost) bridge.close(o.id, o.modified)
   },
   { flush: 'post' },
 )
+// A tab not in front wears its unsaved dot as its held Neovim says (Neovim's word coming after the tab was left, a loss): the close then
+// asks. The tab in front is its editor's to say.
+let stopListening: (() => void) | null = null
+watch(
+  () => props.nvim?.holds,
+  (holds) => {
+    stopListening?.()
+    stopListening =
+      holds?.listen((path, held) => {
+        const t = tabs.value.tabs.find((x) => x.kind === 'file' && x.path === path)
+        if (!t || t.id === active.value?.id) return
+        setDirty(t.id, !!held && held.state.modified)
+      }) ?? null
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => stopListening?.())
 
 // Editing (design round 12, F6): a controller on a session that allows it edits a text file read whole in Monaco (Neovim's keymap
 // edits through Neovim instead); Save and Ctrl+S write it on the session's machine, refused when the file changed on disk since it

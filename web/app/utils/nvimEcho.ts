@@ -113,6 +113,21 @@ export class NvimEcho {
     return this.seq > this.acked
   }
 
+  /**
+   * An acknowledgement that comes while the echo's tab is not in front (finish, then its follower): only its number is noted, the
+   * keys up to it handled; the line changes it covers came, or come, as late ones (lateLines).
+   */
+  noteAck(ack: number): void {
+    this.acked = Math.max(this.acked, ack)
+    if (this.barrier && ack >= this.barrier) {
+      // Keys that end the guesses are handled: Neovim's text stands.
+      this.unshow()
+      this.guesses = []
+      this.base = null
+      this.barrier = 0
+    }
+  }
+
   /** The guesses' range on screen, for the editor's marking. */
   range(): { line: number; from: number; to: number } | null {
     if (!this.base || !this.guesses.length) return null

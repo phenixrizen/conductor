@@ -7,7 +7,8 @@ import { closedByQuit } from './nvimLost'
  * `utils/nvimLost`) is kept too, `state.lost` its reason: its tab's text is what it last held, until Reopen or a close. `stop` ends the
  * following of its changes into the tab's text while it is held (the editor's `follow`): a change on its way as the tab was left, one a
  * plugin makes later, a lost Neovim's last ones, which can come after its end. `echo` is the local echo as it left, finished: the
- * characters typed that Neovim had not acknowledged, laid over its text and reconciled with each of those changes (NvimEcho.lateLines).
+ * numbers of the keys sent and acknowledged, and the characters typed that Neovim had not acknowledged, laid over its text and
+ * reconciled with each of those changes (NvimEcho.lateLines); the next editor goes on with it.
  */
 export interface HeldNvim {
   id: string
@@ -21,18 +22,34 @@ export interface HeldNvim {
  * The Neovims of tabs not in front (the Neovim keymap). A tab whose buffer holds changes not written keeps its Neovim while another
  * tab is in front: the editor hands it here as it leaves and takes it back when its tab is in front again, so the changes stay where
  * they were typed. Closing it instead ended it as a lost connection does, and the next open of the file stumbled on its swap file.
- * A tab that closes takes its held Neovim with it (`orphans`: the person said Don't save, or Neovim kept nothing). Keyed by the
- * file's path; one per page connection (`useEditorBridge`). A Neovim lost stays held as lost, whether it was in front
+ * A tab left while keys Neovim has not acknowledged are on their way is kept too, until they are (its follower then lets it go, clean,
+ * with `release`). A tab that closes takes its held Neovim with it (`orphans`: the person said Don't save, or Neovim kept nothing).
+ * Keyed by the file's path; one per page connection (`useEditorBridge`). A Neovim lost stays held as lost, whether it was in front
  * (its editor hands it here as it leaves, a tab switched or the area folded) or not (`ended`), so the next showing keeps its text.
- * Whatever leaves the holds stops being followed.
+ * Whatever leaves the holds stops being followed. `listen` is told of each change to a hold (the area keeps its tab's unsaved dot).
  */
 export class NvimHolds {
   private held = new Map<string, HeldNvim>()
+  private listeners = new Set<(path: string, h: HeldNvim | undefined) => void>()
 
+  /** cb is told, with the path, of every hold made, changed (`changed`) or let go (undefined then); the returned function stops it. */
+  listen(cb: (path: string, h: HeldNvim | undefined) => void): () => void {
+    this.listeners.add(cb)
+    return () => this.listeners.delete(cb)
+  }
+  private tell(path: string) {
+    const h = this.held.get(path)
+    for (const cb of this.listeners) cb(path, h)
+  }
   hold(path: string, h: HeldNvim): void {
     const was = this.held.get(path)
     if (was && was !== h) was.stop?.()
     this.held.set(path, h)
+    this.tell(path)
+  }
+  /** The hold for path changed in place (its follower: Neovim's word on changes not written, a late change). */
+  changed(path: string): void {
+    if (this.held.has(path)) this.tell(path)
   }
   /** The Neovim held for path, left held. */
   peek(path: string): HeldNvim | undefined {
@@ -41,9 +58,15 @@ export class NvimHolds {
   /** The Neovim held for path, no longer held nor followed: its editor follows it again. */
   take(path: string): HeldNvim | undefined {
     const h = this.held.get(path)
+    if (!h) return undefined
     this.held.delete(path)
-    h?.stop?.()
-    return h ? { id: h.id, state: h.state, cursor: h.cursor, echo: h.echo } : undefined
+    h.stop?.()
+    this.tell(path)
+    return { id: h.id, state: h.state, cursor: h.cursor, echo: h.echo }
+  }
+  /** Lets go the Neovim held for path, as its follower found it clean and settled: the caller ends it. */
+  release(path: string): HeldNvim | undefined {
+    return this.take(path)
   }
   /**
    * Neovim id ended on its own: quit, nothing to take back; lost (reason `error: …`), its tab keeps what it held, as lost, still
@@ -55,17 +78,21 @@ export class NvimHolds {
       if (closedByQuit(reason)) {
         h.stop?.()
         this.held.delete(path)
-      } else this.held.set(path, { ...h, state: { ...h.state, lost: reason, cmdline: '' } })
+      } else this.held.set(path, { ...h, state: { ...h.state, lost: reason, cmdline: '', modified: h.state.modified || !!h.echo?.showing } })
+      this.tell(path)
     }
   }
-  /** The held Neovims whose file has no tab open now, no longer held: the caller ends them, but for a lost one, which has none to end. */
-  orphans(open: Iterable<string>): Array<{ path: string; id: string; lost: boolean }> {
+  /**
+   * The held Neovims whose file has no tab open now, no longer held: the caller ends them, dropping the changes of one that had some
+   * (the person said Don't save), but for a lost one, which has none to end.
+   */
+  orphans(open: Iterable<string>): Array<{ path: string; id: string; lost: boolean; modified: boolean }> {
     const keep = new Set(open)
-    const out: Array<{ path: string; id: string; lost: boolean }> = []
+    const out: Array<{ path: string; id: string; lost: boolean; modified: boolean }> = []
     for (const [path, h] of this.held) {
       if (keep.has(path)) continue
       h.stop?.()
-      out.push({ path, id: h.id, lost: !!h.state.lost })
+      out.push({ path, id: h.id, lost: !!h.state.lost, modified: h.state.modified })
       this.held.delete(path)
     }
     return out

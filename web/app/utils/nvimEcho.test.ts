@@ -258,6 +258,29 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.waiting).toBe(false)
   })
 
+  it('notes an acknowledgement that comes while its tab is not in front, and drops the guesses keys ending them undid', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('<BS>', { line: 1, col: 7 })
+    e.finish()
+    expect(d.text).toEqual(['alpha'])
+    expect(e.waiting).toBe(true)
+    e.noteAck(1)
+    expect(e.waiting).toBe(true)
+    e.noteAck(2)
+    expect(e.waiting).toBe(false)
+    // With no barrier, a kept guess stays through an acknowledgement: its line comes as a late one.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('x', { line: 1, col: 6 })
+    e2.finish()
+    e2.noteAck(1)
+    expect(d2.text).toEqual(['alphax'])
+    expect(e2.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    expect(d2.text).toEqual(['alphax'])
+  })
+
   it('goes on in another editor over the same text, its guesses kept', () => {
     const d = doc('alpha')
     const e = inInsert(d)

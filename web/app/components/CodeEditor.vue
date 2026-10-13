@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { editor as MonacoEditor } from 'monaco-editor'
 import type { NvimBridge, NvimEvent, NvimSwapChoice } from '~/utils/protocol'
+import type { HeldNvim } from '~/utils/nvimHold'
 import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
@@ -296,27 +297,40 @@ function listenForText(bridge: NvimBridge) {
  * was left, one a plugin makes later, the last ones a lost Neovim sent, which can come after its end. Its word on changes not written
  * goes to the held state. The holds stop it as the Neovim leaves them (taken back, its tab closed).
  */
-function follow(bridge: NvimBridge, id: string, finished: NvimEcho | null): () => void {
+function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): () => void {
   const m = model
   const monaco = monacoRef
   const path = props.path
-  let pending = finished
+  // A live Neovim kept only for keys on their way, clean once they are handled: let go (as a clean tab's Neovim ends as it is left).
+  const settle = (h: HeldNvim) => {
+    if (h.state.lost || h.state.modified || echoAsLeft?.waiting) return
+    bridge.holds.release(path)
+    bridge.close(id)
+  }
   return bridge.subscribe((ev) => {
     if (ev.id !== id || !m || !monaco || m.isDisposed()) return
     const h = bridge.holds.peek(path)
+    if (h?.id !== id) return
     if (ev.kind === 'lines') {
       const lev = { first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }
-      if (pending) {
+      if (echoAsLeft) {
         // The characters typed it had not acknowledged as the tab was left stay laid over its text until its lines hold them.
-        if (!pending.lateLines(lev)) pending = null
+        echoAsLeft.lateLines(lev)
       } else {
         const edit = linesEdit(lev, m.getLineCount(), (n) => m.getLineLength(n))
         m.applyEdits([{ range: new monaco.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
       }
-      if (h?.id === id) h.echo = pending
-      if (h?.id === id && h.state.lost) h.state.modified = true
-    } else if (ev.kind === 'modified' && h?.id === id) {
+      if (h.state.lost && !h.state.modified) {
+        h.state.modified = true
+        bridge.holds.changed(path)
+      }
+    } else if (ev.kind === 'modified') {
       h.state.modified = h.state.lost ? h.state.modified || !!ev.modified : !!ev.modified
+      bridge.holds.changed(path)
+      settle(h)
+    } else if (ev.kind === 'cursor' && ev.ack) {
+      echoAsLeft?.noteAck(ev.ack)
+      settle(h)
     }
   })
 }
@@ -519,9 +533,11 @@ onBeforeUnmount(() => {
     // not acknowledged yet may be making some, Neovim's word not come: they keep it too. What the echo holds is shown first, and its
     // changes from now on are followed into the tab's text.
     if (nvimState.modified || echo?.waiting) {
-      const finished = echo?.finish() ? echo : null
+      // The echo goes with it whole (the numbers of its keys, the characters Neovim has not had): its next editor goes on with it.
+      echo?.finish()
+      const asLeft = echo
       const at = editor?.getPosition()
-      props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: finished, stop: follow(props.nvim, nvimId, finished) })
+      props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: asLeft, stop: follow(props.nvim, nvimId, asLeft) })
     } else props.nvim.close(nvimId)
   } else if (props.nvim && nvimState.lost && lostId) {
     // Neovim lost: its text stays the tab's for the next showing (a tab switched, the area folded), until Reopen or a close.

@@ -354,6 +354,66 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
   }
 })
 
+// A tab left while keys Neovim has not acknowledged are on their way keeps its Neovim until they are (Neovim, slow here: 300 ms on each
+// typed character, 3 s on j). A change they make then says so on the tab not in front (the unsaved dot, and the close asks); keys that
+// change nothing let it go once handled, so tabs left that way do not use up the four Neovims a window may keep.
+test('a tab left with keys on their way keeps its Neovim until they are handled, then shows their change or lets it go', async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(
+    join(config, 'init.lua'),
+    "local uv = vim.uv or vim.loop\nlocal function busy(ns) local t = uv.hrtime() while uv.hrtime() - t < ns do end end\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() busy(3e8) end })\nvim.keymap.set('n', 'j', function() busy(3e9) return 'j' end, { expr = true })\n",
+  )
+  const cwd = join(state.root, 'files-vim-waiting')
+  mkdirSync(cwd, { recursive: true })
+  const names = ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt', 'edit.txt', 'other.txt']
+  for (const n of names) writeFileSync(join(cwd, n), `${n}\nsecond\n`)
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-waiting', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    const open = async (name: string) => {
+      await pane.locator(`[data-file-node="${cwd}/${name}"]`).click()
+      await expect(lines).toContainText(name, { timeout: 30_000 })
+    }
+    await open('edit.txt')
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    // A change on its way as the tab is left: its dot comes on the tab not in front, and closing it asks.
+    await lines.click()
+    await page.keyboard.type('A')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await page.keyboard.type('x')
+    await open('other.txt')
+    await expect(tab('edit.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    await tab('edit.txt').locator('[data-editor-close]').click({ force: true })
+    const question = page.locator('[role="dialog"]', { hasText: 'Save edit.txt?' })
+    await expect(question).toBeVisible()
+    await question.locator('[data-editor-discard]').click()
+    await expect(tab('edit.txt')).toHaveCount(0)
+    // Four clean tabs left each with a j on its way, the four Neovims a window may keep: once handled, they go, and a fifth opens.
+    for (const n of ['f1.txt', 'f2.txt', 'f3.txt', 'f4.txt']) {
+      await open(n)
+      await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+      await lines.click()
+      await page.keyboard.type('j')
+    }
+    await page.waitForTimeout(4000)
+    await open('f5.txt')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await expect(status.locator('[data-nvim-message]')).toHaveCount(0)
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover
