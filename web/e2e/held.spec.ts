@@ -4,8 +4,9 @@ import { expect, test, type Session } from './fixtures'
 
 // A line a link's controller sent is typed into the session, and the link is
 // revoked before its Enter: the Enter is never written, the session's view
-// says so in plain words, and a reply sent meanwhile waits; typing in the
-// terminal clears the words, and the waiting reply goes, a line of its own.
+// says so in plain words and takes no reply, and a reply sent before waits;
+// typing in the terminal clears the words, and the waiting reply goes, a
+// line of its own.
 const HELD = 'Text from a link that was let go was typed and not entered: type in the terminal to continue'
 
 test('a line typed for a link that is let go waits for the terminal, and a reply sent meanwhile then goes', async ({ page, api, browser, state }) => {
@@ -41,21 +42,28 @@ test('a line typed for a link that is let go waits for the terminal, and a reply
     await expect(guestBar).toBeVisible({ timeout: 15_000 })
     await guestBar.locator('input').fill('guest line')
     await guestBar.getByRole('button', { name: 'Send' }).click()
-    // Its text is typed (the terminal echoes it), and the link is revoked before its Enter.
+    // Its text is typed (the terminal echoes it). The owner replies meanwhile: the reply waits for its turn,
+    // which the guest's line holds. The link is revoked before the guest's Enter.
     await expect.poll(async () => (await rows.innerText()).includes('guest line'), { timeout: 10_000, intervals: [50] }).toBe(true)
+    const bar = page.locator('[data-quick-reply]')
+    await bar.locator('input').fill('owner line')
+    await bar.getByRole('button', { name: 'Send' }).click()
     await api.ok('DELETE', `/api/sessions/${s.id}/links/${link.id}`)
 
-    // The owner's view says the session waits for the terminal, in plain words.
-    const bar = page.locator('[data-quick-reply]')
+    // The owner's view says the session waits for the terminal, in plain words, and takes no reply meanwhile.
     await expect(bar).toHaveAttribute('data-held', 'true', { timeout: 10_000 })
     await expect(bar).toContainText('Type in the terminal to go on')
     await expect(bar).toContainText(HELD)
+    await expect(bar.locator('input')).toBeDisabled()
+    await expect(bar.locator('input')).toHaveAttribute('placeholder', 'Type in the terminal first')
     expect((await api.session(s.id)).attention).toMatchObject({ state: 'needs_input', source: 'submit', message: HELD })
+    // The sidebar's row says it too, and takes no reply either.
+    const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+    await expect(row.locator('[data-row-prompt]')).toHaveText(HELD, { timeout: 10_000 })
+    await expect(row.locator('[data-row-reply] input, input[data-row-reply]').first()).toBeDisabled()
 
-    // A reply sent meanwhile waits: nothing of it is typed.
-    await bar.locator('input').fill('owner line')
-    await bar.getByRole('button', { name: 'Send' }).click()
-    await page.waitForTimeout(1_500)
+    // The queued reply waits: nothing of it is typed.
+    await page.waitForTimeout(1_000)
     await expect(rows).not.toContainText('owner line')
     await expect(bar).toContainText(HELD)
 

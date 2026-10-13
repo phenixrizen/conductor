@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { waitingHeading, waitsForTerminal } from '~/utils/attention'
+import { TERMINAL_FIRST, waitingHeading, waitsForTerminal } from '~/utils/attention'
 import type { Attention, Role } from '~/utils/protocol'
 
 const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean }>()
@@ -7,11 +7,12 @@ const emit = defineEmits<{ reply: [text: string]; option: [index: number] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
-// A held turn (text typed and not entered): a reply waits until someone types in the terminal.
+// A held turn (text typed and not entered): no reply is taken until someone types in the terminal, which it would only wait for.
 const held = computed(() => waitsForTerminal(props.attention))
 const heading = computed(() => waitingHeading(props.attention, props.agentName))
 const options = computed(() => (show.value ? (props.attention?.options ?? []) : []))
-const canReply = computed(() => props.role === 'control' && !props.busy)
+const canReply = computed(() => props.role === 'control' && !props.busy && !held.value)
+const placeholder = computed(() => (props.role !== 'control' ? 'View only' : held.value ? TERMINAL_FIRST : `Reply to ${props.agentName}…`))
 
 function send() {
   const t = text.value.trim()
@@ -66,7 +67,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </UButton>
     </div>
     <form v-else class="ml-auto flex items-center gap-2 flex-none" @submit.prevent="send">
-      <UInput v-model="text" size="sm" class="w-64" :placeholder="!canReply ? 'View only' : held ? 'Reply (sent after the terminal)…' : `Reply to ${agentName}…`" :disabled="!canReply" />
+      <UInput v-model="text" size="sm" class="w-64" :placeholder="placeholder" :disabled="!canReply" />
       <UButton type="submit" size="sm" label="Send" trailing-icon="i-lucide-corner-down-left" :disabled="!canReply || !text.trim()" />
     </form>
   </div>

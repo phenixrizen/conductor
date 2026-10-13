@@ -14,6 +14,12 @@ export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefine
   return waitsForTerminal(a) ? 'Type in the terminal to go on' : `${agentName} is waiting on you`
 }
 
+/**
+ * What a reply field says while the session waits for its terminal: it takes no reply then, for one would only wait for the
+ * terminal, and a reply box's connection would not see it go or fail.
+ */
+export const TERMINAL_FIRST = 'Type in the terminal first'
+
 /** Sessions that need input, newest signal first. */
 export function needingInput(sessions: Iterable<SessionInfo>): SessionInfo[] {
   const out: SessionInfo[] = []

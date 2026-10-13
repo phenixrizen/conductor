@@ -11,7 +11,8 @@ const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?
 const emit = defineEmits<{ answer: [index: number]; reply: [text: string] }>()
 
 const text = ref('')
-const off = computed(() => props.busy || props.prompt.away)
+// While the host is away, or the session waits for its terminal, nothing typed here would go.
+const off = computed(() => props.busy || props.prompt.away || props.prompt.held)
 
 function send() {
   const t = text.value.trim()
@@ -22,7 +23,7 @@ function send() {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-1.5 pb-1.5 pr-2" :class="big ? 'flex-col items-stretch pl-2 pt-1' : 'pl-10'" :title="prompt.away ? prompt.placeholder : undefined" data-row-answer>
+  <div class="flex flex-wrap items-center gap-1.5 pb-1.5 pr-2" :class="big ? 'flex-col items-stretch pl-2 pt-1' : 'pl-10'" :title="prompt.away || prompt.held ? prompt.placeholder : undefined" data-row-answer>
     <template v-if="prompt.choices.length">
       <UButton
         v-for="(o, i) in prompt.choices"
