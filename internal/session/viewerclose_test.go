@@ -634,6 +634,58 @@ func TestARevokeStopsWhatTheSessionsEndStillWrites(t *testing.T) {
 	}
 }
 
+// A link that expires while the session's end still writes its viewer what
+// was queued for it stops that, as a revoke does: the frame being written
+// is the last.
+func TestALinkExpiringStopsWhatTheSessionsEndStillWrites(t *testing.T) {
+	s, p := newLocal(t, t.TempDir())
+	sink := &endSink{gate: make(chan struct{})}
+	until := time.Now().Add(time.Second)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleView, LinkID: "L", Name: "v",
+		Authorize: func() (Grant, error) { return Grant{Role: RoleView, Until: until}, nil }}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(time.Second, func() bool { return s.hub.Drained() }) {
+		t.Fatal("the attach frames were never written")
+	}
+	sink.mu.Lock()
+	attached := len(sink.frames)
+	sink.mu.Unlock()
+	sink.gated.Store(true)
+	for i := range 50 {
+		s.Send(sub, proto.Encode(proto.TypeOutput, fmt.Appendf(nil, "queued %d", i)))
+	}
+	if !waitFor(time.Second, sink.waiting.Load) {
+		t.Fatal("no write began")
+	}
+	p.exit()
+	select {
+	case <-s.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session never ended")
+	}
+	ended := make(chan struct{})
+	go func() { s.EndLink("L"); close(ended) }()
+	if !waitFor(time.Second, func() bool { return sub.Reason() != nil }) || !errors.Is(sub.Reason(), ErrSessionEnded) {
+		t.Fatalf("the end closed the viewer with %v", sub.Reason())
+	}
+	if !waitFor(3*time.Second, sub.revoked.Load) {
+		t.Fatal("the link's expiry did not reach the viewer the end closed")
+	}
+	close(sink.gate)
+	select {
+	case <-ended:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the end's close of the link never returned")
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if n := len(sink.frames) - attached; n > 1 {
+		t.Fatalf("%d frames written after the link expired, the one being written at most", n)
+	}
+}
+
 // linkSub is the subscription of linkID that s holds attached, nil for none.
 func linkSub(s *Local, linkID string) *Subscription {
 	var got *Subscription

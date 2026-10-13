@@ -65,9 +65,10 @@ type Subscription struct {
 	closed chan struct{}
 	once   sync.Once
 	reason error
-	// revoked says its link was revoked (revoke), which may come after the
-	// subscription ended for another reason: what it is still owed at the
-	// session's end is dropped from then on (owed).
+	// revoked says its link no longer opens the session, revoked (revoke)
+	// or expired (expire), which may come after the subscription ended for
+	// another reason: what it is still owed at the session's end is dropped
+	// from then on (owed).
 	revoked atomic.Bool
 
 	inflight atomic.Int32 // file requests in progress
@@ -247,6 +248,12 @@ func (s *Subscription) closeWith(reason error) {
 func (s *Subscription) revoke() {
 	s.revoked.Store(true)
 	s.closeWith(ErrRevoked)
+}
+
+// expire is revoke for a link that reached its expiry (ErrExpired).
+func (s *Subscription) expire() {
+	s.revoked.Store(true)
+	s.closeWith(ErrExpired)
 }
 
 // Done is closed when the subscription ends.

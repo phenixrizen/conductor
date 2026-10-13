@@ -89,8 +89,9 @@ switchyard included; every viewer as the session leaves the server), or a
 hosted session's viewer as its host goes, is first sent what was queued for
 it before: the session's last output and its `status`, then its `error`
 (`session_ended`, or `host_disconnected`) and `4410`, whatever link it came
-through; a revoke of its link that lands meanwhile stops that, at the frame
-being written, and a link revoked before the end is not the end's to close.
+through; a revoke or the expiry of its link that lands meanwhile (its host
+gone or not) stops that, at the frame being written, and a link revoked
+before the end is not the end's to close.
 A server gives a connection it closes, for any of these reasons, 5 s from
 the close to be written all of it, and then cuts its socket, a close
 handshake under way included: a viewer that reads too little, or does not

@@ -1120,10 +1120,12 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		s.passedOn[r] = struct{}{}
 	}
 	// A credential that lapses closes the client as it lapses, one that
-	// attached a moment before included (at once when that moment has passed).
+	// attached a moment before included (at once when that moment has
+	// passed); one closed before (the session's end) is written nothing
+	// more from then on (Subscription.expire), until its transport closes.
 	var lapse *time.Timer
 	if !until.IsZero() {
-		lapse = time.AfterFunc(time.Until(until), func() { sub.closeWith(ErrExpired) })
+		lapse = time.AfterFunc(time.Until(until), sub.expire)
 	}
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
@@ -1145,12 +1147,12 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	go func() {
 		<-sub.done
-		if lapse != nil {
-			lapse.Stop()
-		}
 		s.Detach(sub)
 		// Detach keeps it among the closing until its transport has closed.
 		<-sub.closed
+		if lapse != nil {
+			lapse.Stop()
+		}
 		s.mu.Lock()
 		delete(s.closing, sub)
 		delete(s.passedOn, sub)

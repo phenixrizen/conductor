@@ -200,6 +200,56 @@ func TestHostedDisconnectLinkIsARevokeAndEndLinkTheSessionsEnd(t *testing.T) {
 	hs.RemoveViewer(cut)
 }
 
+// What a viewer is still written as it is closed (the session's end, its
+// host's going) stops once its link no longer opens the session: as the
+// link expires, and as it is revoked after the host has gone.
+func TestALinkThatStopsOpeningTheSessionStopsWhatItsViewersAreOwed(t *testing.T) {
+	queued := func(t *testing.T, hs *HostedSession, until time.Time) *Viewer {
+		t.Helper()
+		v, err := hs.AddViewerWith(ViewerOptions{ID: "0123456789abcdef", Role: session.RoleView, LinkID: "l1",
+			Authorize: func() (session.Grant, error) { return session.Grant{Role: session.RoleView, Until: until}, nil }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range []byte("abc") {
+			v.push([]byte{proto.TypeOutput, b})
+		}
+		return v
+	}
+	t.Run("expired during the end's", func(t *testing.T) {
+		hub := NewHub(session.NewRegistry(4), nil)
+		hs, conn := register(t, hub)
+		drainHost(t, conn)
+		v := queued(t, hs, time.Now().Add(200*time.Millisecond))
+		hs.HostStatus(session.StatusExited, nil)
+		hs.EndLink("l1")
+		time.Sleep(400 * time.Millisecond) // the link expires meanwhile
+		sink := &pumpSink{}
+		v.Pump(sink)
+		if !errors.Is(sink.reason, session.ErrSessionEnded) || sink.written() != 0 {
+			t.Fatalf("closed with %v after %d frames", sink.reason, sink.written())
+		}
+		hs.RemoveViewer(v)
+	})
+	t.Run("revoked after the host went", func(t *testing.T) {
+		hub := NewHub(session.NewRegistry(4), nil)
+		hs, conn := register(t, hub)
+		drainHost(t, conn)
+		v := queued(t, hs, time.Time{})
+		hs.HostDisconnected(conn)
+		hs.DisconnectLink("l1")
+		sink := &pumpSink{}
+		v.Pump(sink)
+		if !errors.Is(sink.reason, ErrHostGone) || sink.written() != 0 {
+			t.Fatalf("closed with %v after %d frames", sink.reason, sink.written())
+		}
+		hs.RemoveViewer(v)
+		if len(hs.gone) != 0 {
+			t.Fatal("a removed viewer is still kept")
+		}
+	})
+}
+
 // A grant that lapses closes the viewer as it lapses, with ErrExpired, and
 // the frames still queued for it are dropped as on a revoke.
 func TestHostedViewerGrantUntil(t *testing.T) {

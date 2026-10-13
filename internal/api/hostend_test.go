@@ -525,6 +525,41 @@ func guestThrough(t *testing.T, e *testEnv, host *fakeHost, token string) (*wsCl
 	}
 }
 
+// A host that reports the end and then leaves, as every host does: a revoke
+// of the link after that still stops what the end writes its viewer, though
+// the host's leaving let the viewer go from the session.
+func TestARevokeAfterTheHostLeftStopsWhatTheEndStillWrites(t *testing.T) {
+	e := newTestEnv(t, nil)
+	writes := newHoldWrites(t)
+	e.srv.viewerSeam = writes.seam()
+	host, guest, linkID, viewerID := hostedGuest(t, e)
+	writes.hold.Store(true)
+	for i := range 20 {
+		relayOutput(t, host, viewerID, fmt.Sprintf("line %d\r\n", i))
+	}
+	host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+	linkLetGo(t, e, host.sessionID, linkID)
+	host.c.CloseNow()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		d, _ := e.srv.registry.Get(host.sessionID)
+		if hs, ok := d.(*signal.HostedSession); ok && !hs.Connected() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server never saw the host leave")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if resp, _ := e.do("DELETE", "/api/sessions/"+host.sessionID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("revoke: %d", resp.StatusCode)
+	}
+	writes.let()
+	if end := readTheEnd(t, guest, 10*time.Second); end.outputs > 1 {
+		t.Fatalf("%d output frames were written after the revoke, the one being written at most", end.outputs)
+	}
+}
+
 // A link revoked after its session ended, while the end still writes its
 // viewers what was queued for them (the link forgotten already), stops that
 // at the frame being written: through the owner's revoke, and through the

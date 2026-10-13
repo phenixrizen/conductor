@@ -277,13 +277,15 @@ type Viewer struct {
 	stopOnce sync.Once
 	// failed is set by ConnFailed before it closes stop.
 	failed atomic.Bool
-	// revoked says its link was revoked (closeLink), which may come after
-	// the viewer was closed for another reason: what it is still owed is
-	// dropped from then on (finish).
+	// revoked says its link no longer opens the session, revoked
+	// (closeLink) or expired (lapse), which may come after the viewer was
+	// closed for another reason: what it is still owed is dropped from then
+	// on (finish).
 	revoked atomic.Bool
 	// lapse closes the viewer when its link expires (ViewerOptions'
-	// Authorize gave a Grant with Until); set by AddViewerWith, stopped by
-	// RemoveViewer, both under the session's mu.
+	// Authorize gave a Grant with Until), and drops what it is still owed
+	// should it have been closed before (revoked); set by AddViewerWith,
+	// stopped by RemoveViewer, both under the session's mu.
 	lapse *time.Timer
 	// charge is ViewerOptions.Charge.
 	charge func(n int) error
@@ -498,6 +500,11 @@ type HostedSession struct {
 	hasAgentToken  bool
 	conn           *HostConn
 	viewers        map[string]*Viewer
+	// gone are the viewers its host's leaving let go (HostDisconnected),
+	// until whoever serves each removes it (RemoveViewer): a revoke of a
+	// link still finds them, and stops what they are still written
+	// (closeLink).
+	gone           map[*Viewer]struct{}
 	disconnectedAt time.Time
 	maxViewers     int
 	// retired says the session left the server's registry (Retire): no
@@ -561,6 +568,11 @@ func (h *HostedSession) closeLink(linkID string, revoked bool) {
 	h.mu.Lock()
 	var hit []*Viewer
 	for _, v := range h.viewers {
+		if v.LinkID == linkID {
+			hit = append(hit, v)
+		}
+	}
+	for v := range h.gone {
 		if v.LinkID == linkID {
 			hit = append(hit, v)
 		}
@@ -762,7 +774,10 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	v.charge = o.Charge
 	h.viewers[o.ID] = v
 	if !until.IsZero() {
-		v.lapse = time.AfterFunc(time.Until(until), func() { v.close(session.ErrExpired) })
+		v.lapse = time.AfterFunc(time.Until(until), func() {
+			v.revoked.Store(true)
+			v.close(session.ErrExpired)
+		})
 	}
 	conn := h.conn
 	h.mu.Unlock()
@@ -818,6 +833,7 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 	h.mu.Lock()
 	_, present := h.viewers[v.ID]
 	delete(h.viewers, v.ID)
+	delete(h.gone, v)
 	conn := h.conn
 	if v.lapse != nil {
 		v.lapse.Stop()
@@ -1160,7 +1176,9 @@ func (h *HostedSession) HostResize(cols, rows uint16) {
 	h.mu.Unlock()
 }
 
-// HostDisconnected detaches the control connection and closes every viewer.
+// HostDisconnected detaches the control connection and closes every viewer,
+// keeping them where a revoke of a link still finds them (gone) until each
+// is removed.
 func (h *HostedSession) HostDisconnected(conn *HostConn) {
 	h.mu.Lock()
 	if h.conn != conn {
@@ -1173,8 +1191,12 @@ func (h *HostedSession) HostDisconnected(conn *HostConn) {
 		h.info.Status = session.StatusHostDisconnected
 	}
 	viewers := make([]*Viewer, 0, len(h.viewers))
+	if h.gone == nil {
+		h.gone = map[*Viewer]struct{}{}
+	}
 	for _, v := range h.viewers {
 		viewers = append(viewers, v)
+		h.gone[v] = struct{}{}
 	}
 	h.viewers = map[string]*Viewer{}
 	h.mu.Unlock()
