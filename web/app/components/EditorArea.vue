@@ -301,6 +301,9 @@ const nvimConfirm = computed(() => {
   const choices = confirmChoices(st.message)
   return choices.length ? { question: confirmQuestion(st.message), choices } : null
 })
+function dismissRefused() {
+  ;(editorRef.value as { dismissRefused?: () => void } | null)?.dismissRefused?.()
+}
 function answerConfirm(key: string) {
   ;(editorRef.value as { answerConfirm?: (k: string) => void } | null)?.answerConfirm?.(key)
 }
@@ -690,6 +693,10 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <span class="flex-none font-semibold text-highlighted" data-nvim-mode-words>{{ modeWords(nvimState?.mode ?? '') }}</span>
           <span v-if="nvimState?.cmdline" class="flex-none text-highlighted" data-nvim-cmdline>{{ nvimState.cmdline }}</span>
           <span v-if="nvimState?.message" class="min-w-0 flex-1 truncate" :class="nvimState.messageKind === 'emsg' ? 'text-error' : 'text-muted'" data-nvim-message>{{ nvimState.message }}</span>
+          <span v-if="nvimState?.refused" class="flex flex-none items-center gap-1 text-error" data-nvim-refused
+            >Not in the file: <code class="font-mono">{{ nvimState.refused }}</code>
+            <UButton label="Dismiss" size="xs" color="neutral" variant="ghost" data-nvim-refused-dismiss @click="dismissRefused"
+          /></span>
           <span v-if="!nvimState?.cmdline && !nvimState?.message && !modeWords(nvimState?.mode ?? '')" class="text-muted">Neovim · :w writes on {{ nvim?.offer.machine || 'the machine' }} · :q closes the tab</span>
         </template>
         <span v-else class="flex items-center gap-1.5 text-warning" data-editor-keymap-note><UIcon name="i-lucide-info" class="size-3.5" />{{ nvimWhy }} · Monaco's keys meanwhile</span>
@@ -787,6 +794,9 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       </div>
     </template>
     <UModal :open="!!closing" :title="closingWords.title" :description="closingWords.words" :dismissible="!saving" data-editor-close-prompt @update:open="(o) => !o && (closing = null)">
+      <template v-if="nvimState?.refused" #body>
+        <p class="text-sm text-error" data-editor-close-refused>Keys did not reach Neovim and are not in the file: <code class="font-mono">{{ nvimState.refused }}</code>. Type them again, or dismiss them on the status line, then save; or don't save.</p>
+      </template>
       <template #footer>
         <div class="flex w-full justify-end gap-2">
           <UButton label="Cancel" color="neutral" variant="ghost" @click="closing = null" />

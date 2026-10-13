@@ -620,6 +620,70 @@ test("the keymap waits for keys on their way to Neovim, then Monaco's keys own t
   }
 })
 
+// Keys Neovim has no room for are refused: they never reach it. Here a large paste into a Neovim slow to read it (its config waits
+// 20 ms with vim.wait on each typed character, answering requests meanwhile) fills its input buffer. The status line names what was
+// refused until dismissed, and Save from the close question does not close the tab while they are: the file would be written without
+// them.
+test('keys refused on their way are named until dismissed, and Save waits for that', async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(join(config, 'init.lua'), "vim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(20) end })\n")
+  const cwd = join(state.root, 'files-vim-refused')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'end\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-refused', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    await expect(lines).toContainText('end', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('I')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // A paste larger than Neovim's input buffer: the end of it is refused, piece by piece, each once Neovim has had a second to make
+    // room. Waited for until no more come.
+    await page.keyboard.insertText('a'.repeat(18_000))
+    const refused = status.locator('[data-nvim-refused]')
+    await expect(refused).toBeVisible({ timeout: 30_000 })
+    let said = ''
+    await expect
+      .poll(
+        async () => {
+          const now = (await refused.textContent()) ?? ''
+          const same = now === said
+          said = now
+          return same
+        },
+        { timeout: 60_000, intervals: [3_000] },
+      )
+      .toBe(true)
+    await page.keyboard.press('Escape')
+    // Save from the close question does not close the tab while they are not dismissed.
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    const question = page.locator('[role="dialog"]')
+    await expect(question.locator('[data-editor-close-refused]')).toBeVisible()
+    await question.locator('[data-editor-close-save]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
+    await question.getByRole('button', { name: 'Cancel' }).click()
+    // Dismissed: they no longer hold the tab (Neovim, still busy with the paste, has said no change yet: the close does not ask).
+    await refused.locator('[data-nvim-refused-dismiss]').click()
+    await expect(refused).toHaveCount(0)
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 15_000 })
+    expect(readFileSync(join(cwd, 'notes.txt'), 'utf8')).toBe('end\n')
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover

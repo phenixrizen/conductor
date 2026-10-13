@@ -20,9 +20,12 @@ export interface HeldNvim {
   echo?: NvimEcho | null
 }
 
-/** Whether a held Neovim's tab holds changes not written, as the page tells: Neovim said so, or characters typed it has not had show. */
+/**
+ * Whether a held Neovim's tab holds changes not written, as the page tells: Neovim said so, characters typed it has not had show, or
+ * keys refused on their way are not dismissed.
+ */
 export function heldChanges(h: HeldNvim): boolean {
-  return h.state.modified || !!h.echo?.showing
+  return h.state.modified || !!h.echo?.showing || !!h.state.refused
 }
 
 /**

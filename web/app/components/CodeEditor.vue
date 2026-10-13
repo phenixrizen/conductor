@@ -104,7 +104,7 @@ let contentSub: { dispose: () => void } | null = null
 function tellDirty() {
   // Under the Neovim keymap Neovim's buffer is the one with changes or none (its `modified` event); the model only mirrors it. Characters
   // typed that it has not had yet (the local echo's guesses) are changes too: the dot, and a close asks.
-  if (props.nvim) emit('dirty', nvimState.modified || !!echo?.showing)
+  if (props.nvim) emit('dirty', nvimState.modified || !!echo?.showing || !!nvimState.refused)
   else if (model) emit('dirty', isDirty(props.path, model.getAlternativeVersionId()))
 }
 /** The text now, for a save. */
@@ -189,8 +189,8 @@ async function startNvim() {
     resumed = held.echo ?? null
     nvimId = held.id
     nvimPath = held.path ?? null
-    // Keys refused while away are said now, on the status line (the state's message), and no longer kept for it.
-    Object.assign(nvimState, held.state, { refused: undefined })
+    // Keys refused while away are said now, on the status line (the state's message and refused, kept until dismissed).
+    Object.assign(nvimState, held.state)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
     editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
   } else {
@@ -508,6 +508,8 @@ function onNvimEvent(ev: NvimEvent) {
     case 'error': {
       // Keys refused on their way (their number as ack): they never reached Neovim, and the person is told which.
       const refused = ev.ack && echo ? echo.noteRefused(ev.ack, ev.text) : ''
+      // Kept until the person dismisses it (the status line), whatever comes after: a Save waits for that word (nvimWrite).
+      if (refused) nvimState.refused = (nvimState.refused ?? '') + refused
       nvimState.message = refused ? `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${refused}` : (ev.message ?? ev.code ?? 'error')
       nvimState.messageKind = 'emsg'
       markGuesses()
@@ -634,6 +636,8 @@ function nvimWrite(): Promise<boolean> {
   const bridge = props.nvim
   const id = nvimId
   if (!bridge || !id) return Promise.resolve(false)
+  // Keys that did not reach Neovim, not yet dismissed: the file would be written without them, so not here (the status line says them).
+  if (nvimState.refused) return Promise.resolve(false)
   // Nothing changed and nothing on its way: nothing to write.
   if (!nvimState.modified && !echo?.showing && !echo?.unsettled) return Promise.resolve(true)
   const file = nvimPath ?? props.path
@@ -687,6 +691,12 @@ function answerConfirm(key: string) {
   editor?.focus()
 }
 /** Lets a lost Neovim's text go (Reopen, the person's choice): this editor leaves keeping nothing, and the next starts Neovim anew. */
+/** The person has seen the keys that did not reach Neovim (the status line's Dismiss): a Save may write without them. */
+function dismissRefused() {
+  nvimState.refused = undefined
+  tellNvim()
+  tellDirty()
+}
 function releaseLost() {
   nvimState.lost = undefined
   nvimState.unconfirmed = undefined
@@ -695,7 +705,7 @@ function releaseLost() {
   unsubscribe?.()
   unsubscribe = null
 }
-defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite, releaseLost })
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite, releaseLost, dismissRefused })
 </script>
 
 <template>
