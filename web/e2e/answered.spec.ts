@@ -141,8 +141,10 @@ for (const where of ['the reply bar', 'the sidebar'] as const) {
       await expect(shows).toContainText('Which branch?', { timeout: 30_000 })
       const field = where === 'the reply bar' ? bar.locator('input') : row.locator('[data-row-answer] input')
       await field.fill('feature-draft')
-      // Someone else answers it, and the next question comes.
-      await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
+      // Someone else answers it, and the next question comes. The reply bar keeps its line while the agent works in between;
+      // a sidebar row's field goes with the question (a page that sees the agent at work in between empties it), so there the
+      // next question takes the place of the first at once, as Codex's next queued approval does.
+      if (where === 'the reply bar') await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
       await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which file?' })
       await expect(shows).toContainText('Which file?', { timeout: 15_000 })
       await expect(field).toHaveValue('feature-draft')
