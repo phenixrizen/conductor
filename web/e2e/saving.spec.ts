@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
@@ -123,6 +123,8 @@ test('a controller edits and saves; a file changed on disk is caught; an unsaved
 // Monaco's keys; a file of the working tree beside it is edited as before.
 test("a file in a repository's .git opens read only; the working tree beside it saves", async ({ page, api, state }) => {
   const cwd = join(state.root, 'files-gitdir')
+  // A repository of its own each run: one left by the last commits nothing new.
+  rmSync(cwd, { recursive: true, force: true })
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
   git(cwd, 'init', '-q')
