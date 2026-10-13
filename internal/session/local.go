@@ -852,7 +852,12 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
 	}
-	if rules&whileHeld != 0 && (s.held == nil || s.info.Status.Ended()) {
+	if rules&whileHeld != 0 && (s.held == nil || s.info.Status.Ended() ||
+		s.info.Attention.State == AttentionNeedsInput && heldSource(s.info.Attention.Source)) {
+		// The hold shows only while it stands, and never in place of a
+		// question on the screen: that one is what the program waits on,
+		// its words and choices what a person needs (answer shows the hold
+		// once it is answered, if the hold still stands).
 		s.mu.Unlock()
 		return nil
 	}
@@ -878,7 +883,9 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 		return nil
 	}
 	cur := s.info.Attention
-	waiting := cur.State == AttentionNeedsInput
+	// The hold's words give way to a question drawn on the screen (a
+	// startup question's unlessWaiting): the program waits on that one now.
+	waiting := cur.State == AttentionNeedsInput && !(cur.Source == SourceSubmit && heldSource(source))
 	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source))
 	// A report from outside that the session waits, with choices or
 	// without, does not hide a question asked during the work: the dialog
@@ -1642,6 +1649,13 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 	if waiting {
 		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
 		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
+			// A question answered while the turn is still held for a typed
+			// text (one gone with keys typed before the hold): the hold
+			// shows again.
+			now := time.Now().UTC()
+			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now}
+		}
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 		answered, answeredID, told = s.answeredInChat(by, byName)

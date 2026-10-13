@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"regexp"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -318,6 +319,106 @@ func TestTheSubmissionsWaitingForAHeldTurnAreBounded(t *testing.T) {
 	if _, err := s.Submit(short, Submission{Text: "again", ByName: "run"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("again: %v", err)
 	}
+	nothingWritten(t, p, 100*time.Millisecond)
+}
+
+// A startup question on the screen shows over the hold, whether it came
+// before the hold began (drawn in the line's pause) or after: the program
+// waits on it, and its choices are what a person needs. A key that does not
+// answer it (Ctrl+U) ends the hold and leaves the question showing, so the
+// next submission is refused, not typed into the dialog; the question's
+// answer clears it.
+func TestAStartupQuestionShowsOverTheHold(t *testing.T) {
+	for _, first := range []string{"question", "hold"} {
+		t.Run(first+" first", func(t *testing.T) {
+			s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond,
+				TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), TrustAnswers: []Option{{Label: "Yes", Input: "\r"}}})
+			var linkRevoked atomic.Bool
+			guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+			owner := ownerOf(t, s)
+			done := submitAsync(s, Submission{Text: "first", By: guest})
+			if got := written(t, p); got != "first" {
+				t.Fatalf("written %q", got)
+			}
+			untilIdle(t, s)
+			question := func() { s.fireTrust("Trust this folder?") }
+			if first == "question" {
+				question()
+			}
+			linkRevoked.Store(true)
+			s.DisconnectLink(guest.LinkID)
+			got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-done })
+			if !errors.Is(got.err, ErrRevoked) || got.res.Entered {
+				t.Fatalf("result %+v, %v", got.res, got.err)
+			}
+			if first == "hold" {
+				heldShows(t, s)
+				question()
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for att := s.Info().Attention; att.Source != SourceTrust || !s.Held(); att = s.Info().Attention {
+				if time.Now().After(deadline) {
+					t.Fatalf("attention %+v (held %v), want the question's while held", att, s.Held())
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			next := submitAsync(s, Submission{Text: "second", ByName: "run"})
+			nothingWritten(t, p, 300*time.Millisecond)
+
+			// A key that answers nothing: the hold ends, the question stays.
+			if err := s.Input(owner, []byte{0x15}); err != nil {
+				t.Fatal(err)
+			}
+			if got := written(t, p); got != "\x15" {
+				t.Fatalf("written %q", got)
+			}
+			if got := returnsWithin(t, 5*time.Second, "the next submission", func() submitted { return <-next }); !errors.Is(got.err, ErrTrustQuestion) {
+				t.Fatalf("the next submission: %+v, %v", got.res, got.err)
+			}
+			nothingWritten(t, p, 200*time.Millisecond)
+			if att := s.Info().Attention; att.Source != SourceTrust || s.Held() {
+				t.Fatalf("attention %+v (held %v), want the question's alone", att, s.Held())
+			}
+			// Its answer clears it.
+			if err := s.Input(owner, []byte("\r")); err != nil {
+				t.Fatal(err)
+			}
+			written(t, p)
+			heldCleared(t, s)
+		})
+	}
+}
+
+// A question answered while the turn is still held (keys typed before the
+// hold, taken late) gives the hold its words back.
+func TestTheHoldShowsAgainOnceAQuestionIsAnswered(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 300 * time.Millisecond,
+		TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`)})
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	done := submitAsync(s, Submission{Text: "first", By: guest})
+	if got := written(t, p); got != "first" {
+		t.Fatalf("written %q", got)
+	}
+	untilIdle(t, s)
+	s.fireTrust("Trust this folder?")
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	<-done
+	deadline := time.Now().Add(5 * time.Second)
+	for !s.Held() {
+		if time.Now().After(deadline) {
+			t.Fatal("the turn was never held")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	att := s.Info().Attention
+	if att.Source != SourceTrust {
+		t.Fatalf("attention %+v", att)
+	}
+	// As keys typed before the hold, written late, answer it.
+	s.answer(att.Since, "someone", "someone", true, true)
+	heldShows(t, s)
 	nothingWritten(t, p, 100*time.Millisecond)
 }
 

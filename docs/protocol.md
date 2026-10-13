@@ -499,8 +499,12 @@ question, below), `question` (a question asked during the work, below),
 link revoked or expired: the session's turn is held until a person types into
 the terminal; see `submit`), `input` (cleared by a controller typing). While
 that turn is held, the hold is what shows, but for a `trust` or `question`
-prompt on the screen: another change (an agent's report, an admin's clear) is
-recorded in the activity log, with its state, and not shown.
+prompt on the screen, which shows over it whether it came first or after
+(and, answered while the hold still stands, gives it its words back);
+another change (an agent's report, an admin's clear) is recorded in the
+activity log, with its state, and not shown. A key that ends the hold
+without answering such a question leaves the question showing, and the
+submissions it refuses refused.
 
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
