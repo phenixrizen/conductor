@@ -21,6 +21,9 @@ type recorder struct {
 	changes []string
 	swaps   []Swap
 	done    chan struct{}
+	// linesDelay makes each lines event take that long, as a slow page's
+	// connection would hold the client's notifications back.
+	linesDelay time.Duration
 }
 
 func (r *recorder) add(s string) {
@@ -29,6 +32,10 @@ func (r *recorder) add(s string) {
 	r.mu.Unlock()
 }
 func (r *recorder) Lines(first, last int, lines []string) {
+	r.mu.Lock()
+	delay := r.linesDelay
+	r.mu.Unlock()
+	time.Sleep(delay)
 	r.mu.Lock()
 	r.lines = append(r.lines, lines)
 	r.changes = append(r.changes, fmt.Sprintf("%d:%d %q", first, last, lines))

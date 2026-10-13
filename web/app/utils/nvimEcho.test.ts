@@ -177,6 +177,17 @@ describe('the local echo when Neovim is lost', () => {
     expect(other.text).toEqual(['something else'])
   })
 
+  it('keeps no guess a later key may have undone: Neovim deleted x with Backspace, its text stands', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('<BS>', { line: 1, col: 7 })
+    e.lines({ first: 0, last: 1, lines: ['alphax'] })
+    e.lines({ first: 0, last: 1, lines: ['alpha'] })
+    expect(e.finish()).toBe(false)
+    expect(d.text).toEqual(['alpha'])
+  })
+
   it('does nothing with no guesses and nothing held', () => {
     const d = doc('alpha')
     const e = inInsert(d)

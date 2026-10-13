@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -270,6 +271,91 @@ func TestCommandLinesWorkAsInNeovim(t *testing.T) {
 	bufferIs(t, e, "c", "foo", "bar", "foo")
 	if r.has("exited") {
 		t.Fatal("the editor ended")
+	}
+}
+
+// A Neovim that dies is told to the page after every change it sent, though
+// the client's notifications are still on their way (slow here) when a key
+// finds it gone: the page keeps the text Neovim last held, so a change told
+// after the end would be lost. And told at once, with no key needed.
+func TestNeovimEndingIsToldAfterWhatItSent(t *testing.T) {
+	for _, key := range []bool{true, false} {
+		t.Run(fmt.Sprintf("a key after the end %v", key), func(t *testing.T) {
+			e, r := cmdlineEditor(t, "one\n", "")
+			var pid int
+			if err := e.v.Eval("getpid()", &pid); err != nil {
+				t.Fatal(err)
+			}
+			k := &typist{t: t, e: e, r: r}
+			k.key("A")
+			r.wait(t, "ack 1 ")
+			r.mu.Lock()
+			r.linesDelay = 300 * time.Millisecond
+			r.mu.Unlock()
+			k.key("x")
+			k.key("y")
+			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+				t.Fatal(err)
+			}
+			if key {
+				if err := e.InputSeq("z", 99); err != ErrClosed {
+					t.Fatalf("a key after the end: %v", err)
+				}
+			}
+			select {
+			case <-r.done:
+			case <-time.After(10 * time.Second):
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				t.Fatalf("no end told; the events: %q", r.events)
+			}
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			last, exited := -1, -1
+			for i, ev := range r.events {
+				switch {
+				case ev == "lines":
+					last = i
+				case strings.HasPrefix(ev, "exited"):
+					exited = i
+				}
+			}
+			if exited < last || r.events[exited] != "exited error: neovim ended" {
+				t.Fatalf("the end told before the changes, or not as the end: %q", r.events)
+			}
+			if got := r.changes[len(r.changes)-1]; got != `0:1 ["onexy"]` {
+				t.Fatalf("the last change told: %q", got)
+			}
+		})
+	}
+}
+
+// Neovim's own quit is told once, as a quit: the end of its output after it
+// tells nothing more.
+func TestAQuitIsToldOnceAsAQuit(t *testing.T) {
+	e, r := cmdlineEditor(t, "one\n", "")
+	k := &typist{t: t, e: e, r: r}
+	k.cmdline(":", "q")
+	k.key("<CR>")
+	select {
+	case <-r.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no exit after :q")
+	}
+	time.Sleep(300 * time.Millisecond)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, ev := range r.events {
+		if strings.HasPrefix(ev, "exited") {
+			n++
+			if ev != "exited quit" {
+				t.Fatalf("the exit: %q", ev)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d exits told: %q", n, r.events)
 	}
 }
 

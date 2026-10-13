@@ -150,14 +150,15 @@ export class NvimEcho {
   /**
    * Neovim is gone (lost, not quit) and will acknowledge nothing more: every line change it sent and the echo held is shown, and the
    * guesses its line does not hold stay laid over it (the person typed them; Neovim may never have had them), as long as its line is
-   * still the one they were laid on. Returns whether any guess stays. The echo holds nothing after it.
+   * still the one they were laid on and no key that is not a plain character followed them (a Backspace, an Escape: what Neovim made
+   * of those keys is its text, which stands). Returns whether any guess stays. The echo holds nothing after it.
    */
   finish(): boolean {
     const base = this.base
     this.unshow()
     for (const ev of this.held.splice(0)) this.doc.applyLines(ev)
     let left = false
-    if (base && this.guesses.length) {
+    if (base && this.guesses.length && !this.barrier) {
       const now = this.doc.line(base.line)
       for (let k = this.guesses.length; k >= 0; k--) {
         const done = this.guesses

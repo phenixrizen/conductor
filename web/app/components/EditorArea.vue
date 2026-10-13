@@ -282,7 +282,9 @@ function reopenNvim() {
   nvimEpoch.value++
 }
 function copyLostText() {
-  copy(editorRef.value?.getText() ?? '', 'Text copied')
+  // The text is the editor's: with no editor up (its machine away) there is none to copy, and nothing says there was.
+  const text = editorRef.value?.getText()
+  if (text !== undefined) copy(text, 'Text copied')
 }
 // Neovim's status is the editor's in front: another tab, or the other keymap, starts it empty until that editor reports (round 14: the
 // last tab's mode, banner or question stayed over the next tab's file, and a test typed into the new tab before its Neovim listened).
@@ -617,8 +619,9 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <span class="min-w-0 flex-1 text-highlighted" :title="nvimState.swap.file">{{ swapWords(nvimState.swap, nvimState.recovered) }}</span>
         <UButton v-for="c in swapChoices(nvimState.swap, nvimState.recovered)" :key="c.choice" :label="c.label" size="xs" :color="c.choice === 'delete' ? 'warning' : 'neutral'" variant="soft" :data-swap-choice="c.choice" @click="answerSwap(c.choice)" />
       </div>
-      <!-- Neovim lost, not quit (utils/nvimLost): the tab keeps the text it last held, read only; Reopen starts it again. -->
-      <div v-if="nvimOn && nvimState?.lost && active?.kind === 'file'" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-nvim-lost>
+      <!-- Neovim lost, not quit (utils/nvimLost): the tab keeps the text it last held, read only; Reopen starts it again. Not while the
+           session's machine is away: no editor is up then, and the banner comes back with it. -->
+      <div v-if="nvimOn && nvimState?.lost && active?.kind === 'file' && !hostAway" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-nvim-lost>
         <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" />
         <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}</span>
         <UButton label="Copy the text" icon="i-lucide-copy" size="xs" color="neutral" variant="soft" data-nvim-lost-copy @click="copyLostText" />

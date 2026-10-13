@@ -214,7 +214,7 @@ test('in the Neovim keymap / and ? search, and :s///gc asks on the status line u
   }
 })
 
-// Neovim lost, not quit: here it dies (killed, once :preserve has written its swap file), and the next key finds it gone. The tab
+// Neovim lost, not quit: here it dies (killed, once :preserve has written its swap file), and the page is told at once. The tab
 // stays with the text Neovim last held, its change not written among it, and says so, across a tab switched and the area folded; a
 // Neovim that dies while its tab is not in front is kept the same way. Reopen starts Neovim again, which finds the lost one's swap
 // file: Recover brings the change back, :w writes it. Before, the tab closed as on :q, with no word, and its text went with it.
@@ -249,9 +249,11 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
     await page.keyboard.press('Enter')
     await page.keyboard.type(`:lua ${die}`)
     await page.keyboard.press('Enter')
-    await page.keyboard.type('j')
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
-    await expect(lost.locator('[data-nvim-lost-copy]')).toBeVisible()
+    // Copy the text copies what the tab holds, the change not written among it.
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    await lost.locator('[data-nvim-lost-copy]').click()
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()), { timeout: 15_000 }).toContain('alphaxx')
     await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
     await expect(lines).toContainText('alphaxx')
     // Another tab in front, then back; the area folded, then not: the text and the word stay.
@@ -283,9 +285,6 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await page.waitForTimeout(3000)
     await tab('other.txt').click()
-    await expect(lines).toContainText('betayy', { timeout: 15_000 })
-    await lines.click()
-    await page.keyboard.type('j')
     await expect(lost).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await expect(lines).toContainText('betayy')
     // Reopen notes.txt: a new Neovim finds the lost one's swap file (it has left by now) and offers its change.
