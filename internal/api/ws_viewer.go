@@ -78,7 +78,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 	if err != nil {
 		return
 	}
-	sink := newWSSinkOn(c, raw)
+	sink := s.viewerSink(c, raw)
 	sub, err := local.AttachWith(session.AttachOptions{
 		Role: role, LinkID: linkID, LinkLabel: s.linkLabel(linkID), Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows, ChatOnly: hello.ChatOnly,
 		Authorize: check,
@@ -346,7 +346,7 @@ func (s *Server) linkLabel(linkID string) string {
 // (the budget, the join, room in the host's queue): the frame that waited is
 // dropped, and with it whatever the viewer sent after it.
 func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
-	sink := newWSSinkOn(c, raw)
+	sink := s.viewerSink(c, raw)
 	defer sink.cancel()
 	// waits is what the read loop's waits wait under: it ends when the
 	// viewer's connection fails, or its writer ends.

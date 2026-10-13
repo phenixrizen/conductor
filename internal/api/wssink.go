@@ -49,6 +49,10 @@ type wsSink struct {
 	cutMu  sync.Mutex
 	cut    *time.Timer
 	closed bool
+
+	// closeWait replaces the package's closeWait when set (a test's
+	// Server.viewerCloseWait).
+	closeWait time.Duration
 }
 
 // hijackKeeper is the ResponseWriter a viewer's WebSocket is accepted on: it
@@ -90,7 +94,11 @@ func (s *wsSink) Closing() {
 	s.cutMu.Lock()
 	defer s.cutMu.Unlock()
 	if s.cut == nil && !s.closed {
-		s.cut = time.AfterFunc(closeWait, s.cutNow)
+		wait := closeWait
+		if s.closeWait > 0 {
+			wait = s.closeWait
+		}
+		s.cut = time.AfterFunc(wait, s.cutNow)
 	}
 }
 
@@ -104,6 +112,13 @@ func (s *wsSink) cutNow() {
 }
 
 func newWSSink(c *websocket.Conn) *wsSink { return newWSSinkOn(c, nil) }
+
+// viewerSink is newWSSinkOn with the server's viewerCloseWait.
+func (s *Server) viewerSink(c *websocket.Conn, raw net.Conn) *wsSink {
+	sink := newWSSinkOn(c, raw)
+	sink.closeWait = s.viewerCloseWait
+	return sink
+}
 
 // newWSSinkOn is the sink of c, whose socket is raw (nil when not known).
 func newWSSinkOn(c *websocket.Conn, raw net.Conn) *wsSink {

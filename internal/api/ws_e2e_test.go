@@ -998,10 +998,13 @@ func TestAHostThatLeavesSendsItsViewerOneError(t *testing.T) {
 	for _, typing := range []bool{false, true} {
 		t.Run(fmt.Sprintf("typing=%v", typing), func(t *testing.T) {
 			e := newTestEnv(t, nil)
-			// The typing reader waits for the drain at most writeTimeout and
-			// then closes under it, as for a viewer that reads slowly: this
-			// one reads 16 MiB a frame at a time, which a loaded machine
-			// takes longer than that to do.
+			// The viewer the host's going closed is cut closeWait (5 s) on,
+			// and the typing reader waits for the drain writeTimeout at most
+			// and then closes under it, as for a viewer that reads slowly:
+			// this one reads 16 MiB a frame at a time, which a loaded machine
+			// takes longer than either to do. The test is of the order of
+			// what it is written, not of those bounds.
+			e.srv.viewerCloseWait = 2 * time.Minute
 			e.srv.hostGoneWait = 2 * time.Minute
 			host := dialFakeHost(t, e, "hosted-agent-token")
 			events := e.sse(t)
