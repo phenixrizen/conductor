@@ -315,6 +315,40 @@ describe('the local echo when Neovim is lost', () => {
     expect(e2.showing).toBe(false)
   })
 
+  it('retires the guesses of the keys done, and keeps those after them laid after what Neovim holds', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('q', { line: 1, col: 6 })
+    e.send('x', { line: 1, col: 7 })
+    e.send('y', { line: 1, col: 8 })
+    expect(d.text).toEqual(['alphaqxy'])
+    // q (a mapping that took it) is done; x and y are not.
+    e.noteSettled(1)
+    expect(d.text).toEqual(['alphaxy'])
+    // Lost, then x's line comes late: y, which Neovim never had, stays.
+    expect(e.finish()).toBe(true)
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // With x already in Neovim's text when q is done: x is Neovim's, y stays a guess.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('q', { line: 1, col: 6 })
+    e2.send('x', { line: 1, col: 7 })
+    e2.send('y', { line: 1, col: 8 })
+    e2.lines({ first: 0, last: 1, lines: ['alphax'] })
+    e2.noteSettled(1)
+    expect(d2.text).toEqual(['alphaxy'])
+    expect(e2.range()).toEqual({ line: 1, from: 7, to: 8 })
+    // A change the guesses cannot make (an autopair's closing paren): Neovim's text stands.
+    const d3 = doc('alpha')
+    const e3 = inInsert(d3)
+    e3.send('(', { line: 1, col: 6 })
+    e3.lines({ first: 0, last: 1, lines: ['alpha()'] })
+    e3.noteSettled(1)
+    expect(d3.text).toEqual(['alpha()'])
+    expect(e3.showing).toBe(false)
+  })
+
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
     const e = inInsert(doc('alpha'))
     e.send('x', { line: 1, col: 6 })

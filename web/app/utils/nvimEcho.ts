@@ -127,17 +127,43 @@ export class NvimEcho {
   /** Neovim has done the keys numbered up to seq (the `settled` event). */
   noteSettled(seq: number): void {
     this.settledSeq = Math.max(this.settledSeq, seq)
-    // Neovim has done the keys of every guess, and sent every change they made: what its text holds of them it holds; the rest it
-    // made nothing of (a mapping that took the key).
-    const last = this.guesses[this.guesses.length - 1]
-    if (last && last.seq <= seq) {
-      let base = this.base
-      this.unshow()
-      for (const ev of this.held.splice(0)) base = this.apply(ev, base)
+    if (!this.base || !this.guesses.length || this.guesses[0]!.seq > seq) return
+    // Neovim has done the keys of these guesses and sent every change they made: what its text holds of them it holds, and those it
+    // does not it made nothing of (a mapping that took the key). The guesses after them stay, laid after what it holds.
+    let base: { line: number; col: number; text: string } | null = this.base
+    this.unshow()
+    for (const ev of this.held.splice(0)) base = this.apply(ev, base)
+    const now = base ? this.doc.line(base.line) : ''
+    const head = base ? base.text.slice(0, base.col - 1) : ''
+    const tail = base ? base.text.slice(base.col - 1) : ''
+    let inserted: string | null = base && now.startsWith(head) && now.endsWith(tail) && now.length >= head.length + tail.length ? now.slice(head.length, now.length - tail.length) : null
+    const rest: Guess[] = []
+    let done = ''
+    for (const g of this.guesses) {
+      if (inserted === null) break
+      if (rest.length === 0 && inserted.startsWith(g.text)) {
+        // In Neovim's text now.
+        done += g.text
+        inserted = inserted.slice(g.text.length)
+      } else if (g.seq <= seq && rest.length === 0) {
+        // Done, and nothing came of it.
+      } else rest.push(g)
+    }
+    if (!base || inserted === null || inserted !== '') {
+      // Not what the guesses could make (an autopair, a change elsewhere on the line): Neovim's text stands.
       this.guesses = []
       this.base = null
       this.most = 0
+      return
     }
+    this.guesses = rest
+    this.most = 0
+    if (!rest.length) {
+      this.base = null
+      return
+    }
+    this.base = { line: base.line, col: base.col + done.length, text: now }
+    this.show()
   }
 
   /**

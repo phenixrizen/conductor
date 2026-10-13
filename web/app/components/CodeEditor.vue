@@ -353,6 +353,10 @@ function onNvimEvent(ev: NvimEvent) {
       nvimState.modified = true
       tellNvim()
       tellDirty()
+    } else if (ev.kind === 'settled' && lostEcho) {
+      // Its word that keys were done, after its end: the guesses of those it made nothing of go.
+      lostEcho.noteSettled(ev.ack ?? 0)
+      if (!lostEcho.showing) lostEcho = null
     }
     return
   }
