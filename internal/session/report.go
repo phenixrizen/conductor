@@ -50,7 +50,7 @@ var legacyMouse = []byte("\x1b[M")
 // the Escape key, or a report's first byte: it is taken as begun, and the
 // next write tells (a key after it is typing).
 var reportBegun = regexp.MustCompile(`^\x1b(?:` +
-	`\[[<?>]?[\d;]{0,24}\$?` + // CSI: CPR, DSR, DA, DECRPM, window, focus; SGR and urxvt mouse
+	`\[[<?>]?[\d;]{0,64}\$?` + // CSI: CPR, DSR, DA, DECRPM, window, focus; SGR and urxvt mouse
 	`|\][\d;]{0,8}(?:r(?:g(?:b(?::[0-9a-fA-F/]{0,64}\x1b?)?)?)?)?` + // OSC colour reply, its ST begun
 	`|P[>!|0-9$+]{0,4}[^\x1b]{0,128}\x1b?` + // DCS reply, its ST begun
 	`)?$`)

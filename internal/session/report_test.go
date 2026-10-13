@@ -168,6 +168,13 @@ func TestAReportCutAnywhereTypesNothing(t *testing.T) {
 		"\x1b]11;rgb:ffff/ffff/ffff\x07", "\x1b]10;rgb:0000/0000/0000\x1b\\", "\x1b]4;1;rgb:cd00/0000/0000\x07",
 		"\x1bP>|xterm(380)\x1b\\", "\x1bP1$r0m\x1b\\",
 		"\x1b[<35;10;10M", "\x1b[<0;3;4m", "\x1b[35;10;10M", "\x1b[M#**",
+		// Each kind at the longest its grammar takes.
+		"\x1b[?62;1;2;4;6;9;15;18;21;22;28c",
+		"\x1b[?" + strings.Repeat("6;", 32) + "c", "\x1b[>" + strings.Repeat("1", 64) + "c",
+		"\x1b[?9999;9999R", "\x1b[?99999;99$y", "\x1b[99;99999;99999t",
+		"\x1b]4;999;rgb:" + strings.Repeat("f/", 32) + "\x07", "\x1b]12;rgb:" + strings.Repeat("a", 64) + "\x1b\\",
+		"\x1bP>|$+" + strings.Repeat("x", 128) + "\x1b\\",
+		"\x1b[<9999;99999;99999M", "\x1b[9999;99999;99999M",
 	} {
 		if typed, rest := typesSomething(nil, []byte(r)); typed || rest != nil {
 			t.Errorf("%q whole: typed %v, rest %q", r, typed, rest)
