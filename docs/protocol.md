@@ -944,11 +944,17 @@ key is written: the run of rows that holds its last numbered line and the
 footer below, so that a numbered list in the output above is not counted.
 Keys that pick an answer of a dialog on the screen that the session has not
 asked yet (it asks once the screen is quiet) answer that dialog, also while
-the session still shows the one answered before it. A dialog asked during the work with the words of the one last
+the session still shows the one answered before it. Keys written at once (a
+terminal's read, the host's own terminal forwards what it reads) are each a
+key the program reads: an escape sequence is one key and a bracketed paste
+is text, no key, so an arrow then y answers a dialog and a pasted y does
+not. A dialog asked during the work with the words of the one last
 answered, asked again before the screen's watcher has seen that one go (a
 quiet screen with no dialog) or another dialog take its place, is that
 question still, for the program may not have taken the key yet: it is asked
-answered, with an `id` no reply is taken for. Nothing else on the screen
+answered, with an `id` no reply is taken for. Only a look that took the
+screen's text after the answer was noted counts: one under way from before
+saw an older screen. Nothing else on the screen
 counts: output that changes nothing, a status line above the dialog, the
 dialog drawn again under the decision's line. A next dialog of the same
 words that never leaves the screen therefore cannot be told from the one

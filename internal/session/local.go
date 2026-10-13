@@ -200,9 +200,13 @@ type Local struct {
 	// published or not yet, until the screen's watcher sees it go (a quiet
 	// look with no dialog, missAsked) or another dialog in its place: a
 	// dialog with those words asked meanwhile is that question still,
-	// answered (sameDialog). Guarded by mu.
-	answered       string
-	dialogAnswered string
+	// answered (sameDialog). dialogAnsweredAt is how many Feeds the
+	// watcher had seen as it was noted (PatternWatcher.Fed): a look that
+	// took its text before that (LookedAt) does not see it go. Guarded by
+	// mu.
+	answered         string
+	dialogAnswered   string
+	dialogAnsweredAt uint64
 
 	events    EventBucket // guarded by mu
 	dropped   atomic.Uint64
@@ -637,9 +641,10 @@ func (s *Local) fireTrust(text string) {
 func (s *Local) fireAsked(text string) {
 	for _, q := range s.askedQuestions {
 		if words := q.words(text); words != "" {
+			look := s.asked.LookedAt()
 			s.mu.Lock()
 			if s.dialogAnswered != words {
-				s.dialogAnswered = ""
+				s.dialogGone(look)
 			}
 			s.mu.Unlock()
 			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog)
@@ -658,8 +663,9 @@ func (s *Local) fireAsked(text string) {
 // such a key it stays: the dialog cannot have been answered, and a held
 // question keeps every Enter from the screen.
 func (s *Local) missAsked(string) {
+	look := s.asked.LookedAt()
 	s.mu.Lock()
-	s.dialogAnswered = ""
+	s.dialogGone(look)
 	att, typed := s.info.Attention, s.typedAtAsked
 	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && typed.words == att.Message
 	s.mu.Unlock()
@@ -1565,12 +1571,11 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			s.endHold()
 		}
 		// The dialog the screen the dialogs are read from shows as keys
-		// that can answer one are written (an Enter, a single key: a
-		// dialog's shortcut, a digit, Ctrl+C); for others (a paste, an
-		// arrow) it is not read.
+		// are written that may answer one (any key but an escape sequence:
+		// a paste alone, an arrow alone, do not read it).
 		var words string
 		var onScreen *dialogView
-		if s.asked != nil && (enter || len(data) == 1) && !isTerminalReport(data) {
+		if s.asked != nil && mayAnswerDialog(data) && !isTerminalReport(data) {
 			screen := s.asked.Text()
 			var q *StartupQuestion
 			if q, words = s.askedIn(screen); q != nil {
@@ -1828,7 +1833,26 @@ func (s *Local) claimQuestion(id string) error {
 func (s *Local) markAnswered(att Attention) {
 	s.answered = att.ID
 	if att.Source == SourceQuestion {
-		s.dialogAnswered = att.Message
+		s.noteDialogAnswered(att.Message)
+	}
+}
+
+// noteDialogAnswered notes the dialog of words as answered (dialogAnswered),
+// as the screen is now. The caller holds s.mu.
+func (s *Local) noteDialogAnswered(words string) {
+	s.dialogAnswered = words
+	if s.asked != nil {
+		s.dialogAnsweredAt = s.asked.Fed()
+	}
+}
+
+// dialogGone forgets the dialog answered when the look in progress, which
+// saw it go (no dialog, or another), took its text after it was noted: a
+// look that took its text before saw an older screen. The caller holds
+// s.mu; look is the watcher's LookedAt, read before.
+func (s *Local) dialogGone(look uint64) {
+	if look > s.dialogAnsweredAt {
+		s.dialogAnswered = ""
 	}
 }
 
@@ -1860,7 +1884,7 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, onScreen *dia
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data) {
-		s.dialogAnswered = onScreen.words
+		s.noteDialogAnswered(onScreen.words)
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
@@ -1894,34 +1918,101 @@ type dialogView struct {
 }
 
 // picks reports whether data picks an answer of the dialog v shows (a nil
-// v: one whose rows were not read) whose choices are answers: an Enter
-// (the highlighted line), one of its choices' keys, a key its rows name
-// (in either case), Ctrl+C (cancel), or a digit of one of its numbered
-// lines (a digit past them does nothing; with none read, every digit
-// counts).
+// v: one whose rows were not read) whose choices are answers: data is one
+// of its choices, or one of the keys the program reads from it (keysOf: a
+// batch of keys from a terminal, an arrow then y, is each of them) does:
+// an Enter (the highlighted line), one of its choices' keys, a key its rows
+// name (in either case), Escape where they name it, Ctrl+C (cancel), or a
+// digit of one of its numbered lines (a digit past them does nothing; with
+// none read, every digit counts). A bracketed paste is text, no key.
 func (v *dialogView) picks(answers []Option, data []byte) bool {
-	if bytes.IndexByte(data, '\r') >= 0 {
+	if isAnswer(answers, data) {
 		return true
 	}
-	for _, o := range answers {
-		if o.Input != "" && o.Input == string(data) {
+	for _, k := range keysOf(data) {
+		if v.picksKey(answers, k) {
 			return true
 		}
 	}
-	if len(data) != 1 {
-		return false
-	}
-	d := data[0]
-	if v != nil && (v.keys[string(d)] || v.keys[strings.ToLower(string(d))]) {
+	return false
+}
+
+// picksKey is picks for one key.
+func (v *dialogView) picksKey(answers []Option, key []byte) bool {
+	if isAnswer(answers, key) {
 		return true
 	}
-	switch {
-	case d == 0x03:
+	if v != nil && (v.keys[string(key)] || v.keys[strings.ToLower(string(key))]) {
+		return true
+	}
+	if len(key) != 1 {
+		return false
+	}
+	switch d := key[0]; {
+	case d == '\r', d == 0x03:
 		return true
 	case d >= '1' && d <= '9':
 		return v == nil || v.lines == 0 || int(d-'0') <= v.lines
 	}
 	return false
+}
+
+// mayAnswerDialog reports whether data holds a key that may answer a
+// dialog: one of keysOf that is not an escape sequence (a lone Escape is).
+func mayAnswerDialog(data []byte) bool {
+	for _, k := range keysOf(data) {
+		if len(k) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// isAnswer reports whether data is the input of one of answers.
+func isAnswer(answers []Option, data []byte) bool {
+	for _, o := range answers {
+		if o.Input != "" && o.Input == string(data) {
+			return true
+		}
+	}
+	return false
+}
+
+// keysOf splits data, written to a program at once, into the keys it reads
+// from it: an escape sequence (CSI, ESC [ … final byte; SS3, ESC O x) is
+// one key, an Escape not starting one is a key, a bracketed paste is text
+// and no key, every other byte is a key.
+func keysOf(data []byte) [][]byte {
+	var keys [][]byte
+	for i := 0; i < len(data); {
+		switch {
+		case data[i] != 0x1b:
+			keys = append(keys, data[i:i+1])
+			i++
+		case bytes.HasPrefix(data[i:], []byte(pasteStart)):
+			end := bytes.Index(data[i+len(pasteStart):], []byte(pasteEnd))
+			if end < 0 {
+				return keys // the rest is the paste's
+			}
+			i += len(pasteStart) + end + len(pasteEnd)
+		case i+1 < len(data) && data[i+1] == '[':
+			j := i + 2
+			for j < len(data) && (data[j] < 0x40 || data[j] > 0x7e) {
+				j++
+			}
+			j = min(j+1, len(data))
+			keys = append(keys, data[i:j])
+			i = j
+		case i+1 < len(data) && data[i+1] == 'O':
+			j := min(i+3, len(data))
+			keys = append(keys, data[i:j])
+			i = j
+		default:
+			keys = append(keys, data[i:i+1])
+			i++
+		}
+	}
+	return keys
 }
 
 // numberedLine matches a numbered line of a dialog's list ("› 1. Yes,

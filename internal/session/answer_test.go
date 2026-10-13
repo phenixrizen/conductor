@@ -531,6 +531,78 @@ func TestAReplyToADialogTheScreenNoLongerShowsIsRefused(t *testing.T) {
 	}
 }
 
+// Keys a terminal sends at once (the host's own terminal forwards what it
+// reads) answer a dialog when one of them does: an arrow then y is y. A
+// bracketed paste is text the dialog does not take: a y pasted answers
+// nothing, and the dialog still takes a click. (Codex's review, fifth
+// pass, finding 1.)
+func TestKeysSentAtOnceAnswerADialogWhenOneOfThemDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name, keys string
+		answers    bool
+	}{
+		{"an arrow then y", "\x1b[By", true},
+		{"y then an arrow", "y\x1b[A", true},
+		{"a y pasted", "\x1b[200~y\x1b[201~", false},
+		{"two arrows", "\x1b[B\x1b[A", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+			q := waitAttention(t, s, asked)
+			if err := s.InputWaiting(t.Context(), nater, []byte(tc.keys)); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+			err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y"))
+			if tc.answers {
+				if !errors.Is(err, ErrQuestionAnswered) {
+					t.Fatalf("a click after %q: %v", tc.keys, err)
+				}
+				noWrite(t, p, 200*time.Millisecond)
+				return
+			}
+			if err != nil {
+				t.Fatalf("a click after %q, which answers nothing: %v", tc.keys, err)
+			}
+			if got := nextWrite(t, p); got != "y" {
+				t.Fatalf("written %q", got)
+			}
+		})
+	}
+}
+
+// A look of the screen's watcher that took its text before a key answered
+// the dialog (its miss runs after) does not see the answered dialog go: the
+// dialog, asked after, is asked answered. (Codex's review, fifth pass,
+// finding 2.)
+func TestALookOlderThanAnAnswerDoesNotForgetIt(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if err := s.Input(nater, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	// A look in flight since before the dialog was drawn (its text blank)
+	// misses only now; looks are made one at a time.
+	s.asked.fireMu.Lock()
+	s.asked.mu.Lock()
+	s.asked.looked = 0
+	s.asked.mu.Unlock()
+	s.missAsked("")
+	s.asked.fireMu.Unlock()
+	a := waitAttention(t, s, asked)
+	if err := s.AnswerInput(t.Context(), jane, a.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the dialog an older look forgot: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
 // A reply that names no question is written as keystrokes always were
 // (an older page): it answers whatever shows.
 func TestAReplyWithNoIDStillAnswers(t *testing.T) {

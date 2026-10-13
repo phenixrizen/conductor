@@ -265,6 +265,11 @@ type PatternWatcher struct {
 	last    time.Time // of the last Feed
 	feeds   uint64    // Feeds so far
 	checked uint64    // the value of feeds at the last check of the line
+	// looked is the value of feeds at the text the look in progress (or
+	// the last) took, for a fire or a miss to tell which screen it saw
+	// (LookedAt): a callback runs after the text was taken, and the screen
+	// may have moved on meanwhile.
+	looked  uint64
 	stopped bool
 	// held is Hold's: CheckNow finds nothing until output comes.
 	held bool
@@ -319,12 +324,29 @@ func (w *PatternWatcher) CheckNow() bool {
 		return false
 	}
 	line := w.tracker.Last()
+	w.looked = w.feeds
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
 		return true
 	}
 	return false
+}
+
+// LookedAt returns how many Feeds the text the look in progress took had
+// seen: called from a fire or a miss, the screen it saw, which later Feeds
+// (Fed) have moved on from. Looks are made one at a time.
+func (w *PatternWatcher) LookedAt() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.looked
+}
+
+// Fed returns how many Feeds have come so far.
+func (w *PatternWatcher) Fed() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.feeds
 }
 
 // Hold makes CheckNow find nothing until the stream brings output or the
@@ -391,6 +413,7 @@ func (w *PatternWatcher) expire() {
 	w.checked = w.feeds
 	w.held = false // the screen after the answer has been looked at
 	line := w.tracker.Last()
+	w.looked = w.feeds
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
