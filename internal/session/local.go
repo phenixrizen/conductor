@@ -223,7 +223,7 @@ type Local struct {
 	// again meanwhile (the program draws it again before it moves on), it
 	// is asked answered, with an id no reply is taken for. Guarded by mu.
 	startupAnsweredWords string
-	// heldAnswer is the startup question an Escape a terminal's read ended
+	// heldAnswer is the startup question an Escape a write ended
 	// with may have answered (holdStartupAnswered): its id once asked, its
 	// words while not asked yet, who typed it, and how much output the
 	// screen had been fed then. Held answered, it is cleared once the
@@ -679,6 +679,9 @@ func (s *Local) fireTrust(text string) {
 // text, or another question's choice, would reach the dialog's keys. A
 // dialog with other words than the one last answered is that one gone
 // (dialogAnswered); one with its words is that question still (sameDialog).
+// The question it takes the place of, answered by a key typed while it
+// showed that did not clear it (an Escape, which may have been read with
+// what came next), is answered by that key, as when it goes (missAsked).
 func (s *Local) fireAsked(text string) {
 	s.escGone()
 	for _, q := range s.askedQuestions {
@@ -688,7 +691,12 @@ func (s *Local) fireAsked(text string) {
 			if s.dialogAnswered != words {
 				s.dialogGone(look)
 			}
+			cur, typed := s.info.Attention, s.typedAtAsked
+			gone := cur.State == AttentionNeedsInput && cur.Source == SourceQuestion && typed != nil && cur.Since != nil && typed.words == cur.Message && CleanMessage(words) != cur.Message
 			s.mu.Unlock()
+			if gone {
+				s.answer(cur.Since, typed.by, typed.name, true, true)
+			}
 			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog)
 			return
 		}
@@ -1021,7 +1029,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// startup question took its place (the program draws it again before
 	// it moves on), is asked answered too; another startup question asked
 	// ends that.
-	// The startup question an Escape a terminal's read ended with may have
+	// The startup question an Escape a write ended with may have
 	// answered before it was asked (heldAnswer's words): asked answered,
 	// and held so until the screen shows it gone (escGone).
 	heldAsked := false
@@ -1521,7 +1529,7 @@ func (s *Local) InputContext(ctx context.Context, sub *Subscription, data []byte
 // host's): it waits for the program to read, however long it has not, as
 // a terminal does, until ctx ends.
 func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, "", data, writeWait{reads: true})
+	return s.input(ctx, sub, "", data, writeWait{})
 }
 
 // input is Input waiting as o says, until ctx ends; with question, the
@@ -1617,12 +1625,13 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// stamps the startup question showing then that the keys answer
 	// (whatever prompt they were typed at), cleared once they are written.
 	//
-	// An Escape that ends a terminal's read is held (keysWritten): it may
-	// be the Escape key and may be the start of a report the next read goes
-	// on with, and nothing tells which. It counts for what puts a question
-	// behind (a reply to it refused, the safer mistake), never for what
-	// clears one, puts its screen behind or keeps it from being asked: a
-	// startup question it may answer is held answered (escAnswered) until
+	// An Escape that ends a write is held (keysWritten): it may be the
+	// Escape key and may be the start of what the next write goes on with
+	// (a report's rest, a key read with it as Alt and that key), and
+	// nothing tells which. It counts for what puts a question behind (a
+	// reply to it refused, the safer mistake), never for what clears one,
+	// puts its screen behind or keeps it from being asked: a startup
+	// question it may answer is held answered (heldAnswer) until
 	// the screen shows it gone (escGone), a key surely answers it, or the
 	// next startup question takes its place, so that no submission's Enter
 	// reaches a question that still shows.
@@ -1690,7 +1699,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
-		keys, unkeyed, extra := s.keysWritten(data, o.reads)
+		keys, unkeyed, extra := s.keysWritten(data)
 		// The keys that may answer: keys, and those the write may hold
 		// besides (the Escape held, an Alt chord's key alone). A write
 		// with those is never matched whole: Alt and Enter is no Enter.
@@ -2344,19 +2353,16 @@ func isAnswer(answers []Option, data []byte) bool {
 // began (a terminal's report cut across its reads), or the start of one the
 // next ends. Every write made goes through it once, in order.
 //
-// reads says data is a terminal's read (writeWait.reads): an Escape that
-// ends it is held (keyReader.escHeld), and held says so. That Escape may be
-// the Escape key and may be the start of a report the next read goes on
-// with; nothing tells which (the program may read both reads at once), so
-// it may answer a question but never surely does. data is no quiet write
-// then.
-//
-// maybe are the keys data may hold besides keys, never surely: the Escape
-// held, and the keys an Alt chord's (ESC and a key) may be read as alone.
-func (s *Local) keysWritten(data []byte, reads bool) (keys [][]byte, quiet bool, maybe [][]byte) {
+// maybe are the keys data may hold besides keys, never surely: an Escape
+// that ends it, held (keyReader.escHeld: it may be the Escape key and may
+// be the start of what the next write goes on with, and nothing tells
+// which, the program reading two writes as one however they came), and the
+// keys an Alt chord's (ESC and a key) may be read as alone. data is no
+// quiet write with them.
+func (s *Local) keysWritten(data []byte) (keys [][]byte, quiet bool, maybe [][]byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	keys = s.keysIn.keys(data, reads)
+	keys = s.keysIn.keys(data)
 	maybe = s.keysIn.maybe
 	if s.keysIn.escHeld {
 		maybe = append(maybe, []byte{0x1b})
@@ -2364,10 +2370,9 @@ func (s *Local) keysWritten(data []byte, reads bool) (keys [][]byte, quiet bool,
 	return keys, len(keys) == 0 && !s.keysIn.pasted && len(maybe) == 0, maybe
 }
 
-// escWait is how long an Escape a terminal's read ended with stays
-// unfinished for a reply (inputBusy): a report its read cut comes on at
-// once, and a reply written right after it could be read with it as one
-// key.
+// escWait is how long an Escape a write ended with stays unfinished for a
+// reply (inputBusy): a report a terminal's read cut comes on at once, and a
+// reply written right after it could be read with it as one key.
 const escWait = 50 * time.Millisecond
 
 // ErrInputBusy refuses a reply to a question while what was written to the
@@ -2381,8 +2386,8 @@ var ErrInputBusy = errors.New("another connection's paste or key is being writte
 // unfinished (keyReader). The caller holds s.mu.
 func (s *Local) inputBusy() bool {
 	if s.keysIn.escHeld && time.Since(s.keysIn.escAt) > escWait {
-		// An Escape a terminal's read ended with, long enough ago to have
-		// been read alone.
+		// An Escape a write ended with, long enough ago to have been read
+		// alone.
 		return false
 	}
 	return s.keysIn.pasting || s.keysIn.inString || s.keysIn.inCSI || len(s.keysIn.carry) > 0
@@ -2432,13 +2437,13 @@ const maxKeyCarry = 32
 // paste goes on, inString a control string (its bytes no keys), carry is
 // the unfinished end of the last write (at most maxKeyCarry bytes).
 //
-// An Escape that ends a terminal's read outside a paste is kept too
-// (escHeld, the carry its ESC): a read can cut a report right after its
-// ESC, the rest coming in the next. The next write that goes on with a
-// sequence makes it that sequence's start; one that does not leaves it no
-// key of its own (keysWritten counted it as one that may be, for the read
-// it ended). An Escape that ends a page's frame or a reply is the Escape
-// key: those carry whole keys.
+// An Escape that ends a write outside a paste is kept too (escHeld, the
+// carry its ESC): a terminal's read can cut a report right after its ESC,
+// the rest coming in the next, and two writes (a page's frames, ESC then
+// z) can reach the program as one read (Alt+z). The next write that goes
+// on with a sequence makes it that sequence's start; one that does not
+// leaves it no key of its own (keysWritten counted it as one that may be,
+// for the write it ended).
 type keyReader struct {
 	pasting  bool
 	inString bool
@@ -2448,8 +2453,7 @@ type keyReader struct {
 	carry []byte
 	// pasted says the last write held a paste's text.
 	pasted bool
-	// escHeld says the last write, a terminal's read, ended in an Escape
-	// kept, at escAt.
+	// escHeld says the last write ended in an Escape kept, at escAt.
 	escHeld bool
 	escAt   time.Time
 	// maybe are the keys the last write's Alt chords may be read as alone.
@@ -2476,7 +2480,7 @@ func stringEnd(data []byte, i int) (end, cutAt int) {
 	return -1, -1
 }
 
-// heldStartup is a startup question an Escape a terminal's read ended with
+// heldStartup is a startup question an Escape a write ended with
 // may have answered: its id (asked) or its words (not asked yet), who typed
 // it, and how many Feeds the screen the questions asked during the work are
 // read from had seen as it was written (fed).
@@ -2486,7 +2490,7 @@ type heldStartup struct {
 }
 
 // holdStartupAnswered notes the startup question showing, or (words, not
-// asked yet) the one the screen shows, as one an Escape a terminal's read
+// asked yet) the one the screen shows, as one an Escape a write
 // ended with may have answered, typed by sub: held answered (a reply to it
 // refused), not cleared, its screen not put behind, until the screen shows
 // it gone (escGone), a key surely answers it, or the next startup question
@@ -2548,7 +2552,7 @@ func (s *Local) escGone() {
 }
 
 // heldGone reports whether the startup question with words, about to be
-// asked, is the one an Escape a terminal's read ended with may have
+// asked, is the one an Escape a write ended with may have
 // answered before it was asked (heldAnswer's words), and the screen the
 // questions asked during the work are read from shows no startup question,
 // as it is now and after output fed since the Escape was written: the
@@ -2580,7 +2584,7 @@ func (s *Local) heldGone(words string) bool {
 }
 
 // startupGone notes the startup question with words, held answered by an
-// Escape a terminal's read ended with, as surely answered: a look of the
+// Escape a write ended with, as surely answered: a look of the
 // startup questions' watcher that took its text before now asks nothing,
 // and the question asked again before another takes its place is asked
 // answered (as a key that surely answers one does in input). The caller
@@ -2601,10 +2605,9 @@ func continuesSequence(b byte) bool {
 	return false
 }
 
-// keys returns the keys of data, the next write; reads says it is a
-// terminal's read.
-func (r *keyReader) keys(data []byte, reads bool) [][]byte {
-	// An Escape held from the read before: the start of the sequence data
+// keys returns the keys of data, the next write.
+func (r *keyReader) keys(data []byte) [][]byte {
+	// An Escape held from the write before: the start of the sequence data
 	// goes on with, else no key here.
 	heldIn := r.escHeld
 	if len(r.carry) > 0 {
@@ -2667,18 +2670,24 @@ func (r *keyReader) keys(data []byte, reads bool) [][]byte {
 			keys = append(keys, data[i:i+1])
 			i++
 		case i == 0 && heldIn && (i+1 == len(data) || !continuesSequence(data[i+1])):
-			// The Escape held from the read before, which this write does
-			// not go on with: counted for that read, no key here.
+			// The Escape held from the write before, which this write does
+			// not go on with: counted for that write, no key here.
 			i++
-		case i+1 == len(data) && reads:
-			// An Escape that ends a terminal's read: kept until the next
-			// write says whether it began a sequence (escHeld).
+		case i+1 == len(data):
+			// An Escape that ends a write: kept until the next write says
+			// whether it began a sequence (escHeld).
 			r.carry, r.escHeld, r.escAt = []byte{0x1b}, true, time.Now()
 			return keys
-		case i+1 == len(data):
-			// An Escape that ends a page's frame or a reply: the Escape key.
-			keys = append(keys, data[i:i+1])
-			i++
+		case data[i+1] == '[' && i+2 < len(data) && data[i+2] == 'M':
+			// An X10 mouse report: ESC [ M and three bytes (the button
+			// and the cell, each a byte), one key, its bytes no keys of
+			// their own; cut, carried to the next write.
+			if i+6 > len(data) {
+				cut(i)
+				return keys
+			}
+			keys = append(keys, data[i:i+6])
+			i += 6
 		case data[i+1] == '[':
 			j := i + 2
 			for j < len(data) && (data[j] < 0x40 || data[j] > 0x7e) {

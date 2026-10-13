@@ -69,11 +69,6 @@ type writeWait struct {
 	// the last of its checks: an error from it and the write is not made (a
 	// submission's Enter that a newer prompt would take); nil, and it is.
 	guard func() error
-	// reads says the write is what a terminal's read gave (a host's own
-	// terminal, InputWaiting): a read can end anywhere, also right after
-	// the ESC that begins a report, so an Escape that ends it is held
-	// (keyReader). A page's frame or a reply carries whole keys.
-	reads bool
 }
 
 // withdrawn says why the write's connection withdraws it, nil while it

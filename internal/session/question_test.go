@@ -238,7 +238,9 @@ func TestTheSameApprovalAnsweredThenShownAgainIsAskedAgain(t *testing.T) {
 	if got := nextWrite(t, p); got != "\x1b" {
 		t.Fatalf("written %q", got)
 	}
-	// The Escape key once no write goes on with it (escWait).
+	// An Escape that ends a write puts the dialog behind; it is cleared
+	// once the dialog goes.
+	p.outW.Write([]byte(approvalGone("✗ You canceled the request to run curl -sI https://example.com\r\n")))
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 

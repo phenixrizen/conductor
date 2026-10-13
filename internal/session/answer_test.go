@@ -201,8 +201,9 @@ func TestALateReplyNeverLandsOnTheNextQuestion(t *testing.T) {
 	if got := nextWrite(t, p); got != "\x1b" {
 		t.Fatalf("written %q", got)
 	}
-	// An Escape last in a write is the Escape key once no write goes on
-	// with it (escWait): the question is cleared then.
+	// An Escape that ends a write may be read with what comes next: the
+	// question is put behind, and cleared once the dialog goes.
+	p.outW.Write([]byte(approvalGone("✗ You canceled the request to run rm -rf build\r\n")))
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 	if a := s.Info(); a.LastAnswer == nil || a.LastAnswer.ByName != "jane" {
 		t.Fatalf("the next question's own reply: %+v %+v", a.Attention, a.LastAnswer)
@@ -585,45 +586,46 @@ func TestKeysSentAtOnceAnswerADialogWhenOneOfThemDoes(t *testing.T) {
 // own until it ends.
 func TestTheKeysOfWritesCarryWhatOneLeavesUnfinished(t *testing.T) {
 	var r keyReader
-	read := func(data string, reads bool) string {
+	read := func(data string) string {
 		var out []string
-		for _, k := range r.keys([]byte(data), reads) {
+		for _, k := range r.keys([]byte(data)) {
 			out = append(out, string(k))
 		}
 		return strings.Join(out, "|")
 	}
-	for _, step := range []struct {
-		write, keys string
-		reads       bool
-	}{
-		{"\x1b[By", "\x1b[B|y", false},
-		{"\x1b[200~hello ", "", false},
-		{"y there\x1b[20", "", false},
-		{"1~1", "1", false},
-		{"\x1b[", "", false},
-		{"1;5Ay", "\x1b[1;5A|y", false},
-		{"\x1bO", "", false},
-		{"Pq", "\x1bOP|q", false},
-		// An Escape that ends a page's frame is the Escape key.
-		{"\x1b", "\x1b", false},
-		{"\x1b]11;rgb:1/2/3\ay", "\x1b]11;rgb:1/2/3\a|y", false},
-		// One that ends a terminal's read is held: the start of the
-		// sequence the next write goes on with, else no key there (it was
-		// counted, as one that may be, for the read it ended).
-		{"y\x1b", "y", true},
-		{"[3;1R", "\x1b[3;1R", false},
-		{"\x1b", "", true},
-		{"q", "q", false},
-		{"\x1b", "", true},
-		{"\x1b[A", "\x1b[A", true},
-		{"\x1bP>|xterm\x1b\\\x1b[B", "\x1bP>|xterm\x1b\\|\x1b[B", false},
-		{"\x1b]10;rgb:f", "", false},
-		{"f/f/f\x1b", "", false},
-		{"\\y", "y", false},
-		{"\x1b[?" + strings.Repeat("1;", 20), "", false},
-		{"1;1c2", "2", false},
+	for _, step := range []struct{ write, keys string }{
+		{"\x1b[By", "\x1b[B|y"},
+		{"\x1b[200~hello ", ""},
+		{"y there\x1b[20", ""},
+		{"1~1", "1"},
+		{"\x1b[", ""},
+		{"1;5Ay", "\x1b[1;5A|y"},
+		{"\x1bO", ""},
+		{"Pq", "\x1bOP|q"},
+		// An Escape that ends a write is held: the start of the sequence
+		// the next write goes on with, else no key there (it was counted,
+		// as one that may be, for the write it ended).
+		{"y\x1b", "y"},
+		{"[3;1R", "\x1b[3;1R"},
+		{"\x1b", ""},
+		{"q", "q"},
+		{"\x1b", ""},
+		{"\x1b]11;rgb:1/2/3\ay", "\x1b]11;rgb:1/2/3\a|y"},
+		{"\x1b", ""},
+		{"\x1b[A", "\x1b[A"},
+		// An X10 mouse report is one key, cut anywhere.
+		{"\x1b[M 1!y", "\x1b[M 1!|y"},
+		{"\x1b[M", ""},
+		{" 1", ""},
+		{"!y", "\x1b[M 1!|y"},
+		{"\x1bP>|xterm\x1b\\\x1b[B", "\x1bP>|xterm\x1b\\|\x1b[B"},
+		{"\x1b]10;rgb:f", ""},
+		{"f/f/f\x1b", ""},
+		{"\\y", "y"},
+		{"\x1b[?" + strings.Repeat("1;", 20), ""},
+		{"1;1c2", "2"},
 	} {
-		if got := read(step.write, step.reads); got != step.keys {
+		if got := read(step.write); got != step.keys {
 			t.Fatalf("keys of %q: %q, want %q", step.write, got, step.keys)
 		}
 	}
@@ -1311,7 +1313,7 @@ func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 	} {
 		var r keyReader
 		var got []string
-		for _, k := range r.keys([]byte(in), false) {
+		for _, k := range r.keys([]byte(in)) {
 			got = append(got, string(k))
 		}
 		if strings.Join(got, "|") != strings.Join(want, "|") || len(got) != len(want) {
@@ -1319,10 +1321,10 @@ func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 		}
 	}
 	var r keyReader
-	if got := r.keys([]byte("\x1b[2"), true); len(got) != 0 {
+	if got := r.keys([]byte("\x1b[2")); len(got) != 0 {
 		t.Fatalf("the start of a cut sequence: %q", got)
 	}
-	if got := r.keys([]byte("7u"), true); len(got) != 1 || string(got[0]) != "\x1b" {
+	if got := r.keys([]byte("7u")); len(got) != 1 || string(got[0]) != "\x1b" {
 		t.Fatalf("its end: %q", got)
 	}
 }
@@ -1626,25 +1628,90 @@ func TestAnAltChordNeverClearsAStartupQuestion(t *testing.T) {
 	}
 }
 
-// An Escape alone from a page (a key pressed in its terminal, or its quick
-// reply "Skip this update") is the Escape key: a page's frames carry whole
-// keys. The update question is cleared at once, and a second reply to it
-// is refused.
-func TestAnEscapeFromAPageAnswersAStartupQuestion(t *testing.T) {
-	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
-	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
-	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
-	p.outW.Write([]byte(codexUpdateScreen))
-	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
-	if err := s.AnswerInput(t.Context(), nater, update.ID, []byte("\x1b")); err != nil {
-		t.Fatal(err)
+// A page's Escape, a quick reply's "Skip this update" or a key pressed in
+// its terminal, is no surer than a terminal's: the page's next frame can
+// reach the program in the same read (ESC, then z: one Alt+z, which Codex
+// ignores). The update question is put behind (a second reply refused)
+// and still holds a submission back; a z after it leaves it there; once
+// the program has moved on and the screen shows no startup question, it is
+// cleared, answered by the person who sent the Escape. (Codex's review,
+// eighteenth pass, finding 1.)
+func TestAnEscapeFromAPageHoldsTheQuestionUntilItGoes(t *testing.T) {
+	for _, reply := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reply %v", reply), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: append(startupQuestions(), approvalQuestions()...)}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(codexUpdateScreen))
+			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			if reply {
+				if err := s.AnswerInput(t.Context(), nater, update.ID, []byte("\x1b")); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := s.Input(nater, []byte("\x1b")); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+			if err := s.Input(nater, []byte("z")); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+			time.Sleep(2 * escWait)
+			if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("a second reply: %v", err)
+			}
+			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+				t.Fatalf("cleared while the screen shows it: %+v", a)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a submission at the question: %v", err)
+			}
+			noWrite(t, p, 100*time.Millisecond)
+			p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
+			waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+			if a := s.Info(); a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
+				t.Fatalf("answered by %+v", a.LastAnswer)
+			}
+		})
 	}
-	nextWrite(t, p)
-	if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
-		t.Fatalf("a second reply: %v", err)
-	}
-	if a := s.Info(); a.Attention.State != AttentionNone || a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
-		t.Fatalf("not answered at once: %+v %+v", a.Attention, a.LastAnswer)
+}
+
+// An X10 mouse report (ESC [ M and three bytes: the button and the cell),
+// a click in a terminal at Codex's update question, whole or cut anywhere:
+// its bytes are no keys (a column of 1 is the byte '1', which would pick
+// "Update now"), and the question still holds a submission back. (Codex's
+// review, eighteenth pass, finding 2.)
+func TestAMouseReportAnswersNoStartupQuestion(t *testing.T) {
+	const click = "\x1b[M 1!"
+	for cut := 0; cut < len(click); cut++ {
+		t.Run(fmt.Sprintf("cut at %d", cut), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			p.outW.Write([]byte(codexUpdateScreen))
+			update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+			parts := []string{click}
+			if cut > 0 {
+				parts = []string{click[:cut], click[cut:]}
+			}
+			for _, part := range parts {
+				if err := s.InputWaiting(t.Context(), nater, []byte(part)); err != nil {
+					t.Fatal(err)
+				}
+				nextWrite(t, p)
+			}
+			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+				t.Fatalf("the click cleared the question: %+v", a)
+			}
+			// Cut right after its ESC, the ESC alone may have been the
+			// Escape key, and puts the question behind; nothing else does.
+			if err := s.questionWaits(update.ID); err != nil && cut != 1 {
+				t.Fatalf("the click put the question behind: %v", err)
+			}
+			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+				t.Fatalf("a submission at the question: %v", err)
+			}
+			noWrite(t, p, 100*time.Millisecond)
+		})
 	}
 }
 
