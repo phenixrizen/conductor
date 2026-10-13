@@ -45,8 +45,9 @@ const (
 // It knows what TUIs draw with: cursor moves (CUP, HVP, CUU, CUD, CUF, CUB,
 // CNL, CPL, CHA, HPA, VPA, CR, LF, BS, HT, RI, IND, NEL, save and restore),
 // erasing (ED, EL, ECH), inserting and deleting (IL, DL, ICH, DCH),
-// scrolling (DECSTBM, SU, SD), autowrap and the alternate screen (1049,
-// 1047, 47). Colours, modes and every other sequence are skipped, as are the
+// scrolling (DECSTBM, SU, SD), autowrap, the alternate screen (1049, 1047,
+// 47) and a synchronized update under way (2026, Settled). Colours, other
+// modes and every other sequence are skipped, as are the
 // strings of OSC, DCS and the rest. A character's width is an approximation
 // (wide East Asian characters and most emoji take two cells, combining marks
 // none): a program that positions its cells, as a TUI does, puts the next
@@ -62,6 +63,10 @@ type Screen struct {
 	wrap       bool // the last column was written: the next character goes to the next row
 	saved      [2]int
 	savedMain  [2]int // the cursor on the main screen as 1049 left it
+	// syncing says the program has begun a synchronized update (2026) and
+	// not ended it: a terminal shows the frame before it until it ends,
+	// and this screen holds half of the next.
+	syncing bool
 
 	st      screenState
 	params  []byte
@@ -412,8 +417,11 @@ func (s *Screen) csi(final byte) {
 	if private {
 		if s.params[0] == '?' && (final == 'h' || final == 'l') {
 			for _, m := range nums {
-				if m == 1049 || m == 1047 || m == 47 {
+				switch m {
+				case 1049, 1047, 47:
 					s.altScreen(final == 'h', m == 1049)
+				case 2026:
+					s.syncing = final == 'h'
 				}
 			}
 		}
@@ -544,6 +552,10 @@ func (s *Screen) Text() string { return s.text(len(s.cells)) }
 // of what a TUI draws, and a look at a screen of hundreds of wide rows would
 // cost a regular expression tens of milliseconds for nothing.
 const maxLookRows = 80
+
+// Settled reports whether the screen is a whole frame: no synchronized
+// update (2026) begun and not ended, which a terminal would not show yet.
+func (s *Screen) Settled() bool { return !s.syncing }
 
 // Last is what a PatternWatcher matches: Text, its last maxLookRows rows.
 func (s *Screen) Last() string { return s.text(maxLookRows) }

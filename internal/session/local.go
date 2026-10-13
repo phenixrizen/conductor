@@ -2573,7 +2573,7 @@ func (s *Local) escGone() {
 	s.mu.Lock()
 	att, held := s.info.Attention, s.heldAnswer
 	s.mu.Unlock()
-	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust || fed <= held.fed || s.lastStartup(s.asked.Whole()) != "" {
+	if held.id == "" || att.ID != held.id || att.State != AttentionNeedsInput || att.Source != SourceTrust || fed <= held.fed || !s.screenShowsNoStartup() {
 		s.feedMu.Unlock()
 		return
 	}
@@ -2588,6 +2588,15 @@ func (s *Local) escGone() {
 	s.trust.Reset()
 	s.feedMu.Unlock()
 	s.answer(att.Since, held.by, held.name, true, true)
+}
+
+// screenShowsNoStartup reports whether the screen the questions asked
+// during the work are read from, whole, shows no startup question, and is
+// a whole frame (no synchronized update under way, which a terminal would
+// still show the frame before). The caller holds feedMu.
+func (s *Local) screenShowsNoStartup() bool {
+	text, settled := s.asked.Whole()
+	return settled && s.lastStartup(text) == ""
 }
 
 // heldGone reports whether the startup question with words, about to be
@@ -2608,7 +2617,7 @@ func (s *Local) heldGone(words string) bool {
 	s.mu.Lock()
 	held := s.heldAnswer
 	s.mu.Unlock()
-	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || s.lastStartup(s.asked.Whole()) != "" {
+	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || !s.screenShowsNoStartup() {
 		return false
 	}
 	s.mu.Lock()
@@ -2787,8 +2796,9 @@ func (r *keyReader) keys(data []byte) [][]byte {
 // encodedKey reads seq, one escape sequence a terminal sent, as a key the
 // terminal encodes once a program asks it to tell keys apart: the kitty
 // keyboard protocol's CSI u (CSI code[:alternates] ; mods[:event] ; text u,
-// which Codex asks for: Escape is ESC [ 2 7 u, Ctrl+C ESC [ 9 9 ; 5 u) and
-// xterm's modifyOtherKeys (CSI 27 ; mods ; code ~). A press or a repeat of a
+// which Codex asks for: Escape is ESC [ 2 7 u, Ctrl+C ESC [ 9 9 ; 5 u).
+// xterm's modifyOtherKeys (CSI 27 ; mods ; code ~) is not decoded: Codex's
+// crossterm does not read it as the key it encodes. A press or a repeat of a
 // key read the same unencoded is that key: Escape, Enter, Tab, Backspace, a
 // character (Shift and a letter its capital, or the shifted key the
 // terminal names), Ctrl and a letter its control byte (not Ctrl+H, I, J or
@@ -2827,11 +2837,6 @@ func encodedKey(seq []byte) (key []byte, encoded bool) {
 		codes, mod := field(0), field(1)
 		code, shifted = number(codes, 0, -1), number(codes, 1, -1)
 		mods, event = number(mod, 0, 1), number(mod, 1, 1)
-	case '~':
-		if len(fields) != 3 || fields[0] != "27" {
-			return nil, false
-		}
-		code, shifted, mods, event = number(field(2), 0, -1), -1, number(field(1), 0, 1), 1
 	default:
 		return nil, false
 	}

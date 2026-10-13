@@ -1216,12 +1216,11 @@ func TestAnswerResultFrames(t *testing.T) {
 
 // A terminal Codex asked to tell its keys apart (the kitty keyboard
 // protocol, a host's own terminal) sends Escape as ESC [ 2 7 u and Ctrl+C
-// as ESC [ 9 9 ; 5 u (xterm's modifyOtherKeys: ESC [ 2 7 ; 5 ; 9 9 ~):
-// each cancels the approval dialog as the plain key does, and puts the
-// question behind for a reply queued after it, nothing more written.
-// (Codex's review, thirteenth pass, finding 1.)
+// as ESC [ 9 9 ; 5 u: each cancels the approval dialog as the plain key
+// does, and puts the question behind for a reply queued after it, nothing
+// more written. (Codex's review, thirteenth pass, finding 1.)
 func TestAnEncodedEscapeOrCtrlCPutsTheQuestionBehind(t *testing.T) {
-	for _, key := range []string{"\x1b[27u", "\x1b[99;5u", "\x1b[27;129u", "\x1b[27;5;99~"} {
+	for _, key := range []string{"\x1b[27u", "\x1b[99;5u", "\x1b[27;129u"} {
 		t.Run(strings.ReplaceAll(key, "\x1b", "ESC"), func(t *testing.T) {
 			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
@@ -1251,6 +1250,31 @@ func TestAnEncodedEscapeOrCtrlCPutsTheQuestionBehind(t *testing.T) {
 			}
 			noWrite(t, p, 200*time.Millisecond)
 		})
+	}
+}
+
+// xterm's modifyOtherKeys Ctrl+C (ESC [ 2 7 ; 5 ; 9 9 ~), which Codex's
+// crossterm does not read as Ctrl+C: the approval stays open, and a reply
+// to it after the key is written. (Codex's review, twenty-second pass,
+// finding 2.)
+func TestModifyOtherKeysAnswersNothing(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	q := waitAttention(t, s, asked)
+	if err := s.Input(nater, []byte("\x1b[27;5;99~")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; a.ID != q.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("the key cleared the approval: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); err != nil {
+		t.Fatalf("the reply after the key: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
 	}
 }
 
@@ -1299,7 +1323,7 @@ func TestTheKeyReaderReadsEncodedKeys(t *testing.T) {
 		"\x1b[99;7u":     {"\x1b[99;7u"},
 		"\x1b[109;5u":    {"\x1b[109;5u"},
 		"\x1b[57399u":    {"\x1b[57399u"},
-		"\x1b[27;5;99~":  {"\x03"},
+		"\x1b[27;5;99~":  {"\x1b[27;5;99~"},
 		"\x1b[2~":        {"\x1b[2~"},
 		"\x1b[?1u":       {"\x1b[?1u"},
 		"\x1b[A":         {"\x1b[A"},
@@ -1775,6 +1799,42 @@ func TestAHeldStartupQuestionAboveTheLastRowsIsNotGone(t *testing.T) {
 		t.Fatalf("a submission at the question: %v", err)
 	}
 	noWrite(t, p, 100*time.Millisecond)
+}
+
+// Codex redraws in a synchronized update (ESC [ ? 2 0 2 6 h, then l), which a
+// terminal shows only once it ends: a redraw paused right after its erase
+// leaves the screen this session reads blank, the terminal still showing
+// the update question. Held by an Escape, the question is not taken for
+// gone on half a frame: a submission is still held back, and the redraw,
+// ended with the question, leaves it held; a frame without it lets it go.
+// (Codex's review, twenty-second pass, finding 1.)
+func TestAHeldStartupQuestionIsNotGoneOnHalfAFrame(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexUpdateScreen))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	for _, part := range []string{"\x1b", "z"} {
+		if err := s.Input(nater, []byte(part)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	p.outW.Write([]byte("\x1b[?2026h\x1b[2J"))
+	time.Sleep(2 * patternQuiet)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("half a frame cleared the question: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	p.outW.Write([]byte("\x1b[H" + strings.TrimPrefix(codexUpdateScreen, "\x1b[?2026h")))
+	time.Sleep(2 * patternQuiet)
+	if a := s.Info().Attention; a.State != AttentionNeedsInput || a.Source != SourceTrust {
+		t.Fatalf("the question drawn again was cleared: %+v", a)
+	}
+	p.outW.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything\x1b[?2026l"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
 // An X10 mouse report (ESC [ M and three bytes: the button and the cell),

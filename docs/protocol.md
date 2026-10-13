@@ -976,8 +976,9 @@ terminal's read, the host's own terminal forwards what it reads) are each a
 key the program reads: an escape sequence is one key, as is a control
 string through its BEL or ST (OSC, DCS, SOS, PM, APC: a terminal's colour or
 version report), a key the terminal encodes once the program asks it to tell
-keys apart (the kitty keyboard protocol's `CSI … u`, which Codex asks for, and
-xterm's modifyOtherKeys `CSI 27 ; … ~`) is the key it stands for (Escape is
+keys apart (the kitty keyboard protocol's `CSI … u`, which Codex asks for;
+not xterm's modifyOtherKeys `CSI 27 ; … ~`, which Codex's crossterm does not
+read as the key it encodes) is the key it stands for (Escape is
 `ESC[27u`, Ctrl+C `ESC[99;5u`; Enter, a character, Shift or Ctrl and a
 letter, but Ctrl+H, I, J and M, which stay keys of their own, Codex reading
 Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing) and its release no key, an ESC
@@ -1005,8 +1006,10 @@ answer (a reply to it is refused, the safer mistake) but clears none, puts
 no screen behind, and keeps no question from being asked. A startup question it may answer,
 asked or not yet, is held answered until the screen the questions asked
 during the work are read from shows no startup question, looked at whole
-(every row, not only the last rows a watcher matches) as it is then,
-after output drawn since the Escape, with no output let in
+(every row, not only the last rows a watcher matches) as it is then, a
+whole frame (no synchronized update, `ESC[?2026h`, begun and not ended:
+a terminal still shows the frame before it), after output drawn since the
+Escape, with no output let in
 meanwhile (the program took the Escape and moved on: then it is cleared,
 answered by whoever sent the Escape, or never asked; a look taken earlier
 decides nothing), a key surely answers it, or the next startup question
