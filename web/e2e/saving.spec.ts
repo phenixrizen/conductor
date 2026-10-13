@@ -180,6 +180,47 @@ test("a file in a repository's .git opens read only; the working tree beside it 
   }
 })
 
+// Enter after a word the file already holds breaks the line, though the
+// editor suggests that very word as it is typed: a suggestion that would
+// change nothing does not take the Enter (it did, and a save then wrote the
+// line without its break: keys typed slowly, as on a loaded machine, left
+// the suggestion open when the Enter came).
+test('Enter after a word the editor suggests breaks the line', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-saving-enter')
+  mkdirSync(cwd, { recursive: true })
+  const file = join(cwd, 'words.txt')
+  writeFileSync(file, 'alpha\nbeta\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'saving enter', cwd })
+  const area = page.locator('[data-editor-area]')
+  const lines = area.locator('.monaco-editor .view-lines')
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await pane.locator('[data-files-section="explorer"]').click()
+    await pane.locator(`[data-file-node="${file}"]`).click()
+    await expect(lines).toBeVisible({ timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.press('Control+End')
+    // Typed at a person's pace: the editor offers the word the file already
+    // holds as its start is typed, and still offers it once the word is
+    // whole (its widgets sit outside the editor: fixedOverflowWidgets).
+    const suggest = page.locator('.suggest-widget.visible')
+    await page.keyboard.type('al')
+    await expect(suggest).toContainText('alpha', { timeout: 15_000 })
+    await page.keyboard.type('pha')
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 3, Col 6')
+    await expect(suggest).toContainText('alpha')
+    await page.keyboard.press('Enter')
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 4, Col 1')
+    await page.keyboard.type('gamma')
+    await page.keyboard.press('Control+s')
+    await expect.poll(() => readFileSync(file, 'utf8'), { timeout: 15_000 }).toBe('alpha\nbeta\nalpha\ngamma')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
 /** While window.__holdWrittenMs is set, a FILE frame answering a save as written reaches the page that much later, as through a slow relay. */
 async function holdWrittenAnswers(page: Page) {
   await page.addInitScript(() => {

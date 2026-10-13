@@ -81,6 +81,8 @@ async function mount() {
     cursorBlinking: 'smooth',
     padding: { top: 8 },
     fixedOverflowWidgets: true,
+    // Enter takes a suggestion only when it changes the text: the word just typed, offered back, leaves Enter to break the line.
+    acceptSuggestionOnEnter: 'smart',
   })
   editor.onDidChangeCursorPosition((e) => emit('cursor', { line: e.position.lineNumber, col: e.position.column }))
   editor.onDidChangeCursorSelection(() => tellSelection())
