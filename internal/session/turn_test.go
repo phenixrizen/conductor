@@ -295,8 +295,7 @@ func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
 	}
 	read, look := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	s.mu.Lock()
-	s.beforeScan = func(chunk []byte) {
+	hook := func(chunk []byte) {
 		if bytes.Contains(chunk, []byte("\a")) {
 			once.Do(func() {
 				close(read)
@@ -304,7 +303,10 @@ func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
 			})
 		}
 	}
-	s.mu.Unlock()
+	// Held as soon as the read returns, before the pump takes the
+	// session's lock (Codex's review: a turn begun there made the read
+	// the new turn's).
+	s.beforeScan.Store(&hook)
 	go p.outW.Write([]byte("\a\a"))
 	<-read
 	if err := s.TrySetAttentionFull(AttentionDone, "HTTP/2 200", SourceAPI, KindDone, nil); err != nil {
@@ -321,6 +323,50 @@ func TestBellsReadInTheEndedTurnAreItsOwn(t *testing.T) {
 	}
 	p.outW.Write([]byte("\a"))
 	waitAttention(t, s, isBell)
+}
+
+// The same for the start of a notification read in the ended turn, held
+// as soon as it is read while a done and an Enter begin the next turn, and
+// ended after: it asks nothing (Codex's review).
+func TestANotificationBegunInTheEndedTurnIsItsOwn(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	read, look := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hook := func(chunk []byte) {
+		if bytes.Contains(chunk, []byte("\x1b]9;")) {
+			once.Do(func() {
+				close(read)
+				<-look
+			})
+		}
+	}
+	s.beforeScan.Store(&hook)
+	go p.outW.Write([]byte("\x1b]9;Agent turn"))
+	<-read
+	if err := s.TrySetAttentionFull(AttentionDone, "HTTP/2 200", SourceAPI, KindDone, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Input(sub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	close(look)
+	p.outW.Write([]byte(" complete\a"))
+	flushed(p)
+	if a := s.Info().Attention; a.State != AttentionDone {
+		t.Fatalf("the ended turn's notification asked in the next: %+v", a)
+	}
+	p.outW.Write([]byte("\x1b]9;need approval\a"))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNeedsInput }); a.Message != "need approval" {
+		t.Fatalf("the next turn's notification: %+v", a)
+	}
 }
 
 // An OSC notification begun in a turn's output and ended in a read after

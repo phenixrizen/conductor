@@ -215,16 +215,18 @@ type Local struct {
 	// ended is still the last one, and a bell or OSC notification now is
 	// that turn's own (unlessTurnEnded). Guarded by mu.
 	turnEnded bool
-	// turn counts the turns begun after a done (beginTurn): output read
-	// before one began, and scanned after, is the ended turn's own
-	// (scanOutput). Guarded by mu.
-	turn uint64
+	// turn counts the turns begun after a done (beginTurn), changed under
+	// mu: output read before one began, and scanned after, is the ended
+	// turn's own (scanOutput). The pump takes it as soon as a read
+	// returns, before anything else can hold it up.
+	turn atomic.Uint64
 	// scanBegun is turn as the chunk was read in which the escape sequence
 	// the scanner has under way began (scanOutput); the pump's own.
 	scanBegun uint64
-	// beforeScan, a test's hook set under mu, runs with each chunk read
-	// between the read and the look for bells (scanOutput).
-	beforeScan     func(chunk []byte)
+	// beforeScan, a test's hook, runs with each chunk read between the
+	// read (and the turn taken with it) and everything the pump does with
+	// it.
+	beforeScan     atomic.Pointer[func(chunk []byte)]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -337,9 +339,16 @@ func (s *Local) pump() {
 	buf := make([]byte, proto.MaxOutput)
 	for {
 		n, err := s.proc.Read(buf)
+		// The turn the output was read in: taken at once, so that a turn
+		// begun while the pump waits for the lock below leaves it the
+		// ended turn's (scanOutput).
+		turn := s.turn.Load()
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
+			if hook := s.beforeScan.Load(); hook != nil {
+				(*hook)(chunk)
+			}
 			// Output that only sets the window title (a spinner in it) does
 			// not count as output for the quiet the run engine and the
 			// trust watcher wait for.
@@ -350,12 +359,8 @@ func (s *Local) pump() {
 			if !title {
 				s.lastOutput = time.Now()
 			}
-			turn, hook := s.turn, s.beforeScan
 			s.mu.Unlock()
 			s.paste.feed(chunk)
-			if hook != nil {
-				hook(chunk)
-			}
 			s.scanOutput(chunk, turn)
 			if s.pattern != nil {
 				s.pattern.Feed(chunk)
@@ -845,7 +850,7 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 	turnsOwn := rules&unlessTurnEnded != 0 && cur.State == AttentionDone && s.turnEnded
 	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
-	lastTurns := turn != anyTurn && turn != s.turn
+	lastTurns := turn != anyTurn && turn != s.turn.Load()
 	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns {
 		s.mu.Unlock()
 		return nil
@@ -1550,7 +1555,7 @@ func (s *Local) beginTurn() {
 	}
 	s.turnEnded = false
 	s.lastBell = time.Time{}
-	s.turn++
+	s.turn.Add(1)
 }
 
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText
