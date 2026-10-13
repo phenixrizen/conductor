@@ -156,6 +156,46 @@ func TestTypesSomething(t *testing.T) {
 	if typed, _ := typesSomething([]byte("\x1b"), []byte("k")); !typed {
 		t.Fatal("Escape, then a key, types")
 	}
+	// A key, then a report begun: typed, and the report carried all the same.
+	typed, rest = typesSomething(nil, []byte("k\x1b[3;"))
+	if !typed || string(rest) != "\x1b[3;" {
+		t.Fatalf("a key and a report begun: %v %q", typed, rest)
+	}
+	if typed, rest := typesSomething(rest, []byte("1R")); typed || rest != nil {
+		t.Fatalf("the report's rest: %v %q", typed, rest)
+	}
+	if typed, rest := typesSomething(nil, []byte("\x1b[A\x1b[<35;1")); !typed || string(rest) != "\x1b[<35;1" {
+		t.Fatalf("an arrow key and a report begun: %v %q", typed, rest)
+	}
+}
+
+// csiReportLen reads by hand what oneReport's CSI alternatives match: the
+// two agree on every lead, parameter list and final byte tried.
+func TestCSIReportLenIsThePatterns(t *testing.T) {
+	params := []string{"", "0", "1", "3", "4", "9", "12", "123", "1234", "12345", "123456", ";", "1;", ";1", "1;2", "12;34",
+		"1234;1234", "12345;1234", "12345;12", "12345;123", "1;2;3", "12;123;12345", "123;1;1", "1234;12345;12345",
+		"12345;1;1", "1;2;3;4", strings.Repeat("1", 64), strings.Repeat("1", 65), strings.Repeat("6;", 32), strings.Repeat("6;", 33)}
+	n := 0
+	for _, lead := range []string{"", "?", ">", "<", "="} {
+		for _, p := range params {
+			for _, final := range []string{"R", "n", "c", "$y", "$", "$x", "t", "I", "O", "M", "m", "x", "A", ""} {
+				for _, after := range []string{"", "k", "\x1b[I"} {
+					in := []byte("\x1b[" + lead + p + final + after)
+					want := 0
+					if loc := oneReport.FindIndex(in); loc != nil {
+						want = loc[1]
+					}
+					if got := csiReportLen(in); got != want {
+						t.Errorf("csiReportLen(%q) = %d, the pattern %d", in, got, want)
+					}
+					n++
+				}
+			}
+		}
+	}
+	if n < 5000 {
+		t.Fatalf("%d tried", n)
+	}
 }
 
 // Every report the terminal sends by itself, cut between two writes at any

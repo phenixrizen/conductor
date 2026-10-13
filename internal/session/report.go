@@ -63,8 +63,94 @@ func reportLen(data []byte) int {
 	if bytes.HasPrefix(data, legacyMouse) && len(data) >= 6 && data[3] >= 32 && data[4] >= 32 && data[5] >= 32 {
 		return 6
 	}
-	if loc := oneReport.FindIndex(data); loc != nil {
+	if len(data) > 1 && data[1] == '[' {
+		return csiReportLen(data)
+	}
+	// No report is longer than maxReportCarry: the pattern is not given more.
+	if loc := oneReport.FindIndex(data[:min(len(data), maxReportCarry)]); loc != nil {
 		return loc[1]
+	}
+	return 0
+}
+
+// csiReportLen is reportLen for data that starts ESC [: oneReport's CSI
+// alternatives, the terminal's (CPR, DSR, DA, DECRPM, window, focus) and
+// the SGR and urxvt mouse reports, read by hand, for the pattern costs some
+// microseconds a report and a write may hold thousands
+// (TestCSIReportLenIsThePatterns keeps the two the same).
+func csiReportLen(data []byte) int {
+	i := 2
+	var lead byte
+	if i < len(data) && (data[i] == '?' || data[i] == '>' || data[i] == '<') {
+		lead = data[i]
+		i++
+	}
+	// The parameters: at most 64 digits and semicolons, each parameter's
+	// digits counted.
+	// digits are the digit counts of the first parameters, n how many
+	// parameters there are.
+	start := i
+	var digits [4]int
+	n := 1
+scan:
+	for ; i < len(data) && i-start <= 64; i++ {
+		switch c := data[i]; {
+		case c >= '0' && c <= '9':
+			if n <= len(digits) {
+				digits[n-1]++
+			}
+		case c == ';':
+			n++
+		default:
+			break scan
+		}
+	}
+	if i >= len(data) || i-start > 64 {
+		return 0
+	}
+	params := i - start
+	// within reports whether there are len(max) parameters, the k-th of 1
+	// to max[k] digits.
+	within := func(max ...int) bool {
+		if n != len(max) {
+			return false
+		}
+		for k, m := range max {
+			if digits[k] < 1 || digits[k] > m {
+				return false
+			}
+		}
+		return true
+	}
+	switch data[i] {
+	case 'R': // CPR, DECXCPR
+		if (lead == 0 || lead == '?') && within(4, 4) {
+			return i + 1
+		}
+	case 'n': // DSR status
+		if lead == 0 && params == 1 && data[start] <= '3' {
+			return i + 1
+		}
+	case 'c': // DA1, DA2
+		if lead == '?' || lead == '>' {
+			return i + 1
+		}
+	case '$': // DECRPM
+		if (lead == 0 || lead == '?') && within(5, 2) && i+1 < len(data) && data[i+1] == 'y' {
+			return i + 2
+		}
+	case 't': // window reports
+		if lead == 0 && (within(2) || within(2, 5) || within(2, 5, 5)) {
+			return i + 1
+		}
+	case 'I', 'O': // focus in, out
+		if lead == 0 && params == 0 {
+			return i + 1
+		}
+	case 'M', 'm': // SGR mouse; urxvt's, M alone
+		if (lead == '<' || lead == 0 && data[i] == 'M') && within(4, 5, 5) {
+			return i + 1
+		}
 	}
 	return 0
 }
@@ -82,20 +168,35 @@ func typesSomething(carry, data []byte) (typed bool, rest []byte) {
 	if len(carry) > 0 {
 		buf = append(append(make([]byte, 0, len(carry)+len(data)), carry...), data...)
 	}
+	// The whole write is read, also past what was typed, so that a report
+	// begun at its end is carried whatever came before it.
 	for len(buf) > 0 {
-		if buf[0] != 0x1b {
+		if buf[0] == 0x1b {
+			if n := reportLen(buf); n > 0 {
+				buf = buf[n:]
+				continue
+			}
+			if len(buf) <= maxReportCarry && (reportBegun.Match(buf) || legacyBegun(buf)) {
+				return typed, bytes.Clone(buf)
+			}
+		}
+		// A byte a person typed: any but a report's, the ESC of a key's
+		// sequence among them.
+		typed = true
+		buf = buf[1:]
+		if len(buf) > maxReportCarry {
+			// Typed: all that is left to tell is whether a report begins
+			// in the last bytes, which an ESC there starts (a report's
+			// body holds none but its terminator's).
+			buf = buf[len(buf)-maxReportCarry:]
+		}
+		i := bytes.IndexByte(buf, 0x1b)
+		if i < 0 {
 			return true, nil
 		}
-		if n := reportLen(buf); n > 0 {
-			buf = buf[n:]
-			continue
-		}
-		if len(buf) <= maxReportCarry && (reportBegun.Match(buf) || legacyBegun(buf)) {
-			return false, bytes.Clone(buf)
-		}
-		return true, nil
+		buf = buf[i:]
 	}
-	return false, nil
+	return typed, nil
 }
 
 // legacyBegun reports whether data is a legacy mouse report not done: ESC[M
