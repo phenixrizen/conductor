@@ -81,7 +81,8 @@ export class NvimHolds {
         this.held.delete(path)
       } else {
         h.echo?.markLost()
-        this.held.set(path, { ...h, state: { ...h.state, lost: reason, cmdline: '', modified: h.state.modified || !!h.echo?.showing } })
+        const unconfirmed = h.echo?.unconfirmed || undefined
+        this.held.set(path, { ...h, state: { ...h.state, lost: reason, cmdline: '', unconfirmed, modified: h.state.modified || !!h.echo?.showing || !!unconfirmed } })
       }
       this.tell(path)
     }

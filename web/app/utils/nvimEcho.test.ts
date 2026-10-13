@@ -387,6 +387,41 @@ describe('the local echo when Neovim is lost', () => {
     expect(e2.unconfirmed).toBe('')
   })
 
+  it('keeps the characters Neovim never confirmed, whatever became of their guesses before it was lost', () => {
+    // A mapping takes q and x and makes x, its change coming while the tab is not in front (Neovim alive): the guesses go, Neovim's
+    // text stands. Then q and x are said done, and Neovim is lost: y, never confirmed, is kept aside.
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('q', { line: 1, col: 6 })
+    e.send('x', { line: 1, col: 7 })
+    e.send('y', { line: 1, col: 8 })
+    e.finish()
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    e.noteSettled(2)
+    e.markLost()
+    expect(d.text).toEqual(['alphax'])
+    expect(e.unconfirmed).toBe('y')
+    // An autopair's change, then its key said done: the character typed after it is kept aside once lost.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('(', { line: 1, col: 6 })
+    e2.send('a', { line: 1, col: 7 })
+    e2.lines({ first: 0, last: 1, lines: ['alpha()'] })
+    e2.noteSettled(1)
+    expect(d2.text).toEqual(['alpha()'])
+    e2.markLost()
+    expect(e2.unconfirmed).toBe('a')
+    // What Neovim's line held where it was typed is confirmed, and not kept aside.
+    const d3 = doc('alpha')
+    const e3 = inInsert(d3)
+    e3.send('x', { line: 1, col: 6 })
+    e3.send('y', { line: 1, col: 7 })
+    e3.lines({ first: 0, last: 1, lines: ['alphax'] })
+    e3.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)
+    e3.markLost()
+    expect(e3.unconfirmed).toBe('y')
+  })
+
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
     const e = inInsert(doc('alpha'))
     e.send('x', { line: 1, col: 6 })

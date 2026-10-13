@@ -319,7 +319,7 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       if (echoAsLeft) {
         // The characters typed it had not acknowledged as the tab was left stay laid over its text until its lines hold them.
         echoAsLeft.lateLines(lev)
-        if (echoAsLeft.unconfirmed) h.state.unconfirmed = echoAsLeft.unconfirmed
+        h.state.unconfirmed = echoAsLeft.unconfirmed || undefined
       } else {
         const edit = linesEdit(lev, m.getLineCount(), (n) => m.getLineLength(n))
         m.applyEdits([{ range: new monaco.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
@@ -335,6 +335,7 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       bridge.holds.changed(path)
     } else if (ev.kind === 'settled' && ev.ack) {
       echoAsLeft?.noteSettled(ev.ack)
+      if (echoAsLeft) h.state.unconfirmed = echoAsLeft.unconfirmed || undefined
       bridge.holds.changed(path)
       letGoIfClean(h)
     }
@@ -348,18 +349,19 @@ function onNvimEvent(ev: NvimEvent) {
       if (ev.kind === 'lines') {
         const lev = { first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }
         if (lostEcho) {
-          const stays = lostEcho.lateLines(lev)
-          if (lostEcho.unconfirmed) nvimState.unconfirmed = lostEcho.unconfirmed
-          if (!stays) lostEcho = null
+          lostEcho.lateLines(lev)
+          nvimState.unconfirmed = lostEcho.unconfirmed || undefined
         } else applyLinesEvent(lev)
       }
       nvimState.modified = true
       tellNvim()
       tellDirty()
     } else if (ev.kind === 'settled' && lostEcho) {
-      // Its word that keys were done, after its end: the guesses of those it made nothing of go.
+      // Its word that keys were done, after its end: the guesses of those it made nothing of go, and what it confirmed is no longer
+      // kept aside.
       lostEcho.noteSettled(ev.ack ?? 0)
-      if (!lostEcho.showing) lostEcho = null
+      nvimState.unconfirmed = lostEcho.unconfirmed || undefined
+      tellNvim()
     }
     return
   }
@@ -458,8 +460,9 @@ function onNvimEvent(ev: NvimEvent) {
       // What Neovim sent and the echo held is shown first, with the characters typed it never acknowledged.
       if (!closedByQuit(ev.reason)) echo?.markLost()
       const pending = closedByQuit(ev.reason) ? false : (echo?.finish() ?? false)
-      const finished = pending ? echo : null
       const unconfirmed = echo?.unconfirmed ?? ''
+      // Kept while guesses show or characters wait to be confirmed: what comes after its end is reconciled with them.
+      const finished = pending || unconfirmed ? echo : null
       nvimId = null
       stopText?.()
       stopEcho()
@@ -475,7 +478,7 @@ function onNvimEvent(ev: NvimEvent) {
       lostEcho = finished
       nvimState.lost = ev.reason ?? 'error'
       if (unconfirmed) nvimState.unconfirmed = unconfirmed
-      nvimState.modified = lostHoldsChanges(nvimState.modified, pending, model.getValue(), props.text)
+      nvimState.modified = lostHoldsChanges(nvimState.modified, pending || !!unconfirmed, model.getValue(), props.text)
       nvimState.cmdline = ''
       nvimState.message = 'Neovim ended'
       nvimState.messageKind = 'emsg'

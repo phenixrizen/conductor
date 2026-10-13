@@ -84,10 +84,26 @@ export class NvimEcho {
   /** Neovim is gone (markLost). */
   private lost = false
   /**
-   * Characters typed that Neovim, gone, may never have had and its text does not hold where they were typed: its text stood over them
-   * (relay). Shown to the person beside the text, never laid into it.
+   * The characters typed in insert mode that Neovim has not confirmed: not said done (settled), nor seen in its line where they were
+   * typed. Kept apart from what shows, whatever happens to the guesses (a change that is not theirs, a timeout), so none goes without
+   * a trace.
    */
-  unconfirmed = ''
+  private typed: Guess[] = []
+
+  /**
+   * Once Neovim is gone: the characters typed that it never confirmed, which its text may not hold (a mapping took some keys, it died
+   * in the middle). Shown to the person beside the text, never laid into it, since where they belong is then unknown.
+   */
+  get unconfirmed(): string {
+    return this.lost ? this.typed.map((g) => g.text).join('') : ''
+  }
+
+  /** Neovim's line holds these guesses where they were typed: confirmed. */
+  private confirm(gs: Guess[]) {
+    if (!gs.length) return
+    const seqs = new Set(gs.map((g) => g.seq))
+    this.typed = this.typed.filter((g) => !seqs.has(g.seq))
+  }
 
   /** Neovim is gone: what it may never have had is kept aside from here on (unconfirmed). */
   markLost(): void {
@@ -139,6 +155,7 @@ export class NvimEcho {
   /** Neovim has done the keys numbered up to seq (the `settled` event). */
   noteSettled(seq: number): void {
     this.settledSeq = Math.max(this.settledSeq, seq)
+    this.typed = this.typed.filter((g) => g.seq > seq)
     if (!this.base || !this.guesses.length || this.guesses[0]!.seq > seq) return
     // Neovim has done the keys of these guesses and sent every change they made: what its text holds of them it holds, and those it
     // does not it made nothing of (a mapping that took the key). The guesses after them stay, laid after what it holds.
@@ -150,12 +167,14 @@ export class NvimEcho {
     const tail = base ? base.text.slice(base.col - 1) : ''
     let inserted: string | null = base && now.startsWith(head) && now.endsWith(tail) && now.length >= head.length + tail.length ? now.slice(head.length, now.length - tail.length) : null
     const rest: Guess[] = []
+    const held: Guess[] = []
     let done = ''
     for (const g of this.guesses) {
       if (inserted === null) break
       if (rest.length === 0 && inserted.startsWith(g.text)) {
         // In Neovim's text now.
         done += g.text
+        held.push(g)
         inserted = inserted.slice(g.text.length)
       } else if (g.seq <= seq && rest.length === 0) {
         // Done, and nothing came of it.
@@ -168,6 +187,7 @@ export class NvimEcho {
       this.most = 0
       return
     }
+    this.confirm(held)
     this.guesses = rest
     this.most = 0
     if (!rest.length) {
@@ -200,6 +220,7 @@ export class NvimEcho {
   send(keys: string, at: EchoPos): { seq: number; cursor?: EchoPos } {
     const seq = ++this.seq
     const ch = guessable(keys)
+    if (ch && isInsert(this.mode)) this.typed.push({ seq, text: ch })
     if (!ch || !isInsert(this.mode) || this.paused || this.barrier) {
       if (this.guesses.length || ch === null) this.barrier = seq
       return { seq }
@@ -317,6 +338,7 @@ export class NvimEcho {
   private relay(base: { line: number; col: number; text: string } | null, stands: boolean): boolean {
     if (base && this.guesses.length && !stands) {
       const k = this.holds(base)
+      if (k > 0) this.confirm(this.guesses.slice(0, k))
       const rest = k < 0 ? [] : this.guesses.slice(k)
       if (rest.length) {
         const done = this.guesses
@@ -330,14 +352,6 @@ export class NvimEcho {
         this.show()
         return true
       }
-    }
-    if (this.lost && base && this.guesses.length && this.holds(base) < 0) {
-      // Neovim's text stands, and it is gone: the characters typed whose keys it never said it had done may be missing from it (a
-      // mapping took some of them, it died in the middle). They are kept aside, for the person to see.
-      this.unconfirmed += this.guesses
-        .filter((g) => g.seq > this.settledSeq)
-        .map((g) => g.text)
-        .join('')
     }
     this.reset()
     return false
@@ -388,6 +402,7 @@ export class NvimEcho {
       .slice(0, held)
       .map((g) => g.text)
       .join('')
+    this.confirm(this.guesses.slice(0, held))
     this.guesses = this.guesses.slice(held)
     if (!this.guesses.length) {
       this.base = null

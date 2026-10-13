@@ -347,6 +347,8 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
     await expect(area.locator('[data-nvim-lost]')).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await page.waitForTimeout(1000)
     await expect(lines).toContainText('alphaxyz')
+    // And the banner says which characters Neovim may never have had.
+    await expect(area.locator('[data-nvim-unconfirmed]')).toHaveText('xyz')
     await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible()
   } finally {
     rmSync(join(config, 'init.lua'), { force: true })
