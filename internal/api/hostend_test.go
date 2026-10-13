@@ -501,6 +501,14 @@ func hostedGuest(t *testing.T, e *testEnv) (*fakeHost, *wsClient, string, string
 	t.Helper()
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	linkID, token := viewLink(t, e, host.sessionID)
+	guest, viewerID := guestThrough(t, e, host, token)
+	return host, guest, linkID, viewerID
+}
+
+// guestThrough has a guest join host's session through the link token and
+// move to the relay; it returns the guest and its viewer id at the host.
+func guestThrough(t *testing.T, e *testEnv, host *fakeHost, token string) (*wsClient, string) {
+	t.Helper()
 	guest := dialViewer(t, e, host.sessionID, token)
 	guest.expectControl(proto.CtlWelcome)
 	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
@@ -512,8 +520,59 @@ func hostedGuest(t *testing.T, e *testEnv) (*fakeHost, *wsClient, string, string
 			t.Fatalf("waiting for relay_ok: %v", err)
 		}
 		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigRelayOK {
-			return host, guest, linkID, viewerID
+			return guest, viewerID
 		}
+	}
+}
+
+// A link revoked after its session ended, while the end still writes its
+// viewers what was queued for them (the link forgotten already), stops that
+// at the frame being written: through the owner's revoke, and through the
+// host's (a publishing server's, whose revoke reaches the switchyard so).
+func TestARevokeAfterTheEndStopsWhatTheEndStillWrites(t *testing.T) {
+	for _, by := range []string{"owner", "host"} {
+		t.Run(by, func(t *testing.T) {
+			e := newTestEnv(t, nil)
+			writes := newHoldWrites(t)
+			e.srv.viewerSeam = writes.seam()
+			host := dialFakeHost(t, e, "hosted-agent-token")
+			var linkID, token string
+			if by == "owner" {
+				linkID, token = viewLink(t, e, host.sessionID)
+			} else {
+				linkID, token = mintHostLink(t, host, "r1")
+			}
+			guest, viewerID := guestThrough(t, e, host, token)
+			writes.hold.Store(true)
+			for i := range 20 {
+				relayOutput(t, host, viewerID, fmt.Sprintf("line %d\r\n", i))
+			}
+			host.send(proto.HostStatusMsg{T: proto.HostStatus, SessionID: host.sessionID, Status: "exited"})
+			linkLetGo(t, e, host.sessionID, linkID)
+			deadline := time.Now().Add(10 * time.Second)
+			for len(e.srv.links.ListBySession(host.sessionID)) != 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("the session's end never took its links")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if by == "owner" {
+				if resp, _ := e.do("DELETE", "/api/sessions/"+host.sessionID+"/links/"+linkID, adminToken, nil); resp.StatusCode != http.StatusNoContent {
+					t.Fatalf("revoke: %d", resp.StatusCode)
+				}
+			} else {
+				host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "rv", LinkID: linkID})
+				host.expect(proto.HostError) // not_found: the end took it
+			}
+			writes.let()
+			end := readTheEnd(t, guest, 10*time.Second)
+			if end.outputs > 1 {
+				t.Fatalf("%d output frames were written after the revoke, the one being written at most", end.outputs)
+			}
+			if end.errCode != proto.ErrCodeSessionEnded || end.closeCode != proto.CloseSessionEnded {
+				t.Fatalf("the guest was closed with %q and %d, want the end's", end.errCode, end.closeCode)
+			}
+		})
 	}
 }
 

@@ -440,8 +440,19 @@ func (s *Server) handleRevokeLink(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		// An ended session took its links with it: revoking one a dialog still shows is done.
+		// An ended session took its links with it: revoking one a dialog
+		// still shows is done. Its viewers may still be written what the
+		// session's end owed them (for closeWait at most): the revoke stops
+		// that, here and at the rendezvous, which forgot the link too.
 		if d, ok := s.registry.Get(id); ok && d.Info().Status.Ended() {
+			d.DisconnectLink(linkID)
+			if pub := s.publishedOf(id); pub != nil {
+				s.track(func() {
+					ctx, cancel := context.WithTimeout(context.Background(), closeWait)
+					defer cancel()
+					_ = pub.Revoke(ctx, linkID)
+				})
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

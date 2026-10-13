@@ -406,6 +406,11 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if !found {
 			found = s.retryUndeleted(m.LinkID, hs.Owner())
 		}
+		// A session that ended took its links with it, and its viewers may
+		// still be written what its end owed them: the revoke stops that.
+		if !found && hs.Info().Status.Ended() {
+			hs.DisconnectLink(m.LinkID)
+		}
 		switch {
 		case !found:
 			_ = hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: m.RequestID})
