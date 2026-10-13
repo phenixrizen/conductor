@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_QUESTION_ID } from './protocol'
-import { answerMessage, draftQuestion, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
+import { answerMessage, bindDraft, draftQuestion, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -37,6 +37,11 @@ describe('draftQuestion', () => {
   it('names nothing for a line begun while no question waits, or for an older owner', () => {
     expect(draftQuestion('', 'x', undefined, { state: 'working' })).toBeUndefined()
     expect(draftQuestion('', 'x', undefined, { state: 'needs_input' })).toBeUndefined()
+  })
+  it("binds a sidebar row's line by the id its prompt shows (bindDraft)", () => {
+    let bound = bindDraft('', 'f', undefined, 'q1q1q1q1q1q1q1q1')
+    bound = bindDraft('f', 'feature', bound, 'q2q2q2q2q2q2q2q2')
+    expect(bound).toBe('q1q1q1q1q1q1q1q1')
   })
 })
 

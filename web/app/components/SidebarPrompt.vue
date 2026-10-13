@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RowPrompt } from '~/utils/sidebarActions'
+import { bindDraft } from '~/utils/reply'
 
 /**
  * A prompt answered in the row (design 3b, 3c): the choices as numbered buttons, a free-text prompt as a reply field where Enter
@@ -14,11 +15,19 @@ const emit = defineEmits<{ answer: [index: number, question: string | undefined]
 const text = ref('')
 // While the host is away, or the session waits for its terminal, nothing typed here would go.
 const off = computed(() => props.busy || props.prompt.away || props.prompt.held)
+/**
+ * The question a line was begun for (as its first character was typed): it names that one when sent, whatever the row shows by
+ * then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next.
+ */
+const draftFor = ref<string | undefined>()
+watch(text, (now, before) => {
+  draftFor.value = bindDraft(before, now, draftFor.value, props.prompt.question)
+})
 
 function send() {
   const t = text.value.trim()
   if (!t || off.value) return
-  emit('reply', t, props.prompt.question)
+  emit('reply', t, draftFor.value)
   text.value = ''
 }
 </script>

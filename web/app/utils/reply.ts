@@ -24,7 +24,12 @@ export function draftQuestion(
   bound: string | undefined,
   att: Pick<Attention, 'state' | 'id'> | null | undefined,
 ): string | undefined {
-  return after.trim() && !before.trim() ? questionOf(att) : bound
+  return bindDraft(before, after, bound, questionOf(att))
+}
+
+/** draftQuestion for a field that knows the question shown by its id alone (`current`: a sidebar row's prompt). */
+export function bindDraft(before: string, after: string, bound: string | undefined, current: string | undefined): string | undefined {
+  return after.trim() && !before.trim() ? current : bound
 }
 
 /**
