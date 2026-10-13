@@ -24,6 +24,25 @@ describe('NvimHolds', () => {
     expect(h.peek('/w/b.txt')?.id).toBe('e2')
   })
 
+  it('keeps a Neovim lost, not quit, as lost: no Neovim to end, its state with the reason', () => {
+    const h = new NvimHolds()
+    h.hold('/w/a.txt', { id: 'e1', state: { ...state, cmdline: ':w' }, cursor: { line: 2, col: 3 } })
+    h.ended('e1', 'error: msgpack: cannot convert Nil to int64')
+    expect(h.peek('/w/a.txt')).toEqual({ id: '', state: { ...state, cmdline: '', lost: 'error: msgpack: cannot convert Nil to int64' }, cursor: { line: 2, col: 3 } })
+    // Ending it again, or quitting, finds no Neovim of that id.
+    h.ended('e1', 'quit')
+    expect(h.peek('/w/a.txt')?.state.lost).toBe('error: msgpack: cannot convert Nil to int64')
+    // Its tab closed: handed back with no id, nothing to end.
+    expect(h.orphans([])).toEqual([{ path: '/w/a.txt', id: '' }])
+  })
+
+  it('forgets a Neovim that quit', () => {
+    const h = new NvimHolds()
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })
+    h.ended('e1', 'quit')
+    expect(h.peek('/w/a.txt')).toBeUndefined()
+  })
+
   it('hands back the Neovims whose tab closed, and only those', () => {
     const h = new NvimHolds()
     h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })

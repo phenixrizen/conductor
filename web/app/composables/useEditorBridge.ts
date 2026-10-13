@@ -24,7 +24,7 @@ export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: (
   // The Neovims of tabs not in front holding changes not written; they live on this connection, so they go with it (reset).
   const holds = new NvimHolds()
   function onNvim(ev: NvimEvent) {
-    if (ev.kind === 'closed' && ev.id) holds.ended(ev.id)
+    if (ev.kind === 'closed' && ev.id) holds.ended(ev.id, ev.reason)
     for (const cb of listeners) cb(ev)
   }
   function onWelcome(w: Welcome) {

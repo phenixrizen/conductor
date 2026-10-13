@@ -152,14 +152,23 @@ async function startNvim() {
   if (!bridge || !editor || !model || !monacoRef) return
   // This tab's Neovim, held while another tab was in front with its changes not written: taken back as it was.
   const held = bridge.holds.take(props.path)
-  if (held && !freshModel) {
+  if (held?.state.lost && !freshModel) {
+    // Lost (utils/nvimLost) while away, or before the tab was last left: its text stays, read only, until Reopen or a close.
+    Object.assign(nvimState, held.state)
+    editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
+    editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
+    tellNvim()
+    tellDirty()
+    return
+  }
+  if (held && held.id && !freshModel) {
     nvimId = held.id
     Object.assign(nvimState, held.state)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
     editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
   } else {
     // Its model is gone with the text it mirrored: that Neovim ends as a lost connection ends it, its swap file keeping the changes.
-    if (held) bridge.close(held.id)
+    if (held?.id) bridge.close(held.id)
     try {
       const opened = await bridge.open(props.path)
       if (!editor) return
@@ -439,6 +448,10 @@ onBeforeUnmount(() => {
       const at = editor?.getPosition()
       props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
     } else props.nvim.close(nvimId)
+  } else if (props.nvim && nvimState.lost && nvimState.modified) {
+    // Neovim lost with changes not written: its text stays the tab's for the next showing (a tab switched, the area folded).
+    const at = editor?.getPosition()
+    props.nvim.holds.hold(props.path, { id: '', state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
   }
   nvimId = null
   unsubscribe?.()
@@ -499,7 +512,11 @@ function answerConfirm(key: string) {
   tellNvim()
   editor?.focus()
 }
-defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite })
+/** Lets a lost Neovim's text go (Reopen, the person's choice): this editor leaves keeping nothing, and the next starts Neovim anew. */
+function releaseLost() {
+  nvimState.lost = undefined
+}
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite, releaseLost })
 </script>
 
 <template>

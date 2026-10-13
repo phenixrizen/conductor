@@ -274,10 +274,15 @@ const fileReadOnly = computed(() => (active.value?.kind === 'file' ? fileReadOnl
 const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) || fileReadOnly.value : 'Neovim is not offered on this page'))
 const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
 const nvimState = ref<NvimViewState | null>(null)
-// Reopen after Neovim was lost (utils/nvimLost): a new editor, and with it a new Neovim, for the tab in front.
+// Reopen after Neovim was lost (utils/nvimLost): the lost one's text let go, then a new editor, and with it a new Neovim, for the tab
+// in front. Copy keeps that text first, as the banner says.
 const nvimEpoch = ref(0)
 function reopenNvim() {
+  ;(editorRef.value as { releaseLost?: () => void } | null)?.releaseLost?.()
   nvimEpoch.value++
+}
+function copyLostText() {
+  copy(editorRef.value?.getText() ?? '', 'Text copied')
 }
 // Neovim's status is the editor's in front: another tab, or the other keymap, starts it empty until that editor reports (round 14: the
 // last tab's mode, banner or question stayed over the next tab's file, and a test typed into the new tab before its Neovim listened).
@@ -317,7 +322,7 @@ watch(
   (paths) => {
     const bridge = props.nvim
     if (!bridge) return
-    for (const o of bridge.holds.orphans(paths)) bridge.close(o.id, true)
+    for (const o of bridge.holds.orphans(paths)) if (o.id) bridge.close(o.id, true)
   },
   { flush: 'post' },
 )
@@ -616,6 +621,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       <div v-if="nvimOn && nvimState?.lost && active?.kind === 'file'" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-nvim-lost>
         <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" />
         <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}</span>
+        <UButton label="Copy the text" icon="i-lucide-copy" size="xs" color="neutral" variant="soft" data-nvim-lost-copy @click="copyLostText" />
         <UButton label="Reopen" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" data-nvim-reopen @click="reopenNvim" />
       </div>
       <!-- Neovim asks (:confirm q, a write over a file changed outside): the question and its choices as buttons. -->
