@@ -502,6 +502,7 @@ function onNvimEvent(ev: NvimEvent) {
       const refused = ev.ack && echo ? echo.noteRefused(ev.ack, ev.text) : ''
       nvimState.message = refused ? `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${refused}` : (ev.message ?? ev.code ?? 'error')
       nvimState.messageKind = 'emsg'
+      markGuesses()
       tellNvim()
       tellDirty()
       break

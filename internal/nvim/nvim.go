@@ -641,14 +641,17 @@ func (e *Editor) Input(keys string) error { return e.InputSeq(keys, 0) }
 // page that showed the keys at once knows which of its guesses the buffer
 // now holds. While Neovim waits for a command's next key nothing is
 // acknowledged; the next keys' Ack covers these.
-func (e *Editor) InputSeq(keys string, seq uint32) error {
+func (e *Editor) InputSeq(keys string, seq uint32) (err error) {
 	if e.closed.Load() {
 		return ErrClosed
 	}
 	e.inputMu.Lock()
 	defer e.inputMu.Unlock()
 	// Neovim takes what its input buffer has room for and says how much: the
-	// rest is given again once it has read some, or the keys are refused.
+	// rest is given again once it has read some, or the keys are refused;
+	// those it took are acknowledged like any (below), then the refusal is
+	// returned.
+	var refused error
 	for rest, tries := keys, 0; rest != ""; tries++ {
 		n, err := e.v.Input(rest)
 		if err != nil {
@@ -661,12 +664,16 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 			break
 		}
 		if tries >= inputTries {
-			return &InputFullError{Rest: rest[n:]}
+			refused = &InputFullError{Rest: rest[n:]}
+			break
 		}
 		rest = rest[n:]
 		if n == 0 {
 			time.Sleep(inputWait)
 		}
+	}
+	if refused != nil {
+		defer func() { err = refused }()
 	}
 	// A command waiting for its next key (the second g of gg, f's
 	// character) is cancelled by an eval: nvim_get_mode is answered without

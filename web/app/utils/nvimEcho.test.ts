@@ -458,13 +458,29 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.unconfirmed).toBe('yz')
   })
 
-  it('keeps only the end of keys Neovim took in part (its input full), and says that end', () => {
+  it('says the end of keys Neovim took in part (its input full); the part it took waits for its word like any key', () => {
     const e = inInsert(doc('alpha'))
     e.send('hello', { line: 1, col: 6 })
     expect(e.noteRefused(1, 'llo')).toBe('llo')
-    expect(e.unsettled).toBe(false)
+    // he reached Neovim: waited for, and kept aside if Neovim is lost before it says it did them.
+    expect(e.unsettled).toBe(true)
     e.markLost()
+    expect(e.unconfirmed).toBe('hello')
+    e.noteSettled(1)
+    expect(e.unsettled).toBe(false)
     expect(e.unconfirmed).toBe('llo')
+  })
+
+  it("takes a refused key's guess off the text: Neovim never had it", () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.send('z', { line: 1, col: 8 })
+    expect(d.text).toEqual(['alphaxyz'])
+    expect(e.noteRefused(2)).toBe('y')
+    expect(d.text).toEqual(['alphaxz'])
+    expect(e.range()).toEqual({ line: 1, from: 6, to: 8 })
   })
 
   it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {

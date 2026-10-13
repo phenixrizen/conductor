@@ -47,6 +47,8 @@ export const ECHO_HOLD_MS = 250
 interface Guess {
   seq: number
   text: string
+  /** In the ledger: keys refused on their way, which no settle covers. */
+  refused?: boolean
 }
 
 const isInsert = (mode: string) => mode === 'i' || mode === 'insert' || mode === 'ic' || mode === 'ix'
@@ -150,21 +152,32 @@ export class NvimEcho {
   }
 
   /**
-   * The keys numbered seq did not reach Neovim (refused: too many at once, its input full), or only their end, rest, did not: they
-   * will never be done, and its later word that keys are done does not cover them. Returns those that did not, for the person.
+   * The keys numbered seq did not reach Neovim (refused: too many at once, its input full): they will never be done, and its later
+   * word that keys are done does not cover them; a guess of theirs comes off the text, since Neovim never had it. Or only their end,
+   * rest, did not: what came before it reached Neovim and waits for its word like any key. Returns those that did not, for the person.
    */
   noteRefused(seq: number, rest?: string): string {
+    const i = this.typed.findIndex((t) => t.seq === seq)
+    const sent = i >= 0 ? this.typed[i]!.text : ''
+    if (rest && rest.length < sent.length && sent.endsWith(rest)) {
+      this.typed.splice(i, 1, { seq, text: sent.slice(0, sent.length - rest.length) }, { seq, text: rest, refused: true })
+      return rest
+    }
     this.refused.add(seq)
-    const g = this.typed.find((t) => t.seq === seq)
-    // Only their end (Neovim's input full): what came before it reached Neovim.
-    if (g && rest) g.text = rest
-    return g?.text ?? rest ?? ''
+    if (i >= 0) this.typed[i]!.refused = true
+    if (this.guesses.some((g) => g.seq === seq)) {
+      this.unshow()
+      this.guesses = this.guesses.filter((g) => g.seq !== seq)
+      if (this.guesses.length) this.show()
+      else this.base = null
+    }
+    return sent || rest || ''
   }
 
   /** Neovim has done the keys numbered up to seq (the `settled` event). */
   noteSettled(seq: number): void {
     this.settledSeq = Math.max(this.settledSeq, seq)
-    this.typed = this.typed.filter((g) => g.seq > seq || this.refused.has(g.seq))
+    this.typed = this.typed.filter((g) => g.seq > seq || g.refused)
     if (!this.base || !this.guesses.length || this.guesses[0]!.seq > seq) return
     // Neovim has done the keys of these guesses and sent every change they made: what its text holds of them it holds, and those it
     // does not it made nothing of (a mapping that took the key). The guesses after them stay, laid after what it holds.
