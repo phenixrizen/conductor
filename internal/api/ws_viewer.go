@@ -121,7 +121,7 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 		switch f.Type {
 		case proto.TypeInput:
 			if err := local.Input(sub, f.Payload); err != nil {
-				s.sendInputError(sub, local, err)
+				s.sendKeysError(sub, local, err)
 			}
 		case proto.TypeControl:
 			if !s.handleLocalControl(sub, local, &held, f.Payload) {
@@ -147,6 +147,17 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 // submitTimeout bounds a submit message's submission: its turn, the pause
 // and its Enter.
 const submitTimeout = 10 * time.Second
+
+// sendKeysError answers keystrokes (INPUT) refused with err: revoked or
+// expired when the viewer's link no longer opens the session, else as
+// sendInputError.
+func (s *Server) sendKeysError(sub *session.Subscription, local *session.Local, err error) {
+	if code, msg, ok := session.LinkRefusal(err); ok {
+		local.Send(sub, proto.NewError(code, msg))
+		return
+	}
+	s.sendInputError(sub, local, err)
+}
 
 func (s *Server) sendInputError(sub *session.Subscription, local *session.Local, err error) {
 	switch {
@@ -249,12 +260,7 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			return false
 		}
 		if err := local.FileGet(sub, m); err != nil {
-			code := proto.ErrCodeFileDenied
-			if errors.Is(err, session.ErrTooManyRequests) {
-				code = proto.ErrCodeTooManyRequests
-			}
-			if frame, encErr := proto.EncodeFile(proto.FileHeader{ReqID: m.ReqID, Path: m.Path, Kind: "error",
-				Error: &proto.ErrorInfo{Code: code, Message: err.Error()}}, nil); encErr == nil {
+			if frame := session.FileGetRefused(m, err); frame != nil {
 				local.Send(sub, frame)
 			}
 		}

@@ -157,15 +157,22 @@ func (s *Local) nvimOwnerOnly(sub *Subscription) bool {
 
 // NvimOpen starts an editor for sub on req.Path and answers with an
 // nvim_event of kind opened (then the whole buffer as lines), or returns
-// why not: ErrNvimUnavailable, ErrFileDenied (the path or the policy),
-// errGitDir (a file in a repository's .git), ErrTooManyRequests (the
-// bounds), errGone (the connection went: nothing would close an editor
-// opened then), or an error of Neovim's
+// why not: ErrNvimUnavailable, why sub's credential no longer stands
+// (revoked: asked after the role, before anything else), ErrFileDenied
+// (the path or the policy), errGitDir (a file in a repository's .git),
+// ErrTooManyRequests (the bounds), errGone (the connection went: nothing
+// would close an editor opened then), or an error of Neovim's
 // start. ctx bounds the start: Neovim still starting when it ends is ended,
 // and so is one whose connection goes meanwhile (closeNvims).
 func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimOpen) error {
 	if req.ReqID == "" || len(req.ReqID) > 64 || len(req.Path) > 4096 {
 		return errors.New("session: invalid nvim request")
+	}
+	if !s.editAllowed(sub.Role) {
+		return ErrNvimUnavailable
+	}
+	if err := revoked(sub); err != nil {
+		return err
 	}
 	if !s.nvimAllowed(sub) || !nvimAvailable() {
 		return ErrNvimUnavailable
@@ -557,7 +564,8 @@ func NvimInputRefused(id string, seq uint32, err error) []byte {
 }
 
 // NvimRefused is the nvim_event of kind error for a refused request: the
-// code names the reason (nvim_unavailable, too_many_requests, file_denied).
+// code names the reason (nvim_unavailable, too_many_requests, file_denied;
+// revoked or expired for a link that no longer opens the session).
 func NvimRefused(reqID string, err error) []byte {
 	ev := refusal(err)
 	ev.ReqID = reqID
@@ -565,6 +573,9 @@ func NvimRefused(reqID string, err error) []byte {
 }
 
 func refusal(err error) proto.NvimEvent {
+	if code, msg, ok := LinkRefusal(err); ok {
+		return proto.NvimEvent{T: proto.CtlNvimEvent, Kind: proto.NvimError, Code: code, Message: msg}
+	}
 	code := proto.ErrCodeFileDenied
 	switch {
 	case errors.Is(err, ErrNvimUnavailable):

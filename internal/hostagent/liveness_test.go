@@ -262,7 +262,13 @@ func liveHostStalling(t *testing.T, pause, stall time.Duration) (a *agent, px *s
 // directly.
 func liveHostAt(t *testing.T, base string, pause, stall time.Duration) (a *agent, viewer func(id, linkID string) *submitViewer) {
 	t.Helper()
-	a, proc, begun := newSubmitHost(t, pause, 0, 0)
+	return liveHostOf(t, base, stall, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
+}
+
+// liveHostOf is liveHostAt whose session takes opts.
+func liveHostOf(t *testing.T, base string, stall time.Duration, opts session.Options) (a *agent, viewer func(id, linkID string) *submitViewer) {
+	t.Helper()
+	a, proc, begun := newHostOf(t, opts, 0, 0)
 	a.liveWithin, a.livePing, a.stallWait = liveTestWithin, liveTestPing, stall
 	a.opts = Options{ServerURL: base, Token: hostToken, Name: "liveness", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", ReconnectMax: time.Second, Log: discardLog}
 	a.dir = t.TempDir()

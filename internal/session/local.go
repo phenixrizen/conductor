@@ -1704,8 +1704,12 @@ func (s *Local) Detach(sub *Subscription) {
 // Input waits for that at most Options.InputWait: a program that takes
 // nothing meanwhile gets ErrInputStalled, the keystrokes written later if
 // the write had begun (see writeProc) and never otherwise. Keystrokes not
-// yet written when sub ends (revoked, detached) are never written. Keys
-// written (a terminal's own report aside) end the hold of the session's
+// yet written when sub ends (revoked, detached), or once its credential no
+// longer stands (AttachOptions.Authorize: ErrRevoked, ErrExpired, or a kind
+// of either), are never written: refused with that error, asked as they are
+// queued and again as the writer takes them. A viewer with no credential
+// (one of the owner's windows, a host's own terminal) is never refused so.
+// Keys written (a terminal's own report aside) end the hold of the session's
 // turn for a submission's text typed without its Enter (holdTyped). data
 // may be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
@@ -1847,9 +1851,12 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	typedEnter := enter
 	var quiet bool
 	var startupSince *time.Time
-	// A reply to a question is withdrawn as a submission is too, once the
-	// connection's credential no longer stands (writeWait.credential).
-	o.from, o.anyEnd, o.credential = sub, true, question != ""
+	// Keys are withdrawn as the connection ends, and, as a submission is,
+	// once its credential no longer stands (a link's: revoked or expired,
+	// or on a host its server not heard from lately), asked as they are
+	// queued and again as the writer takes them (writeWait.from): a write
+	// begun before lands as the program reads, and none after it begins.
+	o.from, o.anyEnd = sub, true
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
 	// write holds, one the connection's last write began included.
