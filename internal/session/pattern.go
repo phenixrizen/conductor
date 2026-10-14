@@ -383,7 +383,8 @@ func (w *PatternWatcher) Text() string {
 }
 
 // Whole returns all the text the watcher keeps: a screen watcher's whole
-// screen (Screen.Text, every row, where Text is its last rows), the others'
+// screen (Screen.Lines, every row, a row autowrap went on from read with
+// the next as one line, where Text is its last rows), the others'
 // Text; whether that is a whole frame, as a terminal shows it (a screen's
 // Settled; always for the others); and a screen's size (0 by 0 for the
 // others). What tells that something is no longer on the screen reads
@@ -393,7 +394,7 @@ func (w *PatternWatcher) Whole() (text string, settled bool, cols, rows int) {
 	defer w.mu.Unlock()
 	if sc, ok := w.tracker.(*Screen); ok {
 		cols, rows = sc.Size()
-		return sc.Text(), sc.Settled(), cols, rows
+		return sc.Lines(), sc.Settled(), cols, rows
 	}
 	return w.tracker.Last(), true, 0, 0
 }

@@ -2320,3 +2320,65 @@ func TestTwoLongApprovalsAlikeUpToTheCutAreTwoQuestions(t *testing.T) {
 		t.Fatalf("written %q", got)
 	}
 }
+
+// On a screen narrower than a startup question's heading, autowrap cuts a
+// word of it at the screen's edge ("featu" and "re settings"): the question
+// is still on the screen, and a reply to it is taken. Its rows are read as
+// the one line the program wrote (Screen.Lines), never as two words.
+func TestAReplyToAStartupQuestionAutowrapCutIsTaken(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 40, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte(codexBackgroundScreen))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if text, settled, _, _ := s.asked.Whole(); !settled || !strings.Contains(text, "incompatible feature settings") {
+		t.Fatalf("the screen as read for a reply: %q (settled %v)", text, settled)
+	}
+	if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("1")); err != nil {
+		t.Fatalf("a reply to the question on a narrow screen: %v", err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// An agent's question reported with a choice whose key is a digit (`1`),
+// and a dialog or a startup question drawn on the screen before the
+// session has asked it (a watcher asks once the screen is quiet): a reply
+// to the report is refused, nothing written, for its `1` would reach what
+// the screen shows now (Codex's approval, its first line "Yes, proceed").
+func TestAReplyToAReportIsRefusedOnceTheScreenDrawsAQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		questions []StartupQuestion
+		screen    string
+		drawn     string
+	}{
+		{"an approval", approvalQuestions(), approvalDialog("rm -rf build"), "Would you like to run"},
+		{"a startup question", startupQuestions(), codexBackgroundScreen, "Background server"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: tc.questions}))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+			if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which one?", SourceAPI, "", []Option{{Label: "One", Input: "1"}, {Label: "Two", Input: "2"}}); err != nil {
+				t.Fatal(err)
+			}
+			q := s.Info().Attention
+			p.outW.Write([]byte(tc.screen))
+			deadline := time.Now().Add(3 * time.Second)
+			for !strings.Contains(s.asked.Text(), tc.drawn) {
+				if time.Now().After(deadline) {
+					t.Fatalf("the screen never showed it: %q", s.asked.Text())
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			// Read, not yet quiet (the watcher looks after patternQuiet): the report is still what the session shows.
+			if a := s.Info().Attention; a.ID != q.ID {
+				t.Fatalf("the watcher asked before the reply: %+v", a)
+			}
+			if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("1")); !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("a 1 for the report once the screen drew a question: %v", err)
+			}
+			noWrite(t, p, 200*time.Millisecond)
+		})
+	}
+}

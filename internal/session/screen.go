@@ -74,6 +74,12 @@ type Screen struct {
 	// frame that erases nothing, or only some rows, leaves it so.
 	clipped, unclipAtEnd bool
 
+	// softMain, softAlt and soft (main's or alt's, as cells is) mark the
+	// rows whose text goes on in the row below: autowrap took the cursor
+	// past the row's end. An erase to a row's end ends that. Lines reads
+	// such rows as one line, as the program wrote them.
+	softMain, softAlt, soft []bool
+
 	st      screenState
 	params  []byte
 	long    bool // the sequence had more parameter bytes than kept: it is dropped
@@ -145,13 +151,15 @@ func (s *Screen) Resize(cols, rows int) {
 		mainShift, altShift = 0, shift
 	}
 	s.main = fit(s.main, mainShift)
+	s.softMain = make([]bool, rows)
 	if s.alt != nil {
 		s.alt = fit(s.alt, altShift)
+		s.softAlt = make([]bool, rows)
 	}
 	if s.altOn {
-		s.cells = s.alt
+		s.cells, s.soft = s.alt, s.softAlt
 	} else {
-		s.cells = s.main
+		s.cells, s.soft = s.main, s.softMain
 	}
 	s.rows, s.cols = rows, cols
 	s.y = min(s.y-shift, rows-1)
@@ -298,6 +306,7 @@ func (s *Screen) put(r rune) {
 		return
 	}
 	if s.wrap {
+		s.soft[s.y] = true
 		s.x, s.wrap = 0, false
 		s.index()
 	}
@@ -305,6 +314,7 @@ func (s *Screen) put(r rune) {
 		if w > s.cols {
 			return
 		}
+		s.soft[s.y] = true
 		s.x = 0
 		s.index()
 	}
@@ -354,8 +364,10 @@ func (s *Screen) scrollUp(top, bot, n int) {
 	}
 	n = min(n, bot-top+1)
 	copy(s.cells[top:bot+1], s.cells[top+n:bot+1])
+	copy(s.soft[top:bot+1], s.soft[top+n:bot+1])
 	for r := bot - n + 1; r <= bot; r++ {
 		s.cells[r] = blankRow(s.cols)
+		s.soft[r] = false
 	}
 }
 
@@ -366,14 +378,17 @@ func (s *Screen) scrollDown(top, bot, n int) {
 	}
 	n = min(n, bot-top+1)
 	copy(s.cells[top+n:bot+1], s.cells[top:bot+1-n])
+	copy(s.soft[top+n:bot+1], s.soft[top:bot+1-n])
 	for r := top; r < top+n; r++ {
 		s.cells[r] = blankRow(s.cols)
+		s.soft[r] = false
 	}
 }
 
 func (s *Screen) reset() {
 	s.main, s.alt = blankRows(s.rows, s.cols), nil
-	s.cells, s.altOn = s.main, false
+	s.softMain, s.softAlt = make([]bool, s.rows), nil
+	s.cells, s.soft, s.altOn = s.main, s.softMain, false
 	s.x, s.y, s.top, s.bot, s.wrap = 0, 0, 0, s.rows-1, false
 }
 
@@ -386,6 +401,9 @@ func (s *Screen) clampCursor() {
 func (s *Screen) erase(r, a, b int) {
 	row := s.cells[r]
 	a, b = max(0, a), min(len(row), b)
+	if b == len(row) {
+		s.soft[r] = false
+	}
 	for c := a; c < b; c++ {
 		row[c] = ' '
 	}
@@ -560,9 +578,10 @@ func (s *Screen) altScreen(on, cursor bool) {
 			s.savedMain = [2]int{s.x, s.y}
 		}
 		s.alt = blankRows(s.rows, s.cols)
-		s.cells, s.altOn = s.alt, true
+		s.softAlt = make([]bool, s.rows)
+		s.cells, s.soft, s.altOn = s.alt, s.softAlt, true
 	} else {
-		s.cells, s.altOn = s.main, false
+		s.cells, s.soft, s.altOn = s.main, s.softMain, false
 		if cursor {
 			s.x, s.y = s.savedMain[0], s.savedMain[1]
 			s.clampCursor()
@@ -575,6 +594,11 @@ func (s *Screen) altScreen(on, cursor bool) {
 // at its end left out, the rows joined by line breaks, the blank rows at the
 // bottom left out.
 func (s *Screen) Text() string { return s.text(len(s.cells)) }
+
+// Lines is Text with each row autowrap went on from (soft) and the row below
+// it read as one line, the row kept whole, as the program wrote them: a word
+// a narrow screen cut at its edge reads whole.
+func (s *Screen) Lines() string { return s.rowsText(len(s.cells), true) }
 
 // maxLookRows bounds the rows Last gives a pattern: a dialog is the bottom
 // of what a TUI draws, and a look at a screen of hundreds of wide rows would
@@ -605,7 +629,10 @@ func (s *Screen) Size() (cols, rows int) { return s.cols, s.rows }
 func (s *Screen) Last() string { return s.text(maxLookRows) }
 
 // text is Text, its last n rows at most.
-func (s *Screen) text(n int) string {
+func (s *Screen) text(n int) string { return s.rowsText(n, false) }
+
+// rowsText is text, and with soft Lines, its last n rows at most.
+func (s *Screen) rowsText(n int, soft bool) string {
 	var b strings.Builder
 	last := -1
 	for r := len(s.cells) - 1; r >= 0; r-- {
@@ -616,7 +643,8 @@ func (s *Screen) text(n int) string {
 	}
 	first := max(0, last-n+1)
 	for r := first; r <= last; r++ {
-		if r > first {
+		joined := soft && r > first && s.soft[r-1]
+		if r > first && !joined {
 			b.WriteByte('\n')
 		}
 		line := make([]rune, 0, len(s.cells[r]))
@@ -625,7 +653,11 @@ func (s *Screen) text(n int) string {
 				line = append(line, c)
 			}
 		}
-		b.WriteString(strings.TrimRight(string(line), " "))
+		if soft && s.soft[r] && r < last {
+			b.WriteString(string(line))
+		} else {
+			b.WriteString(strings.TrimRight(string(line), " "))
+		}
 	}
 	return b.String()
 }

@@ -2100,12 +2100,15 @@ func (s *Local) waitsLocked(id string) error {
 	return nil
 }
 
-// stillOnScreen reports, for a reply to the question named id when that is
-// one the session reads off the screen (a dialog asked during the work, a
-// startup question), whether the screen its watcher reads still shows it:
-// ErrQuestionAnswered when it shows another question, not asked yet (a
-// watcher asks once the screen is quiet), or none, for its keys would
-// reach what took its place. nil for any other question.
+// stillOnScreen reports, for a reply to the question named id, whether the
+// screen still shows that question and no other the reply's keys would
+// reach: ErrQuestionAnswered when it does not. A question the session reads
+// off the screen (a dialog asked during the work, a startup question) is
+// still on it, and no other is drawn in its place, not asked yet (a
+// watcher asks once the screen is quiet). Any other question (an agent's
+// report, a bell's) has no dialog drawn over it, nor a startup question:
+// the program waits on that one now, and a key for the report (its `1`)
+// would answer it.
 func (s *Local) stillOnScreen(id string) error {
 	s.mu.Lock()
 	att := s.info.Attention
@@ -2113,11 +2116,13 @@ func (s *Local) stillOnScreen(id string) error {
 	if att.ID != id {
 		return nil
 	}
-	switch {
-	case att.Source == SourceQuestion && s.asked != nil:
-		if _, words := s.askedIn(s.asked.Text()); words != att.Message {
+	if s.asked != nil {
+		_, words := s.askedIn(s.asked.Text())
+		if att.Source == SourceQuestion && words != att.Message || att.Source != SourceQuestion && words != "" {
 			return ErrQuestionAnswered
 		}
+	}
+	switch {
 	case att.Source == SourceTrust && s.trust != nil:
 		if s.lastStartup(s.trust.Text()) != att.Message {
 			return ErrQuestionAnswered
@@ -2129,6 +2134,24 @@ func (s *Local) stillOnScreen(id string) error {
 		// reply would reach what took its place.
 		if s.asked != nil {
 			if text, settled, _, _ := s.asked.Whole(); settled && s.lastStartup(text) != att.Message {
+				return ErrQuestionAnswered
+			}
+		}
+	case att.Source != SourceQuestion && s.trust != nil && s.trust.Watching():
+		// A startup question drawn: the screen as it is now, a whole frame,
+		// or else the output the watcher keeps, shows one, other than the
+		// one last answered (still shown, the program slow to go on).
+		text := s.trust.Text()
+		if s.asked != nil {
+			if whole, settled, _, _ := s.asked.Whole(); settled {
+				text = whole
+			}
+		}
+		if words := s.lastStartup(text); words != "" {
+			s.mu.Lock()
+			answered := words == s.startupAnsweredWords
+			s.mu.Unlock()
+			if !answered {
 				return ErrQuestionAnswered
 			}
 		}

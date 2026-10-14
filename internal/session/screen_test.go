@@ -184,3 +184,50 @@ func FuzzScreen(f *testing.F) {
 		_ = s.Text()
 	})
 }
+
+// A row autowrap went on from and the row below it are one line to Lines,
+// the row whole, its last column's space kept: a word a narrow screen cut
+// at its edge reads whole there (Text keeps the rows apart). The mark moves
+// with the rows as they scroll, goes when the row is erased to its end, and
+// is no line break written by the program, nor a cursor moved before the
+// next character.
+func TestScreenLinesJoinsTheRowsAutowrapWentOnFrom(t *testing.T) {
+	s := screenOf(10, 4, "has a feature here\r\nnext")
+	if got := s.Text(); got != "has a feat\nure here\nnext" {
+		t.Fatalf("text %q", got)
+	}
+	if got := s.Lines(); got != "has a feature here\nnext" {
+		t.Fatalf("lines %q", got)
+	}
+	s = screenOf(10, 4, "ends with \r\nspace")
+	if got := s.Lines(); got != "ends with\nspace" {
+		t.Fatalf("a row filled, then a line break: %q", got)
+	}
+	s = screenOf(10, 4, "abcdefghij\x1b[2;1Hnext")
+	if got := s.Lines(); got != "abcdefghij\nnext" {
+		t.Fatalf("a row filled, then the cursor moved: %q", got)
+	}
+	s = screenOf(10, 4, "abcd fghij klm")
+	if got := s.Lines(); got != "abcd fghij klm" {
+		t.Fatalf("a space in the last column: %q", got)
+	}
+	// Scrolled up a row: the mark goes with its row.
+	s = screenOf(10, 4, "top\r\nhas a feature\r\nend\r\nmore")
+	if got := s.Lines(); got != "has a feature\nend\nmore" {
+		t.Fatalf("scrolled %q", got)
+	}
+	// The row erased to its end, the line is two again.
+	s = screenOf(10, 4, "has a feature\x1b[1;5H\x1b[K")
+	if got := s.Lines(); got != "has\nure" {
+		t.Fatalf("after EL %q", got)
+	}
+	// On the alternate screen, and back.
+	s = screenOf(10, 4, "has a feature", "\x1b[?1049h\x1b[Halt row")
+	if got := s.Lines(); got != "alt row" {
+		t.Fatalf("alternate %q", got)
+	}
+	s.Write([]byte("\x1b[?1049l"))
+	if got := s.Lines(); got != "has a feature" {
+		t.Fatalf("back on the main screen %q", got)
+	}
+}
