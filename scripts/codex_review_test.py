@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from codex_review import NotInstalled, install_root, main, refused_flag, registry_path
+import codex_review
+from codex_review import BaseUnknown, NotInstalled, base_of, behind, install_root, main, refused_flag, registry_path
 
 HERE = Path("/repo/conductor")
 
@@ -99,6 +100,84 @@ class Flags(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(main(argv), 2, argv)
             self.assertIn("refused", err.getvalue())
+
+
+class FakeGit:
+    """Answers git as a repository would, keeping every argv: remotes, a
+    fetch that works or not, and how far HEAD is behind each base."""
+
+    def __init__(self, behind_by: dict[str, int], remotes=("origin",), fetch_ok=True):
+        self.calls: list[list[str]] = []
+        self.behind_by, self.remotes, self.fetch_ok = behind_by, remotes, fetch_ok
+
+    def __call__(self, argv, capture_output=True, text=True, env=None):
+        self.calls.append(argv)
+        if argv[:2] == ["git", "remote"]:
+            return subprocess.CompletedProcess(argv, 0, "\n".join(self.remotes) + "\n", "")
+        if argv[:2] == ["git", "fetch"]:
+            return subprocess.CompletedProcess(argv, 0 if self.fetch_ok else 1, "", "" if self.fetch_ok else "network down")
+        base = argv[-1].split("..", 1)[1]
+        if base not in self.behind_by:
+            return subprocess.CompletedProcess(argv, 128, "", f"fatal: bad revision '{argv[-1]}'")
+        return subprocess.CompletedProcess(argv, 0, f"{self.behind_by[base]}\n", "")
+
+
+class Behind(unittest.TestCase):
+    def test_the_base_is_base_s_value_else_origin_main(self):
+        self.assertEqual(base_of(["focus"]), "origin/main")
+        self.assertEqual(base_of(["--base", "origin/parent", "focus"]), "origin/parent")
+        self.assertEqual(base_of(["--base=origin/parent", "focus"]), "origin/parent")
+
+    def test_the_base_s_remote_is_fetched_before_counting(self):
+        git = FakeGit({"origin/main": 3})
+        self.assertEqual(behind("origin/main", git), (3, ""))
+        self.assertIn(["git", "fetch", "-q", "origin"], git.calls)
+        self.assertLess(git.calls.index(["git", "fetch", "-q", "origin"]), git.calls.index(["git", "rev-list", "--count", "HEAD..origin/main"]))
+
+    def test_a_local_base_fetches_nothing(self):
+        git = FakeGit({"parent-branch": 0})
+        self.assertEqual(behind("parent-branch", git), (0, ""))
+        self.assertFalse([c for c in git.calls if c[:2] == ["git", "fetch"]])
+
+    def test_a_failed_fetch_compares_with_what_was_fetched_and_says_so(self):
+        count, note = behind("origin/main", FakeGit({"origin/main": 0}, fetch_ok=False))
+        self.assertEqual(count, 0)
+        self.assertIn("could not fetch origin", note)
+
+    def test_an_unknown_base_is_refused(self):
+        with self.assertRaises(BaseUnknown):
+            behind("origin/nope", FakeGit({}))
+
+
+class MainChecksTheBase(unittest.TestCase):
+    def test_a_branch_behind_its_base_is_refused_before_the_plugin_is_looked_for(self):
+        with mock.patch.object(codex_review, "behind", return_value=(2, "")), \
+                mock.patch.object(codex_review, "registry_path", side_effect=AssertionError("looked for the plugin")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(["focus"]), 2)
+        self.assertIn("2 commits behind origin/main", err.getvalue())
+        self.assertIn("rebase onto it first", err.getvalue())
+
+    def test_a_stacked_branch_is_compared_with_the_base_it_names(self):
+        seen = []
+        with mock.patch.object(codex_review, "behind", side_effect=lambda base, env=None: seen.append(base) or (0, "")), \
+                mock.patch.object(codex_review, "install_root", side_effect=NotInstalled("not installed")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["--base", "origin/parent", "focus"]), 1)
+        self.assertEqual(seen, ["origin/parent"])
+
+    def test_a_branch_on_its_base_goes_on_to_the_review(self):
+        with mock.patch.object(codex_review, "behind", return_value=(0, "")), \
+                mock.patch.object(codex_review, "install_root", side_effect=NotInstalled("not installed")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(["focus"]), 1)
+        self.assertIn("not installed", err.getvalue())
+
+    def test_an_unknown_base_is_refused(self):
+        with mock.patch.object(codex_review, "behind", side_effect=BaseUnknown("cannot compare this branch with origin/nope")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(["--base", "origin/nope", "focus"]), 2)
+        self.assertIn("cannot compare", err.getvalue())
 
 
 if __name__ == "__main__":

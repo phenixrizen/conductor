@@ -130,6 +130,15 @@ went.
   closed as fixed before the fix is on `main`. An issue closes otherwise
   only as a duplicate (naming the issue it repeats) or as not planned when
   the owner drops it, its comment saying why.
+- **Parallel work only on separate files.** Two changes that touch the
+  same files (the same package's state, the same component) are not worked
+  at once in parallel worktrees: the second starts from main once the first
+  has merged. Each merge moves main under the other, and every move means a
+  rebase, the checks again and another review. Changes to separate areas
+  (a Go package and a page, a doc) run side by side. When a change must
+  build on one not merged yet, it is stacked on that branch and reviewed
+  against it (`--base`), then rebased and reviewed again on main once the
+  first merges.
 - **Security findings are the exception.** A security finding never
   becomes an issue, a card, a pull request text or a commit message until
   its fix has shipped (see Reviews): it stays in the owner's private
@@ -222,6 +231,13 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   commit everything first. The pull request's body names the commit
   reviewed; commits after it (the review's own fixes included) get another
   review before the merge.
+- **The review is of what will merge.** The script fetches its base and
+  refuses a branch that is behind it: rebase onto the current
+  `origin/main` before each review, so the review sees the change on top
+  of everything merged since it began, not on the main it started from. A
+  branch stacked on another (see Parallel work) names its parent with
+  `--base`; once the parent merges it is rebased onto main and reviewed
+  again before it merges.
 - **A checkpoint after five rounds.** When the fifth review of a change
   still finds something, stop and sort its findings before going on. A
   finding in the current stream of work (the change introduces it,
