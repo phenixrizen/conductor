@@ -40,7 +40,7 @@ func TestATerminalReportAnswersNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.SetAttention(AttentionNeedsInput, "READY", SourceAPI)
-	for _, report := range []string{"\x1b[12;40R", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b[0n", "\x1b[I", "\x1b[O",
+	for _, report := range []string{"\x1b[12;40R", "\x1b[?12;40;1R", "\x1b[?1;2c", "\x1b[>0;276;0c", "\x1b[0n", "\x1b[I", "\x1b[O",
 		"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\", "\x1b]10;rgb:ffff/ffff/ffff\a", "\x1bP>|xterm.js(6.0.0)\x1b\\", "\x1b[12;40R\x1b[I"} {
 		if err := s.Input(sub, []byte(report)); err != nil {
 			t.Fatal(err)
@@ -60,7 +60,8 @@ func TestATerminalReportAnswersNothing(t *testing.T) {
 		t.Fatalf("typing did not answer: %q", st)
 	}
 	for in, want := range map[string]bool{"\x1b[A": false, "\x1b[12;40Ry": false, "y\x1b[12;40R": false, "": false,
-		strings.Repeat("\x1b[1;1R", 50): false, strings.Repeat("\x1b[1;1R", 30): true} {
+		strings.Repeat("\x1b[1;1R", 50): false, strings.Repeat("\x1b[1;1R", 30): true,
+		"\x1b[?12;40;1R\x1b[I": true, "\x1b[12;40;1R": false, "\x1b[?12;40;1;1R": false} {
 		if got := isTerminalReport([]byte(in)); got != want {
 			t.Errorf("isTerminalReport(%q) = %v", in, got)
 		}
@@ -124,6 +125,9 @@ func TestTypesSomething(t *testing.T) {
 		"\x1b[M\x20\xf0\xf0\x1b[<35;1;1M": false,
 		"\x1b[I\x1b[<35;10;10M":           false, // focus in, then the pointer
 		"\x1b[3;1R\x1b[O":                 false, // a cursor position report, focus out
+		"\x1b[?3;1;1R":                    false, // DECXCPR with its page
+		"\x1b[?3;1;1R\x1b[<35;1;1M":       false,
+		"\x1b[3;1;1R":                     true, // no such report without the ?
 		many:                              false,
 		many + "\x1b[I":                   false,
 		"\x1b[<35;1":                      false, // begun, the rest to come
@@ -181,7 +185,7 @@ func TestTypesSomething(t *testing.T) {
 func TestCSIReportLenIsThePatterns(t *testing.T) {
 	params := []string{"", "0", "1", "3", "4", "9", "12", "123", "1234", "12345", "123456", ";", "1;", ";1", "1;2", "12;34",
 		"1234;1234", "12345;1234", "12345;12", "12345;123", "1;2;3", "12;123;12345", "123;1;1", "1234;12345;12345",
-		"12345;1;1", "1;2;3;4", strings.Repeat("1", 64), strings.Repeat("1", 65), strings.Repeat("6;", 32), strings.Repeat("6;", 33)}
+		"12345;1;1", "1;1;1", "24;80;1", "1234;1234;1234", "1234;1234;12345", "12345;1234;1", "1;2;3;4", strings.Repeat("1", 64), strings.Repeat("1", 65), strings.Repeat("6;", 32), strings.Repeat("6;", 33)}
 	n := 0
 	for _, lead := range []string{"", "?", ">", "<", "="} {
 		for _, p := range params {
@@ -210,7 +214,7 @@ func TestCSIReportLenIsThePatterns(t *testing.T) {
 // finishes it.
 func TestAReportCutAnywhereTypesNothing(t *testing.T) {
 	for _, r := range []string{
-		"\x1b[24;80R", "\x1b[?24;80R", "\x1b[0n", "\x1b[?62;22c", "\x1b[>0;276;0c", "\x1b[?2004;2$y",
+		"\x1b[24;80R", "\x1b[?24;80R", "\x1b[?24;80;1R", "\x1b[0n", "\x1b[?62;22c", "\x1b[>0;276;0c", "\x1b[?2004;2$y",
 		"\x1b[8;24;80t", "\x1b[I", "\x1b[O",
 		"\x1b]11;rgb:ffff/ffff/ffff\x07", "\x1b]10;rgb:0000/0000/0000\x1b\\", "\x1b]4;1;rgb:cd00/0000/0000\x07",
 		"\x1bP>|xterm(380)\x1b\\", "\x1bP1$r0m\x1b\\",
@@ -218,7 +222,7 @@ func TestAReportCutAnywhereTypesNothing(t *testing.T) {
 		// Each kind at the longest its grammar takes.
 		"\x1b[?62;1;2;4;6;9;15;18;21;22;28c",
 		"\x1b[?" + strings.Repeat("6;", 32) + "c", "\x1b[>" + strings.Repeat("1", 64) + "c",
-		"\x1b[?9999;9999R", "\x1b[?99999;99$y", "\x1b[99;99999;99999t",
+		"\x1b[?9999;9999R", "\x1b[?9999;9999;9999R", "\x1b[?99999;99$y", "\x1b[99;99999;99999t",
 		"\x1b]4;999;rgb:" + strings.Repeat("f/", 32) + "\x07", "\x1b]12;rgb:" + strings.Repeat("a", 64) + "\x1b\\",
 		"\x1bP>|$+" + strings.Repeat("x", 128) + "\x1b\\",
 		"\x1b[<9999;99999;99999M", "\x1b[9999;99999;99999M",

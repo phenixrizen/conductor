@@ -172,7 +172,8 @@ func TestThePointerDoesNotEndTheHold(t *testing.T) {
 	for _, report := range []string{"\x1b[<35;10;10M", "\x1b[<0;3;4M\x1b[<0;3;4m", "\x1b[35;10;10M", "\x1b[M#**",
 		"\x1b[I\x1b[<35;10;10M", strings.Repeat("\x1b[<35;10;10M", 30), "\x1b[<35;1", "0;10M\x1b[O",
 		"\x1b]11;rg", "b:ffff/ffff/ffff\x1b", "\\",
-		"\x1b[?62;1;2;4;6;9;15;18;21;22;28", "c"} {
+		"\x1b[?62;1;2;4;6;9;15;18;21;22;28", "c",
+		"\x1b[?24;80;1R", "\x1b[?3;1", ";1R"} {
 		if err := s.Input(owner, []byte(report)); err != nil {
 			t.Fatal(err)
 		}

@@ -10,7 +10,7 @@ import (
 const maxReport = 256
 
 // terminalReports are the alternatives of terminalReport.
-const terminalReports = `\x1b\[\??\d{1,4};\d{1,4}R` + // CPR, DECXCPR
+const terminalReports = `\x1b\[(?:\??\d{1,4};\d{1,4}|\?\d{1,4};\d{1,4};\d{1,4})R` + // CPR, DECXCPR (its page too)
 	`|\x1b\[[0-3]n` + // DSR status
 	`|\x1b\[[?>][\d;]{0,64}c` + // DA1, DA2
 	`|\x1b\[\??\d{1,5};\d{1,2}\$y` + // DECRPM
@@ -20,7 +20,8 @@ const terminalReports = `\x1b\[\??\d{1,4};\d{1,4}R` + // CPR, DECXCPR
 	`|\x1bP[>!|0-9$+]{1,4}[^\x1b]{0,128}\x1b\\` // DCS replies
 
 // terminalReport matches what a terminal sends by itself, never a key press:
-// the replies to a cursor position query (CPR, DECXCPR), a status report, the
+// the replies to a cursor position query (CPR, DECXCPR, with or without the
+// page DECXCPR may end with: ESC[?r;c;pR), a status report, the
 // device attributes (DA1, DA2), a mode report (DECRPM), a window report, a
 // colour query's reply (OSC 4, 10, 11, 12), a DCS reply (XTVERSION, DECRQSS),
 // and the focus in and out reports. One write may carry several. A write of
@@ -123,8 +124,8 @@ scan:
 		return true
 	}
 	switch data[i] {
-	case 'R': // CPR, DECXCPR
-		if (lead == 0 || lead == '?') && within(4, 4) {
+	case 'R': // CPR, DECXCPR; DECXCPR's page, after a ? alone
+		if (lead == 0 || lead == '?') && within(4, 4) || lead == '?' && within(4, 4, 4) {
 			return i + 1
 		}
 	case 'n': // DSR status
