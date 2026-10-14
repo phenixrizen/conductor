@@ -12,9 +12,9 @@ user's), never the newest copy in the cache.
 It reviews the commits origin/main...HEAD (the plugin's --base), not the
 working tree, and waits for the result, in the directory it is run from.
 It first fetches the base's remote and refuses a branch that is behind its
-base: the review is of what will merge, so a branch is rebased onto the
-current base first (a branch stacked on another names that one with
---base).
+base, or one whose base cannot be fetched or compared: the review is of
+what will merge, so a branch is rebased onto the current base first (a
+branch stacked on another names that one with --base, once).
 Only --base <ref> (in place of origin/main) and --scope <auto|branch|
 working-tree> may go before the focus; any other flag is refused, the
 plugin's directory options among them, since the installation is chosen
@@ -49,30 +49,53 @@ class BaseUnknown(Exception):
     pass
 
 
+class BaseRepeated(Exception):
+    pass
+
+
 def base_of(argv: list[str]) -> str:
-    """The base the review compares with: --base's value, else origin/main."""
+    """The base the review compares with: --base's one value, else origin/main.
+    A second --base is refused: the plugin takes the last, and the check
+    must look at the base the review uses."""
+    found = []
     for i, a in enumerate(argv):
         if a == "--base" and i + 1 < len(argv):
-            return argv[i + 1]
-        if a.startswith("--base="):
-            return a.split("=", 1)[1]
-    return "origin/main"
+            found.append(argv[i + 1])
+        elif a.startswith("--base="):
+            found.append(a.split("=", 1)[1])
+    if len(found) > 1:
+        raise BaseRepeated("--base is given more than once; give the base the review compares with once")
+    return found[0] if found else "origin/main"
 
 
-def behind(base: str, run=subprocess.run, env: dict[str, str] | None = None) -> tuple[int, str]:
-    """How many commits base has that HEAD lacks, once base's remote is
-    fetched (when base names a remote's branch), and a note when the fetch
-    failed and the base last fetched is used."""
-    note = ""
-    remote = base.split("/", 1)[0] if "/" in base else ""
+def remote_of(base: str, run=subprocess.run, env: dict[str, str] | None = None) -> str:
+    """The remote whose branch base names, by its full ref (refs/remotes/<remote>/...), else ""."""
+    r = run(["git", "rev-parse", "--symbolic-full-name", base], capture_output=True, text=True, env=env)
+    full = r.stdout.strip() if r.returncode == 0 else ""
+    if not full.startswith("refs/remotes/"):
+        return ""
+    rest = full[len("refs/remotes/"):]
     remotes = run(["git", "remote"], capture_output=True, text=True, env=env)
-    if remote and remotes.returncode == 0 and remote in remotes.stdout.split():
-        if run(["git", "fetch", "-q", remote], capture_output=True, text=True, env=env).returncode != 0:
-            note = f"could not fetch {remote}; comparing with the {base} last fetched"
+    names = remotes.stdout.split() if remotes.returncode == 0 else []
+    for name in sorted(names, key=len, reverse=True):
+        if rest == name or rest.startswith(name + "/"):
+            return name
+    return ""
+
+
+def behind(base: str, run=subprocess.run, env: dict[str, str] | None = None) -> int:
+    """How many commits base has that HEAD lacks, once base's remote is
+    fetched when base is a remote's branch (however it is spelled). A fetch
+    that fails refuses the review: what the remote holds is unknown."""
+    remote = remote_of(base, run, env)
+    if remote:
+        f = run(["git", "fetch", "-q", remote], capture_output=True, text=True, env=env)
+        if f.returncode != 0:
+            raise BaseUnknown(f"could not fetch {remote} ({f.stderr.strip() or 'fetch failed'}): the review needs the current {base}")
     r = run(["git", "rev-list", "--count", f"HEAD..{base}"], capture_output=True, text=True, env=env)
     if r.returncode != 0:
         raise BaseUnknown(f"cannot compare this branch with {base}: {r.stderr.strip() or 'unknown revision'}")
-    return int(r.stdout.strip() or "0"), note
+    return int(r.stdout.strip() or "0")
 
 
 def clean_env(env: dict[str, str]) -> dict[str, str]:
@@ -136,14 +159,12 @@ def main(argv: list[str]) -> int:
     if bad:
         sys.stderr.write(f"codex_review: {bad} is refused: only --base and --scope go before the focus; run it from the repository to review\n")
         return 2
-    base = base_of(argv)
     try:
-        count, note = behind(base, env=clean_env(dict(os.environ)))
-    except BaseUnknown as e:
+        base = base_of(argv)
+        count = behind(base, env=clean_env(dict(os.environ)))
+    except (BaseRepeated, BaseUnknown) as e:
         sys.stderr.write(f"codex_review: {e}\n")
         return 2
-    if note:
-        sys.stderr.write(f"codex_review: {note}\n")
     if count:
         sys.stderr.write(f"codex_review: this branch is {count} commit{'s' if count != 1 else ''} behind {base}: rebase onto it first, "
                          "so the review covers what will merge (a branch stacked on another names that one with --base)\n")
