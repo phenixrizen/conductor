@@ -138,7 +138,7 @@ read; an `nvim_open` with an `nvim_event` error of that code; a `chat` or a
 typed. The role is checked first (`read_only`, and `nvim_unavailable` for a
 view link's `nvim_open`). Each refusal carries words a page shows as they
 come: `this link no longer opens the session`, `this link has expired`, or on
-a host the words saying the server has not answered it. The one
+a host the words saying the server has not been heard from. The one
 exception is a write the program had begun to take when the link went (one
 INPUT frame, or a submission's text or its carriage return): while the
 program does not read, it lands when the program reads, as a submission's
@@ -511,7 +511,8 @@ own lane. Nothing else vouches: not a frame the server relays, not the
 server's own pings, not bytes read. Past the bound the host does with what
 the viewer sent what it does for a link gone (a line's text not typed, or
 typed with no carriage return and the session's turn held for a person;
-the rest refused `revoked` with words saying the server has not answered).
+the rest refused `revoked` with words saying the server has not been heard
+from, which for a host means no ping of its own answered).
 A viewer's attach needs its link alone. The host pings at once as a viewer
 joins through a link (before its hello can arrive), and every 5 s while a
 viewer who joined through a link, or something of theirs, is there, quiet

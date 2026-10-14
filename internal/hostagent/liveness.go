@@ -219,8 +219,10 @@ func (l *connLive) soon(within time.Duration) <-chan struct{} {
 // with the line what it does for a link gone.
 type serverQuiet struct{ within time.Duration }
 
+// Error is the words a page shows for a refusal, the same whatever the
+// host takes for hearing from its server: no ping of its own answered.
 func (e serverQuiet) Error() string {
-	return fmt.Sprintf("host: the server has not answered the host within %s, which a link's line needs", e.within)
+	return fmt.Sprintf("host: the server has not been heard from within %s, which a link's line needs", e.within)
 }
 
 // Is makes errors.Is(serverQuiet, session.ErrRevoked) hold.
