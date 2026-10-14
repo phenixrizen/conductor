@@ -505,6 +505,47 @@ describe('the local echo when Neovim is lost', () => {
     expect(e.unsettled).toBe(false)
   })
 
+  it('says which keys are done: every one up to a number, a refused one never coming', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.send('z', { line: 1, col: 8 })
+    expect(e.doneThrough(0)).toBe(true)
+    expect(e.doneThrough(1)).toBe(false)
+    e.noteSettled(1)
+    expect(e.doneThrough(1)).toBe(true)
+    expect(e.doneThrough(3)).toBe(false)
+    e.noteRefused(2)
+    expect(e.doneThrough(2)).toBe(true)
+    expect(e.doneThrough(3)).toBe(false)
+    e.noteSettled(3)
+    expect(e.doneThrough(3)).toBe(true)
+  })
+
+  it("takes an older owner's acknowledgement for its word that keys are done, which it never says (settlesOnAck)", () => {
+    const d = doc('alpha')
+    const e = new NvimEcho(d, { settlesOnAck: true })
+    e.cursor({ line: 1, col: 6, mode: 'i', ack: 0 }, ascii)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    expect(e.unsettled).toBe(true)
+    // Its line holds x, then the acknowledgement of x: x is done, y waits.
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)).toEqual({ line: 1, col: 8 })
+    expect(e.doneThrough(1)).toBe(true)
+    expect(e.unsettled).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // y acknowledged while its tab is not in front (its follower): done too, nothing left waiting.
+    e.noteAck(2)
+    expect(e.unsettled).toBe(false)
+    // A new owner's echo waits for the word itself.
+    const n = inInsert(doc('alpha'))
+    n.send('x', { line: 1, col: 6 })
+    n.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)
+    n.noteAck(1)
+    expect(n.unsettled).toBe(true)
+  })
+
   it('goes on in another editor over the same text, its guesses kept', () => {
     const d = doc('alpha')
     const e = inInsert(d)

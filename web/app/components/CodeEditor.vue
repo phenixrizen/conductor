@@ -213,7 +213,7 @@ async function startNvim() {
   if (resumed) {
     echo = resumed
     echo.rebind(echoDoc(model))
-  } else echo = new NvimEcho(echoDoc(model))
+  } else echo = new NvimEcho(echoDoc(model), { settlesOnAck: !bridge.offer.settled })
   echo.setMode(nvimState.mode)
   guessMarks = editor.createDecorationsCollection()
   markGuesses()
@@ -340,9 +340,11 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       h.state.modified = h.state.lost ? h.state.modified || !!ev.modified : !!ev.modified
       bridge.holds.changed(path)
     } else if (ev.kind === 'cursor' && ev.ack) {
-      // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done.
+      // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done, but from an older
+      // owner, which never says so, it stands for that word (the echo's settlesOnAck).
       echoAsLeft?.noteAck(ev.ack)
       bridge.holds.changed(path)
+      letGoIfClean(h)
     } else if (ev.kind === 'error' && ev.ack) {
       // Keys refused while the tab was not in front: said on its status line when it is, and its Neovim kept until then.
       const keys = echoAsLeft?.noteRefused(ev.ack, ev.text) ?? ev.text ?? ''
@@ -411,6 +413,8 @@ function onNvimEvent(ev: NvimEvent) {
       }
       markGuesses()
       if (ev.ack) tellDirty()
+      // From an older owner, which never says keys are done, the acknowledgement stands for that word (the echo's settlesOnAck).
+      if (ev.ack && nvimState.unsettled && !echo?.unsettled) tellNvim()
       const line = Math.max(1, Math.min(ev.line ?? 1, model.getLineCount()))
       const col = toUtf16(line, ev.col ?? 1)
       if (echo && !shown) {
@@ -589,7 +593,7 @@ onBeforeUnmount(() => {
     // Neovim has not said it has done may be making some, its word not come: they keep it too (their acknowledgement is no sign: it
     // answers in the middle of a key, a plugin's vim.wait), and so do characters typed that its text does not hold yet. What the echo
     // holds is shown first, and its changes from now on are followed into the tab's text, until it is done and clean.
-    if (nvimState.modified || echo?.showing || echo?.unsettled) {
+    if (nvimState.modified || echo?.showing || echo?.unsettled || nvimState.refused) {
       // The echo goes with it whole (the numbers of its keys, the characters Neovim has not had): its next editor goes on with it.
       echo?.finish()
       const asLeft = echo
@@ -649,21 +653,20 @@ function nvimWrite(): Promise<boolean> {
       resolve(ok)
     }
     const timer = setTimeout(() => done(false), 10_000)
-    // Done once Neovim has written this tab's file (not another buffer a hook wrote) and said the write's keys are done.
+    // Done once Neovim has written this tab's file (not another buffer a hook wrote) and said the write's keys are done (the echo
+    // knows, from its `settled`, or from an older owner's acknowledgement), and the buffer is clean then: a write that came from an
+    // earlier :w, before later changes, is not this one's.
     let wrote = false
     let seq = 0
-    let settled = false
-    // And the buffer clean then: a write that came from an earlier :w, before later changes, is not this one's.
     const check = () => {
-      if (wrote && (!seq || settled) && !nvimState.modified) done(true)
+      if (wrote && (!seq || !echo || echo.doneThrough(seq)) && !nvimState.modified) done(true)
     }
     off = bridge.subscribe((ev) => {
       if (ev.id !== id) return
       if (ev.kind === 'written' && ev.path === file) {
         wrote = true
         check()
-      } else if (ev.kind === 'settled' && seq && (ev.ack ?? 0) >= seq) {
-        settled = true
+      } else if ((ev.kind === 'settled' || (ev.kind === 'cursor' && ev.ack)) && seq) {
         check()
       } else if (ev.kind === 'modified') {
         check()
@@ -690,13 +693,13 @@ function answerConfirm(key: string) {
   tellNvim()
   editor?.focus()
 }
-/** Lets a lost Neovim's text go (Reopen, the person's choice): this editor leaves keeping nothing, and the next starts Neovim anew. */
 /** The person has seen the keys that did not reach Neovim (the status line's Dismiss): a Save may write without them. */
 function dismissRefused() {
   nvimState.refused = undefined
   tellNvim()
   tellDirty()
 }
+/** Lets a lost Neovim's text go (Reopen, the person's choice): this editor leaves keeping nothing, and the next starts Neovim anew. */
 function releaseLost() {
   nvimState.lost = undefined
   nvimState.unconfirmed = undefined

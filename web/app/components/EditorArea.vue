@@ -366,7 +366,10 @@ watch(
   },
   { flush: 'post' },
 )
-/** Ends Neovim id once it has done the keys up to seq (its `settled`), or has ended, or after half a minute (a question it waits on). */
+/**
+ * Ends Neovim id once it has done the keys up to seq (its `settled`; from an older owner, which never says so, their acknowledgement), or
+ * has ended, or after half a minute (a question it waits on).
+ */
 function closeOnceSettled(bridge: NvimBridge, id: string, seq: number) {
   let off: () => void = () => {}
   const end = () => {
@@ -380,7 +383,7 @@ function closeOnceSettled(bridge: NvimBridge, id: string, seq: number) {
     if (ev.kind === 'closed') {
       clearTimeout(timer)
       off()
-    } else if (ev.kind === 'settled' && (ev.ack ?? 0) >= seq) end()
+    } else if ((ev.kind === 'settled' || (ev.kind === 'cursor' && !bridge.offer.settled)) && (ev.ack ?? 0) >= seq) end()
   })
 }
 // A tab whose editor is not up (not in front, or the area folded) wears its unsaved dot as its held Neovim says (Neovim's word coming

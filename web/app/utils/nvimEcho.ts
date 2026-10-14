@@ -114,7 +114,14 @@ export class NvimEcho {
   private base: { line: number; col: number; text: string } | null = null // Neovim's line the guesses lie over, and where
   private held: EchoLines[] = []
 
-  constructor(private doc: EchoDoc) {}
+  /**
+   * settlesOnAck: the owner's Neovim never says keys are done (an older owner, no `nvimSettled` in its welcome): an acknowledgement
+   * stands for that word, as it did before there was one.
+   */
+  constructor(
+    private doc: EchoDoc,
+    private opts: { settlesOnAck?: boolean } = {},
+  ) {}
 
   /** The echo goes on in another editor over the same text (its tab shown again): what it shows and reconciles goes there. */
   rebind(doc: EchoDoc): void {
@@ -147,8 +154,13 @@ export class NvimEcho {
    * way. Their acknowledgement is no sign of it: Neovim answers in the middle of a key (a plugin's vim.wait).
    */
   get unsettled(): boolean {
-    for (let s = this.settledSeq + 1; s <= this.seq; s++) if (!this.refused.has(s)) return true
-    return false
+    return !this.doneThrough(this.seq)
+  }
+
+  /** Whether Neovim has said it has done every key numbered up to seq that reached it (a refused key never will). */
+  doneThrough(seq: number): boolean {
+    for (let s = this.settledSeq + 1; s <= seq; s++) if (!this.refused.has(s)) return false
+    return true
   }
 
   /**
@@ -232,6 +244,7 @@ export class NvimEcho {
    */
   noteAck(ack: number): void {
     this.acked = Math.max(this.acked, ack)
+    if (this.opts.settlesOnAck) this.noteSettled(ack)
   }
 
   /** The guesses' range on screen, for the editor's marking. */
@@ -280,6 +293,7 @@ export class NvimEcho {
     this.acked = Math.max(this.acked, ev.ack)
     this.settle(ev.ack)
     if (this.barrier && ev.ack >= this.barrier) this.barrier = 0
+    if (this.opts.settlesOnAck) this.noteSettled(ev.ack)
     if (!isInsert(this.mode)) this.drop()
     const r = this.range()
     if (r) return { line: r.line, col: r.to }

@@ -202,6 +202,8 @@ export interface Welcome {
   nvim?: boolean
   /** This connection may edit but not through Neovim, which is kept for the owner's own windows: a link's controller edits with the page's own keys and saves (`nvim` is then absent). */
   nvimOwnerOnly?: boolean
+  /** The owner's Neovim says when keys are done (`settled`) and names refused keys; absent from an older owner, whose acknowledgement stands for it. */
+  nvimSettled?: boolean
   /** The owner takes `chat` and `chat_send`; absent from an older owner, which must be sent neither. */
   chat?: boolean
   /** The session is a run's member with a run chat: scope `run` posts and sends, and `chat_roster`. */
@@ -595,7 +597,7 @@ export const HOST_RUN_LINK_UPDATES_PER_MINUTE = 30
  */
 export interface NvimBridge {
   /** The welcome arrived, the machine has nvim, and this connection may edit. `ownerOnly` when editing is allowed but Neovim is kept for the owner's own window. */
-  offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; ownerOnly?: boolean; machine?: string }
+  offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; ownerOnly?: boolean; machine?: string; settled?: boolean }
   open(path: string): Promise<NvimEvent>
   /** Keys for editor id; seq, when given, comes back as the `ack` of the cursor once Neovim has handled them (round 13, G5). */
   input(id: string, keys: string, seq?: number): void

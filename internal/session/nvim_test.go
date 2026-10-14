@@ -347,7 +347,7 @@ func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Detach(owner)
-	if w := firstControl(t, ownerSink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != true || w["nvimOwnerOnly"] != nil {
+	if w := firstControl(t, ownerSink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != true || w["nvimOwnerOnly"] != nil || w["nvimSettled"] != true {
 		t.Fatalf("the owner's welcome: %v", w)
 	}
 	from := 0
@@ -377,7 +377,7 @@ func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if w := firstControl(t, sink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != nil || w["nvimOwnerOnly"] != true {
+		if w := firstControl(t, sink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != nil || w["nvimOwnerOnly"] != true || w["nvimSettled"] != nil {
 			t.Fatalf("%s: the welcome: %v", o.Name, w)
 		}
 		if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "g1", Path: "a.txt"}); err != ErrNvimUnavailable {

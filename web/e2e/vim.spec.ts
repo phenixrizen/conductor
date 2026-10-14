@@ -684,6 +684,186 @@ test('keys refused on their way are named until dismissed, and Save waits for th
   }
 })
 
+// Keys refused stay named when their tab is left, though Neovim has done and written all it had: here its first typed character waits
+// 5 s (vim.wait), so a paste fills its input and the end of it is refused; then it takes the rest at once and :w writes it. Another tab
+// in front, the area folded: the tab keeps its Neovim and the word of what it never had, and Save still waits for that. Before, the
+// tab left clean and done let its Neovim go, and the word with it.
+test('keys refused stay named across a tab switched and the area folded, after Neovim wrote the rest', async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(
+    join(config, 'init.lua'),
+    "local first = true\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() if first then first = false vim.wait(5000) end end })\n",
+  )
+  const cwd = join(state.root, 'files-vim-refused-kept')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'end\n')
+  writeFileSync(join(cwd, 'other.txt'), 'beta\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-refused-kept', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    await expect(lines).toContainText('end', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('I')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // Larger than its input buffer, in short lines, so that Neovim, out of its wait, has the rest at once (each character it inserts
+    // sends its whole line).
+    await page.keyboard.insertText('aaaaaaaaa\n'.repeat(2_000))
+    const refused = status.locator('[data-nvim-refused]')
+    await expect(refused).toBeVisible({ timeout: 30_000 })
+    let said = ''
+    await expect
+      .poll(
+        async () => {
+          const now = (await refused.textContent()) ?? ''
+          const same = now === said
+          said = now
+          return same
+        },
+        { timeout: 60_000, intervals: [3_000] },
+      )
+      .toBe(true)
+    // Neovim out of its wait and done with what it had (the Escape after it); then written, its buffer clean and every key done.
+    await page.keyboard.press('Escape')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 60_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 30_000 }).toMatch(/^(a+\n)+a*end\n$/)
+    await page.waitForTimeout(1000)
+    await expect(refused).toHaveText(said)
+    // Another tab in front, then back: the word stays, and its Neovim with it.
+    await pane.locator(`[data-file-node="${cwd}/other.txt"]`).click()
+    await expect(lines).toContainText('beta', { timeout: 30_000 })
+    await expect(refused).toHaveCount(0)
+    await tab('notes.txt').click()
+    await expect(refused).toHaveText(said, { timeout: 15_000 })
+    // The area folded, then not: the same.
+    await area.locator('[data-editor-fold]').click()
+    await area.locator('[data-editor-unfold]').click()
+    await expect(refused).toHaveText(said, { timeout: 15_000 })
+    // Save from the close question still waits for the person's word on them; dismissed, the tab closes with nothing to ask.
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    const question = page.locator('[role="dialog"]')
+    await expect(question.locator('[data-editor-close-refused]')).toBeVisible()
+    await question.locator('[data-editor-close-save]').click()
+    await expect(tab('notes.txt')).toHaveCount(1)
+    await question.getByRole('button', { name: 'Cancel' }).click()
+    await refused.locator('[data-nvim-refused-dismiss]').click()
+    await expect(refused).toHaveCount(0)
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(tab('notes.txt')).toHaveCount(0, { timeout: 15_000 })
+    expect(readFileSync(join(cwd, 'notes.txt'), 'utf8')).toMatch(/^(a+\n)+a*end\n$/)
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
+// An older owner (a `conductor host` from before the word that keys are done) sends no nvimSettled in its welcome and no settled
+// event: the page takes an acknowledgement for that word, as it did. Here the page's connection drops both, as such an owner would
+// not send them. The keymap turns once the keys are acknowledged, and Save in the close question writes and closes. Before, the page
+// waited for a word that never came: the keymap stayed disabled, and Save gave up after ten seconds, its tab kept.
+test('with an owner that never says keys are done, an acknowledgement stands for it: the keymap turns, Save closes', async ({ page, api, state }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { offerSeen?: boolean; settledDropped?: number }
+    const d = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'onmessage')!
+    Object.defineProperty(WebSocket.prototype, 'onmessage', {
+      configurable: true,
+      get() {
+        return d.get!.call(this)
+      },
+      set(fn: ((ev: MessageEvent) => unknown) | null) {
+        const self = this as WebSocket
+        d.set!.call(
+          self,
+          fn &&
+            ((ev: MessageEvent) => {
+              if (ev.data instanceof ArrayBuffer) {
+                const b = new Uint8Array(ev.data)
+                if (b[0] === 0x03) {
+                  let msg: Record<string, unknown> | null = null
+                  try {
+                    msg = JSON.parse(new TextDecoder().decode(b.subarray(1)))
+                  } catch {
+                    msg = null
+                  }
+                  if (msg?.t === 'nvim_event' && msg.kind === 'settled') {
+                    w.settledDropped = (w.settledDropped ?? 0) + 1
+                    return
+                  }
+                  if (msg?.t === 'welcome' && 'nvimSettled' in msg) {
+                    w.offerSeen = true
+                    delete msg.nvimSettled
+                    const body = new TextEncoder().encode(JSON.stringify(msg))
+                    const out = new Uint8Array(body.length + 1)
+                    out[0] = 0x03
+                    out.set(body, 1)
+                    return fn.call(self, new MessageEvent('message', { data: out.buffer }))
+                  }
+                }
+              }
+              return fn.call(self, ev)
+            }),
+        )
+      },
+    })
+  })
+  const cwd = join(state.root, 'files-vim-older')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-older', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const button = area.locator('[data-editor-keymap]')
+    const question = page.locator('[role="dialog"]')
+    await expect(lines).toContainText('alpha', { timeout: 30_000 })
+    await button.click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    // This server offers the word; the page was made not to see it.
+    expect(await page.evaluate(() => (window as unknown as { offerSeen?: boolean }).offerSeen)).toBe(true)
+    const dot = area.locator('[data-editor-tab-active] [data-editor-dirty]')
+    await lines.click()
+    await page.keyboard.type('Axy')
+    await page.keyboard.press('Escape')
+    await expect(lines).toContainText('alphaxy', { timeout: 15_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alphaxy\n')
+    await expect(dot).toHaveCount(0, { timeout: 15_000 })
+    // Written and every key acknowledged: the keymap turns.
+    await expect(button).toBeEnabled({ timeout: 10_000 })
+    expect(await page.evaluate(() => (window as unknown as { settledDropped?: number }).settledDropped ?? 0)).toBeGreaterThan(0)
+    // Save from the close question: written, and the tab closes.
+    await page.keyboard.type('Azz')
+    await page.keyboard.press('Escape')
+    await expect(lines).toContainText('alphaxyzz', { timeout: 15_000 })
+    await area.locator('[data-editor-tab-active] [data-editor-close]').click()
+    await expect(question).toContainText('Save notes.txt?')
+    await question.locator('[data-editor-close-save]').click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 8_000 })
+    expect(readFileSync(join(cwd, 'notes.txt'), 'utf8')).toBe('alphaxyzz\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
 // Round 13, G3: a file another Vim left a swap file for opens read-only
 // under the Neovim keymap, with a banner naming the swap file's writer and
 // what applies. A Vim that died with unsaved text left this one: Recover
