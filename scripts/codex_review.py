@@ -55,16 +55,22 @@ class BaseRepeated(Exception):
 
 def base_of(argv: list[str]) -> str:
     """The base the review compares with: --base's one value, else origin/main.
-    A second --base is refused: the plugin takes the last, and the check
-    must look at the base the review uses."""
+    A second --base is refused (the plugin takes the last, and the check must
+    look at the base the review uses), and so is an empty or missing one."""
     found = []
     for i, a in enumerate(argv):
-        if a == "--base" and i + 1 < len(argv):
+        if a == "--base":
+            if i + 1 >= len(argv):
+                raise BaseUnknown("--base is given with no value")
             found.append(argv[i + 1])
         elif a.startswith("--base="):
             found.append(a.split("=", 1)[1])
     if len(found) > 1:
         raise BaseRepeated("--base is given more than once; give the base the review compares with once")
+    if found and not found[0].strip():
+        # git reads HEAD.. as HEAD..HEAD, and the plugin takes an empty base as none:
+        # the check would pass and the review would look at something else.
+        raise BaseUnknown("--base is empty (an unset variable?); name the base the review compares with")
     return found[0] if found else "origin/main"
 
 

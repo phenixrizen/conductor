@@ -136,6 +136,11 @@ class Behind(unittest.TestCase):
         self.assertEqual(base_of(["--base", "origin/parent", "focus"]), "origin/parent")
         self.assertEqual(base_of(["--base=origin/parent", "focus"]), "origin/parent")
 
+    def test_an_empty_or_missing_base_is_refused(self):
+        for argv in (["--base", "", "focus"], ["--base=", "focus"], ["--base", "  ", "focus"], ["focus", "--base"]):
+            with self.assertRaises(BaseUnknown, msg=argv):
+                base_of(argv)
+
     def test_a_second_base_is_refused_whatever_its_form(self):
         for argv in (["--base", "HEAD", "--base", "origin/main", "focus"], ["--base=HEAD", "--base", "origin/main", "focus"]):
             with self.assertRaises(BaseRepeated):
@@ -194,6 +199,13 @@ class MainChecksTheBase(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(["--base", "origin/parent", "focus"]), 1)
         self.assertEqual(seen, ["origin/parent"])
+
+    def test_an_empty_base_is_refused_before_the_plugin_is_looked_for(self):
+        with mock.patch.object(codex_review, "behind", side_effect=AssertionError("compared")), \
+                mock.patch.object(codex_review, "registry_path", side_effect=AssertionError("looked for the plugin")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(["--base", "", "focus"]), 2)
+        self.assertIn("empty", err.getvalue())
 
     def test_a_second_base_is_refused_before_the_plugin_is_looked_for(self):
         with mock.patch.object(codex_review, "behind", side_effect=AssertionError("compared")), \
