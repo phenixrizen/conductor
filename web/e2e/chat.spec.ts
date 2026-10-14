@@ -481,6 +481,9 @@ test("the agent's question is in the chat with its choices; answered there, a li
       { timeout: 30_000 },
     )
     .toBe('running')
+  // The member's first turn (its prompt) ends with the stub's Stop hook, which reports done: a question posted before that would
+  // be overwritten by it, and its choice would answer nothing.
+  await expect.poll(async () => (await api.session(coreId)).attention?.state, { timeout: 30_000, message: "the member's first turn is done" }).toBe('done')
   await page.goto(`/runs/${askingRunId}`)
   await expect(page.locator('[data-run-chat-button]:not([data-run-chat-offline])')).toBeVisible({ timeout: 15_000 })
   await page.locator('[data-run-chat-button]').click()
