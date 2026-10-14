@@ -27,7 +27,7 @@ shares sessions through links. One Go module, one Nuxt app, one binary.
 | `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
 | `desktop/` | the Electron shell: starts `conductor serve` with a minted token and the settings it keeps, the handshake, health and restarts, the bridge the workbench reads the token from, WSL 2 on Windows |
 | `THIRD_PARTY_NOTICES`, `notices.go`, `scripts/notices.py` | the licences of what ships, generated (never hand-edited) from the binary's Go modules, the web bundle's npm packages (`web/build/bundledPackages.ts` lists them during the build) and the desktop app's; the root package embeds it and the server serves it at `/third-party-notices.txt` |
-| `docs/` | `protocol.md`, `architecture.md`, `features.md` (what each round decided and verified), `design/brand.md`; the bugs known and the features set aside are GitHub issues (see Issues and the project board) |
+| `docs/` | `protocol.md`, `architecture.md`, `features.md` (what each round decided and verified), `plans/` (a change's plan, reviewed before its code; see Reviews), `design/brand.md`; the bugs known and the features set aside are GitHub issues (see Issues and the project board) |
 
 `internal/session.Local` is shared by the server and the host. Anything that
 changes what a viewer sees belongs there, not in a transport. Attention
@@ -93,11 +93,23 @@ went.
   Ready once the owner picks it for a round. Write the body as GitHub
   shows it: no hard line breaks inside a paragraph (an issue shows each
   one).
-- **A bug found while working is fixed, not parked.** A review's finding
-  outside its change, a sweep, an in-app check or a flaky test is fixed in
-  that round, with its tests; it gets an issue all the same, In progress,
-  so the board shows it until its fix merges. An issue waits in Backlog
-  only when the owner sets it aside or it is a feature of its own.
+- **A bug in the current stream of work is fixed now; any other is the
+  owner's call.** The current stream of work is the change at hand and
+  what its goal needs: its own code, a defect it introduces or exposes, a
+  test it makes fail or that it touches. Such a bug is fixed in that round,
+  with its tests, and gets an issue all the same, In progress, so the
+  board shows it until its fix merges. A bug outside that stream (a
+  review's finding in code the change does not touch, a defect seen in
+  passing) is not fixed on the spot: it becomes an issue in Backlog, and
+  the owner is asked whether it is fixed now (Ready, its own pull request)
+  or waits. An agent that cannot ask reports it to whoever leads, who
+  asks. A security finding follows the same ask, but goes to the owner's
+  private document instead of an issue (see Reviews).
+- **One change per pull request.** A bug fixed now that is not the change's
+  own code (one the owner said to fix now, or a defect the change exposes
+  in code it does not otherwise touch) gets its own branch and pull request
+  from main, not more commits on the change's branch, so the change ships
+  as soon as it is ready and each review stays on one thing.
 - **The board follows the work.** A card is In progress when its branch
   starts, In review when the pull request that finishes it opens, and Done
   when that fix reaches `main`. The finishing pull request's body says
@@ -182,10 +194,30 @@ cached copy, and an ambiguous registry is refused):
 python3 scripts/codex_review.py "<focus: the risks this change touches>"
 ```
 
+- **The plan is reviewed before the code** when a change touches a state
+  machine (a session's, a link's, a turn's), a protocol, concurrency or a
+  security behaviour. The branch's first commit is
+  `docs/plans/<branch>.md`: the events that can interact and every order
+  they can come in, the invariants that must hold in all of them (say,
+  "nothing is written to a viewer once its link goes"), what is out of
+  scope, and the tests that will pin each ordering. Codex reviews that
+  commit alone (`codex_review.py "review this plan: <focus>"`) before any
+  code is written; its findings change the plan, not code. The tests for
+  the orderings are written from the plan, before the code that passes
+  them. The plan stays as the change's design record, written as the pull
+  request is (neutral for a security fix). A small fix (one cause, one
+  place, no new state) needs no plan.
 - `--base` reviews the commits `origin/main...HEAD`, not the working tree:
   commit everything first. The pull request's body names the commit
   reviewed; commits after it (the review's own fixes included) get another
   review before the merge.
+- **A checkpoint after five rounds.** When the fifth review of a change
+  still finds something, stop and sort its findings before going on: one
+  in the change's own new code is fixed and reviewed again; one in code the
+  change does not touch, or an edge case the plan left out of scope, is
+  split off (an issue, and the owner's call, as above), not fixed on the
+  branch. The pull request's body records the checkpoint. A change still
+  finding its own defects after ten rounds goes back to its plan.
 - The focus names the risks the change touches: races and ownership,
   link scopes and revocation, credentials in logs, what the switchyard can
   see, recovery after a restart, per-connection bounds.
@@ -195,8 +227,8 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   refute it.
 - The pull request's body lists the findings and what became of each. One
   outside the change's scope becomes an issue (see Issues and the project
-  board), never dropped silently; a bug among them is fixed in the same
-  round all the same.
+  board), never dropped silently, and the owner says whether it is fixed
+  now, in a pull request of its own, or waits.
 - A security finding (a way to gain access, read what one should not, or
   deny service) never goes into this public repository, a pull request, a
   commit message, an issue or the project board until its fix has
