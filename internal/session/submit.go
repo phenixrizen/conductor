@@ -512,12 +512,13 @@ func (s *Local) holdTyped() {
 // question the hold took the place of (heldOver), still waiting unless the
 // keys answer it (an Enter, one of its choices), shows again, with its id,
 // and the claim the held text made on it (answered) is let go, so that a
-// reply to it waiting for the turn (Submit, its Question) answers it.
-func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
+// reply to it waiting for the turn (Submit, its Question) answers it. It
+// reports whether that question showed again.
+func (s *Local) endHoldTyped(data []byte, maybe [][]byte) bool {
 	s.mu.Lock()
 	if s.held == nil {
 		s.mu.Unlock()
-		return
+		return false
 	}
 	close(s.held)
 	s.held = nil
@@ -547,6 +548,7 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	if restore {
 		s.notifyChange()
 	}
+	return restore
 }
 
 // Held reports whether the session's turn is held for a submission's text

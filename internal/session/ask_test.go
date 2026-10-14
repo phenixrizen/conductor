@@ -986,6 +986,77 @@ func TestAPersonsWriteBegunAsideAnswersTheQuestionShownAgain(t *testing.T) {
 	}
 }
 
+// A person's keys typed at the question showing and taken by the writer
+// once the agent's work has set it aside (the writer busy meanwhile): they
+// remove it as they are written, and the turn's done shows done. (Codex's
+// review of the code, round 2.)
+func TestKeysTypedAtTheQuestionAndWrittenOnceAsideRemoveIt(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	hold, takeAgain := gateWrites(t, p)
+	owner := ownerOf(t, s)
+	askOwn(t, s, "Which database?")
+	hold()
+	go s.Input(owner, []byte("\x1b[3;1R"))
+	untilWaiting(t, s, 0)
+	typed := make(chan error, 1)
+	go func() { typed <- s.Input(owner, []byte("Postgres\r")) }()
+	untilWaiting(t, s, 1)
+	reportState(t, s, AttentionWorking, "")
+	takeAgain()
+	written(t, p)
+	if got := written(t, p); got != "Postgres\r" {
+		t.Fatalf("written %q", got)
+	}
+	if err := returnsWithin(t, 5*time.Second, "the keys", func() error { return <-typed }); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _ := keeps(s); kept {
+		t.Fatal("the person's keys left the question kept")
+	}
+	reportState(t, s, AttentionDone, "chose")
+	shows(t, s, AttentionDone, "the done after the person's keys")
+}
+
+// Keys queued while the question is set aside under the hold, written once
+// the turn's done has held it over, that end the hold without answering it
+// (Ctrl+U, the held text killed): the question shows again and is not
+// claimed by them; a reply then answers it. (Codex's review of the code,
+// round 2.)
+func TestKeysThatEndTheHoldLeaveTheQuestionTheDoneHeldOver(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	hold, takeAgain := gateWrites(t, p)
+	owner := ownerOf(t, s)
+	q := askOwn(t, s, "Which name?")
+	reportState(t, s, AttentionWorking, "")
+	go s.holdTyped()
+	heldShows(t, s)
+	hold()
+	go s.Input(owner, []byte("\x1b[3;1R"))
+	untilWaiting(t, s, 0)
+	typed := make(chan error, 1)
+	go func() { typed <- s.Input(owner, []byte{0x15}) }()
+	untilWaiting(t, s, 1)
+	reportState(t, s, AttentionDone, "asked")
+	heldShows(t, s)
+	takeAgain()
+	written(t, p)
+	if got := written(t, p); got != "\x15" {
+		t.Fatalf("written %q", got)
+	}
+	if err := returnsWithin(t, 5*time.Second, "the keys", func() error { return <-typed }); err != nil {
+		t.Fatal(err)
+	}
+	showsOwn(t, s, q, "once Ctrl+U ended the hold")
+	if err := s.questionWaits(q.ID); err != nil {
+		t.Fatalf("a reply to it: %v", err)
+	}
+	res, err := s.Submit(context.Background(), Submission{Text: "Ada", By: owner, Question: q.ID})
+	if err != nil || !res.Entered {
+		t.Fatalf("the reply: %+v %v", res, err)
+	}
+	shows(t, s, AttentionNone, "answered by the reply")
+}
+
 // The question held over by the hold through its turn's done: an OSC
 // notification (its turn's, or the ended turn's) changes nothing, and keys
 // that end the hold without answering it show it again, the same

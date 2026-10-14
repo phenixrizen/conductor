@@ -853,6 +853,13 @@ orders or invariants above.
   written; Conductor's own leaves it. And an OSC notification under the
   hold dropped the question held over: the hold showing in its place
   counts as the question for `unlessChoices` and `unlessTurnEnded`.
+- **Round 2.** Keys typed at the question showing and taken by the writer
+  once the agent's work had set it aside left it to show again at the done:
+  a person's write removes a question set aside whenever the write began.
+  And keys begun with the question aside under the hold, taken once the
+  done had held it over, claimed it as the hold's end showed it again:
+  keys that end the hold without answering it claim nothing of the
+  question they show again (`endHoldTyped` reports it).
 - **The same words, now marked.** An `ask` with the words, source, kind and
   choices of the needs_input showing changes nothing shown, as any report
   of the same; it marks that question as the agent's from then.

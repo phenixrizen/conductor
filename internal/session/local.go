@@ -2258,6 +2258,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if held {
 			maybe = append(keys[:len(keys):len(keys)], extra...)
 		}
+		// The question the hold took the place of, shown again as the
+		// keys end the hold without answering it: they claim nothing of
+		// it (noteAnswering).
+		restored := false
 		if typed && question == "" {
 			// A person types into the terminal: a submission's text typed
 			// without its Enter no longer holds the session's turn
@@ -2269,7 +2273,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// answered (answer). Keys that answer nothing (Ctrl+U, the
 			// text killed) leave the question the hold took the place of
 			// waiting still: it shows again (endHoldTyped).
-			s.endHoldTyped(data, maybe)
+			restored = s.endHoldTyped(data, maybe)
 		}
 		own := ownKeys(data, keys) && !held
 		quiet = unkeyed || allReports(keys) && !held
@@ -2319,7 +2323,11 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if !isTerminalReport(data) && !quiet {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
-			s.noteAnswering(promptSince, data, maybe, onScreen, aside, typed)
+			noteAside := aside
+			if restored {
+				noteAside = ""
+			}
+			s.noteAnswering(promptSince, data, maybe, onScreen, noteAside, typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -2820,33 +2828,34 @@ func (s *Local) dialogGone(look uint64) {
 // asked again, before the watcher has seen the next) is not what they
 // answer.
 //
-// aside, when set, is the agent's own question set aside as the write
-// began (asideOwn), and person says the write is a person's (keys typed, a
-// reply's text or Enter), not Conductor's own (a crew's prompt, a handoff,
-// a broadcast). Weighed in the same critical section as a done that shows
-// the question again: a person's write removes it, still aside (the person
-// has taken part, and it does not show again at the done), or claims it,
-// shown again meanwhile, for the write's caller to answer once it is made
-// (answerReached); Conductor's own write leaves it as it is, aside or
-// shown, and answers nothing of it.
+// person says the write is a person's (keys typed, a reply's text or
+// Enter), not Conductor's own (a crew's prompt, a handoff, a broadcast),
+// and aside, when set, is the agent's own question set aside as the write
+// began (asideOwn). Weighed in the same critical section as the changes
+// that set the question aside or show it again: a person's write removes
+// it while it is set aside, whenever the write began (the person has taken
+// part, and it does not show again at the done); one begun while it was
+// aside claims it, shown again by its turn's done meanwhile, for the
+// write's caller to answer once it is made (answerReached), unless the
+// write's own keys ended the hold that held it over and showed it again
+// without answering it (its caller passes no aside then). Conductor's own
+// write leaves it as it is, aside or shown, and answers nothing of it.
 func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, aside string, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, keys) {
 		s.noteDialogAnswered(onScreen.words)
 	}
-	if aside != "" && s.own.ID == aside {
-		switch {
-		case s.ownAside:
-			if person {
-				s.dropOwnLocked()
-			}
-		case s.info.Attention.ID == aside:
-			if person {
-				s.markAnswered(s.info.Attention)
-			}
-			return
+	switch {
+	case s.own.ID != "" && s.ownAside:
+		if person {
+			s.dropOwnLocked()
 		}
+	case aside != "" && s.own.ID == aside && s.info.Attention.ID == aside:
+		if person {
+			s.markAnswered(s.info.Attention)
+		}
+		return
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
