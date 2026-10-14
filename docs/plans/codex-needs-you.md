@@ -1,7 +1,21 @@
-# Plan: a Codex member shows Needs you only while Codex waits (#186)
+# Plan: Needs you only while the agent waits (#186, #193)
 
-Branch `codex-needs-you`. Reviewed before any code (AGENTS.md, Reviews): it
-changes attention's state machine. Unreviewed.
+Branch `codex-needs-you`. Reviewed before any code (AGENTS.md, Reviews):
+both parts change attention's state machine. Two parts, each its own pull
+request:
+
+- **Part A (#186).** A Codex member shows Needs you while Codex works.
+- **Part B (#193).** An agent's question stops showing Needs you when its
+  turn ends, which is when the agent waits for the answer.
+
+No code is written for either until the host-connection change has merged:
+it changes `internal/session`'s input path and the host's messages, and both
+parts touch those. The order of the pull requests is at the end.
+
+Revised 2026-10-14: the real Codex 0.161 checked, the bell setting moved to
+its own pull request, Part B added. Unreviewed.
+
+# Part A: a Codex member shows Needs you only while Codex waits (#186)
 
 ## What happens, and why
 
@@ -19,8 +33,8 @@ and the terminal bell (`tui.notification_method="bel"`). The `PreToolUse`
 hook that would report `working`, as Claude Code's does, lives in
 `~/.codex/hooks.json`. Conductor writes that file only when there is none, and
 Codex runs those hooks only with `features.hooks` on and once a person has
-trusted them ("Hooks need review"). The owner's `hooks.json` is not
-Conductor's: it has three empty lists. So once something sets
+trusted them ("Hooks need review"). A person's own `hooks.json` is not
+Conductor's and may hold none of them. So once something sets
 `needs_input` during a Codex turn, nothing but the turn's `done` (or a
 person's key) clears it. Two things do set it while Codex goes on:
 
@@ -31,13 +45,11 @@ person's key) clears it. Two things do set it while Codex goes on:
    at), rings the bell for it (`Notification::AsyncQuestion`,
    `tui/src/chatwidget/questions.rs`). The bell reaches `scanOutput`, which
    shows `needs_input` "terminal bell" (`source:"bell"`).
-   Evidence: the owner's Codex rollout of a todo-crew tester on
-   2026-10-02 (`~/.codex/sessions/2026/10/02/rollout-…01a0fd42…jsonl`,
-   cwd `test_crew_todo`, Codex 0.159). It called `request_user_input_async`
-   1 min 40 s into its turn ("The branches crew/example-todo-app-98c1d030/…
-   are absent … Is there a different run or checkout whose branches I
-   should use?") and worked 4 more minutes: a patch, a handoff to core,
-   tests, then `done`.
+   Evidence: a Codex rollout of a todo-crew tester on 2026-10-02 (Codex
+   0.159). It called `request_user_input_async` 1 min 40 s into its turn
+   ("The branches crew/example-todo-app-98c1d030/… are absent … Is there a
+   different run or checkout whose branches I should use?") and worked 4
+   more minutes: a patch, a handoff to core, tests, then `done`.
 2. **The agent's own question that does not wait.** The MCP tool `ask`
    (and `conductor notify --state needs_input`) returns at once. A Codex
    member that asks and goes on keeps `needs_input` (`source:"api"`) until
@@ -47,13 +59,57 @@ Neither the screen's questions (#121, #192) nor the bell's turn rules (#170)
 change this: a bell or a report shows `needs_input` until a state replaces
 it, and Codex sends none during a turn.
 
-The owner's run of 2026-10-14 is not in the record this machine's app
-keeps. Its server log, run files and Codex rollouts hold no todo-crew run
-after 2026-10-07, and no Codex session after 2026-10-12, so which of the two
-it was is not known. Both reproduce in a Go test on `origin/main`: a
-session with Codex's questions, a prompt's Enter, then the bell and
-"? 1 question" (or a `needs_input` report), then 5 s of Codex's status row
-redrawn. The session still shows `needs_input` at the end.
+The owner's run of 2026-10-14 is not in the record the app keeps: its
+server log, run files and Codex rollouts hold no todo-crew run after
+2026-10-07, so which of the two it was is not known. Both reproduce in a Go
+test on `origin/main`: a session with Codex's questions, a prompt's Enter,
+then the bell and "? 1 question" (or a `needs_input` report), then 5 s of
+Codex's status row redrawn. The session still shows `needs_input` at the
+end.
+
+## Checked with the real Codex 0.161 (2026-10-14)
+
+By hand, in a pseudo-terminal: Codex 0.161 in a person's own home and
+login, in this repository, read-only sandbox, approvals never, one prompt
+that asked for a one-word answer, launched with both settings this part
+names (A1 and A2).
+
+- **The titles.** Codex wrote its window title as `ESC ] 0 ; <title> BEL`:
+  "Ready" at 1.4 s; a braille spinner frame and "Starting" (the frame
+  changing about every 100 ms) while its MCP servers started, to 4.5 s;
+  a frame and "Working" during the turn, 4.6 s to 5.7 s; then "Ready". No
+  bare bell outside an escape sequence. "Thinking", "Waiting" and
+  "[ ! ] Action Required" were not drawn in that run: they are the
+  source's (`tui/src/chatwidget/status_surfaces.rs`, `run_state_status_text`
+  and the action-required prefix).
+- **Without the settings.** The same launch with neither setting wrote no
+  title, but it never reached a turn: a launch with no `-c` override goes
+  through Codex's shared background server (`tui/src/startup_orchestration.rs`,
+  `tui/src/daemon_startup.rs`), and that one stopped at "Background server
+  has incompatible feature settings". So the run shows only that Codex
+  writes no title on that screen. The source says more: with
+  `tui.terminal_title` unset, Codex's items are `activity`, `thread-name`
+  and `project-name` (`DEFAULT_TERMINAL_TITLE_ITEMS`): a spinner frame
+  while busy and no word for the state, and a person's own setting may list
+  any items or none. A1's override is what makes "Working" certain in
+  Conductor's sessions.
+- **"⚠ 2 warnings · f2 to view".** Codex's header showed two warnings with
+  both settings; neither comes from them (found from Codex's source and
+  `codex doctor`, which makes no model call and draws no screen):
+  1. "Codex is ignoring 1 unrecognized configuration setting … `features.notify`
+     is ignored": that home's own `config.toml`. `codex doctor --json`
+     reports exactly this startup warning with and without the two `-c`
+     overrides.
+  2. "Running without the shared background server: command-line
+     configuration overrides (-c, --enable, --disable, or --search)
+     requires embedded mode": any `-c` override but a few feature flags
+     turns the shared server off (`config_exclusion`). Conductor's launch
+     already passes `-c` overrides (`notify`, the bell, its MCP server), so
+     every Codex session Conductor launches shows it today.
+
+  `codex doctor` reports both of A1's items as known (`terminal.title`:
+  "activity, run-state", no invalid item), and Codex checks none of the
+  names in `tui.notifications`: neither setting raises a warning.
 
 ## The changes
 
@@ -70,18 +126,20 @@ redrawn. The session still shows `needs_input` at the end.
    - "⠋ Starting" during its MCP start.
    - "Ready" at rest.
 
-   (`tui/src/chatwidget/status_surfaces.rs`, `bottom_pane/title_setup.rs`;
-   to be checked against the real Codex by hand, below.) The workbench shows
-   no program's title, so the override costs nothing visible. A user's own
-   `tui.terminal_title` is overridden in Conductor's sessions only.
-2. **Codex rings no bell for a question that does not wait.** The same
-   launch gets `-c tui.notifications=["approval-requested","plan-mode-prompt","agent-turn-complete"]`.
-   That is every notification Codex 0.161 has (`notifications.rs`) except
-   `async-question`. Approvals, MCP forms (`approval-requested`) and
-   `request_user_input` (`plan-mode-prompt`) still ring, and so does the
-   turn's end (#121 keeps it from undoing the `done`). Without this change
-   the title would clear such a bell within 100 ms, but the bell would still
-   be recorded as an attention entry and as a question in the run's chat.
+   "Working", "Starting" and "Ready" were seen on 2026-10-14 (above); the
+   rest are the source's. The workbench shows no program's title, so the
+   override costs nothing visible. A person's own `tui.terminal_title` is
+   overridden in Conductor's sessions only, and their `config.toml` is
+   never written.
+2. **Codex rings no bell for a question that does not wait.** Done in its
+   own pull request, ahead of this plan's code (branch `codex-bell-config`,
+   `Part of #186`): the launch passes
+   `-c tui.notifications=["approval-requested","plan-mode-prompt","agent-turn-complete"]`,
+   every notification Codex 0.161 has (`Notification::type_name`,
+   `tui/src/chatwidget/notifications.rs`) except `async-question`.
+   Approvals, MCP forms (`approval-requested`), `request_user_input`
+   (`plan-mode-prompt`) and the turn's end still ring (#121 keeps the
+   last from undoing the `done`). This part's tests take it as given.
 3. **A title that says the agent works is a `working` report.** The
    catalog's signal gains `workingTitle` (RE2, at most 200 bytes, must not
    match an empty title). Codex's built-in is
@@ -93,7 +151,7 @@ redrawn. The session still shows `needs_input` at the end.
    nothing. `scanOutput` weighs a title only when `WorkingTitle` is set; a
    title it does not match changes nothing. A matching title is applied as
    `setAttentionRead(AttentionWorking, "", SourceTitle, "", nil,
-   unlessTurnEnded|unlessHeld|unlessAsked, read)`:
+   unlessTurnEnded|unlessHeld|unlessOnScreen, read)`:
    - **unlessTurnEnded** (as for the bell): it does not undo a `done` until
      the next Enter or another state. A frame drawn before the turn ended
      and read after its `done` is not a new turn.
@@ -101,18 +159,19 @@ redrawn. The session still shows `needs_input` at the end.
      held for a typed text (`s.held`). The held branch of `setAttention`
      records every change it hides as an entry, and the title comes ten
      times a second.
-   - **unlessAsked** (new): it changes nothing while the session shows a
+   - **unlessOnScreen** (new): it changes nothing while the session shows a
      question it holds (`heldSource`: a startup question, a dialog on the
      screen). The screen decides those; this change leaves them alone.
 
    Everything else gives way to it, as to Claude Code's `PreToolUse`: a
    bell, an OSC notification, the agent's own report with or without
-   choices, a screen pattern, the empty state, and `working` itself (no
-   change, nothing recorded). A title spends no token of the event bucket
-   (it is the session's own observation, like the bell) and records an
-   entry only when it changes the state (`recordOwn`). It does not stamp
-   the bell's pace (`lastBell`): the bells of a burst after it stay paced
-   by the first. `SourceTitle = "title"` is a new attention source:
+   choices (Part B sets the agent's question aside instead, in its turn),
+   a screen pattern, the empty state, and `working` itself (no change,
+   nothing recorded). A title spends no token of the event bucket (it is
+   the session's own observation, like the bell) and records an entry only
+   when it changes the state (`recordOwn`). It does not stamp the bell's
+   pace (`lastBell`): the bells of a burst after it stay paced by the
+   first. `SourceTitle = "title"` is a new attention source:
    `docs/protocol.md` (Attention) says what it means;
    `web/app/utils/protocol.ts` types the source as a string and needs no
    change.
@@ -153,13 +212,17 @@ redrawn. The session still shows `needs_input` at the end.
   that the dialog is still asked.
 - O3 E4 `needs_input` (ask) then E1: `working`. The question stays in the
   chat and the activity log, where `askInChat` and `recordOwn` put it.
-- O4 E3 (an async question's bell, on a Codex that ignores change 2) then
-  E1: `working`. The bell was recorded once; the burst after it is paced.
-- O5 E5 (question shown) then E1: nothing changes (unlessAsked). The person
-  answers (E7) and `answer` clears it; the next E1 shows `working`. If the
-  dialog leaves without a key, `missAsked`'s rules stand, unchanged here.
+  (Part B, once it merges: the question is set aside and shows again at
+  its turn's `done`.)
+- O4 E3 (an async question's bell, on a Codex launched without change 2)
+  then E1: `working`. The bell was recorded once; the burst after it is
+  paced.
+- O5 E5 (question shown) then E1: nothing changes (unlessOnScreen). The
+  person answers (E7) and `answer` clears it; the next E1 shows `working`.
+  If the dialog leaves without a key, `missAsked`'s rules stand, unchanged
+  here.
 - O6 E6 then E1 (a title written while Codex starts behind its trust
-  question): nothing changes (unlessAsked).
+  question): nothing changes (unlessOnScreen).
 - O7 E8 then E1: nothing is shown or recorded (unlessHeld). The hold ends
   by a person's key; the next E1 shows `working`.
 - O8 E4 `done` then E1 (a frame drawn before the turn ended, read after the
@@ -206,11 +269,11 @@ redrawn. The session still shows `needs_input` at the end.
 - `conductor host` sessions. The host takes no catalog questions today
   (`internal/cli/host.go`) and takes no title signal either. A follow-up
   issue, together with the questions.
-- The skill's advice to Codex on `ask`. Codex cannot wait in the middle of
-  a turn: to wait it ends the turn, and the `done` replaces the question
-  for every agent. That is the behaviour since #121, unchanged here.
 - Codex's own hooks (`features.hooks`): they stay what `conductor hooks
   install` offers.
+- The two warnings in Codex's header: neither is Conductor's setting's
+  (above). Embedded mode, which every `-c` launch has today, is not
+  changed here.
 
 ## Tests that pin the orderings
 
@@ -219,17 +282,18 @@ Go (`go test -race`):
 - `internal/session`: the scanner reports OSC 0 and 2 titles with BEL and ST
   ends, split between reads, cut at the bound (no match), with control
   characters dropped. Each of O1 to O15 with a `fakeProc`, Codex's questions
-  and `WorkingTitle`, using the titles Codex 0.161 writes. A title-only
-  stream does not break the quiet that the dialogs' watcher and the trust
-  watcher wait for (E5). The two reproductions of #186 (the async
-  question's bell, the agent's own ask, each followed by 5 s of titles)
-  end in `working`. Every one of them fails on `origin/main`, which has no
-  `WorkingTitle`.
+  and `WorkingTitle`, using the titles seen on 2026-10-14 (and the
+  source's for the forms not seen). A title-only stream does not break the
+  quiet that the dialogs' watcher and the trust watcher wait for (E5). The
+  two reproductions of #186 (the async question's bell, the agent's own
+  ask, each followed by 5 s of titles) end in `working`. Every one of them
+  fails on `origin/main`, which has no `WorkingTitle`.
 - `internal/catalog`: `workingTitle` is validated (length, RE2, no empty
   match), and Codex's built-in matches every working form above and none
   of the others.
-- `internal/agents`: Codex's `Inject` carries both `-c` overrides, as TOML
-  Codex reads (a TOML parse of each value).
+- `internal/agents`: Codex's `Inject` carries the title override, as TOML
+  Codex reads, beside change 2's (pinned in its own pull request); the
+  person's `config.toml` is untouched.
 - `internal/crew`: a Codex member that asks and goes on is no longer
   counted in the run's `needsInput` once its title says it works, and a
   handoff waiting for it is typed.
@@ -246,7 +310,8 @@ Stub and Playwright:
   then spins.
 - A Playwright spec (`codexworking.spec.ts`) with a Codex stub session and
   with the todo example crew: after `stub ask …`, the member's row and the
-  Yard show Needs you, then Working while it spins, then done. After
+  Yard show Needs you, then Working while it spins, then done (Part B
+  changes the last to Needs you, and its own spec says so). After
   `stub async …`, Needs you never shows. During `stub approve`, the
   approval still shows with its choices, and Working follows the answer.
   The spec reads state from the rows and from the stub's files, never from
@@ -255,11 +320,10 @@ Stub and Playwright:
   `working` state from `title` turn out to differ, `useAttention`'s test
   covers it.
 
-By hand (the real Codex is not run by an agent): with the capture script in
-an isolated home, Codex 0.161 launched with change 1's override writes the
-titles above while it works, at an approval and at rest. A crew of the todo
-example in the next release candidate's app shows the members' Needs you
-only at approvals. Recorded in `docs/features.md` when done.
+By hand (the real Codex is not run by an agent with a prompt): a crew of the
+todo example in the next release candidate's app shows the members' Needs
+you only at approvals. Recorded in `docs/features.md` when done. The titles
+were checked on 2026-10-14 (above).
 
 ## Alternatives weighed
 
@@ -267,8 +331,7 @@ only at approvals. Recorded in `docs/features.md` when done.
   state. It mends the first cause alone: the agent's own `ask`, and a bell
   Codex rings for an MCP form it declines by itself
   (`handle_elicitation_request_now` rings, then auto-declines OpenAI forms
-  and URLs), still stay until the turn's end. It could ship first, on its
-  own, if the owner prefers.
+  and URLs), still stay until the turn's end. It ships first, on its own.
 - **Codex's status row on the screen** ("(12s • esc to interrupt)"): the
   row redraws continuously, so the quiet-screen watcher never looks while
   Codex works. Looking at the screen on output instead would be a new
@@ -279,3 +342,282 @@ only at approvals. Recorded in `docs/features.md` when done.
 - **Output after a bell clears it**: every agent draws while it waits (a
   countdown, a blinking prompt), so the rule would be wrong for all of
   them.
+
+# Part B: an agent's question shows until it is answered (#193)
+
+## What happens, and why
+
+The Conductor skill tells an agent: "ask, then wait for the answer in the
+terminal. The session shows as needing input until someone replies"
+(`internal/agents/skill.go`); the MCP tool `ask` says the same. An agent
+waits by ending its turn, and the turn's `done` replaces the question:
+`setAttention` keeps a waiting question only from another `needs_input`
+(`unlessWaiting`, `keepAsked`), never from `done`. So the row shows done,
+and the question leaves Needs you, the sidebar and the Yard, exactly when
+the agent waits for its answer. Traced in the code; the API test below
+reproduces it on `origin/main`.
+
+Which `done` that is: Claude Code's `Stop` (and its `idle_prompt`
+notification a minute later, mapped to `done`), Codex's notify
+(`agent-turn-complete`), Copilot's `agentStop`, Cursor's `stop`,
+Antigravity's and Goose's `Stop`: every agent with a hook reports its
+turn's end as `done`, some with `turn` set and some without.
+
+## The change
+
+1. **The report says it is the agent's own question.** The attention
+   route's body (`POST /api/sessions/{id}/attention`) gains `ask` (a
+   boolean, absent meaning false), and so do the attention words of the
+   events route (they share `reportAttention`). It is taken with
+   `needs_input` only (with another state it changes nothing). The MCP
+   tool `ask` sends it; `conductor notify` sends it on a `needs_input` it
+   reports itself (`--state needs_input`, the skill's way), never on one a
+   hook payload maps (`--claude-hook` and the others, `--codex`): a hook's
+   permission prompt is a wait on the screen, not a question the agent
+   asked. A server that refuses `ask` as an unknown field (an older one)
+   gets the report again without it, as `agentSession` and `turn` are
+   today: the question then shows as before.
+2. **The session keeps the agent's question through its turn's end.**
+   `Attention` keeps the mark (`ask`, not sent to browsers). The session
+   keeps at most one agent's question, shown or set aside (`aside`), with
+   these rules, all decided in the critical section that changes the
+   state:
+   - **In its turn** (no `done` since it was asked): a `working` report or
+     title, and any other state but those below, takes its place and sets
+     it aside. A `done` (any, with `turn` or without) leaves it shown, or
+     shows it again from aside, in place of whatever shows: the same id,
+     words and choices, a new `Since`. The `done` still ends the turn
+     (`turnEnded`) and is recorded as the report it is: its attention
+     entry, with the state `done`, reaches the Events page, webhooks and a
+     crew's start-after rule as today. Shown again, the question records
+     its own `needs_input` entry (a state that shows has its entry) and is
+     not put in the chat a second time.
+   - **After its turn's `done`**: it shows until a person's keys or reply
+     answer it (`answer`, as today), the agent clears it (`clear`) or asks
+     another, the agent works again (a `working` report: a new turn, which
+     takes its place for good), another state takes its place, or the
+     session ends. A `done` (Claude Code's `idle_prompt` a minute later)
+     changes nothing shown and is recorded. Codex's working title read
+     after the `done` changes nothing until the next Enter: unlessTurnEnded
+     covers a question its turn's `done` kept as it covers `done`.
+   - **Always**: the bell, an OSC notification and the screen pattern
+     never replace it, shown or aside (`unlessChoices` counts the agent's
+     question as one to keep, as a question with choices; the bare bell
+     and the pattern keep any wait already). The agent's next question
+     replaces it; `clear` and the session's end remove it. A person's
+     keys while it is aside (the agent at work, the person typing into
+     the terminal) remove it too: the person has taken part, and it does
+     not show again at the `done`. Conductor's own submission (a crew's
+     prompt, a handoff) typed while it is aside does not: that is no
+     person's answer.
+   - **A held turn** (`holdTyped`): the hold takes its place and keeps it
+     as `heldOver`, as today; a `done`, and `working` in its turn, hidden
+     by the hold no longer drop it (they drop another held-over question,
+     as today); it shows again when the hold ends without answering it
+     (`endHoldTyped`). A hold that ends after the turn's `done` shows it.
+   - A needs_input without the mark (a hook's permission prompt, the bell,
+     a dialog, a startup question, the pattern) is replaced by `done` as
+     today.
+3. **Hosted sessions.** The server sends the mark on to the host in its
+   `attention` message (`HostAttentionMsg` gains `ask`, a boolean), and the
+   host's session applies the same rules. The server's copy of a hosted
+   session keeps a marked question it shows from a forwarded `done` too, so
+   that it does not show `done` meanwhile; for a question set aside on the
+   host, the server's copy shows the forwarded `done` until the host tells
+   its attention back (the host tells it after every change it applies, as
+   it does today). An older host ignores the field: the question shows as
+   before there.
+4. **Words.** The skill and the MCP tool's description gain one line: an
+   agent that no longer needs its answer clears its question
+   (`--state clear`, `set_state` clear). `docs/protocol.md` (Attention, the
+   attention route's body, the host's `attention` message) says what `ask`
+   does.
+
+## The events that interact
+
+- F1 the agent's question: a `needs_input` report with `ask`.
+- F2 a `done`: the agent's turn's end (a hook, notify), Claude Code's
+  `idle_prompt`, an explicit `done` (`set_state`, `--state done`).
+- F3 `working`: a report (Claude Code's `PreToolUse`, `UserPromptSubmit`;
+  Copilot's `userPromptSubmitted`; Codex's hooks), or Codex's title (A3).
+- F4 the bell, an OSC notification, the screen pattern.
+- F5 another wait: a `needs_input` report without `ask` (a hook's
+  permission prompt), a dialog on the screen (`fireAsked`), a startup
+  question (`fireTrust`).
+- F6 `clear`, the agent's or an admin's.
+- F7 a person's keys (INPUT that answers, `answer`), a reply (`submit`, a
+  choice clicked: `AnswerInput`).
+- F8 Conductor's submission (a crew's prompt, a handoff, a broadcast),
+  written only while no `needs_input` shows (`UnlessWaiting`) or as a
+  member's first prompt.
+- F9 the turn held for a typed text, and its end by a person's keys.
+- F10 the session's end.
+- F11 a report the event bucket refuses (`429`).
+- F12 a hosted session's report, forwarded to its host, and the host's
+  report back.
+
+## The orders they come in, and what must happen
+
+- P1 F1, F2: the question shows, with its id, words and choices; the
+  `done` is recorded (`done` on the Events page; a crew's members that
+  start after this one start). A bell after it (the turn's own) asks
+  nothing.
+- P2 F1, F3, F2 (Codex: the title says Working while it writes its last
+  message; Claude Code: a tool called after asking): `working` while the
+  agent works, then the question shows again at the `done`, the same id.
+  Entries: `needs_input`, `working`, `done`, `needs_input`. One chat line.
+- P3 F1, F3, F4, F2 (Codex rings its turn-end bell before its notify
+  reports `done`): the bell shows over `working`; the `done` shows the
+  question, not the bell's wait.
+- P4 F1, F2, F7: answered, as today: the empty state, `lastAnswer`, the
+  chat's answered line, an `input` entry.
+- P5 F1, F2, F3 report: `working` (the agent went on in a new turn); the
+  question is gone; the next F2 shows `done`.
+- P6 F1, F2, then a Codex title "Working" read after the `done` (drawn
+  before it): nothing. After the next Enter (which answers the question)
+  titles show `working`.
+- P7 F1, F2, F2 (`idle_prompt`): the question stays; the second `done` is
+  recorded.
+- P8 F1 then F4, shown or aside: nothing changes for the question.
+- P9 F1 then F1 (another question): the second shows; the first is gone; a
+  `done` keeps the second.
+- P10 F1, F5 in its turn (a permission prompt, a dialog): the wait shows
+  and the question is set aside; a person's keys that answer the wait (F7)
+  remove the question too; if the wait goes without keys, the `done`
+  shows the question.
+- P11 F1, F2, F5 (after the `done`): the wait shows; the question is gone.
+- P12 F1, F3, F7 (the person types while the agent works): the question is
+  gone; the `done` shows `done`.
+- P13 F1, F3, F8 (a crew's handoff typed while `working` shows): the
+  question stays aside; the `done` shows it.
+- P14 F1, F2, F8: the handoff waits while the question shows; once a
+  person answers, it is typed. (A change for crews: today the `done` lets
+  it be typed at once into an agent that waits on its question.)
+- P15 F1, F6, F2: the empty state, then `done`.
+- P16 F1, F9: the hold shows; the question is held over. F2 hidden by the
+  hold: recorded, the question still held over. The hold ends by keys
+  that do not answer it: the question shows. Keys that pick one of its
+  choices: answered.
+- P17 F10 in any of the above: the empty state, nothing set aside, nothing
+  shown again.
+- P18 F11 at any point: nothing changes; the question stays where it was.
+- P19 a `needs_input` without `ask` (a hook's), then F2: `done`, as today.
+- P20 races: F7 against F2, and F3 against F2, at once. Each order ends as
+  the sequential rules say (answered then `done`: `done`; `done` then
+  answered: the empty state; `working` then `done`: the question; `done`
+  then `working`: `working`, the question gone). Never the question shown
+  after its answer.
+- P21 F12: the host shows what a server session would; the server's copy
+  ends with what the host tells, and never keeps a question the host has
+  dropped.
+- P22 an older server refuses `ask`: `conductor notify` and the MCP tool
+  report again without it; the question shows as before. An older host:
+  as before.
+
+## Invariants
+
+- A question an agent asked (`ask`) that nobody has answered shows as
+  `needs_input` once the turn it was asked in has ended, until a person's
+  keys or reply, the agent's `clear` or next question, the agent at work
+  in a new turn, another state, or the session's end.
+- It never shows after its answer, its `clear` or the session's end.
+- In its turn it never hides the agent at work: `working` shows (#186
+  stands).
+- Nothing changes for a `needs_input` without the mark: a hook's prompt,
+  the bell, a dialog, a startup question and the pattern give way to
+  `done` as today.
+- A `done` it survives still ends the turn and is recorded as the report it
+  is.
+- Nothing is typed into the program while it shows (handoffs and
+  broadcasts wait, as for any `needs_input`).
+- It is put in the chat once.
+
+## Out of scope
+
+- Whether a crew member that waits on its question counts as done for the
+  members that start after it. Unchanged: it does, its turn having ended
+  (the skill: "begins when you next finish a turn"). An issue if that
+  should change.
+- A reply naming the question while it is set aside: refused, as a reply
+  to a question no longer shown is today (`QuestionAnsweredWords`); taken
+  once it shows again.
+- Agents that report no `working` during a turn (Copilot after its prompt,
+  Cursor, Antigravity, Goose, aider, agents without an adapter): one that
+  asks and goes on shows the question during its work (as today) and, if
+  nobody answers, after its turn's `done` too (new). A follow-up issue:
+  map their hooks that run before a tool, where they have one, to
+  `working`.
+- Codex's own `request_user_input` and async questions: Part A and the
+  bell pull request.
+
+## Tests that pin the orderings
+
+Go (`go test -race`):
+
+- `internal/session`: P1 to P20 with a `fakeProc`, each through the
+  setters the API and the pump use (`TrySetAttentionFull` with the mark,
+  `scanOutput` for the bell and, once Part A is in, the title), and the
+  activity, the chat and `OnActivity`'s state checked at each step. P20
+  runs each pair from two goroutines many times and checks the end state
+  against the sequential rules. A `done` over a question without the
+  mark still replaces it (P19).
+- `internal/api`: the attention route takes `ask` (a non-boolean is `400
+  invalid_request`), and the events route's attention words too; `ask`
+  then a `done` with `turn` leaves the session `needs_input` with the
+  question's words (this test fails on `origin/main`); a webhook for
+  `done` fires once; a hosted session's `ask` reaches the host's message,
+  and the server's copy keeps the question over a forwarded `done`.
+- `internal/cli` and `internal/notify`: the MCP tool `ask` sends `ask`,
+  `set_state` does not; `conductor notify --state needs_input` sends it,
+  each `--<agent>-hook` and `--codex` never does; a server that refuses
+  the field gets the report again without it.
+- `internal/proto`: `HostAttentionMsg` carries `ask` and stays within the
+  host message's bound; `internal/hostagent` applies it.
+- `internal/crew`: a member that asks and ends its turn is counted in the
+  run's `needsInput` after its `done`; a handoff to it waits until a person
+  answers, then is typed; the members that start after it start at its
+  `done`, as today.
+
+Stub and Playwright:
+
+- `web/e2e/stub-agent.sh`: `stub ask-wait <question>` asks with `conductor
+  notify --state needs_input` and ends its turn as its agent's hooks do
+  (`STUB_REPORT`). The stubs that stand for a hook's prompt
+  (`asker-*` in `web/e2e/conductor.e2e.json`) keep today's behaviour or
+  move to the hook payload; the whole suite runs.
+- A Playwright spec (`askwait.spec.ts`): after `stub ask-wait …` the row,
+  the Yard and the run's tile show Needs you after the stub's turn ends,
+  with the question's words; a reply from the row answers it (the stub's
+  transcript) and the row moves on; with Part A in, a Codex stub that asks
+  and spins shows Working, then Needs you at its `done`.
+- vitest: nothing in the browser's logic changes (the mark is not sent to
+  it).
+
+## Alternatives weighed
+
+- **Only a `done` with `turn` keeps the question.** Claude Code's
+  `idle_prompt` and Goose's `Stop` carry no `turn`: a minute later the
+  question would go all the same.
+- **Every `needs_input` survives `done`, no mark.** A hook's permission
+  prompt that Codex's reviewer answers by itself, or one the agent
+  withdraws, would show at the turn's end with nothing to answer.
+- **`working` drops the question.** Codex's title says Working until its
+  turn ends, and Claude Code may call a tool after asking: the question
+  would go before the `done`, which is this issue again.
+- **A tool event after the question means the agent went on.** The
+  question's own call reports a tool event after it (the MCP tool, or the
+  shell that ran `conductor notify`), which cannot be told from the next.
+- **`ask` blocks until it is answered.** The agent's tool call would hold
+  its turn open; MCP clients time tools out; it changes the tool's
+  contract for every agent.
+
+# The pull requests, in order
+
+1. The host-connection change merges first (its own plan): it changes
+   `internal/session`'s input path and the host's `attention` message,
+   which both parts touch.
+2. Part A from `main`: changes 1 and 3 (change 2 is in its own pull
+   request, which merges before or beside it).
+3. Part B from `main` once Part A has merged: it changes Part A's O3, and
+   relies on Part A's title for Codex (without it a Codex agent that asks
+   and goes on would keep its question past its turn).
