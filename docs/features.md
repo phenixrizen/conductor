@@ -5,9 +5,10 @@ claude.ai/design project "Conductor Mockups" (screens 1a workbench, 1b wall,
 1c runs, 1d launch, 1e share, 1f join, 1g carousel). This file records what is
 being built, the decisions taken along the way, and what each round left
 for a person to verify. The bugs known and what is deliberately
-deferred are listed once, in [tasks-todo.md](tasks-todo.md); the "Deferred"
-lists under the rounds below are the history of when each item was set
-aside.
+deferred are GitHub issues, worked on the project board (AGENTS.md, Issues
+and the project board; [tasks-todo.md](tasks-todo.md) maps its old entries
+to their issues); the "Deferred" lists under the rounds below are the
+history of when each item was set aside.
 
 ## Delivered (2026-09-28)
 
@@ -942,8 +943,8 @@ request each from main.
   neither a person's reply nor a crew's prompt (a handoff waits for the
   answer). A done is no longer undone by its own turn's bell, which Codex
   rings as it ends a turn; a new turn's bell still asks, unless it comes
-  within half a second of that suppressed one (the bell's debounce, in the
-  todo). The trust
+  within half a second of that suppressed one (the bell's debounce; fixed
+  in #170, below). The trust
   question's "No" says it quits. The update question reads "Update available
   0.161.0 → 0.162.1" and offers "Skip until next version" (the key `3`,
   checked against the real Codex in a throwaway home: it skips at once and
@@ -987,6 +988,75 @@ request each from main.
     terminal keeps waiting for its program, as a terminal does. On a host, a viewer's keys and editor requests leave the frame loop
     for bounded queues. An editor's Neovim keeps to its request's time and is
     registered only while its viewer is attached.
+
+- **v0.7.0-rc.8 in the app.** Tagged on main at 4c79c18 (#114–#123) on
+  2026-10-12; the switchyard runs it (rc.7 kept as `conductor.prev`) and the
+  owner's Windows app was updated to it. With the real Codex 0.161, a
+  command approval was detected with nobody watching the session, with its
+  three choices; answering it from the row worked, and the member stayed
+  done after its turn. Codex's update question still read "Update now
+  (runs" there, where the stub's reads its heading: issue #165.
+- **The backlog on GitHub** (#171). The owner, 2026-10-13: the todo's
+  entries became GitHub issues (#126–#163), worked on a kanban project board
+  whose Status runs Backlog → Ready → In progress → In review → Done.
+  AGENTS.md gains "Issues and the project board": every bug known and every
+  feature set aside is an issue with its labels; a bug found while working
+  is still fixed in that round and gets an issue; a card is Done, and its
+  issue closed, once its fix is on main (`Fixes #N` in the pull request that
+  finishes it, `Part of #N` closing nothing); security findings never
+  become issues until their fix has shipped. `docs/tasks-todo.md` keeps
+  only where each entry went; `scripts/board.py` moves a card.
+- **A session's end gives its link viewers their last output** (#124). A
+  hosted session's guests used to lose what the session printed last and
+  were told their link was revoked (4403): the server ended the session's
+  links by revoking them, and a revoked viewer is written nothing more. The
+  end now has its own path: a viewer closed by the session's end is first
+  written what was queued for it, then `session_ended` (4410), on hosted,
+  published and server sessions alike; a revoke still writes nothing more
+  and stops such a drain. A closed viewer's connection is cut 5 s after its
+  close; a publication stays 5 s past its session's end so a revoke still
+  reaches the switchyard. Codex reviewed it ten times, the tenth approving.
+  Tests: Go (hosted, published and server sessions' last output, the drain
+  stopped by a revoke, an expiry and a session leaving), vitest
+  (`closedByTheEnd`), Playwright (`hostedend.spec.ts`). Still by hand: a
+  guest on WebRTC in a real browser seeing the last output and "session
+  ended".
+- **A new turn's bell** (#170, issue #135). A bell is paced (one attention
+  change per 500 ms), and the pace was stamped before the bell was weighed,
+  so the bell that ends a turn, which changes nothing since #121, kept the
+  next turn's first bell out when it followed within half a second. The
+  pace now counts only bells that change something; a turn after a done
+  begins at its first Enter or other state, and output read in the ended
+  turn is its own, a notification split between reads included. Go tests.
+- **Tests that wait for what they mean** (#177, issue #136). About twenty Go
+  tests and two Playwright specs failed on a loaded machine; each was
+  reproduced under load, traced, and fixed at its cause (most waited a
+  fixed time for an event; `shortcuts.spec`'s G chords needed their two
+  keys sent at once, Playwright's acknowledgement of each key taking up to
+  a second under load). Three causes were the product's, each with an issue
+  closed by it: a viewer let in as its session left was told 4404, not 4410
+  (#173); a run chat message posted as a viewer attached to another member
+  could miss it (#174); and Enter after a word the editor was suggesting
+  took the suggestion and left the line unbroken (#175,
+  `acceptSuggestionOnEnter: 'smart'`).
+- **A link's going reaches a host, and a line typed for it holds the
+  session** (#172). The owner's decision, 2026-10-12, stricter than #122's:
+  a submission whose text was typed and whose link was then revoked or
+  expired gets no Enter; the session's turn stays held, its view saying
+  "Text from a link that was let go was typed and not entered: type in the
+  terminal to continue", until a person types in the terminal (a terminal's
+  own reports and the pointer's do not count) or the session ends; while it
+  holds, the reply boxes take no reply, a question on the screen shows over
+  it, and at most 64 submissions wait. A host now hears why a viewer left
+  (`viewer_leave` with a `reason`) and when a link its viewers joined
+  through goes (`link_gone`, timed on the server's clock), keeps one
+  credential per such link, and withdraws what such a viewer asked for; a
+  host that loses its server counts every such link gone. A host viewer's
+  attaches run one at a time, each tied to the transport its hello came
+  over. Codex reviewed it 21 times. Tests: about forty Go tests, vitest,
+  and Playwright `held.spec.ts` (two tests), which also showed that CI's
+  Chromium now draws WebGL2: a spec never reads terminal text from the
+  page, only what the stub wrote, the API and `data-*` state.
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
