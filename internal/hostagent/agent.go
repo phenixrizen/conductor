@@ -343,9 +343,10 @@ type agent struct {
 	// and is still under way (peer.authorize). Its lock is held for nothing
 	// else: the session asks under its own locks.
 	creds linkCreds
-	// live is what the host has heard on the current control connection
-	// (connLive), nil while there is none: a link's viewer's line is typed
-	// and entered only while the server was heard from lately (vouches).
+	// live is what the host knows of its server on the current control
+	// connection (connLive), nil while there is none: what a link's viewer
+	// sends is acted on only while a ping the host sent lately was answered
+	// there (vouches).
 	live atomic.Pointer[connLive]
 
 	// activity carries the local session's activity entries to the server;
@@ -373,6 +374,14 @@ type agent struct {
 	// liveWithin replaces linkHeardWithin, and livePing livePingEvery, in
 	// tests.
 	liveWithin, livePing time.Duration
+	// beforeSave, when set (tests), runs as a viewer's save part has its
+	// turn on the viewer's saving queue, before the session takes it.
+	beforeSave atomic.Pointer[func(proto.FileWrite)]
+	// beforeAnswer, when set (tests), runs as an offer's answer begins, off
+	// the read loop (peer.handleOffer); beforePing as a ping reserved goes
+	// out (pingOn).
+	beforeAnswer atomic.Pointer[func()]
+	beforePing   atomic.Pointer[func()]
 }
 
 // inputDeadline is when keystrokes arriving now must be written by (a
@@ -519,7 +528,8 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	}
 	// The connection's socket is a pacedConn (controlWriter). Whatever the
 	// host reads on the connection, a frame's part included, as its TLS
-	// gives it, it notes as heard (hearingTransport).
+	// gives it, it notes as heard (hearingTransport), for its give-up alone:
+	// only its own pings answered vouch for the server (liveness.go).
 	live := newConnLive()
 	c, pc, resp, err := pacedDial(dialCtx, a.wsURL, header, base, a.stallWait, live.hear)
 	cancel()
@@ -902,9 +912,9 @@ func (a *agent) useConn(c *websocket.Conn, pc *pacedConn) *controlWriter {
 	return a.useConnHearing(c, pc, nil)
 }
 
-// useConnHearing is useConn of a connection whose hearing is live (one
-// heard from now when nil), which becomes the host's (vouches) until the
-// connection is dropped.
+// useConnHearing is useConn of a connection whose hearing and pings are
+// live (one heard from now, no ping answered, when nil), which becomes the
+// host's (vouches) until the connection is dropped.
 func (a *agent) useConnHearing(c *websocket.Conn, pc *pacedConn, live *connLive) *controlWriter {
 	if live == nil {
 		live = newConnLive()
@@ -919,6 +929,9 @@ func (a *agent) useConnHearing(c *websocket.Conn, pc *pacedConn, live *connLive)
 	a.mu.Unlock()
 	if old != nil {
 		old.stop()
+		if old.live != nil {
+			old.live.end()
+		}
 	}
 	return w
 }
@@ -948,6 +961,9 @@ func (a *agent) dropConn(c *websocket.Conn) {
 	a.mu.Unlock()
 	if w != nil {
 		w.stop()
+		if w.live != nil {
+			w.live.end()
+		}
 	}
 }
 
@@ -964,7 +980,7 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 
 	// Report the current status in case the process ended while disconnected.
 	go a.watchStatus(ctx, w)
-	// Keep hearing from the server while a link's viewer may need it.
+	// Ping the server while a link's viewer may need it.
 	go a.keepHearing(ctx, c, w.live, w.done)
 
 	for {
@@ -1106,14 +1122,13 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		if err := json.Unmarshal(data, &m); err != nil {
 			return err
 		}
+		// Answered off this loop (handleOffer): the answer's wait for its
+		// turn on the writer holds nothing the loop reads.
 		if p := a.peer(m.ViewerID); p != nil {
 			if err := p.handleOffer(m.SDP); err != nil {
-				if errors.Is(err, errNoWebRTC) {
-					// The viewer falls back to the relay on its own timeout.
-					a.log.Debug("offer ignored; webrtc disabled", "viewer", m.ViewerID)
-				} else {
-					a.sendViewerError(m.ViewerID, "webrtc_failed", err.Error())
-				}
+				// The viewer falls back to the relay on its own timeout;
+				// one whose first offer is under way has it answered.
+				a.log.Debug("offer ignored", "viewer", m.ViewerID, "err", err)
 			}
 		}
 	case proto.HostICE:
@@ -1513,6 +1528,11 @@ func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) 
 	// so: its workbench is its operator's (Options.Switchyard).
 	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
 	p.cred = a.creds.of(linkID)
+	if p.cred != nil {
+		// Before its hello can arrive: its first line waits for the answer
+		// when the host does not vouch for its server yet (awaitVouch).
+		a.pingNow()
+	}
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice

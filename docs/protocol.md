@@ -45,7 +45,7 @@ Client → owner:
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended`, `revoked` or `expired` (the viewer's link no longer opens the session: nothing kept or sent) |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member; `revoked` or `expired` with `requestId: ref` once the viewer's link no longer opens the session (nothing typed), as it is taken and as its text is typed |
 | `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it to an owner whose `welcome` lacks `answer`; keys typed into the terminal stay INPUT |
-| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one waiting, and nothing written to the session since was made to answer it, as the keys (a line's text, its Enter for a line with none) are written; otherwise `error{question_answered, requestId}`. Once taken, `answer_ok{requestId}` (the keys written, a line accepted); any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, the server not heard from within 15 s: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
+| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one waiting, and nothing written to the session since was made to answer it, as the keys (a line's text, its Enter for a line with none) are written; otherwise `error{question_answered, requestId}`. Once taken, `answer_ok{requestId}` (the keys written, a line accepted); any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
 
 Owner → client:
 
@@ -122,9 +122,10 @@ before included, closes whoever is attached through it.
 
 What a viewer attached through a link sends is held to its link again as it
 is acted on, by whoever runs the session (the server for its own sessions, a
-host for its session, which also needs the server heard from within 15 s: see
-the host control connection), whether or not the connection has been closed
-for it yet. While the link no longer opens the session, its INPUT is refused
+host for its session, which also needs to vouch for its server: a ping of
+its own, sent within 15 s, answered; see the host control connection; the
+viewer attaches on its link alone), whether or not the connection has been
+closed for it yet. While the link no longer opens the session, its INPUT is refused
 with `error{revoked}` (or `expired`), asked as the keys are queued for the
 program and again as the session's writer takes them, so keys that waited
 behind another write are never written; a FILE_WRITE part is refused with a
@@ -255,13 +256,29 @@ among it, passes at once whatever the rate, where the browser gives up on
 a file request after 20 s (and says a save is slow then); the rate bounds
 what goes over time.
 What waits for a host's connection is bounded in bytes
-as well as in messages (8 MiB): the viewers' frames, and the server's
-`viewer_join` and `viewer_leave` for them, fill at most 7 MiB of it and
-then wait in their own read loops, in the order they came, for the host
-to take some (a viewer whose connection fails meanwhile is let go), which
-neither holds up the host's messages nor closes its connection; a server
-message that finds the whole queue full closes the connection, as a host
-too slow to keep. What a viewer sent before its connection closed reaches
+as well as in messages (8 MiB, 8192 messages), in two lanes, each in its
+order. The server's own messages (`link_gone`, a `viewer_leave` that gives
+a reason, `stop`, `attention`, `activity`, the answers to the host's
+requests, `error`) have a lane of 1 MiB and 512 messages, which the server
+writes first: one of them waits behind the one message being written when
+it was queued, never behind the viewers'; one that finds its lane full
+closes the connection, as a host too slow to keep. The viewers' messages
+(`viewer_join`, `offer`, `ice`, `relay_start`, their relayed frames,
+`viewer_behind`, a `viewer_leave` with no reason) fill the rest, at most
+7 MiB, and then wait in their own read loops, in the order they came, for
+the host to take some (a viewer whose connection fails meanwhile is let
+go), which neither holds up the server's messages nor closes the
+connection. A link's going overtakes what its viewers had queued, so
+nothing of a viewer of a link that went (revoked, expired), still attached
+or gone already, reaches the host after it: the server marks the link gone
+and closes its viewers before it queues `link_gone`, and drops each message
+of a viewer of that link still queued as it comes to write it, its
+`viewer_join` among them; a viewer whose join was dropped so is never named
+to the host, nor its leave (a leave follows a join that was written, and
+only such a join). A viewer that left for any other reason, its link
+standing, has what it sent before its leave written first, then its
+`viewer_leave`, with no reason, in the viewers' lane. What a viewer sent
+before its connection closed reaches
 the host before its `viewer_leave`: once a write to the viewer or a ping
 has failed, its connection is still read for at most 2 s, and a frame that
 needs no wait is relayed; one that was waiting (the budget, room in the
@@ -272,9 +289,9 @@ viewer waits for it on the server, the host is told the viewer is behind
 (`viewer_behind{viewerId, behind:true}`), and once no more than 128 KiB
 waits, that it caught up (`behind:false`): at most one of a viewer's waits
 in the host's queue, the changes made meanwhile going as the latest once it
-is taken; they go within the viewers' 7 MiB of the queue, never into the
-room kept for the server's own messages, and one that finds no room waits
-for some rather than close the connection;
+is taken; they go in the viewers' lane of the queue, never in the
+server's own, and one that finds no room waits for some rather than close
+the connection;
 a hosted viewer's socket holds at most 128 KiB unsent (on Linux, which
 bounds it), so what a viewer has not taken waits where the server counts
 it, not in a buffer of megabytes. The host holds a viewer's frames while it is
@@ -326,8 +343,9 @@ typed late. When the viewer goes (its connection or data channel closes, or
 it moves to the relay and attaches again), what waits is dropped, and does
 not count against the 8; the one being typed is finished, unless the
 viewer's link goes (a `viewer_leave` with a reason, a `link_gone`, the host's
-connection to the server lost, or the server not heard from within 15 s: see
-the host control connection), then or later: it is then withdrawn as on
+connection to the server lost, or no ping of the host's sent within 15 s
+answered: see the host control connection), then or later: it is then
+withdrawn as on
 the server,
 never typed if its text was not, and with no carriage return if it was, the
 session's turn held for a person (see `submit`). The viewer's keys and
@@ -342,8 +360,9 @@ agent or a `chat_send` are written (or refused) before it, and those sent
 after are not held back by its pause. Each INPUT frame has 10 s from its
 arrival for the program to take it: one still waiting then is refused
 (`error{input_failed}`) and never written. A link's viewer's INPUT is held to
-its link and to the server heard from within 15 s as the session's writer
-takes it: refused then with `error{revoked}` (or `expired`), never written.
+its link and to the host vouching for its server (a ping of the host's,
+sent within 15 s, answered) as the session's writer takes it: refused then
+with `error{revoked}` (or `expired`), never written.
 At most 256 frames and 128 KiB
 wait behind the one being written, per viewer; one more is refused with
 `error{too_many_requests}` (no `requestId`) and the connection stays. When
@@ -351,6 +370,32 @@ the viewer goes, the keys that wait are dropped. The editor's `nvim_input`,
 `nvim_swap` and `nvim_close` likewise wait for Neovim off that loop, in the
 order sent, at most 400 behind the one Neovim handles (past them the
 `nvim_event` error is `too_many_requests`).
+
+A viewer's FILE_WRITE parts are taken off that loop too, over the relay
+and the data channel alike, so that a save's disk work (its checks, its
+hash, its temporary file, its rename) never holds up the loop, which for
+the relay also carries the server's messages: in the order sent, one at a
+time, at most 64 parts and 2 MiB (two whole saves of the largest size)
+waiting behind the one being taken, per viewer. One more is refused with a
+FILE error of code `too_many_requests` naming its save (the words say to
+save again once the others are done) and the connection stays. When the
+viewer goes, the parts that wait are dropped, unanswered. A viewer's
+`offer` (host control connection) is answered off the loop that reads the
+control connection as well: the answer waits for its turn among the host's
+own messages (15 s at most, then dropped: the viewer falls back to the relay
+on its own timeout) while the loop goes on reading, and candidates that
+come before the offer is taken wait for it (64 at most); another offer of
+the same viewer while one is being answered is ignored.
+
+The first line, key, save, chat post or `file_get` of a viewer who joined
+through a link, after the host's start, a reconnect or a spell with no link
+held, waits within its own time (a save's part and a read, 15 s) for the
+answer to the ping its join sent (see the host control connection), off the
+loop that carries its frames, and goes on once it comes: a `chat` then
+waits on the typing queue, in its turn among the viewer's submissions, and
+the viewer's chat posts after it follow it there until it is done, so they
+keep their order. One that finds the host not vouching once the server has
+failed to answer a ping since its last answer is refused at once.
 
 A viewer's `answer` waits as what it carries does: its `input` among the
 viewer's INPUT frames (its 10 s, the same bounds, `too_many_requests` naming
@@ -434,51 +479,61 @@ reached its expiry), none for any other end (it left, its connection failed,
 it was too slow); `link_gone`: a link a viewer joined the session through
 (`linkId`, at most 64 bytes) no longer opens it (revoked, expired as the
 server's clock says, its run forgotten, its run's session no longer named),
-sent once, whether a viewer is still attached through it or not, ahead of
-the leaves of those that are; no link no viewer joined through is named,
+sent once, whether a viewer is still attached through it or not, in the
+server's own lane, ahead of the viewers' messages queued for the host and
+of the leaves of the link's viewers; those viewers are closed before it is
+queued, and nothing of theirs still queued is sent after it (see the
+queue's lanes above), so a host, older or newer, never hears of a viewer of
+a link after its going; no link no viewer joined through is named,
 and a host away is not told again. The server keeps at most 1024 joined
 links per session (far more than can open it at once); one pushed out is
-named gone then. The host types nothing more of what a viewer asked for
-once its link went, by either of these, also after the viewer left (see the
-host's queues below); and as it loses its connection to the server, which
-would tell it, it counts every link its viewers joined through as gone for
-what they asked for and is still under way (a viewer joining through one
-once it is back starts afresh). A connection can also stop carrying what
-the server sends without the host noticing (the server has closed it, or the
-network drops what it carries, and nothing the host wrote has failed yet),
-and a link going then would not reach it: so the host types a line of a
-viewer who joined through a link (a `submit`, a `chat` to the agent, a
-`chat_send`), and writes its carriage return, and writes its `answer` (a
-choice's keys, a line), only while it has heard from
-the server within 15 s, and otherwise does with the line what it does for a
-link gone (its text not typed, or typed with no carriage return and the
-session's turn held for a person), as its viewer's attach is refused then.
-Whatever the host reads on the connection counts, as the connection's TLS
-gives it, record by record once each is authenticated (a large frame that
-comes in slowly counts before it is whole; a connection bringing less than
-about 1 KiB a second can go unheard while one comes in): a message, a
-relayed frame, a ping or a pong. The server pings the host every 30 s, and every
-5 s while a link a viewer joined the session through stands (one that left
-may have a line under way on the host), whether or not the last pong has
-come back: a ping is written whatever the server reads, where the answers
-to the host's own pings wait behind what the host sent before them (a
-large frame over a slow uplink) and for the server's reading (a relay
-bound, the host's own or the one it shares with the other open hosts of
-its address, pauses it). While a viewer who joined through a link, or something of
-theirs, is there, the host pings the server too (a WebSocket ping, which
-every server answers, an older one too) once the connection has been quiet
-for 5 s, one ping at a time: a live, quiet connection is heard from at
-least that often and a round trip. An older server pings every 30 s and
-stops at a pong that comes late; with it the host hears its own pings
-answered, which a server that pauses its reading longer than 15 s (only a
-switchyard with a relay bound does) answers late: a line of a link's
-viewer may then be withheld that a newer server's pings would let
-through, never one entered that should not be. Having pinged and heard
-nothing at all for 2 minutes, the host gives the connection up and
-connects again (its pings keep a connection that drops what it carries
-from being idle, which TCP's keepalive would otherwise have ended). The
-lines of the owner's own windows, the host's own terminal and a paste
-invite's viewer need no such word. A host reads a reason it does not know, or
+named gone then (it may still open the session: a viewer joining through it
+later starts afresh on the host). The host types nothing more of what a
+viewer asked for once its link went, by either of these, also after the
+viewer left (see the host's queues below); and as it loses its connection
+to the server, which would tell it, it counts every link its viewers joined
+through as gone for what they asked for and is still under way (a viewer
+joining through one once it is back starts afresh). A connection can also
+stop carrying what the server sends without the host noticing (the server
+has closed it, or the network drops what it carries, and nothing the host
+wrote has failed yet), or carry it late (it waits on the way, or the server
+pauses its reading), and a link going then would not reach the host in
+time: so the host acts on what a viewer who joined through a link sends (a
+line: a `submit`, a `chat` to the agent, a `chat_send`, and its carriage
+return; an `answer`; INPUT; a save's parts and its rename; a `file_get`, an
+`nvim_open`, a `chat`) only while it vouches for its server: while a ping
+of its own (a WebSocket ping, which every server answers, an older one too),
+sent within the last 15 s, has been answered. A pong follows everything the
+server wrote before it, so what the host read before the answer is no
+older than the ping, and a going the server queued by then has been read,
+or follows the answer behind at most one relayed message and the server's
+own lane. Nothing else vouches: not a frame the server relays, not the
+server's own pings, not bytes read. Past the bound the host does with what
+the viewer sent what it does for a link gone (a line's text not typed, or
+typed with no carriage return and the session's turn held for a person;
+the rest refused `revoked` with words saying the server has not been heard
+from, which for a host means no ping of its own answered).
+A viewer's attach needs its link alone. The host pings at once as a viewer
+joins through a link (before its hello can arrive), and every 5 s while a
+viewer who joined through a link, or something of theirs, is there, quiet
+or not, each ping waiting 15 s for its pong, several side by side; the
+first line, key or save of such a viewer after the host's start, a
+reconnect or a spell with no link held waits within its own time for the
+answer to its join's ping, and goes on once it comes. The cost, accepted:
+while a server pauses its reading for longer than 15 s (a switchyard's
+bound on what open hosts relay, about 35 s at its worst; a large frame of
+the host's ahead of its ping on a slow uplink), a link's line waits, and is
+refused when its time is up, rather than being entered. The server pings
+the host every 30 s, and every 5 s while a link a viewer joined the session
+through stands, for an older host, which counts whatever it reads as the
+server heard from. Having pinged and heard nothing at all for 2 minutes
+(whatever it reads counts for this, as the connection's TLS gives it,
+record by record, a large frame that comes in slowly as it comes), the
+host gives the connection up and connects again (its pings keep a
+connection that drops what it carries from being idle, which TCP's
+keepalive would otherwise have ended). The lines of the owner's own
+windows, the host's own terminal and a paste invite's viewer need no such
+word. A host reads a reason it does not know, or
 one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),

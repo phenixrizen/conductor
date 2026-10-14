@@ -1,6 +1,7 @@
 package signal
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,19 +27,26 @@ func register(t *testing.T, hub *Hub) (*HostedSession, *HostConn) {
 	return hs, conn
 }
 
+// takeWithin is the next message conn's writer takes within d (Next): the
+// server's own first, a closed-for-its-link viewer's dropped; false when
+// none comes.
+func takeWithin(conn *HostConn, d time.Duration) (Outbound, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return conn.Next(ctx)
+}
+
 func drainText(t *testing.T, conn *HostConn, want string) {
 	t.Helper()
-	select {
-	case o := <-conn.Send:
-		conn.Took(o)
-		if o.Text == nil {
-			t.Fatalf("expected text %s, got binary", want)
-		}
-		if tt, _ := proto.ParseHeader(o.Text); tt != want {
-			t.Fatalf("expected %s, got %s", want, tt)
-		}
-	case <-time.After(time.Second):
+	o, ok := takeWithin(conn, time.Second)
+	if !ok {
 		t.Fatalf("no %s message", want)
+	}
+	if o.Text == nil {
+		t.Fatalf("expected text %s, got binary", want)
+	}
+	if tt, _ := proto.ParseHeader(o.Text); tt != want {
+		t.Fatalf("expected %s, got %s", want, tt)
 	}
 }
 
@@ -364,7 +372,7 @@ func TestForwardActivityQueuesAnActivityMessage(t *testing.T) {
 	}
 	var m proto.HostActivityMsg
 	select {
-	case o := <-conn.Send:
+	case o := <-conn.Own:
 		if o.Text == nil || json.Unmarshal(o.Text, &m) != nil {
 			t.Fatalf("queued %+v", o)
 		}
@@ -387,7 +395,7 @@ func TestForwardActivityLeavesTheTimeToTheHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	var m proto.HostActivityMsg
-	if err := json.Unmarshal((<-conn.Send).Text, &m); err != nil || m.Entry.At != "" {
+	if err := json.Unmarshal((<-conn.Own).Text, &m); err != nil || m.Entry.At != "" {
 		t.Fatalf("message %+v %v", m, err)
 	}
 }
@@ -400,7 +408,7 @@ func TestForwardActivityCleansWhatItSends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := <-conn.Send
+	o := <-conn.Own
 	if len(o.Text) > proto.MaxControl {
 		t.Fatalf("queued %d bytes", len(o.Text))
 	}
@@ -408,8 +416,8 @@ func TestForwardActivityCleansWhatItSends(t *testing.T) {
 
 func TestForwardActivityNeedsAHostWithRoom(t *testing.T) {
 	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
-	for i := 0; i < cap(conn.Send); i++ {
-		conn.Send <- Outbound{Text: []byte("{}")}
+	for i := 0; i < cap(conn.Own); i++ {
+		conn.Own <- Outbound{Text: []byte("{}")}
 	}
 	if err := hs.ForwardActivity(session.ActivityEntry{Type: session.ActivityProgress}); !errors.Is(err, ErrSlowHost) {
 		t.Fatalf("full queue: %v", err)
@@ -438,7 +446,7 @@ func TestActivityMessageRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var m proto.HostActivityMsg
-	if err := json.Unmarshal((<-srcConn.Send).Text, &m); err != nil {
+	if err := json.Unmarshal((<-srcConn.Own).Text, &m); err != nil {
 		t.Fatal(err)
 	}
 	// The entry on the wire is the shared pair's, in both directions: no
@@ -516,7 +524,7 @@ func TestForwardActivityIsLimitedPerSession(t *testing.T) {
 	if accepted < session.EventBurst || accepted > session.EventBurst+session.EventRatePerSecond {
 		t.Fatalf("accepted %d events, want the burst of %d", accepted, session.EventBurst)
 	}
-	if queued := len(conn.Send); queued != accepted {
+	if queued := len(conn.Own); queued != accepted {
 		t.Fatalf("%d messages queued for the host, %d accepted: a refused event must queue nothing", queued, accepted)
 	}
 }
@@ -549,7 +557,7 @@ func TestEventsAndAttentionForwardsShareOneBucket(t *testing.T) {
 	if events < session.EventBurst/3 || words < session.EventBurst/3 {
 		t.Fatalf("one kind used the budget alone: %d events, %d attention words", events, words)
 	}
-	if queued := len(conn.Send); queued != events+words {
+	if queued := len(conn.Own); queued != events+words {
 		t.Fatalf("%d messages queued, %d forwarded", queued, events+words)
 	}
 }
@@ -579,8 +587,8 @@ func TestSetAttentionFullChangesNothingWhenItIsLimited(t *testing.T) {
 	if got, want := hs.Info().Attention.Message, fmt.Sprint("n", last); got != want {
 		t.Fatalf("attention %q after a refused word, want %q", got, want)
 	}
-	if changes-before != last+1 || len(conn.Send) != last+1 {
-		t.Fatalf("%d changes announced and %d messages queued for %d accepted words", changes-before, len(conn.Send), last+1)
+	if changes-before != last+1 || len(conn.Own) != last+1 {
+		t.Fatalf("%d changes announced and %d messages queued for %d accepted words", changes-before, len(conn.Own), last+1)
 	}
 }
 
@@ -596,8 +604,8 @@ func TestRouteReportsAreLimitedWithOrWithoutAHost(t *testing.T) {
 			t.Fatalf("the host's own report %d was limited: %v", i, err)
 		}
 	}
-	if len(conn.Send) != 0 {
-		t.Fatalf("%d messages went back to the host that sent them", len(conn.Send))
+	if len(conn.Own)+len(conn.Send) != 0 {
+		t.Fatalf("%d messages went back to the host that sent them", len(conn.Own)+len(conn.Send))
 	}
 	hs.HostDisconnected(conn)
 	accepted := 0

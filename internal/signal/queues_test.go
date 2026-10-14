@@ -131,7 +131,7 @@ func TestRelayedFramesWaitForRoomInTheHostQueue(t *testing.T) {
 	}
 }
 
-// While the viewers' share of the host's queue is full, the server's own
+// While the viewers' lane of the host's queue is full, the server's own
 // messages still go: an answer to the host. A viewer joining is let in at
 // once, and its join, the viewer's own message, waits its turn without
 // closing the host's connection; closed while it waits, the viewer sends
@@ -141,7 +141,7 @@ func TestServerMessagesKeepTheirRoomInTheHostQueue(t *testing.T) {
 	v := relayedViewer(t, hs, conn, "0123456789abcdef")
 	sent := fillFromViewer(hs, v, 2*hostQueueBytes)
 	waitQueued(t, conn, hostViewerBytes-(1+proto.ViewerIDLen+1+proto.MaxInput))
-	// The share has no room for another frame, though it has for a join: it
+	// The lane has no room for another frame, though it has for a join: it
 	// is full once the viewer's next frame waits in line, which a join
 	// then waits behind.
 	waitInLine(t, conn, 1)
@@ -149,16 +149,16 @@ func TestServerMessagesKeepTheirRoomInTheHostQueue(t *testing.T) {
 	if err := hs.Tell(proto.ErrorMsg{T: proto.HostError, Code: "not_found", Message: "no such link", RequestID: "r1"}); err != nil {
 		t.Fatalf("the server's answer to its host: %v", err)
 	}
-	if len(conn.Send) != before+1 {
-		t.Fatalf("%d messages queued, want %d", len(conn.Send), before+1)
+	if len(conn.Own) != 1 || len(conn.Send) != before {
+		t.Fatalf("%d of the server's own and %d of the viewers' queued, want 1 and %d", len(conn.Own), len(conn.Send), before)
 	}
 	w, err := hs.AddViewer("fedcba9876543210", session.RoleView, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if len(conn.Send) != before+1 {
-		t.Fatalf("a join went past a full share: %d messages queued, want %d", len(conn.Send), before+1)
+	if len(conn.Send) != before {
+		t.Fatalf("a join went past a full lane: %d messages queued, want %d", len(conn.Send), before)
 	}
 	select {
 	case <-conn.Done():
@@ -172,8 +172,8 @@ func TestServerMessagesKeepTheirRoomInTheHostQueue(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a viewer whose join waited kept waiting as it left")
 	}
-	if len(conn.Send) != before+1 || w.joinSent {
-		t.Fatalf("a viewer gone before its join went: %d messages queued, want %d", len(conn.Send), before+1)
+	if len(conn.Send) != before || len(conn.Own) != 1 || w.joinQueued || w.joinTakenNow() {
+		t.Fatalf("a viewer gone before its join went: %d messages queued, want %d", len(conn.Send), before)
 	}
 	conn.Close()
 	select {
@@ -423,6 +423,7 @@ func TestViewerQueueIsBoundedInBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainText(t, conn, proto.HostViewerJoin)
 	sink := &countSink{}
 	done := make(chan struct{})
 	go func() { w.Pump(sink); close(done) }()
@@ -586,21 +587,19 @@ func TestAViewersChargeIsToldWhatGoesToTheHost(t *testing.T) {
 	}
 }
 
-// nextToHost is the next message the server sends the host on conn.
+// nextToHost is the next message the server sends the host on conn, as
+// its writer takes it (Next).
 func nextToHost(t *testing.T, conn *HostConn) map[string]any {
 	t.Helper()
-	select {
-	case o := <-conn.Send:
-		conn.Took(o)
-		var m map[string]any
-		if err := json.Unmarshal(o.Text, &m); err != nil {
-			t.Fatal(err)
-		}
-		return m
-	case <-time.After(2 * time.Second):
+	o, ok := takeWithin(conn, 2*time.Second)
+	if !ok {
 		t.Fatal("nothing went to the host")
 	}
-	return nil
+	var m map[string]any
+	if err := json.Unmarshal(o.Text, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 // A link a viewer joined through that no longer opens the session is named
@@ -644,10 +643,8 @@ func TestTheHostIsToldOfTheLinksItsViewersJoinedThroughGoing(t *testing.T) {
 		t.Fatalf("the attached viewer's leave: %v", m)
 	}
 	hs.DisconnectLink("l1")
-	select {
-	case o := <-conn.Send:
+	if o, ok := takeWithin(conn, 100*time.Millisecond); ok {
 		t.Fatalf("a second revoke sent %s", o.Text)
-	default:
 	}
 }
 
@@ -739,18 +736,16 @@ func TestAViewersLeaveSaysWhenItsLinkWent(t *testing.T) {
 	next := func() map[string]any {
 		t.Helper()
 		for {
-			select {
-			case o := <-conn.Send:
-				conn.Took(o)
-				var m map[string]any
-				if err := json.Unmarshal(o.Text, &m); err != nil {
-					t.Fatal(err)
-				}
-				if m["t"] != proto.HostLinkGone {
-					return m
-				}
-			case <-time.After(time.Second):
+			o, ok := takeWithin(conn, time.Second)
+			if !ok {
 				t.Fatal("no leave")
+			}
+			var m map[string]any
+			if err := json.Unmarshal(o.Text, &m); err != nil {
+				t.Fatal(err)
+			}
+			if m["t"] != proto.HostLinkGone {
+				return m
 			}
 		}
 	}

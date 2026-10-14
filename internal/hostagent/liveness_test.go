@@ -21,13 +21,15 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/session/sessiontest"
 )
 
-// heardFromServer has a's server heard from all along, as over a live
-// connection, until the test ends.
+// heardFromServer has a's server answer a's pings all along, as over a
+// live connection, until the test ends: the host vouches for it.
 func heardFromServer(t *testing.T, a *agent) {
 	t.Helper()
 	l := newConnLive()
+	l.answer(sinceEpoch())
 	a.live.Store(l)
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
@@ -40,6 +42,7 @@ func heardFromServer(t *testing.T, a *agent) {
 				return
 			case <-tick.C:
 				l.hear()
+				l.answer(sinceEpoch())
 			}
 		}
 	}()
@@ -265,11 +268,27 @@ func liveHostAt(t *testing.T, base string, pause, stall time.Duration) (a *agent
 	return liveHostOf(t, base, stall, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
 }
 
-// liveHostOf is liveHostAt whose session takes opts.
+// liveHostOf is liveHostAt whose session takes opts. Its viewers join as
+// the server's viewer_join has them join (joinedViewerOn): one through a
+// link has the host ping the server.
 func liveHostOf(t *testing.T, base string, stall time.Duration, opts session.Options) (a *agent, viewer func(id, linkID string) *submitViewer) {
 	t.Helper()
+	return liveHostBounds(t, base, stall, opts, liveTestWithin, liveTestPing)
+}
+
+// liveHostBounds is liveHostOf whose bound is within and whose pings are
+// every ping apart.
+func liveHostBounds(t *testing.T, base string, stall time.Duration, opts session.Options, within, ping time.Duration) (a *agent, viewer func(id, linkID string) *submitViewer) {
+	t.Helper()
+	a, _, viewer = liveHostParts(t, base, stall, opts, within, ping)
+	return a, viewer
+}
+
+// liveHostParts is liveHostBounds, with its session's process.
+func liveHostParts(t *testing.T, base string, stall time.Duration, opts session.Options, within, ping time.Duration) (a *agent, proc *sessiontest.FakeProc, viewer func(id, linkID string) *submitViewer) {
+	t.Helper()
 	a, proc, begun := newHostOf(t, opts, 0, 0)
-	a.liveWithin, a.livePing, a.stallWait = liveTestWithin, liveTestPing, stall
+	a.liveWithin, a.livePing, a.stallWait = within, ping, stall
 	a.opts = Options{ServerURL: base, Token: hostToken, Name: "liveness", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", ReconnectMax: time.Second, Log: discardLog}
 	a.dir = t.TempDir()
 	wsURL, err := controlURL(base)
@@ -294,9 +313,9 @@ func liveHostOf(t *testing.T, base string, stall time.Duration, opts session.Opt
 		cancel()
 		<-done
 	})
-	return a, func(id, linkID string) *submitViewer {
+	return a, proc, func(id, linkID string) *submitViewer {
 		t.Helper()
-		return submitViewerOn(t, a, proc, begun, id, linkID, r.add(id))
+		return joinedViewerOn(t, a, proc, begun, id, linkID, r.add(id))
 	}
 }
 
@@ -499,14 +518,35 @@ func TestAConnectionPingedAndNeverHeardIsGivenUp(t *testing.T) {
 	}
 }
 
-// A frame of the server's that comes in slowly, larger than what comes in
-// within the bound, is the server heard from as it comes: a link's line is
-// typed and entered meanwhile, though nothing whole, not a pong, comes
-// before the frame is done.
-func TestALinksLineIsEnteredWhileALargeFrameComesInSlowly(t *testing.T) {
-	conns := make(chan *websocket.Conn, 1)
+// stubServer is a server a host registers with that answers nothing but its
+// registration, reads all the host sends (got, as long as it has room), and
+// hands the test each connection (conns) to write on as it likes. Its pings
+// are answered as pongs says: answered (pongAnswer), held while the server
+// pauses its reading (pongHold: its reader waits, as one paused by a relay
+// bound does), or never (pongNever).
+type stubServer struct {
+	url   string
+	conns chan *websocket.Conn
+	got   chan []byte
+	pongs atomic.Int32
+}
+
+const (
+	pongAnswer int32 = iota
+	pongHold
+	pongNever
+)
+
+func newStubServer(t *testing.T) *stubServer {
+	t.Helper()
+	s := &stubServer{conns: make(chan *websocket.Conn, 8), got: make(chan []byte, 4096)}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := websocket.Accept(w, r, nil)
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OnPingReceived: func(ctx context.Context, _ []byte) bool {
+			for s.pongs.Load() == pongHold && ctx.Err() == nil {
+				time.Sleep(2 * time.Millisecond)
+			}
+			return s.pongs.Load() == pongAnswer
+		}})
 		if err != nil {
 			return
 		}
@@ -520,30 +560,83 @@ func TestALinksLineIsEnteredWhileALargeFrameComesInSlowly(t *testing.T) {
 		if c.Write(ctx, websocket.MessageText, reg) != nil {
 			return
 		}
-		conns <- c
+		s.conns <- c
 		for {
-			if _, _, err := c.Read(ctx); err != nil {
+			_, data, err := c.Read(ctx)
+			if err != nil {
 				return
+			}
+			select {
+			case s.got <- data:
+			default:
 			}
 		}
 	}))
 	t.Cleanup(srv.Close)
-	px := newStallProxy(t, strings.TrimPrefix(srv.URL, "http://"))
-	a, viewer := liveHostAt(t, px.url(), 1500*time.Millisecond, 0)
-	guest := viewer("0123456789abcdef", "l1")
-	server := <-conns
-	// 64 KiB at 5 KiB a second: about 13 s, the host's pongs behind it.
-	px.trickle(256)
-	big := []byte(`{"t":"something_else","pad":"` + strings.Repeat("p", 64<<10) + `"}`)
-	go server.Write(context.Background(), websocket.MessageText, big)
-	time.Sleep(2 * liveTestWithin)
-	guest.send(proto.Submit{T: proto.CtlSubmit, Text: "guest line"})
-	if typed := guest.typed(guest.release(), 2); strings.Join(typed, "|") != "guest line|\r" {
-		t.Fatalf("typed %q", typed)
-	}
-	if a.local.Held() {
-		t.Fatal("the turn is held")
-	}
+	s.url = srv.URL
+	return s
+}
+
+// Nothing but the host's own pings answered vouches for the server (I6):
+// with the server answering none of them, the frames it relays, its other
+// messages and its own pings, which come in all along, leave a link's line
+// withheld; so does a large frame of the server's that comes in slowly past
+// the bound, the host's pongs behind it, though the host reads it as it
+// comes. Neither connection is given up: the server is heard from.
+func TestBufferedFramesAndServerPingsDoNotVouch(t *testing.T) {
+	t.Run("frames and pings", func(t *testing.T) {
+		srv := newStubServer(t)
+		srv.pongs.Store(pongNever)
+		a, viewer := liveHostAt(t, srv.url, 50*time.Millisecond, 0)
+		guest := viewer("0123456789abcdef", "l1")
+		server := <-srv.conns
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			env, _ := proto.EncodeRelay("fedcba9876543210", proto.Encode(proto.TypeOutput, []byte("o")))
+			for {
+				select {
+				case <-stop:
+					return
+				case <-time.After(20 * time.Millisecond):
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				_ = server.Write(ctx, websocket.MessageBinary, env)
+				_ = server.Write(ctx, websocket.MessageText, []byte(`{"t":"something_else"}`))
+				_ = server.Ping(ctx)
+				cancel()
+			}
+		}()
+		time.Sleep(2 * liveTestWithin)
+		if a.vouches() == nil {
+			t.Fatal("the host vouches with no ping of its own answered")
+		}
+		guest.send(proto.Submit{T: proto.CtlSubmit, Text: "guest line"})
+		guest.until(func(m map[string]any) bool { return m["t"] == proto.CtlError && m["code"] == "input_failed" })
+		guest.quiet(300 * time.Millisecond)
+		if a.live.Load().quietFor() > liveTestWithin {
+			t.Fatal("the server's frames were not read")
+		}
+	})
+	t.Run("a large frame coming in slowly", func(t *testing.T) {
+		srv := newStubServer(t)
+		px := newStallProxy(t, strings.TrimPrefix(srv.url, "http://"))
+		a, viewer := liveHostAt(t, px.url(), 50*time.Millisecond, 0)
+		guest := viewer("0123456789abcdef", "l1")
+		server := <-srv.conns
+		untilVouches(t, a, true)
+		// 64 KiB at 5 KiB a second: about 13 s, the host's pongs behind it.
+		px.trickle(256)
+		big := []byte(`{"t":"something_else","pad":"` + strings.Repeat("p", 64<<10) + `"}`)
+		go server.Write(context.Background(), websocket.MessageText, big)
+		untilVouches(t, a, false)
+		guest.send(proto.Submit{T: proto.CtlSubmit, Text: "guest line"})
+		guest.until(func(m map[string]any) bool { return m["t"] == proto.CtlError && m["code"] == "input_failed" })
+		guest.quiet(300 * time.Millisecond)
+		if q := a.live.Load().quietFor(); q > liveTestWithin {
+			t.Fatalf("nothing read for %v while the frame came in", q)
+		}
+	})
 }
 
 // Bytes on a TLS connection that are not a whole record yet, which TLS has
@@ -660,21 +753,35 @@ func TestAConnectionHeardFromIsKeptThoughItsPongsDoNotCome(t *testing.T) {
 	runtime.KeepAlive(held)
 }
 
-// serverQuiet is a link gone for the session (errors.Is ErrRevoked), and a
-// host with no connection vouches for no link.
+// serverQuiet is a link gone for the session (errors.Is ErrRevoked). A host
+// with no connection vouches for no link, nor one whose connection was
+// heard from now with no ping answered; a ping answered vouches from its
+// send for the bound, and no longer once the connection ended.
 func TestServerQuietIsALinkGone(t *testing.T) {
 	err := error(serverQuiet{within: time.Second})
 	if !errors.Is(err, session.ErrRevoked) || errors.Is(err, session.ErrExpired) {
 		t.Fatalf("%v: revoked %v, expired %v", err, errors.Is(err, session.ErrRevoked), errors.Is(err, session.ErrExpired))
 	}
-	a := &agent{}
+	a := &agent{liveWithin: 200 * time.Millisecond}
 	if !errors.Is(a.vouches(), session.ErrRevoked) {
 		t.Fatal("a host with no connection vouches")
 	}
 	l := newConnLive()
 	a.live.Store(l)
+	if a.vouches() == nil {
+		t.Fatal("a connection heard from, with no ping answered, vouches")
+	}
+	l.answer(sinceEpoch() - 300*time.Millisecond)
+	if a.vouches() == nil {
+		t.Fatal("a ping sent longer ago than the bound vouches")
+	}
+	l.answer(sinceEpoch())
 	if a.vouches() != nil {
-		t.Fatal("a connection heard from now does not vouch")
+		t.Fatal("a ping answered now does not vouch")
+	}
+	l.end()
+	if a.vouches() == nil {
+		t.Fatal("a connection that ended vouches")
 	}
 }
 

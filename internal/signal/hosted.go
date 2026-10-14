@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+	"weak"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -47,16 +48,22 @@ const (
 	// an older host's viewer on a slow connection may fall this far behind,
 	// a thousand whole output frames, or a dozen file frames.
 	viewerQueueBytes = 16 << 20
-	hostQueue        = 8192
-	// hostQueueBytes bounds what is queued to a host connection.
+	// hostQueue and hostQueueBytes bound what is queued to a host
+	// connection, its two lanes together (HostConn).
+	hostQueue      = 8192
 	hostQueueBytes = 8 << 20
+	// hostOwnSlots and hostOwnBytes are the server's own lane (send): the
+	// answers to the host's requests, an agent's report, a link's going, a
+	// leave that says why. The writer takes it first.
+	hostOwnSlots = 512
+	hostOwnBytes = 1 << 20
 	// What the viewers' messages (their joins and leaves among them) may
-	// fill of the host's queue (sendFrom): the rest is kept for the
-	// server's own (the answer to the host's request, an agent's report),
-	// so viewers that send more than the host reads, or come and go faster
-	// than it reads, wait for room and never close the host's connection.
-	hostViewerBytes = hostQueueBytes - 1<<20
-	hostViewerSlots = hostQueue - 512
+	// fill (sendFrom): the rest, the viewers' lane. Viewers that send more
+	// than the host reads, or come and go faster than it reads, wait for
+	// room and never close the host's connection, nor hold up the server's
+	// own messages.
+	hostViewerBytes = hostQueueBytes - hostOwnBytes
+	hostViewerSlots = hostQueue - hostOwnSlots
 	// A relayed viewer for which more than relayBehindBytes is queued has
 	// fallen behind what its host relays to it: the host is told
 	// (viewer_behind), and holds that viewer's frames until it is told the
@@ -76,34 +83,59 @@ type Outbound struct {
 	Text   []byte // JSON control message
 	Binary []byte // RELAY envelope
 	// took, when set, is called once the writer has taken the message
-	// (Took), holding no lock.
+	// (Took), holding no lock, whether it is written or dropped.
 	took func()
+	// of, when set, is the viewer the message is of (its join, its
+	// relay_start, offer and candidates, the frames it relays, its
+	// viewer_behind): one whose link went (revoked, expired) by the time
+	// the writer takes the message, the viewer there or gone, has it
+	// dropped then, never written (Took).
+	of *Viewer
+	// join marks of's join: taking it settles whether the join went
+	// (Viewer.joinSettled).
+	join bool
+	// own says the message is in the server's own lane (send).
+	own bool
 }
 
 // size is what o counts for in its queue's bytes.
 func (o Outbound) size() int { return len(o.Text) + len(o.Binary) }
 
-// HostConn is a live control connection from one host process. The API layer
-// drains Send, calls Took with each message it takes, and writes it to the
-// WebSocket.
+// HostConn is a live control connection from one host process. What is
+// queued to it goes in one of two lanes, each in its order: the server's own
+// messages (Own: link_gone, a viewer_leave that gives a reason, stop,
+// attention, activity, the answers to the host's requests, error), and the
+// viewers' (Send: viewer_join, offer, ice, relay_start, the RELAY envelopes,
+// viewer_behind, a viewer_leave with no reason). The API layer's writer
+// takes them with Next, the server's own first, and writes each to the
+// WebSocket: a message of the server's own waits behind the one message
+// being written when it was queued, never behind the viewers' lane. A test
+// that reads a lane itself calls Took with each message it takes.
 type HostConn struct {
+	Own  chan Outbound
 	Send chan Outbound
 	done chan struct{}
 	once sync.Once
 
-	// mu is held by every send into Send, with bytes, the bytes of what Send
-	// holds; waiting, the viewers' messages waiting for room, in their order
-	// (sendFrom); and room, which they wait on: Took closes it, as does a
-	// waiter that leaves the head of the line, and the next to wait makes
-	// another.
-	mu      sync.Mutex
-	bytes   int
-	waiting []*roomWaiter
-	room    chan struct{}
+	// mu is held by every send into either lane, with bytes, the bytes of
+	// what the viewers' lane holds (held among them), and ownBytes, those
+	// of the server's own lane; waiting, the viewers' messages waiting for
+	// room, in their order (sendFrom); and room, which they wait on: Took
+	// closes it, as does a waiter that leaves the head of the line, and the
+	// next to wait makes another.
+	mu       sync.Mutex
+	bytes    int
+	ownBytes int
+	waiting  []*roomWaiter
+	room     chan struct{}
 	// behindLate are the viewers whose viewer_behind found no room in the
 	// queue (offerBehind): each tries again as the writer next takes a
 	// message (Took). Guarded by mu.
 	behindLate []*Viewer
+	// held is a message of the viewers' lane Next took just as one of the
+	// server's own came in: the next it takes after the server's own. Only
+	// Next touches it, and Next has one caller, the writer.
+	held *Outbound
 }
 
 // roomWaiter is a viewer's message in the line for room in a host's queue:
@@ -112,7 +144,7 @@ type roomWaiter struct{ n int }
 
 // NewHostConn creates a host connection with an outbound queue.
 func NewHostConn() *HostConn {
-	return &HostConn{Send: make(chan Outbound, hostQueue), done: make(chan struct{})}
+	return &HostConn{Own: make(chan Outbound, hostOwnSlots), Send: make(chan Outbound, hostViewerSlots), done: make(chan struct{})}
 }
 
 // Done is closed when the connection must be torn down.
@@ -121,32 +153,94 @@ func (c *HostConn) Done() <-chan struct{} { return c.done }
 // Close marks the connection dead.
 func (c *HostConn) Close() { c.once.Do(func() { close(c.done) }) }
 
-// Took tells the connection its writer took o from Send: o's bytes leave
-// the queue, the viewers' messages waiting for room try again, and so do
-// the viewer_behind that found none (offerBehind), after o's own took.
-func (c *HostConn) Took(o Outbound) {
+// Next waits for the next message to write to the host and returns it,
+// taken (Took): one of the server's own while any is queued, else the next
+// of the viewers' lane, a message of a viewer whose link went dropped as it
+// is taken; false once the connection is closed or ctx ends. The
+// connection's writer alone calls it, one call at a time.
+func (c *HostConn) Next(ctx context.Context) (Outbound, bool) {
+	for {
+		o, ok := c.next(ctx)
+		if !ok {
+			return Outbound{}, false
+		}
+		if c.Took(o) {
+			return o, true
+		}
+	}
+}
+
+// next is Next's message before it is taken.
+func (c *HostConn) next(ctx context.Context) (Outbound, bool) {
+	select {
+	case o := <-c.Own:
+		return o, true
+	default:
+	}
+	if c.held != nil {
+		o := *c.held
+		c.held = nil
+		return o, true
+	}
+	select {
+	case o := <-c.Own:
+		return o, true
+	case o := <-c.Send:
+		// One of the server's own that came in meanwhile goes first, and
+		// this one next.
+		select {
+		case own := <-c.Own:
+			c.held = &o
+			return own, true
+		default:
+		}
+		return o, true
+	case <-c.done:
+		return Outbound{}, false
+	case <-ctx.Done():
+		return Outbound{}, false
+	}
+}
+
+// Took tells the connection its writer took o from its lane, and reports
+// whether o is to be written: not when it is of a viewer whose link went
+// (revoked or expired: Viewer.linkWent), the viewer closed for it or gone
+// already, which is dropped as it is taken. o's bytes leave the queue, the
+// viewers' messages waiting for room try again, and so do the
+// viewer_behind that found none (offerBehind), after o's own took. A join
+// taken settles whether it went: written, or dropped so
+// (Viewer.joinSettled).
+func (c *HostConn) Took(o Outbound) (write bool) {
+	write = o.of == nil || !o.of.linkWent()
 	c.mu.Lock()
-	c.bytes = max(0, c.bytes-o.size())
+	if o.own {
+		c.ownBytes = max(0, c.ownBytes-o.size())
+	} else {
+		c.bytes = max(0, c.bytes-o.size())
+	}
 	c.wake()
 	late := c.behindLate
 	c.behindLate = nil
 	c.mu.Unlock()
+	if o.join {
+		o.of.joinSettled(write)
+	}
 	if o.took != nil {
 		o.took()
 	}
 	for _, v := range late {
 		v.behindRoom()
 	}
+	return write
 }
 
-// offerBehind queues v's viewer_behind o when the viewers' share of the
-// queue has room for it (admit), as for a message of v's own but without
-// waiting in their line: never into the room kept for the server's own
-// messages, which then still has all of it, however many viewers there
-// are. When the share has none, it never closes the connection, as send
-// does, but has v try again as the writer next takes a message (Took),
-// which it will, the share being full. It reports whether o was queued.
-// Called with v.behindMu held.
+// offerBehind queues v's viewer_behind o when the viewers' lane has room
+// for it (admit), as for a message of v's own but without waiting in their
+// line: never in the server's own lane, which keeps all of its room however
+// many viewers there are. When the viewers' lane has none, it never closes
+// the connection, as send does, but has v try again as the writer next
+// takes a message (Took), which it will, the lane being full. It reports
+// whether o was queued. Called with v.behindMu held.
 func (c *HostConn) offerBehind(o Outbound, v *Viewer) bool {
 	select {
 	case <-c.done:
@@ -171,16 +265,17 @@ func (c *HostConn) wake() {
 	}
 }
 
-// queued reports the bytes Send holds.
+// queued reports the bytes both lanes hold.
 func (c *HostConn) queued() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.bytes
+	return c.bytes + c.ownBytes
 }
 
-// send queues a message of the server's own without waiting. One that finds
-// the queue full, in messages or in bytes, closes the connection: a host
-// that reads that little is too slow to keep.
+// send queues a message of the server's own in its lane, without waiting.
+// One that finds the lane full, in messages (hostOwnSlots) or in bytes
+// (hostOwnBytes), closes the connection: a host that reads that little is
+// too slow to keep.
 func (c *HostConn) send(o Outbound) bool {
 	select {
 	case <-c.done:
@@ -188,15 +283,16 @@ func (c *HostConn) send(o Outbound) bool {
 	default:
 	}
 	n := o.size()
+	o.own = true
 	c.mu.Lock()
-	if c.bytes+n > hostQueueBytes {
+	if c.ownBytes+n > hostOwnBytes {
 		c.mu.Unlock()
 		c.Close()
 		return false
 	}
 	select {
-	case c.Send <- o:
-		c.bytes += n
+	case c.Own <- o:
+		c.ownBytes += n
 		c.mu.Unlock()
 		return true
 	default:
@@ -207,8 +303,8 @@ func (c *HostConn) send(o Outbound) bool {
 }
 
 // sendFrom queues a message a viewer sent (a frame it relays, its offer, a
-// candidate) within the viewers' share of the queue, hostViewerBytes and
-// hostViewerSlots: past it, sendFrom waits until the writer takes enough
+// candidate) in the viewers' lane, within hostViewerBytes and
+// hostViewerSlots: past them, sendFrom waits until the writer takes enough
 // (Took). The viewers' messages that wait get room in their order, whatever
 // their sizes: one that comes while others wait waits behind them. A viewer
 // that sends more than the host reads is so held in its own read loop; the
@@ -233,7 +329,7 @@ func (c *HostConn) sendFrom(o Outbound, gone, stop <-chan struct{}) error {
 }
 
 // enter is sendFrom's first half: o is queued at once when nobody waits and
-// the viewers' share has room (nil), or takes its place in line (the waiter
+// the viewers' lane has room (nil), or takes its place in line (the waiter
 // await then waits as). What is sent after o goes after it either way.
 func (c *HostConn) enter(o Outbound) *roomWaiter {
 	n := o.size()
@@ -285,8 +381,8 @@ func (c *HostConn) await(me *roomWaiter, o Outbound, stop <-chan struct{}) error
 	}
 }
 
-// admit queues o, of n bytes, when the viewers' share has room for it (any
-// message when the queue is empty). Called with mu held.
+// admit queues o, of n bytes, in the viewers' lane when it has room for it
+// (any message when the lane is empty). Called with mu held.
 func (c *HostConn) admit(o Outbound, n int) bool {
 	if (c.bytes != 0 && c.bytes+n > hostViewerBytes) || len(c.Send) >= hostViewerSlots {
 		return false
@@ -330,11 +426,23 @@ type Viewer struct {
 	stopOnce sync.Once
 	// failed is set by ConnFailed before it closes stop.
 	failed atomic.Bool
-	// revoked says its link no longer opens the session, revoked
-	// (closeLink) or expired (lapse), which may come after the viewer was
-	// closed for another reason: what it is still owed is dropped from then
-	// on (finish).
+	// revoked says what the viewer is still owed is dropped from then on
+	// (finish): its link no longer opens the session, revoked (closeLink)
+	// or expired (lapse), which may come after the viewer was closed for
+	// another reason; or it was let go (RemoveViewer), or the session left
+	// the server (Retire).
 	revoked atomic.Bool
+	// forLink says the server closed the viewer for its link, revoked
+	// (closeLink) or expired (lapse, linkLapsed), whatever it was closed for
+	// first: set before the viewer is closed, and before the link's
+	// link_gone is queued. Nothing of the viewer's still queued for the host
+	// is written from then on (HostConn.Took).
+	forLink atomic.Bool
+	// link is the state of the link the viewer joined through, shared with
+	// the link's other viewers, nil for none: once the link went, nothing
+	// of the viewer's still queued is written either, also once the viewer
+	// has left and so is no longer found to be closed (linkGoneOf).
+	link *linkState
 	// lapse closes the viewer when its link expires (ViewerOptions'
 	// Authorize gave a Grant with Until), and drops what it is still owed
 	// should it have been closed before (revoked); set by AddViewerWith,
@@ -355,11 +463,43 @@ type Viewer struct {
 	told     bool
 	inQueue  bool
 	late     bool
-	// joinDone is closed once the viewer's join has gone to the host, or
-	// will not (joinSent false: the viewer or the connection closed first,
-	// or its charge failed); joinSent is written before, and read after.
-	joinDone chan struct{}
-	joinSent bool
+	// joinDone is closed once the viewer's join is queued for the host, or
+	// will not be (joinQueued false: the viewer or the connection closed
+	// first, or its charge failed); joinQueued is written before, and read
+	// after. Every later message of the viewer's is queued behind it.
+	joinDone   chan struct{}
+	joinQueued bool
+	// joinTaken is closed once it is settled whether the join went: the
+	// writer took it and wrote it (joinWent), or dropped it, the viewer
+	// closed for its link (Took), or it was never queued. joinWent is
+	// written before, and read after. A viewer's leave follows a join that
+	// went, and only such a join (RemoveViewer). One whose connection
+	// closes with the join still queued never settles: whoever waits for it
+	// waits for the connection's end too.
+	joinTaken     chan struct{}
+	joinTakenOnce sync.Once
+	joinWent      bool
+}
+
+// linkWent says the server closed the viewer for its link, or its link no
+// longer opens the session (revoked, expired) whether or not the viewer was
+// still there to be closed: what of its is still queued is not written.
+func (v *Viewer) linkWent() bool {
+	return v.forLink.Load() || (v.link != nil && v.link.gone.Load())
+}
+
+// linkState is what the server knows of a link viewers joined the session
+// through: whether it went (revoked or expired). The link's viewers share
+// it, each holding it for as long as it, or a message of its queued for the
+// host, lives; it is marked before the link's link_gone is queued.
+type linkState struct{ gone atomic.Bool }
+
+// joinSettled settles whether the viewer's join went (went), once.
+func (v *Viewer) joinSettled(went bool) {
+	v.joinTakenOnce.Do(func() {
+		v.joinWent = went
+		close(v.joinTaken)
+	})
 }
 
 // chargeHost tells the viewer's Charge of a message of n bytes it sends the
@@ -371,9 +511,10 @@ func (v *Viewer) chargeHost(n int) error {
 	return v.charge(n)
 }
 
-// joined waits for the viewer's join, which every message of the viewer's
-// to the host follows: ErrViewerGone when the viewer closes, or its
-// connection fails, while the join waits, or the join did not go.
+// joined waits for the viewer's join to be queued, which every message of
+// the viewer's to the host follows: ErrViewerGone when the viewer closes,
+// or its connection fails, while the join waits, or the join was not
+// queued.
 func (v *Viewer) joined() error {
 	select {
 	case <-v.joinDone:
@@ -384,14 +525,25 @@ func (v *Viewer) joined() error {
 			return ErrViewerGone
 		}
 	}
-	if !v.joinSent {
+	if !v.joinQueued {
 		return ErrViewerGone
 	}
 	return nil
 }
 
 func newViewer(id string, role session.Role, linkID, linkLabel string) *Viewer {
-	return &Viewer{ID: id, Role: role, LinkID: linkID, LinkLabel: linkLabel, Out: make(chan []byte, viewerQueue), done: make(chan struct{}), stop: make(chan struct{}), joinDone: make(chan struct{})}
+	return &Viewer{ID: id, Role: role, LinkID: linkID, LinkLabel: linkLabel, Out: make(chan []byte, viewerQueue), done: make(chan struct{}), stop: make(chan struct{}), joinDone: make(chan struct{}), joinTaken: make(chan struct{})}
+}
+
+// closeForLink closes the viewer for its link (reason ErrRevoked or
+// ErrExpired), marked first (forLink, revoked): nothing of its still queued
+// for the host is written, nor what it is still owed. The caller closes a
+// link's viewers so before it queues the link's link_gone, so the going
+// never reaches the host ahead of anything of theirs that is written.
+func (v *Viewer) closeForLink(reason error) {
+	v.forLink.Store(true)
+	v.revoked.Store(true)
+	v.close(reason)
 }
 
 // Done is closed when the viewer must be disconnected.
@@ -578,15 +730,16 @@ func (v *Viewer) noteBacklog() {
 }
 
 // tellBehind sends the host what the marks say of the viewer (behind), in
-// the viewers' share of its queue (offerBehind), when the host was last
+// the viewers' lane of its queue (offerBehind), when the host was last
 // sent otherwise: unless one of the viewer's is still in the host's queue,
-// when the latest goes once that one is taken (behindTaken), or the share
+// when the latest goes once that one is taken (behindTaken), or the lane
 // has no room, when it goes once the writer next takes a message
 // (behindRoom). So the viewer's changes, however many and however fast,
 // never put more than one message in the host's queue, never take the room
-// kept for the server's own messages nor close the connection for want of
-// room, and the host ends with the latest. Nothing is sent once the viewer
-// is closed. Called with behindMu held.
+// of the server's own messages nor close the connection for want of room,
+// and the host ends with the latest. Nothing is sent once the viewer is
+// closed, and one queued for a viewer whose link went is dropped as it is
+// taken. Called with behindMu held.
 func (v *Viewer) tellBehind() {
 	if v.inQueue || v.late || v.told == v.behind {
 		return
@@ -600,7 +753,7 @@ func (v *Viewer) tellBehind() {
 	if err != nil {
 		return
 	}
-	if v.conn.offerBehind(Outbound{Text: b, took: v.behindTaken}, v) {
+	if v.conn.offerBehind(Outbound{Text: b, took: v.behindTaken, of: v}, v) {
 		v.inQueue, v.told = true, v.behind
 	} else {
 		v.late = true
@@ -667,8 +820,14 @@ type HostedSession struct {
 	// expiry when it has one: the host is told when one of them no longer
 	// opens the session (DisconnectLink, linkLapsed), whether a viewer is
 	// still attached through it or not. Guarded by mu.
-	linksJoined    []string
-	linkLapse      map[string]*time.Timer
+	linksJoined []string
+	linkLapse   map[string]*time.Timer
+	// links finds the linkState of a link viewers joined through, weakly:
+	// one no viewer holds any more, nor a message of a viewer's still
+	// queued for the host, goes, which bounds what it keeps; linksPrune is
+	// the size past which the entries gone are swept. Guarded by mu.
+	links          map[string]weak.Pointer[linkState]
+	linksPrune     int
 	disconnectedAt time.Time
 	maxViewers     int
 	// retired says the session left the server's registry (Retire): no
@@ -752,6 +911,41 @@ func (h *HostedSession) forgetLink(linkID string) bool {
 	return len(h.linksJoined) != n
 }
 
+// linkStateOf is linkID's linkState, the one a viewer or a queued message
+// still holds or a new one; nil for no link. The caller holds h.mu.
+func (h *HostedSession) linkStateOf(linkID string) *linkState {
+	if linkID == "" {
+		return nil
+	}
+	if st := h.links[linkID].Value(); st != nil {
+		return st
+	}
+	if h.links == nil {
+		h.links = map[string]weak.Pointer[linkState]{}
+	}
+	st := &linkState{}
+	h.links[linkID] = weak.Make(st)
+	if len(h.links) > max(h.linksPrune, 64) {
+		for id, p := range h.links {
+			if p.Value() == nil {
+				delete(h.links, id)
+			}
+		}
+		h.linksPrune = 2 * len(h.links)
+	}
+	return st
+}
+
+// linkWent marks linkID gone for whatever of its viewers' is still queued
+// for the host, those that left among them, and forgets it: no viewer
+// joins through it again. The caller holds h.mu.
+func (h *HostedSession) linkWent(linkID string) {
+	if st := h.links[linkID].Value(); st != nil {
+		st.gone.Store(true)
+	}
+	delete(h.links, linkID)
+}
+
 // linkGone tells the host, when it is connected, that linkID no longer
 // opens the session.
 func (h *HostedSession) linkGone(conn *HostConn, linkID string) {
@@ -762,16 +956,39 @@ func (h *HostedSession) linkGone(conn *HostConn, linkID string) {
 
 // linkLapsed is a joined link reaching its expiry: the host is told it is
 // gone, as for a revoke, on the server's clock, whether a viewer is still
-// attached through it or not (each one attached is closed by its own lapse,
-// with expired).
+// attached through it or not. Each one attached is closed with expired
+// first, as its own lapse would, which may fire after this: nothing of
+// theirs still queued for the host goes after the going (closeLink).
 func (h *HostedSession) linkLapsed(linkID string) {
 	h.mu.Lock()
 	joined := h.forgetLink(linkID)
 	conn := h.conn
+	hit := h.linkViewers(linkID)
+	h.linkWent(linkID)
 	h.mu.Unlock()
+	for _, v := range hit {
+		v.closeForLink(session.ErrExpired)
+	}
 	if joined {
 		h.linkGone(conn, linkID)
 	}
+}
+
+// linkViewers are the viewers attached through linkID, those its host's
+// leaving let go (gone) among them. The caller holds h.mu.
+func (h *HostedSession) linkViewers(linkID string) []*Viewer {
+	var hit []*Viewer
+	for _, v := range h.viewers {
+		if v.LinkID == linkID {
+			hit = append(hit, v)
+		}
+	}
+	for v := range h.gone {
+		if v.LinkID == linkID {
+			hit = append(hit, v)
+		}
+	}
+	return hit
 }
 
 // DisconnectLink closes the viewers attached through linkID as revoked,
@@ -780,12 +997,18 @@ func (h *HostedSession) linkLapsed(linkID string) {
 // (Pump). It finds them under the lock AddViewerWith registers them under,
 // so a caller that marked the link first (a revoke) misses none: a viewer
 // added after this finds the mark (ViewerOptions.Authorize). When a viewer
-// ever joined through the link, the host is told the link went (link_gone)
-// first, ahead of their leaves: what a viewer of the link asked for and is
-// still under way there (one that left once it had sent) is withdrawn. A
-// link no viewer joined through is never named to the host. A host that is
-// away, or whose connection ends before the message reaches it, is not told
-// again: a host counts every link gone as it loses its connection.
+// ever joined through the link, the host is told the link went (link_gone),
+// in the server's own lane, ahead of their leaves and of the viewers' lane:
+// what a viewer of the link asked for and is still under way there (one
+// that left once it had sent) is withdrawn. The link is marked gone and its
+// viewers closed first (linkState, forLink), so nothing still queued for the
+// host of a viewer of the link, there or gone already, follows the going: a
+// join, a frame, an offer not yet written is dropped as the writer takes
+// it, and a viewer whose join was dropped so is never known to the host. A
+// link no viewer joined through is never named to the host. A host
+// that is away, or whose connection ends before the message reaches it, is
+// not told again: a host counts every link gone as it loses its
+// connection.
 func (h *HostedSession) DisconnectLink(linkID string) { h.closeLink(linkID, true) }
 
 // EndLink closes the viewers attached through linkID, one of the session's
@@ -799,33 +1022,26 @@ func (h *HostedSession) EndLink(linkID string) { h.closeLink(linkID, false) }
 
 // closeLink is DisconnectLink (revoked) and EndLink. A revoke also stops
 // what the session's end still writes the link's viewers, should it have
-// closed them first (finish).
+// closed them first (finish). A revoke closes the link's viewers before it
+// queues the link's going (DisconnectLink).
 func (h *HostedSession) closeLink(linkID string, revoked bool) {
 	h.mu.Lock()
-	var hit []*Viewer
-	for _, v := range h.viewers {
-		if v.LinkID == linkID {
-			hit = append(hit, v)
-		}
-	}
-	for v := range h.gone {
-		if v.LinkID == linkID {
-			hit = append(hit, v)
-		}
-	}
+	hit := h.linkViewers(linkID)
 	joined := linkID != "" && h.forgetLink(linkID)
 	conn := h.conn
-	h.mu.Unlock()
-	if joined && revoked {
-		h.linkGone(conn, linkID)
+	if revoked {
+		h.linkWent(linkID)
 	}
+	h.mu.Unlock()
 	for _, v := range hit {
 		if revoked {
-			v.revoked.Store(true)
-			v.close(session.ErrRevoked)
+			v.closeForLink(session.ErrRevoked)
 		} else {
 			v.close(session.ErrSessionEnded)
 		}
+	}
+	if joined && revoked {
+		h.linkGone(conn, linkID)
 	}
 }
 
@@ -965,10 +1181,10 @@ func (h *HostedSession) RelayOnly() bool {
 
 // LinkStands says whether a link a viewer joined the session through still
 // stands (linksJoined): the host may then have a line of that viewer's
-// under way, also once it has left, which it types only while it hears
-// from the server often (the api's hostKeepalive). A link that leaves the
-// list goes with a link_gone to the host (revoked, expired, pushed out) or
-// with the session's end.
+// under way, also once it has left, which an older host types only while it
+// hears from the server often (the api's hostKeepalive). A link that leaves
+// the list goes with a link_gone to the host (revoked, expired, pushed out)
+// or with the session's end.
 func (h *HostedSession) LinkStands() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1080,13 +1296,11 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	v := newViewer(o.ID, role, o.LinkID, o.LinkLabel)
 	v.charge = o.Charge
 	v.conn = h.conn
+	v.link = h.linkStateOf(o.LinkID)
 	h.viewers[o.ID] = v
 	pushedOut := h.joinedThrough(o.LinkID, until)
 	if !until.IsZero() {
-		v.lapse = time.AfterFunc(time.Until(until), func() {
-			v.revoked.Store(true)
-			v.close(session.ErrExpired)
-		})
+		v.lapse = time.AfterFunc(time.Until(until), func() { v.closeForLink(session.ErrExpired) })
 	}
 	conn := h.conn
 	h.mu.Unlock()
@@ -1098,39 +1312,44 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 
 // sendJoin sends the host v's join without holding up the caller, which
 // goes on to serve the viewer (and so notices it leave). The join is the
-// viewer's own message: charged to it with its leave (chargeJoin), and
-// within the viewers' share of the host's queue in its turn, so viewers
-// coming and going never spend the room kept for the server's messages.
-// Without a charge it takes its place in line at once; with one, it does
-// once charged. Either way it waits on a goroutine of its own, and every
-// later message of the viewer's waits for it (Viewer.joined).
+// viewer's own message: charged to it with its leave (chargeJoin), and in
+// the viewers' lane of the host's queue in its turn, so viewers coming and
+// going never spend the room of the server's own messages. Without a charge
+// it takes its place in line at once; with one, it does once charged.
+// Either way it waits on a goroutine of its own, and every later message of
+// the viewer's waits for it to be queued (Viewer.joined). It counts as sent
+// once the writer has taken it to write (Viewer.joinSettled): one the
+// writer drops, the viewer's link gone, never went.
 func (h *HostedSession) sendJoin(conn *HostConn, v *Viewer, msg proto.ViewerJoin, chargeJoin func(stop <-chan struct{}, n int) error) {
+	queued := func(ok bool) {
+		v.joinQueued = ok
+		if !ok {
+			v.joinSettled(false)
+		}
+		close(v.joinDone)
+	}
 	join, err := jsonMarshal(msg)
 	if err != nil {
-		close(v.joinDone)
+		queued(false)
 		return
 	}
-	o := Outbound{Text: join}
+	o := Outbound{Text: join, of: v, join: true}
 	if chargeJoin == nil {
 		me := conn.enter(o)
 		if me == nil {
-			v.joinSent = true
-			close(v.joinDone)
+			queued(true)
 			return
 		}
-		go func() {
-			v.joinSent = conn.await(me, o, v.stop) == nil
-			close(v.joinDone)
-		}()
+		go func() { queued(conn.await(me, o, v.stop) == nil) }()
 		return
 	}
 	leave := leaveSize(v.ID)
 	go func() {
-		defer close(v.joinDone)
 		if chargeJoin(v.stop, len(join)+leave) != nil {
+			queued(false)
 			return
 		}
-		v.joinSent = conn.sendFrom(o, v.done, v.stop) == nil
+		queued(conn.sendFrom(o, v.done, v.stop) == nil)
 	}()
 }
 
@@ -1140,14 +1359,19 @@ func (h *HostedSession) sendJoin(conn *HostConn, v *Viewer, msg proto.ViewerJoin
 // way rather than finish it; with none for any other (the viewer left, its
 // connection failed, it was too slow).
 func leaveMsg(id string, reason error) ([]byte, error) {
-	m := proto.ViewerLeave{T: proto.HostViewerLeave, ViewerID: id}
+	return jsonMarshal(proto.ViewerLeave{T: proto.HostViewerLeave, ViewerID: id, Reason: leaveReason(reason)})
+}
+
+// leaveReason is the reason a viewer_leave gives for a viewer closed for
+// reason, "" for none.
+func leaveReason(reason error) string {
 	switch {
 	case errors.Is(reason, session.ErrExpired):
-		m.Reason = proto.LeaveExpired
+		return proto.LeaveExpired
 	case errors.Is(reason, session.ErrRevoked):
-		m.Reason = proto.LeaveRevoked
+		return proto.LeaveRevoked
 	}
-	return jsonMarshal(m)
+	return ""
 }
 
 // leaveSize is the size of viewer id's viewer_leave at most, its reason the
@@ -1162,15 +1386,21 @@ func leaveSize(id string) int {
 	return n
 }
 
-// RemoveViewer unregisters a browser and notifies the host. The leave goes
-// as the viewer's join did, within the viewers' share of the host's queue
-// (charged with the join): it waits for room until the host's connection
-// closes, and is never dropped, for the host would keep a viewer it was not
-// told left. A viewer whose join never went sends none. A viewer let go is
-// written nothing more, whatever it was still owed (the session's end, its
-// host's going): no revoke or expiry of its link would find it after. The
-// leave says why when the viewer was closed for its link (leaveMsg): the
-// first reason it was closed for.
+// RemoveViewer unregisters a browser and notifies the host, once the
+// viewer's join went (the writer took it to write; one never queued, or
+// dropped as the viewer's link went, before or after the viewer left, never
+// went, and the host never knew the viewer: no leave follows it). While it
+// waits for that, a revoke or expiry of its link still drops what of its is
+// queued (linkState). A leave with no reason goes
+// as the viewer's join did, in the viewers' lane of the host's queue
+// (charged with the join), behind what the viewer sent before it: it waits
+// for room until the host's connection closes, and is never dropped, for
+// the host would keep a viewer it was not told left. A leave that says why,
+// the viewer closed for its link (leaveMsg: the first reason it was closed
+// for), goes in the server's own lane, behind the link's going. A viewer
+// let go is written nothing more, whatever it was still owed (the
+// session's end, its host's going): no revoke or expiry of its link would
+// find it after.
 func (h *HostedSession) RemoveViewer(v *Viewer) {
 	h.mu.Lock()
 	_, present := h.viewers[v.ID]
@@ -1187,18 +1417,40 @@ func (h *HostedSession) RemoveViewer(v *Viewer) {
 		return
 	}
 	// The join stops waiting as the viewer closes; one that never went
-	// needs no leave.
+	// needs no leave. One queued goes, or is dropped, as the writer takes
+	// it, unless the connection ends first.
 	<-v.joinDone
-	if conn != nil && v.joinSent {
-		if leave, err := leaveMsg(v.ID, v.Reason()); err == nil {
-			_ = conn.sendFrom(Outbound{Text: leave}, nil, nil)
+	if conn != nil && conn == v.conn && v.joinQueued {
+		select {
+		case <-v.joinTaken:
+		case <-conn.Done():
+		}
+	}
+	if conn != nil && conn == v.conn && v.joinTakenNow() {
+		reason := v.Reason()
+		if leave, err := leaveMsg(v.ID, reason); err == nil {
+			if leaveReason(reason) != "" {
+				conn.send(Outbound{Text: leave})
+			} else {
+				_ = conn.sendFrom(Outbound{Text: leave}, nil, nil)
+			}
 		}
 	}
 	h.notifyChange()
 }
 
+// joinTakenNow reports whether the viewer's join went, settled by now.
+func (v *Viewer) joinTakenNow() bool {
+	select {
+	case <-v.joinTaken:
+		return v.joinWent
+	default:
+		return false
+	}
+}
+
 // ForwardOffer sends a viewer's SDP offer to the host. Like every message a
-// viewer sends the host, it waits while the viewers' share of the host's
+// viewer sends the host, it waits while the viewers' lane of the host's
 // queue is full (HostConn.sendFrom).
 func (h *HostedSession) ForwardOffer(v *Viewer, sdp string) error {
 	return h.fromViewer(v, proto.ViewerSDP{T: proto.HostOffer, ViewerID: v.ID, SDP: sdp})
@@ -1210,8 +1462,8 @@ func (h *HostedSession) ForwardICE(v *Viewer, c proto.ICECandidate) error {
 }
 
 // Tell sends the host a message of the server's own (a link_created, an
-// error answering its request): ErrHostGone without a host, ErrSlowHost
-// when its queue is full.
+// error answering its request), in the server's own lane: ErrHostGone
+// without a host, ErrSlowHost when the lane is full.
 func (h *HostedSession) Tell(v any) error { return h.toHost(v) }
 
 // StartRelay switches a viewer to relay mode and tells the host.
@@ -1222,7 +1474,7 @@ func (h *HostedSession) StartRelay(v *Viewer) error {
 
 // RelayToHost wraps a viewer frame in a RELAY envelope for the host. Input
 // and resize from view-role viewers are dropped here as defence in depth.
-// The envelope waits while the viewers' share of the host's queue is full
+// The envelope waits while the viewers' lane of the host's queue is full
 // (HostConn.sendFrom): ErrSlowHost when the host's connection closes
 // meanwhile, ErrViewerGone when the viewer is closed, or its connection
 // fails (ConnFailed) while the envelope waits; one that needs no wait goes
@@ -1259,7 +1511,7 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 	if err := v.chargeHost(len(env)); err != nil {
 		return err
 	}
-	return conn.sendFrom(Outbound{Binary: env}, v.done, v.stop)
+	return conn.sendFrom(Outbound{Binary: env, of: v}, v.done, v.stop)
 }
 
 // fromViewer sends the host a message on v's behalf, charged as encoded
@@ -1282,7 +1534,7 @@ func (h *HostedSession) fromViewer(v *Viewer, msg any) error {
 	if err := v.chargeHost(len(b)); err != nil {
 		return err
 	}
-	return conn.sendFrom(Outbound{Text: b}, v.done, v.stop)
+	return conn.sendFrom(Outbound{Text: b, of: v}, v.done, v.stop)
 }
 
 // toHost sends the host a message of the server's own, without waiting

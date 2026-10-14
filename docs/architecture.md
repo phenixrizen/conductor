@@ -86,22 +86,28 @@ never wait, so the WebSocket library's own time limits (a write's, a ping's
 answer) never fire on a server that reads slowly; a relayed viewer whose frame
 waits too long for its turn is let go alone, and the connection is given up
 only when its socket takes nothing for two minutes.
-The server tells the host on that connection when a link goes, so what a
-viewer who joined through a link sends (a line, a key, a save, a read, an
-editor's open, a chat post) is acted on only while its link stands and the
-host has heard from the server within 15 s (`hostagent/liveness.go`; the
-session asks it as `AttachOptions.Authorize`, see docs/protocol.md, the share
-link's check): whatever it
-reads counts, and while such a viewer, or something of theirs, is there it
-pings the server once the connection has been quiet for 5 s; the server,
-for its part, pings the host every 5 s while a link a viewer joined the
-session through stands (`api/ws_host.go`, `hostKeepalive`), which reaches
-the host whatever the server reads: the answers to the host's own pings
-wait behind what the host sent before them, and for a relay bound that
-pauses the server's reading. A connection
-that stops carrying anything without either end closing it is then a link
-gone for what they send, as a connection lost is, and one the host has pinged
-and heard nothing on for two minutes it gives up.
+The server tells the host on that connection when a link goes, in a lane of
+the server's own that its writer takes ahead of the frames it relays
+(`signal.HostConn`): the link's viewers are closed first, and what of
+theirs was still queued is dropped as the writer comes to it, so nothing of
+a viewer of a link reaches the host after the link's going. What a viewer
+who joined through a link sends (a line, a key, a save, a read, an editor's
+open, a chat post) is acted on only while its link stands
+(`AttachOptions.Authorize`, which an attach needs alone) and the host
+vouches for its server (`AttachOptions.Fresh`; `hostagent/liveness.go`): a
+ping of the host's own, sent within 15 s, answered, nothing else counting
+(see docs/protocol.md, the host control connection). The host pings as a
+viewer joins through a link and every 5 s while such a viewer, or something
+of theirs, is there; a first line waits for its join's ping to be answered.
+A connection that stops carrying anything without either end closing it,
+or whose server pauses its reading for longer than the bound, is then a
+link gone for what they send, as a connection lost is, and one the host has
+pinged and heard nothing on for two minutes it gives up. The server, for
+its part, pings the host every 5 s while a link a viewer joined the session
+through stands (`api/ws_host.go`, `hostKeepalive`), for older hosts. The
+host's control connection's read loop waits on nothing but the read: a
+save's parts and an offer's answer run off it, a save's in a bounded,
+ordered queue of the viewer's, as its keys and editor requests do.
 A relayed viewer the
 server holds more than 512 KiB for, unwritten, is behind (`viewer_behind`):
 the host holds its frames until it catches up, as it holds a WebRTC viewer's

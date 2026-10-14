@@ -103,20 +103,31 @@ func (o writeWait) withdrawn() error {
 // attached or went, failed or was dropped as too slow: the session's end
 // of sub for its link first, else the credential asked again
 // (AttachOptions.Authorize), since a connection that ended for another
-// reason keeps that reason. It does not call the session.
+// reason keeps that reason, and then whether it may be acted on now
+// (AttachOptions.Fresh). It does not call the session.
 func revoked(sub *Subscription) error {
 	if r := sub.Reason(); errors.Is(r, ErrRevoked) {
 		return r
 	}
 	if sub.authorize != nil {
 		if _, err := sub.authorize(); err != nil {
-			if errors.Is(err, ErrRevoked) {
-				return err
-			}
-			return ErrRevoked
+			return asRevoked(err)
+		}
+	}
+	if sub.fresh != nil {
+		if err := sub.fresh(); err != nil {
+			return asRevoked(err)
 		}
 	}
 	return nil
+}
+
+// asRevoked is err when it is ErrRevoked or a kind of it, else ErrRevoked.
+func asRevoked(err error) error {
+	if errors.Is(err, ErrRevoked) {
+		return err
+	}
+	return ErrRevoked
 }
 
 // LinkRefusal is how a viewer is answered for what it sent and the session

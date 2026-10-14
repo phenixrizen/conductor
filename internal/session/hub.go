@@ -95,6 +95,10 @@ type Subscription struct {
 	// connection may have ended for another reason first. Set once, as it
 	// attaches.
 	authorize func() (Grant, error)
+	// fresh is the connection's AttachOptions.Fresh, nil for none: asked
+	// with authorize wherever what the connection sent is acted on
+	// (revoked), never as it attaches. Set once, as it attaches.
+	fresh func() error
 	// quiet marks a connection for a run's chat alone (hello.chatOnly): no
 	// output or scrollback, not a viewer of the session.
 	quiet bool

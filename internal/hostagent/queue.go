@@ -13,8 +13,11 @@ import (
 // before their Enter; a keystroke (INPUT) waits for the program to take it,
 // which one that stopped reading its terminal does not; an nvim_open waits
 // for Neovim to start, and the editor's keys, swap answers and closes for
-// Neovim to answer. None of them may run on the frame loop, which for the
-// relay carries every relayed viewer's frames. The three that type into
+// Neovim to answer; a save's part (FILE_WRITE) for the disk, its last one
+// writing the file. None of them may run on the frame loop, which for the
+// relay carries every relayed viewer's frames and the server's messages:
+// the save's parts run on a queue of their own (saving), in the order
+// sent, one at a time, as the editor's requests do. The three that type into
 // the agent run on the peer's typing queue (requestQueue), one at a time in
 // the order sent, as the server's read loop types them; the keystrokes on a
 // queue of their own (keys), in the order sent, as before: those sent
@@ -46,10 +49,20 @@ const (
 	// Neovim handles, per viewer: its keys' burst (proto.NvimKeyBurst), which
 	// the session refuses past anyway.
 	maxQueuedEdits = proto.NvimKeyBurst
+	// maxQueuedSaveParts and maxQueuedSaveBytes bound the parts of a
+	// viewer's saves that wait behind the one the session takes (a save's
+	// last part writes the file), per viewer: two whole saves, a part being
+	// at most proto.MaxWritePart and a save proto.MaxFileBytes. Past either
+	// a part is refused (too_many_requests).
+	maxQueuedSaveParts = 2 * proto.MaxFileBytes / proto.MaxWritePart
+	maxQueuedSaveBytes = 2 * proto.MaxFileBytes
 )
 
 // queueFullWords say why a request was refused.
 const queueFullWords = "too many requests are waiting on this connection: try again once they are done"
+
+// saveQueueFullWords say why a save's part was refused.
+const saveQueueFullWords = "too many saves are waiting on this connection: save again once they are done"
 
 // queueFull is the error a request gets when its queue is full, naming the
 // request it refuses (a chat's id or a chat_send's ref), or none for a submit.
@@ -71,6 +84,10 @@ type request struct {
 	// holds it no longer than its own time.
 	deadline time.Time
 	expired  func()
+	// done, when set, runs once the request is finished whichever way: run,
+	// refused, or dropped with its viewer or the queue. It may run with the
+	// queue's lock held, and takes none.
+	done func()
 }
 
 // waitingRequest is a request in the queue, with its deadline's timer.
@@ -133,7 +150,7 @@ func (q *requestQueue) add(r request) bool {
 			}
 			w.stop()
 			q.bytes -= w.size
-			close(w.finished)
+			w.finish()
 			return true
 		})
 		if q.full(r.size) {
@@ -179,7 +196,7 @@ func (q *requestQueue) run(w *waitingRequest, done chan struct{}) {
 	defer close(done)
 	for w != nil {
 		w.run()
-		close(w.finished)
+		w.finish()
 		w = q.next()
 	}
 }
@@ -206,7 +223,7 @@ func (q *requestQueue) next() *waitingRequest {
 		if w.live == nil || w.live() {
 			return w
 		}
-		close(w.finished)
+		w.finish()
 	}
 }
 
@@ -221,7 +238,15 @@ func (q *requestQueue) expire(w *waitingRequest) {
 	q.mu.Unlock()
 	if i >= 0 {
 		w.expired()
-		close(w.finished)
+		w.finish()
+	}
+}
+
+// finish marks w finished (after) and runs its done.
+func (w *waitingRequest) finish() {
+	close(w.finished)
+	if w.done != nil {
+		w.done()
 	}
 }
 
@@ -239,7 +264,7 @@ func (q *requestQueue) close() {
 	q.closed = true
 	for _, w := range q.waiting {
 		w.stop()
-		close(w.finished)
+		w.finish()
 	}
 	q.waiting = nil
 	q.bytes = 0
