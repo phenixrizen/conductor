@@ -209,17 +209,28 @@ async function startNvim() {
     }
   }
   if (!nvimId) return
+  attachNvim(bridge, resumed)
+}
+
+// The key handler of the Neovim this editor has (attachNvim), let go before another takes its place (Reopen).
+let keySub: { dispose: () => void } | null = null
+/** Neovim nvimId takes this editor's keys, and its events reach it: one opened, the tab's held one taken back, or one Reopen opened. */
+function attachNvim(bridge: NvimBridge, resumed: NvimEcho | null) {
+  if (!editor || !model) return
   // The echo it had as the tab was left goes on, its characters not acknowledged yet still guesses; else a new one.
   if (resumed) {
     echo = resumed
     echo.rebind(echoDoc(model))
   } else echo = new NvimEcho(echoDoc(model), { settlesOnAck: !bridge.offer.settled })
   echo.setMode(nvimState.mode)
+  guessMarks?.clear()
   guessMarks = editor.createDecorationsCollection()
   markGuesses()
+  unsubscribe?.()
   unsubscribe = bridge.subscribe(onNvimEvent)
   editor.updateOptions({ cursorStyle: cursorStyleFor(nvimState.mode), cursorBlinking: 'solid' })
-  editor.onKeyDown((e) => {
+  keySub?.dispose()
+  keySub = editor.onKeyDown((e) => {
     if (!nvimId || !bridge) return
     const be = e.browserEvent
     // A key an input method or a dead key is composing with: theirs, not Neovim's (round 13, G4).
@@ -231,6 +242,7 @@ async function startNvim() {
     e.stopPropagation()
     sendKeys(bridge, keys)
   })
+  stopText?.()
   listenForText(bridge)
   tellNvim()
   tellDirty()
@@ -699,7 +711,7 @@ function dismissRefused() {
   tellNvim()
   tellDirty()
 }
-/** Lets a lost Neovim's text go (Reopen, the person's choice): this editor leaves keeping nothing, and the next starts Neovim anew. */
+/** Lets a lost Neovim's text go, once another Neovim has opened in its place (reopenNvim). */
 function releaseLost() {
   nvimState.lost = undefined
   nvimState.unconfirmed = undefined
@@ -708,7 +720,43 @@ function releaseLost() {
   unsubscribe?.()
   unsubscribe = null
 }
-defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite, releaseLost, dismissRefused })
+let reopening = false
+/**
+ * Reopen (the lost banner, the person's choice): a new Neovim on the file. The lost one's text and its word stay until that one has
+ * opened, for the open can fail (the connection down, the machine away, the bounds): the tab then stays as it was, saying why. Opened,
+ * the tab is the new one's: the file as Neovim reads it, where a swap file the lost one kept offers its changes (Recover).
+ */
+async function reopenNvim(): Promise<boolean> {
+  const bridge = props.nvim
+  if (!bridge || !editor || !model || !nvimState.lost || reopening) return false
+  reopening = true
+  let opened: NvimEvent
+  try {
+    opened = await bridge.open(props.path)
+  } catch (err) {
+    reopening = false
+    if (nvimState.lost) {
+      nvimState.message = `Reopen failed: ${err instanceof Error ? err.message : String(err)}`
+      nvimState.messageKind = 'emsg'
+      tellNvim()
+    }
+    return false
+  }
+  reopening = false
+  // The tab left or closed meanwhile (its lost text held, or let go): the new Neovim is not its, and ends.
+  if (!editor || !model || !nvimState.lost || !opened.id) {
+    if (opened.id) bridge.close(opened.id)
+    return false
+  }
+  releaseLost()
+  Object.assign(nvimState, { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: false, unsettled: false, refused: undefined })
+  nvimId = opened.id
+  nvimPath = opened.path ?? null
+  attachNvim(bridge, null)
+  editor.focus()
+  return true
+}
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite, reopenNvim, dismissRefused })
 </script>
 
 <template>

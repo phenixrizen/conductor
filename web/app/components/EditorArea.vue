@@ -276,12 +276,10 @@ const fileReadOnly = computed(() => (active.value?.kind === 'file' ? fileReadOnl
 const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) || fileReadOnly.value : 'Neovim is not offered on this page'))
 const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
 const nvimState = ref<NvimViewState | null>(null)
-// Reopen after Neovim was lost (utils/nvimLost): the lost one's text let go, then a new editor, and with it a new Neovim, for the tab
-// in front. Copy keeps that text first, as the banner says.
-const nvimEpoch = ref(0)
+// Reopen after Neovim was lost (utils/nvimLost): a new Neovim for the tab in front, the lost one's text kept until it has opened (an open
+// that fails leaves the tab as it was, saying why). Copy keeps that text first, as the banner says. Not while the connection is down.
 function reopenNvim() {
-  ;(editorRef.value as { releaseLost?: () => void } | null)?.releaseLost?.()
-  nvimEpoch.value++
+  void (editorRef.value as { reopenNvim?: () => Promise<boolean> } | null)?.reopenNvim?.()
 }
 function copyLostText() {
   // The text is the editor's: with no editor up (its machine away) there is none to copy, and nothing says there was.
@@ -291,7 +289,7 @@ function copyLostText() {
 // Neovim's status is the editor's in front: another tab, or the other keymap, starts it empty until that editor reports (round 14: the
 // last tab's mode, banner or question stayed over the next tab's file, and a test typed into the new tab before its Neovim listened).
 watch(
-  () => `${active.value?.id ?? ''}:${nvimOn.value}:${nvimEpoch.value}`,
+  () => `${active.value?.id ?? ''}:${nvimOn.value}`,
   () => (nvimState.value = null),
 )
 /** Neovim's own question and its choices, when one shows (round 13, G3). */
@@ -716,7 +714,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" />
         <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}<template v-if="nvimState.unconfirmed"> Keys typed that Neovim may never have had: <code class="rounded bg-elevated px-1 font-mono" data-nvim-unconfirmed>{{ nvimState.unconfirmed }}</code></template></span>
         <UButton label="Copy the text" icon="i-lucide-copy" size="xs" color="neutral" variant="soft" data-nvim-lost-copy @click="copyLostText" />
-        <UButton label="Reopen" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" data-nvim-reopen @click="reopenNvim" />
+        <UButton label="Reopen" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" :disabled="!nvim?.offer.connected" :title="nvim?.offer.connected ? undefined : 'Reconnect first'" data-nvim-reopen @click="reopenNvim" />
       </div>
       <!-- Neovim asks (:confirm q, a write over a file changed outside): the question and its choices as buttons. -->
       <div v-if="nvimConfirm" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-nvim-confirm>
@@ -756,7 +754,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
         <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
         <DiffEditor v-else-if="activeCompare" :key="`${active!.id}:compare`" :path="active!.path" :original="activeCompare.disk" :modified="activeCompare.mine" :inline="false" data-editor-compare-view />
-        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? `nvim:${nvimEpoch}` : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" @selection="onSelection" />
+        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" @selection="onSelection" />
         <DiffEditor v-else-if="view.state === 'diff'" :key="active!.id" :path="active!.path" :original="view.original ?? ''" :modified="view.modified ?? ''" :inline="inlineDiff" />
         <div v-else-if="view.state === 'image'" class="flex h-full items-center justify-center overflow-auto p-4 [background-image:linear-gradient(45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(-45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--ui-bg-elevated)_75%),linear-gradient(-45deg,transparent_75%,var(--ui-bg-elevated)_75%)] [background-size:16px_16px] [background-position:0_0,0_8px,8px_-8px,-8px_0]">
           <img :src="view.imageSrc" alt="" class="max-h-full max-w-full" />

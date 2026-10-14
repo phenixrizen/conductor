@@ -311,16 +311,33 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
 
 // A connection that ends ends its Neovims on the machine, their swap files kept, and no word of that comes. The page tells its tabs so
 // when it closes: the tab in front and one held behind it, each with a change not written, stay with their text, lost, across the
-// Reconnect; Reopen then finds the swap file, and Recover brings the change back. Before, both kept the ids of Neovims that were
-// gone: their keys and Save went nowhere, and no banner offered Reopen.
+// Reconnect, Reopen waiting for it; Reopen then finds the swap file, and Recover brings the change back. A Reopen whose open is refused
+// leaves the tab as it was, saying so. Before, both kept the ids of Neovims that were gone: their keys and Save went nowhere, and no
+// banner offered Reopen; and a Reopen let the lost text go before its open, which could fail.
 test('a connection that ends keeps its Neovim tabs with their text, lost; after Reconnect, Reopen recovers', async ({ page, api, state }) => {
   await page.addInitScript(() => {
-    const w = window as unknown as { sockets?: WebSocket[] }
+    // The page's sockets, to end one; and failOpens: that many nvim_open requests answered refused, as a server would, never sent.
+    const w = window as unknown as { sockets?: WebSocket[]; failOpens?: number }
     const Native = window.WebSocket
     window.WebSocket = class extends Native {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols)
         ;(w.sockets ??= []).push(this)
+      }
+      send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+        if ((w.failOpens ?? 0) > 0 && data instanceof Uint8Array && data[0] === 0x03) {
+          const msg = JSON.parse(new TextDecoder().decode(data.subarray(1))) as { t?: string; reqId?: string }
+          if (msg.t === 'nvim_open') {
+            w.failOpens = (w.failOpens ?? 0) - 1
+            const body = new TextEncoder().encode(JSON.stringify({ t: 'nvim_event', kind: 'error', reqId: msg.reqId, code: 'too_many_requests', message: 'refused here' }))
+            const out = new Uint8Array(body.length + 1)
+            out[0] = 0x03
+            out.set(body, 1)
+            setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: out.buffer })), 0)
+            return
+          }
+        }
+        super.send(data)
       }
     } as typeof WebSocket
   })
@@ -370,8 +387,11 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
     )
     await expect(lost).toContainText('the connection to the machine was lost', { timeout: 15_000 })
     await expect(lines).toContainText('betayy')
+    // Reopen waits for the connection: there is nothing to open on until then.
+    await expect(lost.locator('[data-nvim-reopen]')).toBeDisabled()
     await page.getByRole('button', { name: 'Reconnect', exact: true }).click()
     await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toHaveCount(0, { timeout: 30_000 })
+    await expect(lost.locator('[data-nvim-reopen]')).toBeEnabled({ timeout: 15_000 })
     // Still lost after the Reconnect, both tabs, their text and dots kept.
     await expect(lost).toContainText('the connection to the machine was lost')
     await expect(tab('other.txt').locator('[data-editor-dirty]')).toBeVisible()
@@ -379,6 +399,14 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
     await expect(lost).toContainText('the connection to the machine was lost', { timeout: 15_000 })
     await expect(lines).toContainText('alphaxx')
     await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible()
+    // A Reopen whose open is refused: the tab stays lost, its text kept, and says why.
+    await page.evaluate(() => ((window as unknown as { failOpens?: number }).failOpens = 1))
+    await lost.locator('[data-nvim-reopen]').click()
+    await page.waitForTimeout(1000)
+    await expect(lost).toContainText('the connection to the machine was lost')
+    await expect(lines).toContainText('alphaxx')
+    await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible()
+    await expect(status).toContainText('Reopen failed: refused here', { timeout: 15_000 })
     // Reopen: a Neovim on the new connection, which finds the ended one's swap file; Recover brings the change back.
     await lost.locator('[data-nvim-reopen]').click()
     await expect(lost).toHaveCount(0)

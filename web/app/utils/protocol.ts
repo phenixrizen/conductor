@@ -597,7 +597,7 @@ export const HOST_RUN_LINK_UPDATES_PER_MINUTE = 30
  */
 export interface NvimBridge {
   /** The welcome arrived, the machine has nvim, and this connection may edit. `ownerOnly` when editing is allowed but Neovim is kept for the owner's own window. */
-  offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; ownerOnly?: boolean; machine?: string; settled?: boolean }
+  offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; ownerOnly?: boolean; machine?: string; settled?: boolean; connected?: boolean }
   open(path: string): Promise<NvimEvent>
   /** Keys for editor id; seq, when given, comes back as the `ack` of the cursor once Neovim has handled them (round 13, G5). */
   input(id: string, keys: string, seq?: number): void

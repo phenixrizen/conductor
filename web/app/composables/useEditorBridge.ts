@@ -20,7 +20,8 @@ export interface EditorTerminal {
  * changes (the Yard's focus moving).
  */
 export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: () => string | undefined) {
-  const offer = ref({ welcome: false, nvim: false, fileEdit: false, ownerOnly: false, machine: undefined as string | undefined, settled: false })
+  // connected: the welcome's connection is up (a close ends it; the next welcome brings it back), for what needs the machine now.
+  const offer = ref({ welcome: false, nvim: false, fileEdit: false, ownerOnly: false, machine: undefined as string | undefined, settled: false, connected: false })
   const listeners = new Set<(ev: NvimEvent) => void>()
   // The Neovims of tabs not in front holding changes not written; they live on this connection, so they go with it (reset).
   const holds = new NvimHolds()
@@ -36,15 +37,16 @@ export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: (
   }
   /** The terminal's connection closed: its editors ended with it on the machine. */
   function onClosed() {
+    offer.value = { ...offer.value, connected: false }
     lost(live.ended())
   }
   function onWelcome(w: Welcome) {
     // Another subscription's welcome: the last one's editors ended with it, though no close was seen.
     lost(live.welcome(w.subscriberId))
-    offer.value = { welcome: true, nvim: !!w.nvim, fileEdit: !!w.fileEdit, ownerOnly: !!w.nvimOwnerOnly, machine: machine(), settled: !!w.nvimSettled }
+    offer.value = { welcome: true, nvim: !!w.nvim, fileEdit: !!w.fileEdit, ownerOnly: !!w.nvimOwnerOnly, machine: machine(), settled: !!w.nvimSettled, connected: true }
   }
   function reset() {
-    offer.value = { welcome: false, nvim: false, fileEdit: false, ownerOnly: false, machine: undefined, settled: false }
+    offer.value = { welcome: false, nvim: false, fileEdit: false, ownerOnly: false, machine: undefined, settled: false, connected: false }
     holds.clear()
     live.clear()
   }
