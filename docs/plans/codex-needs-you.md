@@ -467,6 +467,10 @@ orders or invariants above.
   weighs its own state (still armed, its generation), its wait and the last
   title under the lock that applies its change: an Action Required read as
   it fired was overtaken.
+- **Round 2.** The last title the session keeps is its turn's: the turn
+  that begins after a `done` (`beginTurn`) begins with none, so that a
+  Working title kept from the ended turn (read after its `done`) settles
+  no wait of the next.
 - **The stub** reads still titles from `-c tui.animations=false` as Codex
   does, as well as `STUB_TITLE_STILL=1`; `stub async-ask <question>` is the
   ask during a pending async question; an async question pends

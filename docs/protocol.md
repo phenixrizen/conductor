@@ -750,7 +750,10 @@ or the pattern's prompt, not a question the session holds) shown while the last
 title read matched, or met within its second by a title that matches, gives
 way to `working` once its second has passed, unless a title that does not match
 came meanwhile (Action Required, Ready): Codex writes its title only when its
-text changes, once a turn with animations off. A title asks the event bucket
+text changes, once a turn with animations off. The last title read is its
+turn's: the next turn (the first Enter after a `done`, or another state shown
+after it) begins with none, and a title saying Working of the ended turn read
+after that settles nothing. A title asks the event bucket
 for nothing, does not start the bell's 500 ms, and records an attention entry
 only when it changes the state. While one of Codex's async questions is
 pending its title says Action Required although Codex works on: a wait raised

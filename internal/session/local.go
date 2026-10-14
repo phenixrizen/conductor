@@ -316,8 +316,10 @@ type Local struct {
 	// it.
 	beforeScan atomic.Pointer[func(chunk []byte)]
 	// beforeSettle, a test's hook, runs as the settle timer fires, before
-	// it looks at anything (settled).
+	// it looks at anything (settled); afterTitle between readTitle's look
+	// at a title that matches and its change.
 	beforeSettle   atomic.Pointer[func()]
+	afterTitle     atomic.Pointer[func()]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -742,6 +744,9 @@ func (s *Local) readTitle(title string, turn uint64) {
 		s.armSettleLocked()
 	}
 	s.mu.Unlock()
+	if hook := s.afterTitle.Load(); hook != nil {
+		(*hook)()
+	}
 	s.setAttentionRead(AttentionWorking, "", SourceTitle, "", nil, titleRules, turn)
 }
 
@@ -2409,8 +2414,10 @@ func (s *Local) nextTurn() {
 // turn's: the pace starts again (bellPaced), so that its first bell asks
 // however soon it rings after one of the last turn's (Codex's can ring
 // before its done, and a crew's next prompt follows the done at once).
-// What was read before it is the last turn's (turn). An Enter with no
-// done before it in its turn (an answer, a line typed during the turn)
+// What was read before it is the last turn's (turn), the last window title
+// read included (titleWorking): it says nothing of the next turn, whose
+// waits it neither settles nor arms a timer for (readTitle). An Enter with
+// no done before it in its turn (an answer, a line typed during the turn)
 // keeps the pace: a burst's tail does not ask again. The caller holds
 // s.mu.
 func (s *Local) beginTurn() {
@@ -2420,6 +2427,8 @@ func (s *Local) beginTurn() {
 	s.turnEnded = false
 	s.lastBell = time.Time{}
 	s.turn.Add(1)
+	s.titleWorking = false
+	s.disarmSettleLocked()
 }
 
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText

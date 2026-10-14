@@ -899,3 +899,53 @@ func TestATitleOfTheEndedTurnArmsNothingForTheNext(t *testing.T) {
 		})
 	}
 }
+
+// The last title the session keeps is its turn's: a title saying Working
+// read after the turn's done (a frame drawn before it, or Codex going on by
+// itself), whether its own change is refused for the done or for a turn
+// begun meanwhile, does not settle the next turn's wait once an Enter has
+// begun it; that turn's own title does (O8, O9; Codex's review, round 2).
+func TestTheLastTitleIsItsTurns(t *testing.T) {
+	const settle = 150 * time.Millisecond
+	for _, between := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the turn begun between the title's looks %v", between), func(t *testing.T) {
+			s, p := newLocalWith(t, titled(settle, Options{}))
+			sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out(p, codexReady)
+			if err := s.TrySetAttentionFull(AttentionDone, "ok", SourceAPI, KindDone, nil); err != nil {
+				t.Fatal(err)
+			}
+			enter := func() {
+				if err := s.Input(sub, []byte("\r")); err != nil {
+					t.Error(err)
+				}
+				nextWrite(t, p)
+			}
+			if between {
+				// The Enter lands after the title is kept and before its
+				// change is weighed.
+				var once sync.Once
+				hook := func() { once.Do(enter) }
+				s.afterTitle.Store(&hook)
+				out(p, codexStill)
+			} else {
+				out(p, codexStill)
+				if a := s.Info().Attention; a.State != AttentionDone {
+					t.Fatalf("a title after the done: %+v", a)
+				}
+				enter()
+			}
+			if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			stays(t, s, 3*settle, "the next turn's wait after the ended turn's title", func(a Attention) bool { return waits(a) && a.Message == "Which name?" })
+			out(p, codexReady, codexStill)
+			if a := s.Info().Attention; !titleWorks(a) {
+				t.Fatalf("the next turn's own title: %+v", a)
+			}
+		})
+	}
+}
