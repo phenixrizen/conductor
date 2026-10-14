@@ -258,6 +258,12 @@ function onWelcome(w: Welcome) {
   chat.welcome(!!w.chat, viaChat)
 }
 
+/** The connection closed: what was being said waits, and the editor's Neovims ended with it (their tabs keep their text). */
+function onClosed() {
+  chat.offline()
+  editor.onClosed()
+}
+
 function createTransport() {
   return create({ sessionId: id.value, token: admin.token.value, kind: session.value?.kind ?? 'server' })
 }
@@ -401,7 +407,7 @@ watch(id, () => {
             @viewers="onViewers"
             @activity="onActivity"
             @transport="transport = $event"
-            @closed="chat.offline()"
+            @closed="onClosed"
             @chat="onChat"
             @chat-history="onChatHistory"
             @request-error="onRequestError"

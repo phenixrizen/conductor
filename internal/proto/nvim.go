@@ -63,6 +63,10 @@ const (
 	// written (Modified): the editor's tab wears its dot by it, and closing
 	// the tab asks first.
 	NvimModified = "modified"
+	// NvimSettled says Neovim has done the keys numbered up to Ack, nothing
+	// left pending: every change they made has been sent. A cursor's Ack
+	// alone does not say so (Neovim answers in the middle of a key).
+	NvimSettled = "settled"
 )
 
 // The choices of an nvim_swap: edit the file anyway (the editor leaves

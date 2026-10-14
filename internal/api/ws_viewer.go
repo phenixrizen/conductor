@@ -275,7 +275,7 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 			return false
 		}
 		if err := local.NvimInput(sub, m); err != nil {
-			local.Send(sub, session.NvimRefused("", err))
+			local.Send(sub, session.NvimInputRefused(m.ID, m.Seq, err))
 		}
 	case proto.CtlNvimClose:
 		var m proto.NvimClose

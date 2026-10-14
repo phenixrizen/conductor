@@ -22,7 +22,10 @@ import (
 )
 
 // Handler receives what the editor reports. Its methods run on the client's
-// goroutine, one at a time; they must not block on the editor.
+// goroutine, one at a time; they must not block on the editor. Exited also
+// comes from elsewhere (a key that finds Neovim gone, the client's reading
+// as it ends) and may come before the last changes a Neovim that died sent,
+// which still come after it.
 type Handler interface {
 	// Lines says the buffer lines [first, last) became lines (0-based; last
 	// -1 means to the end, used when the whole buffer is sent).
@@ -52,6 +55,12 @@ type Handler interface {
 	// Modified says the buffer now holds changes not written (true) or no
 	// longer does (false: written, undone back, or another file shown).
 	Modified(modified bool)
+	// Settled says Neovim has done the keys of InputSeq's seq and every one
+	// before, with nothing left pending (SafeState after their Ack): every
+	// change they made, and its word on changes not written, has been
+	// reported. An Ack alone does not say so: Neovim answers requests in
+	// the middle of a key (a plugin's vim.wait), so it can come first.
+	Settled(seq uint32)
 }
 
 // Swap is another editor's swap file for the file opened, as swapinfo()
@@ -135,14 +144,50 @@ type Editor struct {
 	closed atomic.Bool
 	// cmdline keeps the last shown command line for cmdline_pos events.
 	cmdContent, cmdPrompt string
+	// asking says the last message shown is one of Neovim's questions
+	// (promptKinds). Like cmdContent it is the client's notification
+	// goroutine's alone (onRedraw, the acknowledgement).
+	asking bool
+	// acked is the last seq acknowledged and settled the last one reported
+	// settled (conductor_safe); the notification goroutine's alone too.
+	acked, settled uint32
+	// inputMu keeps a key's input, the mode asked after it and its
+	// acknowledgement together (InputSeq, watchDeferred): an acknowledgement
+	// asked for while Neovim waits for a command's next key cancels it.
+	inputMu sync.Mutex
+	// deferred is the last seq whose acknowledgement waits for Neovim to
+	// stop waiting for a key (a mapping's prefix, an operator's motion);
+	// watching says watchDeferred runs. Guarded by inputMu.
+	deferred uint32
+	watching bool
 	// swap is the last swap file found, for SwapChoice; guarded by mu.
 	swap *Swap
 	// ch is the client's channel in Neovim, which rpcnotify answers on.
 	ch int
+	// previews counts the lines of previews not relayed (the tests read it).
+	previews atomic.Int64
 }
 
 // ErrClosed is returned by Input once the editor is gone.
 var ErrClosed = errors.New("nvim: the editor has exited")
+
+// ErrInputFull is what Input's InputFullError is: Neovim's input buffer
+// stayed full, and keys did not reach it.
+var ErrInputFull = errors.New("nvim: neovim's input is full; keys were not taken")
+
+// InputFullError says which of the keys Neovim's full input buffer did not
+// take (Rest, the end of them): those before it reached Neovim.
+type InputFullError struct{ Rest string }
+
+func (e *InputFullError) Error() string        { return ErrInputFull.Error() }
+func (e *InputFullError) Is(target error) bool { return target == ErrInputFull }
+
+// inputTries and inputWait bound how long Input gives Neovim's full input
+// buffer to make room: tries times, waiting inputWait when none was taken.
+const (
+	inputTries = 50
+	inputWait  = 20 * time.Millisecond
+)
 
 // exitWait is how long Close lets Neovim leave on its own once its
 // connection is closed, before it is ended (the client's own wait was the
@@ -198,9 +243,23 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		e.end()
 		return nil, err
 	}
+	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
 	go func() {
 		defer close(served)
-		_ = v.Serve()
+		err := v.Serve()
+		// The client's reading ended with no close and no quit: Neovim is
+		// gone (it died; its output was cut), and is said so at once rather
+		// than at the next key. Its own quit is told before its output ends
+		// (conductor_leaving is a request it waits on); a close, or the
+		// context's end, which kills it, is the editor's own.
+		if isDone(ctx.Done()) || !e.closed.CompareAndSwap(false, true) {
+			return
+		}
+		reason := "error: neovim ended"
+		if err != nil {
+			reason = "error: " + err.Error()
+		}
+		h.Exited(reason)
 	}()
 	// Its context's end closes the editor's connection too, at once, and
 	// Neovim's output: what waits on Neovim (its start, keys, a close) is
@@ -210,7 +269,6 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 		_ = v.Close()
 		_ = out.Close()
 	})
-	e := &Editor{v: v, h: h, cmd: cmd, served: served, out: out, ended: ctx.Done()}
 	fail := func(err error) (*Editor, error) {
 		e.end()
 		return nil, err
@@ -226,11 +284,23 @@ func Open(ctx context.Context, dir, path string, h Handler) (*Editor, error) {
 	for _, cmd := range []string{
 		fmt.Sprintf("autocmd CursorMoved,CursorMovedI * call rpcnotify(%d, 'conductor_cursor', line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", ch),
 		fmt.Sprintf("autocmd BufWritePost * call rpcnotify(%d, 'conductor_written', expand('<afile>:p'))", ch),
-		fmt.Sprintf("autocmd VimLeavePre * call rpcnotify(%d, 'conductor_leaving')", ch),
+		// A request, which Neovim waits on: its quit is told before its
+		// output ends, so the client's end (Open) never takes it for a loss.
+		fmt.Sprintf("autocmd VimLeavePre * silent! call rpcrequest(%d, 'conductor_leaving', v:dying)", ch),
 		fmt.Sprintf("autocmd BufModifiedSet * if str2nr(expand('<abuf>')) == bufnr() | call rpcnotify(%d, 'conductor_modified', &modified) | endif", ch),
+		// Nothing pending, about to wait for a key: the keys acknowledged
+		// before it are done (Settled).
+		fmt.Sprintf("autocmd SafeState * call rpcnotify(%d, 'conductor_safe')", ch),
 		// Another editor's swap file: open read-only instead of asking (the
 		// question would block the open), and say whose it is.
 		fmt.Sprintf("autocmd SwapExists * let v:swapchoice = 'o' | call rpcnotify(%d, 'conductor_swap', v:swapname, swapinfo(v:swapname))", ch),
+		// No live preview of a substitute (after the person's config, which
+		// has run by now): Neovim shows it by changing the buffer for as long
+		// as the command line is open and undoing it with no change reported,
+		// and its split form opens a window the page has no place for. The
+		// page shows the buffer alone; a preview turned on again later (a
+		// plugin) is not relayed either (the lines event).
+		"set inccommand=",
 	} {
 		if err := v.Command(cmd); err != nil {
 			return fail(err)
@@ -322,34 +392,72 @@ func isDone(done <-chan struct{}) bool {
 	}
 }
 
-// register wires the client's notifications to the handler.
+// register wires the client's notifications to the handler. Every handler
+// takes its arguments as they come (interface{}) and reads them itself: the
+// client ends its connection, and the editor loses Neovim, on a message whose
+// arguments do not decode into a handler's types (a preview's lines, whose
+// changedtick is v:null, once did), so a notification of an unexpected shape
+// is passed over instead.
 func (e *Editor) register() error {
 	v := e.v
 	if err := v.RegisterHandler("redraw", e.onRedraw); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufLines, func(buf nvim.Buffer, tick int64, first, last int64, lines [][]byte, more bool) {
+	// [buf, changedtick, firstline, lastline, linedata, more]. The
+	// changedtick is v:null in the lines of a preview ('inccommand'):
+	// Neovim's screen showing what a substitute would do, not the buffer,
+	// and undone with no change reported. It is never relayed: the page's
+	// text is the buffer's alone.
+	if err := v.RegisterHandler(nvim.EventBufLines, func(args ...interface{}) {
+		if len(args) < 5 {
+			return
+		}
+		buf, ok := args[0].(nvim.Buffer)
+		if !ok {
+			return
+		}
+		if args[1] == nil {
+			e.previews.Add(1)
+			return
+		}
+		first, ok1 := intArg(args[2])
+		last, ok2 := intArg(args[3])
+		raw, ok3 := args[4].([]interface{})
+		if !ok1 || !ok2 || !ok3 {
+			return
+		}
+		ss := make([]string, len(raw))
+		for i, l := range raw {
+			switch l := l.(type) {
+			case string:
+				ss[i] = l
+			case []byte:
+				ss[i] = string(l)
+			default:
+				return
+			}
+		}
 		e.mu.Lock()
 		cur := e.buf
 		e.mu.Unlock()
 		if buf != cur {
 			return
 		}
-		ss := make([]string, len(lines))
-		for i, l := range lines {
-			ss[i] = string(l)
-		}
-		e.h.Lines(int(first), int(last), ss)
+		e.h.Lines(first, last, ss)
 	}); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufChangedtick, func(buf nvim.Buffer, tick int64) {}); err != nil {
+	if err := v.RegisterHandler(nvim.EventBufChangedtick, func(args ...interface{}) {}); err != nil {
 		return err
 	}
-	if err := v.RegisterHandler(nvim.EventBufDetach, func(buf nvim.Buffer) {
+	if err := v.RegisterHandler(nvim.EventBufDetach, func(args ...interface{}) {
 		// Neovim stops following a buffer it reloads (:e!, :recover): the
 		// one on screen is followed again and sent whole.
-		if e.closed.Load() {
+		if e.closed.Load() || len(args) < 1 {
+			return
+		}
+		buf, ok := args[0].(nvim.Buffer)
+		if !ok {
 			return
 		}
 		e.mu.Lock()
@@ -412,7 +520,19 @@ func (e *Editor) register() error {
 		if len(args) < 6 {
 			return
 		}
-		e.h.Ack(uint32(toInt(args[0])), toInt(args[1]), toInt(args[2]), fmt.Sprint(args[3]), toInt(args[4]), toInt(args[5]))
+		// Neovim acknowledges no keys while it waits on a question
+		// (InputSeq): one now has been answered. Neovim leaves the question
+		// shown with nothing saying so (the last `replace with` of a
+		// `:s///c`), and the page would go on asking it.
+		if e.asking {
+			e.asking = false
+			e.h.Message("", "clear")
+		}
+		seq := uint32(toInt(args[0]))
+		if seq > e.acked {
+			e.acked = seq
+		}
+		e.h.Ack(seq, toInt(args[1]), toInt(args[2]), fmt.Sprint(args[3]), toInt(args[4]), toInt(args[5]))
 	}); err != nil {
 		return err
 	}
@@ -428,10 +548,29 @@ func (e *Editor) register() error {
 	}); err != nil {
 		return err
 	}
-	return v.RegisterHandler("conductor_leaving", func(args ...interface{}) {
-		if e.closed.CompareAndSwap(false, true) {
-			e.h.Exited("quit")
+	if err := v.RegisterHandler("conductor_safe", func(args ...interface{}) {
+		// The keys were in Neovim's input before their acknowledgement was
+		// asked for: nothing pending now, they are done.
+		if e.acked > e.settled {
+			e.settled = e.acked
+			e.h.Settled(e.settled)
 		}
+	}); err != nil {
+		return err
+	}
+	return v.RegisterHandler("conductor_leaving", func(args ...interface{}) error {
+		// v:dying: Neovim is leaving on a signal (SIGTERM, SIGHUP), not
+		// the person's quit, and its tab is kept as for a loss.
+		reason := "quit"
+		if len(args) > 0 {
+			if n, ok := intArg(args[0]); ok && n > 0 {
+				reason = "error: neovim was ended by a signal"
+			}
+		}
+		if e.closed.CompareAndSwap(false, true) {
+			e.h.Exited(reason)
+		}
+		return nil
 	})
 }
 
@@ -506,27 +645,117 @@ func (e *Editor) InputSeq(keys string, seq uint32) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
-	if _, err := e.v.Input(keys); err != nil {
-		if e.closed.CompareAndSwap(false, true) {
-			e.h.Exited("error: " + err.Error())
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
+	// Neovim takes what its input buffer has room for and says how much: the
+	// rest is given again once it has read some, or the keys are refused,
+	// unacknowledged: the caller says which were refused first, then
+	// acknowledges those taken (Acknowledge), so that no word that they are
+	// done comes before the word that some never came.
+	for rest, tries := keys, 0; rest != ""; tries++ {
+		n, err := e.v.Input(rest)
+		if err != nil {
+			if e.closed.CompareAndSwap(false, true) {
+				e.h.Exited("error: " + err.Error())
+			}
+			return ErrClosed
 		}
-		return ErrClosed
+		if n >= len(rest) {
+			break
+		}
+		if tries >= inputTries {
+			return &InputFullError{Rest: rest[n:]}
+		}
+		rest = rest[n:]
+		if n == 0 {
+			time.Sleep(inputWait)
+		}
 	}
+	e.acknowledge(seq)
+	return nil
+}
+
+// Acknowledge acknowledges the keys of seq, as InputSeq does for keys it
+// gave whole: for the part of them Neovim took before refusing the rest.
+func (e *Editor) Acknowledge(seq uint32) {
+	if e.closed.Load() {
+		return
+	}
+	e.inputMu.Lock()
+	defer e.inputMu.Unlock()
+	e.acknowledge(seq)
+}
+
+// acknowledge reports the keys of seq handled (Ack), or the cursor for keys
+// with no number; inputMu held.
+func (e *Editor) acknowledge(seq uint32) {
 	// A command waiting for its next key (the second g of gg, f's
 	// character) is cancelled by an eval: nvim_get_mode is answered without
 	// touching it and says so; the autocmd reports the cursor once it moves.
-	if m, err := e.v.Mode(); err != nil || m.Blocking {
-		return nil
+	// These keys are acknowledged once Neovim no longer waits (a mapping's
+	// prefix times out), or with the next keys.
+	m, err := e.v.Mode()
+	if err != nil {
+		return
 	}
+	if m.Blocking {
+		if seq != 0 {
+			e.deferred = seq
+			if !e.watching {
+				e.watching = true
+				go e.watchDeferred()
+			}
+		}
+		return
+	}
+	// Keys without a number (the page's answer to a question, its :w)
+	// that end a wait acknowledge the numbered ones that waited.
+	if seq == 0 {
+		seq = e.deferred
+	}
+	e.deferred = 0
 	if seq != 0 {
 		_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'conductor_ack', %d, line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", e.ch, seq))
-		return nil
+		return
 	}
 	var pos []interface{}
 	if err := e.v.Eval("[line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2]]", &pos); err == nil && len(pos) == 5 {
 		e.h.Cursor(toInt(pos[0]), toInt(pos[1]), fmt.Sprint(pos[2]), toInt(pos[3]), toInt(pos[4]))
 	}
-	return nil
+}
+
+// deferPoll is how often watchDeferred asks whether Neovim still waits.
+const deferPoll = 100 * time.Millisecond
+
+// watchDeferred acknowledges the keys whose acknowledgement waited for
+// Neovim to stop waiting for a key (InputSeq) once it has: a mapping's prefix
+// that timed out ends with no key after it, and its keys are then done like
+// any. It asks every deferPoll (nvim_get_mode, which disturbs no wait), and
+// ends with the editor, or once later keys were acknowledged instead.
+func (e *Editor) watchDeferred() {
+	for {
+		time.Sleep(deferPoll)
+		e.inputMu.Lock()
+		if e.closed.Load() || e.deferred == 0 {
+			e.watching = false
+			e.inputMu.Unlock()
+			return
+		}
+		m, err := e.v.Mode()
+		if err != nil {
+			e.watching = false
+			e.inputMu.Unlock()
+			return
+		}
+		if !m.Blocking {
+			seq := e.deferred
+			e.deferred, e.watching = 0, false
+			_ = e.v.Command(fmt.Sprintf("call rpcnotify(%d, 'conductor_ack', %d, line('.'), col('.'), mode(), getpos('v')[1], getpos('v')[2])", e.ch, seq))
+			e.inputMu.Unlock()
+			return
+		}
+		e.inputMu.Unlock()
+	}
 }
 
 // Report tells the handler the cursor and the mode now (the first showing).
@@ -630,8 +859,9 @@ func (e *Editor) Discard() {
 
 // onRedraw reads the UI events the bridge cares about: the mode, the
 // command line and the messages.
-func (e *Editor) onRedraw(updates ...[]interface{}) {
-	for _, u := range updates {
+func (e *Editor) onRedraw(updates ...interface{}) {
+	for _, update := range updates {
+		u, _ := update.([]interface{})
 		if len(u) < 2 {
 			continue
 		}
@@ -660,14 +890,22 @@ func (e *Editor) onRedraw(updates ...[]interface{}) {
 			case "msg_show":
 				// [kind, content, replace_last]
 				if len(args) >= 2 {
-					e.h.Message(chunksText(args[1]), fmt.Sprint(args[0]))
+					kind := fmt.Sprint(args[0])
+					e.asking = promptKinds[kind]
+					e.h.Message(chunksText(args[1]), kind)
 				}
 			case "msg_clear":
+				e.asking = false
 				e.h.Message("", "clear")
 			}
 		}
 	}
 }
+
+// promptKinds are the kinds of the messages that are Neovim's questions,
+// shown while it waits for their answer: `:confirm`'s, a substitute's
+// `replace with ...?` (its c flag), and the hit-enter prompt.
+var promptKinds = map[string]bool{"confirm": true, "confirm_sub": true, "return_prompt": true}
 
 // chunksText joins the text of UI content chunks ([[attr_id, text], ...]).
 func chunksText(v interface{}) string {
@@ -680,6 +918,15 @@ func chunksText(v interface{}) string {
 		}
 	}
 	return b.String()
+}
+
+// intArg is a notification's integer argument, and whether it is one.
+func intArg(v interface{}) (int, bool) {
+	switch v.(type) {
+	case int64, int, uint64, int32, uint32, int8, uint8, int16, uint16:
+		return toInt(v), true
+	}
+	return 0, false
 }
 
 func toInt(v interface{}) int {

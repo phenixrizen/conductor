@@ -333,6 +333,11 @@ type Welcome struct {
 	// which is kept for the owner's own connections: a link's controller
 	// edits with the page's keys (Nvim is then false).
 	NvimOwnerOnly bool `json:"nvimOwnerOnly,omitempty"`
+	// NvimSettled, with Nvim, says the owner's Neovim says when keys are
+	// done (an nvim_event of kind settled): a page waits for that word. An
+	// older owner sends neither, and a page takes a cursor's
+	// acknowledgement for it, as it did.
+	NvimSettled bool `json:"nvimSettled,omitempty"`
 	// Chat says the owner takes chat and chat_send: a client sends neither
 	// to an owner whose welcome lacks it (an older server closes on them).
 	Chat bool `json:"chat,omitempty"`

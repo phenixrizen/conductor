@@ -4,7 +4,9 @@ import type { NvimBridge, NvimEvent, NvimSwapChoice } from '~/utils/protocol'
 import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
-import { ECHO_HOLD_MS, NvimEcho, type EchoLines } from '~/utils/nvimEcho'
+import { ECHO_HOLD_MS, NvimEcho, type EchoDoc, type EchoLines } from '~/utils/nvimEcho'
+import { heldChanges, type HeldNvim } from '~/utils/nvimHold'
+import { closedByQuit, lostHoldsChanges } from '~/utils/nvimLost'
 import { hasModel, isDirty, markSaved, noteVersion } from '~/utils/editorModels'
 
 /**
@@ -100,8 +102,9 @@ async function mount() {
 // read-only, so nothing is typed into the text except by Neovim.
 let contentSub: { dispose: () => void } | null = null
 function tellDirty() {
-  // Under the Neovim keymap Neovim's buffer is the one with changes or none (its `modified` event); the model only mirrors it.
-  if (props.nvim) emit('dirty', nvimState.modified)
+  // Under the Neovim keymap Neovim's buffer is the one with changes or none (its `modified` event); the model only mirrors it. Characters
+  // typed that it has not had yet (the local echo's guesses) are changes too: the dot, and a close asks.
+  if (props.nvim) emit('dirty', nvimState.modified || !!echo?.showing || !!nvimState.refused)
   else if (model) emit('dirty', isDirty(props.path, model.getAlternativeVersionId()))
 }
 /** The text now, for a save. */
@@ -120,6 +123,15 @@ function setText(text: string) {
   tellDirty()
 }
 let nvimId: string | null = null
+// The file its Neovim shows, as Neovim names it (its `opened` events): a write of it is this tab's.
+let nvimPath: string | null = null
+// Neovim's cursor as it last said (its line, its byte column): a tab left with characters typed still showing comes back to it once
+// they go (follow).
+let nvimAt: { line: number; byteCol: number } | null = null
+// The Neovim lost (utils/nvimLost) whose text this tab shows: the changes it sent before its end, which can come after it, still apply,
+// reconciled with the characters typed that it never acknowledged (lostEcho, the local echo finished, while any stay).
+let lostId: string | null = null
+let lostEcho: NvimEcho | null = null
 let unsubscribe: (() => void) | null = null
 // The local echo (round 13, G5): plain characters typed in insert mode show at once, Neovim's acknowledgement settles them.
 let echo: NvimEcho | null = null
@@ -142,8 +154,19 @@ function stopEcho() {
   guessMarks?.clear()
   guessMarks = null
 }
+/** The editor's text as the local echo reaches it. */
+function echoDoc(m: MonacoEditor.ITextModel): EchoDoc {
+  return {
+    line: (n) => (n >= 1 && n <= m.getLineCount() ? m.getLineContent(n) : ''),
+    setLine: (n, text) => {
+      if (n >= 1 && n <= m.getLineCount() && monacoRef) m.applyEdits([{ range: new monacoRef.Range(n, 1, n, m.getLineMaxColumn(n)), text }])
+    },
+    applyLines: applyLinesEvent,
+  }
+}
 const nvimState: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: false }
 function tellNvim() {
+  nvimState.unsettled = !!echo?.unsettled
   emit('nvim', { ...nvimState })
 }
 async function startNvim() {
@@ -151,18 +174,38 @@ async function startNvim() {
   if (!bridge || !editor || !model || !monacoRef) return
   // This tab's Neovim, held while another tab was in front with its changes not written: taken back as it was.
   const held = bridge.holds.take(props.path)
-  if (held && !freshModel) {
+  if (held?.state.lost && !freshModel) {
+    // Lost (utils/nvimLost) while away, or before the tab was last left: its text stays, read only, until Reopen or a close.
+    Object.assign(nvimState, held.state)
+    lostId = held.id
+    lostEcho = held.echo ?? null
+    lostEcho?.rebind(echoDoc(model))
+    unsubscribe = bridge.subscribe(onNvimEvent)
+    editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
+    editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
+    tellNvim()
+    tellDirty()
+    return
+  }
+  let resumed: NvimEcho | null = null
+  if (held && !held.state.lost && !freshModel) {
+    resumed = held.echo ?? null
     nvimId = held.id
+    nvimPath = held.path ?? null
+    nvimAt = held.at ?? null
+    // Keys refused while away are said now, on the status line (the state's message and refused, kept until dismissed).
     Object.assign(nvimState, held.state)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
     editor.revealPositionInCenterIfOutsideViewport({ lineNumber: held.cursor.line, column: held.cursor.col })
   } else {
     // Its model is gone with the text it mirrored: that Neovim ends as a lost connection ends it, its swap file keeping the changes.
-    if (held) bridge.close(held.id)
+    if (held && !held.state.lost) bridge.close(held.id)
+    nvimAt = null
     try {
       const opened = await bridge.open(props.path)
       if (!editor) return
       nvimId = opened.id ?? null
+      nvimPath = opened.path ?? null
     } catch (err) {
       nvimState.message = err instanceof Error ? err.message : String(err)
       nvimState.messageKind = 'emsg'
@@ -171,19 +214,28 @@ async function startNvim() {
     }
   }
   if (!nvimId) return
-  const m = model
-  echo = new NvimEcho({
-    line: (n) => (n >= 1 && n <= m.getLineCount() ? m.getLineContent(n) : ''),
-    setLine: (n, text) => {
-      if (n >= 1 && n <= m.getLineCount() && monacoRef) m.applyEdits([{ range: new monacoRef.Range(n, 1, n, m.getLineMaxColumn(n)), text }])
-    },
-    applyLines: applyLinesEvent,
-  })
+  attachNvim(bridge, resumed)
+}
+
+// The key handler of the Neovim this editor has (attachNvim), let go before another takes its place (Reopen).
+let keySub: { dispose: () => void } | null = null
+/** Neovim nvimId takes this editor's keys, and its events reach it: one opened, the tab's held one taken back, or one Reopen opened. */
+function attachNvim(bridge: NvimBridge, resumed: NvimEcho | null) {
+  if (!editor || !model) return
+  // The echo it had as the tab was left goes on, its characters not acknowledged yet still guesses; else a new one.
+  if (resumed) {
+    echo = resumed
+    echo.rebind(echoDoc(model))
+  } else echo = new NvimEcho(echoDoc(model), { settlesOnAck: !bridge.offer.settled })
   echo.setMode(nvimState.mode)
+  guessMarks?.clear()
   guessMarks = editor.createDecorationsCollection()
+  markGuesses()
+  unsubscribe?.()
   unsubscribe = bridge.subscribe(onNvimEvent)
   editor.updateOptions({ cursorStyle: cursorStyleFor(nvimState.mode), cursorBlinking: 'solid' })
-  editor.onKeyDown((e) => {
+  keySub?.dispose()
+  keySub = editor.onKeyDown((e) => {
     if (!nvimId || !bridge) return
     const be = e.browserEvent
     // A key an input method or a dead key is composing with: theirs, not Neovim's (round 13, G4).
@@ -195,9 +247,24 @@ async function startNvim() {
     e.stopPropagation()
     sendKeys(bridge, keys)
   })
+  stopText?.()
   listenForText(bridge)
   tellNvim()
   tellDirty()
+}
+
+/**
+ * The cursor where the next key goes, once guesses went (retired by Neovim's word, refused): after those that still show, else where
+ * Neovim last said it is.
+ */
+function placeCursor() {
+  if (!editor || !model) return
+  const r = echo?.showing ? echo.range() : null
+  if (r) editor.setPosition({ lineNumber: r.line, column: r.to })
+  else if (nvimAt) {
+    const line = Math.max(1, Math.min(nvimAt.line, model.getLineCount()))
+    editor.setPosition({ lineNumber: line, column: byteColToUtf16(model.getLineContent(line), Math.max(1, nvimAt.byteCol)) })
+  }
 }
 
 /** Sends keys with their number; a plain character in insert mode shows at once (the local echo). */
@@ -209,7 +276,9 @@ function sendKeys(bridge: NvimBridge, keys: string) {
   if (r.cursor && editor) {
     editor.setPosition({ lineNumber: r.cursor.line, column: r.cursor.col })
     markGuesses()
+    tellDirty()
   }
+  if (r.seq && !nvimState.unsettled) tellNvim()
 }
 
 // Text with no key press (round 13, G4): an input method's composed word, a dead key's character, dictation. Taken on the way down to
@@ -263,8 +332,128 @@ function listenForText(bridge: NvimBridge) {
     stopText = null
   }
 }
+/**
+ * While the tab is not in front (its Neovim held, or lost), its Neovim's changes still reach its text: a change on its way as the tab
+ * was left, one a plugin makes later, the last ones a lost Neovim sent, which can come after its end. Its word on changes not written
+ * goes to the held state. The holds stop it as the Neovim leaves them (taken back, its tab closed).
+ */
+function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null, from: { line: number; byteCol: number } | null = null): () => void {
+  const m = model
+  const monaco = monacoRef
+  const path = props.path
+  // Kept only for keys on their way: once Neovim has done them (settled), with no change and nothing typed left to have, it goes, as a
+  // clean tab's Neovim goes when the tab is left.
+  const letGoIfClean = (h: HeldNvim) => {
+    if (h.state.lost || heldChanges(h) || h.echo?.unsettled || h.state.refused) return
+    bridge.holds.take(path)
+    bridge.close(id)
+  }
+  // Neovim's cursor as it last said, while the tab is away: where the tab shows it when it comes back, but while characters typed still
+  // show, after them, as in front. Placed again after every event, for one that retires the last of them (settled, refused, a line)
+  // brings Neovim's own back.
+  let at = from
+  const place = (h: HeldNvim) => {
+    if (h.state.lost || !m || m.isDisposed()) return
+    h.at = at ?? undefined
+    const r = echoAsLeft?.showing ? echoAsLeft.range() : null
+    if (r) h.cursor = { line: r.line, col: r.to }
+    else if (at) {
+      const line = Math.max(1, Math.min(at.line, m.getLineCount()))
+      h.cursor = { line, col: byteColToUtf16(m.getLineContent(line), Math.max(1, at.byteCol)) }
+    }
+  }
+  return bridge.subscribe((ev) => {
+    if (ev.id !== id || !m || !monaco || m.isDisposed()) return
+    const h = bridge.holds.peek(path)
+    if (h?.id !== id) return
+    handle(h, ev)
+    place(h)
+  })
+  function handle(h: HeldNvim, ev: NvimEvent) {
+    if (!m || !monaco) return
+    if (ev.kind === 'lines') {
+      const lev = { first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }
+      if (echoAsLeft) {
+        // The characters typed it had not acknowledged as the tab was left stay laid over its text until its lines hold them.
+        echoAsLeft.lateLines(lev)
+        h.state.unconfirmed = echoAsLeft.unconfirmed || undefined
+      } else {
+        const edit = linesEdit(lev, m.getLineCount(), (n) => m.getLineLength(n))
+        m.applyEdits([{ range: new monaco.Range(edit.range.startLineNumber, edit.range.startColumn, edit.range.endLineNumber, edit.range.endColumn), text: edit.text }])
+      }
+      if (h.state.lost && !h.state.modified) h.state.modified = true
+      bridge.holds.changed(path)
+    } else if (ev.kind === 'opened' && ev.path) {
+      // Another file in its Neovim (:e): a write of that one is the tab's now.
+      h.path = ev.path
+    } else if (ev.kind === 'modified') {
+      h.state.modified = h.state.lost ? h.state.modified || !!ev.modified : !!ev.modified
+      bridge.holds.changed(path)
+    } else if (ev.kind === 'cursor') {
+      // Where Neovim is and its mode, for the tab's next showing: its next keys go there (a key on its way as the tab was left moves it,
+      // `o` into insert mode on a new line).
+      if (ev.mode && !h.state.lost) {
+        h.state.mode = ev.mode
+        echoAsLeft?.setMode(ev.mode)
+      }
+      if (ev.line && !h.state.lost) at = { line: ev.line, byteCol: ev.col ?? 1 }
+      if (ev.ack) {
+        // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done, but from an
+        // older owner, which never says so, it stands for that word (the echo's settlesOnAck).
+        echoAsLeft?.noteAck(ev.ack)
+        bridge.holds.changed(path)
+        letGoIfClean(h)
+      }
+    } else if (ev.kind === 'mode' && ev.mode && !h.state.lost) {
+      h.state.mode = ev.mode
+      echoAsLeft?.setMode(ev.mode)
+    } else if (ev.kind === 'cmdline' && !h.state.lost) {
+      h.state.cmdline = ev.show ? `${ev.prompt ?? ''}${ev.content ?? ''}` : ''
+    } else if (ev.kind === 'message' && !h.state.lost) {
+      // A question it asks meanwhile shows when the tab does (its buttons answer it).
+      h.state.message = ev.messageKind === 'clear' ? '' : (ev.text ?? '')
+      h.state.messageKind = ev.messageKind ?? ''
+    } else if (ev.kind === 'error' && ev.ack) {
+      // Keys refused while the tab was not in front: said on its status line when it is, and its Neovim kept until then.
+      const keys = echoAsLeft?.noteRefused(ev.ack, ev.text) ?? ev.text ?? ''
+      h.state.refused = (h.state.refused ?? '') + keys
+      h.state.message = `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${h.state.refused}`
+      h.state.messageKind = 'emsg'
+      bridge.holds.changed(path)
+    } else if (ev.kind === 'settled' && ev.ack) {
+      echoAsLeft?.noteSettled(ev.ack)
+      if (echoAsLeft) h.state.unconfirmed = echoAsLeft.unconfirmed || undefined
+      bridge.holds.changed(path)
+      letGoIfClean(h)
+    }
+  }
+}
 function onNvimEvent(ev: NvimEvent) {
-  if (!nvimId || ev.id !== nvimId || !editor || !model || !monacoRef) return
+  if (!editor || !model || !monacoRef) return
+  if (ev.id && ev.id === nvimId && ev.kind === 'opened' && ev.path) nvimPath = ev.path
+  if (lostId && ev.id === lostId) {
+    // A lost Neovim's change that came after its end: the tab's text takes it.
+    if (ev.kind === 'lines' || (ev.kind === 'modified' && ev.modified)) {
+      if (ev.kind === 'lines') {
+        const lev = { first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }
+        if (lostEcho) {
+          lostEcho.lateLines(lev)
+          nvimState.unconfirmed = lostEcho.unconfirmed || undefined
+        } else applyLinesEvent(lev)
+      }
+      nvimState.modified = true
+      tellNvim()
+      tellDirty()
+    } else if (ev.kind === 'settled' && lostEcho) {
+      // Its word that keys were done, after its end: the guesses of those it made nothing of go, and what it confirmed is no longer
+      // kept aside.
+      lostEcho.noteSettled(ev.ack ?? 0)
+      nvimState.unconfirmed = lostEcho.unconfirmed || undefined
+      tellNvim()
+    }
+    return
+  }
+  if (!nvimId || ev.id !== nvimId) return
   const monaco = monacoRef
   switch (ev.kind) {
     case 'lines': {
@@ -275,6 +464,7 @@ function onNvimEvent(ev: NvimEvent) {
           holdTimer = undefined
           echo?.timeout()
           markGuesses()
+          tellDirty()
         }, ECHO_HOLD_MS)
         break
       }
@@ -282,6 +472,7 @@ function onNvimEvent(ev: NvimEvent) {
       break
     }
     case 'cursor': {
+      if (ev.line) nvimAt = { line: ev.line, byteCol: ev.col ?? 1 }
       // Neovim counts a line's bytes, Monaco its UTF-16 units.
       const toUtf16 = (l: number, c: number) => byteColToUtf16(model!.getLineContent(Math.max(1, Math.min(l, model!.getLineCount()))), Math.max(1, c))
       const shown = echo ? echo.cursor({ line: ev.line ?? 1, col: ev.col ?? 1, mode: ev.mode ?? nvimState.mode, ack: ev.ack }, toUtf16) : null
@@ -290,6 +481,9 @@ function onNvimEvent(ev: NvimEvent) {
         holdTimer = undefined
       }
       markGuesses()
+      if (ev.ack) tellDirty()
+      // From an older owner, which never says keys are done, the acknowledgement stands for that word (the echo's settlesOnAck).
+      if (ev.ack && nvimState.unsettled && !echo?.unsettled) tellNvim()
       const line = Math.max(1, Math.min(ev.line ?? 1, model.getLineCount()))
       const col = toUtf16(line, ev.col ?? 1)
       if (echo && !shown) {
@@ -337,25 +531,71 @@ function onNvimEvent(ev: NvimEvent) {
       tellNvim()
       tellDirty()
       break
+    case 'settled': {
+      const had = !!echo?.showing
+      echo?.noteSettled(ev.ack ?? 0)
+      if (nvimState.unsettled && !echo?.unsettled) tellNvim()
+      // What it held is shown now: its wait for an acknowledgement is over.
+      if (echo && !echo.holding && holdTimer) {
+        clearTimeout(holdTimer)
+        holdTimer = undefined
+      }
+      markGuesses()
+      // A guess it retired (a key a mapping took, in the middle of a line) takes the cursor back with it.
+      if (had) placeCursor()
+      tellDirty()
+      break
+    }
     case 'swap':
       // Another editor's swap file: the file opened read-only (round 13, G3).
       nvimState.swap = ev.swap ?? null
       nvimState.recovered = false
       tellNvim()
       break
-    case 'closed':
+    case 'closed': {
+      // What Neovim sent and the echo held is shown first, with the characters typed it never acknowledged.
+      if (!closedByQuit(ev.reason)) echo?.markLost()
+      const pending = closedByQuit(ev.reason) ? false : (echo?.finish() ?? false)
+      const unconfirmed = echo?.unconfirmed ?? ''
+      // Kept while guesses show or characters wait to be confirmed: what comes after its end is reconciled with them.
+      const finished = pending || unconfirmed ? echo : null
       nvimId = null
-      unsubscribe?.()
-      unsubscribe = null
       stopText?.()
       stopEcho()
-      emit('nvimClosed')
-      break
-    case 'error':
-      nvimState.message = ev.message ?? ev.code ?? 'error'
+      if (closedByQuit(ev.reason)) {
+        unsubscribe?.()
+        unsubscribe = null
+        emit('nvimClosed')
+        break
+      }
+      // Lost, not quit: the tab stays with the text Neovim last held (read only, which Monaco is here), and the area says so. Its
+      // subscription stays: the changes it sent before its end can come after it.
+      lostId = ev.id ?? null
+      lostEcho = finished
+      nvimState.lost = ev.reason ?? 'error'
+      if (unconfirmed) nvimState.unconfirmed = unconfirmed
+      nvimState.modified = lostHoldsChanges(nvimState.modified, pending || !!unconfirmed, model.getValue(), props.text)
+      nvimState.cmdline = ''
+      nvimState.message = 'Neovim ended'
       nvimState.messageKind = 'emsg'
       tellNvim()
+      tellDirty()
       break
+    }
+    case 'error': {
+      // Keys refused on their way (their number as ack): they never reached Neovim, and the person is told which.
+      const had = !!echo?.showing
+      const refused = ev.ack && echo ? echo.noteRefused(ev.ack, ev.text) : ''
+      // Kept until the person dismisses it (the status line), whatever comes after: a Save waits for that word (nvimWrite).
+      if (refused) nvimState.refused = (nvimState.refused ?? '') + refused
+      nvimState.message = refused ? `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${refused}` : (ev.message ?? ev.code ?? 'error')
+      nvimState.messageKind = 'emsg'
+      markGuesses()
+      if (had) placeCursor()
+      tellNvim()
+      tellDirty()
+      break
+    }
   }
 }
 
@@ -424,13 +664,25 @@ watch(
 onMounted(mount)
 onBeforeUnmount(() => {
   if (nvimId && props.nvim) {
-    // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends.
-    if (nvimState.modified) {
+    // Changes not written keep their Neovim for the tab's next showing (the area discards it if the tab closes); none, it ends. Keys
+    // Neovim has not said it has done may be making some, its word not come: they keep it too (their acknowledgement is no sign: it
+    // answers in the middle of a key, a plugin's vim.wait), and so do characters typed that its text does not hold yet. What the echo
+    // holds is shown first, and its changes from now on are followed into the tab's text, until it is done and clean.
+    if (nvimState.modified || echo?.showing || echo?.unsettled || nvimState.refused) {
+      // The echo goes with it whole (the numbers of its keys, the characters Neovim has not had): its next editor goes on with it.
+      echo?.finish()
+      const asLeft = echo
       const at = editor?.getPosition()
-      props.nvim.holds.hold(props.path, { id: nvimId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 } })
+      props.nvim.holds.hold(props.path, { id: nvimId, path: nvimPath ?? undefined, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: asLeft, at: nvimAt ?? undefined, stop: follow(props.nvim, nvimId, asLeft, nvimAt) })
     } else props.nvim.close(nvimId)
+  } else if (props.nvim && nvimState.lost && lostId) {
+    // Neovim lost: its text stays the tab's for the next showing (a tab switched, the area folded), until Reopen or a close.
+    const at = editor?.getPosition()
+    props.nvim.holds.hold(props.path, { id: lostId, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: lostEcho, stop: follow(props.nvim, lostId, lostEcho) })
   }
   nvimId = null
+  lostId = null
+  lostEcho = null
   unsubscribe?.()
   unsubscribe = null
   stopText?.()
@@ -463,7 +715,11 @@ function nvimWrite(): Promise<boolean> {
   const bridge = props.nvim
   const id = nvimId
   if (!bridge || !id) return Promise.resolve(false)
-  if (!nvimState.modified) return Promise.resolve(true)
+  // Keys that did not reach Neovim, not yet dismissed: the file would be written without them, so not here (the status line says them).
+  if (nvimState.refused) return Promise.resolve(false)
+  // Nothing changed and nothing on its way: nothing to write.
+  if (!nvimState.modified && !echo?.showing && !echo?.unsettled) return Promise.resolve(true)
+  const file = nvimPath ?? props.path
   return new Promise((resolve) => {
     let off: () => void = () => {}
     const done = (ok: boolean) => {
@@ -472,12 +728,35 @@ function nvimWrite(): Promise<boolean> {
       resolve(ok)
     }
     const timer = setTimeout(() => done(false), 10_000)
+    // Done once Neovim has written this tab's file (not another buffer a hook wrote) and said the write's keys are done (the echo
+    // knows, from its `settled`, or from an older owner's acknowledgement), and the buffer is clean then: a write that came from an
+    // earlier :w, before later changes, is not this one's.
+    let wrote = false
+    let seq = 0
+    const check = () => {
+      if (wrote && (!seq || !echo || echo.doneThrough(seq)) && !nvimState.modified) done(true)
+    }
     off = bridge.subscribe((ev) => {
       if (ev.id !== id) return
-      if (ev.kind === 'modified' && !ev.modified) done(true)
-      else if ((ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') done(false)
+      if (ev.kind === 'written' && ev.path === file) {
+        wrote = true
+        check()
+      } else if ((ev.kind === 'settled' || (ev.kind === 'cursor' && ev.ack)) && seq) {
+        check()
+      } else if (ev.kind === 'modified') {
+        check()
+      } else if ((ev.kind === 'error' && ev.ack) || (ev.kind === 'message' && ev.messageKind === 'emsg') || ev.kind === 'closed') {
+        // Keys refused while it saves (its own, or edits before it: what is written is not what was typed), the write failed, or
+        // Neovim is gone: not saved, and the tab stays, its status line saying which keys did not reach Neovim.
+        done(false)
+      }
     })
-    bridge.input(id, '<C-\\><C-n>:w<CR>')
+    // After the keys on their way, in order, so what they change is written too; <C-\\><C-n> first ends whatever waits (an operator's
+    // motion, insert mode). Numbered, so its own keys are waited for too.
+    const keys = '<C-\\><C-n>:w<CR>'
+    const at = editor?.getPosition()
+    seq = echo ? echo.send(keys, { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }).seq : 0
+    bridge.input(id, keys, seq || undefined)
   })
 }
 /** Answers Neovim's confirm question with its choice's key; the question goes. */
@@ -489,7 +768,59 @@ function answerConfirm(key: string) {
   tellNvim()
   editor?.focus()
 }
-defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite })
+/** The person has seen the keys that did not reach Neovim (the status line's Dismiss): a Save may write without them. */
+function dismissRefused() {
+  nvimState.refused = undefined
+  tellNvim()
+  tellDirty()
+}
+/** Lets a lost Neovim's text go, once another Neovim has opened in its place (reopenNvim). */
+function releaseLost() {
+  nvimState.lost = undefined
+  nvimState.unconfirmed = undefined
+  lostId = null
+  lostEcho = null
+  unsubscribe?.()
+  unsubscribe = null
+}
+let reopening = false
+/**
+ * Reopen (the lost banner, the person's choice): a new Neovim on the file. The lost one's text and its word stay until that one has
+ * opened, for the open can fail (the connection down, the machine away, the bounds): the tab then stays as it was, saying why. Opened,
+ * the tab is the new one's: the file as Neovim reads it, where a swap file the lost one kept offers its changes (Recover).
+ */
+async function reopenNvim(): Promise<boolean> {
+  const bridge = props.nvim
+  if (!bridge || !editor || !model || !nvimState.lost || reopening) return false
+  reopening = true
+  let opened: NvimEvent
+  try {
+    opened = await bridge.open(props.path)
+  } catch (err) {
+    reopening = false
+    if (nvimState.lost) {
+      nvimState.message = `Reopen failed: ${err instanceof Error ? err.message : String(err)}`
+      nvimState.messageKind = 'emsg'
+      tellNvim()
+    }
+    return false
+  }
+  reopening = false
+  // The tab left or closed meanwhile (its lost text held, or let go): the new Neovim is not its, and ends.
+  if (!editor || !model || !nvimState.lost || !opened.id) {
+    if (opened.id) bridge.close(opened.id)
+    return false
+  }
+  releaseLost()
+  Object.assign(nvimState, { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: false, unsettled: false, refused: undefined })
+  nvimId = opened.id
+  nvimPath = opened.path ?? null
+  nvimAt = null
+  attachNvim(bridge, null)
+  editor.focus()
+  return true
+}
+defineExpose({ showLine, showRange, find, gotoLine, focus: () => editor?.focus(), getText, version, setText, getLines, answerSwap, answerConfirm, nvimWrite, reopenNvim, dismissRefused })
 </script>
 
 <template>

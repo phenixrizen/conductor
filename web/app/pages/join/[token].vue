@@ -65,6 +65,8 @@ function onStatus(s: string) {
 /** The connection closed: what was being said waits; a close for the session's end (a server's or a hosted one's) says so, should the status frame not have been read first. */
 function onClosed(info: CloseInfo) {
   chat.offline()
+  // The editor's Neovims ended with the connection: their tabs keep their text and say so.
+  editor.onClosed()
   if (closedByTheEnd(info.code, info.reason) && !ended.value) onStatus('exited')
 }
 

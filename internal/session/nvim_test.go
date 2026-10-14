@@ -347,7 +347,7 @@ func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Detach(owner)
-	if w := firstControl(t, ownerSink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != true || w["nvimOwnerOnly"] != nil {
+	if w := firstControl(t, ownerSink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != true || w["nvimOwnerOnly"] != nil || w["nvimSettled"] != true {
 		t.Fatalf("the owner's welcome: %v", w)
 	}
 	from := 0
@@ -377,7 +377,7 @@ func TestNvimIsKeptForTheOwnersConnections(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if w := firstControl(t, sink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != nil || w["nvimOwnerOnly"] != true {
+		if w := firstControl(t, sink, proto.CtlWelcome); w["fileEdit"] != true || w["nvim"] != nil || w["nvimOwnerOnly"] != true || w["nvimSettled"] != nil {
 			t.Fatalf("%s: the welcome: %v", o.Name, w)
 		}
 		if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "g1", Path: "a.txt"}); err != ErrNvimUnavailable {
@@ -939,6 +939,249 @@ func TestAnEditorWhoseWrapperExitedFirstIsEndedWithNeovim(t *testing.T) {
 	detachAndWait(t, s, sub, 10*time.Second)
 	if !gone(child, 5*time.Second) {
 		t.Fatalf("Neovim (pid %d) still runs after its editor ended", child)
+	}
+}
+
+// Neovim ends after the editor took its place and before its opened event
+// (here it quits, as a config may as it starts): the page is told it opened
+// and then that it closed, with why, never left with an editor that answers
+// nothing. Its end, reported before the editor was ready, was told to no one.
+func TestAnEditorEndedAsItOpensSaysItClosed(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nvimStarted = func(ed *nvim.Editor) {
+		_ = ed.Input(":qa!<CR>")
+		// Its end is reported (the editor's place marked gone) before the open goes on.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			sub.nvimMu.Lock()
+			ended := true
+			for _, e := range sub.nvims {
+				if e.ed == ed && !e.gone.Load() {
+					ended = false
+				}
+			}
+			sub.nvimMu.Unlock()
+			if ended {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Error("the end was never reported")
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	t.Cleanup(func() { nvimStarted = nil })
+	err = returnsWithin(t, 10*time.Second, "the open", func() error {
+		return s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
+	})
+	if err != nil {
+		t.Fatalf("the open: %v", err)
+	}
+	from := 0
+	evs := nvimEvents(t, sink, &from, proto.NvimClosed, 10*time.Second)
+	if evs[0].Kind != proto.NvimOpened {
+		t.Fatalf("the events: %+v", evs)
+	}
+	if closed := evs[len(evs)-1]; closed.Reason != "quit" || closed.ID != evs[0].ID {
+		t.Fatalf("closed: %+v", closed)
+	}
+}
+
+// A Neovim that died may have sent changes the client delivers after its
+// end is told: they still reach the page, which keeps the text a lost
+// Neovim last held; the end is told once. A close the page asked for (or the
+// connection going) stops its frames.
+// Keys Neovim's full input took only in part: the refusal of the rest is
+// sent before any word that keys up to them are done, so the page never takes
+// the refused end for done (the real Neovim, its input filled: a plugin's
+// vim.wait in InsertCharPre lets it answer between the keys it reads).
+func TestARefusalComesBeforeTheWordThatItsKeysAreDone(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the bridge's test needs the real Neovim")
+	}
+	cfg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cfg, "nvim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "nvim", "init.lua"), []byte("vim.api.nvim_create_autocmd('InsertCharPre', { callback = function() vim.wait(20) end })\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Neovim, busy with the keys it took, is ended soon after the test.
+	old := nvimEndWait
+	nvimEndWait = 300 * time.Millisecond
+	t.Cleanup(func() { nvimEndWait = old })
+	s, _ := newLocal(t, dir)
+	editorsEnd(t, s)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := openEditor(t, s, sub)
+	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: "i", Seq: 1}); err != nil {
+		t.Fatal(err)
+	}
+	from := 0
+	nvimEvents(t, sink, &from, proto.NvimSettled, 10*time.Second)
+	refused := uint32(0)
+	keys := strings.Repeat("x", 250)
+	for seq := uint32(2); seq < 200 && refused == 0; seq++ {
+		if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: id, Keys: keys, Seq: seq}); err != nil {
+			t.Fatal(err)
+		}
+		sink.mu.Lock()
+		for _, frame := range sink.frames[from:] {
+			if f, err := proto.Decode(frame); err == nil {
+				var ev proto.NvimEvent
+				if json.Unmarshal(f.Payload, &ev) == nil && ev.Kind == proto.NvimError && ev.ID == id {
+					refused = ev.Ack
+				}
+			}
+		}
+		sink.mu.Unlock()
+	}
+	if refused == 0 {
+		t.Fatal("Neovim took every key: the test filled nothing")
+	}
+	time.Sleep(time.Second)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, frame := range sink.frames[from:] {
+		f, err := proto.Decode(frame)
+		if err != nil {
+			continue
+		}
+		var ev proto.NvimEvent
+		if json.Unmarshal(f.Payload, &ev) != nil || ev.ID != id {
+			continue
+		}
+		if ev.Kind == proto.NvimError {
+			if ev.Ack != refused || ev.Text == "" || !strings.HasSuffix(keys, ev.Text) {
+				t.Fatalf("the refusal: %+v", ev)
+			}
+			return
+		}
+		if ev.Kind == proto.NvimSettled && ev.Ack >= refused {
+			t.Fatalf("keys up to %d said done before the refusal of %d", ev.Ack, refused)
+		}
+	}
+	t.Fatal("no refusal among the frames")
+}
+
+func TestARefusedInputNamesItsEditorAndItsKeys(t *testing.T) {
+	id := newNvimID()
+	f, err := proto.Decode(NvimInputRefused(id, 7, ErrTooManyRequests))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ev proto.NvimEvent
+	if err := json.Unmarshal(f.Payload, &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != proto.NvimError || ev.ID != id || ev.Ack != 7 || ev.Code != proto.ErrCodeTooManyRequests {
+		t.Fatalf("the refusal: %+v", ev)
+	}
+	// Only the end of the keys refused, Neovim's input full: the refusal says which.
+	f, _ = proto.Decode(NvimInputRefused(id, 8, &RefusedKeys{Rest: "yz"}))
+	ev = proto.NvimEvent{}
+	_ = json.Unmarshal(f.Payload, &ev)
+	if ev.ID != id || ev.Ack != 8 || ev.Text != "yz" || ev.Code != proto.ErrCodeTooManyRequests {
+		t.Fatalf("the partial refusal: %+v", ev)
+	}
+	// An id no editor could have is not said back: the refusal names none, and stays within a control frame's bound whatever the
+	// request carried, the end of its keys at their longest besides.
+	for _, other := range []string{"e1", strings.ToUpper(id), id + "0", strings.Repeat("a", proto.MaxControl)} {
+		rest := strings.Repeat("\x01", proto.MaxNvimKeys)
+		f, err := proto.Decode(NvimInputRefused(other, 9, &RefusedKeys{Rest: rest}))
+		if err != nil {
+			t.Fatalf("an id of %d bytes: %v", len(other), err)
+		}
+		ev = proto.NvimEvent{}
+		_ = json.Unmarshal(f.Payload, &ev)
+		if ev.ID != "" || ev.Ack != 9 || ev.Text != rest {
+			t.Fatalf("an id of %d bytes: %+v", len(other), ev)
+		}
+	}
+	// Keys for such an id reach no editor.
+	s, _ := newLocal(t, t.TempDir())
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: strings.Repeat("a", proto.MaxControl), Keys: "x"}); err != ErrFileDenied && err != ErrNvimUnavailable {
+		t.Fatalf("keys for an id no editor could have: %v", err)
+	}
+	// A refused open still carries its request's id alone.
+	f, _ = proto.Decode(NvimRefused("r1", ErrNvimUnavailable))
+	ev = proto.NvimEvent{}
+	_ = json.Unmarshal(f.Payload, &ev)
+	if ev.ReqID != "r1" || ev.ID != "" || ev.Code != proto.ErrCodeNvimUnavailable {
+		t.Fatalf("the open's refusal: %+v", ev)
+	}
+}
+
+func TestALostNeovimsLastChangesComeAfterItsEnd(t *testing.T) {
+	s, _ := newLocal(t, t.TempDir())
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &nvimEditor{id: "e1", cancel: func() {}, endWait: time.Second}
+	e.ready.Store(true)
+	h := &nvimHandler{s: s, sub: sub, e: e}
+	h.Exited("error: neovim ended")
+	h.Exited("error: msgpack/rpc: session closed")
+	h.Lines(0, 1, []string{"late"})
+	h.Settled(7)
+	from := 0
+	evs := nvimEvents(t, sink, &from, proto.NvimSettled, 5*time.Second)
+	var kinds []string
+	for _, ev := range evs {
+		kinds = append(kinds, ev.Kind)
+	}
+	if strings.Join(kinds, " ") != "closed lines settled" || evs[0].Reason != "error: neovim ended" || evs[1].Lines[0] != "late" || evs[2].Ack != 7 {
+		t.Fatalf("the events: %+v", evs)
+	}
+	// Closed by the page: nothing more.
+	q := &nvimEditor{id: "e2", cancel: func() {}, endWait: time.Second}
+	q.ready.Store(true)
+	sub.nvimMu.Lock()
+	sub.nvims = map[string]*nvimEditor{"e2": q}
+	sub.nvimMu.Unlock()
+	s.NvimClose(sub, proto.NvimClose{T: proto.CtlNvimClose, ID: "e2"})
+	(&nvimHandler{s: s, sub: sub, e: q}).Lines(0, 1, []string{"after the close"})
+	time.Sleep(100 * time.Millisecond)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, f := range sink.frames[from:] {
+		if strings.Contains(string(f), "after the close") {
+			t.Fatal("a closed editor's frame was sent")
+		}
 	}
 }
 

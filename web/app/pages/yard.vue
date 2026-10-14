@@ -242,6 +242,7 @@ onMounted(() => {
             @welcome="onFocusWelcome"
             @activity="onFocusActivity"
             @nvim="editor.onNvim"
+            @closed="editor.onClosed()"
             @viewers="viewers = $event.count"
             @transport="transport = $event"
             @open-file="openFile"

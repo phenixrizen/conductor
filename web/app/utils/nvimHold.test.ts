@@ -1,44 +1,167 @@
 import { describe, expect, it } from 'vitest'
+import { NvimEcho } from './nvimEcho'
 import { NvimHolds } from './nvimHold'
 import type { NvimViewState } from './nvimSwap'
 
 const state: NvimViewState = { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: true }
 
+/** A follower's stop, counting its calls. */
+function stopper() {
+  const s = { calls: 0, stop: () => void s.calls++ }
+  return s
+}
+
 describe('NvimHolds', () => {
-  it('keeps a Neovim for its path until taken back', () => {
+  it('keeps a Neovim for its path until taken back, and stops following it then', () => {
     const h = new NvimHolds()
-    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 3, col: 2 } })
+    const f = stopper()
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 3, col: 2 }, stop: f.stop })
     expect(h.peek('/w/a.txt')?.id).toBe('e1')
     expect(h.size).toBe(1)
+    expect(f.calls).toBe(0)
     expect(h.take('/w/a.txt')).toEqual({ id: 'e1', state, cursor: { line: 3, col: 2 } })
+    expect(f.calls).toBe(1)
     expect(h.take('/w/a.txt')).toBeUndefined()
     expect(h.size).toBe(0)
   })
 
+  it("gives back Neovim's last cursor with the hold, for the next hold after the tab is shown and left again", () => {
+    const h = new NvimHolds()
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 4 }, at: { line: 1, byteCol: 3 } })
+    const taken = h.take('/w/a.txt')
+    expect(taken?.at).toEqual({ line: 1, byteCol: 3 })
+    expect(taken?.cursor).toEqual({ line: 1, col: 4 })
+  })
+
   it('forgets a Neovim that ended on its own', () => {
     const h = new NvimHolds()
-    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })
+    const f = stopper()
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 }, stop: f.stop })
     h.hold('/w/b.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
     h.ended('e1')
     expect(h.peek('/w/a.txt')).toBeUndefined()
+    expect(f.calls).toBe(1)
     expect(h.peek('/w/b.txt')?.id).toBe('e2')
   })
 
-  it('hands back the Neovims whose tab closed, and only those', () => {
+  it('keeps a Neovim lost, not quit, as lost: its state with the reason, still followed for the changes it sent before its end', () => {
+    const h = new NvimHolds()
+    const f = stopper()
+    h.hold('/w/a.txt', { id: 'e1', state: { ...state, cmdline: ':w' }, cursor: { line: 2, col: 3 }, stop: f.stop })
+    h.ended('e1', 'error: neovim ended')
+    expect(h.peek('/w/a.txt')).toMatchObject({ id: 'e1', state: { ...state, cmdline: '', lost: 'error: neovim ended' }, cursor: { line: 2, col: 3 } })
+    expect(f.calls).toBe(0)
+    // A second end, or a quit, changes nothing: it is lost.
+    h.ended('e1', 'quit')
+    expect(h.peek('/w/a.txt')?.state.lost).toBe('error: neovim ended')
+    // Its tab closed: handed back as lost (nothing to end), no longer followed.
+    expect(h.orphans([])).toEqual([{ path: '/w/a.txt', id: 'e1', lost: true, seq: 0, unsettled: false }])
+    expect(f.calls).toBe(1)
+  })
+
+  it('counts the characters a lost Neovim never had among its changes not written', () => {
+    const h = new NvimHolds()
+    const text = ['alpha']
+    const echo = new NvimEcho({ line: (n) => text[n - 1] ?? '', setLine: (n, t) => void (text[n - 1] = t), applyLines: () => {} })
+    echo.cursor({ line: 1, col: 6, mode: 'i', ack: 0 }, (_l, c) => c)
+    echo.send('x', { line: 1, col: 6 })
+    echo.finish()
+    h.hold('/w/a.txt', { id: 'e1', state: { ...state, modified: false }, cursor: { line: 1, col: 7 }, echo })
+    h.ended('e1', 'error: neovim ended')
+    expect(h.peek('/w/a.txt')?.state.modified).toBe(true)
+  })
+
+  it('forgets a Neovim that quit', () => {
     const h = new NvimHolds()
     h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })
+    h.ended('e1', 'quit')
+    expect(h.peek('/w/a.txt')).toBeUndefined()
+  })
+
+  it('hands back the Neovims whose tab closed, and only those, with what their end needs', () => {
+    const h = new NvimHolds()
+    const clean = { ...state, modified: false }
+    const text = ['alpha']
+    const echo = (typed: string, settledTo = 0) => {
+      const e = new NvimEcho({ line: (n) => text[n - 1] ?? '', setLine: (n, t) => void (text[n - 1] = t), applyLines: () => {} })
+      e.cursor({ line: 1, col: 6, mode: typed === 'j' ? 'n' : 'i', ack: 0 }, (_l, c) => c)
+      e.send(typed, { line: 1, col: 6 })
+      e.noteSettled(settledTo)
+      return e
+    }
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })
     h.hold('/w/b.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
-    expect(h.orphans(['/w/b.txt', '/w/c.txt'])).toEqual([{ path: '/w/a.txt', id: 'e1' }])
+    expect(h.orphans(['/w/b.txt', '/w/c.txt'])).toEqual([{ path: '/w/a.txt', id: 'e1', lost: false, seq: 0, unsettled: false }])
     expect(h.peek('/w/a.txt')).toBeUndefined()
     expect(h.orphans(['/w/b.txt'])).toEqual([])
-    expect(h.orphans([])).toEqual([{ path: '/w/b.txt', id: 'e2' }])
+    // Keys it has not done: it ends once it has (a character typed among them, or not).
+    h.hold('/w/typed.txt', { id: 'e3', state: clean, cursor: { line: 1, col: 1 }, echo: echo('x') })
+    h.hold('/w/moved.txt', { id: 'e4', state: clean, cursor: { line: 1, col: 1 }, echo: echo('j') })
+    h.hold('/w/done.txt', { id: 'e5', state: clean, cursor: { line: 1, col: 1 }, echo: echo('j', 1) })
+    expect(h.orphans([])).toEqual([
+      { path: '/w/b.txt', id: 'e2', lost: false, seq: 0, unsettled: false },
+      { path: '/w/typed.txt', id: 'e3', lost: false, seq: 1, unsettled: true },
+      { path: '/w/moved.txt', id: 'e4', lost: false, seq: 1, unsettled: true },
+      { path: '/w/done.txt', id: 'e5', lost: false, seq: 1, unsettled: false },
+    ])
     expect(h.size).toBe(0)
   })
 
-  it('clears', () => {
+  it('tells its listeners of each hold made, changed, ended and let go', () => {
     const h = new NvimHolds()
+    const told: Array<[string, boolean | undefined]> = []
+    const off = h.listen((path, held) => told.push([path, held?.state.modified]))
+    const s = { ...state, modified: false }
+    h.hold('/w/a.txt', { id: 'e1', state: s, cursor: { line: 1, col: 1 } })
+    s.modified = true
+    h.changed('/w/a.txt')
+    h.changed('/w/none.txt')
+    h.ended('e1', 'error: neovim ended')
+    expect(h.take('/w/a.txt')?.id).toBe('e1')
+    off()
+    h.hold('/w/b.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
+    expect(told).toEqual([
+      ['/w/a.txt', false],
+      ['/w/a.txt', true],
+      ['/w/a.txt', true],
+      ['/w/a.txt', undefined],
+    ])
+  })
+
+  it('tells its listeners of the holds its orphans and clear let go', () => {
+    const h = new NvimHolds()
+    const told: string[] = []
     h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 } })
+    h.hold('/w/b.txt', { id: 'e2', state, cursor: { line: 1, col: 1 } })
+    h.listen((path, held) => told.push(`${path} ${held ? 'held' : 'gone'}`))
+    h.orphans(['/w/b.txt'])
     h.clear()
+    expect(told).toEqual(['/w/a.txt gone', '/w/b.txt gone'])
+  })
+
+  it('says whether a kept Neovim, not lost, has keys it has not said it has done', () => {
+    const h = new NvimHolds()
+    const text = ['alpha']
+    const echo = new NvimEcho({ line: (n) => text[n - 1] ?? '', setLine: (n, t) => void (text[n - 1] = t), applyLines: () => {} })
+    echo.send('j', { line: 1, col: 1 })
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 }, echo })
+    expect(h.busy()).toBe(true)
+    echo.noteSettled(1)
+    expect(h.busy()).toBe(false)
+    echo.send('k', { line: 1, col: 1 })
+    h.ended('e1', 'error: neovim ended')
+    expect(h.busy()).toBe(false)
+  })
+
+  it('stops following what it clears, and what another hold of the same path replaces', () => {
+    const h = new NvimHolds()
+    const a = stopper()
+    const b = stopper()
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 1 }, stop: a.stop })
+    h.hold('/w/a.txt', { id: 'e2', state, cursor: { line: 1, col: 1 }, stop: b.stop })
+    expect(a.calls).toBe(1)
+    h.clear()
+    expect(b.calls).toBe(1)
     expect(h.size).toBe(0)
   })
 })

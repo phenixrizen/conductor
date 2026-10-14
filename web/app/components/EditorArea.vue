@@ -2,6 +2,8 @@
 import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge, NvimSwapChoice } from '~/utils/protocol'
 import { swapChoices, swapWords, type NvimViewState } from '~/utils/nvimSwap'
 import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
+import { lostWords } from '~/utils/nvimLost'
+import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
@@ -265,6 +267,7 @@ onMounted(() => {
   keymap.value = readKeymap(typeof localStorage === 'undefined' ? null : localStorage)
 })
 function setKeymap(k: Keymap) {
+  if (keymapBusy.value) return
   keymap.value = k
   writeKeymap(typeof localStorage === 'undefined' ? null : localStorage, k)
 }
@@ -273,6 +276,16 @@ const fileReadOnly = computed(() => (active.value?.kind === 'file' ? fileReadOnl
 const nvimWhy = computed(() => (props.nvim ? nvimUnavailableWords(props.nvim.offer) || fileReadOnly.value : 'Neovim is not offered on this page'))
 const nvimOn = computed(() => keymap.value === 'nvim' && !!props.nvim && nvimWhy.value === '')
 const nvimState = ref<NvimViewState | null>(null)
+// Reopen after Neovim was lost (utils/nvimLost): a new Neovim for the tab in front, the lost one's text kept until it has opened (an open
+// that fails leaves the tab as it was, saying why). Copy keeps that text first, as the banner says. Not while the connection is down.
+function reopenNvim() {
+  void (editorRef.value as { reopenNvim?: () => Promise<boolean> } | null)?.reopenNvim?.()
+}
+function copyLostText() {
+  // The text is the editor's: with no editor up (its machine away) there is none to copy, and nothing says there was.
+  const text = editorRef.value?.getText()
+  if (text !== undefined) copy(text, 'Text copied')
+}
 // Neovim's status is the editor's in front: another tab, or the other keymap, starts it empty until that editor reports (round 14: the
 // last tab's mode, banner or question stayed over the next tab's file, and a test typed into the new tab before its Neovim listened).
 watch(
@@ -286,6 +299,9 @@ const nvimConfirm = computed(() => {
   const choices = confirmChoices(st.message)
   return choices.length ? { question: confirmQuestion(st.message), choices } : null
 })
+function dismissRefused() {
+  ;(editorRef.value as { dismissRefused?: () => void } | null)?.dismissRefused?.()
+}
 function answerConfirm(key: string) {
   ;(editorRef.value as { answerConfirm?: (k: string) => void } | null)?.answerConfirm?.(key)
 }
@@ -293,9 +309,16 @@ function answerConfirm(key: string) {
 function answerSwap(choice: NvimSwapChoice) {
   ;(editorRef.value as { answerSwap?: (c: NvimSwapChoice) => void } | null)?.answerSwap?.(choice)
 }
+// Keys on their way to a Neovim (in front, or kept for a tab): the keymap waits for them, since what they make is Neovim's to show.
+const holdsTick = ref(0)
+const keymapBusy = computed(() => {
+  void holdsTick.value
+  return keymap.value === 'nvim' && (!!nvimState.value?.unsettled || !!props.nvim?.holds.busy())
+})
 const keymapTip = computed(() => {
   // Each keymap keeps its own text (Neovim's buffer, Monaco's model): switching with changes not written would lose them.
   if (dirty.size) return 'Save or discard the changes first: the other keymap would not have them'
+  if (keymapBusy.value) return 'Neovim is still taking keys: a moment'
   if (keymap.value === 'nvim') return nvimWhy.value ? `${nvimWhy.value} · Monaco's keys meanwhile · click for Monaco's keys` : "Neovim keys: the real Neovim on the session's machine holds the file · click for Monaco's keys"
   return "Monaco's keys · click for Neovim keys (the real Neovim on the session's machine)"
 })
@@ -303,6 +326,8 @@ function closeActive() {
   // Neovim's :q: Neovim kept its own buffer, nothing to ask.
   if (active.value) closeNow([active.value.id])
 }
+// The paths whose tabs the person closed with Don't save: their held Neovims drop their changes as they end (the orphans below).
+const dropConsented = new Set<string>()
 // A tab not in front keeps its Neovim while its buffer holds changes not written (the bridge's holds); once its tab is closed, its
 // changes go with it (the close asked first: Don't save), and its swap file with them. After the render: a tab closing in front hands
 // its Neovim over as its editor leaves.
@@ -311,10 +336,75 @@ watch(
   (paths) => {
     const bridge = props.nvim
     if (!bridge) return
-    for (const o of bridge.holds.orphans(paths)) bridge.close(o.id, true)
+    for (const o of bridge.holds.orphans(paths)) {
+      const dropped = dropConsented.delete(o.path)
+      if (o.lost) continue
+      // Its changes go when the person said so (Don't save); any it made after, or that the close did not ask about, stay (its swap file).
+      if (dropped) bridge.close(o.id, true)
+      // Kept for keys on their way: it ends once it has done them, keeping what they made (its swap file), as a lost connection does.
+      else if (o.unsettled) closeOnceSettled(bridge, o.id, o.seq)
+      else bridge.close(o.id)
+    }
   },
   { flush: 'post' },
 )
+// The Neovim keymap turned off by its button (no tab holds changes then: it waits for them): every Neovim kept for a tab goes, those with keys
+// on their way once they are done, keeping what those make (their swap file), so no Neovim writes into a text Monaco's keys now edit.
+// After the render, as the editor in front has handed its own over.
+watch(
+  keymap,
+  (k) => {
+    const bridge = props.nvim
+    if (k === 'nvim' || !bridge) return
+    for (const o of bridge.holds.orphans([])) {
+      if (o.lost) continue
+      if (o.unsettled) closeOnceSettled(bridge, o.id, o.seq)
+      else bridge.close(o.id)
+    }
+  },
+  { flush: 'post' },
+)
+/**
+ * Ends Neovim id once it has done the keys up to seq (its `settled`; from an older owner, which never says so, their acknowledgement), or
+ * has ended, or after half a minute (a question it waits on).
+ */
+function closeOnceSettled(bridge: NvimBridge, id: string, seq: number) {
+  let off: () => void = () => {}
+  const end = () => {
+    clearTimeout(timer)
+    off()
+    bridge.close(id)
+  }
+  const timer = setTimeout(end, 30_000)
+  off = bridge.subscribe((ev) => {
+    if (ev.id !== id) return
+    if (ev.kind === 'closed') {
+      clearTimeout(timer)
+      off()
+    } else if ((ev.kind === 'settled' || (ev.kind === 'cursor' && !bridge.offer.settled)) && (ev.ack ?? 0) >= seq) end()
+  })
+}
+// A tab whose editor is not up (not in front, or the area folded) wears its unsaved dot as its held Neovim says (Neovim's word coming
+// after the tab was left, a loss): the close then asks. An editor that is up says it itself.
+let stopListening: (() => void) | null = null
+watch(
+  () => props.nvim?.holds,
+  (holds) => {
+    stopListening?.()
+    stopListening =
+      holds?.listen((path, held) => {
+        holdsTick.value++
+        const t = tabs.value.tabs.find((x) => x.kind === 'file' && x.path === path)
+        if (!t) return
+        // Held, its editor is not up, though its tab may be in front (the area folded); let go as the tab in front comes up again, its
+        // editor says.
+        if (held) setDirty(t.id, heldChanges(held))
+        else if (t.id !== active.value?.id) setDirty(t.id, false)
+      }) ?? null
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => stopListening?.())
 
 // Editing (design round 12, F6): a controller on a session that allows it edits a text file read whole in Monaco (Neovim's keymap
 // edits through Neovim instead); Save and Ctrl+S write it on the session's machine, refused when the file changed on disk since it
@@ -472,10 +562,18 @@ async function closingSave() {
     closeNow(ids)
   }
 }
-function closingDiscard() {
+async function closingDiscard() {
   const ids = closing.value?.ids ?? []
   closing.value = null
+  // The person said Don't save: their Neovims drop what they hold as they end (the orphans, once the tabs have gone), and only
+  // theirs, this once: the word goes with this close, whatever it found.
+  for (const id of ids) {
+    const t = tabs.value.tabs.find((x) => x.id === id)
+    if (t?.kind === 'file') dropConsented.add(t.path)
+  }
   closeNow(ids)
+  await nextTick()
+  dropConsented.clear()
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -542,7 +640,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         </div>
         <div class="flex flex-none items-center gap-0.5 px-1">
           <UTooltip v-if="nvim" :text="keymapTip">
-            <UButton :disabled="dirty.size > 0" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
+            <UButton :disabled="dirty.size > 0 || keymapBusy" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
           </UTooltip>
           <UTooltip text="Terminal only (T · Alt+T in the terminal)">
             <UButton icon="i-lucide-panel-bottom" size="xs" color="neutral" variant="ghost" aria-label="Terminal only" data-editor-fold @click="tabs = toggleFold(tabs)" />
@@ -596,6 +694,10 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <span class="flex-none font-semibold text-highlighted" data-nvim-mode-words>{{ modeWords(nvimState?.mode ?? '') }}</span>
           <span v-if="nvimState?.cmdline" class="flex-none text-highlighted" data-nvim-cmdline>{{ nvimState.cmdline }}</span>
           <span v-if="nvimState?.message" class="min-w-0 flex-1 truncate" :class="nvimState.messageKind === 'emsg' ? 'text-error' : 'text-muted'" data-nvim-message>{{ nvimState.message }}</span>
+          <span v-if="nvimState?.refused" class="flex flex-none items-center gap-1 text-error" data-nvim-refused
+            >Not in the file: <code class="font-mono">{{ nvimState.refused }}</code>
+            <UButton label="Dismiss" size="xs" color="neutral" variant="ghost" data-nvim-refused-dismiss @click="dismissRefused"
+          /></span>
           <span v-if="!nvimState?.cmdline && !nvimState?.message && !modeWords(nvimState?.mode ?? '')" class="text-muted">Neovim · :w writes on {{ nvim?.offer.machine || 'the machine' }} · :q closes the tab</span>
         </template>
         <span v-else class="flex items-center gap-1.5 text-warning" data-editor-keymap-note><UIcon name="i-lucide-info" class="size-3.5" />{{ nvimWhy }} · Monaco's keys meanwhile</span>
@@ -605,6 +707,14 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <UIcon name="i-lucide-file-lock" class="size-3.5 flex-none text-warning" />
         <span class="min-w-0 flex-1 text-highlighted" :title="nvimState.swap.file">{{ swapWords(nvimState.swap, nvimState.recovered) }}</span>
         <UButton v-for="c in swapChoices(nvimState.swap, nvimState.recovered)" :key="c.choice" :label="c.label" size="xs" :color="c.choice === 'delete' ? 'warning' : 'neutral'" variant="soft" :data-swap-choice="c.choice" @click="answerSwap(c.choice)" />
+      </div>
+      <!-- Neovim lost, not quit (utils/nvimLost): the tab keeps the text it last held, read only; Reopen starts it again. Not while the
+           session's machine is away: no editor is up then, and the banner comes back with it. -->
+      <div v-if="nvimOn && nvimState?.lost && active?.kind === 'file' && !hostAway" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-error/10 px-3 py-1.5 text-xs" data-nvim-lost>
+        <UIcon name="i-lucide-circle-x" class="size-3.5 flex-none text-error" />
+        <span class="min-w-0 flex-1 text-highlighted">{{ lostWords(nvimState.lost) }}<template v-if="nvimState.unconfirmed"> Keys typed that Neovim may never have had: <code class="rounded bg-elevated px-1 font-mono" data-nvim-unconfirmed>{{ nvimState.unconfirmed }}</code></template></span>
+        <UButton label="Copy the text" icon="i-lucide-copy" size="xs" color="neutral" variant="soft" data-nvim-lost-copy @click="copyLostText" />
+        <UButton label="Reopen" icon="i-lucide-rotate-ccw" size="xs" color="neutral" variant="soft" :disabled="!nvim?.offer.connected" :title="nvim?.offer.connected ? undefined : 'Reconnect first'" data-nvim-reopen @click="reopenNvim" />
       </div>
       <!-- Neovim asks (:confirm q, a write over a file changed outside): the question and its choices as buttons. -->
       <div v-if="nvimConfirm" class="flex flex-none flex-wrap items-center gap-2 border-b border-default bg-elevated px-3 py-1.5 text-xs" data-nvim-confirm>
@@ -685,11 +795,14 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       </div>
     </template>
     <UModal :open="!!closing" :title="closingWords.title" :description="closingWords.words" :dismissible="!saving" data-editor-close-prompt @update:open="(o) => !o && (closing = null)">
+      <template v-if="nvimState?.refused" #body>
+        <p class="text-sm text-error" data-editor-close-refused>Keys did not reach Neovim and are not in the file: <code class="font-mono">{{ nvimState.refused }}</code>. Type them again, or dismiss them on the status line, then save; or don't save.</p>
+      </template>
       <template #footer>
         <div class="flex w-full justify-end gap-2">
           <UButton label="Cancel" color="neutral" variant="ghost" @click="closing = null" />
           <UButton label="Don't save" color="error" variant="soft" data-editor-discard @click="closingDiscard" />
-          <UButton v-if="closingOne" label="Save" color="primary" :loading="saving" data-editor-close-save @click="closingSave" />
+          <UButton v-if="closingOne && !nvimState?.lost" label="Save" color="primary" :loading="saving" data-editor-close-save @click="closingSave" />
         </div>
       </template>
     </UModal>

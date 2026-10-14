@@ -1180,6 +1180,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		sub.want = [2]uint16{cols, rows}
 	}
 	room := s.opts.RunChat
+	offerNvim := nvimAvailable() && !s.nvimOwnerOnly(sub)
 	sub.send(proto.MustControl(proto.Welcome{
 		T:               proto.CtlWelcome,
 		Proto:           proto.ProtoVersion,
@@ -1195,8 +1196,9 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		Transport:       transport,
 		FileView:        s.fileAllowed(role),
 		FileEdit:        s.editAllowed(role),
-		Nvim:            nvimAvailable() && !s.nvimOwnerOnly(sub),
+		Nvim:            offerNvim,
 		NvimOwnerOnly:   s.nvimOwnerOnly(sub),
+		NvimSettled:     offerNvim,
 		Chat:            true,
 		RunChat:         room != nil,
 		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),

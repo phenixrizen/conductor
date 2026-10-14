@@ -144,3 +144,429 @@ describe('the local echo', () => {
     expect(d.text).toEqual(['aend', 'new'])
   })
 })
+
+describe('the local echo when Neovim is lost', () => {
+  it('shows the line changes it held, and keeps the guesses Neovim never acknowledged laid over them', () => {
+    const d = doc('alpha', 'end')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    expect(d.text).toEqual(['alphaxy', 'end'])
+    // Neovim had x, and changed line 2 too; both held for an acknowledgement that never comes.
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.lines({ first: 1, last: 2, lines: ['end -- from Neovim'] })).toBe(true)
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphaxy', 'end -- from Neovim'])
+    // y is still a guess, for the line changes that may come after; nothing is held.
+    expect(e.range()).toEqual({ line: 1, from: 7, to: 8 })
+    expect(e.holding).toBe(false)
+  })
+
+  it('keeps no guess Neovim had, and none over a line that is no longer the one they were laid on', () => {
+    const had = doc('alpha')
+    const e1 = inInsert(had)
+    e1.send('x', { line: 1, col: 6 })
+    e1.lines({ first: 0, last: 1, lines: ['alphax'] })
+    expect(e1.finish()).toBe(false)
+    expect(had.text).toEqual(['alphax'])
+
+    const other = doc('alpha')
+    const e2 = inInsert(other)
+    e2.send('x', { line: 1, col: 6 })
+    e2.lines({ first: 0, last: 1, lines: ['something else'] })
+    expect(e2.finish()).toBe(false)
+    expect(other.text).toEqual(['something else'])
+  })
+
+  it('keeps no guess a later key may have undone: Neovim deleted x with Backspace, its text stands', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('<BS>', { line: 1, col: 7 })
+    e.lines({ first: 0, last: 1, lines: ['alphax'] })
+    e.lines({ first: 0, last: 1, lines: ['alpha'] })
+    expect(e.finish()).toBe(false)
+    expect(d.text).toEqual(['alpha'])
+  })
+
+  it('reconciles the guesses it kept with line changes that come after the end', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    // The end comes before any line: both guesses stay.
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // Neovim's line for x comes after: x is Neovim's now, y stays laid after it.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // Its line for y: nothing left to guess.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphaxy'] })).toBe(false)
+    expect(d.text).toEqual(['alphaxy'])
+    // After that, a late change is Neovim's text as it is.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphaxyz'] })).toBe(false)
+    expect(d.text).toEqual(['alphaxyz'])
+  })
+
+  it('lays no kept guess over a late line that is not the one they were laid on', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    expect(e.finish()).toBe(true)
+    expect(e.lateLines({ first: 0, last: 1, lines: ['something else'] })).toBe(false)
+    expect(d.text).toEqual(['something else'])
+  })
+
+  it('follows the guesses’ line through lines inserted or removed above it, among lines that read the same', () => {
+    const d = doc('alpha', 'alpha')
+    const e = new NvimEcho(d)
+    e.cursor({ line: 2, col: 6, mode: 'i', ack: 0 }, ascii)
+    e.send('x', { line: 2, col: 6 })
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alpha', 'alphax'])
+    // A line inserted above: x goes down with its line.
+    expect(e.lateLines({ first: 0, last: 0, lines: ['alpha'] })).toBe(true)
+    expect(d.text).toEqual(['alpha', 'alpha', 'alphax'])
+    // Neovim's line for x, now the third: nothing left to guess, nothing doubled.
+    expect(e.lateLines({ first: 2, last: 3, lines: ['alphax'] })).toBe(false)
+    expect(d.text).toEqual(['alpha', 'alpha', 'alphax'])
+  })
+
+  it('follows the guesses’ line up when a line above goes, and while Neovim still answers', () => {
+    const d = doc('top', 'alpha')
+    const e = new NvimEcho(d)
+    e.cursor({ line: 2, col: 6, mode: 'i', ack: 0 }, ascii)
+    e.send('x', { line: 2, col: 6 })
+    e.send('y', { line: 2, col: 7 })
+    expect(d.text).toEqual(['top', 'alphaxy'])
+    // Held for x's acknowledgement: the first line removed, then x's line (now the first).
+    expect(e.lines({ first: 0, last: 1, lines: [] })).toBe(true)
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)).toEqual({ line: 1, col: 8 })
+    expect(d.text).toEqual(['alphaxy'])
+  })
+
+  it('says keys are waiting until Neovim acknowledges the last of them', () => {
+    const e = inInsert(doc('alpha'))
+    expect(e.waiting).toBe(false)
+    e.send('x', { line: 1, col: 6 })
+    e.send('<Esc>', { line: 1, col: 7 })
+    expect(e.waiting).toBe(true)
+    e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)
+    expect(e.waiting).toBe(true)
+    e.cursor({ line: 1, col: 6, mode: 'n', ack: 2 }, ascii)
+    expect(e.waiting).toBe(false)
+  })
+
+  it('notes an acknowledgement that comes while its tab is not in front; what Neovim made of the keys shows in their changes', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('<BS>', { line: 1, col: 7 })
+    // No change of Neovim's yet: x, typed, stays (Neovim may not have had it, nor the Backspace after it).
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphax'])
+    e.noteAck(1)
+    expect(e.waiting).toBe(true)
+    e.noteAck(2)
+    expect(e.waiting).toBe(false)
+    expect(d.text).toEqual(['alphax'])
+    // Its changes come: x, then the Backspace taking it back. Neovim's text stands.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alpha'] })).toBe(false)
+    expect(d.text).toEqual(['alpha'])
+    // With no barrier, a kept guess stays through an acknowledgement: its line comes as a late one.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('x', { line: 1, col: 6 })
+    e2.finish()
+    e2.noteAck(1)
+    expect(d2.text).toEqual(['alphax'])
+    expect(e2.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    expect(d2.text).toEqual(['alphax'])
+  })
+
+  it('keeps characters typed before an Escape when Neovim had none of them as it was lost', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.send('<Esc>', { line: 1, col: 8 })
+    expect(e.finish()).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+  })
+
+  it('retires the guesses of keys Neovim says it has done, though no change of theirs came (a mapping took the key)', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    expect(e.showing).toBe(true)
+    e.noteSettled(1)
+    expect(e.showing).toBe(false)
+    expect(d.text).toEqual(['alpha'])
+    // In front too: the acknowledgement settles nothing (the line does not hold x), the word that it is done does.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('x', { line: 1, col: 6 })
+    e2.cursor({ line: 1, col: 6, mode: 'i', ack: 1 }, ascii)
+    expect(d2.text).toEqual(['alphax'])
+    e2.noteSettled(1)
+    expect(d2.text).toEqual(['alpha'])
+    expect(e2.showing).toBe(false)
+  })
+
+  it('retires the guesses of the keys done, and keeps those after them laid after what Neovim holds', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('q', { line: 1, col: 6 })
+    e.send('x', { line: 1, col: 7 })
+    e.send('y', { line: 1, col: 8 })
+    expect(d.text).toEqual(['alphaqxy'])
+    // q (a mapping that took it) is done; x and y are not.
+    e.noteSettled(1)
+    expect(d.text).toEqual(['alphaxy'])
+    // Lost, then x's line comes late: y, which Neovim never had, stays.
+    expect(e.finish()).toBe(true)
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // With x already in Neovim's text when q is done: x is Neovim's, y stays a guess.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('q', { line: 1, col: 6 })
+    e2.send('x', { line: 1, col: 7 })
+    e2.send('y', { line: 1, col: 8 })
+    e2.lines({ first: 0, last: 1, lines: ['alphax'] })
+    e2.noteSettled(1)
+    expect(d2.text).toEqual(['alphaxy'])
+    expect(e2.range()).toEqual({ line: 1, from: 7, to: 8 })
+    // A change the guesses cannot make (an autopair's closing paren): Neovim's text stands.
+    const d3 = doc('alpha')
+    const e3 = inInsert(d3)
+    e3.send('(', { line: 1, col: 6 })
+    e3.lines({ first: 0, last: 1, lines: ['alpha()'] })
+    e3.noteSettled(1)
+    expect(d3.text).toEqual(['alpha()'])
+    expect(e3.showing).toBe(false)
+  })
+
+  it('keeps a guess typed after a settle through a timeout that has nothing left to show', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    // The acknowledgement first (Neovim answered in the middle of the key), then its change, held, then its word that it is done.
+    e.cursor({ line: 1, col: 6, mode: 'i', ack: 1 }, ascii)
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    e.noteSettled(1)
+    expect(e.holding).toBe(false)
+    expect(d.text).toEqual(['alphax'])
+    e.send('y', { line: 1, col: 7 })
+    // The hold's timer, from before the settle, runs: nothing is held, y stays.
+    e.timeout()
+    expect(d.text).toEqual(['alphaxy'])
+    expect(e.showing).toBe(true)
+  })
+
+  it('keeps aside, once Neovim is lost, the characters typed that its text does not hold where they were typed', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('q', { line: 1, col: 6 })
+    e.send('x', { line: 1, col: 7 })
+    e.send('y', { line: 1, col: 8 })
+    e.markLost()
+    expect(e.finish()).toBe(true)
+    // An insert mapping took q and x and made x: the line is not what was typed, Neovim's text stands, the typed ones are kept aside.
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    expect(d.text).toEqual(['alphax'])
+    expect(e.unconfirmed).toBe('qxy')
+    // Not lost (its tab left, Neovim alive): nothing is kept aside, its own text will come.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('q', { line: 1, col: 6 })
+    e2.finish()
+    e2.lateLines({ first: 0, last: 1, lines: ['other'] })
+    expect(e2.unconfirmed).toBe('')
+  })
+
+  it('keeps the characters Neovim never confirmed, whatever became of their guesses before it was lost', () => {
+    // A mapping takes q and x and makes x, its change coming while the tab is not in front (Neovim alive): the guesses go, Neovim's
+    // text stands. Then q and x are said done, and Neovim is lost: y, never confirmed, is kept aside.
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('q', { line: 1, col: 6 })
+    e.send('x', { line: 1, col: 7 })
+    e.send('y', { line: 1, col: 8 })
+    e.finish()
+    expect(e.lateLines({ first: 0, last: 1, lines: ['alphax'] })).toBe(false)
+    e.noteSettled(2)
+    e.markLost()
+    expect(d.text).toEqual(['alphax'])
+    expect(e.unconfirmed).toBe('y')
+    // An autopair's change, then its key said done: the character typed after it is kept aside once lost.
+    const d2 = doc('alpha')
+    const e2 = inInsert(d2)
+    e2.send('(', { line: 1, col: 6 })
+    e2.send('a', { line: 1, col: 7 })
+    e2.lines({ first: 0, last: 1, lines: ['alpha()'] })
+    e2.noteSettled(1)
+    expect(d2.text).toEqual(['alpha()'])
+    e2.markLost()
+    expect(e2.unconfirmed).toBe('a')
+    // A line holding what was typed confirms nothing (a mapping may make x into xy, y never sent on): only the word that keys are
+    // done does.
+    const d3 = doc('alpha')
+    const e3 = inInsert(d3)
+    e3.send('x', { line: 1, col: 6 })
+    e3.send('y', { line: 1, col: 7 })
+    e3.lines({ first: 0, last: 1, lines: ['alphaxy'] })
+    e3.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)
+    e3.markLost()
+    expect(d3.text).toEqual(['alphaxy'])
+    expect(e3.unconfirmed).toBe('xy')
+    e3.noteSettled(1)
+    expect(e3.unconfirmed).toBe('y')
+  })
+
+  it('keeps every key Neovim never confirmed, typed before its word on the mode came too', () => {
+    const d = doc('alpha')
+    const e = new NvimEcho(d)
+    // Normal mode as far as the page knows: A, then x y z before Neovim's word that it is in insert mode.
+    for (const k of ['A', 'x', 'y', 'z', '<Esc>']) e.send(k, { line: 1, col: 1 })
+    expect(d.text).toEqual(['alpha'])
+    e.markLost()
+    expect(e.unconfirmed).toBe('Axyz<Esc>')
+    // Those Neovim said it has done are no longer kept aside.
+    e.noteSettled(2)
+    expect(e.unconfirmed).toBe('yz<Esc>')
+  })
+
+  it('counts a refused key as never coming: not unsettled, not covered by a later settle, and kept among what Neovim never had', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    // y, the last key, refused: only x is waited for.
+    expect(e.noteRefused(2)).toBe('y')
+    expect(e.unsettled).toBe(true)
+    e.noteSettled(1)
+    expect(e.unsettled).toBe(false)
+    // A refused key in the middle: a later key's settle does not take it for done.
+    e.send('z', { line: 1, col: 8 })
+    e.send('w', { line: 1, col: 9 })
+    e.noteRefused(3)
+    e.noteSettled(4)
+    expect(e.unsettled).toBe(false)
+    e.markLost()
+    expect(e.unconfirmed).toBe('yz')
+  })
+
+  it('says the end of keys Neovim took in part (its input full); the part it took waits for its word like any key', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('hello', { line: 1, col: 6 })
+    expect(e.noteRefused(1, 'llo')).toBe('llo')
+    // he reached Neovim: waited for, and kept aside if Neovim is lost before it says it did them.
+    expect(e.unsettled).toBe(true)
+    e.markLost()
+    expect(e.unconfirmed).toBe('hello')
+    e.noteSettled(1)
+    expect(e.unsettled).toBe(false)
+    expect(e.unconfirmed).toBe('llo')
+  })
+
+  it('keeps a refused end that comes after a settle covering its keys', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('hello', { line: 1, col: 6 })
+    e.noteSettled(1)
+    expect(e.noteRefused(1, 'llo')).toBe('llo')
+    e.markLost()
+    expect(e.unconfirmed).toBe('llo')
+  })
+
+  it("takes a refused key's guess off the text: Neovim never had it", () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.send('z', { line: 1, col: 8 })
+    expect(d.text).toEqual(['alphaxyz'])
+    expect(e.noteRefused(2)).toBe('y')
+    expect(d.text).toEqual(['alphaxz'])
+    expect(e.range()).toEqual({ line: 1, from: 6, to: 8 })
+  })
+
+  it('says keys are unsettled until Neovim says it has done the last of them, whatever their acknowledgement', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.noteAck(2)
+    expect(e.waiting).toBe(false)
+    expect(e.unsettled).toBe(true)
+    e.noteSettled(1)
+    expect(e.unsettled).toBe(true)
+    e.noteSettled(2)
+    expect(e.unsettled).toBe(false)
+  })
+
+  it('says which keys are done: every one up to a number, a refused one never coming', () => {
+    const e = inInsert(doc('alpha'))
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    e.send('z', { line: 1, col: 8 })
+    expect(e.doneThrough(0)).toBe(true)
+    expect(e.doneThrough(1)).toBe(false)
+    e.noteSettled(1)
+    expect(e.doneThrough(1)).toBe(true)
+    expect(e.doneThrough(3)).toBe(false)
+    e.noteRefused(2)
+    expect(e.doneThrough(2)).toBe(true)
+    expect(e.doneThrough(3)).toBe(false)
+    e.noteSettled(3)
+    expect(e.doneThrough(3)).toBe(true)
+  })
+
+  it("takes an older owner's acknowledgement for its word that keys are done, which it never says (settlesOnAck)", () => {
+    const d = doc('alpha')
+    const e = new NvimEcho(d, { settlesOnAck: true })
+    e.cursor({ line: 1, col: 6, mode: 'i', ack: 0 }, ascii)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    expect(e.unsettled).toBe(true)
+    // Its line holds x, then the acknowledgement of x: x is done, y waits.
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)).toEqual({ line: 1, col: 8 })
+    expect(e.doneThrough(1)).toBe(true)
+    expect(e.unsettled).toBe(true)
+    expect(d.text).toEqual(['alphaxy'])
+    // y acknowledged while its tab is not in front (its follower): done too, nothing left waiting.
+    e.noteAck(2)
+    expect(e.unsettled).toBe(false)
+    // A new owner's echo waits for the word itself.
+    const n = inInsert(doc('alpha'))
+    n.send('x', { line: 1, col: 6 })
+    n.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)
+    n.noteAck(1)
+    expect(n.unsettled).toBe(true)
+  })
+
+  it('goes on in another editor over the same text, its guesses kept', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    e.send('x', { line: 1, col: 6 })
+    e.send('y', { line: 1, col: 7 })
+    expect(e.finish()).toBe(true)
+    // The tab shown again: a new editor over the same text, which Neovim's lines reach.
+    const again = doc(...d.text)
+    e.rebind(again)
+    expect(e.lines({ first: 0, last: 1, lines: ['alphax'] })).toBe(true)
+    expect(e.cursor({ line: 1, col: 7, mode: 'i', ack: 1 }, ascii)).toEqual({ line: 1, col: 8 })
+    expect(again.text).toEqual(['alphaxy'])
+    // And if Neovim is lost then, y stays.
+    expect(e.finish()).toBe(true)
+    expect(again.text).toEqual(['alphaxy'])
+  })
+
+  it('does nothing with no guesses and nothing held', () => {
+    const d = doc('alpha')
+    const e = inInsert(d)
+    expect(e.finish()).toBe(false)
+    expect(d.text).toEqual(['alpha'])
+  })
+})

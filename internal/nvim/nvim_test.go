@@ -17,8 +17,13 @@ type recorder struct {
 	mu     sync.Mutex
 	events []string
 	lines  [][]string
-	swaps  []Swap
-	done   chan struct{}
+	// changes are the lines events whole: "first:last" and the lines.
+	changes []string
+	swaps   []Swap
+	done    chan struct{}
+	// linesDelay makes each lines event take that long, as a slow page's
+	// connection would hold the client's notifications back.
+	linesDelay time.Duration
 }
 
 func (r *recorder) add(s string) {
@@ -28,7 +33,12 @@ func (r *recorder) add(s string) {
 }
 func (r *recorder) Lines(first, last int, lines []string) {
 	r.mu.Lock()
+	delay := r.linesDelay
+	r.mu.Unlock()
+	time.Sleep(delay)
+	r.mu.Lock()
 	r.lines = append(r.lines, lines)
+	r.changes = append(r.changes, fmt.Sprintf("%d:%d %q", first, last, lines))
 	r.mu.Unlock()
 	r.add("lines")
 }
@@ -47,7 +57,8 @@ func (r *recorder) Buffer(path string)        { r.add("buffer " + filepath.Base(
 func (r *recorder) Ack(seq uint32, line, col int, mode string, vl, vc int) {
 	r.add(fmt.Sprintf("ack %d %d:%d %s", seq, line, col, mode))
 }
-func (r *recorder) Modified(m bool) { r.add(fmt.Sprintf("modified %v", m)) }
+func (r *recorder) Modified(m bool)    { r.add(fmt.Sprintf("modified %v", m)) }
+func (r *recorder) Settled(seq uint32) { r.add(fmt.Sprintf("settled %d", seq)) }
 func (r *recorder) Swap(sw Swap) {
 	r.mu.Lock()
 	r.swaps = append(r.swaps, sw)

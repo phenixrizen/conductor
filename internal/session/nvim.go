@@ -45,8 +45,19 @@ type nvimEditor struct {
 	// Neovim's own exit); set under the subscription's nvimMu, so that an
 	// open still under way either sees it or is seen by whoever ends it.
 	gone atomic.Bool
-	// ready gates the frames: nothing before `opened` is sent.
+	// quiet stops its frames: the page closed it (NvimClose), or its
+	// connection is going (closeNvims). Neovim's own end (Exited) does not:
+	// a Neovim that died may have sent changes the client delivers after its
+	// end is told, and the page keeps the text it last held.
+	quiet atomic.Bool
+	// told says its end (`closed`) was sent, once.
+	told atomic.Bool
+	// ready gates the frames: nothing before `opened` is sent. It is set
+	// under the subscription's nvimMu, as Exited reads it.
 	ready atomic.Bool
+	// lost is why Neovim ended before the editor was ready (Exited), told
+	// once `opened` is: set under the subscription's nvimMu.
+	lost string
 	// ending ends Neovim once, however many ways ask (end).
 	ending sync.Once
 	// endWait is nvimEndWait as the editor opened.
@@ -241,7 +252,19 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 		nvimStarted(ed)
 	}
 	sub.send(proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, ID: id, Kind: proto.NvimOpened, ReqID: req.ReqID, Path: target}))
+	sub.nvimMu.Lock()
 	e.ready.Store(true)
+	lost := e.lost
+	sub.nvimMu.Unlock()
+	if lost != "" {
+		// Neovim ended between taking its place and `opened`: its Exited,
+		// which ends the editor, could tell no one.
+		stop()
+		if e.told.CompareAndSwap(false, true) {
+			sub.send(proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, ID: id, Kind: proto.NvimClosed, Reason: lost}))
+		}
+		return nil
+	}
 	if lines, err := ed.Lines(); err == nil {
 		h.Lines(0, -1, lines)
 	}
@@ -296,6 +319,9 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	if !s.nvimAllowed(sub) {
 		return ErrNvimUnavailable
 	}
+	if !validNvimID(req.ID) {
+		return ErrFileDenied
+	}
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
 	var ed *nvim.Editor
@@ -314,8 +340,28 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	if !ok {
 		return ErrTooManyRequests
 	}
-	return ed.InputSeq(req.Keys, req.Seq)
+	if err := ed.InputSeq(req.Keys, req.Seq); err != nil {
+		var full *nvim.InputFullError
+		if !errors.As(err, &full) {
+			return err
+		}
+		// The end Neovim's full input did not take is said first, then the
+		// part it took is acknowledged: no word that the keys are done
+		// comes before the word that some never came.
+		sub.send(NvimInputRefused(req.ID, req.Seq, &RefusedKeys{Rest: full.Rest}))
+		if len(full.Rest) < len(req.Keys) {
+			ed.Acknowledge(req.Seq)
+		}
+	}
+	return nil
 }
+
+// RefusedKeys is NvimInput's error when only the end of the keys (Rest) did
+// not reach Neovim, its input full: it is ErrTooManyRequests.
+type RefusedKeys struct{ Rest string }
+
+func (e *RefusedKeys) Error() string        { return "session: neovim's input is full; keys were not taken" }
+func (e *RefusedKeys) Is(target error) bool { return target == ErrTooManyRequests }
 
 // NvimClose ends one of sub's editors: with Discard as `:qa!` does (the
 // person chose to drop the changes not written; the swap file goes), else as
@@ -326,6 +372,7 @@ func (s *Local) NvimClose(sub *Subscription, req proto.NvimClose) {
 	started := false
 	if e != nil {
 		e.gone.Store(true)
+		e.quiet.Store(true)
 		started = e.ed != nil
 	}
 	sub.nvimMu.Unlock()
@@ -347,6 +394,7 @@ func (s *Local) closeNvims(sub *Subscription) {
 	sub.nvimsClosed = true
 	for _, e := range sub.nvims {
 		e.gone.Store(true)
+		e.quiet.Store(true)
 		started := e.ed != nil
 		go func() {
 			e.end(false)
@@ -379,7 +427,7 @@ type nvimHandler struct {
 }
 
 func (h *nvimHandler) emit(ev proto.NvimEvent) {
-	if h.e.gone.Load() || !h.e.ready.Load() {
+	if h.e.quiet.Load() || !h.e.ready.Load() {
 		return
 	}
 	ev.T, ev.ID = proto.CtlNvimEvent, h.e.id
@@ -420,6 +468,9 @@ func (h *nvimHandler) Ack(seq uint32, line, col int, mode string, vl, vc int) {
 func (h *nvimHandler) Modified(modified bool) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimModified, Modified: modified})
 }
+func (h *nvimHandler) Settled(seq uint32) {
+	h.emit(proto.NvimEvent{Kind: proto.NvimSettled, Ack: seq})
+}
 func (h *nvimHandler) Swap(sw nvim.Swap) {
 	info := &proto.NvimSwapInfo{File: sw.File, Pid: sw.Pid, Running: sw.Running, User: sw.User, Host: sw.Host, Modified: sw.Modified}
 	if sw.Mtime > 0 {
@@ -428,7 +479,16 @@ func (h *nvimHandler) Swap(sw nvim.Swap) {
 	h.emit(proto.NvimEvent{Kind: proto.NvimSwapFound, Swap: info})
 }
 func (h *nvimHandler) Exited(reason string) {
-	h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})
+	h.sub.nvimMu.Lock()
+	ready := h.e.ready.Load()
+	if !ready && h.e.lost == "" {
+		// Before `opened`: the open tells it once it has (NvimOpen).
+		h.e.lost = reason
+	}
+	h.sub.nvimMu.Unlock()
+	if ready && h.e.told.CompareAndSwap(false, true) {
+		h.emit(proto.NvimEvent{Kind: proto.NvimClosed, Reason: reason})
+	}
 	h.sub.nvimMu.Lock()
 	h.e.gone.Store(true)
 	started := h.e.ed != nil
@@ -449,6 +509,24 @@ func newNvimID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// nvimIDLen is the length of an editor's id (newNvimID).
+const nvimIDLen = 16
+
+// validNvimID reports whether id is one newNvimID could have made: what a
+// request names is said back only then, so an answer stays within its
+// bounds whatever the request carried.
+func validNvimID(id string) bool {
+	if len(id) != nvimIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // truncateRunes cuts s to at most n bytes on a rune boundary.
 func truncateRunes(s string, n int) string {
 	if len(s) <= n {
@@ -460,9 +538,33 @@ func truncateRunes(s string, n int) string {
 	return s[:n]
 }
 
+// NvimInputRefused is the nvim_event of kind error for keys that did not
+// reach editor id's Neovim (the bounds, its input full, the editor gone): with
+// the editor's id and the keys' seq as its ack, so the page knows which.
+func NvimInputRefused(id string, seq uint32, err error) []byte {
+	ev := refusal(err)
+	// Only an id an editor could have: any other names none, and is not said back.
+	if !validNvimID(id) {
+		id = ""
+	}
+	ev.ID, ev.Ack = id, seq
+	// Only the end of them, when Neovim took the rest: its Text.
+	var some *RefusedKeys
+	if errors.As(err, &some) {
+		ev.Text = truncateRunes(some.Rest, proto.MaxNvimKeys)
+	}
+	return proto.MustControl(ev)
+}
+
 // NvimRefused is the nvim_event of kind error for a refused request: the
 // code names the reason (nvim_unavailable, too_many_requests, file_denied).
 func NvimRefused(reqID string, err error) []byte {
+	ev := refusal(err)
+	ev.ReqID = reqID
+	return proto.MustControl(ev)
+}
+
+func refusal(err error) proto.NvimEvent {
 	code := proto.ErrCodeFileDenied
 	switch {
 	case errors.Is(err, ErrNvimUnavailable):
@@ -470,5 +572,5 @@ func NvimRefused(reqID string, err error) []byte {
 	case errors.Is(err, ErrTooManyRequests):
 		code = proto.ErrCodeTooManyRequests
 	}
-	return proto.MustControl(proto.NvimEvent{T: proto.CtlNvimEvent, Kind: proto.NvimError, ReqID: reqID, Code: code, Message: err.Error()})
+	return proto.NvimEvent{T: proto.CtlNvimEvent, Kind: proto.NvimError, Code: code, Message: err.Error()}
 }

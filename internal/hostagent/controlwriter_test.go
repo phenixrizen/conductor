@@ -17,6 +17,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
 )
@@ -171,6 +172,28 @@ func TestTheHostsOwnMessagesGoAheadOfRelayedFrames(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// A frame the server would not relay (past its type's bound) is its viewer's
+// error alone: never written, so the server has no cause to close the
+// host's connection, and the frames after it go.
+func TestAFrameTheServerWouldNotRelayIsNeverWritten(t *testing.T) {
+	s, c, pc := dialHeld(t, 0)
+	w := newControlWriter(c, pc)
+	t.Cleanup(w.stop)
+	a := &agent{out: w}
+	const viewer = "0123456789abcdef"
+	over := proto.Encode(proto.TypeControl, bytes.Repeat([]byte("x"), proto.MaxControl+1))
+	if err := a.sendRelay(viewer, over, nil); !errors.Is(err, proto.ErrTooLarge) {
+		t.Fatalf("a control frame past its bound: %v", err)
+	}
+	fits := proto.MustControl(map[string]string{"t": "status"})
+	if err := a.sendRelay(viewer, fits, nil); err != nil {
+		t.Fatal(err)
+	}
+	close(s.read)
+	want, _ := proto.EncodeRelay(viewer, fits)
+	s.expectGot(t, want)
 }
 
 // A relayed frame whose turn does not come within its wait is withdrawn as

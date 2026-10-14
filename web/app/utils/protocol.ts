@@ -202,6 +202,8 @@ export interface Welcome {
   nvim?: boolean
   /** This connection may edit but not through Neovim, which is kept for the owner's own windows: a link's controller edits with the page's own keys and saves (`nvim` is then absent). */
   nvimOwnerOnly?: boolean
+  /** The owner's Neovim says when keys are done (`settled`) and names refused keys; absent from an older owner, whose acknowledgement stands for it. */
+  nvimSettled?: boolean
   /** The owner takes `chat` and `chat_send`; absent from an older owner, which must be sent neither. */
   chat?: boolean
   /** The session is a run's member with a run chat: scope `run` posts and sends, and `chat_roster`. */
@@ -595,7 +597,7 @@ export const HOST_RUN_LINK_UPDATES_PER_MINUTE = 30
  */
 export interface NvimBridge {
   /** The welcome arrived, the machine has nvim, and this connection may edit. `ownerOnly` when editing is allowed but Neovim is kept for the owner's own window. */
-  offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; ownerOnly?: boolean; machine?: string }
+  offer: { welcome: boolean; nvim: boolean; fileEdit: boolean; ownerOnly?: boolean; machine?: string; settled?: boolean; connected?: boolean }
   open(path: string): Promise<NvimEvent>
   /** Keys for editor id; seq, when given, comes back as the `ack` of the cursor once Neovim has handled them (round 13, G5). */
   input(id: string, keys: string, seq?: number): void
@@ -647,12 +649,13 @@ export interface NvimSwapInfo {
   modified?: boolean
   mtime?: string
 }
-export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error' | 'swap' | 'modified'
+export type NvimEventKind = 'opened' | 'lines' | 'cursor' | 'mode' | 'cmdline' | 'message' | 'written' | 'closed' | 'error' | 'swap' | 'modified' | 'settled'
 /**
  * What the editor reports. `kind` says which fields are set: `opened` (reqId on the first, path), `lines` (the buffer lines [first, last) become
  * `lines`, last -1 to the end, `truncated` when a line was cut), `cursor` (1-based line and col, the mode, the other end of a visual selection),
  * `mode`, `cmdline` (show, content, pos, prompt), `message` (text, messageKind), `written` (path), `closed` (reason), `error` (reqId, code, message),
- * `modified` (modified: the buffer holds changes not written, or no longer does).
+ * `modified` (modified: the buffer holds changes not written, or no longer does), `settled` (ack: Neovim has done the keys numbered up to it, nothing
+ * pending, every change they made sent; a cursor's ack can come before those changes).
  */
 export interface NvimEvent {
   t: 'nvim_event'
