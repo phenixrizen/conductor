@@ -55,37 +55,56 @@ func (h *fakeHost) sendRelayed(viewer string, n int) {
 	}
 }
 
-// A switchyard pings a host whose session has a viewer attached through a
-// link every linkPingEvery, also while the bound on what the open hosts of
-// its address relay pauses the reading of its connection: another open host
-// of the address spent the bound, and the host's next message waits for it,
-// its pongs unread meanwhile. The host types such a viewer's lines only
-// while it has heard from the server lately; it hears the pings. Without a
-// viewer through a link, the pings are pingEvery apart.
-func TestAHostWithALinksViewerIsPingedWhileItsReadingWaits(t *testing.T) {
+// pingedYard is a switchyard admitting open hosts, the open hosts of an
+// address relaying 16 KiB a second together (a burst of 32 KiB), with an
+// open host whose pings pings logs, its session the one a viewer joins, and
+// another open host of the same address. hostPingEvery is 200 ms.
+func pingedYard(t *testing.T, pings *pingLog) (yard *testEnv, host, other *fakeHost) {
+	t.Helper()
 	noBurstFloor(t)
-	defer func(old time.Duration) { linkPingEvery = old }(linkPingEvery)
-	linkPingEvery = 200 * time.Millisecond
-	yard := newTestEnv(t, func(c *config.Config) {
+	old := hostPingEvery
+	hostPingEvery = 200 * time.Millisecond
+	t.Cleanup(func() { hostPingEvery = old })
+	yard = newTestEnv(t, func(c *config.Config) {
 		c.Switchyard.Enabled = true
 		c.Switchyard.OpenHosts = true
 		c.Switchyard.OpenHostRelayKBps = 16
 	})
-	var pings pingLog
-	host, _ := dialFakeHostPinged(t, yard, proto.HostInfo{Name: "laptop"}, proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: "hosted", Cols: 80, Rows: 24}, "", pings.ping)
-	other := dialFakeHostAuth(t, yard, "", "")
+	host, _ = dialFakeHostPinged(t, yard, proto.HostInfo{Name: "laptop"}, proto.HostSession{Name: "hosted", AgentID: "cat", Command: []string{"cat"}, Cwd: "hosted", Cols: 80, Rows: 24}, "", pings.ping)
+	other = dialFakeHostAuth(t, yard, "", "")
+	return yard, host, other
+}
 
-	// Before a viewer joins through a link: pingEvery (30 s) apart.
+// quietFor fails unless pings logs no ping for d from now: the host is
+// pinged pingEvery (30 s) apart.
+func quietFor(t *testing.T, pings *pingLog, d time.Duration, why string) {
+	t.Helper()
 	start := time.Now()
-	time.Sleep(5 * linkPingEvery)
-	if quiet := pings.longestQuiet(start, time.Now()); quiet < 4*linkPingEvery {
-		t.Fatalf("pinged within %v with no viewer through a link", quiet)
+	time.Sleep(d)
+	if quiet := pings.longestQuiet(start, time.Now()); quiet < d*4/5 {
+		t.Fatalf("%s: pinged within %v", why, quiet)
 	}
+}
 
+// A switchyard pings a host every hostPingEvery while the bound on what
+// the open hosts of its address relay pauses the reading of its
+// connection: another open host of the address spent the bound, and the
+// host's next message waits for it, its pongs and the answers to its own
+// pings unread meanwhile. The host types the line of a viewer who joined
+// through a link only while it has heard from the server lately, also once
+// that viewer has left (a reply box closes its connection once it has
+// sent): it hears the pings. Otherwise, with no viewer through a link,
+// the pings are pingEvery apart.
+func TestAHostIsPingedWhileItsReadingWaits(t *testing.T) {
+	var pings pingLog
+	yard, host, other := pingedYard(t, &pings)
 	tok := host.link("control", "guest")
 	guest := dialViewer(t, yard, host.sessionID, tok)
 	guest.hello(80, 24)
 	host.expect(proto.HostViewerJoin)
+	guest.c.Close(websocket.StatusNormalClosure, "")
+	host.expect(proto.HostViewerLeave)
+	quietFor(t, &pings, 5*hostPingEvery, "no viewer through a link, the reading not paused")
 
 	// The other host spends the address's bound: 32 KiB of burst, then 64
 	// KiB at 16 KiB a second, about 4 s, which the host's next message
@@ -119,7 +138,38 @@ func TestAHostWithALinksViewerIsPingedWhileItsReadingWaits(t *testing.T) {
 	if waited := answered.Sub(paused); waited < 2*time.Second {
 		t.Fatalf("the host's reading waited %v only: the bound was not spent", waited)
 	}
-	if quiet := pings.longestQuiet(paused, answered); quiet > 5*linkPingEvery {
+	if quiet := pings.longestQuiet(paused, answered); quiet > 5*hostPingEvery {
 		t.Fatalf("no ping for %v while the host's reading waited %v", quiet, answered.Sub(paused))
 	}
+	// Read again, the host's pings are answered, and the switchyard's are
+	// pingEvery apart.
+	pctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
+	err = host.c.Ping(pctx)
+	cancel()
+	if err != nil {
+		t.Fatalf("the host's ping once read again: %v", err)
+	}
+	quietFor(t, &pings, 5*hostPingEvery, "read again")
+}
+
+// A switchyard pings a host every hostPingEvery while a viewer is attached
+// to its session through a link, and pingEvery apart again once it has
+// left.
+func TestAHostWithALinksViewerIsPingedOften(t *testing.T) {
+	var pings pingLog
+	yard, host, _ := pingedYard(t, &pings)
+	quietFor(t, &pings, 5*hostPingEvery, "no viewer")
+	tok := host.link("control", "guest")
+	guest := dialViewer(t, yard, host.sessionID, tok)
+	guest.hello(80, 24)
+	host.expect(proto.HostViewerJoin)
+	start := time.Now()
+	time.Sleep(10 * hostPingEvery)
+	if quiet := pings.longestQuiet(start, time.Now()); quiet > 3*hostPingEvery {
+		t.Fatalf("no ping for %v with a viewer attached through a link", quiet)
+	}
+	guest.c.Close(websocket.StatusNormalClosure, "")
+	host.expect(proto.HostViewerLeave)
+	time.Sleep(2 * hostPingEvery)
+	quietFor(t, &pings, 5*hostPingEvery, "the viewer left")
 }

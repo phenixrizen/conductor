@@ -25,36 +25,35 @@ import (
 //
 // Whatever the host reads on the connection counts: the server's messages,
 // the frames it relays, its pings, and its pongs. The server pings every 30
-// s, and every 5 s while a viewer is attached through a link, pong or none,
-// which reaches the host also while the server's reading of the connection
-// is paused (a relay bound); an older server pings every 30 s and stops
-// once a pong is late. The host pings it too, once the connection has been
-// quiet for livePingEvery while someone joined through a link or something
-// of theirs is under way (linkCreds.held), so a connection that is live and
-// quiet keeps being heard from, an older server's too, which answers them
-// as it reads. These are the WebSocket's own pings: no message of the
-// protocol changes.
+// s, and every 5 s, pong or none, while its reading of the connection is
+// paused (a relay bound), which holds back its answers to the host's pings,
+// and while a viewer is attached through a link; an older server pings
+// every 30 s and stops once a pong is late. The host pings it too, once the
+// connection has been quiet for livePingEvery while someone joined through
+// a link or something of theirs is under way (linkCreds.held), so a
+// connection that is live and quiet keeps being heard from, an older
+// server's too, which answers them as it reads. These are the WebSocket's
+// own pings: no message of the protocol changes.
 const (
 	// livePingEvery is how long the connection may be quiet before the host
 	// pings the server, while a link's viewer may need it.
 	livePingEvery = 5 * time.Second
 	// linkHeardWithin bounds how long ago the server must have been heard
-	// from for a link's viewer's line to be typed and entered: three of the
-	// server's pings while such a viewer is attached, which come whatever it
-	// reads. A live connection also answers the host's ping within a round
-	// trip, so a line meets at most livePingEvery, a quarter of it for the
-	// check's tick, and a round trip of quiet: about 7 s with a slow path.
-	// The rest is room for a slow path, or for an older server that pauses
-	// its reading a while (a switchyard's bound on what a host relays, which
-	// would hold its answers back: what the relayed viewers send, their pings
-	// every 10 s among it, still comes meanwhile). It is also how long the
-	// server waits for a write of its own to the host before it closes the
-	// connection. And
-	// it is how long a link that goes as the connection stops carrying
-	// anything can still have a line entered, where that was until the host
-	// noticed the connection lost: its socket taking nothing for 2 minutes,
-	// TCP's keepalive after about 5, or, with data unacknowledged,
-	// retransmissions that give up after many more.
+	// from for a link's viewer's line to be typed and entered. A live
+	// connection answers the host's ping within a round trip, so a line
+	// meets at most livePingEvery, a quarter of it for the check's tick, and
+	// a round trip of quiet: about 7 s with a slow path. While the server
+	// pauses its reading (a switchyard's bound on what a host relays), which
+	// holds its answers back, it pings the host every 5 s itself, whatever it
+	// reads, and the bound is three of those (an older server does not: what
+	// the relayed viewers send, their pings every 10 s among it, still comes
+	// meanwhile, and a line may be withheld it would have let through). It is
+	// also how long the server waits for a write of its own to the host
+	// before it closes the connection. And it is how long a link that goes as
+	// the connection stops carrying anything can still have a line entered,
+	// where that was until the host noticed the connection lost: its socket
+	// taking nothing for 2 minutes, TCP's keepalive after about 5, or, with
+	// data unacknowledged, retransmissions that give up after many more.
 	linkHeardWithin = 15 * time.Second
 )
 
