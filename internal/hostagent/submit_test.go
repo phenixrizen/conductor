@@ -75,16 +75,37 @@ func newLinkedSubmitViewer(t *testing.T, pause time.Duration, linkID string) *su
 // linkID ("" for none).
 func newSubmitViewerOf(t *testing.T, pause, timeout, inputWait time.Duration, linkID string) *submitViewer {
 	t.Helper()
+	a, proc, begun := newSubmitHost(t, pause, timeout, inputWait)
+	out := make(chan any, 64)
+	a.sendHook = func(v any) { out <- v }
+	// A host with no connection to the server vouches for no link: this
+	// one's server is heard from all along.
+	heardFromServer(t, a)
+	return submitViewerOn(t, a, proc, begun, "0123456789abcdef", linkID, out)
+}
+
+// newSubmitHost is the host of newSubmitViewerWaits, with no viewer and no
+// control connection, and its session's process.
+func newSubmitHost(t *testing.T, pause, timeout, inputWait time.Duration) (*agent, *sessiontest.FakeProc, *atomic.Int32) {
+	t.Helper()
 	proc := sessiontest.NewFakeProc()
 	begun := new(atomic.Int32)
 	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, countingProc{proc, begun}, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
 	t.Cleanup(func() { proc.End(0) })
-	out := make(chan any, 64)
 	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout, inputWait: inputWait}
-	a.sendHook = func(v any) { out <- v }
-	p := newPeer(a, "0123456789abcdef", session.RoleControl, linkID, "", linkID == "")
+	return a, proc, begun
+}
+
+// submitViewerOn attaches viewer id to a's session (proc, begun) over a
+// loopback data channel, joined through linkID ("" for none: one of the
+// owner's windows); out carries the host's signaling for it.
+func submitViewerOn(t *testing.T, a *agent, proc *sessiontest.FakeProc, begun *atomic.Int32, id, linkID string, out <-chan any) *submitViewer {
+	t.Helper()
+	p := newPeer(a, id, session.RoleControl, linkID, "", linkID == "")
 	p.cred = a.creds.of(linkID)
+	a.mu.Lock()
 	a.peers[p.id] = p
+	a.mu.Unlock()
 	if err := p.startWebRTC(nil); err != nil {
 		t.Fatal(err)
 	}

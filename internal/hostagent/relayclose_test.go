@@ -80,7 +80,7 @@ func TestARelayViewerThatFallsBehindDoesNotStallTheHostSession(t *testing.T) {
 		_ = rc.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 4<<10) })
 		return serr
 	}}
-	conn, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), nil, &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, 0)
+	conn, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), nil, &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

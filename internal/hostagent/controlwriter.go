@@ -245,7 +245,9 @@ var errNotPaced = errors.New("host: the control connection was not dialed throug
 // connection it upgraded: the one the upgrade request went out on, as the
 // request's trace saw it, which after a redirect need not be the last one
 // dialed. The transport is the dial's own and keeps no idle connection.
-func pacedDial(ctx context.Context, url string, header http.Header, base *http.Client, stall time.Duration) (*websocket.Conn, *pacedConn, *http.Response, error) {
+// heard, when set, is called as each ping or pong is read on the
+// connection.
+func pacedDial(ctx context.Context, url string, header http.Header, base *http.Client, stall time.Duration, heard func()) (*websocket.Conn, *pacedConn, *http.Response, error) {
 	if base == nil {
 		base = &http.Client{}
 	}
@@ -280,7 +282,15 @@ func pacedDial(ctx context.Context, url string, header http.Header, base *http.C
 		used = info.Conn
 		mu.Unlock()
 	}})
-	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header, HTTPClient: &client})
+	opts := &websocket.DialOptions{HTTPHeader: header, HTTPClient: &client}
+	if heard != nil {
+		opts.OnPingReceived = func(context.Context, []byte) bool {
+			heard()
+			return true
+		}
+		opts.OnPongReceived = func(context.Context, []byte) { heard() }
+	}
+	c, resp, err := websocket.Dial(ctx, url, opts)
 	if err != nil {
 		return nil, nil, resp, err
 	}
@@ -319,6 +329,8 @@ type outMessage struct {
 type controlWriter struct {
 	c  *websocket.Conn
 	pc *pacedConn
+	// live is what the host hears on c (connLive).
+	live *connLive
 	// controlTurn replaces controlTurnWait in tests.
 	controlTurn time.Duration
 

@@ -64,6 +64,20 @@ func (l *linkCreds) of(linkID string) *linkCred {
 	return c
 }
 
+// held says whether someone holds a link still standing: a viewer who
+// joined through it, or something of theirs under way. One the collector
+// has not swept yet counts until it has.
+func (l *linkCreds) held() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, p := range l.m {
+		if c := p.Value(); c != nil && c.err() == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // sweep forgets the links nobody holds any more; the next sweep comes once
 // the map has doubled. The caller holds l.mu.
 func (l *linkCreds) sweep() {

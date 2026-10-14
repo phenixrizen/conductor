@@ -592,17 +592,26 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 // longer opens the session, and why then: the server let the viewer go for
 // it (closeFor), said the link went (link_gone: revoked or expired, on the
 // server's clock), or the connection to the server was lost
-// (linkCreds.lost). The session asks it again before it writes what the
-// viewer asked for (a submission's text and Enter), so what is under way of
-// the viewer's, on any of its subscriptions (one it had before a move to the
-// relay too), also once it has left, is withdrawn then, and a text typed
-// without its Enter holds the session's turn for a person. It takes no lock.
+// (linkCreds.lost); and, for a viewer who joined through a link, only while
+// the host has heard from the server lately (agent.vouches), which would
+// have told it of the link going: serverQuiet, a kind of
+// session.ErrRevoked, otherwise. The session asks it again before it writes
+// what the viewer asked for (a submission's text and Enter), so what is
+// under way of the viewer's, on any of its subscriptions (one it had before
+// a move to the relay too), also once it has left, is withdrawn then, and a
+// text typed without its Enter holds the session's turn for a person. It
+// takes no lock.
 func (p *peer) authorize() (session.Grant, error) {
 	if why := p.letGo.Load(); why != nil {
 		return session.Grant{}, *why
 	}
-	if err := p.cred.err(); err != nil {
-		return session.Grant{}, err
+	if p.cred != nil {
+		if err := p.cred.err(); err != nil {
+			return session.Grant{}, err
+		}
+		if err := p.a.vouches(); err != nil {
+			return session.Grant{}, err
+		}
 	}
 	return session.Grant{Role: p.role}, nil
 }
