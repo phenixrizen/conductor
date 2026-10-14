@@ -253,6 +253,20 @@ function attachNvim(bridge: NvimBridge, resumed: NvimEcho | null) {
   tellDirty()
 }
 
+/**
+ * The cursor where the next key goes, once guesses went (retired by Neovim's word, refused): after those that still show, else where
+ * Neovim last said it is.
+ */
+function placeCursor() {
+  if (!editor || !model) return
+  const r = echo?.showing ? echo.range() : null
+  if (r) editor.setPosition({ lineNumber: r.line, column: r.to })
+  else if (nvimAt) {
+    const line = Math.max(1, Math.min(nvimAt.line, model.getLineCount()))
+    editor.setPosition({ lineNumber: line, column: byteColToUtf16(model.getLineContent(line), Math.max(1, nvimAt.byteCol)) })
+  }
+}
+
 /** Sends keys with their number; a plain character in insert mode shows at once (the local echo). */
 function sendKeys(bridge: NvimBridge, keys: string) {
   if (!nvimId) return
@@ -517,7 +531,8 @@ function onNvimEvent(ev: NvimEvent) {
       tellNvim()
       tellDirty()
       break
-    case 'settled':
+    case 'settled': {
+      const had = !!echo?.showing
       echo?.noteSettled(ev.ack ?? 0)
       if (nvimState.unsettled && !echo?.unsettled) tellNvim()
       // What it held is shown now: its wait for an acknowledgement is over.
@@ -526,8 +541,11 @@ function onNvimEvent(ev: NvimEvent) {
         holdTimer = undefined
       }
       markGuesses()
+      // A guess it retired (a key a mapping took, in the middle of a line) takes the cursor back with it.
+      if (had) placeCursor()
       tellDirty()
       break
+    }
     case 'swap':
       // Another editor's swap file: the file opened read-only (round 13, G3).
       nvimState.swap = ev.swap ?? null
@@ -566,12 +584,14 @@ function onNvimEvent(ev: NvimEvent) {
     }
     case 'error': {
       // Keys refused on their way (their number as ack): they never reached Neovim, and the person is told which.
+      const had = !!echo?.showing
       const refused = ev.ack && echo ? echo.noteRefused(ev.ack, ev.text) : ''
       // Kept until the person dismisses it (the status line), whatever comes after: a Save waits for that word (nvimWrite).
       if (refused) nvimState.refused = (nvimState.refused ?? '') + refused
       nvimState.message = refused ? `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${refused}` : (ev.message ?? ev.code ?? 'error')
       nvimState.messageKind = 'emsg'
       markGuesses()
+      if (had) placeCursor()
       tellNvim()
       tellDirty()
       break

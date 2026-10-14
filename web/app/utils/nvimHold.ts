@@ -74,7 +74,7 @@ export class NvimHolds {
     this.held.delete(path)
     h.stop?.()
     this.tell(path)
-    return { id: h.id, path: h.path, state: h.state, cursor: h.cursor, echo: h.echo }
+    return { id: h.id, path: h.path, state: h.state, cursor: h.cursor, at: h.at, echo: h.echo }
   }
   /**
    * Neovim id ended on its own: quit, nothing to take back; lost (reason `error: …`), its tab keeps what it held, as lost, still

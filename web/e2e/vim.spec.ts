@@ -592,7 +592,11 @@ test('a tab left while keys are on their way comes back where Neovim is, in its 
   mkdirSync(config, { recursive: true })
   writeFileSync(
     join(config, 'init.lua'),
-    "vim.keymap.set('n', 'o', function() vim.wait(1500) return 'o' end, { expr = true })\nvim.keymap.set('i', 'jj', function() vim.wait(1500) return '<Esc>' end, { expr = true })\n",
+    [
+      "vim.keymap.set('n', 'o', function() vim.wait(1500) return 'o' end, { expr = true })",
+      "vim.keymap.set('i', 'jj', function() vim.wait(1500) return '<Esc>' end, { expr = true })",
+      "vim.keymap.set('i', 'q', function() vim.wait(3000) return '' end, { expr = true })",
+    ].join('\n') + '\n',
   )
   const cwd = join(state.root, 'files-vim-follow')
   mkdirSync(cwd, { recursive: true })
@@ -652,6 +656,36 @@ test('a tab left while keys are on their way comes back where Neovim is, in its 
     await page.keyboard.type(':w')
     await page.keyboard.press('Enter')
     await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alpha\nnewx\nbeta\n')
+    // A key that changes nothing, in the middle of a line (q, which waits 3 s), after a change not written (the tab keeps its Neovim),
+    // its tab left, shown and left again before Neovim is done: it comes back where Neovim's cursor was when it took the key, not after
+    // the q that never was.
+    await page.keyboard.type('gg0lli')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await page.keyboard.type('Y')
+    await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 1, Col 4', { timeout: 15_000 })
+    await page.waitForTimeout(500)
+    await page.keyboard.type('q')
+    await expect(lines).toContainText('alYqpha')
+    await tab('other.txt').click()
+    await expect(lines).toContainText('gamma', { timeout: 15_000 })
+    await tab('notes.txt').click()
+    await expect(lines).toContainText('alYqpha', { timeout: 15_000 })
+    await tab('other.txt').click()
+    await expect(lines).toContainText('gamma', { timeout: 15_000 })
+    await page.waitForTimeout(4000)
+    await tab('notes.txt').click()
+    await expect(lines).toContainText('alYpha', { timeout: 15_000 })
+    await expect(lines).not.toContainText('alYqpha')
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 1, Col 4')
+    await area.locator('.monaco-editor textarea').focus()
+    await page.keyboard.type('z')
+    await expect(lines).toContainText('alYzpha', { timeout: 15_000 })
+    await page.keyboard.press('Escape')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 15_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alYzpha\nnewx\nbeta\n')
   } finally {
     rmSync(join(config, 'init.lua'), { force: true })
     await api.stopSession(s.id)
@@ -718,7 +752,7 @@ test("Don't save holds for its own close only: a later close keeps a change stil
 
 // Save in the close question writes even with an operator waiting for its motion (d), which never settles by itself: the write goes in
 // order after it, ending the wait. And a key an insert mapping takes without changing the text (q here) shows at once, then goes once
-// Neovim says it is done: no change, no dot.
+// Neovim says it is done: no change, no dot; in the middle of a line, the cursor goes back with it, where the next character lands.
 test('Save writes with an operator waiting; a key a mapping takes leaves no change behind', async ({ page, api, state }) => {
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
@@ -727,6 +761,7 @@ test('Save writes with an operator waiting; a key a mapping takes leaves no chan
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'op.txt'), 'op\n')
   writeFileSync(join(cwd, 'nop.txt'), 'nop\n')
+  writeFileSync(join(cwd, 'mid.txt'), 'abcde\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-pending', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
@@ -765,6 +800,26 @@ test('Save writes with an operator waiting; a key a mapping takes leaves no chan
     await page.keyboard.press('Escape')
     await area.locator('[data-editor-tab-active] [data-editor-close]').click()
     await expect(area.locator('[data-editor-tab]')).toHaveCount(0, { timeout: 15_000 })
+    // In the middle of a line: q goes and the cursor with it, back before c, where z then lands.
+    await pane.locator(`[data-file-node="${cwd}/mid.txt"]`).click()
+    await expect(lines).toContainText('abcde', { timeout: 30_000 })
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await area.locator('.monaco-editor textarea').focus()
+    await page.keyboard.type('0lli')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 1, Col 3', { timeout: 15_000 })
+    await page.keyboard.type('q')
+    await expect(lines).not.toContainText('abqcde', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 1, Col 3', { timeout: 15_000 })
+    await page.keyboard.type('z')
+    await expect(lines).toContainText('abzcde', { timeout: 15_000 })
+    await page.waitForTimeout(500)
+    await expect(lines).toContainText('abzcde')
+    await page.keyboard.press('Escape')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 15_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'mid.txt'), 'utf8'), { timeout: 15_000 }).toBe('abzcde\n')
   } finally {
     rmSync(join(config, 'init.lua'), { force: true })
     await api.stopSession(s.id)

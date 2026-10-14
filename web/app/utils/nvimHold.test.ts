@@ -25,6 +25,14 @@ describe('NvimHolds', () => {
     expect(h.size).toBe(0)
   })
 
+  it("gives back Neovim's last cursor with the hold, for the next hold after the tab is shown and left again", () => {
+    const h = new NvimHolds()
+    h.hold('/w/a.txt', { id: 'e1', state, cursor: { line: 1, col: 4 }, at: { line: 1, byteCol: 3 } })
+    const taken = h.take('/w/a.txt')
+    expect(taken?.at).toEqual({ line: 1, byteCol: 3 })
+    expect(taken?.cursor).toEqual({ line: 1, col: 4 })
+  })
+
   it('forgets a Neovim that ended on its own', () => {
     const h = new NvimHolds()
     const f = stopper()
