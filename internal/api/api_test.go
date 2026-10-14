@@ -1011,6 +1011,46 @@ func TestCreateSessionInjectsTheAdapter(t *testing.T) {
 	}
 }
 
+// A Codex session is launched with the notifications Codex rings the bell
+// for, as a -c override after its command: an approval or a form, a question
+// that stops it and the turn's end, never a question Codex asks while its
+// turn goes on (#186). The override is the launch's alone: the person's own
+// ~/.codex/config.toml, which sets notifications of its own, is byte for byte
+// what it was once the session runs.
+func TestCreateSessionCodexRingsOnlyForWhatWaits(t *testing.T) {
+	e := newTestEnv(t, nil)
+	home := t.TempDir()
+	e.srv.home = home
+	config := filepath.Join(home, ".codex", "config.toml")
+	own := []byte("model = \"o3\"\n\n[tui]\nnotifications = true\nnotification_method = \"osc9\"\n")
+	if err := os.MkdirAll(filepath.Dir(config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, own, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := agentBody("codexish")
+	body["command"] = []string{"/bin/sh", "-c", `printf 'ARGS[%s]\n' "$*"; exec /bin/cat`, "sh"}
+	body["adapter"] = "codex"
+	body["signal"] = map[string]any{"kind": "hook"}
+	e.save(body)
+	info := e.launch("codexish", nil)
+	const want = `tui.notifications=["approval-requested","plan-mode-prompt","agent-turn-complete"]`
+	var got []string
+	for _, a := range info["command"].([]any) {
+		got = append(got, a.(string))
+	}
+	if i := slices.Index(got, want); i < 1 || got[i-1] != "-c" {
+		t.Fatalf("command %q has no -c %s", got, want)
+	}
+	c := dialViewer(t, e, info["id"].(string), adminToken)
+	c.hello(200, 24)
+	c.expectOutput("-c " + want)
+	if b, err := os.ReadFile(config); err != nil || !bytes.Equal(b, own) {
+		t.Fatalf("the person's config.toml changed: %v %q", err, b)
+	}
+}
+
 // The adapter's environment reaches the session, under the agent's own: a
 // variable the agent sets itself keeps its value.
 func TestCreateSessionAdapterEnvYieldsToTheAgent(t *testing.T) {

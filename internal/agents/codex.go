@@ -8,8 +8,9 @@ import (
 )
 
 // Codex CLI takes config overrides with -c, so a session launched by Conductor
-// gets a notify program and the terminal bell without anything written to
-// ~/.codex. Install puts the same notify line in a marked block of
+// gets a notify program and the terminal bell, rung for the notifications that
+// wait for a person, without anything written to ~/.codex. Install puts the
+// same notify line in a marked block of
 // ~/.codex/config.toml and writes ~/.codex/hooks.json, Codex's experimental
 // hooks, when there is none; Codex runs those only with features.hooks on.
 // Install also puts the Conductor skill in ~/.codex/skills.
@@ -22,6 +23,17 @@ const (
 	codexMarker = "notify --codex-hook"
 	// codexHooksHint is what to do about a hooks.json Conductor did not write.
 	codexHooksHint = "add Conductor's hooks from the snippet to it by hand (Codex runs the hooks in hooks.json only with features.hooks enabled)"
+	// codexNotifications is the -c override naming the notifications Codex
+	// rings the bell for in a session Conductor launches: every one Codex
+	// 0.161 has (Notification::type_name in tui/src/chatwidget/notifications.rs)
+	// but "async-question". That one is a question Codex asks without
+	// stopping: its turn goes on, and the bell would show the session as
+	// waiting until the turn's end (#186). An approval or an MCP form
+	// ("approval-requested"), a request_user_input question or a plan's
+	// prompt ("plan-mode-prompt") and the turn's end ("agent-turn-complete")
+	// still ring. Codex takes any list of names and warns about none, so a
+	// name it does not know only rings nothing.
+	codexNotifications = `tui.notifications=["approval-requested","plan-mode-prompt","agent-turn-complete"]`
 )
 
 var codexAssets = map[string]string{
@@ -95,7 +107,7 @@ func codexAdapter() Adapter {
 			if err != nil {
 				return nil, nil
 			}
-			return []string{"-c", "notify=[" + tomlString(bin) + `,"notify","--codex"]`, "-c", `tui.notification_method="bel"`}, nil
+			return []string{"-c", "notify=[" + tomlString(bin) + `,"notify","--codex"]`, "-c", `tui.notification_method="bel"`, "-c", codexNotifications}, nil
 		},
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, codexSteps(hooksDir)...)

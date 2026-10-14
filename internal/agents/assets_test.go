@@ -202,7 +202,7 @@ func TestAdaptersNameTheBinaryTheAssetsWereWrittenFor(t *testing.T) {
 		}
 	}
 	argv, _ := InjectFor("codex", hooks, catalog.Signal{Kind: "hook"}, false)
-	if len(argv) != 4 || argv[1] != `notify=["/opt/conductor-1.0/conductor","notify","--codex"]` {
+	if len(argv) != 6 || argv[1] != `notify=["/opt/conductor-1.0/conductor","notify","--codex"]` {
 		t.Fatalf("codex launch: %q", argv)
 	}
 }
