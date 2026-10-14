@@ -359,7 +359,9 @@ func chatBy(sub *Subscription) ChatBy {
 // kept. Every role may post. With To ("agent", or a member of the run in
 // scope "run"; a controller's) the caller goes on with ChatSend on the
 // message. An ended session takes no post of its own; the run's chat stays
-// open while the run is kept.
+// open while the run is kept. A post of a connection whose credential no
+// longer stands (a link revoked or expired) is refused with why (revoked),
+// asked after the role, and nothing of it is kept or sent.
 func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error) {
 	if !sub.chat.take(time.Now()) {
 		return ChatMessage{}, ErrChatRateLimited
@@ -383,6 +385,9 @@ func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error
 	}
 	if post.To != "" && sub.Role != RoleControl {
 		return ChatMessage{}, ErrReadOnly
+	}
+	if err := revoked(sub); err != nil {
+		return ChatMessage{}, err
 	}
 	text := CleanChatText(post.Text)
 	quote := cleanQuote(post.Quote)
@@ -417,10 +422,15 @@ func (s *Local) Chat(sub *Subscription, post proto.ChatPost) (ChatMessage, error
 // box does (Submit), and marks it in the chat; in scope "run", into the
 // member To of the run as a broadcast does (nothing while it waits on a
 // prompt), with the marker in the run's chat, or ErrNotSent says why not.
-// Controllers only.
+// Controllers only; one whose credential no longer stands is refused with
+// why (revoked), as it is taken, and its text is held to the credential
+// again as it is typed, as any submission's is.
 func (s *Local) ChatSend(ctx context.Context, sub *Subscription, send proto.ChatSend) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
+	}
+	if err := revoked(sub); err != nil {
+		return err
 	}
 	switch send.Scope {
 	case "", proto.ChatScopeSession:
@@ -509,10 +519,14 @@ func (s *Local) chatSystem(sub *Subscription, event string) (ChatMessage, bool) 
 }
 
 // ChatErrorFrame is the error frame a chat post or send gets for err, naming
-// the post's nonce or the send's ref as its requestId.
+// the post's nonce or the send's ref as its requestId: revoked or expired
+// for a link that no longer opens the session (LinkRefusal).
 func ChatErrorFrame(err error, requestID string) []byte {
 	code, msg := "input_failed", "could not be delivered"
 	var notSent ErrNotSent
+	if c, m, ok := LinkRefusal(err); ok {
+		return proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: c, Message: m, RequestID: requestID})
+	}
 	switch {
 	case errors.As(err, &notSent):
 		code, msg = proto.ErrCodeNotSent, notSent.Reason

@@ -377,12 +377,7 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 				return
 			}
 			if err := p.a.local.FileGet(sub, m); err != nil {
-				code := proto.ErrCodeFileDenied
-				if errors.Is(err, session.ErrTooManyRequests) {
-					code = proto.ErrCodeTooManyRequests
-				}
-				if frame, encErr := proto.EncodeFile(proto.FileHeader{ReqID: m.ReqID, Path: m.Path, Kind: "error",
-					Error: &proto.ErrorInfo{Code: code, Message: err.Error()}}, nil); encErr == nil {
+				if frame := session.FileGetRefused(m, err); frame != nil {
 					p.a.local.Send(sub, frame)
 				}
 			}
@@ -493,8 +488,13 @@ func (p *peer) edit(sub *session.Subscription, size int, run func(), refused []b
 	}
 }
 
-// inputError is the error keystrokes get for err.
+// inputError is the error keystrokes get for err: revoked or expired when
+// the viewer's link no longer opens the session (authorize; the server not
+// heard from lately among it), with the words the page shows.
 func inputError(err error) []byte {
+	if code, msg, ok := session.LinkRefusal(err); ok {
+		return proto.NewError(code, msg)
+	}
 	switch {
 	case errors.Is(err, session.ErrReadOnly):
 		return proto.NewError(proto.ErrCodeReadOnly, "this link is view-only")

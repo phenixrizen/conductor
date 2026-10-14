@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // Writing to the process. What the session types into the program, a
@@ -55,18 +57,16 @@ type writeWait struct {
 	// long on another write (the program is not reading); none when zero.
 	stall time.Duration
 	// from is the connection that asked for the write, nil for what
-	// Conductor types itself. Its end withdraws a write not yet begun:
-	// any end with anyEnd (keystrokes), else only the end of its
-	// credential (a revoked or expired link, revoked): a reply box closes
-	// its connection once it has sent, and its submission goes on, as it
-	// does for a connection that failed or was too slow. With credential
-	// too, both: a reply to a question (AnswerInput) is keystrokes of a
-	// connection that waits for the word on them, held to a submission's
-	// check of the credential, asked again as the writer takes it
-	// (revoked: on a host, the server heard from lately too).
-	from       *Subscription
-	anyEnd     bool
-	credential bool
+	// Conductor types itself. The end of its credential (a revoked or
+	// expired link, revoked: on a host, the server heard from lately too)
+	// withdraws a write not yet begun, asked as the write is queued and
+	// again as the writer takes it; with anyEnd (keystrokes, a reply's keys
+	// among them), so does any end of the connection. Without it, only the
+	// credential's: a reply box closes its connection once it has sent, and
+	// its submission goes on, as it does for a connection that failed or
+	// was too slow.
+	from   *Subscription
+	anyEnd bool
 	// before, when set, runs as the writer takes the write, just before it
 	// is made, and never for a write not made: a submission's BeforeEnter.
 	before func()
@@ -77,24 +77,23 @@ type writeWait struct {
 }
 
 // withdrawn says why the write's connection withdraws it, nil while it
-// does not: a keystroke's, once the connection has ended; a submission's,
-// once its link's credential no longer stands, whether or not the
-// connection has been closed for it yet (a revoke marks the link before it
-// closes the link's connections); a reply's, for either.
+// does not: once its link's credential no longer stands, whether or not
+// the connection has been closed for it yet (a revoke marks the link
+// before it closes the link's connections), and that first; a
+// keystroke's also once the connection has ended (errGone).
 func (o writeWait) withdrawn() error {
 	if o.from == nil {
 		return nil
 	}
-	if !o.anyEnd {
-		return revoked(o.from)
+	if err := revoked(o.from); err != nil {
+		return err
 	}
-	select {
-	case <-o.from.done:
-		return errGone
-	default:
-	}
-	if o.credential {
-		return revoked(o.from)
+	if o.anyEnd {
+		select {
+		case <-o.from.done:
+			return errGone
+		default:
+		}
 	}
 	return nil
 }
@@ -118,6 +117,25 @@ func revoked(sub *Subscription) error {
 		}
 	}
 	return nil
+}
+
+// LinkRefusal is how a viewer is answered for what it sent and the session
+// refused with err because the viewer's link no longer opens the session
+// (revoked: ErrRevoked, ErrExpired, or a kind of either with words of its
+// own, such as a host's that has not heard from its server lately): the
+// error code, expired or revoked, and the words a page shows. ok is false
+// for any other err.
+func LinkRefusal(err error) (code, message string, ok bool) {
+	switch {
+	case errors.Is(err, ErrExpired):
+		return proto.ErrCodeExpired, "this link has expired", true
+	case err == ErrRevoked:
+		// The plain error; a kind of it keeps its own words.
+		return proto.ErrCodeRevoked, "this link no longer opens the session", true
+	case errors.Is(err, ErrRevoked):
+		return proto.ErrCodeRevoked, err.Error(), true
+	}
+	return "", "", false
 }
 
 // procWrite is one write waiting for the writer, or being made.

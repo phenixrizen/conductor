@@ -38,7 +38,11 @@ func sha256Hex(b []byte) string {
 // FileWrite takes one part of a save for sub. Every refusal and the result
 // go back to sub as a FILE frame with the save's ReqID: kind `written`, or
 // `error` with a code (read_only, also for a file in a repository's .git;
-// denied, too_large, out_of_order, not_found, changed_on_disk, write).
+// revoked or expired, sub's link no longer opening the session; denied,
+// too_large, out_of_order, not_found, changed_on_disk, write). sub's
+// credential (AttachOptions.Authorize) is asked at each part, after the
+// role, and once more just before the save's rename (saveFile): a part it
+// refuses drops the save under way, and nothing of it reaches the folder.
 func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 	reply := func(fh proto.FileHeader) {
 		fh.ReqID = h.ReqID
@@ -55,6 +59,16 @@ func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 	}
 	if !s.editAllowed(sub.Role) {
 		refuse("read_only", "this connection may not edit files here")
+		return
+	}
+	if err := revoked(sub); err != nil {
+		// The save under way goes with the link: none of its parts after
+		// this one is taken as its continuation.
+		sub.writeMu.Lock()
+		sub.write = nil
+		sub.writeMu.Unlock()
+		code, msg, _ := LinkRefusal(err)
+		refuse(code, msg)
 		return
 	}
 	if h.Total < 0 || h.Total > proto.MaxFileBytes {
@@ -98,7 +112,9 @@ func (s *Local) FileWrite(sub *Subscription, h proto.FileWrite, part []byte) {
 // the file's directory opened from it one element at a time as a read
 // opens it (Folder.openDir), the file looked at and compared there, and the
 // temporary file made and renamed over it in that directory by its handle,
-// so that a save lands where its check said or nowhere.
+// so that a save lands where its check said or nowhere. sub's credential is
+// asked just before the rename: a link gone by then leaves the file as it
+// was.
 func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) proto.FileHeader {
 	errh := func(code, msg string) proto.FileHeader {
 		return proto.FileHeader{Path: h.Path, Kind: "error", Error: &proto.ErrorInfo{Code: code, Message: msg}}
@@ -191,6 +207,15 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	}
 	cerr := tmp.Close()
 	if werr == nil && cerr == nil {
+		// The rename is the save's commit: sub's credential is asked once
+		// more just before it, after the checks, the hash and the
+		// temporary file, which a slow disk can draw out. Refused, the
+		// temporary file goes and the file stays as it was.
+		if err := revoked(sub); err != nil {
+			dir.Remove(tmpName)
+			code, msg, _ := LinkRefusal(err)
+			return errh(code, msg)
+		}
 		werr = dir.Rename(tmpName, name)
 	}
 	if werr != nil || cerr != nil {

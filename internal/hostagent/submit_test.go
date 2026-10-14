@@ -88,9 +88,16 @@ func newSubmitViewerOf(t *testing.T, pause, timeout, inputWait time.Duration, li
 // control connection, and its session's process.
 func newSubmitHost(t *testing.T, pause, timeout, inputWait time.Duration) (*agent, *sessiontest.FakeProc, *atomic.Int32) {
 	t.Helper()
+	return newHostOf(t, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog}, timeout, inputWait)
+}
+
+// newHostOf is newSubmitHost whose session takes opts, in a folder of its
+// own.
+func newHostOf(t *testing.T, opts session.Options, timeout, inputWait time.Duration) (*agent, *sessiontest.FakeProc, *atomic.Int32) {
+	t.Helper()
 	proc := sessiontest.NewFakeProc()
 	begun := new(atomic.Int32)
-	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, countingProc{proc, begun}, session.Options{SubmitPause: pause, FileEdit: "off", Log: discardLog})
+	local := session.NewLocal(session.Info{ID: "s", Cwd: t.TempDir(), Cols: 80, Rows: 24}, countingProc{proc, begun}, opts)
 	t.Cleanup(func() { proc.End(0) })
 	a := &agent{opts: Options{}, local: local, peers: map[string]*peer{}, log: discardLog, submitWait: timeout, inputWait: inputWait}
 	return a, proc, begun
@@ -101,8 +108,13 @@ func newSubmitHost(t *testing.T, pause, timeout, inputWait time.Duration) (*agen
 // owner's windows); out carries the host's signaling for it.
 func submitViewerOn(t *testing.T, a *agent, proc *sessiontest.FakeProc, begun *atomic.Int32, id, linkID string, out <-chan any) *submitViewer {
 	t.Helper()
-	p := newPeer(a, id, session.RoleControl, linkID, "", linkID == "")
-	p.cred = a.creds.of(linkID)
+	return submitPeerOn(t, a, proc, begun, newPeer(a, id, session.RoleControl, linkID, "", linkID == ""), out)
+}
+
+// submitPeerOn is submitViewerOn for the viewer p, of a's.
+func submitPeerOn(t *testing.T, a *agent, proc *sessiontest.FakeProc, begun *atomic.Int32, p *peer, out <-chan any) *submitViewer {
+	t.Helper()
+	p.cred = a.creds.of(p.linkID)
 	a.mu.Lock()
 	a.peers[p.id] = p
 	a.mu.Unlock()

@@ -86,9 +86,12 @@ never wait, so the WebSocket library's own time limits (a write's, a ping's
 answer) never fire on a server that reads slowly; a relayed viewer whose frame
 waits too long for its turn is let go alone, and the connection is given up
 only when its socket takes nothing for two minutes.
-The server tells the host on that connection when a link goes, so a line of
-a viewer who joined through a link is typed and entered only while the host
-has heard from the server within 15 s (`hostagent/liveness.go`): whatever it
+The server tells the host on that connection when a link goes, so what a
+viewer who joined through a link sends (a line, a key, a save, a read, an
+editor's open, a chat post) is acted on only while its link stands and the
+host has heard from the server within 15 s (`hostagent/liveness.go`; the
+session asks it as `AttachOptions.Authorize`, see docs/protocol.md, the share
+link's check): whatever it
 reads counts, and while such a viewer, or something of theirs, is there it
 pings the server once the connection has been quiet for 5 s; the server,
 for its part, pings the host every 5 s while a link a viewer joined the
@@ -97,7 +100,7 @@ the host whatever the server reads: the answers to the host's own pings
 wait behind what the host sent before them, and for a relay bound that
 pauses the server's reading. A connection
 that stops carrying anything without either end closing it is then a link
-gone for those lines, as a connection lost is, and one the host has pinged
+gone for what they send, as a connection lost is, and one the host has pinged
 and heard nothing on for two minutes it gives up.
 A relayed viewer the
 server holds more than 512 KiB for, unwritten, is behind (`viewer_behind`):

@@ -47,6 +47,13 @@ func (s *stdoutSink) WriteFrame(frame []byte) error {
 
 func (s *stdoutSink) Close(error) {}
 
+// localTerminal is how the host's own terminal attaches to its session: a
+// controller with no link and no credential, whose keys no link's going or
+// silence of the server ever refuses.
+func localTerminal(cols, rows uint16) session.AttachOptions {
+	return session.AttachOptions{ID: "local-" + session.NewID()[:10], Role: session.RoleControl, Name: "host terminal", Cols: cols, Rows: rows}
+}
+
 // attachLocal puts stdin in raw mode and connects it to the PTY as a
 // controller. It returns a function that restores the terminal.
 func (a *agent) attachLocal(ctx context.Context) (func(), error) {
@@ -59,9 +66,7 @@ func (a *agent) attachLocal(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	cols, rows, _ := terminalSize(a.opts.Stdin)
-	sub, err := a.local.AttachWith(session.AttachOptions{
-		ID: "local-" + session.NewID()[:10], Role: session.RoleControl, Name: "host terminal", Cols: cols, Rows: rows,
-	}, &stdoutSink{out: a.opts.Stdout})
+	sub, err := a.local.AttachWith(localTerminal(cols, rows), &stdoutSink{out: a.opts.Stdout})
 	if err != nil {
 		term.Restore(fd, state)
 		return nil, err

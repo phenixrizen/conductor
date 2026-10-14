@@ -64,12 +64,18 @@ func (s *Local) fileDeny() []string {
 }
 
 // FileGet serves a file or directory read for sub. It enforces the role
-// policy, an in-flight cap, and resolves the path inside the session cwd,
-// read through the session's folder (Folder). The response is queued to the
-// subscriber as a FILE frame.
+// policy, sub's credential (AttachOptions.Authorize: a link that no longer
+// opens the session is refused with why, revoked, and nothing is read), an
+// in-flight cap, and resolves the path inside the session cwd, read through
+// the session's folder (Folder). The response is queued to the subscriber
+// as a FILE frame; a refusal is returned, for the caller to answer with
+// FileGetRefused.
 func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 	if !s.fileAllowed(sub.Role) {
 		return ErrFileDenied
+	}
+	if err := revoked(sub); err != nil {
+		return err
 	}
 	if req.ReqID == "" || len(req.ReqID) > 64 || len(req.Path) > 4096 {
 		return errors.New("session: invalid file request")
@@ -120,6 +126,27 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 		sub.send(frame)
 	}()
 	return nil
+}
+
+// FileGetRefused is the FILE frame of kind error that answers req, which
+// FileGet refused with err: code revoked or expired for a link that no
+// longer opens the session (LinkRefusal), too_many_requests past the
+// in-flight cap, file_denied for any other refusal; nil when it cannot be
+// encoded.
+func FileGetRefused(req proto.FileGet, err error) []byte {
+	code, msg, ok := LinkRefusal(err)
+	if !ok {
+		code, msg = proto.ErrCodeFileDenied, err.Error()
+		if errors.Is(err, ErrTooManyRequests) {
+			code = proto.ErrCodeTooManyRequests
+		}
+	}
+	frame, encErr := proto.EncodeFile(proto.FileHeader{ReqID: req.ReqID, Path: req.Path, Kind: "error",
+		Error: &proto.ErrorInfo{Code: code, Message: msg}}, nil)
+	if encErr != nil {
+		return nil
+	}
+	return frame
 }
 
 // ReadPath resolves raw against root and returns a header plus body. Paths may
