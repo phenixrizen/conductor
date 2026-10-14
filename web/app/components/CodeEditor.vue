@@ -351,12 +351,33 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
     } else if (ev.kind === 'modified') {
       h.state.modified = h.state.lost ? h.state.modified || !!ev.modified : !!ev.modified
       bridge.holds.changed(path)
-    } else if (ev.kind === 'cursor' && ev.ack) {
-      // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done, but from an older
-      // owner, which never says so, it stands for that word (the echo's settlesOnAck).
-      echoAsLeft?.noteAck(ev.ack)
-      bridge.holds.changed(path)
-      letGoIfClean(h)
+    } else if (ev.kind === 'cursor') {
+      // Where Neovim is and its mode, for the tab's next showing: its next keys go there (a key on its way as the tab was left moves it,
+      // `o` into insert mode on a new line). While characters typed still show, the cursor stays after them, as in front.
+      if (ev.mode && !h.state.lost) {
+        h.state.mode = ev.mode
+        echoAsLeft?.setMode(ev.mode)
+      }
+      if (ev.line && !h.state.lost && !echoAsLeft?.showing) {
+        const line = Math.max(1, Math.min(ev.line, m.getLineCount()))
+        h.cursor = { line, col: byteColToUtf16(m.getLineContent(line), Math.max(1, ev.col ?? 1)) }
+      }
+      if (ev.ack) {
+        // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done, but from an
+        // older owner, which never says so, it stands for that word (the echo's settlesOnAck).
+        echoAsLeft?.noteAck(ev.ack)
+        bridge.holds.changed(path)
+        letGoIfClean(h)
+      }
+    } else if (ev.kind === 'mode' && ev.mode && !h.state.lost) {
+      h.state.mode = ev.mode
+      echoAsLeft?.setMode(ev.mode)
+    } else if (ev.kind === 'cmdline' && !h.state.lost) {
+      h.state.cmdline = ev.show ? `${ev.prompt ?? ''}${ev.content ?? ''}` : ''
+    } else if (ev.kind === 'message' && !h.state.lost) {
+      // A question it asks meanwhile shows when the tab does (its buttons answer it).
+      h.state.message = ev.messageKind === 'clear' ? '' : (ev.text ?? '')
+      h.state.messageKind = ev.messageKind ?? ''
     } else if (ev.kind === 'error' && ev.ack) {
       // Keys refused while the tab was not in front: said on its status line when it is, and its Neovim kept until then.
       const keys = echoAsLeft?.noteRefused(ev.ack, ev.text) ?? ev.text ?? ''

@@ -582,6 +582,57 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
   }
 })
 
+// A tab left while a key is on its way follows what Neovim then does: here `o` waits 1.5 s (its mapping's vim.wait) and the tab is left
+// at once. Shown again, it is where Neovim is: insert mode, on the new line, and the next keys land there. Before, it came back with
+// the cursor and mode it was left with, though Neovim had moved on: the keys typed next went somewhere else than it showed.
+test('a tab left while a key is on its way comes back where Neovim is, in its mode', async ({ page, api, state }) => {
+  const config = join(state.home, '.config', 'nvim')
+  mkdirSync(config, { recursive: true })
+  writeFileSync(join(config, 'init.lua'), "vim.keymap.set('n', 'o', function() vim.wait(1500) return 'o' end, { expr = true })\n")
+  const cwd = join(state.root, 'files-vim-follow')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\nbeta\n')
+  writeFileSync(join(cwd, 'other.txt'), 'gamma\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-follow', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    await expect(lines).toContainText('alpha', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('gg')
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 1, Col 1', { timeout: 15_000 })
+    await page.keyboard.type('o')
+    await pane.locator(`[data-file-node="${cwd}/other.txt"]`).click()
+    await expect(lines).toContainText('gamma', { timeout: 30_000 })
+    // Neovim done with the o meanwhile.
+    await page.waitForTimeout(3000)
+    await tab('notes.txt').click()
+    await expect(lines).toContainText('beta', { timeout: 15_000 })
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 2, Col 1')
+    // The editor's keys again (its text area focused, the cursor where it is).
+    await area.locator('.monaco-editor textarea').focus()
+    await page.keyboard.type('new')
+    await page.keyboard.press('Escape')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 15_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alpha\nnew\nbeta\n')
+  } finally {
+    rmSync(join(config, 'init.lua'), { force: true })
+    await api.stopSession(s.id)
+  }
+})
+
 // Don't save drops what the closed tabs' Neovims hold, that once: a file closed with it, opened again, edited and closed before Neovim
 // says so (its x waits 1.5 s here) does not ask, and its Neovim ends keeping the change, which the next open offers from its swap file.
 test("Don't save holds for its own close only: a later close keeps a change still on its way", async ({ page, api, state }) => {
