@@ -16,6 +16,8 @@ export interface HeldNvim {
   path?: string
   state: NvimViewState
   cursor: { line: number; col: number }
+  /** Neovim's cursor as it last said (its line, its byte column), which the cursor shows once no typed character does. */
+  at?: { line: number; byteCol: number }
   stop?: () => void
   echo?: NvimEcho | null
 }

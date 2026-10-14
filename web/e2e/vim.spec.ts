@@ -583,12 +583,17 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
 })
 
 // A tab left while a key is on its way follows what Neovim then does: here `o` waits 1.5 s (its mapping's vim.wait) and the tab is left
-// at once. Shown again, it is where Neovim is: insert mode, on the new line, and the next keys land there. Before, it came back with
-// the cursor and mode it was left with, though Neovim had moved on: the keys typed next went somewhere else than it showed.
-test('a tab left while a key is on its way comes back where Neovim is, in its mode', async ({ page, api, state }) => {
+// at once. Shown again, it is where Neovim is: insert mode, on the new line, and the next keys land there. And a tab left with typed
+// characters still showing (`jj`, an insert mapping to Escape that waits too) comes back to Neovim's cursor once they go, not after
+// them. Before, it came back with the cursor and mode it was left with, though Neovim had moved on: the keys typed next went somewhere
+// else than it showed.
+test('a tab left while keys are on their way comes back where Neovim is, in its mode', async ({ page, api, state }) => {
   const config = join(state.home, '.config', 'nvim')
   mkdirSync(config, { recursive: true })
-  writeFileSync(join(config, 'init.lua'), "vim.keymap.set('n', 'o', function() vim.wait(1500) return 'o' end, { expr = true })\n")
+  writeFileSync(
+    join(config, 'init.lua'),
+    "vim.keymap.set('n', 'o', function() vim.wait(1500) return 'o' end, { expr = true })\nvim.keymap.set('i', 'jj', function() vim.wait(1500) return '<Esc>' end, { expr = true })\n",
+  )
   const cwd = join(state.root, 'files-vim-follow')
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\nbeta\n')
@@ -627,6 +632,26 @@ test('a tab left while a key is on its way comes back where Neovim is, in its mo
     await page.keyboard.type(':w')
     await page.keyboard.press('Enter')
     await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alpha\nnew\nbeta\n')
+    // A change not written, then jj, the tab left while it shows: Neovim leaves insert mode, its cursor on the last x.
+    await page.keyboard.type('Axx')
+    await expect(lines).toContainText('newxx', { timeout: 15_000 })
+    await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    await page.keyboard.type('jj')
+    await tab('other.txt').click()
+    await expect(lines).toContainText('gamma', { timeout: 30_000 })
+    await page.waitForTimeout(3000)
+    await tab('notes.txt').click()
+    await expect(lines).toContainText('newxx', { timeout: 15_000 })
+    await expect(lines).not.toContainText('newxxjj')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 15_000 })
+    await expect(area.locator('[data-editor-pos]')).toHaveText('Ln 2, Col 5')
+    // x deletes what the cursor shows.
+    await area.locator('.monaco-editor textarea').focus()
+    await page.keyboard.type('x')
+    await expect(lines).not.toContainText('newxx', { timeout: 15_000 })
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alpha\nnewx\nbeta\n')
   } finally {
     rmSync(join(config, 'init.lua'), { force: true })
     await api.stopSession(s.id)

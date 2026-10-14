@@ -125,6 +125,9 @@ function setText(text: string) {
 let nvimId: string | null = null
 // The file its Neovim shows, as Neovim names it (its `opened` events): a write of it is this tab's.
 let nvimPath: string | null = null
+// Neovim's cursor as it last said (its line, its byte column): a tab left with characters typed still showing comes back to it once
+// they go (follow).
+let nvimAt: { line: number; byteCol: number } | null = null
 // The Neovim lost (utils/nvimLost) whose text this tab shows: the changes it sent before its end, which can come after it, still apply,
 // reconciled with the characters typed that it never acknowledged (lostEcho, the local echo finished, while any stay).
 let lostId: string | null = null
@@ -189,6 +192,7 @@ async function startNvim() {
     resumed = held.echo ?? null
     nvimId = held.id
     nvimPath = held.path ?? null
+    nvimAt = held.at ?? null
     // Keys refused while away are said now, on the status line (the state's message and refused, kept until dismissed).
     Object.assign(nvimState, held.state)
     editor.setPosition({ lineNumber: held.cursor.line, column: held.cursor.col })
@@ -196,6 +200,7 @@ async function startNvim() {
   } else {
     // Its model is gone with the text it mirrored: that Neovim ends as a lost connection ends it, its swap file keeping the changes.
     if (held && !held.state.lost) bridge.close(held.id)
+    nvimAt = null
     try {
       const opened = await bridge.open(props.path)
       if (!editor) return
@@ -318,7 +323,7 @@ function listenForText(bridge: NvimBridge) {
  * was left, one a plugin makes later, the last ones a lost Neovim sent, which can come after its end. Its word on changes not written
  * goes to the held state. The holds stop it as the Neovim leaves them (taken back, its tab closed).
  */
-function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): () => void {
+function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null, from: { line: number; byteCol: number } | null = null): () => void {
   const m = model
   const monaco = monacoRef
   const path = props.path
@@ -329,10 +334,29 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
     bridge.holds.take(path)
     bridge.close(id)
   }
+  // Neovim's cursor as it last said, while the tab is away: where the tab shows it when it comes back, but while characters typed still
+  // show, after them, as in front. Placed again after every event, for one that retires the last of them (settled, refused, a line)
+  // brings Neovim's own back.
+  let at = from
+  const place = (h: HeldNvim) => {
+    if (h.state.lost || !m || m.isDisposed()) return
+    h.at = at ?? undefined
+    const r = echoAsLeft?.showing ? echoAsLeft.range() : null
+    if (r) h.cursor = { line: r.line, col: r.to }
+    else if (at) {
+      const line = Math.max(1, Math.min(at.line, m.getLineCount()))
+      h.cursor = { line, col: byteColToUtf16(m.getLineContent(line), Math.max(1, at.byteCol)) }
+    }
+  }
   return bridge.subscribe((ev) => {
     if (ev.id !== id || !m || !monaco || m.isDisposed()) return
     const h = bridge.holds.peek(path)
     if (h?.id !== id) return
+    handle(h, ev)
+    place(h)
+  })
+  function handle(h: HeldNvim, ev: NvimEvent) {
+    if (!m || !monaco) return
     if (ev.kind === 'lines') {
       const lev = { first: ev.first ?? 0, last: ev.last ?? 0, lines: ev.lines ?? [] }
       if (echoAsLeft) {
@@ -353,15 +377,12 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       bridge.holds.changed(path)
     } else if (ev.kind === 'cursor') {
       // Where Neovim is and its mode, for the tab's next showing: its next keys go there (a key on its way as the tab was left moves it,
-      // `o` into insert mode on a new line). While characters typed still show, the cursor stays after them, as in front.
+      // `o` into insert mode on a new line).
       if (ev.mode && !h.state.lost) {
         h.state.mode = ev.mode
         echoAsLeft?.setMode(ev.mode)
       }
-      if (ev.line && !h.state.lost && !echoAsLeft?.showing) {
-        const line = Math.max(1, Math.min(ev.line, m.getLineCount()))
-        h.cursor = { line, col: byteColToUtf16(m.getLineContent(line), Math.max(1, ev.col ?? 1)) }
-      }
+      if (ev.line && !h.state.lost) at = { line: ev.line, byteCol: ev.col ?? 1 }
       if (ev.ack) {
         // Its numbers go on (the next editor goes on with this echo); an acknowledgement is no sign the keys are done, but from an
         // older owner, which never says so, it stands for that word (the echo's settlesOnAck).
@@ -391,7 +412,7 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null): ()
       bridge.holds.changed(path)
       letGoIfClean(h)
     }
-  })
+  }
 }
 function onNvimEvent(ev: NvimEvent) {
   if (!editor || !model || !monacoRef) return
@@ -437,6 +458,7 @@ function onNvimEvent(ev: NvimEvent) {
       break
     }
     case 'cursor': {
+      if (ev.line) nvimAt = { line: ev.line, byteCol: ev.col ?? 1 }
       // Neovim counts a line's bytes, Monaco its UTF-16 units.
       const toUtf16 = (l: number, c: number) => byteColToUtf16(model!.getLineContent(Math.max(1, Math.min(l, model!.getLineCount()))), Math.max(1, c))
       const shown = echo ? echo.cursor({ line: ev.line ?? 1, col: ev.col ?? 1, mode: ev.mode ?? nvimState.mode, ack: ev.ack }, toUtf16) : null
@@ -631,7 +653,7 @@ onBeforeUnmount(() => {
       echo?.finish()
       const asLeft = echo
       const at = editor?.getPosition()
-      props.nvim.holds.hold(props.path, { id: nvimId, path: nvimPath ?? undefined, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: asLeft, stop: follow(props.nvim, nvimId, asLeft) })
+      props.nvim.holds.hold(props.path, { id: nvimId, path: nvimPath ?? undefined, state: { ...nvimState }, cursor: { line: at?.lineNumber ?? 1, col: at?.column ?? 1 }, echo: asLeft, at: nvimAt ?? undefined, stop: follow(props.nvim, nvimId, asLeft, nvimAt) })
     } else props.nvim.close(nvimId)
   } else if (props.nvim && nvimState.lost && lostId) {
     // Neovim lost: its text stays the tab's for the next showing (a tab switched, the area folded), until Reopen or a close.
@@ -773,6 +795,7 @@ async function reopenNvim(): Promise<boolean> {
   Object.assign(nvimState, { mode: 'n', cmdline: '', message: '', messageKind: '', swap: null, recovered: false, modified: false, unsettled: false, refused: undefined })
   nvimId = opened.id
   nvimPath = opened.path ?? null
+  nvimAt = null
   attachNvim(bridge, null)
   editor.focus()
   return true
