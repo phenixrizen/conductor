@@ -690,7 +690,25 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			if err := enter(); err != nil {
 				return err
 			}
+			if err := s.stillOnScreen(sub.Question); err != nil {
+				return err
+			}
 			return s.claimQuestion(sub.Question)
+		}
+	} else if sub.Question != "" {
+		// A reply's line, its text typed: its Enter is left out once the
+		// screen shows another question in its question's place (a
+		// startup question drawn in the pause, which the question's
+		// waiting keeps from being asked).
+		enter := wait.guard
+		wait.guard = func() error {
+			if err := enter(); err != nil {
+				return err
+			}
+			if s.stillOnScreen(sub.Question) != nil {
+				return errPromptCame
+			}
+			return nil
 		}
 	}
 	// As the writer takes the Enter, never for one not written: the
@@ -820,6 +838,12 @@ func (s *Local) textGuard(sub Submission) func() error {
 			return ErrQuestion
 		}
 		if sub.Question != "" {
+			// The screen still shows the question, and no other drawn in
+			// its place (a startup question its own waiting keeps from
+			// being asked), which the line would reach.
+			if err := s.stillOnScreen(sub.Question); err != nil {
+				return err
+			}
 			return s.claimQuestion(sub.Question)
 		}
 		return nil

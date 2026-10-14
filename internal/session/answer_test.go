@@ -2382,3 +2382,53 @@ func TestAReplyToAReportIsRefusedOnceTheScreenDrawsAQuestion(t *testing.T) {
 		})
 	}
 }
+
+// A line that replies to an agent's report, with a startup question drawn
+// on the screen (never asked: the report waiting keeps it from being): the
+// line is refused, nothing written, for its `1` would pick the startup
+// question's first answer; drawn in the line's pause, after its text, the
+// line's Enter is left out.
+func TestALineReplyingToAReportIsRefusedOnceTheScreenDrawsAStartupQuestion(t *testing.T) {
+	t.Run("before its text", func(t *testing.T) {
+		s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+		jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+		if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		q := s.Info().Attention
+		p.outW.Write([]byte(codexBackgroundScreen))
+		deadline := time.Now().Add(3 * time.Second)
+		for !strings.Contains(s.asked.Text(), "Background server") {
+			if time.Now().After(deadline) {
+				t.Fatalf("the screen never showed it: %q", s.asked.Text())
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		res, err := s.Submit(t.Context(), Submission{Text: "1", By: jane, Question: q.ID})
+		if !errors.Is(err, ErrQuestionAnswered) || res.Typed {
+			t.Fatalf("a line naming the report: %+v, %v", res, err)
+		}
+		noWrite(t, p, 200*time.Millisecond)
+		if a := s.Info().Attention; a.ID != q.ID {
+			t.Fatalf("attention %+v, want the report still", a)
+		}
+	})
+	t.Run("in its pause", func(t *testing.T) {
+		s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions(), SubmitPause: 300 * time.Millisecond}))
+		jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+		if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		q := s.Info().Attention
+		done := submitAsync(s, Submission{Text: "main", By: jane, Question: q.ID})
+		if got := nextWrite(t, p); got != "main" {
+			t.Fatalf("written %q", got)
+		}
+		p.outW.Write([]byte(codexBackgroundScreen))
+		got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-done })
+		if got.err != nil || !got.res.Typed || got.res.Entered {
+			t.Fatalf("the line: %+v, %v; want typed, its Enter left out", got.res, got.err)
+		}
+		noWrite(t, p, 200*time.Millisecond)
+	})
+}
