@@ -1,4 +1,4 @@
-import { FOLLOW_SIZE, QUESTION_ANSWERED } from '~/utils/protocol'
+import { FOLLOW_SIZE } from '~/utils/protocol'
 import { repliedQuestions, type QuestionReply } from '~/utils/reply'
 import type { TerminalTransport } from '~/utils/transport/types'
 import type { SessionInfo } from './useSessions'
@@ -29,24 +29,23 @@ export function useQuickReply() {
   }
 
   async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, reply: QuestionReply, server?: string): Promise<void> {
-    // One reply per question from here: a second click on one already answered from this tab is not sent.
-    if (sending.value.has(session.id) || !replied.take(reply.question)) return
-    mark(session.id, true)
-    const t: TerminalTransport = create({ sessionId: session.id, token: token ?? admin.token.value, kind: session.kind, forceRelay: true, server })
-    try {
-      const welcome = await t.connect(FOLLOW_SIZE)
-      if (welcome.role !== 'control') throw new Error('This link is view-only')
-      // An owner that takes answers says whether it took this one; to an older one, the frame is only let leave: it finishes
-      // a submission after the connection goes.
-      if (!(await t.answer(reply))) await new Promise((r) => setTimeout(r, 150))
-    } catch (e) {
-      // Not sent for another reason than its question's being answered: it may be tried again.
-      if ((e as { code?: string }).code !== QUESTION_ANSWERED) replied.release(reply.question)
-      throw e
-    } finally {
-      t.close()
-      mark(session.id, false)
-    }
+    // One reply per question from here: a second click on one already answered from this tab is not sent; one refused may be
+    // tried again (repliedQuestions).
+    if (sending.value.has(session.id)) return
+    await replied.once(reply.question, async () => {
+      mark(session.id, true)
+      const t: TerminalTransport = create({ sessionId: session.id, token: token ?? admin.token.value, kind: session.kind, forceRelay: true, server })
+      try {
+        const welcome = await t.connect(FOLLOW_SIZE)
+        if (welcome.role !== 'control') throw new Error('This link is view-only')
+        // An owner that takes answers says whether it took this one; to an older one, the frame is only let leave: it finishes
+        // a submission after the connection goes.
+        if (!(await t.answer(reply))) await new Promise((r) => setTimeout(r, 150))
+      } finally {
+        t.close()
+        mark(session.id, false)
+      }
+    })
   }
 
   function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<void> {

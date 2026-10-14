@@ -7,7 +7,6 @@ import type { InspectorTab } from '~/components/SessionInspector.vue'
 import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
-import { QUESTION_ANSWERED } from '~/utils/protocol'
 
 const route = useRoute()
 const api = useSessions()
@@ -100,11 +99,8 @@ function chatAnswer(m: ChatMessage, index: number) {
 const replied = repliedQuestions()
 function answerQuestion(reply: QuestionReply) {
   if (!terminal.value) return toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
-  if (!replied.take(reply.question)) return
-  terminal.value.answer(reply).catch((e: unknown) => {
-    if ((e as ReplyError).code !== QUESTION_ANSWERED) replied.release(reply.question)
-    toast.add(replyFailure(e))
-  })
+  const t = terminal.value
+  replied.once(reply.question, () => t.answer(reply)).catch((e: unknown) => toast.add(replyFailure(e)))
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return

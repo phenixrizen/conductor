@@ -68,24 +68,36 @@ const REMEMBERED = 64
 /**
  * The questions a page has sent a reply to: a second click or key on one (a double click, a digit pressed twice before the
  * question leaves the page) is not sent, so the person is never told their own question was answered by someone else. `take`
- * says whether a reply to `question` may go, and notes it; `release` forgets it when the reply did not go for another reason (not
- * connected, the session slow), so that it can be tried again. A reply naming no question always goes.
+ * says whether a reply to `question` may go, and notes it; `release` forgets it. `once` sends a reply that may go and forgets
+ * it when it did not go, whatever the refusal (not connected, the session slow, or answered: a question refused while the
+ * session's turn was held over it is asked again with its id once a person's keys end the hold without answering it), so that
+ * it can be tried again; the owner refuses it again while it is answered. A reply naming no question always goes.
  */
 export function repliedQuestions() {
   const sent: string[] = []
-  return {
-    take(question: string | undefined): boolean {
-      if (!question) return true
-      if (sent.includes(question)) return false
-      sent.push(question)
-      if (sent.length > REMEMBERED) sent.shift()
-      return true
-    },
-    release(question: string | undefined) {
-      const i = question ? sent.indexOf(question) : -1
-      if (i >= 0) sent.splice(i, 1)
-    },
+  function take(question: string | undefined): boolean {
+    if (!question) return true
+    if (sent.includes(question)) return false
+    sent.push(question)
+    if (sent.length > REMEMBERED) sent.shift()
+    return true
   }
+  function release(question: string | undefined) {
+    const i = question ? sent.indexOf(question) : -1
+    if (i >= 0) sent.splice(i, 1)
+  }
+  /** Sends a reply to `question` with `send` unless one went from here or is on its way: whether it was sent. */
+  async function once(question: string | undefined, send: () => Promise<unknown>): Promise<boolean> {
+    if (!take(question)) return false
+    try {
+      await send()
+    } catch (e) {
+      release(question)
+      throw e
+    }
+    return true
+  }
+  return { take, release, once }
 }
 
 /**

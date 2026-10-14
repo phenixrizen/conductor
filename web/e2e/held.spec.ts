@@ -59,6 +59,13 @@ function stubFiles(home: string, s: Session) {
 type Held = { s: Session; bar: Locator; terminal: Locator; guestCtx: BrowserContext; stub: ReturnType<typeof stubFiles> }
 
 /**
+ * How holdOne's guest types its line: as a reply to the question with no choices (`Which name?`) from its reply bar, with the
+ * owner's reply when set; or, with chat, while a question with choices (`Which way?`: Left `l`, Right `r`) shows, as a line its
+ * chat sends to the agent.
+ */
+type HoldHow = { reply?: string; chat?: boolean }
+
+/**
  * holdOne brings a session to the held turn: a guest joins through a control link, the stub reads as the agents' TUIs do (mouse
  * tracking on) and draws without answering until the test stops it, the guest's reply is typed into it and its link revoked
  * before its Enter. With reply, the owner replies from its own view just before the revoke, a reply that waits for the session's
@@ -70,9 +77,9 @@ type Held = { s: Session; bar: Locator; terminal: Locator; guestCtx: BrowserCont
  * session is put aside and the setup done again, three times at most; an Enter taken any later fails the test, for it may have
  * been written after the revoke. Once held, every check is made.
  */
-async function holdOne(page: Page, api: Api, browser: Browser, home: string, reply?: string): Promise<Held> {
+async function holdOne(page: Page, api: Api, browser: Browser, home: string, how: HoldHow = {}): Promise<Held> {
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const held = await tryHold(page, api, browser, home, reply)
+    const held = await tryHold(page, api, browser, home, how)
     if (held) return held
     test.info().annotations.push({ type: 'setup again', description: `try ${attempt}: the guest's Enter was taken before the revoke was asked for` })
   }
@@ -80,7 +87,7 @@ async function holdOne(page: Page, api: Api, browser: Browser, home: string, rep
 }
 
 /** tryHold is one try of holdOne: null when the guest's Enter was taken before the revoke was asked for (the session stopped). */
-async function tryHold(page: Page, api: Api, browser: Browser, home: string, reply?: string): Promise<Held | null> {
+async function tryHold(page: Page, api: Api, browser: Browser, home: string, { reply, chat }: HoldHow): Promise<Held | null> {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'held line' })
   const stub = stubFiles(home, s)
   const guestCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } })
@@ -108,16 +115,26 @@ async function tryHold(page: Page, api: Api, browser: Browser, home: string, rep
   await expect.poll(stub.spin, { timeout: 10_000, message: 'the stub draws' }).toBe('spinning')
 
   // A question with no choices: the reply bars offer a reply. The owner's, with reply, is written now and sent once the
-  // guest's text is typed.
-  await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which name?' })
+  // guest's text is typed. With chat, a question with choices, and the guest's line goes from its chat to the agent.
   const bar = page.locator('[data-quick-reply]')
-  if (reply) await bar.locator('input').fill(reply)
   const guestBar = guest.locator('[data-quick-reply]')
-  await expect(guestBar).toBeVisible({ timeout: 15_000 })
-  await guestBar.locator('input').fill('guest line')
+  const guestChat = guest.locator('[data-chat-aside] [data-chat]')
+  let send: Locator
+  if (chat) {
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which way?', options: [{ label: 'Left', input: 'l' }, { label: 'Right', input: 'r' }] })
+    await expect(guestBar).toContainText('Which way?', { timeout: 15_000 })
+    await guestChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first().fill('guest line')
+    send = guestChat.locator('[data-chat-to-agent]')
+  } else {
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which name?' })
+    if (reply) await bar.locator('input').fill(reply)
+    await expect(guestBar).toBeVisible({ timeout: 15_000 })
+    await guestBar.locator('input').fill('guest line')
+    send = guestBar.getByRole('button', { name: 'Send' })
+  }
   const mark = stub.lineMark()
   const guestEnter = () => stub.enters().find((e) => e.line === 'guest line')
-  await guestBar.getByRole('button', { name: 'Send' }).click()
+  await send.click()
   // Its text is typed: Conductor writes it at once, so the stub's first byte of it says so (or, a test too slow to see the
   // line, the stub's taking its Enter since). The link is revoked before its Enter, nothing slow in between.
   await expect
@@ -195,7 +212,7 @@ test('a line typed for a link that is let go holds the session: the view says so
 })
 
 test('a reply waiting for the held turn goes once someone types in the terminal, a line of its own', async ({ page, api, browser, state }) => {
-  const { s, bar, terminal, guestCtx, stub } = await holdOne(page, api, browser, state.home, 'owner line')
+  const { s, bar, terminal, guestCtx, stub } = await holdOne(page, api, browser, state.home, { reply: 'owner line' })
   try {
     // The reply was sent (its box emptied) and waits: nothing of it is typed while the turn is held, the guest's line alone
     // is. The agent's work is done meanwhile, its screen quiet, so that the reply goes as soon as it may: within its ten
@@ -214,6 +231,38 @@ test('a reply waiting for the held turn goes once someone types in the terminal,
     await expect.poll(() => stub.entered('owner line'), { timeout: 30_000, message: 'the reply was entered' }).toBe(true)
     expect(stub.typedLines()).not.toContain('guest line')
     expect(stub.enters().map((e) => e.line)).not.toContain('guest line')
+  } finally {
+    await guestCtx.close()
+    await api.stopSession(s.id)
+  }
+})
+
+test('the question the held turn took the place of comes back once someone types in the terminal: a choice refused meanwhile can be clicked again', async ({ page, api, browser, state }) => {
+  const { s, bar, terminal, guestCtx, stub } = await holdOne(page, api, browser, state.home, { chat: true })
+  try {
+    await expect(bar).toContainText(HELD)
+    // The owner's chat: the question keeps its choices while the turn is held over it.
+    await page.locator('[data-inspector] [data-chat-tab]').click()
+    const left = page.locator('[data-chat] [data-chat-question]').filter({ hasText: 'Which way?' }).last().locator('[data-chat-option="1"]')
+    // A choice clicked while the turn is held is refused: the hold, not the question, is what the session waits on.
+    await left.click()
+    const refused = page.locator('li').filter({ hasText: 'Already answered' })
+    await expect(refused.last()).toBeVisible({ timeout: 15_000 })
+    const toasts = await refused.count()
+    expect(stub.pending()).toBe('guest line')
+    stub.stopSpin()
+    await expect.poll(stub.spin, { timeout: 10_000 }).toBe('done')
+    // Typing in the terminal (Ctrl+U, the leftover line killed) answers nothing: the question shows again, with its id.
+    await terminal.focus()
+    await page.keyboard.press('Control+U')
+    await expect(page.getByText(HELD)).toHaveCount(0, { timeout: 10_000 })
+    await expect(bar).toContainText('Which way?', { timeout: 10_000 })
+    await expect.poll(stub.pending, { timeout: 10_000, message: 'Ctrl+U cleared the line' }).toBe('')
+    // The same choice, clicked again from the same page, goes: the refusal is not remembered as an answer.
+    await left.click()
+    await expect.poll(stub.pending, { timeout: 15_000, message: 'the choice was typed' }).toBe('l')
+    await expect.poll(async () => (await api.session(s.id)).attention?.message ?? '', { timeout: 10_000 }).not.toBe('Which way?')
+    expect(await refused.count()).toBeLessThanOrEqual(toasts)
   } finally {
     await guestCtx.close()
     await api.stopSession(s.id)

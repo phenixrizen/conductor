@@ -103,6 +103,23 @@ describe('repliedQuestions', () => {
     expect(replied.take('q1')).toBe(true)
     expect(replied.take('n63')).toBe(false)
   })
+
+  it('sends once: a second reply while one is on its way, or after it went, is not sent; one refused, answered too, may go again', async () => {
+    const replied = repliedQuestions()
+    const sent: string[] = []
+    let refuse: ((e: Error) => void) | undefined
+    const first = replied.once('q1', () => new Promise<void>((_, reject) => (refuse = reject)))
+    expect(await replied.once('q1', async () => void sent.push('double'))).toBe(false)
+    // Refused as answered (the session's turn was held over it): the question may be asked again with its id, its hold over.
+    refuse!(new ReplyError('question_answered', 'this question was already answered: nothing was sent'))
+    await expect(first).rejects.toMatchObject({ code: 'question_answered' })
+    expect(await replied.once('q1', async () => void sent.push('again'))).toBe(true)
+    expect(await replied.once('q1', async () => void sent.push('third'))).toBe(false)
+    expect(sent).toEqual(['again'])
+    // A reply naming no question always goes.
+    expect(await replied.once(undefined, async () => void sent.push('none'))).toBe(true)
+    expect(await replied.once(undefined, async () => void sent.push('none'))).toBe(true)
+  })
 })
 
 describe('replyFailure', () => {

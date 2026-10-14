@@ -10,7 +10,6 @@ import { filesRoot, joinedFromInfo } from '~/utils/joined'
 import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
 import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
-import { QUESTION_ANSWERED } from '~/utils/protocol'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
@@ -222,11 +221,8 @@ function chatAnswer(m: ChatMessage, index: number) {
 const replied = repliedQuestions()
 function answerQuestion(reply: QuestionReply) {
   if (!terminal.value) return toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
-  if (!replied.take(reply.question)) return
-  terminal.value.answer(reply).catch((e: unknown) => {
-    if ((e as ReplyError).code !== QUESTION_ANSWERED) replied.release(reply.question)
-    toast.add(replyFailure(e))
-  })
+  const t = terminal.value
+  replied.once(reply.question, () => t.answer(reply)).catch((e: unknown) => toast.add(replyFailure(e)))
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return
