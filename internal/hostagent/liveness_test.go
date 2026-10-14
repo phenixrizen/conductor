@@ -2,15 +2,20 @@ package hostagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/phenixrizen/conductor/internal/proto"
@@ -216,11 +221,19 @@ func liveHostStalling(t *testing.T, pause, stall time.Duration) (a *agent, px *s
 	t.Helper()
 	_, hs := startServer(t)
 	px = newStallProxy(t, strings.TrimPrefix(hs.URL, "http://"))
+	a, viewer = liveHostAt(t, px.url(), pause, stall)
+	return a, px, viewer
+}
+
+// liveHostAt is liveHostStalling registered with the server at base
+// directly.
+func liveHostAt(t *testing.T, base string, pause, stall time.Duration) (a *agent, viewer func(id, linkID string) *submitViewer) {
+	t.Helper()
 	a, proc, begun := newSubmitHost(t, pause, 0, 0)
 	a.liveWithin, a.livePing, a.stallWait = liveTestWithin, liveTestPing, stall
-	a.opts = Options{ServerURL: px.url(), Token: hostToken, Name: "liveness", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", ReconnectMax: time.Second, Log: discardLog}
+	a.opts = Options{ServerURL: base, Token: hostToken, Name: "liveness", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", ReconnectMax: time.Second, Log: discardLog}
 	a.dir = t.TempDir()
-	wsURL, err := controlURL(px.url())
+	wsURL, err := controlURL(base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,10 +253,9 @@ func liveHostStalling(t *testing.T, pause, stall time.Duration) (a *agent, px *s
 	}()
 	t.Cleanup(func() {
 		cancel()
-		px.close()
 		<-done
 	})
-	return a, px, func(id, linkID string) *submitViewer {
+	return a, func(id, linkID string) *submitViewer {
 		t.Helper()
 		return submitViewerOn(t, a, proc, begun, id, linkID, r.add(id))
 	}
@@ -393,6 +405,62 @@ func TestAConnectionPingedAndNeverHeardIsGivenUp(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// A server that answers none of the host's pings but goes on sending,
+// something after each ping among it, is heard from: the host does not
+// give the connection up, however long its pings go unanswered.
+func TestAConnectionHeardFromIsKeptThoughItsPongsDoNotCome(t *testing.T) {
+	var conns atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pinged := make(chan struct{}, 16)
+		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OnPingReceived: func(context.Context, []byte) bool {
+			select {
+			case pinged <- struct{}{}:
+			default:
+			}
+			return false // no pong
+		}})
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		conns.Add(1)
+		ctx := r.Context()
+		if _, _, err := c.Read(ctx); err != nil {
+			return
+		}
+		reg, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "s1", Secret: "secret", ShareBaseURL: "http://yard.invalid"})
+		if c.Write(ctx, websocket.MessageText, reg) != nil {
+			return
+		}
+		go func() {
+			for {
+				if _, _, err := c.Read(ctx); err != nil {
+					return
+				}
+			}
+		}()
+		for {
+			select {
+			case <-pinged:
+				if c.Write(ctx, websocket.MessageText, []byte(`{"t":"something_else"}`)) != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	a, _ := liveHostAt(t, srv.URL, 50*time.Millisecond, 1500*time.Millisecond)
+	held := a.creds.of("l1")
+	first := a.live.Load()
+	time.Sleep(4 * time.Second)
+	if n := conns.Load(); n != 1 || a.live.Load() != first {
+		t.Fatalf("the host gave up a connection it heard from (%d connections)", n)
+	}
+	runtime.KeepAlive(held)
 }
 
 // serverQuiet is a link gone for the session (errors.Is ErrRevoked), and a
