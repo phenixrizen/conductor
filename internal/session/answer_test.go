@@ -2222,3 +2222,33 @@ func TestAStartupQuestionTheScreenLeftGivesWayToTheNext(t *testing.T) {
 		t.Fatalf("written %q", got)
 	}
 }
+
+// Two startup questions one pattern finds (a catalog's own, with no words
+// pattern): the output the watcher keeps holds both once the second is
+// drawn, and the question asked is the one drawn last, by its words, not
+// the first. A reply to the first, gone by a key Conductor does not read
+// as an answer, is refused, nothing written; the second takes its own.
+func TestTwoStartupQuestionsOfOnePatternAreToldByTheLastDrawn(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{{Pattern: regexp.MustCompile(`Confirm (?:read|delete)\?`), Answers: []Option{{Label: "Yes", Input: "y"}}}}}))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte("Confirm read?\r\n"))
+	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if first.Message != "Confirm read?" {
+		t.Fatalf("the first question asked: %+v", first)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[HConfirm delete?\r\n"))
+	second := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != first.ID })
+	if second.Message != "Confirm delete?" {
+		t.Fatalf("the second question asked: %+v", second)
+	}
+	if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the first: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+	if err := s.AnswerInput(t.Context(), jane, second.ID, []byte("y")); err != nil {
+		t.Fatalf("the second's own answer: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+}

@@ -775,7 +775,9 @@ type StartupQuestion struct {
 	// Words, when set, picks the words a page shows out of the same text
 	// (the catalog's words): its last match's capturing groups joined by a
 	// space, or that whole match without a group. Without it, or when it
-	// matches nothing, the words are what Pattern matched.
+	// matches nothing, the words are what Pattern matched last: a text that
+	// keeps what came before (the startup watcher's ScreenTail) shows the
+	// question drawn last there.
 	Words   *regexp.Regexp
 	Answers []Option
 }
@@ -787,11 +789,11 @@ type StartupQuestion struct {
 // character boundary with an ellipsis at their end, so that a long command
 // reads as cut rather than as all there is.
 func (q StartupQuestion) words(text string) string {
-	match := q.Pattern.FindString(text)
-	if match == "" {
+	all := q.Pattern.FindAllString(text, -1)
+	if len(all) == 0 || all[len(all)-1] == "" {
 		return ""
 	}
-	words := match
+	words := all[len(all)-1]
 	if q.Words != nil {
 		if all := q.Words.FindAllStringSubmatch(text, -1); len(all) > 0 {
 			last := all[len(all)-1]
