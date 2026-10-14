@@ -23,10 +23,13 @@ import (
 // the line is withdrawn as for a link gone, its text not typed, or typed
 // and not entered and the session's turn held for a person.
 //
-// Whatever the host reads on the connection counts, as its socket gives it
-// (pacedConn), so a large frame that comes in slowly counts before it is
-// whole: the server's messages, the frames it relays, its pings, and its
-// pongs. The server pings every 30
+// Whatever the host reads on the connection counts, as the connection's TLS
+// gives it (hearingTransport), authenticated record by record, so a large
+// frame that comes in slowly counts before it is whole: the server's
+// messages, the frames it relays, its pings, and its pongs. A record takes
+// 16 KiB at most, so a connection that brings less than about 1 KiB a
+// second can go unheard while a large frame comes in, and a link's line is
+// then withheld. The server pings every 30
 // s, and every 5 s, pong or none, while a link a viewer joined through
 // stands, whatever it reads; an older server pings every 30 s and stops
 // once a pong is late. The host pings it too, once the connection has been

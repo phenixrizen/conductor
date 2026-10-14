@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,8 @@ type stallProxy struct {
 	mu    sync.Mutex
 	open  chan struct{} // closed while it carries
 	conns []net.Conn
+	// hosts are the connections' ends toward the host (inject).
+	hosts []net.Conn
 	done  chan struct{}
 }
 
@@ -90,6 +93,7 @@ func (p *stallProxy) accept() {
 		}
 		p.mu.Lock()
 		p.conns = append(p.conns, c, s)
+		p.hosts = append(p.hosts, c)
 		p.mu.Unlock()
 		go p.pipe(s, c, false)
 		go p.pipe(c, s, true)
@@ -138,6 +142,17 @@ func (p *stallProxy) gate() <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.open
+}
+
+// inject writes b toward the host on every connection, as something on the
+// way between the host and the server would.
+func (p *stallProxy) inject(b []byte) {
+	p.mu.Lock()
+	hosts := slices.Clone(p.hosts)
+	p.mu.Unlock()
+	for _, c := range hosts {
+		_, _ = c.Write(b)
+	}
 }
 
 // trickle has what the server sends carried n bytes every 50 ms.
@@ -469,6 +484,64 @@ func TestALinksLineIsEnteredWhileALargeFrameComesInSlowly(t *testing.T) {
 	}
 	if a.local.Held() {
 		t.Fatal("the turn is held")
+	}
+}
+
+// Bytes on a TLS connection that are not a whole record yet, which TLS has
+// not authenticated, are not the server heard from: with the server's side
+// silent, a record begun by something on the way and never finished, a
+// byte at a time, leaves the connection unheard. What TLS gives counts.
+func TestAnUnfinishedTLSRecordIsNotTheServerHeard(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		for {
+			if _, _, err := c.Read(r.Context()); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	px := newStallProxy(t, strings.TrimPrefix(srv.URL, "https://"))
+	tr, ok := srv.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("the test server's client has no http.Transport")
+	}
+	live := newConnLive()
+	c, _, _, err := pacedDial(t.Context(), "wss://"+strings.TrimPrefix(px.url(), "http://"), nil, &http.Client{Transport: tr.Clone()}, 0, live.hear)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.CloseNow() })
+	go func() {
+		for {
+			if _, _, err := c.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	// Heard: the server answers a ping, which comes in a record of its own.
+	before := live.quietFor()
+	time.Sleep(50 * time.Millisecond)
+	if err := c.Ping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if live.quietFor() >= before {
+		t.Fatal("a pong in a whole record was not the server heard")
+	}
+
+	px.stall()
+	stalled := time.Now()
+	px.inject([]byte{0x17, 0x03, 0x03, 0x40, 0x00}) // application data, 16 KiB to come
+	for time.Since(stalled) < time.Second {
+		px.inject([]byte{0x5a})
+		time.Sleep(20 * time.Millisecond)
+	}
+	if quiet := live.quietFor(); quiet < time.Since(stalled)-100*time.Millisecond {
+		t.Fatalf("heard %v ago, with the server silent for %v and a record begun", quiet, time.Since(stalled))
 	}
 }
 

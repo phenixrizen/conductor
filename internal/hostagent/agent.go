@@ -518,7 +518,8 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		base = ownersServerClient()
 	}
 	// The connection's socket is a pacedConn (controlWriter). Whatever the
-	// host reads from it, a frame's part included, it notes as heard.
+	// host reads on the connection, a frame's part included, as its TLS
+	// gives it, it notes as heard (hearingTransport).
 	live := newConnLive()
 	c, pc, resp, err := pacedDial(dialCtx, a.wsURL, header, base, a.stallWait, live.hear)
 	cancel()
