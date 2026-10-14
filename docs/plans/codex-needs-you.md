@@ -461,6 +461,12 @@ orders or invariants above.
   blink "[ . ] Action Required"): Codex leaves the spinner and the run state
   out of it (`build_action_required_title_text`). The pattern does not
   match it either way.
+- **From Codex's review of the code (round 1).** A matching title read in
+  the ended turn changes nothing at all, not even the last title the session
+  keeps (O9, O12): kept, it armed the next turn's wait's timer. The timer
+  weighs its own state (still armed, its generation), its wait and the last
+  title under the lock that applies its change: an Action Required read as
+  it fired was overtaken.
 - **The stub** reads still titles from `-c tui.animations=false` as Codex
   does, as well as `STUB_TITLE_STILL=1`; `stub async-ask <question>` is the
   ask during a pending async question; an async question pends

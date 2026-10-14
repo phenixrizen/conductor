@@ -314,7 +314,10 @@ type Local struct {
 	// beforeScan, a test's hook, runs with each chunk read between the
 	// read (and the turn taken with it) and everything the pump does with
 	// it.
-	beforeScan     atomic.Pointer[func(chunk []byte)]
+	beforeScan atomic.Pointer[func(chunk []byte)]
+	// beforeSettle, a test's hook, runs as the settle timer fires, before
+	// it looks at anything (settled).
+	beforeSettle   atomic.Pointer[func()]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -716,9 +719,19 @@ const titleRules = unlessTurnEnded | unlessHeld | unlessOnScreen | unlessFresh |
 // than its TitleSettle is left to the settle timer, armed for what is left
 // of it: the title is written only when its text changes, once per state
 // with animations off, so a later title may never come.
+//
+// A title that matches read during the ended turn and looked at once the
+// next has begun (turn) is that turn's own: it changes nothing, not even
+// what the last title says, so that it arms no timer for the next turn's
+// wait. One that does not match is weighed whenever it was read: it can
+// only keep a wait standing.
 func (s *Local) readTitle(title string, turn uint64) {
 	working := s.opts.WorkingTitle.MatchString(title)
 	s.mu.Lock()
+	if working && turn != anyTurn && turn != s.turn.Load() {
+		s.mu.Unlock()
+		return
+	}
 	s.titleWorking = working
 	if !working {
 		s.disarmSettleLocked()
@@ -778,22 +791,18 @@ func (s *Local) disarmSettleLocked() {
 }
 
 // settled is the settle timer's fire, gen the timer's: the wait it was
-// armed for, if it still shows and the last title still says the agent
-// works (no title that does not match came since, which disarms it), gives
-// way to working, with the title's rules (titleRules): a done, a question
-// on the screen, a held turn or another wait that came meanwhile stays.
+// armed for, if it still shows, the timer still armed for it and the last
+// title still says the agent works (no title that does not match came
+// since, which disarms it), gives way to working, with the title's rules
+// (titleRules): a done, a question on the screen, a held turn or another
+// wait that came meanwhile stays. All of that is weighed under the lock
+// that applies the change (onlySettling): a title read between the fire
+// and the change counts.
 func (s *Local) settled(gen uint64) {
-	s.mu.Lock()
-	if s.settleTimer == nil || s.settleGen != gen {
-		s.mu.Unlock()
-		return
+	if hook := s.beforeSettle.Load(); hook != nil {
+		(*hook)()
 	}
-	s.settleTimer = nil
-	working := s.titleWorking
-	s.mu.Unlock()
-	if working {
-		s.setAttention(AttentionWorking, "", SourceTitle, "", nil, titleRules|onlySettling)
-	}
+	s.setAttentionLooked(AttentionWorking, "", SourceTitle, "", nil, titleRules|onlySettling, anyTurn, gen)
 }
 
 // firePattern is the pattern watcher's fire: the last line matched after the
@@ -1246,7 +1255,9 @@ const (
 	// unlessEnded changes nothing once the session has ended.
 	unlessEnded
 	// onlySettling (the settle timer, settled) changes nothing unless the
-	// session still shows the wait the timer was armed for (settleID).
+	// timer of generation look (settleGen) is still armed, for the wait
+	// the session still shows (settleID), and the last title read still
+	// says the agent works (titleWorking).
 	onlySettling
 )
 
@@ -1274,7 +1285,8 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 
 // setAttentionLooked is setAttentionRead for a change a look of the startup
 // questions' watcher found (startupLook): look is the Feeds that look's text
-// had seen (PatternWatcher.LookedAt).
+// had seen (PatternWatcher.LookedAt); for the settle timer's change
+// (onlySettling), the timer's generation.
 func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64) error {
 	if !state.Valid() {
 		return nil
@@ -1337,7 +1349,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	fresh := rules&unlessFresh != 0 && cur.State == AttentionNeedsInput && cur.ID != "" && cur.ID == s.settleID && time.Now().Before(s.settleAt)
 	working := rules&unlessWorking != 0 && cur.State == AttentionWorking
 	ended := rules&unlessEnded != 0 && s.info.Status.Ended()
-	notSettling := rules&onlySettling != 0 && (cur.State != AttentionNeedsInput || cur.ID == "" || cur.ID != s.settleID)
+	notSettling := rules&onlySettling != 0 && (s.settleTimer == nil || s.settleGen != look || !s.titleWorking ||
+		cur.State != AttentionNeedsInput || cur.ID == "" || cur.ID != s.settleID)
 	// A startup question answered and still shown (its write not made yet,
 	// or the session slow to clear it) waits on nothing: the next startup
 	// question takes its place.

@@ -251,14 +251,15 @@ func TestAWaitRaisedWhileCodexWorksGivesWay(t *testing.T) {
 					stop = make(chan struct{})
 					defer func() { close(stop) }()
 				}
+				raised := time.Now()
 				raise(s, p)
 				asked := waitAttention(t, s, waits)
 				if !still {
 					frames(p, stop)
 				}
-				worked := waitAttention(t, s, titleWorks)
-				if worked.Since.Sub(*asked.Since) < settle {
-					t.Fatalf("the wait gave way %v after it showed, before its settle", worked.Since.Sub(*asked.Since))
+				waitAttention(t, s, titleWorks)
+				if d := time.Since(raised); d < settle {
+					t.Fatalf("the wait gave way within %v, before its settle", d)
 				}
 				got := entries(s)
 				if len(got) != 3 || got[0] != "working" || got[1] != asked.Message || got[2] != "working" {
@@ -525,9 +526,9 @@ func TestATitleNeverShowsOverAHeldTurn(t *testing.T) {
 	nextWrite(t, p)
 	waitAttention(t, s, func(a Attention) bool { return a.Message == "Which name?" })
 	out(p, codexWorking(1))
-	worked := waitAttention(t, s, titleWorks)
-	if d := worked.Since.Sub(ended); d < settle {
-		t.Fatalf("working %v after the hold ended", d)
+	waitAttention(t, s, titleWorks)
+	if d := time.Since(ended); d < settle {
+		t.Fatalf("working within %v of the hold's end", d)
 	}
 }
 
@@ -716,13 +717,13 @@ func TestTheSettleTimerActsOnlyOnItsWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(settle / 2)
+	second := time.Now()
 	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which line?", SourceAPI, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	second := s.Info().Attention
-	worked := waitAttention(t, s, titleWorks)
-	if d := worked.Since.Sub(*second.Since); d < settle {
-		t.Fatalf("the second wait gave way %v after it showed", d)
+	waitAttention(t, s, titleWorks)
+	if d := time.Since(second); d < settle {
+		t.Fatalf("the second wait gave way within %v", d)
 	}
 }
 
@@ -734,14 +735,14 @@ func TestOneWorkingTitleAfterAWaitSettlesIt(t *testing.T) {
 	const settle = 200 * time.Millisecond
 	s, p := newLocalWith(t, titled(settle, Options{}))
 	out(p, codexReady)
+	raised := time.Now()
 	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	shown := s.Info().Attention
 	out(p, codexStill)
-	worked := waitAttention(t, s, titleWorks)
-	if d := worked.Since.Sub(*shown.Since); d < settle {
-		t.Fatalf("the wait gave way %v after it showed", d)
+	waitAttention(t, s, titleWorks)
+	if d := time.Since(raised); d < settle {
+		t.Fatalf("the wait gave way within %v", d)
 	}
 
 	out(p, codexReady)
@@ -767,10 +768,10 @@ func TestActionRequiredHoldsAWaitUntilTheTitleSaysWorking(t *testing.T) {
 	for _, late := range []bool{true, false} {
 		s, p := newLocalWith(t, titled(settle, Options{}))
 		out(p, codexTurnBegins, codexAction)
+		raised := time.Now()
 		if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
 			t.Fatal(err)
 		}
-		shown := s.Info().Attention
 		if late {
 			stays(t, s, settle+100*time.Millisecond, "the wait under Action Required", waits)
 			out(p, codexWorking(1))
@@ -780,9 +781,9 @@ func TestActionRequiredHoldsAWaitUntilTheTitleSaysWorking(t *testing.T) {
 			continue
 		}
 		out(p, codexWorking(1))
-		worked := waitAttention(t, s, titleWorks)
-		if d := worked.Since.Sub(*shown.Since); d < settle {
-			t.Fatalf("the wait gave way %v after it showed", d)
+		waitAttention(t, s, titleWorks)
+		if d := time.Since(raised); d < settle {
+			t.Fatalf("the wait gave way within %v", d)
 		}
 	}
 }
@@ -812,5 +813,89 @@ func TestATitleSpendsNoTokenWhenTheBucketIsEmpty(t *testing.T) {
 	out(p, codexWorking(0))
 	if a := s.Info().Attention; !titleWorks(a) {
 		t.Fatalf("a title with the bucket empty: %+v", a)
+	}
+}
+
+// A title read as the settle timer fires counts: Action Required read
+// between the timer's fire and its change leaves the wait standing, since
+// the timer weighs the last title under the lock that applies its change
+// (Codex's review, round 1).
+func TestATitleReadAsTheSettleFiresCounts(t *testing.T) {
+	const settle = 150 * time.Millisecond
+	s, p := newLocalWith(t, titled(settle, Options{}))
+	out(p, codexStill)
+	fired := make(chan struct{})
+	var once sync.Once
+	hook := func() {
+		once.Do(func() {
+			out(p, codexAction)
+			close(fired)
+		})
+	}
+	s.beforeSettle.Store(&hook)
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow the form?", SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-fired:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the settle timer never fired")
+	}
+	stays(t, s, 3*settle, "Action Required read as the timer fired", func(a Attention) bool { return waits(a) && a.Message == "Allow the form?" })
+}
+
+// A title saying Working read during the ended turn and scanned once the
+// next has begun arms nothing for the next turn's wait, whole or split
+// between two reads: the wait stands past its settle, and the next turn's
+// own title then shows working (O9, O12; Codex's review, round 1).
+func TestATitleOfTheEndedTurnArmsNothingForTheNext(t *testing.T) {
+	for _, split := range []bool{false, true} {
+		t.Run(fmt.Sprintf("split %v", split), func(t *testing.T) {
+			const settle = 150 * time.Millisecond
+			s, p := newLocalWith(t, titled(settle, Options{}))
+			sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out(p, codexReady)
+			first := codexWorking(1)
+			if split {
+				first = "\x1b]0;\xe2\xa0"
+			}
+			read, look := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			hook := func(chunk []byte) {
+				if string(chunk) == first {
+					once.Do(func() {
+						close(read)
+						<-look
+					})
+				}
+			}
+			s.beforeScan.Store(&hook)
+			go p.outW.Write([]byte(first))
+			<-read
+			if err := s.TrySetAttentionFull(AttentionDone, "ok", SourceAPI, KindDone, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Input(sub, []byte("\r")); err != nil {
+				t.Fatal(err)
+			}
+			nextWrite(t, p)
+			if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
+				t.Fatal(err)
+			}
+			close(look)
+			if split {
+				out(p, "\x99 Working\x07")
+			} else {
+				flushed(p)
+			}
+			stays(t, s, 3*settle, "the next turn's wait after the ended turn's title", func(a Attention) bool { return waits(a) && a.Message == "Which name?" })
+			out(p, codexWorking(2))
+			if a := s.Info().Attention; !titleWorks(a) {
+				t.Fatalf("the next turn's own title: %+v", a)
+			}
+		})
 	}
 }
