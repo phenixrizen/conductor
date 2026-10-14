@@ -309,6 +309,93 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
   }
 })
 
+// A connection that ends ends its Neovims on the machine, their swap files kept, and no word of that comes. The page tells its tabs so
+// when it closes: the tab in front and one held behind it, each with a change not written, stay with their text, lost, across the
+// Reconnect; Reopen then finds the swap file, and Recover brings the change back. Before, both kept the ids of Neovims that were
+// gone: their keys and Save went nowhere, and no banner offered Reopen.
+test('a connection that ends keeps its Neovim tabs with their text, lost; after Reconnect, Reopen recovers', async ({ page, api, state }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { sockets?: WebSocket[] }
+    const Native = window.WebSocket
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols)
+        ;(w.sockets ??= []).push(this)
+      }
+    } as typeof WebSocket
+  })
+  const cwd = join(state.root, 'files-vim-reconnect')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  writeFileSync(join(cwd, 'other.txt'), 'beta\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-reconnect', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    const lines = area.locator('.monaco-editor .view-lines')
+    const status = area.locator('[data-nvim-status]')
+    const lost = area.locator('[data-nvim-lost]')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    await expect(lines).toContainText('alpha', { timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('Axx')
+    await page.keyboard.press('Escape')
+    await expect(lines).toContainText('alphaxx', { timeout: 15_000 })
+    await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    // Its swap file written now, as Neovim would after a pause.
+    await page.keyboard.type(':preserve')
+    await page.keyboard.press('Enter')
+    // Another tab in front, with a change of its own: notes.txt's Neovim held behind it.
+    await pane.locator(`[data-file-node="${cwd}/other.txt"]`).click()
+    await expect(lines).toContainText('beta', { timeout: 30_000 })
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    await lines.click()
+    await page.keyboard.type('Ayy')
+    await page.keyboard.press('Escape')
+    await expect(lines).toContainText('betayy', { timeout: 15_000 })
+    await expect(tab('other.txt').locator('[data-editor-dirty]')).toBeVisible({ timeout: 15_000 })
+    // The terminal's connection ends.
+    await page.evaluate(
+      (id) =>
+        (window as unknown as { sockets?: WebSocket[] }).sockets
+          ?.filter((ws) => ws.url.includes(`/ws/sessions/${id}?`) && ws.readyState === WebSocket.OPEN)
+          .forEach((ws) => ws.close()),
+      s.id,
+    )
+    await expect(lost).toContainText('the connection to the machine was lost', { timeout: 15_000 })
+    await expect(lines).toContainText('betayy')
+    await page.getByRole('button', { name: 'Reconnect', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toHaveCount(0, { timeout: 30_000 })
+    // Still lost after the Reconnect, both tabs, their text and dots kept.
+    await expect(lost).toContainText('the connection to the machine was lost')
+    await expect(tab('other.txt').locator('[data-editor-dirty]')).toBeVisible()
+    await tab('notes.txt').click()
+    await expect(lost).toContainText('the connection to the machine was lost', { timeout: 15_000 })
+    await expect(lines).toContainText('alphaxx')
+    await expect(tab('notes.txt').locator('[data-editor-dirty]')).toBeVisible()
+    // Reopen: a Neovim on the new connection, which finds the ended one's swap file; Recover brings the change back.
+    await lost.locator('[data-nvim-reopen]').click()
+    await expect(lost).toHaveCount(0)
+    const banner = area.locator('[data-editor-swap]')
+    await expect(banner).toBeVisible({ timeout: 30_000 })
+    await expect(banner).toHaveAttribute('data-swap-running', 'false', { timeout: 15_000 })
+    await banner.locator('[data-swap-choice="recover"]').click()
+    await expect(lines).toContainText('alphaxx', { timeout: 15_000 })
+    await lines.click()
+    await page.keyboard.type(':w')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => readFileSync(join(cwd, 'notes.txt'), 'utf8'), { timeout: 15_000 }).toBe('alphaxx\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
 // Characters typed in insert mode show at once (the local echo); Neovim, slow here (its config busy-waits 300 ms on each), dies before
 // it has them. The tab keeps them: the text Neovim last held with what was typed laid over it, and its changes that come after its end
 // reconciled with it rather than written over it.

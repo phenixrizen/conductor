@@ -1,5 +1,6 @@
 import type { Ref } from 'vue'
 import { NvimHolds } from '~/utils/nvimHold'
+import { CONNECTION_LOST, NvimLive } from '~/utils/nvimLost'
 import type { FileResponse, FileWriteOptions, NvimBridge, NvimEvent, NvimSwapChoice, Welcome } from '~/utils/protocol'
 
 /** What a page's terminal offers the editor: Neovim (F8) and saves (F6), over its connection. */
@@ -23,16 +24,29 @@ export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: (
   const listeners = new Set<(ev: NvimEvent) => void>()
   // The Neovims of tabs not in front holding changes not written; they live on this connection, so they go with it (reset).
   const holds = new NvimHolds()
+  // The editors this connection has: they end with it, and are told lost then (each tab keeps its text, Reopen).
+  const live = new NvimLive()
   function onNvim(ev: NvimEvent) {
+    live.note(ev)
     if (ev.kind === 'closed' && ev.id) holds.ended(ev.id, ev.reason)
     for (const cb of listeners) cb(ev)
   }
+  function lost(ids: string[]) {
+    for (const id of ids) onNvim({ t: 'nvim_event', id, kind: 'closed', reason: CONNECTION_LOST })
+  }
+  /** The terminal's connection closed: its editors ended with it on the machine. */
+  function onClosed() {
+    lost(live.ended())
+  }
   function onWelcome(w: Welcome) {
+    // Another subscription's welcome: the last one's editors ended with it, though no close was seen.
+    lost(live.welcome(w.subscriberId))
     offer.value = { welcome: true, nvim: !!w.nvim, fileEdit: !!w.fileEdit, ownerOnly: !!w.nvimOwnerOnly, machine: machine(), settled: !!w.nvimSettled }
   }
   function reset() {
     offer.value = { welcome: false, nvim: false, fileEdit: false, ownerOnly: false, machine: undefined, settled: false }
     holds.clear()
+    live.clear()
   }
   const nvim = computed<NvimBridge>(() => ({
     offer: offer.value,
@@ -50,5 +64,5 @@ export function useEditorBridge(terminal: Ref<EditorTerminal | null>, machine: (
     return terminal.value ? terminal.value.writeFile(path, data, opts) : Promise.reject(new Error('terminal not ready'))
   }
   const canEdit = computed(() => offer.value.welcome && offer.value.fileEdit)
-  return { offer, nvim, onNvim, onWelcome, reset, writeFile, canEdit }
+  return { offer, nvim, onNvim, onWelcome, onClosed, reset, writeFile, canEdit }
 }

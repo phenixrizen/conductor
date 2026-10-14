@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { closedByQuit, lostHoldsChanges, lostWords } from './nvimLost'
+import { closedByQuit, CONNECTION_LOST, lostHoldsChanges, lostWords, NvimLive } from './nvimLost'
 
 describe('lostHoldsChanges', () => {
   it('holds changes when Neovim said so, a guess shows, or the text is not the file as read', () => {
@@ -32,5 +32,40 @@ describe('lostWords', () => {
   })
   it('reads without a reason', () => {
     expect(lostWords('error:')).toMatch(/^Neovim ended unexpectedly\. /)
+  })
+})
+
+describe('NvimLive', () => {
+  it("names a connection's editors when it closes, those it opened and did not close", () => {
+    const live = new NvimLive()
+    live.welcome('s1')
+    live.note({ kind: 'opened', id: 'a' })
+    live.note({ kind: 'opened', id: 'b' })
+    live.note({ kind: 'lines', id: 'b' })
+    live.note({ kind: 'closed', id: 'b' })
+    live.note({ kind: 'opened' })
+    expect(live.ended()).toEqual(['a'])
+    // Told once: the next close names none.
+    expect(live.ended()).toEqual([])
+  })
+
+  it("names the last subscription's editors at a welcome of another, a close it did not see", () => {
+    const live = new NvimLive()
+    expect(live.welcome('s1')).toEqual([])
+    live.note({ kind: 'opened', id: 'a' })
+    // A welcome naming no subscriber (a signaling one), or the same: nothing ended.
+    expect(live.welcome(undefined)).toEqual([])
+    expect(live.welcome('s1')).toEqual([])
+    expect(live.welcome('s2')).toEqual(['a'])
+    live.note({ kind: 'opened', id: 'c' })
+    // The page's terminal changed: nothing carried over.
+    live.clear()
+    expect(live.welcome('s3')).toEqual([])
+    expect(live.ended()).toEqual([])
+  })
+
+  it('says why: a loss, not a quit, its tab kept', () => {
+    expect(closedByQuit(CONNECTION_LOST)).toBe(false)
+    expect(lostWords(CONNECTION_LOST)).toMatch(/^Neovim ended unexpectedly \(the connection to the machine was lost\)\. /)
   })
 })
