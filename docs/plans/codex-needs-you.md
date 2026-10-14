@@ -13,8 +13,9 @@ it changes `internal/session`'s input path and the host's messages, and both
 parts touch those. The order of the pull requests is at the end.
 
 Revised 2026-10-14: the real Codex 0.161 checked, the bell setting moved to
-its own pull request, Part B added; review round 1's findings taken in
-(the end of this plan). Round 2 pending.
+its own pull request, Part B added; the findings of review rounds 1 and 2
+taken in (the end of this plan). The revision after round 2 is
+unreviewed: the owner decides whether it is reviewed again.
 
 # Part A: a Codex member shows Needs you only while Codex waits (#186)
 
@@ -166,17 +167,32 @@ names (A1 and A2).
      read)`.
    - **A wait raised while the last title says Working** (a bell, an OSC
      notification, the agent's report: not a question on the screen, not a
-     startup question) arms a timer, `titleSettle` (1 s). When it fires,
-     under the lock: if that wait (its id) still shows and no title has
-     been read since that does not match, it gives way to `working`, with
-     the same rules. A title that does not match ("[ ! ] Action Required",
-     "Ready", "Starting") disarms it: Codex has stopped working, and the
-     wait stands. An approval rings the bell as Codex draws its overlay,
+     startup question) arms a timer, `titleSettle` (1 s). So does **a
+     matching title read while such a wait shows that is younger than
+     `titleSettle`** (the wait came while the last title said Ready or
+     Action Required, and one "Working" follows), for the rest of the
+     second. When the timer fires, under the lock: if that wait (its id)
+     still shows and no title has been read since that does not match, it
+     gives way to `working`, with the same rules. A title that does not
+     match ("[ ! ] Action Required", "Ready", "Starting") disarms it: Codex
+     shows something for a person, or is at rest, and the wait stands. An approval rings the bell as Codex draws its overlay,
      and its title becomes "[ ! ] Action Required" with that overlay (O1;
      to be checked by hand to come within the second, below); a wait Codex
      goes on from (its own question it does not wait on, a form it
      declines by itself) gives way after a second whether frames come or
      not.
+
+   One case the title cannot tell: while one of Codex's async questions
+   (`request_user_input_async`) is pending, its title says "[ ! ] Action
+   Required" (`BottomPane::terminal_title_requires_action` counts the
+   question editor's unanswered questions, a blocking view or not) though
+   Codex works on. A wait raised then stands until the title says Working
+   again: when the question is answered or resolves by itself, 30 s after
+   it was posted while the editor is collapsed
+   (`bottom_pane/async_questions/state.rs`, `expires_at`; to be checked by
+   hand). The stale Needs you is bounded by that, not ended by it; telling
+   an async question's Action Required from a blocking one would take a
+   look at the screen, which this plan does not add.
 
    The rules:
    - **unlessTurnEnded** (as for the bell): it does not undo a `done` until
@@ -293,6 +309,15 @@ names (A1 and A2).
 - O20 E11 against E9 or E8: an ended session shows nothing and the timer
   changes nothing (the end clears the state and stops it); in a held turn
   it changes nothing (unlessHeld).
+- O21 E4 `needs_input` while the last title says Ready, then one E1 within
+  the second and no title after: the title arms the timer for the rest of
+  the second (unlessFresh keeps it from applying at once); E11 shows
+  `working`.
+- O22 E1, then "[ ! ] Action Required" for an async question while Codex
+  works, then E4 `needs_input` (ask): it stands (the title is not
+  Working, no timer); the title back to Working (the async question
+  resolved) applies `working` at once if the wait is older than the
+  second, else arms the timer for the rest.
 
 ## Invariants
 
@@ -330,7 +355,7 @@ Go (`go test -race`):
 
 - `internal/session`: the scanner reports OSC 0 and 2 titles with BEL and ST
   ends, split between reads, cut at the bound (no match), with control
-  characters dropped. Each of O1 to O20 with a `fakeProc`, Codex's questions
+  characters dropped. Each of O1 to O22 with a `fakeProc`, Codex's questions
   and `WorkingTitle`, using the titles seen on 2026-10-14 (and the
   source's for the forms not seen), with `titleSettle` shortened by an
   option for the tests. A title-only stream does not break the quiet that
@@ -360,6 +385,8 @@ Stub and Playwright:
   with animations off. Two new lines:
   `stub async <question>` draws "? 1 question" and spins without a bell
   (rung only when its argv's `tui.notifications` lists `async-question`),
+  its title "[ ! ] Action Required" while the question is pending (a few
+  seconds in the stub) and Working frames after,
   and `stub ask <question>` runs `conductor notify --state needs_input` and
   then spins.
 - A Playwright spec (`codexworking.spec.ts`) with a Codex stub session and
@@ -368,7 +395,9 @@ Stub and Playwright:
   changes the last to Needs you, and its own spec says so). After
   `stub async …`, Needs you never shows. During `stub approve`, the
   approval still shows with its choices, and Working follows the answer.
-  The `stub ask` case runs again with `STUB_TITLE_STILL=1`.
+  The `stub ask` case runs again with `STUB_TITLE_STILL=1`, and once
+  during a `stub async` question: Needs you until the stub's question
+  resolves, then Working.
   The spec reads state from the rows and from the stub's files, never from
   `.xterm-rows`. `approval.spec.ts` and `trust.spec.ts` pass unchanged.
 - vitest: nothing in the browser's logic changes. If the row's words for a
@@ -378,9 +407,10 @@ Stub and Playwright:
 By hand (the real Codex is not run by an agent with a prompt): a crew of the
 todo example in the next release candidate's app shows the members' Needs
 you only at approvals; with a person's `tui.animations = false`, the same;
-and at an approval, Codex's title becomes "[ ! ] Action Required" within
-`titleSettle` of its bell (the capture script records both, with their
-times). Recorded in `docs/features.md` when done. The titles at rest and at
+at an approval, Codex's title becomes "[ ! ] Action Required" within
+`titleSettle` of its bell; and an async question's title returns to Working
+when it resolves, about 30 s after it was posted (the capture script
+records titles and bells with their times). Recorded in `docs/features.md` when done. The titles at rest and at
 work were checked on 2026-10-14 (above).
 
 ## Alternatives weighed
@@ -448,11 +478,13 @@ turn's end as `done`, some with `turn` set and some without.
    it, as `agentSession` and `turn` are today: the question then shows as
    before.
 2. **The session keeps the agent's question through its turn's end.**
-   `Attention` keeps the mark (`ask`, not sent to browsers). The session
-   keeps at most one agent's question, shown or set aside (`aside`), with
-   these rules, all decided in the critical section that changes the
-   state:
-   - **In its turn** (no `done` since it was asked): a `working` report or
+   `Attention` keeps the mark (`ask`, not sent to browsers) and the turn it
+   was asked in (`Local.turn`, the count of turns begun after a `done`, as
+   the session counts them now). The session keeps at most one agent's
+   question, shown or set aside (`aside`), with these rules, all decided in
+   the critical section that changes the state:
+   - **In its turn** (the turn count it was asked in, no `done` since): a
+     `working` report or
      title, and any other state but those below, takes its place and sets
      it aside. A `done` (any, with `turn` or without) leaves it shown, or
      shows it again from aside, in place of whatever shows. The `done`
@@ -475,8 +507,8 @@ turn's end as `done`, some with `turn` set and some without.
    - **After its turn's `done`**: it shows until a person's keys or reply
      answer it (`answer`, as today), the agent clears it (`clear`) or asks
      another, the agent works again (a `working` report: a new turn, which
-     takes its place for good), another state takes its place, or the
-     session ends. A `done` (Claude Code's `idle_prompt` a minute later)
+     takes its place for good; so does `working` once an Enter has begun
+     the next turn), another state takes its place, or the session ends. A `done` (Claude Code's `idle_prompt` a minute later)
      changes nothing shown and is recorded. Codex's working title read
      after the `done` changes nothing until the next Enter: unlessTurnEnded
      covers a question its turn's `done` kept as it covers `done`.
@@ -490,6 +522,18 @@ turn's end as `done`, some with `turn` set and some without.
      not show again at the `done`. Conductor's own submission (a crew's
      prompt, a handoff) typed while it is aside does not: that is no
      person's answer.
+   - **A submission under way when it shows again.** Conductor's own
+     submission (a handoff, a broadcast) may be typed while the question is
+     aside, `working` showing; the turn's `done` can then come between its
+     text and its Enter. The submission notes, as it begins, the question
+     set aside (its id); the checks that leave an Enter out when a prompt
+     came since the submission began (`pressEnter`, its guard as the
+     writer takes the Enter) do not count that question shown again. The
+     Enter is written, so the text is never left in the program's input
+     without it; it answers nothing (it is no person's answer, and its
+     `answer` compares the stamp the submission began with); and it begins
+     the next turn, in which the agent's work (a `working` report or
+     title) removes the question. A reply a person makes then answers it.
    - **A held turn** (`holdTyped`): the hold takes its place and keeps it
      as `heldOver`, as today; a `done`, and `working` in its turn, hidden
      by the hold no longer drop it (they drop another held-over question,
@@ -613,6 +657,17 @@ turn's end as `done`, some with `turn` set and some without.
   shows it.
 - P27 OpenCode's or DeepSeek Harness's permission report (no mark), then
   their `done` with no input between: `done`, as today.
+- P28 F1, F3 (aside), F8 (a handoff: its text typed, its Enter not yet),
+  F2, then the Enter: the question shows again; the Enter is written all
+  the same (the handoff is entered, not left typed); it answers nothing;
+  F3 after it (the agent at work on the handoff, a new turn) removes the
+  question; without F3, a person's reply answers it, typed on its own.
+- P29 F1, F3 (aside), F8 entered before F2 (Enter written while `working`
+  shows, no turn begun by it): the question stays aside; F2 shows it. An
+  agent that takes the handoff after its turn (Claude Code's queued
+  message: `UserPromptSubmit`, `working` after the `done`) removes it; one
+  that takes it into the same turn (Codex steering) shows it at its
+  `done` until a person answers.
 
 ## Invariants
 
@@ -624,6 +679,9 @@ turn's end as `done`, some with `turn` set and some without.
   after a reply or a person's keys reached it; shown again it is the same
   `Attention` (id and `Since`), so a reply under way is neither refused
   nor left without its Enter because of it.
+- A submission whose text is typed while the question is aside is
+  entered: the question's return is not a prompt that leaves its Enter
+  out.
 - Only a report that says so (`ask`) is kept; a program's wait reported
   without it (a permission prompt, aider's wait) is replaced by `done` as
   today.
@@ -660,12 +718,12 @@ turn's end as `done`, some with `turn` set and some without.
 
 Go (`go test -race`):
 
-- `internal/session`: P1 to P27 with a `fakeProc`, each through the
+- `internal/session`: P1 to P29 with a `fakeProc`, each through the
   setters the API and the pump use (`TrySetAttentionFull` with the mark,
   `scanOutput` for the bell and, once Part A is in, the title and its
   timer), and the activity, the chat and `OnActivity`'s state checked at
   each step. P20 runs each pair from two goroutines many times and checks
-  the end state against the sequential rules. P23 and P24 are
+  the end state against the sequential rules. P23, P24 and P28 are
   deterministic: the submission is paused after its claim and text and
   before its Enter (a hook in the test, as the hold tests pause one), the
   reports are applied, then the Enter goes on; P25 holds the program's
@@ -691,7 +749,10 @@ Go (`go test -race`):
 - `internal/crew`: a member that asks and ends its turn is counted in the
   run's `needsInput` after its `done`; a handoff to it waits until a person
   answers, then is typed; the members that start after it start at its
-  `done`, as today.
+  `done`, as today; a handoff whose text is typed while the member's
+  question is aside and whose Enter follows the `done` is noted entered
+  (`noteHandoff`), never "typed without its Enter" (P28), and a reply after
+  it is typed on its own.
 
 Stub and Playwright:
 
@@ -767,3 +828,33 @@ attention, three findings, each traced in the code and taken in.
   whatever the launch says. Taken in: Part A reads the title as Codex's
   state, with a settle timer for a wait raised while it says Working
   (O16 to O20, P26), and the stub draws a still title too.
+
+Round 2 (41ecad8): needs attention, three findings, each traced in the
+code and taken in once; this revision is unreviewed.
+
+- [high] A handoff typed while the question is aside, whose Enter follows
+  the turn's `done`, has its Enter left out once the question shows
+  again (`pressEnter` sees a prompt that came since it began), and the
+  crew notes it "typed without its Enter" and never types it again
+  (`internal/crew/handoff.go`); a reply would then join its text. Held:
+  `done` shows nothing today, so the Enter goes through; Part B made the
+  `done` a prompt. Taken in: the submission notes the question set aside
+  as it begins, and its Enter is not left out for that question's return;
+  it answers nothing and begins the next turn, in which the agent's work
+  removes the question (P28, P29, a deterministic test, and the crew's
+  handoff test).
+- [high] Codex's title says "[ ! ] Action Required" while one of its async
+  questions is pending, though it works on
+  (`BottomPane::terminal_title_requires_action` counts the question
+  editor's unanswered questions), so a wait raised then cannot settle.
+  Held. Taken in as a bound, not a fix: the wait stands until the title
+  says Working again, when the async question is answered or resolves by
+  itself (30 s while the editor is collapsed, from the source; to be
+  checked by hand); the stub draws that title and a spec covers an ask
+  during it (O22). Telling the two Action Required apart would take a
+  look at the screen, which this plan does not add.
+- [medium] A wait raised while the last title is not Working, followed by
+  a single "Working" within the second (animations off), arms no timer:
+  unlessFresh refuses the title and nothing comes after. Held. Taken in: a
+  matching title that meets a wait younger than the second arms the timer
+  for the rest of it (O21).
