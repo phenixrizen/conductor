@@ -232,7 +232,7 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
 - `--base` reviews the commits `origin/main...HEAD`, not the working tree:
   commit everything first. The pull request's body names the commit
   reviewed; commits after it (the review's own fixes included) get another
-  review before the merge.
+  review before the merge, within the rounds below.
 - **The review is of what will merge.** The script fetches its base and
   refuses a branch that is behind it: rebase onto the current
   `origin/main` before each review, so the review sees the change on top
@@ -254,7 +254,11 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   checkpoint and how each finding was sorted. **Five** rounds is the stop:
   a change still finding its own defects then goes back to its plan, the
   agent reports where it stands, and the owner says whether more is spent
-  on it. An agent never passes a limit on its own.
+  on it. When the last round a change may have still finds something, the
+  agent fixes that round's findings, commits them, and reports them as
+  unreviewed in the pull request's body; the owner says whether one more
+  round is spent on them or the pull request merges as it is. An agent
+  never passes a limit on its own.
 - The focus names the risks the change touches: races and ownership,
   link scopes and revocation, credentials in logs, what the switchyard can
   see, recovery after a restart, per-connection bounds.
