@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
+import { TERMINAL_FIRST } from './attention'
 import { HOST_AWAY, accountItems, rowMenuItems, rowPrompt, sessionLive, stopQuestion } from './sidebarActions'
 
 const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, stop: () => {}, forget: () => {} }
@@ -51,8 +52,8 @@ describe('rowPrompt', () => {
   ]
 
   it('gives a prompt with choices its buttons and one without a reply field', () => {
-    expect(rowPrompt({ session: session('running'), prompt: { message: 'Run the migration on staging?', options } })).toEqual({ message: 'Run the migration on staging?', choices: options, away: false, placeholder: 'Reply…' })
-    expect(rowPrompt({ session: session('running'), prompt: { message: 'Which branch should I base it on?', options: [] } })).toEqual({ message: 'Which branch should I base it on?', choices: [], away: false, placeholder: 'Reply…' })
+    expect(rowPrompt({ session: session('running'), prompt: { message: 'Run the migration on staging?', options } })).toEqual({ message: 'Run the migration on staging?', choices: options, away: false, held: false, placeholder: 'Reply…' })
+    expect(rowPrompt({ session: session('running'), prompt: { message: 'Which branch should I base it on?', options: [] } })).toEqual({ message: 'Which branch should I base it on?', choices: [], away: false, held: false, placeholder: 'Reply…' })
   })
 
   it('waits, with the words, while the host is away; nothing without a prompt', () => {
@@ -61,6 +62,14 @@ describe('rowPrompt', () => {
     expect(p?.placeholder).toBe(HOST_AWAY)
     expect(p?.choices).toEqual(options)
     expect(rowPrompt({ session: session('running') })).toBeNull()
+  })
+
+  it('takes no reply while the session waits for its terminal', () => {
+    const held = { ...session('running'), attention: { state: 'needs_input', source: 'submit', message: 'Text … type in the terminal to continue' } } as SessionInfo
+    const p = rowPrompt({ session: held, prompt: { message: 'Text … type in the terminal to continue', options: [] } })
+    expect(p?.held).toBe(true)
+    expect(p?.away).toBe(false)
+    expect(p?.placeholder).toBe(TERMINAL_FIRST)
   })
 })
 

@@ -233,8 +233,17 @@ type Local struct {
 	ended chan struct{}
 
 	// submitting holds a token while a submission runs (Submit): one at a
-	// time per session.
-	submitting chan struct{}
+	// time per session. turnWaiters counts the submissions waiting for it
+	// (awaitTurn), at most maxTurnWaiters.
+	submitting  chan struct{}
+	turnWaiters atomic.Int32
+	// held is closed by the first keys a person types into the terminal
+	// (input) while the session's turn is held for a submission's text
+	// typed without its Enter (holdTyped); nil while it is not. heldNext is
+	// closed as the next such hold begins, nil until someone asks
+	// (Holding). Under mu.
+	held     chan struct{}
+	heldNext chan struct{}
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.
@@ -799,6 +808,11 @@ const (
 	// (its ended turn's own, or one at a wait that stays) has nothing to
 	// pace, and must not keep the next turn's bell from asking.
 	bellPaced
+	// whileHeld changes nothing unless the session's turn is held for a
+	// typed text (held) and the session has not ended: the hold's own
+	// attention, which keys that ended the hold before it showed, or the
+	// session's end, must not leave behind.
+	whileHeld
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -838,8 +852,19 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
 	}
+	if rules&whileHeld != 0 && (s.held == nil || s.info.Status.Ended() ||
+		s.info.Attention.State == AttentionNeedsInput && heldSource(s.info.Attention.Source)) {
+		// The hold shows only while it stands, and never in place of a
+		// question on the screen: that one is what the program waits on,
+		// its words and choices what a person needs (answer shows the hold
+		// once it is answered, if the hold still stands).
+		s.mu.Unlock()
+		return nil
+	}
 	cur := s.info.Attention
-	waiting := cur.State == AttentionNeedsInput
+	// The hold's words give way to a question drawn on the screen (a
+	// startup question's unlessWaiting): the program waits on that one now.
+	waiting := cur.State == AttentionNeedsInput && !(cur.Source == SourceSubmit && heldSource(source))
 	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source))
 	// A report from outside that the session waits, with choices or
 	// without, does not hide a question asked during the work: the dialog
@@ -853,6 +878,31 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
 	if (rules&unlessWaiting != 0 && waiting) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns {
 		s.mu.Unlock()
+		return nil
+	}
+	if s.held != nil && source != SourceSubmit && !heldSource(source) {
+		// The session's turn is held for a typed text (holdTyped): the hold
+		// is what shows, until a person types into the terminal, but for a
+		// question on the screen, whose answer ends the hold too. Another
+		// change, past the rules above (the bell's pace among them), is
+		// recorded, as the report it is, and not shown; its turn and pace
+		// are kept as a change shown keeps them.
+		if state == AttentionDone {
+			s.turnEnded = true
+		} else {
+			s.beginTurn()
+		}
+		if rules&bellPaced != 0 {
+			s.lastBell = time.Now()
+		}
+		s.mu.Unlock()
+		if state != AttentionNone {
+			label := message
+			if label == "" {
+				label = string(state)
+			}
+			s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: label}, state)
+		}
 		return nil
 	}
 	if state == AttentionDone {
@@ -881,10 +931,11 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 	s.info.Attention = att
 	s.signalAttention()
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
-	// The agent's question goes into the chat too (design: the agents' questions in the chat).
+	// The agent's question goes into the chat too (design: the agents' questions in the chat);
+	// the session's own hold is no question of the agent's.
 	var asked ChatMessage
 	var askedID string
-	if state == AttentionNeedsInput {
+	if state == AttentionNeedsInput && source != SourceSubmit {
 		asked, askedID = s.askInChat(att)
 	}
 	s.mu.Unlock()
@@ -1291,8 +1342,10 @@ func (s *Local) Detach(sub *Subscription) {
 // Input waits for that at most Options.InputWait: a program that takes
 // nothing meanwhile gets ErrInputStalled, the keystrokes written later if
 // the write had begun (see writeProc) and never otherwise. Keystrokes not
-// yet written when sub ends (revoked, detached) are never written. data may
-// be reused once Input returns.
+// yet written when sub ends (revoked, detached) are never written. Keys
+// written (a terminal's own report aside) end the hold of the session's
+// turn for a submission's text typed without its Enter (holdTyped). data
+// may be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
 	return s.input(context.Background(), sub, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
 }
@@ -1386,6 +1439,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 	// read once the write is made.
 	var noted bool
 	o.from, o.anyEnd = sub, true
+	// Whether a person typed anything here, or only the terminal reported
+	// (its replies, the pointer moved or clicked), as many reports as the
+	// write holds, one the connection's last write began included.
+	typed := sub.typesSomething(data)
 	if s.asked != nil && len(data) > 1 && bytes.IndexByte(data, '\r') >= 0 && !isTerminalReport(data) {
 		// Several keys with an Enter, looked at again as the writer takes
 		// them (they may have waited behind another write): a key that
@@ -1407,6 +1464,13 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		}
 	}
 	o.before = func() {
+		if typed {
+			// A person types into the terminal: a submission's text typed
+			// without its Enter no longer holds the session's turn
+			// (holdTyped), and what comes next is written after these keys.
+			// The terminal's reports, the pointer's among them, type nothing.
+			s.endHold()
+		}
 		if answersQuestion && s.trust != nil {
 			s.trust.Reset()
 		}
@@ -1441,7 +1505,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 				select {
 				case werr := <-landed:
 					if werr == nil {
-						s.typedKeys(sub, data, promptSince, enter, noted)
+						s.typedKeys(sub, data, promptSince, enter, noted, typed)
 					}
 				case <-s.ended:
 				}
@@ -1449,7 +1513,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, data []byte, o wri
 		}
 		return err
 	}
-	s.typedKeys(sub, data, promptSince, enter, noted)
+	s.typedKeys(sub, data, promptSince, enter, noted, typed)
 	return nil
 }
 
@@ -1466,7 +1530,7 @@ func isChoice(att Attention, data []byte) bool {
 // typedKeys is what follows keys written to the program (input): sub is
 // typing, the dialog or question they answer is noted and looked at again,
 // and the prompt that showed as they were typed (promptSince) is answered.
-func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted bool) {
+func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted, typed bool) {
 	if isTerminalReport(data) {
 		return
 	}
@@ -1482,6 +1546,16 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time
 			// Look at the screen again even if the program draws nothing:
 			// a dialog the key did not take away is asked again.
 			s.asked.Poke()
+		}
+	}
+	if !typed {
+		s.mu.Lock()
+		hold := s.info.Attention.Source == SourceSubmit && s.info.Attention.Since == promptSince
+		s.mu.Unlock()
+		if hold {
+			// Only the terminal reported (the pointer moved, say): the
+			// hold's words stay with it.
+			return
 		}
 	}
 	s.answer(promptSince, sub.ID, sub.Name, true, enter)
@@ -1594,6 +1668,13 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 	if waiting {
 		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
 		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
+			// A question answered while the turn is still held for a typed
+			// text (one gone with keys typed before the hold): the hold
+			// shows again.
+			now := time.Now().UTC()
+			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now}
+		}
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 		answered, answeredID, told = s.answeredInChat(by, byName)

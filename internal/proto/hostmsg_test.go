@@ -41,6 +41,48 @@ func TestHostActivityMsgOmitsAnEmptySessionAndEmptyFields(t *testing.T) {
 	}
 }
 
+// A viewer_leave carries its reason when the viewer's link went, none
+// otherwise, so that an older host reads the same message it always did;
+// a host acts on the two reasons it knows, and on nothing else: an unknown
+// reason, or one past MaxLeaveReason, is none.
+func TestViewerLeaveWireShapeAndReasons(t *testing.T) {
+	b, _ := json.Marshal(ViewerLeave{T: HostViewerLeave, ViewerID: "0123456789abcdef", Reason: LeaveExpired})
+	if want := `{"t":"viewer_leave","viewerId":"0123456789abcdef","reason":"expired"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	b, _ = json.Marshal(ViewerLeave{T: HostViewerLeave, ViewerID: "0123456789abcdef"})
+	if want := `{"t":"viewer_leave","viewerId":"0123456789abcdef"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	var old ViewerRef
+	if err := json.Unmarshal([]byte(`{"t":"viewer_leave","viewerId":"0123456789abcdef","reason":"revoked"}`), &old); err != nil || old.ViewerID != "0123456789abcdef" {
+		t.Fatalf("an older host's read: %+v %v", old, err)
+	}
+	for in, want := range map[string]string{
+		"": "", LeaveRevoked: LeaveRevoked, LeaveExpired: LeaveExpired,
+		"left": "", "Revoked": "", strings.Repeat("r", MaxLeaveReason+1): "", "revoked\x00": "",
+	} {
+		if got := LeaveReason(in); got != want {
+			t.Errorf("LeaveReason(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if len(LeaveRevoked) > MaxLeaveReason || len(LeaveExpired) > MaxLeaveReason {
+		t.Fatal("a reason is over its bound")
+	}
+}
+
+// link_gone names a link alone.
+func TestLinkGoneWireShape(t *testing.T) {
+	b, _ := json.Marshal(LinkGone{T: HostLinkGone, LinkID: "l1"})
+	if want := `{"t":"link_gone","linkId":"l1"}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	var m LinkGone
+	if err := json.Unmarshal(b, &m); err != nil || m != (LinkGone{T: HostLinkGone, LinkID: "l1"}) {
+		t.Fatalf("round trip: %+v %v", m, err)
+	}
+}
+
 // The register message carries the host's instance and the session's local
 // id; registered always carries its links, [] when none, and a reply
 // without the field (an older server) reads as nil.

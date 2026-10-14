@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
+import { TERMINAL_FIRST, waitsForTerminal } from '~/utils/attention'
 import { agentInitials, relativeTime } from '~/utils/sessions'
 
 const props = defineProps<{ sessions: SessionInfo[]; answered: SessionInfo[]; selected: number; sending: Set<string> }>()
@@ -21,7 +22,8 @@ function inputRef(id: string) {
 
 function submit(s: SessionInfo) {
   const text = (drafts[s.id] ?? '').trim()
-  if (!text) return
+  // A session that waits for its terminal takes no reply: it would only wait (TERMINAL_FIRST).
+  if (!text || waitsForTerminal(s.attention)) return
   emit('reply', s, text)
   drafts[s.id] = ''
 }
@@ -75,8 +77,18 @@ defineExpose({ focusSelected })
         />
       </div>
       <form v-else class="flex items-center gap-1.5" @submit.prevent="submit(s)">
-        <UInput :ref="inputRef(s.id)" v-model="drafts[s.id]" size="sm" class="flex-1" :placeholder="`Reply to ${agentName(s)}…`" :loading="sending.has(s.id)" @click.stop @focus="emit('select', i)" />
-        <UButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" aria-label="Send" :disabled="!(drafts[s.id] ?? '').trim()" />
+        <UInput
+          :ref="inputRef(s.id)"
+          v-model="drafts[s.id]"
+          size="sm"
+          class="flex-1"
+          :placeholder="waitsForTerminal(s.attention) ? TERMINAL_FIRST : `Reply to ${agentName(s)}…`"
+          :disabled="waitsForTerminal(s.attention)"
+          :loading="sending.has(s.id)"
+          @click.stop
+          @focus="emit('select', i)"
+        />
+        <UButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" aria-label="Send" :disabled="waitsForTerminal(s.attention) || !(drafts[s.id] ?? '').trim()" />
       </form>
     </div>
 

@@ -359,7 +359,7 @@ func TestAViewerMovingToTheRelayAfterItsChannelWentKeepsItsSlot(t *testing.T) {
 	p.mu.Lock()
 	p.relay = &relaySink{a: a, viewerID: id}
 	p.mu.Unlock()
-	p.attach(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "v"})
+	p.attach(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "v"}, nil)
 	p.mu.Lock()
 	sub := p.sub
 	p.mu.Unlock()
@@ -410,7 +410,7 @@ func TestARelayAttachBeforeTheChannelsDetachFinishesKeepsTheSlot(t *testing.T) {
 	p.replaces = old
 	p.relay = &relaySink{a: a, viewerID: id}
 	p.mu.Unlock()
-	p.attach(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "v"})
+	p.attach(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "v"}, nil)
 	p.mu.Lock()
 	sub := p.sub
 	p.mu.Unlock()

@@ -43,7 +43,11 @@ pump follows `ESC[?2004h`/`ESC[?2004l`), then, 250 ms later, a carriage return
 written on its own, one submission at a time per session, with no lock held
 across the pause (which, in a session with a trust watcher, lasts until the
 watcher has looked at what was drawn since the text), cancellable, and never
-written twice. A person's INPUT stays
+written twice. A submission whose link no longer opens the session (revoked,
+expired) before its carriage return is written gets none: if its text is
+typed, the session's turn stays held (`holdTyped`, attention `source:"submit"`)
+until a person's INPUT, or the session's end, so no other line joins the
+text. A person's INPUT stays
 raw. The same pump treats output that only sets the window title as no output,
 watches the screen's text for the agent's workspace-trust question
 (`Options.TrustPattern`), and an INPUT that is only a terminal's automatic

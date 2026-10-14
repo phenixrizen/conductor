@@ -102,6 +102,23 @@ type Subscription struct {
 	// hello's, then its last resize), for a hand-over of the size; under the
 	// session's mu.
 	want [2]uint16
+	// reportCarry is a terminal or mouse report the connection's last
+	// write began and did not finish (typesSomething), for its next; under
+	// carryMu.
+	carryMu     sync.Mutex
+	reportCarry []byte
+}
+
+// typesSomething reports whether data, the connection's next write of keys,
+// holds anything a person typed rather than only the terminal's reports
+// (session.typesSomething), and keeps what it leaves of a report begun for
+// the write after.
+func (s *Subscription) typesSomething(data []byte) bool {
+	s.carryMu.Lock()
+	defer s.carryMu.Unlock()
+	typed, rest := typesSomething(s.reportCarry, data)
+	s.reportCarry = rest
+	return typed
 }
 
 // ownsSize reports whether s is one of the owner's own windows: a

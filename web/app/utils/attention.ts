@@ -1,4 +1,24 @@
 import type { SessionInfo } from '~/composables/useSessions'
+import type { Attention } from '~/utils/protocol'
+
+/**
+ * Whether the session waits for a person to type into its terminal: a submission's text was typed and not entered,
+ * its link no longer opening the session (source "submit"), and the next reply goes once someone has typed there.
+ */
+export function waitsForTerminal(a: Pick<Attention, 'state' | 'source'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.source === 'submit'
+}
+
+/** The heading a reply bar shows for a session that needs input: the terminal's for a held turn, else the agent's. */
+export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefined, agentName: string): string {
+  return waitsForTerminal(a) ? 'Type in the terminal to go on' : `${agentName} is waiting on you`
+}
+
+/**
+ * What a reply field says while the session waits for its terminal: it takes no reply then, for one would only wait for the
+ * terminal, and a reply box's connection would not see it go or fail.
+ */
+export const TERMINAL_FIRST = 'Type in the terminal first'
 
 /** Sessions that need input, newest signal first. */
 export function needingInput(sessions: Iterable<SessionInfo>): SessionInfo[] {

@@ -1,4 +1,5 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
+import { TERMINAL_FIRST, waitsForTerminal } from './attention'
 import type { AttentionOption } from './protocol'
 import type { SessionRow } from './sidebar'
 
@@ -68,6 +69,8 @@ export interface RowPrompt {
   choices: AttentionOption[]
   /** A hosted session whose host is away: nothing reaches it until the host is back. */
   away: boolean
+  /** The session waits for someone to type in its terminal (waitsForTerminal): a reply would only wait, so none is taken. */
+  held: boolean
   placeholder: string
 }
 
@@ -76,7 +79,8 @@ export const HOST_AWAY = 'The host is away'
 export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPrompt | null {
   if (!row.prompt) return null
   const away = row.session.status === 'host_disconnected'
-  return { message: row.prompt.message, choices: row.prompt.options, away, placeholder: away ? HOST_AWAY : 'Reply…' }
+  const held = waitsForTerminal(row.session.attention)
+  return { message: row.prompt.message, choices: row.prompt.options, away, held, placeholder: away ? HOST_AWAY : held ? TERMINAL_FIRST : 'Reply…' }
 }
 
 /** What the account menu beside the sidebar's name offers (design 3b): your name, the shortcuts, the theme, the workbench token. */

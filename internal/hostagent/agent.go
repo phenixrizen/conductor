@@ -337,6 +337,13 @@ type agent struct {
 	// request id. Guarded by mu.
 	links map[string]chan linkAnswer
 
+	// creds are the links the viewers joined through (linkCreds): one the
+	// server says no longer opens the session (link_gone), or every one as
+	// the connection to it is lost, withdraws what its viewers asked for
+	// and is still under way (peer.authorize). Its lock is held for nothing
+	// else: the session asks under its own locks.
+	creds linkCreds
+
 	// activity carries the local session's activity entries to the server;
 	// statusQueued says the session's final (status) entry is in it.
 	activity     *activityForwarder
@@ -715,7 +722,9 @@ func (a *agent) retryAttention() {
 
 // sameAttention says whether x and y tell the server the same.
 func sameAttention(x, y session.Attention) bool {
-	return x.State == y.State && x.Message == y.Message && x.Kind == y.Kind && len(x.Options) == len(y.Options)
+	// The source too: a switchyard is told no words, and a held turn
+	// (source submit) differs from a bell's wait by its source alone there.
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options)
 }
 
 // toServer is an attention change as the server is told it: in full to the
@@ -925,10 +934,7 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	if att := a.toServer(a.local.Info().Attention); att.State != session.AttentionNone {
 		a.send(hostAttentionMsg(a.sessionID(), att))
 	}
-	defer func() {
-		a.dropConn(c)
-		a.closeAllPeers()
-	}()
+	defer a.connLost(c)
 
 	// Report the current status in case the process ended while disconnected.
 	go a.watchStatus(ctx, w)
@@ -1057,6 +1063,15 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			return errors.New("invalid viewer_join")
 		}
 		a.addPeer(m.ViewerID, role, m.LinkID, m.LinkLabel)
+	case proto.HostLinkGone:
+		var m proto.LinkGone
+		if err := json.Unmarshal(data, &m); err != nil {
+			return err
+		}
+		if m.LinkID == "" || len(m.LinkID) > proto.MaxLinkID {
+			return errors.New("invalid link_gone")
+		}
+		a.creds.gone(m.LinkID)
 	case proto.HostOffer:
 		var m proto.ViewerSDP
 		if err := json.Unmarshal(data, &m); err != nil {
@@ -1089,11 +1104,21 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			p.startRelay()
 		}
 	case proto.HostViewerLeave:
-		var m proto.ViewerRef
+		var m proto.ViewerLeave
 		if err := json.Unmarshal(data, &m); err != nil {
 			return err
 		}
-		a.removePeer(m.ViewerID)
+		// Its link no longer opens the session: what the viewer has under
+		// way is withdrawn, not finished. An older server gives no reason,
+		// and one this host does not know is none.
+		var why error
+		switch proto.LeaveReason(m.Reason) {
+		case proto.LeaveRevoked:
+			why = session.ErrRevoked
+		case proto.LeaveExpired:
+			why = session.ErrExpired
+		}
+		a.removePeerFor(m.ViewerID, why)
 	case proto.HostAttention:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard
@@ -1111,6 +1136,15 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
+		if a.local.Held() {
+			// The session's turn is held for a typed text, which is what it
+			// shows (session.HeldWords), the change only recorded: the
+			// server, which shows the change it sent, is told so.
+			a.mu.Lock()
+			a.attentionUntold = true
+			a.mu.Unlock()
+			a.noteChange(a.local.Info())
+		}
 	case proto.HostActivity:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard
@@ -1404,6 +1438,7 @@ func (a *agent) addPeer(id string, role session.Role, linkID, linkLabel string) 
 	// A switchyard's viewer is never the owner's window, whatever else says
 	// so: its workbench is its operator's (Options.Switchyard).
 	p := newPeer(a, id, role, linkID, linkLabel, linkID == "" && a.opts.ServerIsOwners && !a.opts.Switchyard)
+	p.cred = a.creds.of(linkID)
 	a.mu.Lock()
 	a.peers[id] = p
 	ice := a.ice
@@ -1421,13 +1456,27 @@ func (a *agent) peer(id string) *peer {
 	return a.peers[id]
 }
 
-func (a *agent) removePeer(id string) {
+func (a *agent) removePeer(id string) { a.removePeerFor(id, nil) }
+
+// connLost is the end of the control connection c: its writer goes, every
+// viewer is let go, and every link the viewers joined through counts as
+// gone (linkCreds.lost) before them, for a link's going is not heard of
+// until the connection is back: what a link's viewer asked for and is
+// still under way is withdrawn rather than finished.
+func (a *agent) connLost(c *websocket.Conn) {
+	a.dropConn(c)
+	a.creds.lost()
+	a.closeAllPeers()
+}
+
+// removePeerFor lets the viewer id go, for why (peer.closeFor).
+func (a *agent) removePeerFor(id string, why error) {
 	a.mu.Lock()
 	p := a.peers[id]
 	delete(a.peers, id)
 	a.mu.Unlock()
 	if p != nil {
-		p.close()
+		p.closeFor(why)
 	}
 }
 
