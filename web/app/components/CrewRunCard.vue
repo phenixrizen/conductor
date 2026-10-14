@@ -69,7 +69,8 @@ async function stop() {
 
     <div v-for="a in asks" :key="a.name" class="flex items-center gap-2 rounded-md bg-warning/10 px-2.5 py-2 text-[13px]" data-run-ask>
       <UIcon name="i-lucide-hand" class="size-3.5 flex-none text-warning" />
-      <span class="min-w-0 truncate"><b class="font-semibold">{{ a.name }}</b> asks “{{ a.question }}”</span>
+      <!-- The question whole (#187): wrapped, six lines at most, the full text as the tooltip. -->
+      <span class="min-w-0 line-clamp-6 break-words" :title="a.question" data-run-ask-words><b class="font-semibold">{{ a.name }}</b> asks “{{ a.question }}”</span>
       <NuxtLink v-if="a.sessionId" :to="`/sessions/${encodeURIComponent(a.sessionId)}`" class="ml-auto flex-none font-medium text-highlighted hover:underline">Answer</NuxtLink>
     </div>
 

@@ -64,6 +64,17 @@
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       },
       {
+        "id": "asker-long",
+        "name": "Asker, long question (e2e stub)",
+        "description": "The asker whose question runs to 200 characters, as a Claude Code permission prompt quoting its command does: the question must read whole wherever it shows (#187).",
+        "command": ["/bin/bash", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_ASK": "Claude needs your permission to use Bash: git log --oneline --graph origin/main..HEAD -- internal/session web/app/components (the commits this branch adds, so that the release notes can name each one)", "STUB_CHOICES": "Yes|Yes, and don't ask again|No" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
         "id": "goose",
         "name": "Goose (e2e stub)",
         "description": "The stub answering `goose --version` as the Go migrations tool does: an impostor on the PATH, which the identity probe must name.",
