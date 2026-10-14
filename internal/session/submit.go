@@ -120,9 +120,9 @@ type Submission struct {
 var ErrSubmitPending = errors.New("session: the program is taking its input slowly; the line is entered once it has")
 
 // submitState is what a submission carries from its text to its Enter.
-// aside is the id of the agent's own question set aside as Conductor's own
-// submission (no By) began (own): shown again at its turn's done before
-// the Enter, it is no prompt that leaves the Enter out (comesAfter).
+// aside is the id of the agent's own question set aside as the submission
+// began (own): shown again at its turn's done before the Enter, it is no
+// prompt that leaves the Enter out (comesAfter).
 type submitState struct {
 	promptSince *time.Time
 	byName      string
@@ -134,11 +134,12 @@ type submitState struct {
 // comesAfter reports whether att is a prompt come since the submission
 // began, which its Enter must not answer: needs_input, stamped otherwise
 // than the attention it began with, and not the agent's own question it
-// began with set aside (aside), shown again by its turn's done (a handoff
+// began with set aside (aside), shown again by its turn's done (a line
 // typed while the agent worked, its Enter after the done): that Enter is
-// written all the same, so that no text is left typed without it; it
-// answers nothing (answer compares the stamp the submission began with),
-// and begins the next turn, whose work removes the question.
+// written all the same, so that no text is left typed without it. A
+// handoff's answers nothing (answer compares the stamp the submission
+// began with), and begins the next turn, whose work removes the question;
+// a person's reply answers it (noteAnswering, answerReached).
 func (st submitState) comesAfter(att Attention) bool {
 	return att.State == AttentionNeedsInput && att.Since != st.promptSince && !(st.aside != "" && att.ID == st.aside)
 }
@@ -263,13 +264,11 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if sub.Question != "" {
 		gone = s.waitsLocked(sub.Question)
 	}
-	// Conductor's own submission notes the agent's own question set aside
-	// as it begins (submitState.comesAfter); a person's reply removes it
-	// as it is written (reachedAside).
-	var aside string
-	if sub.By == nil {
-		aside = s.asideOwn()
-	}
+	// The agent's own question set aside as the submission begins
+	// (submitState.comesAfter): a person's reply removes it as it is
+	// written, or answers it if its turn's done shows it again meanwhile;
+	// Conductor's own line answers nothing of it (noteAnswering).
+	aside := s.asideOwn()
 	s.mu.Unlock()
 	if ended {
 		return res, ErrSessionEnded
@@ -320,10 +319,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		textWait.guard = s.textGuard(sub)
 		textWait.before = func() {
 			keys, _, _ := s.keysWritten([]byte(data))
-			s.noteAnswering(promptSince, []byte(data), keys, nil, st.aside)
-			if sub.By != nil {
-				s.reachedAside()
-			}
+			s.noteAnswering(promptSince, []byte(data), keys, nil, st.aside, sub.By != nil)
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
@@ -759,10 +755,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			sub.BeforeEnter()
 		}
 		keys, _, _ := s.keysWritten([]byte{'\r'})
-		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil, st.aside)
-		if sub.By != nil {
-			s.reachedAside()
-		}
+		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil, st.aside, sub.By != nil)
 		s.nextTurn()
 	}
 	enterAt := time.Now().UTC()
@@ -796,6 +789,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if sub.By != nil {
 		s.stampTyping(sub.By)
 		s.answer(promptSince, sub.By.ID, sub.By.Name, true, true)
+		s.answerReached(st.aside, sub.By.ID, sub.By.Name)
 	} else {
 		s.answer(promptSince, "", byName, false, true)
 	}

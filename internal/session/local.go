@@ -1385,17 +1385,19 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	ask := rules&agentAsks != 0 && state == AttentionNeedsInput
 	own := s.own
 	ownShown := own.ID != "" && cur.ID == own.ID
+	// Held over by the hold of the turn, which shows in its place.
+	ownHeld := own.ID != "" && s.heldOver.ID == own.ID && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit
 	// The hold's words give way to a question drawn on the screen (a
 	// startup question's unlessWaiting): the program waits on that one now.
 	waiting := cur.State == AttentionNeedsInput && !(cur.Source == SourceSubmit && heldSource(source))
-	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source) || ownShown)
+	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source) || ownShown || ownHeld)
 	// A report from outside that the session waits, with choices or
 	// without, does not hide a question asked during the work: the dialog
 	// on the screen is what answers go to (a hook that reports the same
 	// dialog late, say, or another question whose choices would land on
 	// it).
 	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
-	turnsOwn := rules&unlessTurnEnded != 0 && (cur.State == AttentionDone || ownShown) && s.turnEnded
+	turnsOwn := rules&unlessTurnEnded != 0 && (cur.State == AttentionDone || ownShown || ownHeld) && s.turnEnded
 	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
@@ -2121,6 +2123,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// may raise the next one meanwhile, and typing must not clear that one.
 	// Each attention change gets a new Since, which tells the prompts apart.
 	promptSince := s.info.Attention.Since
+	// The agent's own question set aside as the keys begin (own): they
+	// remove it as they are written, or, shown again by its turn's done
+	// meanwhile, answer it (noteAnswering, answerReached).
+	aside := s.asideOwn()
 	// A question's own choice answers it, with an Enter or without: some
 	// dialogs pick on a digit (Codex's background-server question) or skip on
 	// Escape (its update question), and an Enter after those would land on
@@ -2313,12 +2319,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if !isTerminalReport(data) && !quiet {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
-			s.noteAnswering(promptSince, data, maybe, onScreen, "")
-			if typed {
-				// A person's keys (a reply's choice too) while the agent's
-				// own question is set aside: it does not show again.
-				s.reachedAside()
-			}
+			s.noteAnswering(promptSince, data, maybe, onScreen, aside, typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -2430,6 +2431,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	written := func() {
 		if !quiet {
 			s.typedKeys(sub, data, promptSince, typedEnter, noted, typed)
+			if typed && aside != "" {
+				s.answerReached(aside, sub.ID, sub.Name)
+			}
 		}
 		if startupSince != nil {
 			s.answer(startupSince, sub.ID, sub.Name, true, true)
@@ -2586,22 +2590,23 @@ func (s *Local) dropOwnLocked() {
 	s.own, s.ownAside, s.ownTurn = Attention{}, false, 0
 }
 
-// reachedAside removes the agent's own question while it is set aside, as
-// a person's keys or reply are written (input, Submit): the person has
-// taken part, and it does not show again at its turn's done. Conductor's
-// own submissions (a crew's prompt, a handoff, a broadcast) do not: they
-// are no person's answer.
-func (s *Local) reachedAside() {
+// answerReached answers the agent's own question named id, once a person's
+// write that began while it was set aside is made, when its turn's done
+// showed it again meanwhile and the write claimed it (noteAnswering): the
+// person's keys or reply reached it. Nothing otherwise.
+func (s *Local) answerReached(id, by, byName string) {
 	s.mu.Lock()
-	if s.own.ID != "" && s.ownAside {
-		s.dropOwnLocked()
-	}
+	att := s.info.Attention
+	reached := id != "" && att.ID == id && att.State == AttentionNeedsInput && s.answered == id
 	s.mu.Unlock()
+	if reached {
+		s.answer(att.Since, by, byName, true, true)
+	}
 }
 
 // asideOwn is the id of the agent's own question while it is set aside,
-// "" while none is: what a submission notes as it begins (submitState.aside).
-// The caller holds s.mu.
+// "" while none is: what a write notes as it begins (input,
+// submitState.aside). The caller holds s.mu.
 func (s *Local) asideOwn() string {
 	if s.own.ID != "" && s.ownAside {
 		return s.own.ID
@@ -2815,17 +2820,36 @@ func (s *Local) dialogGone(look uint64) {
 // asked again, before the watcher has seen the next) is not what they
 // answer.
 //
-// except, when set, is the agent's own question Conductor's submission
-// began with set aside (submitState.aside): shown again by its turn's done
-// before the submission's write, it is not what the write answers.
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, except string) {
+// aside, when set, is the agent's own question set aside as the write
+// began (asideOwn), and person says the write is a person's (keys typed, a
+// reply's text or Enter), not Conductor's own (a crew's prompt, a handoff,
+// a broadcast). Weighed in the same critical section as a done that shows
+// the question again: a person's write removes it, still aside (the person
+// has taken part, and it does not show again at the done), or claims it,
+// shown again meanwhile, for the write's caller to answer once it is made
+// (answerReached); Conductor's own write leaves it as it is, aside or
+// shown, and answers nothing of it.
+func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, aside string, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, keys) {
 		s.noteDialogAnswered(onScreen.words)
 	}
+	if aside != "" && s.own.ID == aside {
+		switch {
+		case s.ownAside:
+			if person {
+				s.dropOwnLocked()
+			}
+		case s.info.Attention.ID == aside:
+			if person {
+				s.markAnswered(s.info.Attention)
+			}
+			return
+		}
+	}
 	att := s.info.Attention
-	if att.State != AttentionNeedsInput || att.ID == "" || att.ID == except {
+	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
 	var picks bool

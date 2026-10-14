@@ -802,12 +802,14 @@ question, shown or set aside:
   reached, is removed, never set aside; one set aside is removed by a
   person's keys or reply typed meanwhile (the person has taken part), not by
   Conductor's own submissions (a crew's prompt, a handoff, a broadcast). A
-  handoff typed while it is set aside whose carriage return follows the
-  `done` that shows it again is entered all the same: it answers nothing,
-  and begins the next turn, in which the agent's work removes the question.
-  The hold of the turn (`submit`) holds it over, through its turn's `done`
-  and its work in that turn, as it holds over any question the agent
-  reported. Handoffs and broadcasts wait while it shows, as for any
+  line typed while it is set aside whose carriage return follows the `done`
+  that shows it again is entered all the same: a handoff's answers nothing,
+  and begins the next turn, in which the agent's work removes the question;
+  a person's reply or keys begun while it was set aside and written once the
+  `done` has shown it again answer it. The hold of the turn (`submit`) holds
+  it over, through its turn's `done` and its work in that turn, as it holds
+  over any question the agent reported, and an OSC notification leaves it
+  held over. Handoffs and broadcasts wait while it shows, as for any
   `needs_input`, and a reply naming it while it is set aside is refused, as
   one to a question no longer shown.
 

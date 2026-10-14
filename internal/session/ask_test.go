@@ -925,3 +925,85 @@ func TestAPersonsReplyWhileTheQuestionIsAsideRemovesIt(t *testing.T) {
 		t.Fatalf("the reply: %+v, %v", got.res, got.err)
 	}
 }
+
+// A person's reply, or keys, begun while the question is set aside and
+// written once its turn's done has shown it again (the writer busy with
+// another write meanwhile): weighed with the done in one critical section,
+// the write reaches the question shown again and answers it, and the
+// reply's Enter is written, never left out for the question's return.
+// (Codex's review of the code, round 1.)
+func TestAPersonsWriteBegunAsideAnswersTheQuestionShownAgain(t *testing.T) {
+	for _, reply := range []bool{true, false} {
+		t.Run(fmt.Sprintf("reply %v", reply), func(t *testing.T) {
+			s, p, _ := asking(t, Options{})
+			hold, takeAgain := gateWrites(t, p)
+			owner := ownerOf(t, s)
+			q := askOwn(t, s, "Which database?", dbChoices...)
+			reportState(t, s, AttentionWorking, "")
+			// A terminal's own report takes the writer, and waits.
+			hold()
+			go s.Input(owner, []byte("\x1b[3;1R"))
+			untilWaiting(t, s, 0)
+			done := make(chan error, 1)
+			if reply {
+				go func() {
+					res, err := s.Submit(context.Background(), Submission{Text: "Postgres", By: owner})
+					if err == nil && !res.Entered {
+						err = fmt.Errorf("not entered: %+v", res)
+					}
+					done <- err
+				}()
+			} else {
+				go func() { done <- s.Input(owner, []byte("Postgres\r")) }()
+			}
+			untilWaiting(t, s, 1)
+			reportState(t, s, AttentionDone, "asked")
+			showsOwn(t, s, q, "the done with the person's write queued")
+			takeAgain()
+			if got := written(t, p); got != "\x1b[3;1R" {
+				t.Fatalf("written %q", got)
+			}
+			want := []string{"Postgres\r"}
+			if reply {
+				want = []string{"Postgres", "\r"}
+			}
+			for _, w := range want {
+				if got := written(t, p); got != w {
+					t.Fatalf("written %q, want %q", got, w)
+				}
+			}
+			if err := returnsWithin(t, 5*time.Second, "the person's write", func() error { return <-done }); err != nil {
+				t.Fatal(err)
+			}
+			info := s.Info()
+			if info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.Message != "Which database?" {
+				t.Fatalf("the person's write did not answer the question: %+v %+v", info.Attention, info.LastAnswer)
+			}
+			if kept, _ := keeps(s); kept {
+				t.Fatal("the answered question is kept")
+			}
+		})
+	}
+}
+
+// The question held over by the hold through its turn's done: an OSC
+// notification (its turn's, or the ended turn's) changes nothing, and keys
+// that end the hold without answering it show it again, the same
+// Attention. (Codex's review of the code, round 1.)
+func TestANotificationLeavesTheQuestionHeldOver(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	owner := ownerOf(t, s)
+	q := askOwn(t, s, "Which name?")
+	go s.holdTyped()
+	heldShows(t, s)
+	out(p, "\x1b]9;in its turn\x07")
+	heldShows(t, s)
+	reportState(t, s, AttentionDone, "asked")
+	out(p, "\x1b]9;Codex: turn complete\x07")
+	heldShows(t, s)
+	if err := s.Input(owner, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	showsOwn(t, s, q, "once the hold ended")
+}

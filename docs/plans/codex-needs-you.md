@@ -841,6 +841,18 @@ orders or invariants above.
   chat sent to the agent) removes a question set aside as its text or
   Enter is written; a run's chat to a member, a broadcast and a handoff
   (`UnlessWaiting`, no `By`) are Conductor's and do not.
+- **Round 1 of Codex's review of the code.** A person's write begun while
+  the question was aside, and taken by the writer once the done had shown
+  it again, did nothing to it (the removal was its own critical section,
+  after the note of what the write answers), and a reply's Enter was left
+  out for the question's return. Every write now notes the question aside
+  as it begins (input, `submitState.aside`), and the note of what it
+  answers (`noteAnswering`) weighs it in the same critical section as the
+  done: a person's write removes it, still aside, or claims it, shown
+  again, and answers it once written (`answerReached`), the reply's Enter
+  written; Conductor's own leaves it. And an OSC notification under the
+  hold dropped the question held over: the hold showing in its place
+  counts as the question for `unlessChoices` and `unlessTurnEnded`.
 - **The same words, now marked.** An `ask` with the words, source, kind and
   choices of the needs_input showing changes nothing shown, as any report
   of the same; it marks that question as the agent's from then.
