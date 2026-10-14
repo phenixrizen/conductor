@@ -107,14 +107,15 @@ went.
   pull request) or waits. An agent that cannot ask reports it to whoever
   leads, who asks. A security finding follows the same ask, but goes to
   the owner's private document instead of an issue (see Reviews).
-- **One change per pull request.** A bug fixed now in code the change does
-  not otherwise touch (one the owner said to fix now, or a defect the
-  change exposes or needs fixed there) gets its own branch and pull request
-  from main, not more commits on the change's branch, so each review stays
-  on one thing. When the change depends on that fix (it exposes or needs
-  it), that pull request merges first, and the change, rebased on it, is
-  tested and reviewed again before it merges. A defect in the change's own
-  code is fixed on its branch.
+- **One change per pull request.** The change's branch holds the change
+  and the bugs of its current stream that lie in code it touches. Every
+  other fix gets its own branch and pull request from main, not more
+  commits on the change's branch, so each review stays on one thing: an
+  independent bug the owner says to fix now, even one in code the change
+  touches, and a bug the change exposes or needs fixed in code it does not
+  otherwise touch. When the change depends on such a fix, that pull
+  request merges first, and the change, rebased on it, is tested and
+  reviewed again before it merges.
 - **The board follows the work.** A card is In progress when its branch
   starts, In review when the pull request that finishes it opens, and Done
   when that fix reaches `main`. The finishing pull request's body says
@@ -226,9 +227,9 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   finding in the current stream of work (the change introduces it,
   exposes it or needs it fixed; see Issues and the project board) is fixed
   before the change merges, where One change per pull request puts it: on
-  the branch when it is in the change's own code, in a pull request of its
-  own that merges first when it is in code the change does not otherwise
-  touch. One that is independent of the change is split off (an issue, and
+  the branch when it is in code the change touches, in a pull request of
+  its own that merges first when it is in code the change does not
+  otherwise touch. One that is independent of the change is split off (an issue, and
   the owner's call), not fixed on the branch. The pull request's body
   records the checkpoint and how each finding was sorted. A change still
   finding its own defects after ten rounds goes back to its plan.
