@@ -279,15 +279,26 @@ func (a *agent) awaitVouch(ctx context.Context) {
 	}
 }
 
-// pingServer pings the server on c, whose pings l keeps, and notes the
-// outcome there: answered (the pong came within heardWithin), or not. Its
-// send is when the ping is noted to go, before it is written: the host
-// vouches from no later than the ping left. A ping past maxPingsUnderWay is
-// not sent.
+// pingServer pings the server on c, whose pings l keeps, on a goroutine of
+// its own (pingOn). The ping is noted under way here, on the caller's
+// goroutine, before it returns: a write that comes next finds it under way
+// and waits for its answer (awaitVouch). A ping past maxPingsUnderWay is not
+// sent.
 func (a *agent) pingServer(ctx context.Context, c *websocket.Conn, l *connLive) {
 	sent, ok := l.pingSent()
 	if !ok {
 		return
+	}
+	go a.pingOn(ctx, c, l, sent)
+}
+
+// pingOn sends the ping noted under way at sent and notes its outcome:
+// answered (the pong came within heardWithin), or not. Its send is when the
+// ping was noted, before it is written: the host vouches from no later than
+// the ping left.
+func (a *agent) pingOn(ctx context.Context, c *websocket.Conn, l *connLive, sent time.Duration) {
+	if seam := a.beforePing.Load(); seam != nil {
+		(*seam)()
 	}
 	pctx, cancel := context.WithTimeout(ctx, a.heardWithin())
 	err := c.Ping(pctx)
@@ -298,9 +309,9 @@ func (a *agent) pingServer(ctx context.Context, c *websocket.Conn, l *connLive) 
 	l.pingDone(sent, err == nil)
 }
 
-// pingNow pings the server at once on the current control connection, on a
-// goroutine of its own: a viewer joining through a link, whose first line
-// waits for the answer when the host does not vouch yet.
+// pingNow pings the server at once on the current control connection: a
+// viewer joining through a link, whose first line waits for the answer when
+// the host does not vouch yet. The ping is under way once it returns.
 func (a *agent) pingNow() {
 	a.mu.Lock()
 	w := a.out
@@ -308,7 +319,7 @@ func (a *agent) pingNow() {
 	if w == nil || w.live == nil {
 		return
 	}
-	go a.pingServer(w.ctx, w.c, w.live)
+	a.pingServer(w.ctx, w.c, w.live)
 }
 
 // keepHearing pings the server on c, whose pings l keeps, every pingEvery
@@ -367,6 +378,6 @@ func (a *agent) keepHearing(ctx context.Context, c *websocket.Conn, l *connLive,
 			c.CloseNow()
 			return
 		}
-		go a.pingServer(ctx, c, l)
+		a.pingServer(ctx, c, l)
 	}
 }

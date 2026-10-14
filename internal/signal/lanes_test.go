@@ -237,6 +237,73 @@ func TestAClosedViewersQueuedMessagesAreDropped(t *testing.T) {
 	})
 }
 
+// A viewer that left with its join and a line still queued, and whose link
+// goes (revoked, or expired on its own timer) before they are written, has
+// none of them written: the going reaches the host alone, and no leave
+// follows a join that never went, so a host never meets the viewer after
+// the link's going. One whose join was written before has the going, then
+// its leave, its queued line dropped.
+func TestALeftViewersQueuedMessagesAreDroppedWhenItsLinkGoes(t *testing.T) {
+	line := proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "queued line"})
+	queueLine := func(t *testing.T, hs *HostedSession, v *Viewer) {
+		t.Helper()
+		if err := hs.StartRelay(v); err != nil {
+			t.Fatal(err)
+		}
+		if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: line[1:]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, how := range []string{"revoked", "expired"} {
+		t.Run(how+", its join still queued", func(t *testing.T) {
+			hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+			opts := ViewerOptions{ID: "0123456789abcdef", Role: session.RoleControl, LinkID: "l1"}
+			if how == "expired" {
+				until := time.Now().Add(300 * time.Millisecond)
+				opts.Authorize = func() (session.Grant, error) { return session.Grant{Role: session.RoleControl, Until: until}, nil }
+			}
+			v, err := hs.AddViewerWith(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			queueLine(t, hs, v)
+			gone := removed(hs, v) // it left: its join is waited for
+			time.Sleep(50 * time.Millisecond)
+			if how == "revoked" {
+				hs.DisconnectLink("l1")
+			} else {
+				time.Sleep(400 * time.Millisecond)
+			}
+			got := takeAll(t, conn, 300*time.Millisecond)
+			if len(got) != 1 || got[0] != (taken{proto.HostLinkGone, "l1"}) {
+				t.Fatalf("the host was sent %v, want the link's going alone", got)
+			}
+			select {
+			case <-gone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the viewer was never let go")
+			}
+			if got := takeAll(t, conn, 200*time.Millisecond); len(got) != 0 {
+				t.Fatalf("then %v, want nothing", got)
+			}
+		})
+	}
+	t.Run("revoked, its join written", func(t *testing.T) {
+		hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+		v := linkViewer(t, hs, "0123456789abcdef", "l1")
+		drainText(t, conn, proto.HostViewerJoin)
+		queueLine(t, hs, v)
+		gone := removed(hs, v)
+		<-gone // its leave is queued behind its relay_start and line
+		hs.DisconnectLink("l1")
+		got := takeAll(t, conn, 300*time.Millisecond)
+		want := []taken{{proto.HostLinkGone, "l1"}, {proto.HostViewerLeave, v.ID}}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("the host was sent %v, want %v", got, want)
+		}
+	})
+}
+
 // A viewer that left for no reason of its link's (it left, its connection
 // failed) has what it sent before its leave written first, in order, and
 // its leave after, with no reason, whatever the server's own lane holds.

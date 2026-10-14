@@ -377,6 +377,11 @@ type agent struct {
 	// beforeSave, when set (tests), runs as a viewer's save part has its
 	// turn on the viewer's saving queue, before the session takes it.
 	beforeSave atomic.Pointer[func(proto.FileWrite)]
+	// beforeAnswer, when set (tests), runs as an offer's answer begins, off
+	// the read loop (peer.handleOffer); beforePing as a ping reserved goes
+	// out (pingOn).
+	beforeAnswer atomic.Pointer[func()]
+	beforePing   atomic.Pointer[func()]
 }
 
 // inputDeadline is when keystrokes arriving now must be written by (a

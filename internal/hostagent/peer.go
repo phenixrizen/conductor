@@ -155,7 +155,9 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 // offer is taken wait for it (handleICE). It refuses at once with
 // errNoWebRTC without a peer connection, and with errOfferUnderWay while
 // another offer of the viewer's is being answered. One that fails is the
-// viewer's error (webrtc_failed).
+// viewer's error (webrtc_failed), unless the peer connection it was for is
+// no longer the viewer's by then (the viewer moved to the relay, or left):
+// what becomes of an offer of a connection let go is nobody's concern.
 func (p *peer) handleOffer(sdp string) error {
 	p.mu.Lock()
 	pc := p.pc
@@ -170,20 +172,29 @@ func (p *peer) handleOffer(sdp string) error {
 	p.offering = true
 	p.mu.Unlock()
 	go func() {
+		if seam := p.a.beforeAnswer.Load(); seam != nil {
+			(*seam)()
+		}
 		err := p.answerOffer(pc, sdp)
 		p.mu.Lock()
 		p.offering = false
+		current := p.ownsPC(pc)
 		p.mu.Unlock()
-		if err != nil {
+		if err != nil && current {
 			p.a.sendViewerError(p.id, "webrtc_failed", err.Error())
 		}
 	}()
 	return nil
 }
 
+// ownsPC says whether pc is still the viewer's peer connection. The caller
+// holds p.mu.
+func (p *peer) ownsPC(pc *webrtc.PeerConnection) bool { return p.pc == pc && !p.closed }
+
 // answerOffer makes pc's answer to sdp, adds the candidates that waited
 // for it, and sends it (agent.send: dropped once it has waited
-// controlTurnWait for its turn).
+// controlTurnWait for its turn), as long as pc is still the viewer's: an
+// answer for a connection let go meanwhile is neither applied nor sent.
 func (p *peer) answerOffer(pc *webrtc.PeerConnection, sdp string) error {
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
 		return err
@@ -196,6 +207,10 @@ func (p *peer) answerOffer(pc *webrtc.PeerConnection, sdp string) error {
 		return err
 	}
 	p.mu.Lock()
+	if !p.ownsPC(pc) {
+		p.mu.Unlock()
+		return nil
+	}
 	p.remoteSet = true
 	pending := p.pending
 	p.pending = nil

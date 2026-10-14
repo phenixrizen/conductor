@@ -172,6 +172,98 @@ func TestFirstLineWaitsForTheFirstPong(t *testing.T) {
 	}
 }
 
+// A viewer joining through a link has the host's ping under way as its join
+// is handled, before anything of the viewer's can be: its first request,
+// over the relay right behind its hello, waits for that ping's answer
+// however late the ping itself goes out, and is written once it is
+// answered.
+func TestTheJoinsPingIsUnderWayBeforeTheFirstRequest(t *testing.T) {
+	srv := newStubServer(t)
+	a, proc, _ := liveHostParts(t, srv.url, 0, session.Options{FileEdit: "off", Log: discardLog}, firstWithin, firstPing)
+	<-srv.conns
+	release := make(chan struct{})
+	hold := func() { <-release }
+	a.beforePing.Store(&hold)
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	const id = "0123456789abcdef"
+	if err := a.handleControl(t.Context(), mustJSON(proto.ViewerJoin{T: proto.HostViewerJoin, ViewerID: id, Role: string(session.RoleControl), LinkID: "l1"})); err != nil {
+		t.Fatal(err)
+	}
+	l := a.live.Load()
+	l.mu.Lock()
+	underWay := l.underWay
+	l.mu.Unlock()
+	if underWay < 1 {
+		t.Fatal("no ping under way once the join was handled")
+	}
+	if err := a.handleControl(t.Context(), mustJSON(proto.ViewerRef{T: proto.HostRelayStart, ViewerID: id})); err != nil {
+		t.Fatal(err)
+	}
+	p := a.peer(id)
+	p.handleFrame(helloFrame("guest"))
+	untilAttached(t, a, id)
+	p.handleFrame(proto.Frame{Type: proto.TypeInput, Payload: []byte("first keys")})
+	typedNothing(t, proc, 300*time.Millisecond)
+	close(release)
+	if got := typedNext(t, proc); got != "first keys" {
+		t.Fatalf("typed %q", got)
+	}
+}
+
+// An offer whose viewer moves to the relay while its answer is being made
+// (the answer runs off the read loop, so relay_start can be read
+// meanwhile) is let go quietly: neither an answer nor an error is sent for
+// the connection let go, and the viewer stays, on the relay.
+func TestAnOfferOfAViewerThatMovedToTheRelayIsLetGoQuietly(t *testing.T) {
+	a, _, _ := newHostOf(t, editOpts(), 0, 0)
+	sent := make(chan any, 16)
+	a.sendHook = func(v any) {
+		select {
+		case sent <- v:
+		default:
+		}
+	}
+	t.Cleanup(a.closeAllPeers)
+	entered, release := make(chan struct{}), make(chan struct{})
+	hold := func() {
+		close(entered)
+		<-release
+	}
+	a.beforeAnswer.Store(&hold)
+	const id = "0123456789abcdef"
+	a.addPeer(id, session.RoleControl, "", "")
+	if err := a.handleControl(t.Context(), offerOf(id, viewerOffer(t))); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	if err := a.handleControl(t.Context(), mustJSON(proto.ViewerRef{T: proto.HostRelayStart, ViewerID: id})); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case v := <-sent:
+			switch v.(type) {
+			case proto.ViewerSDP, proto.ViewerError:
+				t.Fatalf("sent for the connection let go: %#v", v)
+			}
+			continue
+		case <-deadline:
+		}
+		break
+	}
+	if a.peer(id) == nil {
+		t.Fatal("the viewer was let go")
+	}
+}
+
 // pausingSwitchyard is a switchyard whose bound on what a tokened host
 // relays is 16 KiB a second, past its burst (4 MiB, the floor): a host that
 // relays more has the switchyard pause its reading until the bound is paid.

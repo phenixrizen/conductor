@@ -269,13 +269,14 @@ closes the connection, as a host too slow to keep. The viewers' messages
 the host to take some (a viewer whose connection fails meanwhile is let
 go), which neither holds up the server's messages nor closes the
 connection. A link's going overtakes what its viewers had queued, so
-nothing of a viewer the server closed for its link (revoked, expired)
-reaches the host after it: the server closes the link's viewers before it
-queues `link_gone`, and drops each message of such a viewer still queued
-as it comes to write it, its `viewer_join` among them; a viewer whose join
-was dropped so is never named to the host, nor its leave (a leave follows
-a join that was written, and only such a join). A viewer that left for
-any other reason has what it sent before its leave written first, then its
+nothing of a viewer of a link that went (revoked, expired), still attached
+or gone already, reaches the host after it: the server marks the link gone
+and closes its viewers before it queues `link_gone`, and drops each message
+of a viewer of that link still queued as it comes to write it, its
+`viewer_join` among them; a viewer whose join was dropped so is never named
+to the host, nor its leave (a leave follows a join that was written, and
+only such a join). A viewer that left for any other reason, its link
+standing, has what it sent before its leave written first, then its
 `viewer_leave`, with no reason, in the viewers' lane. What a viewer sent
 before its connection closed reaches
 the host before its `viewer_leave`: once a write to the viewer or a ping
