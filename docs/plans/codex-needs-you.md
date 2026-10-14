@@ -13,7 +13,8 @@ it changes `internal/session`'s input path and the host's messages, and both
 parts touch those. The order of the pull requests is at the end.
 
 Revised 2026-10-14: the real Codex 0.161 checked, the bell setting moved to
-its own pull request, Part B added. Unreviewed.
+its own pull request, Part B added; review round 1's findings taken in
+(the end of this plan). Round 2 pending.
 
 # Part A: a Codex member shows Needs you only while Codex waits (#186)
 
@@ -140,18 +141,44 @@ names (A1 and A2).
    Approvals, MCP forms (`approval-requested`), `request_user_input`
    (`plan-mode-prompt`) and the turn's end still ring (#121 keeps the
    last from undoing the `done`). This part's tests take it as given.
-3. **A title that says the agent works is a `working` report.** The
+3. **Codex's title is its state: while it says Working, Codex works.** The
    catalog's signal gains `workingTitle` (RE2, at most 200 bytes, must not
    match an empty title). Codex's built-in is
-   `^(?:\S+\s+)?(?:Working|Thinking|Waiting)$`. `session.Options` gains
-   `WorkingTitle`, set from the catalog in `internal/api/sessions.go`. The
-   `Scanner` reports a window title (OSC 0 or 2) as an `Event` with source
-   `title` and the title as its text: control characters dropped, bounded
-   by the 256 bytes it captures, a title cut by that bound matching
-   nothing. `scanOutput` weighs a title only when `WorkingTitle` is set; a
-   title it does not match changes nothing. A matching title is applied as
-   `setAttentionRead(AttentionWorking, "", SourceTitle, "", nil,
-   unlessTurnEnded|unlessHeld|unlessOnScreen, read)`:
+   `^(?:\S+\s+)?(?:Working|Thinking|Waiting)$` ("[ ! ] Action Required"
+   followed by the run state has more than one word before it and does not
+   match). `session.Options` gains `WorkingTitle`, set from the catalog in
+   `internal/api/sessions.go`. The `Scanner` reports a window title (OSC 0
+   or 2) as an `Event` with source `title` and the title as its text:
+   control characters dropped, bounded by the 256 bytes it captures, a
+   title cut by that bound matching nothing. `scanOutput` weighs a title
+   only when `WorkingTitle` is set.
+
+   The title is a state, not a heartbeat. Codex writes it only when its
+   text changes (`refresh_terminal_title_from_selections` skips a title
+   equal to the last one): with animations on, the spinner's frame changes
+   it every 100 ms; with them off (`tui.animations`, `tui.effects.progress`,
+   or the system's reduced-motion preference, which a launch override
+   cannot undo) Codex writes "Working" once and nothing more until the
+   state changes. So the session keeps the last title it read
+   (`titleWorking`: whether it matched) and acts on it twice:
+   - **A matching title** is applied as `setAttentionRead(AttentionWorking,
+     "", SourceTitle, "", nil, unlessTurnEnded|unlessHeld|unlessOnScreen|unlessFresh,
+     read)`.
+   - **A wait raised while the last title says Working** (a bell, an OSC
+     notification, the agent's report: not a question on the screen, not a
+     startup question) arms a timer, `titleSettle` (1 s). When it fires,
+     under the lock: if that wait (its id) still shows and no title has
+     been read since that does not match, it gives way to `working`, with
+     the same rules. A title that does not match ("[ ! ] Action Required",
+     "Ready", "Starting") disarms it: Codex has stopped working, and the
+     wait stands. An approval rings the bell as Codex draws its overlay,
+     and its title becomes "[ ! ] Action Required" with that overlay (O1;
+     to be checked by hand to come within the second, below); a wait Codex
+     goes on from (its own question it does not wait on, a form it
+     declines by itself) gives way after a second whether frames come or
+     not.
+
+   The rules:
    - **unlessTurnEnded** (as for the bell): it does not undo a `done` until
      the next Enter or another state. A frame drawn before the turn ended
      and read after its `done` is not a new turn.
@@ -162,6 +189,10 @@ names (A1 and A2).
    - **unlessOnScreen** (new): it changes nothing while the session shows a
      question it holds (`heldSource`: a startup question, a dialog on the
      screen). The screen decides those; this change leaves them alone.
+   - **unlessFresh** (new): a matching title read within `titleSettle` of
+     the wait now showing changes nothing; the timer decides that wait. A
+     frame drawn between an approval's bell and its overlay no longer
+     clears the bell.
 
    Everything else gives way to it, as to Claude Code's `PreToolUse`: a
    bell, an OSC notification, the agent's own report with or without
@@ -181,7 +212,7 @@ names (A1 and A2).
 - E1 a title that matches `workingTitle`, about every 100 ms while Codex
   works.
 - E2 a title that does not match (Action Required, Ready, Starting, another
-  program's title).
+  program's title): `titleWorking` false, the settle timer disarmed.
 - E3 a bell (an approval, an MCP form, `request_user_input`, the turn's
   end), paced to one change per 500 ms.
 - E4 the agent's report through the API: `needs_input` (`ask`, `notify`),
@@ -197,6 +228,10 @@ names (A1 and A2).
 - E8 the turn held for a typed text (`holdTyped`, `source:"submit"`).
 - E9 the session's end.
 - E10 a title split between two reads (`Scanner.Carried`, the read turn).
+- E11 the settle timer firing, `titleSettle` after a wait raised while the
+  last title said Working.
+- E12 one title "Working" and then none (animations off): Codex works on
+  with no title written.
 
 ## The orders they come in, and what must happen
 
@@ -206,10 +241,10 @@ names (A1 and A2).
   dialog's question.
 - O2 E3 then a stray E1 before the overlay's title (a spinner frame written
   between the bell and the overlay's draw; Codex's code writes none, but
-  nothing promises it): the bell gives way to `working`. E5 still asks the
-  dialog once the screen is quiet. A form the catalog does not know (an MCP
-  form, `request_user_input`) shows nothing then. Accepted; the test pins
-  that the dialog is still asked.
+  nothing promises it): nothing (unlessFresh); the overlay's title (E2)
+  disarms the timer and the bell stands until E5 asks the dialog. A form
+  the catalog does not know (an MCP form, `request_user_input`) keeps the
+  bell's Needs you, as today.
 - O3 E4 `needs_input` (ask) then E1: `working`. The question stays in the
   chat and the activity log, where `askInChat` and `recordOwn` put it.
   (Part B, once it merges: the question is set aside and shows again at
@@ -245,12 +280,26 @@ names (A1 and A2).
   stays `done`, and Action Required raises nothing by itself (out of scope).
 - O15 another agent, or a shell, writes "Working" as its title: nothing,
   since only an agent whose catalog has `workingTitle` weighs titles.
+- O16 E12, then E4 `needs_input` (ask) or E3 (a bell Codex goes on from),
+  and no title after: E11 shows `working` a second later.
+- O17 E1, E3, then E2 within the second (an approval drawn): the timer is
+  disarmed; the bell stands; E5 asks the dialog once the screen is quiet.
+- O18 E11 against E4 `done` (the turn ends inside the second): `done`
+  wins in either order; a timer that fires after the `done` changes
+  nothing (unlessTurnEnded).
+- O19 E11 after the wait it was armed for has gone (answered, replaced by
+  another wait, which arms its own timer): nothing; it acts only on the
+  wait whose id it carries.
+- O20 E11 against E9 or E8: an ended session shows nothing and the timer
+  changes nothing (the end clears the state and stops it); in a held turn
+  it changes nothing (unlessHeld).
 
 ## Invariants
 
-- A Codex session never shows `needs_input` from a bell or a report for
-  longer than one title frame after Codex's title says it is at work, while
-  no question it holds is on its screen.
+- A Codex session whose last title says Working never shows `needs_input`
+  from a bell or a report for longer than `titleSettle` (plus one look at
+  the timer) while no question it holds is on its screen, whether Codex
+  animates its title or writes it once.
 - A title never hides or clears a question the session holds (`trust`,
   `question`) nor a held turn (`submit`), and never undoes the `done` of the
   turn it was read in.
@@ -281,13 +330,16 @@ Go (`go test -race`):
 
 - `internal/session`: the scanner reports OSC 0 and 2 titles with BEL and ST
   ends, split between reads, cut at the bound (no match), with control
-  characters dropped. Each of O1 to O15 with a `fakeProc`, Codex's questions
+  characters dropped. Each of O1 to O20 with a `fakeProc`, Codex's questions
   and `WorkingTitle`, using the titles seen on 2026-10-14 (and the
-  source's for the forms not seen). A title-only stream does not break the
-  quiet that the dialogs' watcher and the trust watcher wait for (E5). The
-  two reproductions of #186 (the async question's bell, the agent's own
-  ask, each followed by 5 s of titles) end in `working`. Every one of them
-  fails on `origin/main`, which has no `WorkingTitle`.
+  source's for the forms not seen), with `titleSettle` shortened by an
+  option for the tests. A title-only stream does not break the quiet that
+  the dialogs' watcher and the trust watcher wait for (E5). The two
+  reproductions of #186 (the async question's bell, the agent's own ask)
+  end in `working` twice: once followed by 5 s of spinner frames, once
+  after a single "Working" title and 5 s of other output with no title
+  (animations off). Every one of them fails on `origin/main`, which has no
+  `WorkingTitle`.
 - `internal/catalog`: `workingTitle` is validated (length, RE2, no empty
   match), and Codex's built-in matches every working form above and none
   of the others.
@@ -303,7 +355,9 @@ Stub and Playwright:
 
 - `web/e2e/stub-agent.sh`, as Codex (`STUB_IDENTITY=codex`), writes Codex's
   titles: "⠋ Working" frames while it answers or spins, "[ ! ] Action
-  Required" during `stub approve`, "Ready" at rest. Two new lines:
+  Required" during `stub approve`, "Ready" at rest; with
+  `STUB_TITLE_STILL=1`, "Working" once per turn and no frames, as Codex
+  with animations off. Two new lines:
   `stub async <question>` draws "? 1 question" and spins without a bell
   (rung only when its argv's `tui.notifications` lists `async-question`),
   and `stub ask <question>` runs `conductor notify --state needs_input` and
@@ -314,6 +368,7 @@ Stub and Playwright:
   changes the last to Needs you, and its own spec says so). After
   `stub async …`, Needs you never shows. During `stub approve`, the
   approval still shows with its choices, and Working follows the answer.
+  The `stub ask` case runs again with `STUB_TITLE_STILL=1`.
   The spec reads state from the rows and from the stub's files, never from
   `.xterm-rows`. `approval.spec.ts` and `trust.spec.ts` pass unchanged.
 - vitest: nothing in the browser's logic changes. If the row's words for a
@@ -322,8 +377,11 @@ Stub and Playwright:
 
 By hand (the real Codex is not run by an agent with a prompt): a crew of the
 todo example in the next release candidate's app shows the members' Needs
-you only at approvals. Recorded in `docs/features.md` when done. The titles
-were checked on 2026-10-14 (above).
+you only at approvals; with a person's `tui.animations = false`, the same;
+and at an approval, Codex's title becomes "[ ! ] Action Required" within
+`titleSettle` of its bell (the capture script records both, with their
+times). Recorded in `docs/features.md` when done. The titles at rest and at
+work were checked on 2026-10-14 (above).
 
 ## Alternatives weighed
 
@@ -342,6 +400,12 @@ were checked on 2026-10-14 (above).
 - **Output after a bell clears it**: every agent draws while it waits (a
   countdown, a blinking prompt), so the rule would be wrong for all of
   them.
+- **The title as a heartbeat, with animations forced on at launch**
+  (`-c tui.animations=true`, `tui.effects.progress=true`): the system's
+  reduced-motion preference still turns the spinner off
+  (`LocalSettings::apply_host_preferences`, `system_motion.rs`), and a
+  person's motion preference is not Conductor's to override. The title as
+  a state works either way.
 
 # Part B: an agent's question shows until it is answered (#193)
 
@@ -369,14 +433,20 @@ turn's end as `done`, some with `turn` set and some without.
    route's body (`POST /api/sessions/{id}/attention`) gains `ask` (a
    boolean, absent meaning false), and so do the attention words of the
    events route (they share `reportAttention`). It is taken with
-   `needs_input` only (with another state it changes nothing). The MCP
-   tool `ask` sends it; `conductor notify` sends it on a `needs_input` it
-   reports itself (`--state needs_input`, the skill's way), never on one a
-   hook payload maps (`--claude-hook` and the others, `--codex`): a hook's
-   permission prompt is a wait on the screen, not a question the agent
-   asked. A server that refuses `ask` as an unknown field (an older one)
-   gets the report again without it, as `agentSession` and `turn` are
-   today: the question then shows as before.
+   `needs_input` only (with another state it changes nothing). It is said
+   on purpose, never inferred from the command: the MCP tool `ask` sends
+   it, and `conductor notify` sends it only with its new flag `--ask`
+   (`conductor notify --ask --message "…" [--choices "…"]`; `--ask` with
+   another state, an event or a hook flag is a usage error). A plain
+   `--state needs_input` carries no mark, because Conductor's own assets
+   report a program's wait that way: OpenCode's plugin for
+   `permission.asked`, DeepSeek Harness's for `permission-requested` and
+   `question-asked`, aider's notification command; those, and copies
+   already installed in a person's config, keep today's behaviour. The
+   skill's two `needs_input` lines become `--ask`. A server that refuses
+   `ask` as an unknown field (an older one) gets the report again without
+   it, as `agentSession` and `turn` are today: the question then shows as
+   before.
 2. **The session keeps the agent's question through its turn's end.**
    `Attention` keeps the mark (`ask`, not sent to browsers). The session
    keeps at most one agent's question, shown or set aside (`aside`), with
@@ -385,13 +455,23 @@ turn's end as `done`, some with `turn` set and some without.
    - **In its turn** (no `done` since it was asked): a `working` report or
      title, and any other state but those below, takes its place and sets
      it aside. A `done` (any, with `turn` or without) leaves it shown, or
-     shows it again from aside, in place of whatever shows: the same id,
-     words and choices, a new `Since`. The `done` still ends the turn
+     shows it again from aside, in place of whatever shows. The `done`
+     still ends the turn
      (`turnEnded`) and is recorded as the report it is: its attention
      entry, with the state `done`, reaches the Events page, webhooks and a
-     crew's start-after rule as today. Shown again, the question records
-     its own `needs_input` entry (a state that shows has its entry) and is
-     not put in the chat a second time.
+     crew's start-after rule as today. Shown again, the question is the
+     same `Attention` it was, its `Since` included, as a held-over question
+     is when its hold ends (`endHoldTyped`): a reply under way compares
+     that stamp before its Enter (`pressEnter`) and after its write
+     (`answer`), so it is never re-stamped. It records its own
+     `needs_input` entry (a state that shows has its entry) and is not put
+     in the chat a second time.
+   - **A question a reply has reached is never set aside.** One whose id a
+     reply has claimed (`claimQuestion`, `s.answered`), or that a person's
+     keys or a reply's text or Enter reached, is removed, not set aside,
+     by whatever takes its place; and one set aside is removed by a
+     person's keys or a reply's write made while it is aside. Such a
+     question never shows again.
    - **After its turn's `done`**: it shows until a person's keys or reply
      answer it (`answer`, as today), the agent clears it (`clear`) or asks
      another, the agent works again (a `working` report: a new turn, which
@@ -427,15 +507,16 @@ turn's end as `done`, some with `turn` set and some without.
    its attention back (the host tells it after every change it applies, as
    it does today). An older host ignores the field: the question shows as
    before there.
-4. **Words.** The skill and the MCP tool's description gain one line: an
-   agent that no longer needs its answer clears its question
-   (`--state clear`, `set_state` clear). `docs/protocol.md` (Attention, the
-   attention route's body, the host's `attention` message) says what `ask`
-   does.
+4. **Words.** The skill asks with `conductor notify --ask`, and it and the
+   MCP tool's description gain one line: an agent that no longer needs its
+   answer clears its question (`--state clear`, `set_state` clear).
+   `docs/protocol.md` (Attention, the attention route's body, the host's
+   `attention` message) says what `ask` does.
 
 ## The events that interact
 
-- F1 the agent's question: a `needs_input` report with `ask`.
+- F1 the agent's question: a `needs_input` report with `ask` (the MCP tool
+  `ask`, `conductor notify --ask`).
 - F2 a `done`: the agent's turn's end (a hook, notify), Claude Code's
   `idle_prompt`, an explicit `done` (`set_state`, `--state done`).
 - F3 `working`: a report (Claude Code's `PreToolUse`, `UserPromptSubmit`;
@@ -455,6 +536,11 @@ turn's end as `done`, some with `turn` set and some without.
 - F11 a report the event bucket refuses (`429`).
 - F12 a hosted session's report, forwarded to its host, and the host's
   report back.
+- F13 a reply under way: a `submit` reply that has claimed the question
+  and typed its text, its Enter 250 ms later; or a person's keys whose
+  write has begun and not landed (the program not reading).
+- F14 Part A's settle timer, for a question asked while Codex's title says
+  Working.
 
 ## The orders they come in, and what must happen
 
@@ -464,7 +550,8 @@ turn's end as `done`, some with `turn` set and some without.
   nothing.
 - P2 F1, F3, F2 (Codex: the title says Working while it writes its last
   message; Claude Code: a tool called after asking): `working` while the
-  agent works, then the question shows again at the `done`, the same id.
+  agent works, then the question shows again at the `done`, the same
+  `Attention` (id and `Since`).
   Entries: `needs_input`, `working`, `done`, `needs_input`. One chat line.
 - P3 F1, F3, F4, F2 (Codex rings its turn-end bell before its notify
   reports `done`): the bell shows over `working`; the `done` shows the
@@ -513,6 +600,19 @@ turn's end as `done`, some with `turn` set and some without.
 - P22 an older server refuses `ask`: `conductor notify` and the MCP tool
   report again without it; the question shows as before. An older host:
   as before.
+- P23 F1, F13 (text typed), F2, then the Enter: the `done` changes nothing
+  shown, so the Enter is written and answers the question (its `Since`
+  unchanged).
+- P24 F1, F13 (text typed), F3, F2, then the Enter: the question, claimed,
+  is removed at F3, not set aside; the Enter is written (`working`
+  shows); F2 shows `done`. The question never shows after its reply.
+- P25 F1, F3 (set aside), a person's keys whose write lands late, F2: the
+  question was removed as the keys were written; F2 shows `done`.
+- P26 F1, F14 (Codex asked while it works on, its title written once):
+  the timer shows `working` and sets the question aside; the turn's `done`
+  shows it.
+- P27 OpenCode's or DeepSeek Harness's permission report (no mark), then
+  their `done` with no input between: `done`, as today.
 
 ## Invariants
 
@@ -520,7 +620,13 @@ turn's end as `done`, some with `turn` set and some without.
   `needs_input` once the turn it was asked in has ended, until a person's
   keys or reply, the agent's `clear` or next question, the agent at work
   in a new turn, another state, or the session's end.
-- It never shows after its answer, its `clear` or the session's end.
+- It never shows after its answer, its `clear` or the session's end, nor
+  after a reply or a person's keys reached it; shown again it is the same
+  `Attention` (id and `Since`), so a reply under way is neither refused
+  nor left without its Enter because of it.
+- Only a report that says so (`ask`) is kept; a program's wait reported
+  without it (a permission prompt, aider's wait) is replaced by `done` as
+  today.
 - In its turn it never hides the agent at work: `working` shows (#186
   stands).
 - Nothing changes for a `needs_input` without the mark: a hook's prompt,
@@ -554,13 +660,17 @@ turn's end as `done`, some with `turn` set and some without.
 
 Go (`go test -race`):
 
-- `internal/session`: P1 to P20 with a `fakeProc`, each through the
+- `internal/session`: P1 to P27 with a `fakeProc`, each through the
   setters the API and the pump use (`TrySetAttentionFull` with the mark,
-  `scanOutput` for the bell and, once Part A is in, the title), and the
-  activity, the chat and `OnActivity`'s state checked at each step. P20
-  runs each pair from two goroutines many times and checks the end state
-  against the sequential rules. A `done` over a question without the
-  mark still replaces it (P19).
+  `scanOutput` for the bell and, once Part A is in, the title and its
+  timer), and the activity, the chat and `OnActivity`'s state checked at
+  each step. P20 runs each pair from two goroutines many times and checks
+  the end state against the sequential rules. P23 and P24 are
+  deterministic: the submission is paused after its claim and text and
+  before its Enter (a hook in the test, as the hold tests pause one), the
+  reports are applied, then the Enter goes on; P25 holds the program's
+  read so the keys' write lands after the reports. A `done` over a
+  question without the mark still replaces it (P19, P27).
 - `internal/api`: the attention route takes `ask` (a non-boolean is `400
   invalid_request`), and the events route's attention words too; `ask`
   then a `done` with `turn` leaves the session `needs_input` with the
@@ -568,9 +678,14 @@ Go (`go test -race`):
   `done` fires once; a hosted session's `ask` reaches the host's message,
   and the server's copy keeps the question over a forwarded `done`.
 - `internal/cli` and `internal/notify`: the MCP tool `ask` sends `ask`,
-  `set_state` does not; `conductor notify --state needs_input` sends it,
-  each `--<agent>-hook` and `--codex` never does; a server that refuses
-  the field gets the report again without it.
+  `set_state` does not; `conductor notify --ask` sends it, with or without
+  `--choices`; `--state needs_input` without it, each `--<agent>-hook` and
+  `--codex` never do; `--ask` with another state, an event or a hook flag
+  is a usage error; a server that refuses the field gets the report again
+  without it.
+- `internal/agents`: the commands OpenCode's and DeepSeek Harness's
+  plugins and aider's notification run, executed against a test server,
+  report no mark; the skill's question lines use `--ask`.
 - `internal/proto`: `HostAttentionMsg` carries `ask` and stays within the
   host message's bound; `internal/hostagent` applies it.
 - `internal/crew`: a member that asks and ends its turn is counted in the
@@ -581,10 +696,10 @@ Go (`go test -race`):
 Stub and Playwright:
 
 - `web/e2e/stub-agent.sh`: `stub ask-wait <question>` asks with `conductor
-  notify --state needs_input` and ends its turn as its agent's hooks do
-  (`STUB_REPORT`). The stubs that stand for a hook's prompt
-  (`asker-*` in `web/e2e/conductor.e2e.json`) keep today's behaviour or
-  move to the hook payload; the whole suite runs.
+  notify --ask` and ends its turn as its agent's hooks do (`STUB_REPORT`).
+  The stubs that stand for a hook's prompt (`asker-*` in
+  `web/e2e/conductor.e2e.json`, `STUB_CHOICES`) report with `--state
+  needs_input` and keep today's behaviour; the whole suite runs.
 - A Playwright spec (`askwait.spec.ts`): after `stub ask-wait …` the row,
   the Yard and the run's tile show Needs you after the stub's turn ends,
   with the question's words; a reply from the row answers it (the stub's
@@ -621,3 +736,34 @@ Stub and Playwright:
 3. Part B from `main` once Part A has merged: it changes Part A's O3, and
    relies on Part A's title for Codex (without it a Codex agent that asks
    and goes on would keep its question past its turn).
+
+# Reviews
+
+Round 1 (6d1c3e7, `codex_review.py "review this plan: …"`): needs
+attention, three findings, each traced in the code and taken in.
+
+- [high] Showing a set-aside question again with a new `Since` strands a
+  reply under way: `pressEnter` leaves its Enter out when the shown
+  question's `Since` is not the one it began with (`submit.go`), and the
+  claimed id then refuses another reply (`waitsLocked`); `answer` compares
+  the same stamp. Held. Taken in: the question shows again as the same
+  `Attention`, its `Since` included (as `endHoldTyped` restores a
+  held-over one); a question a reply has claimed or reached is removed,
+  never set aside or shown again (P23 to P25, with deterministic tests).
+- [medium] `conductor notify --state needs_input` is not only the agents'
+  question: OpenCode's plugin (`internal/agents/opencode.go`, its
+  `permission.asked`) and DeepSeek Harness's (`dsh.go`, its
+  `permission-requested`) report a permission wait that way, and so does
+  aider's command; marking every such report would keep their stale
+  permission prompts past `done`. Held. Taken in: the mark is said on
+  purpose only, by the MCP tool and by a new `--ask` flag; a plain
+  `--state needs_input` keeps today's behaviour, in installed copies too
+  (P27).
+- [medium] With animations off Codex writes "Working" once
+  (`refresh_terminal_title_from_selections` skips an unchanged title; the
+  spinner needs `tui.animations` and `tui.effects.progress`), so a title
+  read as a heartbeat leaves a later wait standing through the work.
+  Held, and the system's reduced-motion preference turns the spinner off
+  whatever the launch says. Taken in: Part A reads the title as Codex's
+  state, with a settle timer for a wait raised while it says Working
+  (O16 to O20, P26), and the stub draws a still title too.
