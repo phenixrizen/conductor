@@ -2475,7 +2475,11 @@ func TestAnApprovalDrawnAgainAtAnotherWidthIsTheSameQuestion(t *testing.T) {
 		t.Fatalf("written %q", got)
 	}
 	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
-	p.outW.Write([]byte(approvalWrapped(long[:60], long[60:])))
+	// The window narrower: the program erases its screen and draws it again at 70 columns.
+	if err := s.Resize(nater, 70, 24); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[H\x1b[2J" + approvalWrapped(long[:60], long[60:])))
 	time.Sleep(patternQuiet + 200*time.Millisecond)
 	a := s.Info().Attention
 	if !asked(a) {
@@ -2483,6 +2487,79 @@ func TestAnApprovalDrawnAgainAtAnotherWidthIsTheSameQuestion(t *testing.T) {
 	}
 	if err := s.AnswerInput(t.Context(), jane, a.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
 		t.Fatalf("a click on the approval drawn again at another width: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// Two approvals in a row at one width, one command on two rows (a line
+// break of its own: `printf '%s' 'build` and `output'`) and the next on
+// one (`printf '%s' 'buildoutput'`): the program broke the first's rows,
+// not the width, and they are two questions. The second, drawn over the
+// first, answered or not, is asked with an id of its own and takes a
+// click; a reply naming the first is refused.
+func TestARowBreakOfTheProgramsOwnTellsTwoApprovalsApart(t *testing.T) {
+	for _, answerFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the first answered %v", answerFirst), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(approvalWrapped(`printf '%s' 'build`, `output'`)))
+			first := waitAttention(t, s, asked)
+			seen := first
+			if answerFirst {
+				if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+					t.Fatal(err)
+				}
+				if got := nextWrite(t, p); got != "y" {
+					t.Fatalf("written %q", got)
+				}
+				seen = waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+			}
+			p.outW.Write([]byte(approvalWrapped(`printf '%s' 'buildoutput'`)))
+			next := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID && a.ID != seen.ID })
+			if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("a reply naming the first: %v", err)
+			}
+			noWrite(t, p, 200*time.Millisecond)
+			if err := s.AnswerInput(t.Context(), jane, next.ID, []byte("y")); err != nil {
+				t.Fatalf("a click on the second: %v", err)
+			}
+			if got := nextWrite(t, p); got != "y" {
+				t.Fatalf("written %q", got)
+			}
+		})
+	}
+}
+
+// An approval answered, then a synchronized redraw begun (its screen
+// erased) and left unfinished past the watcher's quiet period: half a
+// frame, which forgets no dialog answered. The frame finished with the same
+// approval, it is still answered: a click on it is refused, nothing
+// written.
+func TestHalfAFrameForgetsNoApprovalAnswered(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	first := waitAttention(t, s, asked)
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	p.outW.Write([]byte("\x1b[?2026h\x1b[2J"))
+	time.Sleep(patternQuiet + 300*time.Millisecond)
+	// The rest of the frame: the same approval (approvalDialog begins a synchronized update of its own and ends it).
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com") + "\x1b[?2026l"))
+	time.Sleep(patternQuiet + 300*time.Millisecond)
+	a := s.Info().Attention
+	if !asked(a) {
+		t.Fatalf("the approval is not asked: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, a.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the approval the frame finished with: %v", err)
 	}
 	noWrite(t, p, 200*time.Millisecond)
 }

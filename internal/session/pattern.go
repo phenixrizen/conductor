@@ -399,6 +399,17 @@ func (w *PatternWatcher) Whole() (text string, settled bool, cols, rows int) {
 	return w.tracker.Last(), true, 0, 0
 }
 
+// Settled reports whether a screen watcher's screen is a whole frame
+// (Screen.Settled); always for the others.
+func (w *PatternWatcher) Settled() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		return sc.Settled()
+	}
+	return true
+}
+
 // Size returns a screen watcher's screen size, 0 by 0 for the others.
 func (w *PatternWatcher) Size() (cols, rows int) {
 	w.mu.Lock()

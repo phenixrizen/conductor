@@ -703,15 +703,20 @@ func (s *Local) fireTrust(text string) {
 // what came next), is answered by that key, as when it goes (missAsked).
 func (s *Local) fireAsked(text string) {
 	s.escGone()
+	cols, _ := s.asked.Size()
+	// Half a frame (a synchronized update under way, or one drawn at
+	// another size not yet erased and drawn again) shows what the program
+	// has not finished drawing: it asks, and forgets no dialog answered.
+	settled := s.asked.Settled()
 	for _, q := range s.askedQuestions {
-		if words := q.words(text); words != "" {
+		if words := atWidth(q.words(text), cols); words != "" {
 			look := s.asked.LookedAt()
 			s.mu.Lock()
-			if !sameWords(s.dialogAnswered, words) {
+			if settled && !sameWords(s.dialogAnswered, words) {
 				s.dialogGone(look)
 			}
 			cur, typed := s.info.Attention, s.typedAtAsked
-			gone := cur.State == AttentionNeedsInput && cur.Source == SourceQuestion && typed != nil && cur.Since != nil && sameWords(typed.words, cur.words()) && !sameWords(words, cur.words())
+			gone := settled && cur.State == AttentionNeedsInput && cur.Source == SourceQuestion && typed != nil && cur.Since != nil && sameWords(typed.words, cur.words()) && !sameWords(words, cur.words())
 			s.mu.Unlock()
 			if gone {
 				s.answer(cur.Since, typed.by, typed.name, true, true)
@@ -733,6 +738,11 @@ func (s *Local) fireAsked(text string) {
 // question keeps every Enter from the screen.
 func (s *Local) missAsked(string) {
 	s.escGone()
+	if !s.asked.Settled() {
+		// Half a frame (fireAsked): the dialog answered may be drawn
+		// again in the rest of it.
+		return
+	}
 	look := s.asked.LookedAt()
 	s.mu.Lock()
 	s.dialogGone(look)
@@ -852,6 +862,7 @@ func cleanRows(m string) string {
 // character boundary with an ellipsis at their end, so that a long command
 // reads as cut rather than as all there is.
 func shownWords(rows string) string {
+	_, rows = widthOf(rows)
 	words := strings.Join(strings.Fields(rows), " ")
 	const more = "…"
 	if len(words) > MaxAttentionMessage {
@@ -875,6 +886,14 @@ func shownWords(rows string) string {
 func sameWords(a, b string) bool {
 	if a == b {
 		return true
+	}
+	ca, a := widthOf(a)
+	cb, b := widthOf(b)
+	if ca != 0 && ca == cb {
+		// Read at one width, its rows broken where the program breaks
+		// them: a row break is the program's own (a line break in a
+		// command), and the words are the same row for row.
+		return a == b
 	}
 	ta, ga, ba := wordMarks(a)
 	tb, gb, bb := wordMarks(b)
@@ -910,6 +929,39 @@ func wordMarks(words string) (string, []string, []bool) {
 		}
 	}
 	return b.String(), gap, brk
+}
+
+// widthMark begins and ends the width a dialog's words were read at
+// (atWidth): a character of Unicode's private use area, which a screen's
+// words do not begin with.
+const widthMark = "\ue000"
+
+// atWidth is a dialog's words (StartupQuestion.words) read off a screen
+// cols wide, with that width before them (widthOf), which tells whether a
+// row break is the program's own (sameWords); "" for none.
+func atWidth(words string, cols int) string {
+	if words == "" || cols <= 0 {
+		return words
+	}
+	return widthMark + strconv.Itoa(cols) + widthMark + words
+}
+
+// widthOf returns the width words were read at (atWidth), 0 for none, and
+// the words without it.
+func widthOf(words string) (int, string) {
+	rest, ok := strings.CutPrefix(words, widthMark)
+	if !ok {
+		return 0, words
+	}
+	num, after, ok := strings.Cut(rest, widthMark)
+	if !ok {
+		return 0, words
+	}
+	cols, err := strconv.Atoi(num)
+	if err != nil || cols <= 0 {
+		return 0, words
+	}
+	return cols, after
 }
 
 // words returns the question's words a's are, as rows (StartupQuestion.words):
@@ -2092,9 +2144,10 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time
 // askedIn returns the question asked during the work that text (the
 // screen's) shows, and its words; nil and "" when it shows none.
 func (s *Local) askedIn(text string) (*StartupQuestion, string) {
+	cols, _ := s.asked.Size()
 	for i := range s.askedQuestions {
 		if words := s.askedQuestions[i].words(text); words != "" {
-			return &s.askedQuestions[i], words
+			return &s.askedQuestions[i], atWidth(words, cols)
 		}
 	}
 	return nil, ""

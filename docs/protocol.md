@@ -594,8 +594,10 @@ dialog asked again as the question just answered is asked answered, see
 Answering a question), none with the empty state. A question read off the
 screen (`trust`, `question`) is told by its words whole, as the screen's
 rows show them: drawn again at another width, its rows broken elsewhere,
-it is the same question; two that differ anywhere, past the 500 bytes of
-`message` too or by one space within a row, are two. A hosted session's is its
+it is the same question; at one width its rows are the program's own;
+two that differ anywhere, past the 500 bytes of `message` too, by one
+space within a row or by a row break at one width, are two. Half a frame
+(a synchronized update under way) forgets no dialog answered. A hosted session's is its
 host's, as the host reports
 it; a change the server makes for a hosted session (a report through its
 routes) has none in the server's listings until the host reports it back with
