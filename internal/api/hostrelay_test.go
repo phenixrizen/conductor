@@ -205,6 +205,230 @@ func TestARelayedViewerThatStopsReadingIsLetGoAlone(t *testing.T) {
 	}
 }
 
+// slowUplink is a listener whose connections each take little at a time (a
+// small receive buffer, as smallReadBuffers) and are read at most rate bytes
+// a second: a host on an uplink of that rate, as the server sees it.
+type slowUplink struct {
+	net.Listener
+	rate int
+}
+
+func (l slowUplink) Accept() (net.Conn, error) {
+	c, err := smallReadBuffers{l.Listener}.Accept()
+	if err != nil {
+		return c, err
+	}
+	return &slowUplinkConn{Conn: c, rate: newByteBucket(l.rate, 64<<10)}, nil
+}
+
+type slowUplinkConn struct {
+	net.Conn
+	rate *byteBucket
+}
+
+func (c *slowUplinkConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p[:min(len(p), 16<<10)])
+	if n > 0 {
+		_ = c.rate.take(context.Background(), n)
+	}
+	return n, err
+}
+
+// A host relays its session to two viewers over an uplink that carries
+// 900 KiB a second, and the session prints about 770 KB a second (at most
+// 819): the uplink carries it to one viewer, not to two. One viewer reads
+// everything; the other reads nothing at all. Once the stalled viewer's
+// socket holds what it may hold unsent and the server 512 KiB more, a
+// second or two in, the host holds the rest of its frames, and the uplink
+// carries the reader's. The reader keeps the session throughout, is sent
+// output all along, past the time a write to the stalled viewer may take,
+// and after the stalled viewer is let go.
+func TestAViewerThatReadsNothingLeavesTheHostsUplinkToTheOthers(t *testing.T) {
+	logs := &logBuffer{}
+	e := newTestEnvLogging(t, nil, slog.New(slog.NewTextHandler(logs, nil)))
+	uplink := httptest.NewUnstartedServer(e.srv.Handler())
+	uplink.Listener = slowUplink{uplink.Listener, 900 << 10}
+	uplink.Start()
+	t.Cleanup(uplink.Close)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	registered := make(chan string, 1)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		_, _ = hostagent.Run(ctx, hostagent.Options{
+			ServerURL: uplink.URL, Token: "test-host-token", Name: "printer", HostName: "laptop", RelayOnly: true,
+			// About 770 KB/s: 128 KiB, then 160 ms and more.
+			Argv: []string{"/bin/sh", "-c", "while :; do head -c 131072 /dev/zero; sleep 0.16; done"},
+			Dir:  e.root, Log: slog.New(slog.DiscardHandler),
+			Registered: func(id, _ string) { registered <- id },
+		})
+	}()
+	defer func() { cancel(); <-ran }()
+	var id string
+	select {
+	case id = <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host never registered")
+	}
+	reader := dialViewer(t, e, id, adminToken)
+	joinRelay(t, reader)
+	// The stalled viewer comes through a link of its own, whose count of
+	// viewers says when the server has let it go, on sockets as they come.
+	resp, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, lo)
+	}
+	stalledLink := lo["link"].(map[string]any)["id"].(string)
+	stalled := dialViewer(t, e, id, lo["token"].(string))
+	joinRelay(t, stalled)
+	hosted, ok := e.srv.hosts.Get(id)
+	if !ok {
+		t.Fatal("no hosted session")
+	}
+
+	// The reader reads everything, noting the last error it is told.
+	var output atomic.Int64
+	var told atomic.Value
+	readerEnded := make(chan error, 1)
+	go func() {
+		for {
+			_, data, err := reader.c.Read(ctx)
+			if err != nil {
+				readerEnded <- err
+				return
+			}
+			f, err := proto.Decode(data)
+			switch {
+			case err != nil:
+			case f.Type == proto.TypeOutput:
+				output.Add(int64(len(f.Payload)))
+			case f.Type == proto.TypeControl:
+				if tt, _ := proto.ParseHeader(f.Payload); tt == proto.CtlError {
+					told.Store(string(f.Payload))
+				}
+			}
+		}
+	}()
+	lost := func(err error) {
+		t.Helper()
+		t.Fatalf("the reading viewer lost the session after %d bytes: %v (told %v; host disconnects: %d)", output.Load(), err, told.Load(), strings.Count(logs.String(), "host disconnected"))
+	}
+	// The stalled viewer reads nothing from now on. The watch runs past the
+	// 15 s a write to it may wait, and on until the server has let it go (2
+	// minutes at most); the reader is sent output every 2 s all the while.
+	watch := time.After(20 * time.Second)
+	giveUp := time.After(2 * time.Minute)
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+	look := time.NewTicker(50 * time.Millisecond)
+	defer look.Stop()
+	var last int64
+	for watched, letGo := false, false; !watched || !letGo; {
+		select {
+		case err := <-readerEnded:
+			lost(err)
+		case <-tick.C:
+			n := output.Load()
+			if n == last {
+				t.Fatalf("the reading viewer was sent no output for 2 s (%d bytes in all)", n)
+			}
+			last = n
+		case <-watch:
+			watched = true
+		case <-look.C:
+			letGo = hosted.LinkViewers()[stalledLink] == 0
+		case <-giveUp:
+			t.Fatalf("the stalled viewer was never let go (%d bytes of output to the reader)", output.Load())
+		}
+	}
+	// The reader stays, and goes on being sent the output.
+	for at, fresh := output.Load(), time.Now().Add(10*time.Second); output.Load() == at; time.Sleep(10 * time.Millisecond) {
+		select {
+		case err := <-readerEnded:
+			lost(err)
+		default:
+		}
+		if time.Now().After(fresh) {
+			t.Fatal("the reading viewer was sent nothing after the stalled one was let go")
+		}
+	}
+	if n := strings.Count(logs.String(), "host disconnected"); n != 0 {
+		t.Fatalf("the host's connection closed %d times", n)
+	}
+}
+
+// A relayed viewer that reads nothing is behind once the server holds
+// 512 KiB of what its host relays to it, on top of what its socket holds
+// unsent, which the server bounds (hostedViewerUnsent): the host is told
+// (viewer_behind) before it has relayed the viewer 2 MiB, where a socket's
+// buffer on its own grows to megabytes first, and once the viewer reads,
+// that it caught up. The viewer is sent every frame, in order.
+func TestAHostIsToldSoonThatARelayedViewerReadsNothing(t *testing.T) {
+	e := newTestEnv(t, nil)
+	host := dialFakeHost(t, e, "")
+	v := dialViewer(t, e, host.sessionID, adminToken)
+	viewerID := joinRelayed(t, host, v)
+	// The viewer reads nothing from now on; the host relays it output, a
+	// frame at a time with a moment for the server to take each, until it
+	// is told the viewer is behind. (A server slower than that is only
+	// counted a few frames late.)
+	out := bytes.Repeat([]byte("o"), proto.MaxOutput)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	sent := 0
+	var told map[string]any
+	for told == nil {
+		if sent > 4<<20 {
+			t.Fatalf("relayed %d bytes to a viewer that reads nothing, and it is not behind", sent)
+		}
+		env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, out))
+		if err := host.c.Write(ctx, websocket.MessageBinary, env); err != nil {
+			t.Fatal(err)
+		}
+		sent += len(out)
+		select {
+		case m := <-host.msgs:
+			if m["t"] == proto.HostViewerBehind {
+				told = m
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if told["viewerId"] != viewerID || told["behind"] != true {
+		t.Fatalf("the host was told %v", told)
+	}
+	if sent > 2<<20 {
+		t.Fatalf("the host was told the viewer is behind once it had relayed %d bytes", sent)
+	}
+	// The viewer reads: it is sent every frame, and caught up.
+	got := 0
+	for got < sent {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("after %d of %d bytes: %v", got, sent, err)
+		}
+		if f.Type == proto.TypeOutput {
+			got += len(f.Payload)
+		}
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case m := <-host.msgs:
+			if m["t"] != proto.HostViewerBehind {
+				continue
+			}
+			if m["viewerId"] != viewerID || m["behind"] != false {
+				t.Fatalf("the host was told %v", m)
+			}
+		case <-deadline:
+			t.Fatal("the host was never told the viewer caught up")
+		}
+		break
+	}
+}
+
 // dialSmallReader is dialViewer through the server at base, the client's
 // socket given a small receive buffer.
 func dialSmallReader(t *testing.T, base, sessionID, token string) *wsClient {
