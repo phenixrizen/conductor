@@ -110,6 +110,13 @@ html, body, #__nuxt {
   background: var(--ui-bg);
 }
 
+/* In the editor column the slot holds the terminal's least height (EditorColumn's min-h-32, 8rem): the host fills the slot and no
+   more, so that the fit lays out only the rows that show (#189). Folded (h-0: a phone with a file open), the host keeps its own
+   minimum. */
+[data-terminal-slot="open"] .terminal-host {
+  min-height: 0;
+}
+
 .terminal-host .xterm {
   height: 100%;
   padding: 0.5rem;
