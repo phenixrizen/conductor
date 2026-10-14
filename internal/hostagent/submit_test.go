@@ -122,6 +122,24 @@ func submitPeerOn(t *testing.T, a *agent, proc *sessiontest.FakeProc, begun *ato
 		t.Fatal(err)
 	}
 	t.Cleanup(p.close)
+	return attachLoopback(t, a, proc, begun, p, out)
+}
+
+// joinedViewerOn is submitViewerOn for a viewer that joins as the server's
+// viewer_join has it join (agent.addPeer): one through a link has the host
+// ping its server as it joins.
+func joinedViewerOn(t *testing.T, a *agent, proc *sessiontest.FakeProc, begun *atomic.Int32, id, linkID string, out <-chan any) *submitViewer {
+	t.Helper()
+	a.addPeer(id, session.RoleControl, linkID, "")
+	p := a.peer(id)
+	t.Cleanup(func() { a.removePeer(id) })
+	return attachLoopback(t, a, proc, begun, p, out)
+}
+
+// attachLoopback connects a loopback data channel to p, a's viewer, whose
+// peer connection is started, and attaches it with its hello.
+func attachLoopback(t *testing.T, a *agent, proc *sessiontest.FakeProc, begun *atomic.Int32, p *peer, out <-chan any) *submitViewer {
+	t.Helper()
 	dc, frames := loopbackViewer(t, p, out)
 	v := &submitViewer{t: t, p: p, proc: proc, dc: dc, frames: frames, begun: begun}
 	v.send(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 80, Rows: 24, Name: "Nate"})

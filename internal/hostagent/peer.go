@@ -47,13 +47,18 @@ type peer struct {
 	pending   []webrtc.ICECandidateInit
 	remoteSet bool
 	closed    bool
+	// offering says an offer of the viewer's is being answered
+	// (handleOffer): another meanwhile is refused.
+	offering bool
 
 	// typing runs the viewer's submits, chats to the agent and chat_sends;
 	// keys its keystrokes; editing its editor's keys, swap answers and
-	// closes; nvimOpening counts its nvim_opens running (queue.go).
+	// closes; saving the parts of its saves; nvimOpening counts its
+	// nvim_opens running (queue.go).
 	typing      requestQueue
 	keys        requestQueue
 	editing     requestQueue
+	saving      requestQueue
 	nvimOpening atomic.Int32
 
 	// room is whether the server has room for more of the viewer's relayed
@@ -72,13 +77,17 @@ type peer struct {
 	letGo atomic.Pointer[error]
 }
 
-var errNoWebRTC = errors.New("webrtc disabled on this host")
+var (
+	errNoWebRTC      = errors.New("webrtc disabled on this host")
+	errOfferUnderWay = errors.New("an offer of this viewer's is being answered")
+)
 
 func newPeer(a *agent, id string, role session.Role, linkID, linkLabel string, owner bool) *peer {
 	return &peer{
 		a: a, id: id, role: role, linkID: linkID, linkLabel: linkLabel, owner: owner && linkID == "", left: make(chan struct{}),
 		keys:    requestQueue{limit: maxQueuedKeys, maxBytes: maxQueuedKeyBytes},
 		editing: requestQueue{limit: maxQueuedEdits},
+		saving:  requestQueue{limit: maxQueuedSaveParts, maxBytes: maxQueuedSaveBytes},
 	}
 }
 
@@ -137,13 +146,45 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 	return nil
 }
 
+// handleOffer answers the viewer's offer on a goroutine of its own and
+// returns at once, so that the loop that read it (the control connection's,
+// which carries every viewer's messages and the server's) waits for none of
+// it: neither the answer's making nor its wait for its turn on the writer
+// (up to controlTurnWait, past which it is dropped and the viewer falls
+// back to the relay on its own timeout). Candidates that come before the
+// offer is taken wait for it (handleICE). It refuses at once with
+// errNoWebRTC without a peer connection, and with errOfferUnderWay while
+// another offer of the viewer's is being answered. One that fails is the
+// viewer's error (webrtc_failed).
 func (p *peer) handleOffer(sdp string) error {
 	p.mu.Lock()
 	pc := p.pc
-	p.mu.Unlock()
-	if pc == nil {
+	switch {
+	case pc == nil:
+		p.mu.Unlock()
 		return errNoWebRTC
+	case p.offering:
+		p.mu.Unlock()
+		return errOfferUnderWay
 	}
+	p.offering = true
+	p.mu.Unlock()
+	go func() {
+		err := p.answerOffer(pc, sdp)
+		p.mu.Lock()
+		p.offering = false
+		p.mu.Unlock()
+		if err != nil {
+			p.a.sendViewerError(p.id, "webrtc_failed", err.Error())
+		}
+	}()
+	return nil
+}
+
+// answerOffer makes pc's answer to sdp, adds the candidates that waited
+// for it, and sends it (agent.send: dropped once it has waited
+// controlTurnWait for its turn).
+func (p *peer) answerOffer(pc *webrtc.PeerConnection, sdp string) error {
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
 		return err
 	}
@@ -392,7 +433,7 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 			p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
 			return
 		}
-		p.a.local.FileWrite(sub, h, part)
+		p.saveIn(sub, h, part)
 	case proto.TypeInput:
 		if sub == nil {
 			return
@@ -409,8 +450,10 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 // loop, written in the order sent, each within session.InputWait of its
 // arrival (agent.inputDeadline), its wait in the queue included; past that
 // it is refused (input_failed) and, if its write had not begun, never
-// written. A full queue refuses it at once (too_many_requests). data is
-// the frame's own: neither transport reuses it.
+// written. A full queue refuses it at once (too_many_requests). A link's
+// viewer's keys wait, within that time, for the host to vouch for its
+// server when it may soon (awaitVouch). data is the frame's own: neither
+// transport reuses it.
 func (p *peer) keyIn(sub *session.Subscription, data []byte) {
 	deadline := p.a.inputDeadline()
 	if !p.keys.add(request{
@@ -418,6 +461,10 @@ func (p *peer) keyIn(sub *session.Subscription, data []byte) {
 		run: func() {
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
+			if err := p.awaitVouch(ctx); err != nil {
+				p.a.local.Send(sub, inputError(err))
+				return
+			}
 			if err := p.a.local.InputContext(ctx, sub, data); err != nil {
 				p.a.local.Send(sub, inputError(err))
 			}
@@ -438,8 +485,8 @@ func (p *peer) keyIn(sub *session.Subscription, data []byte) {
 // (question_answered), nothing written. A view-role viewer's is refused
 // (read_only), as its keystrokes are. Either is held to a submission's
 // check of the viewer's credential as the session's writer takes it
-// (authorize): a link's viewer's is written only while the link stands
-// and the server was heard from lately, else refused (input_failed),
+// (authorize, fresh): a link's viewer's is written only while the link
+// stands and the host vouches for its server, else refused (input_failed),
 // nothing written.
 func (p *peer) answerIn(sub *session.Subscription, m proto.Answer) {
 	refuse := func(err error) {
@@ -468,11 +515,46 @@ func (p *peer) answerIn(sub *session.Subscription, m proto.Answer) {
 		run: func() {
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
+			if err := p.awaitVouch(ctx); err != nil {
+				refuse(err)
+				return
+			}
 			refuse(p.a.local.AnswerInput(ctx, sub, m.Question, []byte(m.Input)))
 		},
 		live: p.attached(sub),
 	}) {
 		p.a.local.Send(sub, queueFull(m.ReqID))
+	}
+}
+
+// saveIn queues a part of a save for sub on the viewer's saving queue: off
+// the frame loop (for the relay, the host's control connection, whose
+// reading it would otherwise hold for the save's disk work), in the order
+// sent, one at a time, at most maxQueuedSaveParts and maxQueuedSaveBytes
+// waiting. A part past them is refused (a FILE error, too_many_requests,
+// naming its save) and the connection stays. A link's viewer's part waits
+// for the host to vouch for its server when it may soon (awaitVouch), at
+// most a ping's own wait; the session asks the link's check at the part,
+// and the save's last part once more before its rename. A part whose viewer
+// has gone by its turn is dropped (request.live). part is the frame's own.
+func (p *peer) saveIn(sub *session.Subscription, h proto.FileWrite, part []byte) {
+	if !p.saving.add(request{
+		size: len(part),
+		run: func() {
+			ctx, cancel := context.WithTimeout(context.Background(), p.a.heardWithin())
+			_ = p.awaitVouch(ctx)
+			cancel()
+			if seam := p.a.beforeSave.Load(); seam != nil {
+				(*seam)(h)
+			}
+			p.a.local.FileWrite(sub, h, part)
+		},
+		live: p.attached(sub),
+	}) {
+		if frame, err := proto.EncodeFile(proto.FileHeader{ReqID: h.ReqID, Path: h.Path, Kind: "error",
+			Error: &proto.ErrorInfo{Code: proto.ErrCodeTooManyRequests, Message: saveQueueFullWords}}, nil); err == nil {
+			p.a.local.Send(sub, frame)
+		}
 	}
 }
 
@@ -489,8 +571,8 @@ func (p *peer) edit(sub *session.Subscription, size int, run func(), refused []b
 }
 
 // inputError is the error keystrokes get for err: revoked or expired when
-// the viewer's link no longer opens the session (authorize; the server not
-// heard from lately among it), with the words the page shows.
+// the viewer's link no longer opens the session (authorize; fresh, the host
+// not vouching for its server, among it), with the words the page shows.
 func inputError(err error) []byte {
 	if code, msg, ok := session.LinkRefusal(err); ok {
 		return proto.NewError(code, msg)
@@ -567,6 +649,9 @@ func (p *peer) typeIn(sub *session.Subscription, requestID string, do func(conte
 			}
 			err := ctx.Err()
 			if err == nil {
+				err = p.awaitVouch(ctx)
+			}
+			if err == nil {
 				err = do(ctx)
 			}
 			if err != nil {
@@ -627,7 +712,7 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 	p.mu.Unlock()
 	sub, err := p.a.local.AttachWith(session.AttachOptions{
 		ID: p.id, Role: p.role, LinkID: p.linkID, LinkLabel: p.linkLabel, Name: hello.Name, Cols: hello.Cols, Rows: hello.Rows,
-		Owner: p.owner, Replaces: replaces, Authorize: p.authorize,
+		Owner: p.owner, Replaces: replaces, Authorize: p.authorize, Fresh: p.fresh,
 	}, sink)
 	if err != nil {
 		p.a.sendViewerError(p.id, "attach_failed", err.Error())
@@ -655,28 +740,53 @@ func (p *peer) attach(hello proto.Hello, via *dcSink) {
 // longer opens the session, and why then: the server let the viewer go for
 // it (closeFor), said the link went (link_gone: revoked or expired, on the
 // server's clock), or the connection to the server was lost
-// (linkCreds.lost); and, for a viewer who joined through a link, only while
-// the host has heard from the server lately (agent.vouches), which would
-// have told it of the link going: serverQuiet, a kind of
-// session.ErrRevoked, otherwise. The session asks it again before it writes
-// what the viewer asked for (a submission's text and Enter), so what is
-// under way of the viewer's, on any of its subscriptions (one it had before
-// a move to the relay too), also once it has left, is withdrawn then, and a
-// text typed without its Enter holds the session's turn for a person. It
-// takes no lock.
+// (linkCreds.lost). The viewer attaches on it alone. The session asks it
+// again, with fresh, wherever it acts on what the viewer sent (a
+// submission's text and Enter, keys, a save's part and its rename), so what
+// is under way of the viewer's, on any of its subscriptions (one it had
+// before a move to the relay too), also once it has left, is withdrawn
+// then, and a text typed without its Enter holds the session's turn for a
+// person. It takes no lock.
 func (p *peer) authorize() (session.Grant, error) {
 	if why := p.letGo.Load(); why != nil {
 		return session.Grant{}, *why
 	}
-	if p.cred != nil {
-		if err := p.cred.err(); err != nil {
-			return session.Grant{}, err
-		}
-		if err := p.a.vouches(); err != nil {
-			return session.Grant{}, err
-		}
+	if err := p.cred.err(); err != nil {
+		return session.Grant{}, err
 	}
 	return session.Grant{Role: p.role}, nil
+}
+
+// fresh is the rest of the check of what a viewer who joined through a link
+// sends (session.AttachOptions.Fresh): it is acted on only while the host
+// vouches for its server (agent.vouches: a ping it sent within the bound
+// answered), which would have told it of the link going; serverQuiet, a
+// kind of session.ErrRevoked, otherwise. A viewer with no link needs none.
+// It takes no lock but the connection's own.
+func (p *peer) fresh() error {
+	if p.cred == nil {
+		return nil
+	}
+	return p.a.vouches()
+}
+
+// awaitVouch has a request of a viewer who joined through a link wait,
+// within ctx, for the host to vouch for its server when it does not yet and
+// may soon (agent.awaitVouch: its join's ping under way). When ctx ends
+// first and the host still does not vouch, it returns why (serverQuiet), so
+// that the request is refused for that rather than for its time; nil
+// otherwise, the session's own checks to come. A viewer with no link waits
+// for nothing.
+func (p *peer) awaitVouch(ctx context.Context) error {
+	if p.cred == nil || p.cred.err() != nil || p.letGo.Load() != nil {
+		// No link, or one gone: nothing to wait for.
+		return nil
+	}
+	p.a.awaitVouch(ctx)
+	if ctx.Err() != nil {
+		return p.fresh()
+	}
+	return nil
 }
 
 // transport is the sink a hello that came over via attaches the viewer to:
@@ -723,11 +833,11 @@ func (p *peer) close() { p.closeFor(nil) }
 
 // closeFor lets the viewer go: for why, its link no longer opening the
 // session (session.ErrRevoked, session.ErrExpired), or nil for any other
-// end. What waits of the viewer's (its keys, submissions and editor
-// requests not begun) is dropped either way; with why, what is under way
-// of a submission's is withdrawn too (authorize), not finished, its text
-// typed or not. Why is set first, before anything of the viewer's sees it
-// go.
+// end. What waits of the viewer's (its keys, submissions, save parts and
+// editor requests not begun) is dropped either way; with why, what is under
+// way of a submission's is withdrawn too (authorize), not finished, its
+// text typed or not, and a save under way is refused at its next check.
+// Why is set first, before anything of the viewer's sees it go.
 func (p *peer) closeFor(why error) {
 	if why != nil {
 		p.letGo.CompareAndSwap(nil, &why)
@@ -745,6 +855,7 @@ func (p *peer) closeFor(why error) {
 	p.typing.close()
 	p.keys.close()
 	p.editing.close()
+	p.saving.close()
 	if sub != nil {
 		p.a.local.Detach(sub)
 	}

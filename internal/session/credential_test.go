@@ -231,6 +231,68 @@ func leftBeside(t *testing.T, file string) []string {
 	return other
 }
 
+// A viewer attaches on its credential alone (AttachOptions.Authorize),
+// whatever AttachOptions.Fresh says: a host's first viewer after a start,
+// a reconnect or an idle spell attaches before the host vouches for its
+// server. What it sends is held to both: while Fresh refuses, its keys, a
+// save's part, a read and a chat post are refused with Fresh's words and do
+// nothing; once Fresh passes, its keys are written and its save lands.
+func TestAttachNeedsNoFreshnessAndAWriteDoes(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, FileView: "control", FileEdit: "control"})
+	file := fileIn(t, s, "notes.txt", "alpha\n")
+	var stale atomic.Bool
+	stale.Store(true)
+	fresh := func() error {
+		if stale.Load() {
+			return quietKind{}
+		}
+		return nil
+	}
+	var c credential
+	sink := newChanSink(false)
+	guest, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "guest", LinkID: "l1", Authorize: c.check(RoleControl), Fresh: fresh}, sink)
+	if err != nil {
+		t.Fatalf("an attach with its credential standing and no freshness yet: %v", err)
+	}
+	if err := s.Input(guest, []byte("early")); !errors.Is(err, quietKind{}) {
+		t.Fatalf("keys before the host vouches: %v", err)
+	}
+	save(s, guest, "w1", "notes.txt", []byte("early\n"), 512, "", true)
+	if h := fileReply(t, sink, "w1"); h.Kind != "error" || h.Error.Code != proto.ErrCodeRevoked || h.Error.Message != (quietKind{}).Error() {
+		t.Fatalf("a save before the host vouches: %+v %+v", h, h.Error)
+	}
+	if err := s.FileGet(guest, proto.FileGet{ReqID: "r1", Path: "notes.txt"}); !errors.Is(err, quietKind{}) {
+		t.Fatalf("a read before the host vouches: %v", err)
+	}
+	if _, err := s.Chat(guest, proto.ChatPost{Text: "early"}); !errors.Is(err, quietKind{}) {
+		t.Fatalf("a chat post before the host vouches: %v", err)
+	}
+	nothingWritten(t, p, 200*time.Millisecond)
+	if b, _ := os.ReadFile(file); string(b) != "alpha\n" {
+		t.Fatalf("the file is %q", b)
+	}
+
+	stale.Store(false)
+	if err := s.Input(guest, []byte("vouched")); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "vouched" {
+		t.Fatalf("written %q", got)
+	}
+	save(s, guest, "w2", "notes.txt", []byte("vouched\n"), 512, "", true)
+	if h := fileReply(t, sink, "w2"); h.Kind != "written" {
+		t.Fatalf("a save once the host vouches: %+v %+v", h, h.Error)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "vouched\n" {
+		t.Fatalf("the file is %q", b)
+	}
+	// The credential gone refuses as before, Fresh passing or not.
+	c.goneFor(ErrRevoked)
+	if err := s.Input(guest, []byte("gone")); !errors.Is(err, ErrRevoked) || errors.Is(err, quietKind{}) {
+		t.Fatalf("keys once the link went: %v", err)
+	}
+}
+
 // A link's save once its credential is gone is refused with why at its
 // part, the file as it was, nothing recorded.
 func TestFileWriteRefusedOnceCredentialGone(t *testing.T) {

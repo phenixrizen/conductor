@@ -1411,6 +1411,16 @@ type AttachOptions struct {
 	// closes the client with ErrExpired then. Authorize must not call the
 	// session.
 	Authorize func() (Grant, error)
+	// Fresh, when set, says whether the client's credential may be acted
+	// on now, beside what it gives (Authorize): on a host, a link's viewer
+	// needs the host to vouch for its server (an answered ping within its
+	// bound). AttachWith does not ask it, so a client attaches on its
+	// credential alone; it is asked with the credential wherever what the
+	// client sent is acted on (a write, a save's part and its rename, a
+	// read, an editor's open, a chat post), and an error refuses that as a
+	// link gone would (ErrRevoked, or a kind of it). Fresh must not call
+	// the session.
+	Fresh func() error
 	// Owner marks one of the owner's own connections: the workbench's on a
 	// server, a host's viewer with no link from a server the person said is
 	// their own (never a switchyard's). Only such a
@@ -1535,6 +1545,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	sub.quiet = o.ChatOnly
 	sub.owner = o.Owner && o.LinkID == ""
 	sub.authorize = o.Authorize
+	sub.fresh = o.Fresh
 	if sized {
 		sub.want = [2]uint16{cols, rows}
 	}
