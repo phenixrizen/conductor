@@ -84,6 +84,10 @@ type request struct {
 	// holds it no longer than its own time.
 	deadline time.Time
 	expired  func()
+	// done, when set, runs once the request is finished whichever way: run,
+	// refused, or dropped with its viewer or the queue. It may run with the
+	// queue's lock held, and takes none.
+	done func()
 }
 
 // waitingRequest is a request in the queue, with its deadline's timer.
@@ -146,7 +150,7 @@ func (q *requestQueue) add(r request) bool {
 			}
 			w.stop()
 			q.bytes -= w.size
-			close(w.finished)
+			w.finish()
 			return true
 		})
 		if q.full(r.size) {
@@ -192,7 +196,7 @@ func (q *requestQueue) run(w *waitingRequest, done chan struct{}) {
 	defer close(done)
 	for w != nil {
 		w.run()
-		close(w.finished)
+		w.finish()
 		w = q.next()
 	}
 }
@@ -219,7 +223,7 @@ func (q *requestQueue) next() *waitingRequest {
 		if w.live == nil || w.live() {
 			return w
 		}
-		close(w.finished)
+		w.finish()
 	}
 }
 
@@ -234,7 +238,15 @@ func (q *requestQueue) expire(w *waitingRequest) {
 	q.mu.Unlock()
 	if i >= 0 {
 		w.expired()
-		close(w.finished)
+		w.finish()
+	}
+}
+
+// finish marks w finished (after) and runs its done.
+func (w *waitingRequest) finish() {
+	close(w.finished)
+	if w.done != nil {
+		w.done()
 	}
 }
 
@@ -252,7 +264,7 @@ func (q *requestQueue) close() {
 	q.closed = true
 	for _, w := range q.waiting {
 		w.stop()
-		close(w.finished)
+		w.finish()
 	}
 	q.waiting = nil
 	q.bytes = 0

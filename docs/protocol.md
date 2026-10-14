@@ -387,12 +387,15 @@ on its own timeout) while the loop goes on reading, and candidates that
 come before the offer is taken wait for it (64 at most); another offer of
 the same viewer while one is being answered is ignored.
 
-The first line, key or save of a viewer who joined through a link, after
-the host's start, a reconnect or a spell with no link held, waits within
-its own time (a save's part, 15 s) for the answer to the ping its join sent
-(see the host control connection), and goes on once it comes; one that
-finds the host not vouching once the server has failed to answer a ping
-since its last answer is refused at once.
+The first line, key, save, chat post or `file_get` of a viewer who joined
+through a link, after the host's start, a reconnect or a spell with no link
+held, waits within its own time (a save's part and a read, 15 s) for the
+answer to the ping its join sent (see the host control connection), off the
+loop that carries its frames, and goes on once it comes: a `chat` then
+waits on the typing queue, in its turn among the viewer's submissions, and
+the viewer's chat posts after it follow it there until it is done, so they
+keep their order. One that finds the host not vouching once the server has
+failed to answer a ping since its last answer is refused at once.
 
 A viewer's `answer` waits as what it carries does: its `input` among the
 viewer's INPUT frames (its 10 s, the same bounds, `too_many_requests` naming

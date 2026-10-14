@@ -60,6 +60,13 @@ type peer struct {
 	editing     requestQueue
 	saving      requestQueue
 	nvimOpening atomic.Int32
+	// chatsLater counts the viewer's chat posts taken off the frame loop
+	// while its host did not vouch for its server (chatLater) and not yet
+	// finished: the posts after them follow them there, in their order.
+	chatsLater atomic.Int32
+	// filesWaiting counts the viewer's file reads waiting for the host to
+	// vouch for its server (fileGetIn).
+	filesWaiting atomic.Int32
 
 	// room is whether the server has room for more of the viewer's relayed
 	// frames (viewer_behind), whichever relay sink the viewer is on.
@@ -361,6 +368,9 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad chat message"))
 				return
 			}
+			if p.chatLater(sub, m) {
+				return
+			}
 			msg, err := p.a.local.Chat(sub, m)
 			if err != nil {
 				p.a.local.Send(sub, session.ChatErrorFrame(err, m.Nonce))
@@ -432,11 +442,7 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 			if json.Unmarshal(f.Payload, &m) != nil {
 				return
 			}
-			if err := p.a.local.FileGet(sub, m); err != nil {
-				if frame := session.FileGetRefused(m, err); frame != nil {
-					p.a.local.Send(sub, frame)
-				}
-			}
+			p.fileGetIn(sub, m)
 		}
 	case proto.TypeFileWrite:
 		// A save from the editor (design round 12, F6), written on this machine.
@@ -573,6 +579,75 @@ func (p *peer) saveIn(sub *session.Subscription, h proto.FileWrite, part []byte)
 	}
 }
 
+// fileGetIn serves a file read for sub (session.FileGet, which reads off
+// the frame loop and answers with a FILE frame), or answers why not. A read
+// of a viewer who joined through a link while the host does not vouch for
+// its server yet (its join's ping not answered) waits for it first, off the
+// frame loop, a ping's own wait at most, as the viewer's first line does:
+// at most session.MaxInflightFiles such reads wait at once, past which one
+// is taken at once (and refused as the host does not vouch).
+func (p *peer) fileGetIn(sub *session.Subscription, m proto.FileGet) {
+	get := func() {
+		if err := p.a.local.FileGet(sub, m); err != nil {
+			if frame := session.FileGetRefused(m, err); frame != nil {
+				p.a.local.Send(sub, frame)
+			}
+		}
+	}
+	if p.cred == nil || p.a.vouches() == nil {
+		get()
+		return
+	}
+	if p.filesWaiting.Add(1) > session.MaxInflightFiles {
+		p.filesWaiting.Add(-1)
+		get()
+		return
+	}
+	go func() {
+		defer p.filesWaiting.Add(-1)
+		ctx, cancel := context.WithTimeout(context.Background(), p.a.heardWithin())
+		_ = p.awaitVouch(ctx)
+		cancel()
+		get()
+	}()
+}
+
+// chatLater takes a chat post of a viewer who joined through a link off the
+// frame loop while the host does not vouch for its server (the first
+// pong of its join's ping not in yet, as after a start, a reconnect or a
+// spell with no link held), and reports whether it did: the post goes on
+// the typing queue, in its turn among the viewer's submissions and chats to
+// the agent, waits there for the host to vouch within its own time
+// (typeIn's awaitVouch), and is then kept, and typed when it is for the
+// agent, as a post taken at once would be; refused with why otherwise. So
+// that the viewer's posts keep their order, those that come while one is
+// still on its way take the same road. A viewer with no link, or a post
+// that comes once the host vouches with none on its way, is taken at once
+// (false).
+func (p *peer) chatLater(sub *session.Subscription, m proto.ChatPost) bool {
+	if p.cred == nil || (p.chatsLater.Load() == 0 && p.a.vouches() == nil) {
+		return false
+	}
+	p.chatsLater.Add(1)
+	p.typeInDone(sub, m.Nonce, func(ctx context.Context) error {
+		msg, err := p.a.local.Chat(sub, m)
+		if err != nil {
+			p.a.local.Send(sub, session.ChatErrorFrame(err, m.Nonce))
+			return nil
+		}
+		if m.To != "" {
+			send := proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: msg.Scope, To: m.To}
+			if err := p.a.local.ChatSend(ctx, sub, send); err != nil {
+				p.a.local.Send(sub, session.ChatErrorFrame(err, msg.ID))
+			}
+		}
+		return nil
+	}, func(err error) {
+		p.a.local.Send(sub, session.ChatErrorFrame(err, m.Nonce))
+	}, func() { p.chatsLater.Add(-1) })
+	return true
+}
+
 // edit queues one of the editor's requests for sub (keys, a swap answer, a
 // close) on the viewer's editing queue: off the frame loop, in the order
 // sent. A full queue refuses it at once (too_many_requests).
@@ -630,6 +705,12 @@ func (p *peer) attached(sub *session.Subscription) func() bool {
 // its turn came or not. A full queue refuses it at once (too_many_requests,
 // requestID naming it).
 func (p *peer) typeIn(sub *session.Subscription, requestID string, do func(context.Context) error, refuse func(error)) {
+	p.typeInDone(sub, requestID, do, refuse, nil)
+}
+
+// typeInDone is typeIn with done run once the request is finished,
+// whichever way (request.done), or at once when the queue refused it.
+func (p *peer) typeInDone(sub *session.Subscription, requestID string, do func(context.Context) error, refuse func(error), done func()) {
 	deadline := p.a.submitDeadline()
 	// The keys the viewer sent before it are written (or refused) first,
 	// as the frame loop wrote them before it once; those sent after are
@@ -676,7 +757,11 @@ func (p *peer) typeIn(sub *session.Subscription, requestID string, do func(conte
 		live:     p.attached(sub),
 		deadline: deadline,
 		expired:  func() { refuse(context.DeadlineExceeded) },
+		done:     done,
 	}) {
+		if done != nil {
+			done()
+		}
 		p.a.local.Send(sub, queueFull(requestID))
 	}
 }

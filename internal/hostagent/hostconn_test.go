@@ -87,7 +87,7 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 	if when == "start" {
 		srv.pongs.Store(pongHold)
 	}
-	a, viewer := liveHostBounds(t, srv.url, 0, session.Options{SubmitPause: 20 * time.Millisecond, FileEdit: "off", Log: discardLog}, firstWithin, firstPing)
+	a, viewer := liveHostBounds(t, srv.url, 0, session.Options{SubmitPause: 20 * time.Millisecond, FileView: "control", FileEdit: "off", Log: discardLog}, firstWithin, firstPing)
 	first := <-srv.conns
 	switch when {
 	case "reconnect":
@@ -167,6 +167,65 @@ func TestFirstLineWaitsForTheFirstPong(t *testing.T) {
 			srv.pongs.Store(pongAnswer)
 			if typed := guest.typed(guest.release(), 2); strings.Join(typed, "|") != "first line|\r" {
 				t.Fatalf("typed %q", typed)
+			}
+		})
+	}
+}
+
+// The first chat posts of a viewer who joined through a link, after the
+// host's start and a reconnect (where a page sends again what it had not
+// had answered), wait for the answer to the join's ping as its first line
+// does, in their order: one for the agent, then one for the chat alone.
+// Neither is refused; once the pong comes, both are kept, in order, and
+// the one for the agent is typed and entered.
+func TestFirstChatPostsWaitForTheFirstPong(t *testing.T) {
+	for _, when := range []string{"start", "reconnect"} {
+		t.Run(when, func(t *testing.T) {
+			_, srv, guest := firstLinkViewer(t, when)
+			guest.send(proto.ChatPost{T: proto.CtlChat, Nonce: "c1", Text: "hello agent", To: proto.ChatToAgent})
+			guest.send(proto.ChatPost{T: proto.CtlChat, Nonce: "c2", Text: "and the chat"})
+			for _, m := range guest.sync() {
+				if m["t"] == proto.CtlError || m["t"] == proto.CtlChat {
+					t.Fatalf("before the pong: %v", m)
+				}
+			}
+			guest.quiet(300 * time.Millisecond)
+			srv.pongs.Store(pongAnswer)
+			var kept []any
+			guest.until(func(m map[string]any) bool {
+				if m["t"] == proto.CtlError {
+					t.Fatalf("refused: %v", m)
+				}
+				if m["t"] == proto.CtlChat && m["nonce"] != nil {
+					kept = append(kept, m["nonce"])
+				}
+				return len(kept) == 2
+			})
+			if fmt.Sprint(kept) != "[c1 c2]" {
+				t.Fatalf("kept %v", kept)
+			}
+			if typed := guest.typed(guest.release(), 2); strings.Join(typed, "|") != "hello agent|\r" {
+				t.Fatalf("typed %q", typed)
+			}
+		})
+	}
+}
+
+// A first file read of a viewer who joined through a link, after the host's
+// start and a reconnect (where the Files tab asks again), waits for the
+// answer to the join's ping, off the frame loop, and is answered with the
+// file once it comes, not refused.
+func TestFirstReadWaitsForTheFirstPong(t *testing.T) {
+	for _, when := range []string{"start", "reconnect"} {
+		t.Run(when, func(t *testing.T) {
+			a, srv, guest := firstLinkViewer(t, when)
+			fileIn(t, a, "notes.txt", "alpha\n")
+			guest.send(proto.FileGet{T: proto.CtlFileGet, ReqID: "r1", Path: "notes.txt"})
+			guest.sync() // the frame loop goes on meanwhile
+			time.Sleep(300 * time.Millisecond)
+			srv.pongs.Store(pongAnswer)
+			if h := guest.fileAnswer("r1"); h.Kind != "file" {
+				t.Fatalf("the first read: %+v %+v", h, h.Error)
 			}
 		})
 	}
