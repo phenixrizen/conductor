@@ -40,10 +40,12 @@ const DisconnectGrace = 60 * time.Second
 const (
 	viewerQueue = 2048
 	// viewerQueueBytes bounds the frames queued to one viewer: past it the
-	// viewer is closed as too slow (ErrSlowViewer). It is how far a viewer
-	// on a slow connection may fall behind its host's output, a thousand
-	// whole output frames, or a dozen file frames (proto.MaxFrame); the
-	// frames alone, of up to proto.MaxFrame each, would let it hold GiBs.
+	// viewer is closed as too slow (ErrSlowViewer). The frames alone, of up
+	// to proto.MaxFrame each, would let it hold GiBs. A host that holds a
+	// relayed viewer's frames once told it is behind (relayBehindBytes)
+	// leaves little more than that mark queued, and what was on its way;
+	// an older host's viewer on a slow connection may fall this far behind,
+	// a thousand whole output frames, or a dozen file frames.
 	viewerQueueBytes = 16 << 20
 	hostQueue        = 8192
 	// hostQueueBytes bounds what is queued to a host connection.
@@ -55,12 +57,27 @@ const (
 	// than it reads, wait for room and never close the host's connection.
 	hostViewerBytes = hostQueueBytes - 1<<20
 	hostViewerSlots = hostQueue - 512
+	// A relayed viewer for which more than relayBehindBytes is queued has
+	// fallen behind what its host relays to it: the host is told
+	// (viewer_behind), and holds that viewer's frames until it is told the
+	// viewer caught up, at relayCaughtUpBytes or less, as it holds a WebRTC
+	// viewer's while the data channel is full. The host's connection, which
+	// its relayed viewers share, so carries what each of them takes, and
+	// what waits for one waits on the host, under the host's own bound for
+	// a viewer. What the viewer's socket holds is not counted (the server
+	// keeps it small: api's hostedViewerUnsent). An older host, which
+	// ignores viewer_behind, is bounded by viewerQueueBytes alone.
+	relayBehindBytes   = 512 << 10
+	relayCaughtUpBytes = 128 << 10
 )
 
 // Outbound is one message queued to a host connection.
 type Outbound struct {
 	Text   []byte // JSON control message
 	Binary []byte // RELAY envelope
+	// took, when set, is called once the writer has taken the message
+	// (Took), holding no lock.
+	took func()
 }
 
 // size is what o counts for in its queue's bytes.
@@ -83,6 +100,10 @@ type HostConn struct {
 	bytes   int
 	waiting []*roomWaiter
 	room    chan struct{}
+	// behindLate are the viewers whose viewer_behind found no room in the
+	// queue (offerBehind): each tries again as the writer next takes a
+	// message (Took). Guarded by mu.
+	behindLate []*Viewer
 }
 
 // roomWaiter is a viewer's message in the line for room in a host's queue:
@@ -101,12 +122,44 @@ func (c *HostConn) Done() <-chan struct{} { return c.done }
 func (c *HostConn) Close() { c.once.Do(func() { close(c.done) }) }
 
 // Took tells the connection its writer took o from Send: o's bytes leave
-// the queue, and the viewers' messages waiting for room try again.
+// the queue, the viewers' messages waiting for room try again, and so do
+// the viewer_behind that found none (offerBehind), after o's own took.
 func (c *HostConn) Took(o Outbound) {
 	c.mu.Lock()
 	c.bytes = max(0, c.bytes-o.size())
 	c.wake()
+	late := c.behindLate
+	c.behindLate = nil
 	c.mu.Unlock()
+	if o.took != nil {
+		o.took()
+	}
+	for _, v := range late {
+		v.behindRoom()
+	}
+}
+
+// offerBehind queues v's viewer_behind o when the viewers' share of the
+// queue has room for it (admit), as for a message of v's own but without
+// waiting in their line: never into the room kept for the server's own
+// messages, which then still has all of it, however many viewers there
+// are. When the share has none, it never closes the connection, as send
+// does, but has v try again as the writer next takes a message (Took),
+// which it will, the share being full. It reports whether o was queued.
+// Called with v.behindMu held.
+func (c *HostConn) offerBehind(o Outbound, v *Viewer) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.admit(o, o.size()) {
+		return true
+	}
+	c.behindLate = append(c.behindLate, v)
+	return false
 }
 
 // wake has the viewers' messages waiting for room look again. Called with mu
@@ -289,6 +342,19 @@ type Viewer struct {
 	lapse *time.Timer
 	// charge is ViewerOptions.Charge.
 	charge func(n int) error
+	// conn is the host connection the viewer joined over, told when the
+	// viewer falls behind and when it catches up (noteBacklog). Under
+	// behindMu: behind is what the marks say of the viewer; told is what
+	// the host was last sent; inQueue says that message is still in the
+	// host's queue, not taken; late says the viewer waits for room there.
+	// So at most one viewer_behind of the viewer's is ever queued, and the
+	// host is sent the latest once it is taken.
+	conn     *HostConn
+	behindMu sync.Mutex
+	behind   bool
+	told     bool
+	inQueue  bool
+	late     bool
 	// joinDone is closed once the viewer's join has gone to the host, or
 	// will not (joinSent false: the viewer or the connection closed first,
 	// or its charge failed); joinSent is written before, and read after.
@@ -414,6 +480,7 @@ func (v *Viewer) Pump(sink session.Sink) {
 			return
 		case frame := <-v.Out:
 			v.queued.Add(-int64(len(frame)))
+			v.noteBacklog()
 			if err := sink.WriteFrame(frame); err != nil {
 				// The connection failed: what waits on the viewer's behalf
 				// (a frame for the host's queue) stops.
@@ -463,7 +530,8 @@ func framesOwed(reason error) bool {
 
 // push queues a frame for the viewer without waiting. A viewer whose queue
 // would hold more than viewerQueue frames or viewerQueueBytes bytes is closed
-// as too slow (ErrSlowViewer).
+// as too slow (ErrSlowViewer). A relayed viewer that passes relayBehindBytes
+// is behind (noteBacklog).
 func (v *Viewer) push(frame []byte) {
 	select {
 	case <-v.done:
@@ -478,10 +546,97 @@ func (v *Viewer) push(frame []byte) {
 	}
 	select {
 	case v.Out <- frame:
+		v.noteBacklog()
 	default:
 		v.queued.Add(-n)
 		v.close(ErrSlowViewer)
 	}
+}
+
+// noteBacklog tells the host, when the viewer is relayed, that it fell
+// behind (more than relayBehindBytes queued) or caught up (relayCaughtUpBytes
+// or less), as it passes either mark, and none once the viewer is closed.
+// It is called after each change of what is queued, as a frame is queued
+// (push) and as one is taken (Pump), and looks at what is queued under
+// behindMu every time: a look that is the last in the lock's order comes
+// after every change, so what the host is told last holds for what is
+// queued once the changes stop (a look outside the lock could miss the
+// change the other end was making). It does not wait (tellBehind).
+func (v *Viewer) noteBacklog() {
+	if v.conn == nil || !v.relay.Load() {
+		return
+	}
+	v.behindMu.Lock()
+	defer v.behindMu.Unlock()
+	if behindAt(v.queued.Load(), v.behind) != v.behind {
+		if behindSeam != nil {
+			behindSeam(v)
+		}
+		v.behind = !v.behind
+	}
+	v.tellBehind()
+}
+
+// tellBehind sends the host what the marks say of the viewer (behind), in
+// the viewers' share of its queue (offerBehind), when the host was last
+// sent otherwise: unless one of the viewer's is still in the host's queue,
+// when the latest goes once that one is taken (behindTaken), or the share
+// has no room, when it goes once the writer next takes a message
+// (behindRoom). So the viewer's changes, however many and however fast,
+// never put more than one message in the host's queue, never take the room
+// kept for the server's own messages nor close the connection for want of
+// room, and the host ends with the latest. Nothing is sent once the viewer
+// is closed. Called with behindMu held.
+func (v *Viewer) tellBehind() {
+	if v.inQueue || v.late || v.told == v.behind {
+		return
+	}
+	select {
+	case <-v.done:
+		return
+	default:
+	}
+	b, err := jsonMarshal(proto.ViewerBehind{T: proto.HostViewerBehind, ViewerID: v.ID, Behind: v.behind})
+	if err != nil {
+		return
+	}
+	if v.conn.offerBehind(Outbound{Text: b, took: v.behindTaken}, v) {
+		v.inQueue, v.told = true, v.behind
+	} else {
+		v.late = true
+	}
+}
+
+// behindTaken is the viewer's viewer_behind taken by the host connection's
+// writer: the latest goes now, if it differs.
+func (v *Viewer) behindTaken() {
+	v.behindMu.Lock()
+	defer v.behindMu.Unlock()
+	v.inQueue = false
+	v.tellBehind()
+}
+
+// behindRoom is room in the host's queue for the viewer_behind that found
+// none.
+func (v *Viewer) behindRoom() {
+	v.behindMu.Lock()
+	defer v.behindMu.Unlock()
+	v.late = false
+	v.tellBehind()
+}
+
+// behindSeam, when set (a test's), is called in noteBacklog once it has
+// decided to tell the host of a change, before it does.
+var behindSeam func(v *Viewer)
+
+// behindAt reports whether a relayed viewer with queued bytes queued is
+// behind, given whether it was: past relayBehindBytes it falls behind, and
+// it stays so until it is down to relayCaughtUpBytes.
+func behindAt(queued int64, was bool) bool {
+	if was {
+		return queued > relayCaughtUpBytes
+	}
+	return queued > relayBehindBytes
 }
 
 // HostedSession is a session whose PTY lives in a host process. It implements
@@ -884,6 +1039,7 @@ func (h *HostedSession) AddViewerWith(o ViewerOptions) (*Viewer, error) {
 	}
 	v := newViewer(o.ID, role, o.LinkID, o.LinkLabel)
 	v.charge = o.Charge
+	v.conn = h.conn
 	h.viewers[o.ID] = v
 	pushedOut := h.joinedThrough(o.LinkID, until)
 	if !until.IsZero() {

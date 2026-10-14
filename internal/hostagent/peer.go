@@ -56,6 +56,10 @@ type peer struct {
 	editing     requestQueue
 	nvimOpening atomic.Int32
 
+	// room is whether the server has room for more of the viewer's relayed
+	// frames (viewer_behind), whichever relay sink the viewer is on.
+	room relayRoom
+
 	// left is closed when the peer is closed (the viewer left): what waits
 	// to tell the server of the viewer is withdrawn then. erred says the
 	// viewer's error is on its way (sendViewerError), the first alone.
@@ -197,6 +201,7 @@ func (p *peer) startRelay() {
 	}
 	old := p.relay
 	p.relay = newRelaySink(p.a, p.id)
+	p.relay.room = &p.room
 	p.mu.Unlock()
 	if old != nil {
 		old.let()

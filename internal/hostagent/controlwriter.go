@@ -24,7 +24,10 @@ import (
 // messages first (its status, its attention and activity, the answers and
 // candidates of its WebRTC viewers, its link requests), then the frames
 // relayed to its viewers, each viewer's in the order its frames come and the
-// viewers in turn. A message is handed to the connection once what it holds
+// viewers in turn. A viewer the server says is behind (viewer_behind) takes
+// no turn: its frames wait on the host for it to catch up (relaySink), and
+// the connection carries the frames of the viewers that take them. A
+// message is handed to the connection once what it holds
 // unsent is under a mark; until then it waits its turn, for a bounded time
 // of its own, and one whose time runs out is withdrawn, never written late.
 //

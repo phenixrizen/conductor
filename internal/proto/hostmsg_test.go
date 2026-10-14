@@ -83,6 +83,24 @@ func TestLinkGoneWireShape(t *testing.T) {
 	}
 }
 
+// viewer_behind names a viewer and says behind, false as well as true.
+func TestViewerBehindWireShape(t *testing.T) {
+	for behind, want := range map[bool]string{
+		true:  `{"t":"viewer_behind","viewerId":"0123456789abcdef","behind":true}`,
+		false: `{"t":"viewer_behind","viewerId":"0123456789abcdef","behind":false}`,
+	} {
+		in := ViewerBehind{T: HostViewerBehind, ViewerID: "0123456789abcdef", Behind: behind}
+		b, _ := json.Marshal(in)
+		if string(b) != want {
+			t.Fatalf("got %s want %s", b, want)
+		}
+		var m ViewerBehind
+		if err := json.Unmarshal(b, &m); err != nil || m != in {
+			t.Fatalf("round trip: %+v %v", m, err)
+		}
+	}
+}
+
 // The register message carries the host's instance and the session's local
 // id; registered always carries its links, [] when none, and a reply
 // without the field (an older server) reads as nil.

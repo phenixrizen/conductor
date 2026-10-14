@@ -405,6 +405,11 @@ func (s *Server) linkLabel(linkID string) string {
 // (the budget, the join, room in the host's queue): the frame that waited is
 // dropped, and with it whatever the viewer sent after it.
 func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw net.Conn, hs *signal.HostedSession, role session.Role, linkID string, check func() (session.Grant, error), addr string) {
+	// What the viewer has not taken waits in its queue, where the server
+	// sees it, not in its socket's buffer (hostedViewerUnsent).
+	if raw != nil {
+		limitUnsent(raw, hostedViewerUnsent)
+	}
 	sink := s.viewerSink(c, raw)
 	defer sink.cancel()
 	// waits is what the read loop's waits wait under: it ends when the
