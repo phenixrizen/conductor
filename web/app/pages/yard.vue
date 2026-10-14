@@ -235,7 +235,9 @@ onMounted(() => {
     <template #body>
       <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="m-3" />
 
-      <div v-if="focusId" class="flex flex-1 min-h-0 gap-3 p-2 sm:p-3">
+      <!-- Scrolls when the terminal's least height and the reply bar's question (#187: whole, up to 500 bytes) outgrow a short
+           viewport, a landscape phone's, so that the choices stay reachable; the session page's body scrolls the same way. -->
+      <div v-if="focusId" class="flex flex-1 min-h-0 gap-3 overflow-y-auto p-2 sm:p-3" data-yard-focus>
         <EditorColumn v-if="focused" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="focused.cwd" :raw-url="rawUrl" :host-away="focused.status === 'host_disconnected' ? focused.hostName || 'The host' : undefined" :bar-text="focused.attention?.message || focused.agentId">
           <TerminalView
             :key="focused.id"

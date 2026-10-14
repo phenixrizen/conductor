@@ -121,7 +121,7 @@ test("a member's question is whole on the run card of the Crews page", async ({ 
   await expectWhole(ask.locator('[data-run-ask-words]'))
 })
 
-test("a question at the server's bound reads whole in the row, and the pointer over it and onto a choice moves nothing", async ({ page, api }) => {
+test("a question at the server's bound reads whole in the row, and the pointer over it and onto a choice moves nothing", async ({ page, api, browser, state }) => {
   expect(LONGEST).toHaveLength(500)
   await api.ok('POST', `/api/sessions/${encodeURIComponent(asker.id)}/attention`, { state: 'needs_input', message: LONGEST, options: CHOICES })
   expect((await api.session(asker.id)).attention?.message).toBe(LONGEST)
@@ -147,6 +147,25 @@ test("a question at the server's bound reads whole in the row, and the pointer o
   const line = page.locator('[data-quick-reply] [data-quick-reply-message]')
   await expect(line).toHaveText(LONGEST, { timeout: 30_000 })
   await expectWhole(line)
+
+  // A landscape phone in the Yard's focus mode: the terminal's least height and the whole question outgrow the 390 px, and the
+  // choices are reached by scrolling (the second review round found them clipped under the panel, out of reach).
+  const landscape = await browser.newContext({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true })
+  try {
+    await landscape.addInitScript(({ token }) => localStorage.setItem('conductor.workbenchToken', token), { token: state.token })
+    const yard = await landscape.newPage()
+    await yard.goto(`/yard?focus=${encodeURIComponent(asker.id)}`)
+    const bar = yard.locator('[data-quick-reply]')
+    await expect(bar.locator('[data-quick-reply-message]')).toHaveText(LONGEST, { timeout: 30_000 })
+    const no = bar.getByRole('button', { name: 'No' })
+    await no.scrollIntoViewIfNeeded()
+    const box = (await no.boundingBox())!
+    expect(box.y, 'the choice is in the viewport').toBeGreaterThanOrEqual(0)
+    expect(box.y + box.height, 'the choice is in the viewport').toBeLessThanOrEqual(390)
+    expect(await yard.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('button')?.textContent?.trim(), { x: box.x + box.width / 2, y: box.y + box.height / 2 })).toMatch(/No$/)
+  } finally {
+    await landscape.close()
+  }
 
   // The stub's own question again, for the phone.
   await api.ok('POST', `/api/sessions/${encodeURIComponent(asker.id)}/attention`, { state: 'needs_input', message: QUESTION, options: CHOICES })
