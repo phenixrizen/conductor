@@ -231,7 +231,18 @@ has failed, its connection is still read for at most 2 s, and a frame that
 needs no wait is relayed; one that was waiting (the budget, room in the
 host's queue) is dropped, and nothing the viewer sent after it goes. What waits for a viewer is bounded at 16 MiB beside its
 2048 frames: past either the viewer is closed as too slow (1008,
-`slow_consumer`). On the host's side, what it writes on its control
+`slow_consumer`). Once more than 512 KiB of what its host relays a
+viewer waits for it on the server, the host is told the viewer is behind
+(`viewer_behind{viewerId, behind:true}`), and once no more than 128 KiB
+waits, that it caught up (`behind:false`), each change once and in order;
+a hosted viewer's socket holds at most 128 KiB unsent (on Linux and
+macOS), so what a viewer has not taken waits where the server counts it,
+not in a buffer of megabytes. The host holds a viewer's frames while it is
+behind, as it holds a WebRTC viewer's while its data channel is full, so
+its connection, which its relayed viewers share, carries what each of them
+takes; what waits for a viewer waits on the host, under its 1 MiB for a
+viewer. An older host ignores `viewer_behind`, and its viewers are bounded
+by the 16 MiB alone. On the host's side, what it writes on its control
 connection goes one message at a time: its own messages (its status,
 attention and activity, the answers and candidates for its WebRTC viewers,
 its link requests) ahead of the frames it relays, and those viewer by
@@ -245,7 +256,7 @@ as that connection closes. A `link_revoke` while the session runs goes at
 once. A publishing server does not revoke its session's links at the
 switchyard as the session ends: the switchyard ends them as it hears the
 `status`, which a revocation sent then could overtake. A relayed frame that waits more than
-30 s for its turn is never sent: that viewer alone is let go
+30 s for its turn, its viewer's catching up included, is never sent: that viewer alone is let go
 (`slow_consumer`, then `viewer_closed`), as a WebRTC viewer is whose data
 channel stays full; one of the host's own messages that waits more than 15 s
 is dropped, but for `viewer_closed` and `viewer_error` (a viewer's first),
@@ -356,6 +367,10 @@ Server → host: `registered{sessionId, secret, shareBaseUrl, resumed, iceServer
 when none; an older server sends no field, which says nothing),
 `viewer_join{viewerId, role, linkId?, linkLabel?}`, `offer{viewerId,sdp}`, `ice{viewerId,candidate}`,
 `relay_start{viewerId}`, `viewer_leave{viewerId, reason?}`, `link_gone{linkId}`, `stop{sessionId}`,
+`viewer_behind{viewerId, behind}` (a relayed viewer fell behind what the
+server holds for it, or caught up: above; a host refuses one whose
+`viewerId` is not 16 bytes, and one for a viewer it no longer has changes
+nothing),
 (`reason`: `revoked` when the viewer was let go for its link (revoked, its
 run forgotten, its run's session no longer named) or `expired` (the link
 reached its expiry), none for any other end (it left, its connection failed,

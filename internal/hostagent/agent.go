@@ -1146,6 +1146,19 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			why = session.ErrExpired
 		}
 		a.removePeerFor(m.ViewerID, why)
+	case proto.HostViewerBehind:
+		var m proto.ViewerBehind
+		if err := json.Unmarshal(data, &m); err != nil {
+			return err
+		}
+		if len(m.ViewerID) != proto.ViewerIDLen {
+			return errors.New("invalid viewer_behind")
+		}
+		// The viewer's relayed frames wait while it is behind (relaySink);
+		// one that has left needs nothing.
+		if p := a.peer(m.ViewerID); p != nil {
+			p.room.set(m.Behind)
+		}
 	case proto.HostAttention:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard
@@ -1403,6 +1416,24 @@ func (a *agent) send(v any) error {
 // turn does not come within relayTurnWait, errViewerGone when gone closes
 // first. Neither touches the connection.
 func (a *agent) sendRelay(viewerID string, frame []byte, gone <-chan struct{}) error {
+	return a.sendRelayWithin(viewerID, frame, gone, a.relayTurn())
+}
+
+// relayTurn is how long a frame relayed to a viewer may wait to be sent:
+// relayTurnWait, or a test's relayWait.
+func (a *agent) relayTurn() time.Duration {
+	if a.relayWait > 0 {
+		return a.relayWait
+	}
+	return relayTurnWait
+}
+
+// sendRelayWithin is sendRelay with the frame's turn to come within turn:
+// session.ErrSlowConsumer at once when turn is not above zero.
+func (a *agent) sendRelayWithin(viewerID string, frame []byte, gone <-chan struct{}, turn time.Duration) error {
+	if turn <= 0 {
+		return session.ErrSlowConsumer
+	}
 	env, err := proto.EncodeRelay(viewerID, frame)
 	if err != nil {
 		return err
@@ -1412,10 +1443,6 @@ func (a *agent) sendRelay(viewerID string, frame []byte, gone <-chan struct{}) e
 	a.mu.Unlock()
 	if w == nil {
 		return errConnDown
-	}
-	turn := relayTurnWait
-	if a.relayWait > 0 {
-		turn = a.relayWait
 	}
 	return w.sendRelay(env, turn, gone)
 }

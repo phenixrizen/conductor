@@ -49,6 +49,9 @@ const (
 	// HostLinkGone tells the host a link a viewer joined through no longer
 	// opens the session (LinkGone).
 	HostLinkGone = "link_gone"
+	// HostViewerBehind tells the host a relayed viewer fell behind what the
+	// server relays to it, or caught up (ViewerBehind).
+	HostViewerBehind = "viewer_behind"
 )
 
 // HostInfo describes the host process.
@@ -167,6 +170,20 @@ type LinkGone struct {
 type ViewerRef struct {
 	T        string `json:"t"`
 	ViewerID string `json:"viewerId"`
+}
+
+// ViewerBehind tells the host whether the server holds more of what it
+// relayed to a viewer, unwritten to the viewer, than a viewer that keeps up
+// would (Behind), or the viewer caught up (Behind false): it comes as the
+// viewer passes either mark, never twice the same in a row. A host gives
+// the frames it relays to a viewer behind no turn on the connection while
+// another viewer's frame waits for one, so a viewer that reads slowly, or
+// not at all, never takes the connection from those that keep up. An older
+// host ignores the message, and an older server never sends it.
+type ViewerBehind struct {
+	T        string `json:"t"`
+	ViewerID string `json:"viewerId"`
+	Behind   bool   `json:"behind"`
 }
 
 // ViewerLeave tells the host a viewer left, or was let go. Reason says the

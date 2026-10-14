@@ -10,6 +10,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
 )
 
 const (
@@ -123,14 +124,71 @@ func (s *dcSink) Close(reason error) {
 	})
 }
 
+// relayRoom is whether the server has room for more of a relayed viewer's
+// frames: none while it says the viewer is behind (viewer_behind), when it
+// holds more of them, unwritten to the viewer, than a viewer that keeps up
+// would. The viewer's frames then wait here until it catches up, as a
+// WebRTC viewer's wait while its data channel holds too much (dcSink),
+// rather than on the connection the other viewers' frames share. Its zero
+// value has room.
+type relayRoom struct {
+	mu sync.Mutex
+	// caughtUp is closed as the viewer catches up; nil while it is not
+	// behind.
+	caughtUp chan struct{}
+}
+
+// set records what the server said of the viewer: behind or caught up.
+func (r *relayRoom) set(behind bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case behind && r.caughtUp == nil:
+		r.caughtUp = make(chan struct{})
+	case !behind && r.caughtUp != nil:
+		close(r.caughtUp)
+		r.caughtUp = nil
+	}
+}
+
+// wait returns once the viewer is not behind: session.ErrSlowConsumer when
+// it still is at until, errViewerGone when gone closes first.
+func (r *relayRoom) wait(until time.Time, gone <-chan struct{}) error {
+	for {
+		r.mu.Lock()
+		caughtUp := r.caughtUp
+		r.mu.Unlock()
+		if caughtUp == nil {
+			return nil
+		}
+		left := time.Until(until)
+		if left <= 0 {
+			return session.ErrSlowConsumer
+		}
+		t := time.NewTimer(left)
+		select {
+		case <-caughtUp:
+			t.Stop()
+		case <-gone:
+			t.Stop()
+			return errViewerGone
+		case <-t.C:
+			return session.ErrSlowConsumer
+		}
+	}
+}
+
 // relaySink writes frames through the server relay, on the host's control
 // connection, each in its turn among the other relayed viewers' (agent's
-// sendRelay): a frame whose turn does not come within relayTurnWait ends
-// the viewer's subscription as a slow consumer, the viewer alone.
+// sendRelay), once the server has room for it (room): a frame that waits
+// longer than relayTurnWait for both ends the viewer's subscription as a
+// slow consumer, the viewer alone.
 type relaySink struct {
 	a        *agent
 	viewerID string
-	once     sync.Once
+	// room is the viewer's (peer.room), nil for always.
+	room *relayRoom
+	once sync.Once
 	// gone is closed when the peer lets go of the viewer (let): a frame
 	// waiting for its turn is withdrawn then. Nil never closes.
 	gone     chan struct{}
@@ -151,7 +209,16 @@ func (s *relaySink) let() {
 // Transport labels welcome messages sent through this sink.
 func (s *relaySink) Transport() string { return proto.TransportRelay }
 
-func (s *relaySink) WriteFrame(frame []byte) error { return s.a.sendRelay(s.viewerID, frame, s.gone) }
+func (s *relaySink) WriteFrame(frame []byte) error {
+	turn := s.a.relayTurn()
+	until := time.Now().Add(turn)
+	if s.room != nil {
+		if err := s.room.wait(until, s.gone); err != nil {
+			return err
+		}
+	}
+	return s.a.sendRelayWithin(s.viewerID, frame, s.gone, time.Until(until))
+}
 
 // Close tells the viewer why, when its turn comes in time, and then the
 // server that the viewer is closed, however long that waits while the
@@ -161,6 +228,8 @@ func (s *relaySink) WriteFrame(frame []byte) error { return s.a.sendRelay(s.view
 func (s *relaySink) Close(reason error) {
 	s.once.Do(func() {
 		if reason != nil {
+			// The viewer's last frame, whether the server has room or not:
+			// a few bytes, which tell the viewer why.
 			if code := errorCode(reason); code != "" {
 				_ = s.a.sendRelay(s.viewerID, proto.NewError(code, reason.Error()), s.gone)
 			}

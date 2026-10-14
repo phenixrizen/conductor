@@ -1,0 +1,138 @@
+package signal
+
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
+)
+
+// toHostNow is the message the host's queue holds now, or nil.
+func toHostNow(t *testing.T, conn *HostConn) map[string]any {
+	t.Helper()
+	select {
+	case o := <-conn.Send:
+		conn.Took(o)
+		var m map[string]any
+		if err := json.Unmarshal(o.Text, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	default:
+		return nil
+	}
+}
+
+// A relayed viewer the server holds more than relayBehindBytes for is
+// behind, and the host is told so once; as the viewer takes its frames it
+// catches up at relayCaughtUpBytes, and the host is told that once; then
+// again each time it falls behind and catches up. A viewer not relayed is
+// never named, nor one closed.
+func TestTheHostIsToldWhenARelayedViewerFallsBehindAndCatchesUp(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	v := relayedViewer(t, hs, conn, "0123456789abcdef")
+	out := bytes.Repeat([]byte("o"), proto.MaxOutput)
+	frame := int64(1 + len(out))
+	relay := func() { hs.HostRelayFrame(v.ID, proto.Frame{Type: proto.TypeOutput, Payload: out}) }
+	expectBehind := func(want bool) {
+		t.Helper()
+		m := toHostNow(t, conn)
+		if m == nil || m["t"] != proto.HostViewerBehind || m["viewerId"] != v.ID || m["behind"] != want {
+			t.Fatalf("with %d bytes queued the host was told %v, want behind %v", v.queued.Load(), m, want)
+		}
+	}
+	expectNothing := func() {
+		t.Helper()
+		if m := toHostNow(t, conn); m != nil {
+			t.Fatalf("with %d bytes queued the host was told %v", v.queued.Load(), m)
+		}
+	}
+	for round := range 2 {
+		// Up to the mark, nothing; past it, behind, once.
+		for v.queued.Load()+frame <= relayBehindBytes {
+			relay()
+		}
+		expectNothing()
+		relay()
+		expectBehind(true)
+		for range 8 {
+			relay()
+		}
+		expectNothing()
+		// The frames are taken one at a time, as Pump takes them: caught up
+		// as the queue is down to relayCaughtUpBytes, and not before; what
+		// is left is taken without another word to the host.
+		caughtUp := false
+		for len(v.Out) > 0 {
+			f := <-v.Out
+			v.queued.Add(-int64(len(f)))
+			v.noteBacklog()
+			switch {
+			case v.queued.Load() > relayCaughtUpBytes || caughtUp:
+				expectNothing()
+			default:
+				expectBehind(false)
+				caughtUp = true
+			}
+		}
+		if !caughtUp {
+			t.Fatal("the viewer never caught up")
+		}
+		if round == 0 && v.queued.Load() != 0 {
+			t.Fatalf("%d bytes left counted", v.queued.Load())
+		}
+	}
+
+	// Not relayed: never named.
+	w, err := hs.AddViewer("fedcba9876543210", session.RoleView, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainText(t, conn, proto.HostViewerJoin)
+	for w.queued.Load() <= 2*relayBehindBytes {
+		hs.HostRelayFrame(w.ID, proto.Frame{Type: proto.TypeOutput, Payload: out})
+	}
+	expectNothing()
+
+	// Closed: never named again.
+	for v.queued.Load() <= relayBehindBytes/2 {
+		relay()
+	}
+	v.close(ErrHostGone)
+	for range 64 {
+		v.queued.Add(frame)
+		v.noteBacklog()
+	}
+	expectNothing()
+}
+
+// Pump itself says the viewer caught up as it takes the frames, once.
+func TestPumpTellsTheHostTheViewerCaughtUp(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	v := relayedViewer(t, hs, conn, "0123456789abcdef")
+	out := bytes.Repeat([]byte("o"), proto.MaxOutput)
+	for v.queued.Load() <= relayBehindBytes {
+		hs.HostRelayFrame(v.ID, proto.Frame{Type: proto.TypeOutput, Payload: out})
+	}
+	if m := nextToHost(t, conn); m["t"] != proto.HostViewerBehind || m["behind"] != true {
+		t.Fatalf("the host was told %v", m)
+	}
+	sink := &countSink{}
+	done := make(chan struct{})
+	go func() { v.Pump(sink); close(done) }()
+	if m := nextToHost(t, conn); m["t"] != proto.HostViewerBehind || m["behind"] != false || m["viewerId"] != v.ID {
+		t.Fatalf("the host was told %v", m)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for v.queued.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if m := toHostNow(t, conn); m != nil {
+		t.Fatalf("the host was told %v as well", m)
+	}
+	hs.RemoveViewer(v)
+	<-done
+}

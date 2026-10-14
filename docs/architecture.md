@@ -99,6 +99,11 @@ pauses the server's reading. A connection
 that stops carrying anything without either end closing it is then a link
 gone for those lines, as a connection lost is, and one the host has pinged
 and heard nothing on for two minutes it gives up.
+A relayed viewer the
+server holds more than 512 KiB for, unwritten, is behind (`viewer_behind`):
+the host holds its frames until it catches up, as it holds a WebRTC viewer's
+while the data channel is full, so the shared connection carries what each
+relayed viewer takes.
 The server never sees terminal bytes on the WebRTC path and never runs the
 command. On the relay path it carries them and can read them; and since it
 carries the signalling and tells the host each viewer's role, a host trusts
