@@ -707,11 +707,11 @@ func (s *Local) fireAsked(text string) {
 		if words := q.words(text); words != "" {
 			look := s.asked.LookedAt()
 			s.mu.Lock()
-			if s.dialogAnswered != words {
+			if !sameWords(s.dialogAnswered, words) {
 				s.dialogGone(look)
 			}
 			cur, typed := s.info.Attention, s.typedAtAsked
-			gone := cur.State == AttentionNeedsInput && cur.Source == SourceQuestion && typed != nil && cur.Since != nil && typed.words == cur.Message && CleanMessage(words) != cur.Message
+			gone := cur.State == AttentionNeedsInput && cur.Source == SourceQuestion && typed != nil && cur.Since != nil && sameWords(typed.words, cur.Message) && !sameWords(CleanMessage(words), cur.Message)
 			s.mu.Unlock()
 			if gone {
 				s.answer(cur.Since, typed.by, typed.name, true, true)
@@ -737,7 +737,7 @@ func (s *Local) missAsked(string) {
 	s.mu.Lock()
 	s.dialogGone(look)
 	att, typed := s.info.Attention, s.typedAtAsked
-	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && typed.words == att.Message
+	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && sameWords(typed.words, att.Message)
 	s.mu.Unlock()
 	if gone {
 		s.answer(att.Since, typed.by, typed.name, true, true)
@@ -787,11 +787,11 @@ type StartupQuestion struct {
 // Each run of white space in them (a screen's line breaks and padding among
 // them) is one space, and words longer than a message can be are cut on a
 // character boundary with an ellipsis, so that a long command reads as cut
-// rather than as all there is, then a tag of the whole words (8 hex
-// characters of their SHA-256): the words are what tells one question from
-// the next (a dialog answered, asked again with its words; a startup
-// question still on the screen), and two commands alike up to the cut and
-// different after it are two questions.
+// rather than as all there is, then a tag of the whole words (wordsTag):
+// the words are what tells one question from the next (a dialog answered,
+// asked again with its words; a startup question still on the screen;
+// sameWords), and two commands alike up to the cut and different after it
+// are two questions.
 func (q StartupQuestion) words(text string) string {
 	all := q.Pattern.FindAllString(text, -1)
 	if len(all) == 0 || all[len(all)-1] == "" {
@@ -818,8 +818,7 @@ func (q StartupQuestion) words(text string) string {
 	}
 	words = strings.Join(strings.Fields(words), " ")
 	if len(words) > MaxAttentionMessage {
-		sum := sha256.Sum256([]byte(words))
-		more := fmt.Sprintf("… #%x", sum[:4])
+		more := "… #" + wordsTag(words)
 		cut := MaxAttentionMessage - len(more)
 		for cut > 0 && !utf8.RuneStart(words[cut]) {
 			cut--
@@ -827,6 +826,35 @@ func (q StartupQuestion) words(text string) string {
 		words = words[:cut] + more
 	}
 	return words
+}
+
+// wordsTag is 8 hex characters of the SHA-256 of a question's whole words
+// without their white space: the same for the question however a screen's
+// width broke it into rows (a row break reads as a space, also where the
+// program cut a word at the edge).
+func wordsTag(words string) string {
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(words), "")))
+	return fmt.Sprintf("%x", sum[:4])
+}
+
+// cutTag finds the tag cut words end with (words).
+var cutTag = regexp.MustCompile(`… #([0-9a-f]{8})$`)
+
+// sameWords reports whether a and b are the words of one question: the
+// same but for white space, a question drawn again at another width (its
+// rows broken elsewhere, a word cut at another place), or, cut, with the
+// same tag of the whole.
+func sameWords(a, b string) bool {
+	if a == b {
+		return true
+	}
+	key := func(w string) string {
+		if m := cutTag.FindStringSubmatch(w); m != nil {
+			return m[1]
+		}
+		return wordsTag(w)
+	}
+	return key(a) == key(b)
 }
 
 // signalAttention wakes whoever waits for an attention change (Submit). The
@@ -1016,7 +1044,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// read as one) waits on nothing either: the question the screen shows
 	// takes its place, with an id of its own, and a reply naming the one
 	// left is refused.
-	movedOn := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && state == AttentionNeedsInput && source == SourceTrust && message != cur.Message
+	movedOn := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && state == AttentionNeedsInput && source == SourceTrust && !sameWords(message, cur.Message)
 	if (rules&unlessWaiting != 0 && waiting && !answeredStartup && !movedOn) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook {
 		s.mu.Unlock()
 		return nil
@@ -1059,7 +1087,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	}
 	// The dialog last answered, asked before it has gone (sameDialog): its
 	// question is answered, whatever id it shows with.
-	stillAnswered := rules&sameDialog != 0 && state == AttentionNeedsInput && s.dialogAnswered != "" && s.dialogAnswered == message
+	stillAnswered := rules&sameDialog != 0 && state == AttentionNeedsInput && s.dialogAnswered != "" && sameWords(s.dialogAnswered, message)
 	// The startup question last answered, asked again before another
 	// startup question took its place (the program draws it again before
 	// it moves on), is asked answered too; another startup question asked
@@ -1069,20 +1097,20 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// and held so until the screen shows it gone (escGone).
 	heldAsked, startupStill := false, false
 	if rules&startupLook != 0 && state == AttentionNeedsInput {
-		if s.startupAnsweredWords != "" && s.startupAnsweredWords == message {
+		if s.startupAnsweredWords != "" && sameWords(s.startupAnsweredWords, message) {
 			stillAnswered, startupStill = true, true
 		} else {
 			s.startupAnsweredWords = ""
 		}
 		if s.heldAnswer.words != "" {
-			if s.heldAnswer.words == message {
+			if sameWords(s.heldAnswer.words, message) {
 				stillAnswered, heldAsked = true, true
 			} else {
 				s.heldAnswer.words = ""
 			}
 		}
 	}
-	if cur.State == state && cur.Message == message && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
+	if cur.State == state && sameWords(cur.Message, message) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
 		if stillAnswered && cur.ID != "" {
 			s.answered = cur.ID
 			s.holdAskedAgain(cur.ID, message, heldAsked, startupStill)
@@ -1786,7 +1814,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// choice of the older one is no answer to it.
 		shownDrawn := true
 		if s.trust != nil && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.trust.Watching() {
-			if _, drawn := s.lastStartupQ(s.trust.Text()); drawn != "" && CleanMessage(drawn) != shown.Message {
+			if _, drawn := s.lastStartupQ(s.trust.Text()); drawn != "" && !sameWords(CleanMessage(drawn), shown.Message) {
 				shownDrawn = false
 			}
 		}
@@ -1834,7 +1862,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if startupOnScreen && !startupAnswer && !ownAnswer {
 			s.mu.Lock()
 			att := s.info.Attention
-			asked := att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && att.Message == CleanMessage(startupWords)
+			asked := att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && sameWords(att.Message, CleanMessage(startupWords))
 			s.mu.Unlock()
 			if !asked {
 				// Drawn and not asked yet (the watcher asks once the screen
@@ -1872,7 +1900,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			if startupWords != "" {
 				s.startupAnsweredWords = startupWords
 			}
-			if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (startupWords == "" || att.Message == startupWords) {
+			if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (startupWords == "" || sameWords(att.Message, startupWords)) {
 				s.markAnswered(att)
 				if startupSince == nil {
 					startupSince = att.Since
@@ -2118,13 +2146,13 @@ func (s *Local) stillOnScreen(id string) error {
 	}
 	if s.asked != nil {
 		_, words := s.askedIn(s.asked.Text())
-		if att.Source == SourceQuestion && words != att.Message || att.Source != SourceQuestion && words != "" {
+		if att.Source == SourceQuestion && !sameWords(words, att.Message) || att.Source != SourceQuestion && words != "" {
 			return ErrQuestionAnswered
 		}
 	}
 	switch {
 	case att.Source == SourceTrust && s.trust != nil:
-		if s.lastStartup(s.trust.Text()) != att.Message {
+		if !sameWords(s.lastStartup(s.trust.Text()), att.Message) {
 			return ErrQuestionAnswered
 		}
 		// The output the watcher keeps holds what came before a screen
@@ -2133,7 +2161,7 @@ func (s *Local) stillOnScreen(id string) error {
 		// screen as it is now, a whole frame, shows the question, or the
 		// reply would reach what took its place.
 		if s.asked != nil {
-			if text, settled, _, _ := s.asked.Whole(); settled && s.lastStartup(text) != att.Message {
+			if text, settled, _, _ := s.asked.Whole(); settled && !sameWords(s.lastStartup(text), att.Message) {
 				return ErrQuestionAnswered
 			}
 		}
@@ -2149,7 +2177,7 @@ func (s *Local) stillOnScreen(id string) error {
 		}
 		if words := s.lastStartup(text); words != "" {
 			s.mu.Lock()
-			answered := words == s.startupAnsweredWords
+			answered := sameWords(words, s.startupAnsweredWords)
 			s.mu.Unlock()
 			if !answered {
 				return ErrQuestionAnswered
@@ -2271,7 +2299,7 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte
 	}
 	var picks bool
 	switch {
-	case att.Source == SourceQuestion && onScreen != nil && onScreen.words != att.Message:
+	case att.Source == SourceQuestion && onScreen != nil && !sameWords(onScreen.words, att.Message):
 		return
 	case att.Source == SourceQuestion:
 		picks = onScreen.picks(att.Options, data, keys)
@@ -2408,7 +2436,7 @@ func (s *Local) startupPicks(att Attention, data []byte, keys [][]byte) bool {
 	items := 0
 	if s.trust != nil {
 		text := s.trust.Text()
-		if q, words := s.lastStartupQ(text); q != nil && words == att.Message {
+		if q, words := s.lastStartupQ(text); q != nil && sameWords(words, att.Message) {
 			items = startupItems(q, text)
 		}
 	}
@@ -2612,7 +2640,7 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 		if s.asked != nil {
 			held.cols, held.rows = s.asked.Size()
 		}
-		if last := s.info.LastAnswer; last != nil && last.Message == words {
+		if last := s.info.LastAnswer; last != nil && sameWords(last.Message, words) {
 			held.by, held.name = last.By, last.ByName
 		}
 		s.heldAnswer = held
@@ -2647,7 +2675,7 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 		held.cols, held.rows = s.asked.Size()
 	}
 	att := s.info.Attention
-	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || att.Message == words) {
+	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || sameWords(att.Message, words)) {
 		s.markAnswered(att)
 		held.id = att.ID
 		if prev := s.heldAnswer; prev.id == att.ID {
@@ -2662,7 +2690,7 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 	}
 	if words != "" {
 		held.words = CleanMessage(words)
-		if prev := s.heldAnswer; prev.words == held.words {
+		if prev := s.heldAnswer; sameWords(prev.words, held.words) {
 			held.by, held.name = prev.by, prev.name
 			held.cols, held.rows = max(held.cols, prev.cols), max(held.rows, prev.rows)
 		}
@@ -2737,7 +2765,7 @@ func (s *Local) heldGone(words string) bool {
 	s.mu.Lock()
 	held := s.heldAnswer
 	s.mu.Unlock()
-	if held.words == "" || held.words != CleanMessage(words) || fed <= held.fed || !s.screenShowsNoStartup(held) {
+	if held.words == "" || !sameWords(held.words, CleanMessage(words)) || fed <= held.fed || !s.screenShowsNoStartup(held) {
 		return false
 	}
 	s.mu.Lock()

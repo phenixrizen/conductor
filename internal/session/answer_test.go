@@ -2432,3 +2432,56 @@ func TestALineReplyingToAReportIsRefusedOnceTheScreenDrawsAStartupQuestion(t *te
 		noWrite(t, p, 200*time.Millisecond)
 	})
 }
+
+// approvalWrapped is approvalDialog with its command on rows of its own, as
+// Codex lays out a long one at the screen's width: each row a cut of it, a
+// word cut where it meets the edge.
+func approvalWrapped(rows ...string) string {
+	var b strings.Builder
+	b.WriteString("\x1b[?2026h\x1b[12;1H\x1b[J\x1b[13;3H\x1b[1mWould you like to run the following command?\x1b[22m\x1b[15;3HEnvironment: local")
+	r := 17
+	for i, row := range rows {
+		lead := "  "
+		if i == 0 {
+			lead = "$ "
+		}
+		fmt.Fprintf(&b, "\x1b[%d;3H%s%s", r, lead, row)
+		r++
+	}
+	fmt.Fprintf(&b, "\x1b[%d;1H› 1. Yes, proceed (y)\x1b[%d;3H2. No, and tell Codex what to do differently (esc)\x1b[%d;3HPress enter to confirm or esc to cancel\x1b[?2026l", r+1, r+2, r+4)
+	return b.String()
+}
+
+// An approval answered, drawn again at another width (the window resized):
+// its command's rows break elsewhere, a long word cut at another place, and
+// it is the same question still, answered: a click on it is refused,
+// nothing written. Told by its words as the rows read, it was a question
+// of its own, and took a second answer.
+func TestAnApprovalDrawnAgainAtAnotherWidthIsTheSameQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	long := "curl https://example.com/" + strings.Repeat("a", 90)
+	p.outW.Write([]byte(approvalWrapped(long[:70], long[70:])))
+	first := waitAttention(t, s, asked)
+	if !strings.Contains(first.Message, long[:70]+" "+long[70:]) {
+		t.Fatalf("the approval's words: %q", first.Message)
+	}
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	p.outW.Write([]byte(approvalWrapped(long[:60], long[60:])))
+	time.Sleep(patternQuiet + 200*time.Millisecond)
+	a := s.Info().Attention
+	if !asked(a) {
+		t.Fatalf("the approval drawn again is not asked: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, a.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the approval drawn again at another width: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}

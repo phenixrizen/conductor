@@ -810,3 +810,29 @@ func TestAHandoffAsTheDialogIsAnsweredLeavesNoQuestion(t *testing.T) {
 		t.Fatalf("a question left held: %+v", a)
 	}
 }
+
+// A question's words are the same question whatever the width the screen
+// broke them at: a row break reads as a space, also inside a word the
+// program cut at the edge, and words cut to a message are told by the tag
+// of the whole. Other words are another question.
+func TestSameWordsIsTheQuestionWhateverTheWidth(t *testing.T) {
+	q := approvalQuestions()[0]
+	screen := func(cmdRows ...string) string {
+		return "  Would you like to run the following command?\n\n  " + strings.Join(cmdRows, "\n  ") +
+			"\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `rm` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
+	}
+	short := "$ curl https://example.com/" + strings.Repeat("a", 60)
+	if a, b := q.words(screen(short[:50], short[50:])), q.words(screen(short[:40], short[40:])); a == b || !sameWords(a, b) {
+		t.Fatalf("one command broken at two widths: %q and %q", a, b)
+	}
+	long := "$ " + strings.Repeat("echo abcdefghij && ", 40) + "rm -rf /tmp/x"
+	if a, b := q.words(screen(long[:300], long[300:])), q.words(screen(long[:290], long[290:])); !sameWords(a, b) {
+		t.Fatalf("one long command broken at two widths: %q and %q", a, b)
+	}
+	if a, b := q.words(screen(long)), q.words(screen(strings.TrimSuffix(long, "x")+"y")); sameWords(a, b) {
+		t.Fatalf("two long commands that differ after the cut: %q and %q", a, b)
+	}
+	if sameWords(q.words(screen("$ rm -rf build")), q.words(screen("$ rm -rf built"))) {
+		t.Fatal("two commands are one question")
+	}
+}
