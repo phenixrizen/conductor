@@ -139,27 +139,24 @@ func (c *HostConn) Took(o Outbound) {
 	}
 }
 
-// offerBehind queues v's viewer_behind o, one of the server's own messages,
-// when the queue has room for it; when it has none, it never closes the
-// connection, as send does, but has v try again as the writer next takes a
-// message (Took), which it will, the queue being full. It reports whether o
-// was queued. Called with v.behindMu held.
+// offerBehind queues v's viewer_behind o when the viewers' share of the
+// queue has room for it (admit), as for a message of v's own but without
+// waiting in their line: never into the room kept for the server's own
+// messages, which then still has all of it, however many viewers there
+// are. When the share has none, it never closes the connection, as send
+// does, but has v try again as the writer next takes a message (Took),
+// which it will, the share being full. It reports whether o was queued.
+// Called with v.behindMu held.
 func (c *HostConn) offerBehind(o Outbound, v *Viewer) bool {
 	select {
 	case <-c.done:
 		return false
 	default:
 	}
-	n := o.size()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.bytes+n <= hostQueueBytes {
-		select {
-		case c.Send <- o:
-			c.bytes += n
-			return true
-		default:
-		}
+	if c.admit(o, o.size()) {
+		return true
 	}
 	c.behindLate = append(c.behindLate, v)
 	return false
@@ -580,15 +577,16 @@ func (v *Viewer) noteBacklog() {
 	v.tellBehind()
 }
 
-// tellBehind sends the host what the marks say of the viewer (behind), as
-// one of the server's own messages, when the host was last sent otherwise:
-// unless one of the viewer's is still in the host's queue, when the latest
-// goes once that one is taken (behindTaken), or the queue has no room, when
-// it goes once the writer next takes a message (behindRoom). So the
-// viewer's changes, however many and however fast, never put more than one
-// message in the host's queue, never close it for want of room (as the
-// server's other messages do), and the host ends with the latest. Nothing
-// is sent once the viewer is closed. Called with behindMu held.
+// tellBehind sends the host what the marks say of the viewer (behind), in
+// the viewers' share of its queue (offerBehind), when the host was last
+// sent otherwise: unless one of the viewer's is still in the host's queue,
+// when the latest goes once that one is taken (behindTaken), or the share
+// has no room, when it goes once the writer next takes a message
+// (behindRoom). So the viewer's changes, however many and however fast,
+// never put more than one message in the host's queue, never take the room
+// kept for the server's own messages nor close the connection for want of
+// room, and the host ends with the latest. Nothing is sent once the viewer
+// is closed. Called with behindMu held.
 func (v *Viewer) tellBehind() {
 	if v.inQueue || v.late || v.told == v.behind {
 		return

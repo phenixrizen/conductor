@@ -236,11 +236,12 @@ viewer waits for it on the server, the host is told the viewer is behind
 (`viewer_behind{viewerId, behind:true}`), and once no more than 128 KiB
 waits, that it caught up (`behind:false`): at most one of a viewer's waits
 in the host's queue, the changes made meanwhile going as the latest once it
-is taken, and one that finds the queue full waits for room there rather
-than close the connection, as the server's other messages would;
-a hosted viewer's socket holds at most 128 KiB unsent (on Linux and
-macOS), so what a viewer has not taken waits where the server counts it,
-not in a buffer of megabytes. The host holds a viewer's frames while it is
+is taken; they go within the viewers' 7 MiB of the queue, never into the
+room kept for the server's own messages, and one that finds no room waits
+for some rather than close the connection;
+a hosted viewer's socket holds at most 128 KiB unsent (on Linux, which
+bounds it), so what a viewer has not taken waits where the server counts
+it, not in a buffer of megabytes. The host holds a viewer's frames while it is
 behind, as it holds a WebRTC viewer's while its data channel is full, so
 its connection, which its relayed viewers share, carries what each of them
 takes; what waits for a viewer waits on the host, under its 1 MiB for a

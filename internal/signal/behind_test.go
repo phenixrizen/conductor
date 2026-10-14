@@ -3,6 +3,7 @@ package signal
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -170,6 +171,62 @@ func TestACatchUpAsTheViewerFallsBehindReachesTheHost(t *testing.T) {
 	}
 	if m := nextToHost(t, conn); m["t"] != proto.HostViewerBehind || m["behind"] != false {
 		t.Fatalf("the host was told %v, want caught up", m)
+	}
+}
+
+// Many viewers falling behind while the viewers' share of the host's queue
+// is full take none of the room kept for the server's own messages: those
+// still fill all of it without closing the connection, and each viewer's
+// word goes once there is room in the share again.
+func TestViewersBehindLeaveTheServersRoomInTheHostQueue(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	const viewers = 8
+	vs := make([]*Viewer, viewers)
+	for i := range vs {
+		vs[i] = relayedViewer(t, hs, conn, fmt.Sprintf("%016d", i))
+	}
+	// The viewers' share, full.
+	filler := Outbound{Text: []byte(`{"t":"filler"}`)}
+	for len(conn.Send) < hostViewerSlots {
+		if err := conn.sendFrom(filler, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	big := bytes.Repeat([]byte("f"), relayBehindBytes+1)
+	for _, v := range vs {
+		hs.HostRelayFrame(v.ID, proto.Frame{Type: proto.TypeOutput, Payload: big})
+	}
+	if n := len(conn.Send); n != hostViewerSlots {
+		t.Fatalf("%d messages queued, want the %d of the viewers' share", n, hostViewerSlots)
+	}
+	// The server's own, all the room kept for them.
+	for i := range hostQueue - hostViewerSlots {
+		if !conn.send(Outbound{Text: []byte(`{"t":"own"}`)}) {
+			t.Fatalf("the server's own message %d was refused", i)
+		}
+	}
+	select {
+	case <-conn.Done():
+		t.Fatal("the host's connection was closed")
+	default:
+	}
+	told := map[string]int{}
+	for len(conn.Send) > 0 {
+		o := <-conn.Send
+		conn.Took(o)
+		var m map[string]any
+		if json.Unmarshal(o.Text, &m) == nil && m["t"] == proto.HostViewerBehind {
+			if m["behind"] != true {
+				t.Fatalf("the host was told %v", m)
+			}
+			told[m["viewerId"].(string)]++
+		}
+	}
+	for _, v := range vs {
+		if told[v.ID] != 1 {
+			t.Fatalf("viewer %s was said behind %d times", v.ID, told[v.ID])
+		}
 	}
 }
 

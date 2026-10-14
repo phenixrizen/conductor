@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -365,6 +366,9 @@ func TestAViewerThatReadsNothingLeavesTheHostsUplinkToTheOthers(t *testing.T) {
 // buffer on its own grows to megabytes first, and once the viewer reads,
 // that it caught up. The viewer is sent every frame, in order.
 func TestAHostIsToldSoonThatARelayedViewerReadsNothing(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("a socket's unsent bytes are bounded on Linux alone (limitUnsent)")
+	}
 	e := newTestEnv(t, nil)
 	host := dialFakeHost(t, e, "")
 	v := dialViewer(t, e, host.sessionID, adminToken)
