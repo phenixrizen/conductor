@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -245,7 +246,9 @@ var errNotPaced = errors.New("host: the control connection was not dialed throug
 // connection it upgraded: the one the upgrade request went out on, as the
 // request's trace saw it, which after a redirect need not be the last one
 // dialed. The transport is the dial's own and keeps no idle connection.
-func pacedDial(ctx context.Context, url string, header http.Header, base *http.Client, stall time.Duration) (*websocket.Conn, *pacedConn, *http.Response, error) {
+// heard, when set, is called each time a read of the upgraded connection
+// takes something (hearingTransport).
+func pacedDial(ctx context.Context, url string, header http.Header, base *http.Client, stall time.Duration, heard func()) (*websocket.Conn, *pacedConn, *http.Response, error) {
 	if base == nil {
 		base = &http.Client{}
 	}
@@ -272,6 +275,9 @@ func pacedDial(ctx context.Context, url string, header http.Header, base *http.C
 	t.DialTLSContext = nil
 	client := *base
 	client.Transport = t
+	if heard != nil {
+		client.Transport = hearingTransport{base: t, heard: heard}
+	}
 	defer t.CloseIdleConnections()
 	var mu sync.Mutex
 	var used net.Conn
@@ -303,6 +309,43 @@ func pacedDial(ctx context.Context, url string, header http.Header, base *http.C
 	return c, pc, resp, nil
 }
 
+// hearingTransport is base, whose upgraded connections (the body of a 101
+// answer, which the WebSocket library reads and writes) call heard each
+// time a read takes something: what the connection's TLS gives, which it
+// gives only once it has authenticated a whole record, or what the socket
+// gives on a connection with none. So a large frame that comes in slowly
+// counts as it comes, record by record, and bytes that are not yet a whole
+// record (anyone's, on the way) do not.
+type hearingTransport struct {
+	base  http.RoundTripper
+	heard func()
+}
+
+func (h hearingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := h.base.RoundTrip(r)
+	if err == nil && resp.StatusCode == http.StatusSwitchingProtocols {
+		if rwc, ok := resp.Body.(io.ReadWriteCloser); ok {
+			resp.Body = hearingBody{ReadWriteCloser: rwc, heard: h.heard}
+		}
+	}
+	return resp, err
+}
+
+// hearingBody is an upgraded connection whose reads call heard when they
+// take something.
+type hearingBody struct {
+	io.ReadWriteCloser
+	heard func()
+}
+
+func (b hearingBody) Read(p []byte) (int, error) {
+	n, err := b.ReadWriteCloser.Read(p)
+	if n > 0 {
+		b.heard()
+	}
+	return n, err
+}
+
 // outMessage is one message waiting for, or taking, its turn.
 type outMessage struct {
 	typ  websocket.MessageType
@@ -319,6 +362,8 @@ type outMessage struct {
 type controlWriter struct {
 	c  *websocket.Conn
 	pc *pacedConn
+	// live is what the host hears on c (connLive).
+	live *connLive
 	// controlTurn replaces controlTurnWait in tests.
 	controlTurn time.Duration
 

@@ -255,7 +255,9 @@ takes it. However slowly the server reads the
 connection (a relay bound pauses its reading), the host answers its pings
 and keeps the connection; it gives the connection up only when its socket
 takes nothing at all for 2 minutes, or when it would hold more than 4 MiB
-unsent (a server that pings and does not read). After `relay_ok` the same WebSocket carries terminal frames: the
+unsent (a server that pings and does not read), or when it has pinged the
+server for a link's viewer (see the host control connection) and heard
+nothing at all for 2 minutes. After `relay_ok` the same WebSocket carries terminal frames: the
 server wraps the viewer's frames in RELAY envelopes for the host and unwraps
 the host's envelopes for the viewer. The welcome then reports `transport:"relay"`.
 View-role INPUT, FILE_WRITE, `resize`, `submit`, `chat_send` and the `nvim_*` messages are dropped by the server before they reach the host (`read_only`); a `chat` post passes for every role, and the host refuses one that is also for the agent. A control connection's FILE_WRITE is carried, so the editor's saves work on the relay the same as a file read does (the editor's Neovim is the owner's own window only, so a link's controller edits with the editor's keys and saves).
@@ -271,7 +273,8 @@ typed late. When the viewer goes (its connection or data channel closes, or
 it moves to the relay and attaches again), what waits is dropped, and does
 not count against the 8; the one being typed is finished, unless the
 viewer's link goes (a `viewer_leave` with a reason, a `link_gone`, the host's
-connection to the server lost), then or later: it is then withdrawn as on
+connection to the server lost, or the server not heard from within 15 s: see
+the host control connection), then or later: it is then withdrawn as on
 the server,
 never typed if its text was not, and with no carriage return if it was, the
 session's turn held for a person (see `submit`). The viewer's keys and
@@ -368,7 +371,41 @@ once its link went, by either of these, also after the viewer left (see the
 host's queues below); and as it loses its connection to the server, which
 would tell it, it counts every link its viewers joined through as gone for
 what they asked for and is still under way (a viewer joining through one
-once it is back starts afresh). A host reads a reason it does not know, or
+once it is back starts afresh). A connection can also stop carrying what
+the server sends without the host noticing (the server has closed it, or the
+network drops what it carries, and nothing the host wrote has failed yet),
+and a link going then would not reach it: so the host types a line of a
+viewer who joined through a link (a `submit`, a `chat` to the agent, a
+`chat_send`), and writes its carriage return, only while it has heard from
+the server within 15 s, and otherwise does with the line what it does for a
+link gone (its text not typed, or typed with no carriage return and the
+session's turn held for a person), as its viewer's attach is refused then.
+Whatever the host reads on the connection counts, as the connection's TLS
+gives it, record by record once each is authenticated (a large frame that
+comes in slowly counts before it is whole; a connection bringing less than
+about 1 KiB a second can go unheard while one comes in): a message, a
+relayed frame, a ping or a pong. The server pings the host every 30 s, and every
+5 s while a link a viewer joined the session through stands (one that left
+may have a line under way on the host), whether or not the last pong has
+come back: a ping is written whatever the server reads, where the answers
+to the host's own pings wait behind what the host sent before them (a
+large frame over a slow uplink) and for the server's reading (a relay
+bound, the host's own or the one it shares with the other open hosts of
+its address, pauses it). While a viewer who joined through a link, or something of
+theirs, is there, the host pings the server too (a WebSocket ping, which
+every server answers, an older one too) once the connection has been quiet
+for 5 s, one ping at a time: a live, quiet connection is heard from at
+least that often and a round trip. An older server pings every 30 s and
+stops at a pong that comes late; with it the host hears its own pings
+answered, which a server that pauses its reading longer than 15 s (only a
+switchyard with a relay bound does) answers late: a line of a link's
+viewer may then be withheld that a newer server's pings would let
+through, never one entered that should not be. Having pinged and heard
+nothing at all for 2 minutes, the host gives the connection up and
+connects again (its pings keep a connection that drops what it carries
+from being idle, which TCP's keepalive would otherwise have ended). The
+lines of the owner's own windows, the host's own terminal and a paste
+invite's viewer need no such word. A host reads a reason it does not know, or
 one over 16 bytes, as none; an older server sends neither, and an older
 host ignores both, as before: each side decodes the other's messages
 without refusing unknown fields),
@@ -554,7 +591,8 @@ began. One raised while the input was being written (a process that answers at
 once, an echo that rings the bell) is left for the next input. An input that is
 only a terminal's own automatic reports, at most 256 bytes of them, is written
 and clears nothing, nor stamps its viewer as typing: a cursor position report
-(`ESC[<row>;<col>R`, with or without `?`), a status report (`ESC[0n`…`ESC[3n`),
+(`ESC[<row>;<col>R`, with or without `?`, and the extended one with its page,
+`ESC[?<row>;<col>;<page>R`), a status report (`ESC[0n`…`ESC[3n`),
 device attributes (`ESC[?…c`, `ESC[>…c`), a mode report (`ESC[?<mode>;<n>$y`),
 a window report (`ESC[<n>;…t`), a colour query's reply (`ESC]4;…`, `ESC]10;`
 to `ESC]12;` with `rgb:…`, ended by BEL or ST), a DCS reply such as XTVERSION

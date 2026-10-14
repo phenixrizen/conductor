@@ -50,6 +50,10 @@ type Server struct {
 	// pingEvery is how often a WebSocket is pinged (the package's pingEvery
 	// when the server was made).
 	pingEvery time.Duration
+	// hostPingEvery is how often a host's control connection is pinged
+	// while a link a viewer joined its session through still stands (the
+	// package's hostPingEvery when the server was made).
+	hostPingEvery time.Duration
 	// relayBurstFloor is the least burst of a relay bound (relayBurst; the
 	// package's relayBurstFloor when the server was made).
 	relayBurstFloor int
@@ -257,6 +261,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		relayed:     newRelayMeter(nil),
 	}
 	s.relayBurstFloor = relayBurstFloor
+	s.hostPingEvery = hostPingEvery
 	s.hostGoneWait = writeTimeout
 	s.viewerCloseWait = closeWait
 	s.runSyncRetry = runSyncRetry

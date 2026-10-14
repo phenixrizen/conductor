@@ -64,7 +64,7 @@ func dialHeld(t *testing.T, stall time.Duration) (*heldServer, *websocket.Conn, 
 		_ = rc.Control(func(fd uintptr) { serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 4<<10) })
 		return serr
 	}}
-	c, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), nil, &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, stall)
+	c, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http"), nil, &http.Client{Transport: &http.Transport{DialContext: dialer.DialContext}}, stall, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestAPacedDialWorksOverTLS(t *testing.T) {
 	t.Cleanup(srv.Close)
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
-	c, pc, _, err := pacedDial(t.Context(), "wss"+strings.TrimPrefix(srv.URL, "https"), nil, &http.Client{Transport: tr}, 0)
+	c, pc, _, err := pacedDial(t.Context(), "wss"+strings.TrimPrefix(srv.URL, "https"), nil, &http.Client{Transport: tr}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,7 +632,7 @@ func TestAPacedDialFindsTheConnectionItUpgraded(t *testing.T) {
 	}
 	first.Start()
 	t.Cleanup(first.Close)
-	c, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(first.URL, "http")+"/start", nil, nil, 0)
+	c, pc, _, err := pacedDial(t.Context(), "ws"+strings.TrimPrefix(first.URL, "http")+"/start", nil, nil, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -740,7 +740,7 @@ func TestAPacedDialWorksThroughAnHTTPSProxy(t *testing.T) {
 	// The test servers share one certificate.
 	tr.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
 	tr.Proxy = http.ProxyURL(proxyURL)
-	c, pc, _, err := pacedDial(t.Context(), "wss"+strings.TrimPrefix(srv.URL, "https"), nil, &http.Client{Transport: tr}, 0)
+	c, pc, _, err := pacedDial(t.Context(), "wss"+strings.TrimPrefix(srv.URL, "https"), nil, &http.Client{Transport: tr}, 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

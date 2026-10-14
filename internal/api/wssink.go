@@ -31,6 +31,16 @@ const defaultPingEvery = 30 * time.Second
 // (Server.pingEvery), so a test may shorten it for the servers it makes.
 var pingEvery = defaultPingEvery
 
+// defaultHostPingEvery is how often a host's control connection is pinged
+// while a link a viewer joined its session through still stands
+// (hostKeepalive): the host types such a viewer's lines only while it has
+// heard from the server within 15 s, three of these.
+const defaultHostPingEvery = 5 * time.Second
+
+// hostPingEvery is defaultHostPingEvery, which a server takes when it is
+// made (Server.hostPingEvery), so a test may shorten it.
+var hostPingEvery = defaultHostPingEvery
+
 // wsSink writes session frames to a viewer WebSocket and translates the close
 // reason into a close code.
 type wsSink struct {

@@ -506,6 +506,13 @@ func dialFakeHostAuth(t *testing.T, e *testEnv, agentToken, auth string) *fakeHo
 // server's registered answer.
 func dialFakeHostWith(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.HostSession, auth string) (*fakeHost, map[string]any) {
 	t.Helper()
+	return dialFakeHostPinged(t, e, host, sess, auth, nil)
+}
+
+// dialFakeHostPinged is dialFakeHostWith whose connection calls onPing, when
+// set, as each of the server's pings arrives (and answers it as ever).
+func dialFakeHostPinged(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.HostSession, auth string, onPing func()) (*fakeHost, map[string]any) {
+	t.Helper()
 	url := strings.Replace(e.http.URL, "http://", "ws://", 1) + "/ws/host"
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -513,7 +520,14 @@ func dialFakeHostWith(t *testing.T, e *testEnv, host proto.HostInfo, sess proto.
 	if auth != "" {
 		header.Set("Authorization", auth)
 	}
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header})
+	opts := &websocket.DialOptions{HTTPHeader: header}
+	if onPing != nil {
+		opts.OnPingReceived = func(context.Context, []byte) bool {
+			onPing()
+			return true
+		}
+	}
+	c, _, err := websocket.Dial(ctx, url, opts)
 	if err != nil {
 		t.Fatalf("dial host: %v", err)
 	}

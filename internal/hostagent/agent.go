@@ -343,6 +343,10 @@ type agent struct {
 	// and is still under way (peer.authorize). Its lock is held for nothing
 	// else: the session asks under its own locks.
 	creds linkCreds
+	// live is what the host has heard on the current control connection
+	// (connLive), nil while there is none: a link's viewer's line is typed
+	// and entered only while the server was heard from lately (vouches).
+	live atomic.Pointer[connLive]
 
 	// activity carries the local session's activity entries to the server;
 	// statusQueued says the session's final (status) entry is in it.
@@ -366,6 +370,9 @@ type agent struct {
 	inputWait time.Duration
 	// viewersWait replaces viewersSettle in tests.
 	viewersWait time.Duration
+	// liveWithin replaces linkHeardWithin, and livePing livePingEvery, in
+	// tests.
+	liveWithin, livePing time.Duration
 }
 
 // inputDeadline is when keystrokes arriving now must be written by (a
@@ -510,8 +517,11 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if a.opts.ServerIsOwners {
 		base = ownersServerClient()
 	}
-	// The connection's socket is a pacedConn (controlWriter).
-	c, pc, resp, err := pacedDial(dialCtx, a.wsURL, header, base, a.stallWait)
+	// The connection's socket is a pacedConn (controlWriter). Whatever the
+	// host reads on the connection, a frame's part included, as its TLS
+	// gives it, it notes as heard (hearingTransport).
+	live := newConnLive()
+	c, pc, resp, err := pacedDial(dialCtx, a.wsURL, header, base, a.stallWait, live.hear)
 	cancel()
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
@@ -560,6 +570,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if typ != websocket.MessageText || json.Unmarshal(data, &registered) != nil || registered.T != proto.HostRegistered {
 		return fail(errors.New("registration rejected"))
 	}
+	live.hear()
 	a.mu.Lock()
 	first := a.sessID == ""
 	a.sessID = registered.SessionID
@@ -575,7 +586,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		a.ice = a.opts.ICEServers
 	}
 	a.mu.Unlock()
-	a.useConn(c, pc)
+	a.useConnHearing(c, pc, live)
 	a.log.Info("registered with conductor", "session", registered.SessionID, "resumed", registered.Resumed)
 	if first && a.opts.Registered != nil {
 		a.opts.Registered(registered.SessionID, registered.ShareBaseURL)
@@ -886,11 +897,23 @@ func hostActivityMsg(sessionID string, e session.ActivityEntry) proto.HostActivi
 // connection (dropConn). A connection dialed without a pacedConn (nil) is
 // written to as its socket takes it.
 func (a *agent) useConn(c *websocket.Conn, pc *pacedConn) *controlWriter {
+	return a.useConnHearing(c, pc, nil)
+}
+
+// useConnHearing is useConn of a connection whose hearing is live (one
+// heard from now when nil), which becomes the host's (vouches) until the
+// connection is dropped.
+func (a *agent) useConnHearing(c *websocket.Conn, pc *pacedConn, live *connLive) *controlWriter {
+	if live == nil {
+		live = newConnLive()
+	}
 	w := newControlWriter(c, pc)
 	w.controlTurn = a.controlWait
+	w.live = live
 	a.mu.Lock()
 	old := a.out
 	a.out = w
+	a.live.Store(live)
 	a.mu.Unlock()
 	if old != nil {
 		old.stop()
@@ -916,6 +939,7 @@ func (a *agent) dropConn(c *websocket.Conn) {
 	w := a.out
 	if w != nil && w.c == c {
 		a.out = nil
+		a.live.CompareAndSwap(w.live, nil)
 	} else {
 		w = nil
 	}
@@ -938,12 +962,15 @@ func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 
 	// Report the current status in case the process ended while disconnected.
 	go a.watchStatus(ctx, w)
+	// Keep hearing from the server while a link's viewer may need it.
+	go a.keepHearing(ctx, c, w.live, w.done)
 
 	for {
 		typ, data, err := c.Read(ctx)
 		if err != nil {
 			return err
 		}
+		w.live.hear()
 		if typ == websocket.MessageBinary {
 			f, err := proto.Decode(data)
 			if err != nil || f.Type != proto.TypeRelay {
