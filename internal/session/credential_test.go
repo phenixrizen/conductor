@@ -521,3 +521,48 @@ func TestChatPostRefusedOnceCredentialGone(t *testing.T) {
 		})
 	}
 }
+
+// A run's chat send of a link's controller to another member's agent that
+// passed its check as it was taken, and whose credential goes while its
+// text waits behind another write there, is withdrawn, nothing typed, and
+// says why (revoked or expired, with the words), not that the member could
+// not take it.
+func TestARunChatSendWithdrawnWhileItWaitsSaysWhy(t *testing.T) {
+	for _, e := range linkEnds {
+		t.Run(e.name, func(t *testing.T) {
+			room := NewChatRoom(nil, nil)
+			a, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, RunChat: room})
+			b, pb := newLocalWith(t, Options{ScrollbackBytes: 4096, RunChat: room, InputWait: 5 * time.Second, SubmitPause: 10 * time.Millisecond})
+			room.Join(a, "core")
+			room.Join(b, "tests")
+			takeAgain := stopTaking(t, pb)
+			go b.Input(ownerOf(t, b), []byte("other's"))
+			untilWaiting(t, b, 0)
+			var c credential
+			guest, _ := linkViewer(t, a, "l1", RoleControl, &c)
+			msg, err := a.Chat(guest, proto.ChatPost{Scope: proto.ChatScopeRun, Text: "run the tests"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- a.ChatSend(context.Background(), guest, proto.ChatSend{T: proto.CtlChatSend, Ref: msg.ID, Scope: proto.ChatScopeRun, To: "tests"})
+			}()
+			untilWaiting(t, b, 1)
+			c.goneFor(e.why)
+			takeAgain()
+			if got := written(t, pb); got != "other's" {
+				t.Fatalf("written %q", got)
+			}
+			nothingWritten(t, pb, 300*time.Millisecond)
+			err = returnsWithin(t, 5*time.Second, "the send", func() error { return <-done })
+			if !errors.Is(err, e.why) {
+				t.Fatalf("the send withdrawn as it waited: %v", err)
+			}
+			m := decodeControl(t, ChatErrorFrame(err, msg.ID))
+			if m["code"] != e.code || m["message"] != e.words || m["requestId"] != msg.ID {
+				t.Fatalf("the refusal: %v", m)
+			}
+		})
+	}
+}

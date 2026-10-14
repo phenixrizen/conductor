@@ -674,7 +674,9 @@ func (r *ChatRoom) post(m ChatMessage) {
 
 // sendTo types text into the member name as a broadcast does (nothing
 // while its session waits on a prompt), recorded as byName, for the
-// connection from (Submission.From); an ErrNotSent says why it was not.
+// connection from (Submission.From); an ErrNotSent says why it was not,
+// unless from's credential no longer stands, which is said as it is
+// (revoked: ErrRevoked, ErrExpired or a kind of either).
 func (r *ChatRoom) sendTo(ctx context.Context, name, text, byName string, from *Subscription) error {
 	l, ok := r.memberNamed(name)
 	if !ok {
@@ -685,6 +687,9 @@ func (r *ChatRoom) sendTo(ctx context.Context, name, text, byName string, from *
 	}
 	res, err := l.Submit(ctx, Submission{Text: text, ByName: byName, From: from, UnlessWaiting: true})
 	switch {
+	case errors.Is(err, ErrRevoked):
+		// Withdrawn for the sender's link, its text typed or not: why.
+		return err
 	case errors.Is(err, ErrSubmitPending):
 		// Accepted: entered as the program reads.
 		return nil
