@@ -45,8 +45,9 @@ const (
 // It knows what TUIs draw with: cursor moves (CUP, HVP, CUU, CUD, CUF, CUB,
 // CNL, CPL, CHA, HPA, VPA, CR, LF, BS, HT, RI, IND, NEL, save and restore),
 // erasing (ED, EL, ECH), inserting and deleting (IL, DL, ICH, DCH),
-// scrolling (DECSTBM, SU, SD), autowrap and the alternate screen (1049,
-// 1047, 47). Colours, modes and every other sequence are skipped, as are the
+// scrolling (DECSTBM, SU, SD), autowrap, the alternate screen (1049, 1047,
+// 47) and a synchronized update under way (2026, Settled). Colours, other
+// modes and every other sequence are skipped, as are the
 // strings of OSC, DCS and the rest. A character's width is an approximation
 // (wide East Asian characters and most emoji take two cells, combining marks
 // none): a program that positions its cells, as a TUI does, puts the next
@@ -62,6 +63,22 @@ type Screen struct {
 	wrap       bool // the last column was written: the next character goes to the next row
 	saved      [2]int
 	savedMain  [2]int // the cursor on the main screen as 1049 left it
+	// syncing says the program has begun a synchronized update (2026) and
+	// not ended it: a terminal shows the frame before it until it ends,
+	// and this screen holds half of the next.
+	syncing bool
+	// clipped says the screen was resized with something on it, and the
+	// program has not erased it all since (ED 2, or ED 0 from its first
+	// cell; in a synchronized update, once that ends: unclipAtEnd): what it shows was drawn at another
+	// size (cut, or laid out narrower), and what it lacks is not gone. A
+	// frame that erases nothing, or only some rows, leaves it so.
+	clipped, unclipAtEnd bool
+
+	// softMain, softAlt and soft (main's or alt's, as cells is) mark the
+	// rows whose text goes on in the row below: autowrap took the cursor
+	// past the row's end. An erase to a row's end ends that. Lines reads
+	// such rows as one line, as the program wrote them.
+	softMain, softAlt, soft []bool
 
 	st      screenState
 	params  []byte
@@ -104,6 +121,16 @@ func (s *Screen) Resize(cols, rows int) {
 		cols, rows = 80, 24
 	}
 	cols, rows = min(cols, maxScreenCols), min(rows, maxScreenRows)
+	if cols != s.cols || rows != s.rows {
+		if s.syncing || strings.TrimSpace(s.text(len(s.cells))) != "" {
+			// What the screen shows, or the frame under way, was drawn at
+			// another size (cut, or laid out narrower) until the program
+			// erases it all and draws it again (Settled).
+			s.clipped = true
+		}
+		// An erase before the resize settles nothing after it.
+		s.unclipAtEnd = false
+	}
 	// Rows leave at the top when the cursor would fall off the bottom.
 	shift := max(0, s.y-rows+1)
 	fit := func(old [][]rune, shift int) [][]rune {
@@ -124,13 +151,15 @@ func (s *Screen) Resize(cols, rows int) {
 		mainShift, altShift = 0, shift
 	}
 	s.main = fit(s.main, mainShift)
+	s.softMain = make([]bool, rows)
 	if s.alt != nil {
 		s.alt = fit(s.alt, altShift)
+		s.softAlt = make([]bool, rows)
 	}
 	if s.altOn {
-		s.cells = s.alt
+		s.cells, s.soft = s.alt, s.softAlt
 	} else {
-		s.cells = s.main
+		s.cells, s.soft = s.main, s.softMain
 	}
 	s.rows, s.cols = rows, cols
 	s.y = min(s.y-shift, rows-1)
@@ -277,6 +306,7 @@ func (s *Screen) put(r rune) {
 		return
 	}
 	if s.wrap {
+		s.soft[s.y] = true
 		s.x, s.wrap = 0, false
 		s.index()
 	}
@@ -284,6 +314,7 @@ func (s *Screen) put(r rune) {
 		if w > s.cols {
 			return
 		}
+		s.soft[s.y] = true
 		s.x = 0
 		s.index()
 	}
@@ -333,8 +364,10 @@ func (s *Screen) scrollUp(top, bot, n int) {
 	}
 	n = min(n, bot-top+1)
 	copy(s.cells[top:bot+1], s.cells[top+n:bot+1])
+	copy(s.soft[top:bot+1], s.soft[top+n:bot+1])
 	for r := bot - n + 1; r <= bot; r++ {
 		s.cells[r] = blankRow(s.cols)
+		s.soft[r] = false
 	}
 }
 
@@ -345,14 +378,17 @@ func (s *Screen) scrollDown(top, bot, n int) {
 	}
 	n = min(n, bot-top+1)
 	copy(s.cells[top+n:bot+1], s.cells[top:bot+1-n])
+	copy(s.soft[top+n:bot+1], s.soft[top:bot+1-n])
 	for r := top; r < top+n; r++ {
 		s.cells[r] = blankRow(s.cols)
+		s.soft[r] = false
 	}
 }
 
 func (s *Screen) reset() {
 	s.main, s.alt = blankRows(s.rows, s.cols), nil
-	s.cells, s.altOn = s.main, false
+	s.softMain, s.softAlt = make([]bool, s.rows), nil
+	s.cells, s.soft, s.altOn = s.main, s.softMain, false
 	s.x, s.y, s.top, s.bot, s.wrap = 0, 0, 0, s.rows-1, false
 }
 
@@ -365,6 +401,9 @@ func (s *Screen) clampCursor() {
 func (s *Screen) erase(r, a, b int) {
 	row := s.cells[r]
 	a, b = max(0, a), min(len(row), b)
+	if b == len(row) {
+		s.soft[r] = false
+	}
 	for c := a; c < b; c++ {
 		row[c] = ' '
 	}
@@ -412,8 +451,15 @@ func (s *Screen) csi(final byte) {
 	if private {
 		if s.params[0] == '?' && (final == 'h' || final == 'l') {
 			for _, m := range nums {
-				if m == 1049 || m == 1047 || m == 47 {
+				switch m {
+				case 1049, 1047, 47:
 					s.altScreen(final == 'h', m == 1049)
+				case 2026:
+					if final == 'l' && s.syncing && s.unclipAtEnd {
+						// The end of a frame that erased the screen whole.
+						s.clipped = false
+					}
+					s.syncing, s.unclipAtEnd = final == 'h', false
 				}
 			}
 		}
@@ -445,15 +491,23 @@ func (s *Screen) csi(final byte) {
 			for r := s.y + 1; r < s.rows; r++ {
 				s.erase(r, 0, s.cols)
 			}
+			if s.x == 0 && s.y == 0 {
+				// From the first cell: the whole screen (Codex clears so).
+				s.erasedWhole()
+			}
 		case 1:
 			for r := 0; r < s.y; r++ {
 				s.erase(r, 0, s.cols)
 			}
 			s.erase(s.y, 0, s.x+1)
+			if s.x >= s.cols-1 && s.y >= s.rows-1 {
+				s.erasedWhole()
+			}
 		case 2:
 			for r := 0; r < s.rows; r++ {
 				s.erase(r, 0, s.cols)
 			}
+			s.erasedWhole()
 		}
 		// 3 erases the scrollback, which a Screen does not keep.
 	case 'K':
@@ -524,9 +578,10 @@ func (s *Screen) altScreen(on, cursor bool) {
 			s.savedMain = [2]int{s.x, s.y}
 		}
 		s.alt = blankRows(s.rows, s.cols)
-		s.cells, s.altOn = s.alt, true
+		s.softAlt = make([]bool, s.rows)
+		s.cells, s.soft, s.altOn = s.alt, s.softAlt, true
 	} else {
-		s.cells, s.altOn = s.main, false
+		s.cells, s.soft, s.altOn = s.main, s.softMain, false
 		if cursor {
 			s.x, s.y = s.savedMain[0], s.savedMain[1]
 			s.clampCursor()
@@ -540,16 +595,44 @@ func (s *Screen) altScreen(on, cursor bool) {
 // bottom left out.
 func (s *Screen) Text() string { return s.text(len(s.cells)) }
 
+// Lines is Text with each row autowrap went on from (soft) and the row below
+// it read as one line, the row kept whole, as the program wrote them: a word
+// a narrow screen cut at its edge reads whole.
+func (s *Screen) Lines() string { return s.rowsText(len(s.cells), true) }
+
 // maxLookRows bounds the rows Last gives a pattern: a dialog is the bottom
 // of what a TUI draws, and a look at a screen of hundreds of wide rows would
 // cost a regular expression tens of milliseconds for nothing.
 const maxLookRows = 80
 
+// erasedWhole notes the screen erased whole: what follows is drawn at its
+// size now (in a synchronized update, once it ends).
+func (s *Screen) erasedWhole() {
+	if s.syncing {
+		s.unclipAtEnd = true
+	} else {
+		s.clipped = false
+	}
+}
+
+// Settled reports whether the screen is a whole frame: no synchronized
+// update (2026) begun and not ended, which a terminal would not show yet,
+// and nothing drawn at another size that the program has not erased whole
+// since (a resize keeps what showed, cut or as laid out before; the
+// program erases and redraws it).
+func (s *Screen) Settled() bool { return !s.syncing && !s.clipped }
+
+// Size returns the screen's columns and rows.
+func (s *Screen) Size() (cols, rows int) { return s.cols, s.rows }
+
 // Last is what a PatternWatcher matches: Text, its last maxLookRows rows.
 func (s *Screen) Last() string { return s.text(maxLookRows) }
 
 // text is Text, its last n rows at most.
-func (s *Screen) text(n int) string {
+func (s *Screen) text(n int) string { return s.rowsText(n, false) }
+
+// rowsText is text, and with soft Lines, its last n rows at most.
+func (s *Screen) rowsText(n int, soft bool) string {
 	var b strings.Builder
 	last := -1
 	for r := len(s.cells) - 1; r >= 0; r-- {
@@ -560,7 +643,8 @@ func (s *Screen) text(n int) string {
 	}
 	first := max(0, last-n+1)
 	for r := first; r <= last; r++ {
-		if r > first {
+		joined := soft && r > first && s.soft[r-1]
+		if r > first && !joined {
 			b.WriteByte('\n')
 		}
 		line := make([]rune, 0, len(s.cells[r]))
@@ -569,7 +653,11 @@ func (s *Screen) text(n int) string {
 				line = append(line, c)
 			}
 		}
-		b.WriteString(strings.TrimRight(string(line), " "))
+		if soft && s.soft[r] && r < last {
+			b.WriteString(string(line))
+		} else {
+			b.WriteString(strings.TrimRight(string(line), " "))
+		}
 	}
 	return b.String()
 }

@@ -406,8 +406,9 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil || !session.AttentionState(m.State).Valid() {
 			return false
 		}
-		// The host's own report is not forwarded, so it is never limited.
-		_ = hs.SetAttentionFull(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), false)
+		// The host's own report is not forwarded, so it is never limited;
+		// its question keeps the host's id.
+		hs.HostAttention(session.AttentionState(m.State), m.Message, m.Source, m.Kind, signal.OptionsFromProto(m.Options), m.ID)
 	case proto.HostActivity:
 		var m proto.HostActivityMsg
 		if json.Unmarshal(data, &m) != nil {

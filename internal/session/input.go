@@ -59,15 +59,20 @@ type writeWait struct {
 	// any end with anyEnd (keystrokes), else only the end of its
 	// credential (a revoked or expired link, revoked): a reply box closes
 	// its connection once it has sent, and its submission goes on, as it
-	// does for a connection that failed or was too slow.
-	from   *Subscription
-	anyEnd bool
+	// does for a connection that failed or was too slow. With credential
+	// too, both: a reply to a question (AnswerInput) is keystrokes of a
+	// connection that waits for the word on them, held to a submission's
+	// check of the credential, asked again as the writer takes it
+	// (revoked: on a host, the server heard from lately too).
+	from       *Subscription
+	anyEnd     bool
+	credential bool
 	// before, when set, runs as the writer takes the write, just before it
 	// is made, and never for a write not made: a submission's BeforeEnter.
 	before func()
-	// guard, when set, is asked as the writer takes the write, as over is:
-	// an error from it and the write is not made (a submission's Enter
-	// that a newer prompt would take).
+	// guard, when set, is asked as the writer takes the write, as over is,
+	// the last of its checks: an error from it and the write is not made (a
+	// submission's Enter that a newer prompt would take); nil, and it is.
 	guard func() error
 }
 
@@ -75,7 +80,7 @@ type writeWait struct {
 // does not: a keystroke's, once the connection has ended; a submission's,
 // once its link's credential no longer stands, whether or not the
 // connection has been closed for it yet (a revoke marks the link before it
-// closes the link's connections).
+// closes the link's connections); a reply's, for either.
 func (o writeWait) withdrawn() error {
 	if o.from == nil {
 		return nil
@@ -87,8 +92,11 @@ func (o writeWait) withdrawn() error {
 	case <-o.from.done:
 		return errGone
 	default:
-		return nil
 	}
+	if o.credential {
+		return revoked(o.from)
+	}
+	return nil
 }
 
 // revoked says why sub's credential no longer stands (a revoked or expired
@@ -146,13 +154,16 @@ func (s *Local) newWrite(ctx context.Context, data []byte, deadline time.Time, o
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return ErrInputStalled
+		}
+		// The guard is asked last: the writer begins the write when it
+		// passes, so a guard that notes something of the write (a reply
+		// noting its question answered) notes it only for a write made.
 		if o.guard != nil {
 			if err := o.guard(); err != nil {
 				return err
 			}
-		}
-		if !deadline.IsZero() && !time.Now().Before(deadline) {
-			return ErrInputStalled
 		}
 		return nil
 	}}

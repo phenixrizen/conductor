@@ -238,9 +238,10 @@ func TestTheSameApprovalAnsweredThenShownAgainIsAskedAgain(t *testing.T) {
 	if got := nextWrite(t, p); got != "\x1b" {
 		t.Fatalf("written %q", got)
 	}
-	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("Escape did not answer: %q", st)
-	}
+	// An Escape that ends a write puts the dialog behind; it is cleared
+	// once the dialog goes.
+	p.outW.Write([]byte(approvalGone("✗ You canceled the request to run curl -sI https://example.com\r\n")))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
 // A person who answers the dialog in its terminal before the session has
@@ -488,24 +489,35 @@ func TestAnApprovalGoneAfterAKeyTypedIntoItGivesWay(t *testing.T) {
 }
 
 // The words are the command whole: a "$ " inside it does not start them
-// again, rows of it are joined, and a command longer than a message can
-// hold is cut with an ellipsis, never silently.
+// again, its rows are kept as rows (what tells it from the next), and the
+// message shown joins them; a command longer than a message can hold is
+// shown cut with an ellipsis, never silently, and is told whole.
 func TestAnApprovalsWordsAreItsWholeCommand(t *testing.T) {
 	q := approvalQuestions()[0]
 	screen := func(cmdRows ...string) string {
 		return "  Would you like to run the following command?\n\n  Reason: needs the network.\n\n  " + strings.Join(cmdRows, "\n  ") +
 			"\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `rm` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
 	}
-	if got := q.words(screen("$ rm -rf build; printf '$ done'")); got != "Would you like to run the following command? $ rm -rf build; printf '$ done'" {
+	if got := shownWords(q.words(screen("$ rm -rf build; printf '$ done'"))); got != "Would you like to run the following command? $ rm -rf build; printf '$ done'" {
 		t.Fatalf("words %q", got)
 	}
-	if got := q.words(screen("$ cat <<'EOF' > notes.txt", "hello", "EOF")); got != "Would you like to run the following command? $ cat <<'EOF' > notes.txt hello EOF" {
+	rows := q.words(screen("$ cat <<'EOF' > notes.txt", "hello", "EOF"))
+	if rows != "Would you like to run the following command? $ cat <<'EOF' > notes.txt\nhello\nEOF" {
+		t.Fatalf("rows of a command on three rows %q", rows)
+	}
+	if got := shownWords(rows); got != "Would you like to run the following command? $ cat <<'EOF' > notes.txt hello EOF" {
 		t.Fatalf("words of a command on three rows %q", got)
 	}
 	long := "$ " + strings.Repeat("echo abcdefghij && ", 40) + "rm -rf /tmp/x"
-	got := q.words(screen(long))
+	whole := q.words(screen(long))
+	got := shownWords(whole)
 	if len(got) > MaxAttentionMessage || !strings.HasSuffix(got, "…") || !strings.Contains(got, "$ echo abcdefghij && echo") || !utf8.ValidString(got) {
 		t.Fatalf("words of a long command (%d bytes) %q", len(got), got)
+	}
+	// Alike up to the cut and different after it, two commands are two questions, shown alike.
+	other := q.words(screen(strings.TrimSuffix(long, "x") + "y"))
+	if shownWords(other) != got || sameWords(other, whole) || !strings.HasSuffix(whole, "/tmp/x") {
+		t.Fatalf("two long commands that differ after the cut: %q and %q", whole, other)
 	}
 }
 
@@ -803,5 +815,46 @@ func TestAHandoffAsTheDialogIsAnsweredLeavesNoQuestion(t *testing.T) {
 	time.Sleep(900 * time.Millisecond)
 	if a := s.Info().Attention; a.State == AttentionNeedsInput {
 		t.Fatalf("a question left held: %+v", a)
+	}
+}
+
+// A question's words are the same question whatever the width the screen
+// broke them at: a row break reads as a space, also inside a word the
+// program cut at the edge, and words cut to a message are told by the tag
+// of the whole. Other words are another question.
+func TestSameWordsIsTheQuestionWhateverTheWidth(t *testing.T) {
+	q := approvalQuestions()[0]
+	screen := func(cmdRows ...string) string {
+		return "  Would you like to run the following command?\n\n  " + strings.Join(cmdRows, "\n  ") +
+			"\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `rm` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
+	}
+	short := "$ curl https://example.com/" + strings.Repeat("a", 60)
+	if a, b := q.words(screen(short[:50], short[50:])), q.words(screen(short[:40], short[40:])); a == b || !sameWords(a, b) {
+		t.Fatalf("one command broken at two widths: %q and %q", a, b)
+	}
+	long := "$ " + strings.Repeat("echo abcdefghij && ", 40) + "rm -rf /tmp/x"
+	if a, b := q.words(screen(long[:300], long[300:])), q.words(screen(long[:290], long[290:])); !sameWords(a, b) {
+		t.Fatalf("one long command broken at two widths: %q and %q", a, b)
+	}
+	if a, b := q.words(screen(long)), q.words(screen(strings.TrimSuffix(long, "x")+"y")); sameWords(a, b) {
+		t.Fatalf("two long commands that differ after the cut: %q and %q", a, b)
+	}
+	if sameWords(q.words(screen("$ rm -rf build")), q.words(screen("$ rm -rf built"))) {
+		t.Fatal("two commands are one question")
+	}
+	// A space within a row is the command's own: two commands that differ by one are two questions.
+	if a, b := q.words(screen(`$ rm -rf "./build output"`)), q.words(screen(`$ rm -rf "./buildoutput"`)); sameWords(a, b) {
+		t.Fatalf("two commands that differ by a space: %q and %q", a, b)
+	}
+	if a, b := q.words(screen(`$ rm -rf "./build output"`)), q.words(screen(`$ rm -rf "./build  output"`)); sameWords(a, b) {
+		t.Fatalf("two commands that differ by one space and two: %q and %q", a, b)
+	}
+	// Broken between two words at one width and not at another, a command is one question.
+	if a, b := q.words(screen(`$ rm -rf "./build`, `output"`)), q.words(screen(`$ rm -rf "./build output"`)); !sameWords(a, b) {
+		t.Fatalf("one command broken between two words: %q and %q", a, b)
+	}
+	// What a command shows is never taken for a tag of anything: two commands alike but for one are two questions.
+	if a, b := q.words(screen("$ echo harmless # … #deadbeef")), q.words(screen("$ rm -rf ./backups # … #deadbeef")); sameWords(a, b) {
+		t.Fatalf("two commands that end alike: %q and %q", a, b)
 	}
 }

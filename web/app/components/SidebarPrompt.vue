@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RowPrompt } from '~/utils/sidebarActions'
+import { bindDraft } from '~/utils/reply'
 
 /**
  * A prompt answered in the row (design 3b, 3c): the choices as numbered buttons, a free-text prompt as a reply field where Enter
@@ -8,16 +9,25 @@ import type { RowPrompt } from '~/utils/sidebarActions'
  * what is typed.
  */
 const props = withDefaults(defineProps<{ prompt: RowPrompt; busy?: boolean; big?: boolean }>(), { busy: false, big: false })
-const emit = defineEmits<{ answer: [index: number]; reply: [text: string] }>()
+/** Each answer names the question the row showed as it was clicked or typed (its id). */
+const emit = defineEmits<{ answer: [index: number, question: string | undefined]; reply: [text: string, question: string | undefined] }>()
 
 const text = ref('')
 // While the host is away, or the session waits for its terminal, nothing typed here would go.
 const off = computed(() => props.busy || props.prompt.away || props.prompt.held)
+/**
+ * The question a line was begun for (as its first character was typed): it names that one when sent, whatever the row shows by
+ * then (someone else answered, the next question came), so that the owner refuses it rather than take it for the next.
+ */
+const draftFor = ref<string | undefined>()
+watch(text, (now, before) => {
+  draftFor.value = bindDraft(before, now, draftFor.value, props.prompt.question)
+})
 
 function send() {
   const t = text.value.trim()
   if (!t || off.value) return
-  emit('reply', t)
+  emit('reply', t, draftFor.value)
   text.value = ''
 }
 </script>
@@ -36,7 +46,7 @@ function send() {
         :disabled="off"
         :loading="busy"
         :data-row-choice="i + 1"
-        @click="emit('answer', i)"
+        @click="emit('answer', i, prompt.question)"
       >
         <template v-if="i < 9" #leading><UKbd :value="String(i + 1)" size="sm" class="opacity-70" /></template>
       </UButton>

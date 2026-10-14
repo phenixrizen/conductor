@@ -6,6 +6,7 @@ import { broadcastSelection, crewFeed, memberStatus, runCounts, skipWords, takeV
 import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
+import { replyFailure } from '~/utils/reply'
 
 // The run page: a tile for every member of one run, its activity and a
 // broadcast bar. Sessions and the run come from the live store (useAttention):
@@ -170,7 +171,8 @@ function runChatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
   const t = tiles.value.find((x) => x.name === m.on)
   if (!o || !t?.session) return
-  quick.send(t.session, o.input).catch((e: unknown) => toast.add({ title: `Reply to ${t.name} failed`, description: (e as Error).message, color: 'error' }))
+  // The question's line in the chat is the question's own id: a choice clicked once it was answered types nothing.
+  quick.send(t.session, o.input, { question: m.id }).catch((e: unknown) => toast.add(replyFailure(e, t.name)))
 }
 watch(runChat.refused, (r) => {
   if (r) toast.add({ title: 'Not sent to the member', description: skipWords(r.reason), color: 'warning' })

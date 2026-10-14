@@ -6,6 +6,7 @@ import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
 import { blockSubtitle, focusRows, moveFocus, needsDotShown, reopenNeeds, rowMeta, sectionPreview, sidebarModel, type ListSection, type RunBlock, type SessionRow, type SidebarItem } from '~/utils/sidebar'
 import { rowMenuItems, sessionLive } from '~/utils/sidebarActions'
+import { replyFailure } from '~/utils/reply'
 
 /**
  * The full sidebar (design 3a, 3b): sessions and runs, ordered by what needs you. Two sections, Needs you then Running, each holding
@@ -130,17 +131,18 @@ function openRunOf(row: SessionRow) {
 
 // Answering in the row (design 3b, 3c): a choice sends its keys, a typed line is submitted, over the Yard's short-lived connection
 // (the relay for a hosted session); the stream clears the prompt and the row moves on by itself. Busy is the Yard's set too, so a
-// card there and the row here agree.
+// card there and the row here agree. Each answer names the question the row showed as it was clicked, typed or keyed: one that
+// another person answered first takes nothing, and the toast says it was answered already.
 const busyAll = computed(() => new Set([...busy.value, ...quick.sending.value]))
-function fail(title: string) {
-  return (e: unknown) => toast.add({ title, description: (e as Error).message, color: 'error' })
+function fail(name: string) {
+  return (e: unknown) => toast.add(replyFailure(e, name))
 }
-function answer(row: SessionRow, i: number) {
+function answer(row: SessionRow, i: number, question: string | undefined) {
   const o = row.prompt?.options[i]
-  if (o) quick.send(row.session, o.input).catch(fail(`Reply to ${row.session.name} failed`))
+  if (o) quick.send(row.session, o.input, { question }).catch(fail(row.session.name))
 }
-function reply(row: SessionRow, text: string) {
-  quick.reply(row.session, text).catch(fail(`Reply to ${row.session.name} failed`))
+function reply(row: SessionRow, text: string, question: string | undefined) {
+  quick.reply(row.session, text, { question }).catch(fail(row.session.name))
 }
 
 function focusFilter() {
@@ -289,7 +291,8 @@ function onKey(e: KeyboardEvent) {
   const n = Number(e.key)
   if (Number.isInteger(n) && n >= 1 && n <= 9) {
     own()
-    if (row?.kind === 'session' && row.prompt?.options[n - 1]) answer(row, n - 1)
+    // The digit names the question the focused row shows as it is pressed.
+    if (row?.kind === 'session' && row.prompt?.options[n - 1]) answer(row, n - 1, row.prompt.question)
   }
 }
 

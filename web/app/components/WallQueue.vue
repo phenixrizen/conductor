@@ -2,11 +2,22 @@
 import type { SessionInfo } from '~/composables/useSessions'
 import { TERMINAL_FIRST, waitsForTerminal } from '~/utils/attention'
 import { agentInitials, relativeTime } from '~/utils/sessions'
+import { draftQuestion, questionOf } from '~/utils/reply'
 
 const props = defineProps<{ sessions: SessionInfo[]; answered: SessionInfo[]; selected: number; sending: Set<string> }>()
-const emit = defineEmits<{ reply: [session: SessionInfo, text: string]; option: [session: SessionInfo, index: number]; open: [session: SessionInfo]; select: [index: number] }>()
+/** A reply names the question its card showed (its id), so that one answered meanwhile takes nothing. */
+const emit = defineEmits<{ reply: [session: SessionInfo, text: string, question: string | undefined]; option: [session: SessionInfo, index: number, question: string | undefined]; open: [session: SessionInfo]; select: [index: number] }>()
 
 const drafts = reactive<Record<string, string>>({})
+/**
+ * The question each card's line was begun for (as its first character was typed): it names that one when sent, whatever the card
+ * shows by then, so that the owner refuses it rather than take it for the next question.
+ */
+const draftQuestions: Record<string, string | undefined> = {}
+function setDraft(s: SessionInfo, value: string) {
+  draftQuestions[s.id] = draftQuestion(drafts[s.id] ?? '', value, draftQuestions[s.id], s.attention)
+  drafts[s.id] = value
+}
 const now = ref(Date.now())
 let tick: number | undefined
 onMounted(() => (tick = window.setInterval(() => (now.value = Date.now()), 1000)))
@@ -24,7 +35,7 @@ function submit(s: SessionInfo) {
   const text = (drafts[s.id] ?? '').trim()
   // A session that waits for its terminal takes no reply: it would only wait (TERMINAL_FIRST).
   if (!text || waitsForTerminal(s.attention)) return
-  emit('reply', s, text)
+  emit('reply', s, text, draftQuestions[s.id])
   drafts[s.id] = ''
 }
 
@@ -73,18 +84,19 @@ defineExpose({ focusSelected })
           :color="oi === 0 ? 'primary' : 'neutral'"
           class="flex-1 justify-center"
           :loading="sending.has(s.id)"
-          @click.stop="emit('option', s, oi)"
+          @click.stop="emit('option', s, oi, questionOf(s.attention))"
         />
       </div>
       <form v-else class="flex items-center gap-1.5" @submit.prevent="submit(s)">
         <UInput
           :ref="inputRef(s.id)"
-          v-model="drafts[s.id]"
+          :model-value="drafts[s.id]"
           size="sm"
           class="flex-1"
           :placeholder="waitsForTerminal(s.attention) ? TERMINAL_FIRST : `Reply to ${agentName(s)}…`"
           :disabled="waitsForTerminal(s.attention)"
           :loading="sending.has(s.id)"
+          @update:model-value="(v: string | number) => setDraft(s, String(v ?? ''))"
           @click.stop
           @focus="emit('select', i)"
         />

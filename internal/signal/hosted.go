@@ -858,6 +858,26 @@ func (h *HostedSession) SetAttention(state session.AttentionState, message, sour
 // is told, so its viewers see the change too; without one the change is held
 // on the server. A change from the host (forward false) never spends one.
 func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
+	return h.setAttention(state, message, source, kind, options, forward, "")
+}
+
+// HostAttention records an attention change the host reports (forward
+// false): id is the id the host's session gave it (Attention.ID), kept
+// when it is a question's id (proto.ValidQuestionID), so that an answer
+// from the server's listings names the question the host holds.
+func (h *HostedSession) HostAttention(state session.AttentionState, message, source, kind string, options []session.Option, id string) {
+	if !proto.ValidQuestionID(id) {
+		id = ""
+	}
+	_ = h.setAttention(state, message, source, kind, options, false, id)
+}
+
+// setAttention is SetAttentionFull with the change's id: the host's, or,
+// for a change the server makes (id ""), none, the host giving the change
+// its own as it applies it and reporting it back (HostAttention). A
+// forwarded change the host will not apply, the same as the one it holds,
+// keeps that one's id.
+func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -879,6 +899,12 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 	if state != session.AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
+		att.ID = id
+		if cur := h.info.Attention; forward && id == "" && sameAttention(cur, att) {
+			// The host keeps what it shows (a change that changes nothing),
+			// and reports nothing back: its question keeps its id here too.
+			att.ID = cur.ID
+		}
 	}
 	h.info.Attention = att
 	h.mu.Unlock()
@@ -887,6 +913,20 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 	}
 	h.notifyChange()
 	return nil
+}
+
+// sameAttention says whether a and b show the same, as a session takes a
+// change (state, words, source, kind and choices), whatever their stamps.
+func sameAttention(a, b session.Attention) bool {
+	if a.State != b.State || a.Message != b.Message || a.Source != b.Source || a.Kind != b.Kind || len(a.Options) != len(b.Options) {
+		return false
+	}
+	for i := range a.Options {
+		if a.Options[i] != b.Options[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // hostAttentionMsg encodes an attention change for the host control link.
@@ -1198,7 +1238,7 @@ func (h *HostedSession) RelayToHost(v *Viewer, inner proto.Frame) error {
 		case proto.TypeControl:
 			// A chat post passes for every role (the host refuses one that is
 			// also for the agent); typing a message into the agent does not.
-			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlChatSend || t == proto.CtlNvimOpen || t == proto.CtlNvimInput || t == proto.CtlNvimClose || t == proto.CtlNvimSwap {
+			if t, _ := proto.ParseHeader(inner.Payload); t == proto.CtlResize || t == proto.CtlSubmit || t == proto.CtlAnswer || t == proto.CtlChatSend || t == proto.CtlNvimOpen || t == proto.CtlNvimInput || t == proto.CtlNvimClose || t == proto.CtlNvimSwap {
 				return session.ErrReadOnly
 			}
 		}

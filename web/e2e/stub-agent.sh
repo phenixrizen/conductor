@@ -50,7 +50,10 @@
 # (y, p, Esc; the digits too; Enter picks Yes) before it answers the line;
 # the answer goes into the transcript as "approval: …". It is never run.
 # That turn ends as Codex's does while its terminal is not focused: a bell
-# after its done ("bell: after done" in the transcript).
+# after its done ("bell: after done" in the transcript). A line
+# `stub approvals <command>|<command>…` asks for each command in turn, the
+# next drawn as soon as the one before is answered, as Codex asks the
+# approvals it has queued.
 # A line `stub spin N` (N seconds, 1 to 99) makes the stub draw a dot every
 # 100 ms for about N seconds and answer nothing, as an agent draws while it
 # works: what is typed meanwhile waits (the terminal echoes it, or the stub
@@ -397,7 +400,16 @@ update_question() {
 	while IFS= read -rsn1 key; do
 		case $key in
 		'' | $'\r' | 1) answer=update ;;
-		$'\e' | 2) answer=skip ;;
+		$'\e')
+			# ESC and a key at once (Alt+z, an arrow) is one key, as
+			# Codex's crossterm reads it, and the question ignores it; an
+			# ESC alone skips.
+			if IFS= read -rsn1 -t 0.05 _; then
+				continue
+			fi
+			answer=skip
+			;;
+		2) answer=skip ;;
 		3) answer=skip-version ;;
 		*) continue ;;
 		esac
@@ -600,6 +612,16 @@ answer() {
 	fi
 	if [[ $line =~ ^stub\ approve\ ([A-Za-z0-9\ ./:_-]{1,100})$ ]]; then
 		approval "${BASH_REMATCH[1]}"
+	fi
+	if [[ $line =~ ^stub\ approvals\ ([A-Za-z0-9\ ./:_|-]{1,200})$ ]]; then
+		local -a queued=()
+		local cmd
+		IFS='|' read -ra queued <<<"${BASH_REMATCH[1]}"
+		for cmd in "${queued[@]}"; do
+			if [[ -n ${cmd// /} ]]; then
+				approval "$cmd"
+			fi
+		done
 	fi
 	while [[ $rest =~ $target_re ]]; do
 		kind=${BASH_REMATCH[1]}

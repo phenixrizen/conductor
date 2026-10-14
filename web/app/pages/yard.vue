@@ -6,6 +6,7 @@ import type { TransportState } from '~/utils/transport/types'
 import { WALL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
 import { bestGrid } from '~/utils/wall'
+import { replyFailure } from '~/utils/reply'
 
 useHead({ title: 'Yard' })
 
@@ -122,14 +123,15 @@ function fail(title: string) {
   return (e: unknown) => toast.add({ title, description: (e as Error).message, color: 'error' })
 }
 
-function reply(s: SessionInfo, text: string) {
-  quick.reply(s, text).catch(fail(`Reply to ${s.name} failed`))
+/** A reply names the question the card or the bar showed (its id): one answered meanwhile takes nothing, and says so. */
+function reply(s: SessionInfo, text: string, question?: string) {
+  quick.reply(s, text, { question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
 }
 
-function option(s: SessionInfo, index: number) {
+function option(s: SessionInfo, index: number, question?: string) {
   const o = s.attention?.options?.[index]
   if (!o) return
-  quick.send(s, o.input).catch(fail(`Reply to ${s.name} failed`))
+  quick.send(s, o.input, { question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
 }
 
 async function stop(s: SessionInfo) {
@@ -249,7 +251,7 @@ onMounted(() => {
             @open-url="openUrl"
           />
           <template #bar>
-            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="reply(focused!, $event)" @option="option(focused!, $event)" />
+            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" />
           </template>
         </EditorColumn>
         <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 text-muted">

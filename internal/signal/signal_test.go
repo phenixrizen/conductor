@@ -76,6 +76,10 @@ func TestRegisterResumeAndRelayRules(t *testing.T) {
 	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: submit[1:]}); !errors.Is(err, session.ErrReadOnly) {
 		t.Fatalf("view submit: %v", err)
 	}
+	answer := proto.MustControl(proto.Answer{T: proto.CtlAnswer, ReqID: "a1", Question: "0123456789abcdef", Input: "y"})
+	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeControl, Payload: answer[1:]}); !errors.Is(err, session.ErrReadOnly) {
+		t.Fatalf("view answer: %v", err)
+	}
 	ping := proto.MustControl(proto.Ping{T: proto.CtlPing})
 	// The editor's saves and Neovim are the control role's too (design round 12, F6, F8).
 	if err := hs.RelayToHost(v, proto.Frame{Type: proto.TypeFileWrite, Payload: []byte("x")}); !errors.Is(err, session.ErrReadOnly) {
@@ -788,6 +792,39 @@ func TestAnEndedHostedSessionNeedsNothing(t *testing.T) {
 	hs.HostStatus(session.StatusExited, &code)
 	if info := hs.Info(); info.Status != session.StatusExited || info.Attention.State != session.AttentionNone {
 		t.Fatalf("ended: %+v", info)
+	}
+}
+
+// A hosted session's question keeps the id its host gave it, so that an
+// answer from the server's listings names the question the host holds; an
+// id that is no question's id is dropped. A change the server makes and
+// forwards has none until the host reports its own, except one the host
+// will not apply (the same as it shows), which keeps the one it has.
+func TestAHostedQuestionKeepsItsHostsID(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, conn := register(t, hub)
+	opts := []session.Option{{Label: "Yes", Input: "y"}}
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef")
+	if a := hs.Info().Attention; a.ID != "0123456789abcdef" || a.State != session.AttentionNeedsInput {
+		t.Fatalf("the host's question: %+v", a)
+	}
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "has space")
+	if a := hs.Info().Attention; a.ID != "" {
+		t.Fatalf("an id that is no question's: %q", a.ID)
+	}
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, "fedcba9876543210")
+	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if a := hs.Info().Attention; a.ID != "fedcba9876543210" {
+		t.Fatalf("a forwarded change the host keeps: id %q", a.ID)
+	}
+	drainText(t, conn, proto.HostAttention)
+	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Which port?", session.SourceAPI, "", nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if a := hs.Info().Attention; a.ID != "" {
+		t.Fatalf("a forwarded change: id %q before the host's", a.ID)
 	}
 }
 

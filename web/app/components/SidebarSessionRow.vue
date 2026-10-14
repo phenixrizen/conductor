@@ -12,7 +12,7 @@ import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/side
  * drives the keys: `focused` marks the row they act on, `confirming` (a model: the hover Stop sets it too) shows the question.
  */
 const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false })
-const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number]; reply: [row: SessionRow, text: string]; sheet: [row: SessionRow] }>()
+const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; sheet: [row: SessionRow] }>()
 
 // A touch long press (500 ms, design 3e) opens the row's sheet; the context menu is the mouse's and a coarse pointer's own is off.
 const coarse = useMedia('(pointer: coarse)')
@@ -133,7 +133,7 @@ function confirmStop() {
           <UButton icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" :aria-label="`More for ${s.name}`" data-row-more />
         </UDropdownMenu>
       </span>
-      <SidebarPrompt v-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="emit('answer', row, $event)" @reply="emit('reply', row, $event)" />
+      <SidebarPrompt v-if="prompt && !confirming" :prompt="prompt" :busy="busy" :big="big" @answer="(i, q) => emit('answer', row, i, q)" @reply="(text, q) => emit('reply', row, text, q)" />
     </li>
   </UContextMenu>
 </template>

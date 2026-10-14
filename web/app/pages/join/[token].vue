@@ -9,6 +9,7 @@ import { joinServer } from '~/utils/invite'
 import { filesRoot, joinedFromInfo } from '~/utils/joined'
 import { chatThreadKey, scopeItems } from '~/utils/chat'
 import { skipWords, type MemberStatus } from '~/utils/crews'
+import { repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 
 // The workbench (the desktop app, or a browser holding the workbench token) shows the page beside its sidebar, so a shared session
 // never takes the window over and its own sessions stay one click away; a guest gets the bare page. Decided once: a layout that
@@ -52,7 +53,7 @@ const transport = ref<{ kind: TransportKind; state: TransportState; rtt: number 
 // The editor area (design 4g): files open above the terminal, the Files pane beside it where there is room.
 const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 const filesPanel = ref(true)
-const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
+const terminal = ref<EditorTerminal & { requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean } | null>(null)
 const attention = ref<Attention>({ state: '' })
 function onAttention(msg: { state: string; message?: string; source?: string }) {
   attention.value = { ...(msg as Attention), since: new Date().toISOString() }
@@ -202,7 +203,8 @@ function runChatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
   const member = runMembers.value.find((x) => x.name === m.on)
   if (!o || !member?.sessionId) return
-  quick.send({ id: member.sessionId, kind: member.kind ?? 'server' }, o.input, { token: token.value, server: server.value }).catch((e: unknown) => toast.add({ title: `Reply to ${member.name} failed`, description: (e as Error).message, color: 'error' }))
+  // The question's line in the chat is the question's own id.
+  quick.send({ id: member.sessionId, kind: member.kind ?? 'server' }, o.input, { token: token.value, server: server.value, question: m.id }).catch((e: unknown) => toast.add(replyFailure(e, member.name)))
 }
 function chatSendToAgent(ref: string) {
   if (!chat.sendToAgent(ref, viaChatSend)) toast.add({ title: 'Not connected', color: 'warning' })
@@ -210,10 +212,17 @@ function chatSendToAgent(ref: string) {
 function chatRetry(nonce: string) {
   chat.retry(nonce, viaChat)
 }
-/** A question's choice from the session's chat: its keys into the session. */
+/** A question's choice from the session's chat: its keys into the session, naming the question (its line is the question's id). */
 function chatAnswer(m: ChatMessage, index: number) {
   const o = m.options?.[index]
-  if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', color: 'warning' })
+  if (o) answerQuestion({ question: m.id, input: o.input })
+}
+/** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
+const replied = repliedQuestions()
+function answerQuestion(reply: QuestionReply) {
+  if (!terminal.value) return toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
+  const t = terminal.value
+  replied.once(reply.question, () => t.answer(reply)).catch((e: unknown) => toast.add(replyFailure(e)))
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return
@@ -311,13 +320,13 @@ function backToCrew() {
   fetchInfo()
 }
 
-function reply(text: string) {
-  if (!terminal.value?.submit(text)) toast.add({ title: 'Not connected', color: 'warning' })
+function reply(text: string, question?: string) {
+  answerQuestion({ question, text })
 }
 
-function option(index: number) {
+function option(index: number, question?: string) {
   const o = attention.value.options?.[index]
-  if (o && !terminal.value?.sendInput(o.input)) toast.add({ title: 'Not connected', color: 'warning' })
+  if (o) answerQuestion({ question, input: o.input })
 }
 
 function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {

@@ -731,11 +731,13 @@ func (a *agent) retryAttention() {
 	}()
 }
 
-// sameAttention says whether x and y tell the server the same.
+// sameAttention says whether x and y tell the server the same: a question
+// asked again with the same words is another question (its ID), which the
+// server's listings must name for an answer from them to reach it.
 func sameAttention(x, y session.Attention) bool {
 	// The source too: a switchyard is told no words, and a held turn
 	// (source submit) differs from a bell's wait by its source alone there.
-	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options)
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID
 }
 
 // toServer is an attention change as the server is told it: in full to the
@@ -751,7 +753,7 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 
 // hostAttentionMsg encodes an attention change for the control connection.
 func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind}
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}
@@ -1176,15 +1178,18 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
 		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
-		if a.local.Held() {
-			// The session's turn is held for a typed text, which is what it
-			// shows (session.HeldWords), the change only recorded: the
-			// server, which shows the change it sent, is told so.
-			a.mu.Lock()
-			a.attentionUntold = true
-			a.mu.Unlock()
-			a.noteChange(a.local.Info())
-		}
+		// The server's listing took this report without an id (the id is
+		// the session's, given as it applies it), and one the session
+		// takes as changing nothing (the same as it shows), or records and
+		// does not show (its turn held for a typed text: it shows
+		// session.HeldWords), makes no change to tell: the host tells its
+		// attention, with its id, all the same, in its turn among its
+		// changes, so that the server never holds an id or a change the
+		// session does not show, or none.
+		a.mu.Lock()
+		a.attentionUntold = true
+		a.mu.Unlock()
+		a.noteChange(a.local.Info())
 	case proto.HostActivity:
 		if a.opts.Switchyard {
 			return nil // see Options.Switchyard

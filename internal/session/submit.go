@@ -104,6 +104,13 @@ type Submission struct {
 	// result (Entered, or typed without its Enter) and the error that
 	// ended it, if any.
 	Finished func(SubmitResult, error)
+	// Question, when set, makes the line a reply to the question of that id
+	// (Attention.ID, as the person was shown it): it is typed only while
+	// that question is the one waiting and no write was made to answer it,
+	// looked at as the submission begins and again, together with noting
+	// the line as its answer, as the writer takes its text (its Enter, for
+	// a line with no text); ErrQuestionAnswered otherwise, nothing written.
+	Question string
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
@@ -236,9 +243,18 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	promptSince := s.info.Attention.Since
 	showing := s.info.Attention.State == AttentionNeedsInput
 	source := s.info.Attention.Source
+	var gone error
+	if sub.Question != "" {
+		gone = s.waitsLocked(sub.Question)
+	}
 	s.mu.Unlock()
 	if ended {
 		return res, ErrSessionEnded
+	}
+	// A reply to a question answered or gone (one before it in the
+	// session's turn answered it) types nothing.
+	if gone != nil {
+		return res, gone
 	}
 	if sub.UnlessWaiting && showing {
 		return res, nil
@@ -274,9 +290,14 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			data = pasteStart + text + pasteEnd
 		}
 		// Looked at again as the writer takes the text: a question come
-		// meanwhile, or a dialog drawn, holds it as one seen before does.
+		// meanwhile, or a dialog drawn, holds it as one seen before does;
+		// a reply's question is noted answered as it is written.
 		textWait := st.wait
 		textWait.guard = s.textGuard(sub)
+		textWait.before = func() {
+			keys, _, _ := s.keysWritten([]byte(data))
+			s.noteAnswering(promptSince, []byte(data), keys, nil)
+		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
 			return res, nil
@@ -432,6 +453,7 @@ func (s *Local) holdTyped() {
 	}
 	held := make(chan struct{})
 	s.held = held
+	s.heldOver = Attention{}
 	if s.heldNext != nil {
 		close(s.heldNext)
 		s.heldNext = nil
@@ -461,14 +483,35 @@ func (s *Local) holdTyped() {
 	}
 }
 
-// endHold ends the hold of the session's turn for a typed text, if one
-// stands (holdTyped): a person types into the terminal.
-func (s *Local) endHold() {
+// endHoldTyped ends the hold of the session's turn for a typed text, if
+// one stands, as a person's keys (data, read as maybe) are written: the
+// question the hold took the place of (heldOver), still waiting unless the
+// keys answer it (an Enter, one of its choices), shows again, with its id,
+// and the claim the held text made on it (answered) is let go, so that a
+// reply to it waiting for the turn (Submit, its Question) answers it.
+func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.held != nil {
-		close(s.held)
-		s.held = nil
+	if s.held == nil {
+		s.mu.Unlock()
+		return
+	}
+	close(s.held)
+	s.held = nil
+	over := s.heldOver
+	s.heldOver = Attention{}
+	cur := s.info.Attention
+	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended() && !picksChoice(over.Options, data, maybe)
+	if restore {
+		s.info.Attention = over
+		if s.answered == over.ID {
+			s.answered = ""
+		}
+		s.signalAttention()
+		s.hub.Broadcast(proto.MustControl(attentionMessage(over)))
+	}
+	s.mu.Unlock()
+	if restore {
+		s.notifyChange()
 	}
 }
 
@@ -636,12 +679,48 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	wait.guard = s.enterGuard(func(att Attention) bool {
 		return att.State == AttentionNeedsInput && att.Since != promptSince
 	})
+	if sub.Question != "" && !res.Typed {
+		// A reply that is an Enter alone: its question still waits, and is
+		// noted answered as the Enter is taken (its text did so for a line).
+		enter := wait.guard
+		wait.guard = func() error {
+			if err := s.questionWaits(sub.Question); err != nil {
+				return err
+			}
+			if err := enter(); err != nil {
+				return err
+			}
+			if err := s.stillOnScreen(sub.Question); err != nil {
+				return err
+			}
+			return s.claimQuestion(sub.Question)
+		}
+	} else if sub.Question != "" {
+		// A reply's line, its text typed: its Enter is left out once the
+		// screen shows another question in its question's place (a
+		// startup question drawn in the pause, which the question's
+		// waiting keeps from being asked).
+		enter := wait.guard
+		wait.guard = func() error {
+			if err := enter(); err != nil {
+				return err
+			}
+			if s.stillOnScreen(sub.Question) != nil {
+				return errPromptCame
+			}
+			return nil
+		}
+	}
 	// As the writer takes the Enter, never for one not written: the
-	// caller's BeforeEnter, and the turn a done ended is behind (nextTurn).
+	// caller's BeforeEnter, the prompt it answers put behind for the
+	// replies after it (noteAnswering), and the turn a done ended is behind
+	// (nextTurn).
 	wait.before = func() {
 		if sub.BeforeEnter != nil {
 			sub.BeforeEnter()
 		}
+		keys, _, _ := s.keysWritten([]byte{'\r'})
+		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil)
 		s.nextTurn()
 	}
 	enterAt := time.Now().UTC()
@@ -667,6 +746,10 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if s.trust != nil {
 		// A trust question comes before the first prompt, never after.
 		s.trust.Stop()
+		if s.asked != nil && len(s.askedQuestions) == 0 {
+			// The screen kept for the startup questions alone.
+			s.asked.Stop()
+		}
 	}
 	if sub.By != nil {
 		s.stampTyping(sub.By)
@@ -730,9 +813,17 @@ var errWaiting = errors.New("session: the session waits on a prompt")
 // for a question or a dialog come while the text waited behind another
 // write. With UnlessWaiting, any prompt (errWaiting); else a startup
 // question (ErrTrustQuestion), a question asked during the work or a
-// dialog on the screen now or Held (ErrQuestion).
+// dialog on the screen now or Held (ErrQuestion). A reply to a question
+// (Question) is refused once that question no longer waits
+// (ErrQuestionAnswered), and passing, it notes the question answered in
+// the same critical section (claimQuestion).
 func (s *Local) textGuard(sub Submission) func() error {
 	return func() error {
+		if sub.Question != "" {
+			if err := s.questionWaits(sub.Question); err != nil {
+				return err
+			}
+		}
 		dialog := s.asked != nil && (s.asked.Held() || s.asked.CheckNow())
 		s.mu.Lock()
 		att := s.info.Attention
@@ -745,6 +836,15 @@ func (s *Local) textGuard(sub Submission) func() error {
 			return ErrTrustQuestion
 		case dialog || showing && att.Source == SourceQuestion:
 			return ErrQuestion
+		}
+		if sub.Question != "" {
+			// The screen still shows the question, and no other drawn in
+			// its place (a startup question its own waiting keeps from
+			// being asked), which the line would reach.
+			if err := s.stillOnScreen(sub.Question); err != nil {
+				return err
+			}
+			return s.claimQuestion(sub.Question)
 		}
 		return nil
 	}
@@ -857,7 +957,7 @@ func (s *Local) enterAgain(ctx context.Context) bool {
 	// meanwhile is answered by it.
 	again := writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, guard: s.enterGuard(func(att Attention) bool {
 		return att.State == AttentionNeedsInput
-	})}
+	}), before: func() { s.keysWritten([]byte{'\r'}) }}
 	if _, err := s.writeProc(ctx, []byte{'\r'}, again); err != nil {
 		return false
 	}

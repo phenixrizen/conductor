@@ -380,6 +380,59 @@ func TestALinksLineNotTypedYetIsWithdrawnWhileTheServerIsNotHeardFrom(t *testing
 	}
 }
 
+// An answer of a link's viewer (answer{question, input}: a choice to a
+// question the agent asked) is typing, held to the checks a line is:
+// while the server is not heard from within the bound it is refused
+// (input_failed), nothing of it typed, and the question stays, with its
+// id, for the owner, whose answer is typed and taken (answer_ok). Once
+// the connection carries again the host hears the server, and the link's
+// answer to the next question is typed.
+func TestALinksAnswerIsRefusedWhileTheServerIsNotHeardFrom(t *testing.T) {
+	a, px, viewer := liveHost(t, 50*time.Millisecond)
+	guest := viewer("0123456789abcdef", "l1")
+	owner := viewer("fedcba9876543210", "")
+	choices := []session.Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}}
+	a.local.SetAttentionFull(session.AttentionNeedsInput, "Allow Bash?", session.SourceAPI, session.KindPermission, choices)
+	q := a.local.Info().Attention.ID
+	px.stall()
+	untilVouches(t, a, false)
+
+	guest.send(proto.Answer{T: proto.CtlAnswer, ReqID: "g1", Question: q, Input: "1"})
+	words := guest.until(func(m map[string]any) bool { return m["requestId"] == "g1" })
+	if m := words[len(words)-1]; m["t"] != proto.CtlError || m["code"] != "input_failed" {
+		t.Fatalf("the link's answer: %v", m)
+	}
+	guest.quiet(300 * time.Millisecond)
+	if att := a.local.Info().Attention; att.ID != q || att.State != session.AttentionNeedsInput {
+		t.Fatalf("the question after the refusal: %+v", att)
+	}
+
+	owner.send(proto.Answer{T: proto.CtlAnswer, ReqID: "o1", Question: q, Input: "1"})
+	if got := owner.release(); got != "1" {
+		t.Fatalf("typed %q", got)
+	}
+	words = owner.until(func(m map[string]any) bool { return m["requestId"] == "o1" })
+	if m := words[len(words)-1]; m["t"] != proto.CtlAnswerOK {
+		t.Fatalf("the owner's answer: %v", m)
+	}
+	if a.vouches() == nil {
+		t.Fatal("the server was heard from through the stalled proxy")
+	}
+
+	px.resume()
+	untilVouches(t, a, true)
+	a.local.SetAttentionFull(session.AttentionNeedsInput, "Allow curl?", session.SourceAPI, session.KindPermission, choices)
+	next := a.local.Info().Attention.ID
+	guest.send(proto.Answer{T: proto.CtlAnswer, ReqID: "g2", Question: next, Input: "3"})
+	if got := guest.release(); got != "3" {
+		t.Fatalf("typed %q", got)
+	}
+	words = guest.until(func(m map[string]any) bool { return m["requestId"] == "g2" })
+	if m := words[len(words)-1]; m["t"] != proto.CtlAnswerOK {
+		t.Fatalf("the link's next answer: %v", m)
+	}
+}
+
 // A connection that is live and quiet, the server sending nothing of its
 // own for longer than the bound (its pings are 30 s apart), is not taken
 // for gone: the host pings it, the server answers, and a link's line is

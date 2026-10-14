@@ -1,5 +1,6 @@
 import type { Ref } from 'vue'
 import type { ChatPost, ChatSend, ControlMessage, FileGetExtra, FileResponse, FileWriteOptions, NvimEvent, NvimSwapChoice, TransportKind, Welcome } from '../protocol'
+import type { QuestionReply } from '../reply'
 
 export type TransportState = 'idle' | 'connecting' | 'signaling' | 'open' | 'closed'
 
@@ -23,6 +24,12 @@ export interface TerminalTransport {
    * Enter 250 ms later, so that a TUI takes the Enter as Enter. Controllers only; at most MAX_SUBMIT bytes.
    */
   submit(text: string): void
+  /**
+   * Replies to an agent's question, naming it (the attention's `id`) to an owner whose welcome said `answer`: true once the owner
+   * took it, a ReplyError when it did not (`question_answered`: the question no longer waits, nothing was sent). To an older owner,
+   * or without a question's id, it goes as keys or a submit and settles false at once.
+   */
+  answer(reply: QuestionReply): Promise<boolean>
   /** Posts to the session's chat (every role); only once the owner's welcome said `chat`. */
   chat(post: ChatPost): void
   /** Types a kept chat message into the agent (controllers only). */
