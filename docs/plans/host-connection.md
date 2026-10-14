@@ -1,6 +1,9 @@
 # Plan: how a `conductor host` talks to its server
 
-Branch `host-connection`. Reviewed before any code (AGENTS.md, Reviews).
+Branch `host-connection`. Reviewed before any code (AGENTS.md, Reviews):
+two rounds; the second round's findings are taken into this revision,
+which is unreviewed, and the owner decides whether it is reviewed once
+more or stands.
 No code is written until #133 (branch `quick-reply-question`, which also
 changes `internal/hostagent/peer.go`) has merged; each pull request below
 starts from `main` once the one before it has merged, since they touch
@@ -15,7 +18,11 @@ the same files (`hostagent/agent.go`, `peer.go`).
    server (change 3), as a submission's text and its Enter are. The check
    is the session's (`internal/session`, shared by the server and the
    host): `input` asks `revoked(sub)` (AttachOptions.Authorize) as it
-   queues the write and again as the writer takes it (`procWrite.over`);
+   queues the write and again as the writer takes it (`procWrite.over`),
+   which never begins a write it finds refused; a write begun before the
+   going (the program not reading) lands when the program reads, as a
+   submission's text does (#172): at most one INPUT frame, or a
+   submission's text or its Enter, per viewer, and nothing after it;
    `FileWrite` asks it at each part, and `saveFile` once more immediately
    before the rename that is the save's commit, after the path checks,
    the hash and the temporary file: a refusal there removes the temporary
@@ -40,10 +47,14 @@ the same files (`hostagent/agent.go`, `peer.go`).
    it, two rules keep a closed viewer from reaching the host after its
    close: the server closes a link's viewers before it queues the link's
    `link_gone` (`closeLink`, the other order today), and the writer drops
-   a message of a viewer that is closed as it takes it (`Outbound` names
-   its viewer); a join counts as sent once written, and a leave follows a
-   written join only. A viewer whose join was dropped is never known to
-   the host, older or newer. The host keeps no record of links gone: the
+   a message of a viewer closed for its link (its close's reason revoked
+   or expired; `Outbound` names its viewer) as it takes it; a join counts
+   as sent once written, and a leave follows a written join only. A
+   viewer that left for any other reason (a quick reply's, which closes
+   150 ms after it sent) has what was admitted before its leave written
+   first, as now (`TestAViewersLastFramesReachTheHostBeforeItsLeave`
+   stands). A viewer whose join was dropped is never known to the host,
+   older or newer. The host keeps no record of links gone: the
    server's push-out of its oldest joined link names one gone that still
    opens the session, and a viewer joining through it later starts
    afresh, as now. No message or field changes; docs/protocol.md states
@@ -51,10 +62,18 @@ the same files (`hostagent/agent.go`, `peer.go`).
 3. **The host vouches for the server by its own answered ping.** A line,
    a key or a save of a link's viewer passes only while a ping the host
    sent within the last 15 s has been answered (`c.Ping` returns on the
-   pong): the host pings every 5 s while a link is held, quiet or not,
-   each waiting 15 s, side by side. Nothing else vouches: not a relayed
-   frame, not the server's own ping, not bytes read, which keep only the
-   two-minute give-up. A pong follows everything the server wrote before
+   pong): the host pings at once when a viewer joins through a link
+   (`addPeer`, before its hello can arrive) and every 5 s while a link is
+   held, quiet or not, each waiting 15 s, side by side. Nothing else
+   vouches: not a relayed frame, not the server's own ping, not bytes
+   read, which keep only the two-minute give-up. The credential and the
+   freshness part: a viewer's attach (`AttachWith`'s call of
+   `AttachOptions.Authorize`) needs the credential alone, so the first
+   viewer after a start, a reconnect or an idle spell attaches before any
+   pong; the freshness is asked at writes (`AttachOptions.Fresh`, asked
+   by `revoked` with the credential), and a write that finds no answered
+   ping yet waits for the one under way within its own time rather than
+   being refused at once. A pong follows everything the server wrote before
    it, so what the host read before the answer is at most as old as the
    ping; with the lanes, a going queued before the answer was written but
    not yet written follows it behind at most one relayed message and the
@@ -149,12 +168,22 @@ fourth.)
   whatever the path still holds, and the going is read behind that
   answer after at most one relayed message and the lane.
 - O7 E13: E1 lands while a viewer's join, `relay_start`, hello or frames
-  wait in the viewers' share. The viewer is closed before `link_gone` is
-  queued, so the writer drops each of them as it takes it; the host,
-  older or newer, never knows the viewer, and `linkCreds.gone` forgetting
-  the id mints no credential for it. A join written before the close is
-  followed by its frames taken before the close, then the going; what
-  was queued and not yet taken is dropped.
+  wait in the viewers' share. The viewer is closed for its link before
+  `link_gone` is queued, so the writer drops each of them as it takes
+  it; the host, older or newer, never knows the viewer, and
+  `linkCreds.gone` forgetting the id mints no credential for it. A join
+  written before the close is followed by its frames taken before the
+  close, then the going; what was queued and not yet taken is dropped.
+  E9 instead (the viewer left, its link standing): its admitted frames
+  go, then its leave; a quick reply's submit queued under a congested
+  writer reaches the host.
+- O7b a viewer joins through a link after a start, a reconnect or an idle
+  spell longer than the bound: the host pings at the join; the hello
+  attaches on the credential alone; its first line or key waits for that
+  ping's answer within its own time, and passes on it.
+- O7c a write begun before E1 while the program is not reading (a key, a
+  submission's text, its Enter): it lands when the program reads; the
+  writes queued behind it are refused at their turn, never begun.
 - O8 E1 while the host's read loop is in a save (E7) or an answer (E8):
   neither is on the loop any more; `link_gone` is read as it arrives, the
   save's remaining parts then refused.
@@ -195,9 +224,13 @@ fourth.)
 ## Invariants
 
 - I1 Nothing a link's viewer sends (a submission's text and its Enter, a
-  keystroke, a save) is written to the session or its folder once the
-  link went (`link_gone`, a `viewer_leave` with a reason, the connection
-  lost) or the host's last answered ping is older than the bound.
+  keystroke, a save) is begun on the session or committed to its folder
+  once the link went (`link_gone`, a `viewer_leave` with a reason, the
+  connection lost) or the host's last answered ping is older than the
+  bound. The one exception is a write the program had been handed
+  before the going and has not read: it lands when the program reads,
+  as a submission's text does today; a save has no such exception, its
+  commit being the rename.
 - I2 The check is asked at the write, not only on arrival: what waited in
   a queue across the going is refused at its turn, and a save's commit
   (the rename) asks last, after its slow work.
@@ -206,13 +239,16 @@ fourth.)
 - I4 A message of the server's own waits behind at most the one message
   being written when it was queued, never behind the viewers' queue; the
   lane holds at most 1 MiB and 512 messages.
-- I5 Nothing of a viewer's reaches the host after the server closed it:
-  its queued messages are dropped as the writer takes them, and a link's
-  viewers are closed before the link's going is queued. The viewers'
-  messages keep their order among themselves.
+- I5 Nothing of a viewer's reaches the host after the server closed it
+  for its link: its queued messages are dropped as the writer takes
+  them, and a link's viewers are closed before the link's going is
+  queued. A viewer that left otherwise has its admitted messages written
+  before its leave. The viewers' messages keep their order among
+  themselves.
 - I6 The host vouches on its own answered pings alone: no line is entered
   more than 15 s after the send of the last ping that was answered, and
-  nothing read vouches past the answer that followed it.
+  nothing read vouches past the answer that followed it. An attach needs
+  no pong; a first write waits for the first answer within its own time.
 - I7 The host's read loop waits on nothing but the read: no disk, no
   viewer's transport, no turn on the writer; every handler returns at
   once or hands off to a queue bounded in count and bytes.
@@ -247,6 +283,10 @@ Go (`go test -race`), each named for what it proves:
   `TestSaveRefusedWhenCredentialGoesBeforeTheRename` (O4: the
   `afterCheckHook` seam holds the last part, the credential goes, the
   seam releases; the target unchanged, the temporary file gone),
+  `TestBegunWriteLandsAndNothingQueuedBehindItDoes` (O7c: a program that
+  stops reading, a key and an Enter blocked, the credential goes, the
+  program reads: the begun write lands, the next is refused),
+  `TestAttachNeedsNoFreshnessAndAWriteDoes` (O7b, `AttachOptions.Fresh`),
   `TestInputAndFileWriteNeedNoCredentialWithoutALink` (O13).
 - `internal/hostagent`: `TestLinkKeysRefusedAfterLinkGone`,
   `TestLinkSaveRefusedAfterLinkGone` (O1, both transports),
@@ -255,7 +295,10 @@ Go (`go test -race`), each named for what it proves:
   `TestLinkLinePassesAgainOnAnAnsweredPing` (O5, `liveWithin` short),
   `TestBufferedFramesAndServerPingsDoNotVouch` (I6: relayed frames and
   the server's pings trickle in past the bound, no pong; the line is
-  withheld), `TestOwnerWindowAndPasteViewerKeysNeedNoVouch` (O13),
+  withheld), `TestFirstLinkViewerAttachesBeforeAnyPong` and
+  `TestFirstLineWaitsForTheFirstPong` (O7b: after a start, a reconnect
+  and an idle spell past the bound; the ping goes at the join),
+  `TestOwnerWindowAndPasteViewerKeysNeedNoVouch` (O13),
   `TestKeysOfAViewerThatLeftAreDropped` (O11, O12);
   `TestRelayedSaveRunsOffTheReadLoop` (O8: a folder whose write blocks
   through a seam while another viewer's keys and a `link_gone` are read
@@ -274,6 +317,9 @@ Go (`go test -race`), each named for what it proves:
   `TestAClosedViewersQueuedMessagesAreDropped` (O7, I5: a join, a
   `relay_start`, a hello and frames queued, then the revoke; the writer
   takes none; no leave for the unwritten join),
+  `TestALeavingViewersAdmittedMessagesStillGo` and
+  `TestQuickReplyReachesTheHostUnderACongestedWriter` (O7's E9 half, I5;
+  the api's `TestAViewersLastFramesReachTheHostBeforeItsLeave` kept),
   `TestReasonedLeaveInTheServerLane` (O10),
   `TestViewersMessagesKeepTheirOrder` (I5),
   `TestServerLaneFullClosesTheConnection` (I4).
