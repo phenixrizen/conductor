@@ -1093,7 +1093,8 @@ func TestARefusalComesBeforeTheWordThatItsKeysAreDone(t *testing.T) {
 }
 
 func TestARefusedInputNamesItsEditorAndItsKeys(t *testing.T) {
-	f, err := proto.Decode(NvimInputRefused("e1", 7, ErrTooManyRequests))
+	id := newNvimID()
+	f, err := proto.Decode(NvimInputRefused(id, 7, ErrTooManyRequests))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1101,15 +1102,38 @@ func TestARefusedInputNamesItsEditorAndItsKeys(t *testing.T) {
 	if err := json.Unmarshal(f.Payload, &ev); err != nil {
 		t.Fatal(err)
 	}
-	if ev.Kind != proto.NvimError || ev.ID != "e1" || ev.Ack != 7 || ev.Code != proto.ErrCodeTooManyRequests {
+	if ev.Kind != proto.NvimError || ev.ID != id || ev.Ack != 7 || ev.Code != proto.ErrCodeTooManyRequests {
 		t.Fatalf("the refusal: %+v", ev)
 	}
 	// Only the end of the keys refused, Neovim's input full: the refusal says which.
-	f, _ = proto.Decode(NvimInputRefused("e1", 8, &RefusedKeys{Rest: "yz"}))
+	f, _ = proto.Decode(NvimInputRefused(id, 8, &RefusedKeys{Rest: "yz"}))
 	ev = proto.NvimEvent{}
 	_ = json.Unmarshal(f.Payload, &ev)
-	if ev.ID != "e1" || ev.Ack != 8 || ev.Text != "yz" || ev.Code != proto.ErrCodeTooManyRequests {
+	if ev.ID != id || ev.Ack != 8 || ev.Text != "yz" || ev.Code != proto.ErrCodeTooManyRequests {
 		t.Fatalf("the partial refusal: %+v", ev)
+	}
+	// An id no editor could have is not said back: the refusal names none, and stays within a control frame's bound whatever the
+	// request carried, the end of its keys at their longest besides.
+	for _, other := range []string{"e1", strings.ToUpper(id), id + "0", strings.Repeat("a", proto.MaxControl)} {
+		rest := strings.Repeat("\x01", proto.MaxNvimKeys)
+		f, err := proto.Decode(NvimInputRefused(other, 9, &RefusedKeys{Rest: rest}))
+		if err != nil {
+			t.Fatalf("an id of %d bytes: %v", len(other), err)
+		}
+		ev = proto.NvimEvent{}
+		_ = json.Unmarshal(f.Payload, &ev)
+		if ev.ID != "" || ev.Ack != 9 || ev.Text != rest {
+			t.Fatalf("an id of %d bytes: %+v", len(other), ev)
+		}
+	}
+	// Keys for such an id reach no editor.
+	s, _ := newLocal(t, t.TempDir())
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "owner", Owner: true}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NvimInput(sub, proto.NvimInput{T: proto.CtlNvimInput, ID: strings.Repeat("a", proto.MaxControl), Keys: "x"}); err != ErrFileDenied && err != ErrNvimUnavailable {
+		t.Fatalf("keys for an id no editor could have: %v", err)
 	}
 	// A refused open still carries its request's id alone.
 	f, _ = proto.Decode(NvimRefused("r1", ErrNvimUnavailable))

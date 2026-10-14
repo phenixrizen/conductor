@@ -319,6 +319,9 @@ func (s *Local) NvimInput(sub *Subscription, req proto.NvimInput) error {
 	if !s.nvimAllowed(sub) {
 		return ErrNvimUnavailable
 	}
+	if !validNvimID(req.ID) {
+		return ErrFileDenied
+	}
 	sub.nvimMu.Lock()
 	e := sub.nvims[req.ID]
 	var ed *nvim.Editor
@@ -506,6 +509,24 @@ func newNvimID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// nvimIDLen is the length of an editor's id (newNvimID).
+const nvimIDLen = 16
+
+// validNvimID reports whether id is one newNvimID could have made: what a
+// request names is said back only then, so an answer stays within its
+// bounds whatever the request carried.
+func validNvimID(id string) bool {
+	if len(id) != nvimIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // truncateRunes cuts s to at most n bytes on a rune boundary.
 func truncateRunes(s string, n int) string {
 	if len(s) <= n {
@@ -522,6 +543,10 @@ func truncateRunes(s string, n int) string {
 // the editor's id and the keys' seq as its ack, so the page knows which.
 func NvimInputRefused(id string, seq uint32, err error) []byte {
 	ev := refusal(err)
+	// Only an id an editor could have: any other names none, and is not said back.
+	if !validNvimID(id) {
+		id = ""
+	}
 	ev.ID, ev.Ack = id, seq
 	// Only the end of them, when Neovim took the rest: its Text.
 	var some *RefusedKeys

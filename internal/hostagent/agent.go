@@ -1440,6 +1440,12 @@ func (a *agent) relayTurn() time.Duration {
 // sendRelayWithin is sendRelay with the frame's turn to come within turn:
 // session.ErrSlowConsumer at once when turn is not above zero.
 func (a *agent) sendRelayWithin(viewerID string, frame []byte, gone <-chan struct{}, turn time.Duration) error {
+	// A frame the server would not relay (past its type's bound) would cost
+	// the connection, every viewer's: it is this viewer's error alone, and
+	// never written.
+	if _, err := proto.Decode(frame); err != nil {
+		return err
+	}
 	if turn <= 0 {
 		return session.ErrSlowConsumer
 	}

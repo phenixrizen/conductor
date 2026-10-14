@@ -579,6 +579,36 @@ func readFiles(ctx context.Context, v *wsClient, path string, inflight int, file
 	}
 }
 
+// A relayed viewer's request for an editor it was not offered, naming an
+// editor id as long as a control message allows, is refused naming no
+// editor: the refusal fits a control frame, and the host's connection stays,
+// the viewer and the others served after it.
+func TestARefusedEditorRequestKeepsTheHostConnected(t *testing.T) {
+	logs := &logBuffer{}
+	yard := newTestEnvLogging(t, func(c *config.Config) {
+		c.Switchyard.Enabled = true
+		c.Switchyard.OpenHosts = true
+	}, slog.New(slog.NewTextHandler(logs, nil)))
+	local := newTestEnv(t, nil)
+	viewers := relayedViewersVia(t, yard, hostsDoor(t, yard), local, "", 2)
+	guest, other := viewers[0], viewers[1]
+	keys := proto.MustControl(proto.NvimInput{T: proto.CtlNvimInput, ID: strings.Repeat("a", proto.MaxControl-100), Keys: "x", Seq: 7})
+	if len(keys)-1 > proto.MaxControl {
+		t.Fatalf("the request is %d bytes", len(keys)-1)
+	}
+	guest.send(keys)
+	ev := guest.expectNvim(proto.NvimError)
+	if ev["ack"] != float64(7) || ev["id"] != nil || ev["code"] != proto.ErrCodeNvimUnavailable {
+		t.Fatalf("the refusal: %v", ev)
+	}
+	guest.send(proto.Encode(proto.TypeInput, []byte("still here\n")))
+	other.expectOutput("still here")
+	guest.expectOutput("still here")
+	if n := strings.Count(logs.String(), "host disconnected"); n != 0 {
+		t.Fatalf("the host's connection closed %d times", n)
+	}
+}
+
 // A Conductor publishes a session to a switchyard as an open host, under the
 // switchyard's default bound on what open hosts relay, past its burst. Six
 // relayed viewers read a large file over and over, one read at a time each
