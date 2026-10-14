@@ -169,6 +169,88 @@ func idsOf(c Catalog) string {
 	return strings.Join(ids, ",")
 }
 
+// A signal's workingTitle, with any kind, is RE2 of at most 200 bytes that
+// does not match an empty title: a title cut at the session's capture, or
+// one a program writes to clear its own, is empty.
+func TestWorkingTitleValidation(t *testing.T) {
+	for _, kind := range []string{SignalHook, SignalBell, SignalNone} {
+		a := Agent{ID: "x", Name: "X", Command: []string{"x"}, Signal: &Signal{Kind: kind, WorkingTitle: CodexWorkingTitle}}
+		if err := validate(a); err != nil {
+			t.Fatalf("kind %s with Codex's working title: %v", kind, err)
+		}
+	}
+	a := Agent{ID: "x", Name: "X", Command: []string{"x"}, Signal: &Signal{Kind: SignalPattern, Pattern: `^> $`, WorkingTitle: `^Busy$`}}
+	if err := validate(a); err != nil {
+		t.Fatalf("a pattern signal with a working title: %v", err)
+	}
+	if _, err := CompileWorkingTitle(strings.Repeat("a", 200)); err != nil {
+		t.Fatalf("a working title of 200 bytes was rejected: %v", err)
+	}
+	for _, p := range []string{"(", strings.Repeat("a", 201), `.*`, `^$`, `x*`, `(?:)`, `^\s*$`, `^|Working`} {
+		a := Agent{ID: "x", Name: "X", Command: []string{"x"}, Signal: &Signal{Kind: SignalHook, WorkingTitle: p}}
+		err := validate(a)
+		if err == nil || !strings.Contains(err.Error(), "workingTitle") {
+			t.Fatalf("working title %.20q: %v", p, err)
+		}
+	}
+	if _, err := CompileWorkingTitle(`^$`); err == nil || !strings.Contains(err.Error(), "empty title") {
+		t.Fatalf("a working title matching an empty title: %v", err)
+	}
+}
+
+// Codex's working title matches its title through a turn, with the items
+// Conductor's launch asks for (a frame of its spinner and the run state;
+// the word alone with animations off), and none of its others: Starting
+// while its MCP servers start, Ready at rest, Action Required and its blink,
+// nor another program's.
+func TestCodexWorkingTitleMatchesItsWorkingForms(t *testing.T) {
+	re, err := CompileWorkingTitle(CodexWorkingTitle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var working []string
+	for _, frame := range []string{"⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠋"} {
+		for _, state := range []string{"Working", "Thinking", "Waiting"} {
+			working = append(working, frame+" "+state)
+		}
+	}
+	working = append(working, "Working", "Thinking", "Waiting")
+	for _, title := range working {
+		if !re.MatchString(title) {
+			t.Errorf("%q does not match", title)
+		}
+	}
+	for _, title := range []string{"", "Ready", "⠸ Starting", "Starting", "[ ! ] Action Required", "[ . ] Action Required",
+		"[ ! ] Action Required | Working", "⠋ conductor", "codex | Working", "Working on it", "vim - Working", "working"} {
+		if re.MatchString(title) {
+			t.Errorf("%q matches", title)
+		}
+	}
+}
+
+// A saved agent whose signal leaves the working title out (the Agents page
+// has no control for it; a version before it saved none) keeps the one of
+// the agent it replaces; one that names its own keeps it.
+func TestOverlayInheritsTheWorkingTitle(t *testing.T) {
+	c := Default()
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "codex", Name: "Codex", Command: []string{"codex", "--model", "o3"}, Signal: &Signal{Kind: SignalHook}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := c.Get("codex"); a.Signal == nil || a.Signal.Kind != SignalHook || a.Signal.WorkingTitle != CodexWorkingTitle {
+		t.Fatalf("saved codex signal %+v", a.Signal)
+	}
+	c = Default()
+	if err := c.ApplyOverlay(Overlay{Agents: []Agent{{ID: "codex", Name: "Codex", Command: []string{"codex"}, Signal: &Signal{Kind: SignalBell, WorkingTitle: `^Busy$`}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := c.Get("codex"); a.Signal.Kind != SignalBell || a.Signal.WorkingTitle != `^Busy$` {
+		t.Fatalf("saved codex signal %+v", a.Signal)
+	}
+	if b, _ := Default().Get("codex"); b.Signal.WorkingTitle != CodexWorkingTitle {
+		t.Fatalf("the built-in changed: %+v", b.Signal)
+	}
+}
+
 func TestSignalKinds(t *testing.T) {
 	base := Agent{ID: "x", Name: "X", Command: []string{"x"}}
 	valid := []Signal{
@@ -1255,8 +1337,8 @@ func TestCodexCommandApproval(t *testing.T) {
 }
 
 // The e2e suite's Codex (web/e2e/conductor.e2e.json, the stub with Codex's
-// recipes) carries the built-in entry's questions, so that what the specs
-// check is what ships.
+// recipes) carries the built-in entry's questions and its working title, so
+// that what the specs check is what ships.
 func TestTheE2ECodexCarriesTheBuiltInQuestions(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "e2e", "conductor.e2e.json"))
 	if err != nil {
@@ -1277,6 +1359,9 @@ func TestTheE2ECodexCarriesTheBuiltInQuestions(t *testing.T) {
 		}
 		if !reflect.DeepEqual(a.Questions, builtIn.Questions) {
 			t.Fatalf("the e2e Codex's questions differ from the built-in's:\n%+v\n%+v", a.Questions, builtIn.Questions)
+		}
+		if a.Signal == nil || *a.Signal != *builtIn.Signal {
+			t.Fatalf("the e2e Codex's signal %+v differs from the built-in's %+v", a.Signal, builtIn.Signal)
 		}
 		return
 	}

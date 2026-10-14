@@ -103,6 +103,17 @@ describe('signalOut', () => {
     expect(signalOut('pattern', '^> $', { kind: 'hook', toolEvents: true })).toEqual({ kind: 'pattern', pattern: '^> $', toolEvents: true })
     expect(signalOut('none', '', { kind: 'hook', toolEvents: true })).toEqual({ kind: 'none', toolEvents: true })
   })
+  it("keeps Codex's working title, which the form has no control for, whatever the kind saved", () => {
+    const codex = { kind: 'hook' as const, workingTitle: '^(?:\\S+\\s+)?(?:Working|Thinking|Waiting)$' }
+    for (const kind of ['hook', 'bell', 'none'] as const) {
+      expect(signalOut(kind, '', codex)).toStrictEqual({ kind, toolEvents: undefined, workingTitle: codex.workingTitle })
+    }
+    expect(signalOut('pattern', '^> $', codex)).toStrictEqual({ kind: 'pattern', pattern: '^> $', toolEvents: undefined, workingTitle: codex.workingTitle })
+    // The Codex agent edited on the Agents page (an env var added) saves its working title back.
+    const agent: AgentInfo = { id: 'codex', name: 'Codex CLI', command: ['codex'], allowArgs: true, adapter: 'codex', signal: codex }
+    expect(agentPayload(formFromAgent(agent, counter()), agent).signal).toStrictEqual({ kind: 'hook', toolEvents: undefined, workingTitle: codex.workingTitle })
+    expect(signalOut('hook', '', { kind: 'hook' })).toStrictEqual({ kind: 'hook', toolEvents: undefined, workingTitle: undefined })
+  })
 })
 
 describe('AGENT_ID_PATTERN and slugId', () => {

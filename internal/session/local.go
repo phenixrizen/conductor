@@ -110,6 +110,24 @@ type Options struct {
 	// screen (Screen), by a watcher of its own, with source "question"
 	// (fireAsked, missAsked).
 	Questions []StartupQuestion
+	// WorkingTitle, when set, matches the window title (OSC 0 or 2) the
+	// agent writes while it works (the catalog's signal.workingTitle:
+	// Codex's "⠋ Working", with the title Conductor's launch asks it for).
+	// The session keeps whether the last title it read matches
+	// (readTitle), and a title that matches shows working (source
+	// "title"), as the agent's working report would: over a bell, an OSC
+	// notification, the agent's report, the screen pattern, the empty state
+	// or the done of a turn an Enter has followed; never over a question
+	// the session holds (a startup question, a dialog on the screen), a
+	// held turn, the done of the turn just ended, nor a wait younger than
+	// TitleSettle. A wait raised while the title says the agent works, or
+	// met by such a title before its TitleSettle has passed, gives way to
+	// working once it has, unless a title that does not match came between
+	// (settled). Titles are not weighed without it.
+	WorkingTitle *regexp.Regexp
+	// TitleSettle is how long a wait stands before a title that says the
+	// agent works takes its place; TitleSettle when zero.
+	TitleSettle time.Duration
 	// SubmitPause is the pause between a submission's text and its Enter;
 	// SubmitPause when zero.
 	SubmitPause time.Duration
@@ -143,6 +161,13 @@ const patternQuiet = 500 * time.Millisecond
 // bellPace is the least time between two changes the bell or OSC
 // notifications make (bellPaced): a burst of bells makes one.
 const bellPace = 500 * time.Millisecond
+
+// TitleSettle is how long a wait (a bell, an OSC notification, the agent's
+// report) stands before a window title that says the agent works takes its
+// place (Options.WorkingTitle): long enough for Codex to draw what it rang
+// the bell for (an approval, whose title then says Action Required), short
+// enough that a question Codex goes on from does not hold the session.
+const TitleSettle = time.Second
 
 // Local owns a PTY process and serves attached clients. It is used by the
 // server for server-hosted sessions and by `conductor host` for hosted ones.
@@ -260,6 +285,19 @@ type Local struct {
 	// attention (bellPaced); zero once a new turn has begun (beginTurn).
 	// Guarded by mu.
 	lastBell time.Time
+	// titleWorking says the last window title read matched
+	// Options.WorkingTitle (readTitle). settleID is the id of the wait
+	// shown last that a title may settle (needs_input, but no question the
+	// session holds and no held turn; empty while none shows), settleAt the
+	// time (monotonic) its TitleSettle ends, and settleTimer the timer that
+	// gives it way to working then (settled), armed while the title says
+	// the agent works, nil otherwise; settleGen tells a timer from the one
+	// before. Kept only with Options.WorkingTitle. Guarded by mu.
+	titleWorking bool
+	settleID     string
+	settleAt     time.Time
+	settleTimer  *time.Timer
+	settleGen    uint64
 	// turnEnded says a done was reported and neither an Enter has been
 	// written since (Input, Submit) nor another state shown: the turn it
 	// ended is still the last one, and a bell or OSC notification now is
@@ -276,7 +314,12 @@ type Local struct {
 	// beforeScan, a test's hook, runs with each chunk read between the
 	// read (and the turn taken with it) and everything the pump does with
 	// it.
-	beforeScan     atomic.Pointer[func(chunk []byte)]
+	beforeScan atomic.Pointer[func(chunk []byte)]
+	// beforeSettle, a test's hook, runs as the settle timer fires, before
+	// it looks at anything (settled); afterTitle between readTitle's look
+	// at a title that matches and its change.
+	beforeSettle   atomic.Pointer[func()]
+	afterTitle     atomic.Pointer[func()]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -338,6 +381,9 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 	}
 	if opts.InputWait <= 0 {
 		opts.InputWait = InputWait
+	}
+	if opts.TitleSettle <= 0 {
+		opts.TitleSettle = TitleSettle
 	}
 	if info.Status == "" {
 		info.Status = StatusRunning
@@ -493,6 +539,7 @@ func (s *Local) markEnded(status Status) {
 		s.info.Attention = Attention{}
 		s.signalAttention()
 	}
+	s.settleLocked(s.info.Attention)
 	now := time.Now().UTC()
 	s.info.EndedAt = &now
 	var exitCode *int
@@ -628,8 +675,9 @@ func (s *Local) notifyChange() {
 // does one read during the ended turn (turn, the count of turns begun as
 // the chunk was read; for a notification begun in an earlier chunk, that
 // chunk's) and looked at once the next has begun: a done and an Enter that
-// come between the read and the look leave it the last turn's. Only the
-// pump calls it.
+// come between the read and the look leave it the last turn's. A window
+// title is weighed only with Options.WorkingTitle (readTitle), with the
+// same turn. Only the pump calls it.
 func (s *Local) scanOutput(chunk []byte, turn uint64) {
 	begun := s.scanBegun
 	events := s.scanner.Scan(chunk)
@@ -638,16 +686,128 @@ func (s *Local) scanOutput(chunk []byte, turn uint64) {
 		s.scanBegun = turn
 	}
 	for i, ev := range events {
-		msg, rule := ev.Message, unlessChoices
-		if msg == "" {
-			msg, rule = "terminal bell", unlessWaiting
-		}
 		read := turn
 		if i == 0 && s.scanner.Carried() {
 			read = begun
 		}
+		if ev.Source == SourceTitle {
+			if s.opts.WorkingTitle != nil {
+				s.readTitle(ev.Message, read)
+			}
+			continue
+		}
+		msg, rule := ev.Message, unlessChoices
+		if msg == "" {
+			msg, rule = "terminal bell", unlessWaiting
+		}
 		s.setAttentionRead(AttentionNeedsInput, msg, ev.Source, "", nil, rule|unlessTurnEnded|bellPaced, read)
 	}
+}
+
+// titleRules are how a window title that says the agent works is applied
+// (readTitle, settled): as the agent's working report would be, but over
+// nothing the screen or the session holds, not over the done of the turn
+// just ended, not over a wait younger than its TitleSettle, and as no
+// change while the session shows working already or has ended. It spends
+// no token and stamps no bell's pace: it is the session's own observation,
+// recorded only when it changes the state.
+const titleRules = unlessTurnEnded | unlessHeld | unlessOnScreen | unlessFresh | unlessWorking | unlessEnded
+
+// readTitle weighs a window title read in turn (Options.WorkingTitle). One
+// that does not match ("[ ! ] Action Required", "Ready", "Starting", a cut
+// one) says the agent shows something for a person, or is at rest: it
+// changes nothing, and the wait showing stands (the settle timer is
+// disarmed). One that matches shows working (titleRules); a wait younger
+// than its TitleSettle is left to the settle timer, armed for what is left
+// of it: the title is written only when its text changes, once per state
+// with animations off, so a later title may never come.
+//
+// A title that matches read during the ended turn and looked at once the
+// next has begun (turn) is that turn's own: it changes nothing, not even
+// what the last title says, so that it arms no timer for the next turn's
+// wait. One that does not match is weighed whenever it was read: it can
+// only keep a wait standing.
+func (s *Local) readTitle(title string, turn uint64) {
+	working := s.opts.WorkingTitle.MatchString(title)
+	s.mu.Lock()
+	if working && turn != anyTurn && turn != s.turn.Load() {
+		s.mu.Unlock()
+		return
+	}
+	s.titleWorking = working
+	if !working {
+		s.disarmSettleLocked()
+		s.mu.Unlock()
+		return
+	}
+	if cur := s.info.Attention; cur.State == AttentionNeedsInput && cur.ID != "" && cur.ID == s.settleID && time.Now().Before(s.settleAt) {
+		s.armSettleLocked()
+	}
+	s.mu.Unlock()
+	if hook := s.afterTitle.Load(); hook != nil {
+		(*hook)()
+	}
+	s.setAttentionRead(AttentionWorking, "", SourceTitle, "", nil, titleRules, turn)
+}
+
+// settleLocked follows the attention now showing, att, for the settle
+// timer: a wait a title may settle (needs_input, but no question the
+// session holds and no held turn) begins its TitleSettle, and the timer is
+// armed for it while the last title says the agent works; anything else
+// ends the last one's. Only with Options.WorkingTitle. The caller holds
+// s.mu, and calls it wherever the attention shown changes.
+func (s *Local) settleLocked(att Attention) {
+	if s.opts.WorkingTitle == nil {
+		return
+	}
+	if att.State == AttentionNeedsInput && att.ID != "" && att.ID == s.settleID {
+		return // the same wait, still showing
+	}
+	s.disarmSettleLocked()
+	s.settleID = ""
+	if att.State != AttentionNeedsInput || att.ID == "" || att.Source == SourceSubmit || heldSource(att.Source) {
+		return
+	}
+	s.settleID, s.settleAt = att.ID, time.Now().Add(s.opts.TitleSettle)
+	if s.titleWorking {
+		s.armSettleLocked()
+	}
+}
+
+// armSettleLocked arms the settle timer for the wait settleID names, to
+// fire as its TitleSettle ends (settleAt), unless it is armed already. The
+// caller holds s.mu.
+func (s *Local) armSettleLocked() {
+	if s.settleTimer != nil || s.settleID == "" {
+		return
+	}
+	s.settleGen++
+	gen := s.settleGen
+	s.settleTimer = time.AfterFunc(time.Until(s.settleAt), func() { s.settled(gen) })
+}
+
+// disarmSettleLocked stops the settle timer: a timer that has fired
+// already finds itself disarmed (settled). The caller holds s.mu.
+func (s *Local) disarmSettleLocked() {
+	if s.settleTimer != nil {
+		s.settleTimer.Stop()
+		s.settleTimer = nil
+	}
+}
+
+// settled is the settle timer's fire, gen the timer's: the wait it was
+// armed for, if it still shows, the timer still armed for it and the last
+// title still says the agent works (no title that does not match came
+// since, which disarms it), gives way to working, with the title's rules
+// (titleRules): a done, a question on the screen, a held turn or another
+// wait that came meanwhile stays. All of that is weighed under the lock
+// that applies the change (onlySettling): a title read between the fire
+// and the change counts.
+func (s *Local) settled(gen uint64) {
+	if hook := s.beforeSettle.Load(); hook != nil {
+		(*hook)()
+	}
+	s.setAttentionLooked(AttentionWorking, "", SourceTitle, "", nil, titleRules|onlySettling, anyTurn, gen)
 }
 
 // firePattern is the pattern watcher's fire: the last line matched after the
@@ -1081,6 +1241,29 @@ const (
 	// sets the change, so an answer that comes between the look and the
 	// set is not overtaken.
 	startupLook
+	// unlessHeld changes nothing, shown or recorded, while the session's
+	// turn is held for a typed text (held): the hold records every change
+	// it hides as an entry, and a title comes ten times a second.
+	unlessHeld
+	// unlessOnScreen changes nothing while the session shows a question it
+	// holds (heldSource: a startup question, a dialog on the screen): the
+	// screen decides those.
+	unlessOnScreen
+	// unlessFresh changes nothing while the wait showing is one a title may
+	// settle whose Options.TitleSettle has not passed (settleID, settleAt):
+	// the settle timer decides it. A frame drawn between an approval's bell
+	// and its dialog does not clear the bell.
+	unlessFresh
+	// unlessWorking changes nothing while the session shows working,
+	// whatever reported it.
+	unlessWorking
+	// unlessEnded changes nothing once the session has ended.
+	unlessEnded
+	// onlySettling (the settle timer, settled) changes nothing unless the
+	// timer of generation look (settleGen) is still armed, for the wait
+	// the session still shows (settleID), and the last title read still
+	// says the agent works (titleWorking).
+	onlySettling
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -1107,7 +1290,8 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 
 // setAttentionLooked is setAttentionRead for a change a look of the startup
 // questions' watcher found (startupLook): look is the Feeds that look's text
-// had seen (PatternWatcher.LookedAt).
+// had seen (PatternWatcher.LookedAt); for the settle timer's change
+// (onlySettling), the timer's generation.
 func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64) error {
 	if !state.Valid() {
 		return nil
@@ -1164,6 +1348,14 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
 	staleLook := rules&startupLook != 0 && s.startupAnswered && look <= s.startupAnsweredAt
+	// A window title's (titleRules), and the settle timer's.
+	held := rules&unlessHeld != 0 && s.held != nil
+	onScreen := rules&unlessOnScreen != 0 && cur.State == AttentionNeedsInput && heldSource(cur.Source)
+	fresh := rules&unlessFresh != 0 && cur.State == AttentionNeedsInput && cur.ID != "" && cur.ID == s.settleID && time.Now().Before(s.settleAt)
+	working := rules&unlessWorking != 0 && cur.State == AttentionWorking
+	ended := rules&unlessEnded != 0 && s.info.Status.Ended()
+	notSettling := rules&onlySettling != 0 && (s.settleTimer == nil || s.settleGen != look || !s.titleWorking ||
+		cur.State != AttentionNeedsInput || cur.ID == "" || cur.ID != s.settleID)
 	// A startup question answered and still shown (its write not made yet,
 	// or the session slow to clear it) waits on nothing: the next startup
 	// question takes its place.
@@ -1174,7 +1366,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// takes its place, with an id of its own, and a reply naming the one
 	// left is refused.
 	movedOn := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && state == AttentionNeedsInput && source == SourceTrust && !sameWords(words, cur.words())
-	if (rules&unlessWaiting != 0 && waiting && !answeredStartup && !movedOn) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook {
+	if (rules&unlessWaiting != 0 && waiting && !answeredStartup && !movedOn) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook ||
+		held || onScreen || fresh || working || ended || notSettling {
 		s.mu.Unlock()
 		return nil
 	}
@@ -1288,6 +1481,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 	}
 	s.info.Attention = att
+	s.settleLocked(att)
 	s.signalAttention()
 	s.hub.Broadcast(proto.MustControl(attentionMessage(att)))
 	// The agent's question goes into the chat too (design: the agents' questions in the chat);
@@ -2220,8 +2414,10 @@ func (s *Local) nextTurn() {
 // turn's: the pace starts again (bellPaced), so that its first bell asks
 // however soon it rings after one of the last turn's (Codex's can ring
 // before its done, and a crew's next prompt follows the done at once).
-// What was read before it is the last turn's (turn). An Enter with no
-// done before it in its turn (an answer, a line typed during the turn)
+// What was read before it is the last turn's (turn), the last window title
+// read included (titleWorking): it says nothing of the next turn, whose
+// waits it neither settles nor arms a timer for (readTitle). An Enter with
+// no done before it in its turn (an answer, a line typed during the turn)
 // keeps the pace: a burst's tail does not ask again. The caller holds
 // s.mu.
 func (s *Local) beginTurn() {
@@ -2231,6 +2427,8 @@ func (s *Local) beginTurn() {
 	s.turnEnded = false
 	s.lastBell = time.Time{}
 	s.turn.Add(1)
+	s.titleWorking = false
+	s.disarmSettleLocked()
 }
 
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText
@@ -3335,6 +3533,7 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 			now := time.Now().UTC()
 			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
 		}
+		s.settleLocked(s.info.Attention)
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 		answered, answeredID, told = s.answeredInChat(by, byName)

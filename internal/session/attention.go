@@ -42,6 +42,9 @@ const (
 	// written, its link no longer opening the session; the session's next
 	// submission waits for a person to type into the terminal (HeldWords).
 	SourceSubmit = "submit"
+	// SourceTitle: the agent's window title says it works (Options.WorkingTitle:
+	// Codex's "⠋ Working").
+	SourceTitle = "title"
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can
@@ -133,20 +136,25 @@ const MaxAttentionMessage = 500
 
 // Event is an attention signal found in terminal output.
 type Event struct {
-	Source  string // SourceBell or SourceOSC
-	Message string
+	Source  string // SourceBell, SourceOSC or SourceTitle
+	Message string // a title's text: "" when it was cut (Scanner)
 }
 
-// Scanner finds terminal bells and OSC notification sequences in a byte
-// stream. It keeps state across chunks so split sequences are still seen.
+// Scanner finds terminal bells, OSC notification sequences and window titles
+// in a byte stream. It keeps state across chunks so split sequences are still
+// seen.
 //
 // Recognised:
 //   - a bare BEL (0x07) outside an escape sequence          -> bell
 //   - ESC ] 9 ; text (BEL | ESC \)                          -> osc (iTerm2 style)
 //   - ESC ] 777 ; notify ; title ; body (BEL | ESC \)        -> osc (urxvt style)
+//   - ESC ] 0 ; title (BEL | ESC \), and ESC ] 2 ; title    -> title, its
+//     text with control characters dropped; a title longer than the
+//     sequence's capture (maxOSCCapture bytes with its number) is reported
+//     with no text, as no title a pattern can match (Options.WorkingTitle)
 //
-// Other OSC sequences (window title, hyperlinks, colours) are skipped; a BEL
-// that terminates one of them is not a bell.
+// Other OSC sequences (hyperlinks, colours) are skipped; a BEL that
+// terminates one of them, or a title, is not a bell.
 type Scanner struct {
 	state   scanState
 	param   []byte // OSC number and payload, bounded
@@ -254,6 +262,14 @@ func (s *Scanner) finishOSC(events []Event) []Event {
 	switch num {
 	case "9":
 		events = append(events, Event{Source: SourceOSC, Message: trimMessage(rest)})
+	case "0", "2":
+		// The window title (OSC 0 sets the icon name too). Cut at the
+		// capture, its end is unknown: no text.
+		title := ""
+		if !s.dropped {
+			title = cleanTitle(rest)
+		}
+		events = append(events, Event{Source: SourceTitle, Message: title})
 	case "777":
 		parts := strings.SplitN(rest, ";", 3)
 		if len(parts) >= 1 && parts[0] == "notify" {
@@ -268,6 +284,17 @@ func (s *Scanner) finishOSC(events []Event) []Event {
 	}
 	s.param = s.param[:0]
 	return events
+}
+
+// cleanTitle is a window title's text without control characters (C0, DEL
+// and C1), as given otherwise: what the agent wrote.
+func cleanTitle(t string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r >= 0x7f && r < 0xa0 {
+			return -1
+		}
+		return r
+	}, t)
 }
 
 func trimMessage(m string) string {

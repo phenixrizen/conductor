@@ -1051,6 +1051,68 @@ func TestCreateSessionCodexRingsOnlyForWhatWaits(t *testing.T) {
 	}
 }
 
+// A Codex session is launched with the window title Codex then writes, its
+// activity and run state, as a -c override after its command, and with the
+// catalog's working title: the title Codex writes through a turn ("⠙
+// Working", the bytes Codex 0.161 wrote) shows the session working, from
+// its title (#186). The person's ~/.codex/config.toml, which names title
+// items of its own, is byte for byte what it was. An agent whose signal has
+// no working title writing the same title shows nothing.
+func TestCreateSessionCodexWorksByItsTitle(t *testing.T) {
+	e := newTestEnv(t, nil)
+	home := t.TempDir()
+	e.srv.home = home
+	config := filepath.Join(home, ".codex", "config.toml")
+	own := []byte("model = \"o3\"\n\n[tui]\nterminal_title = [\"project-name\"]\n")
+	if err := os.MkdirAll(filepath.Dir(config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, own, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := []string{"/bin/sh", "-c", `printf 'ARGS[%s]\n' "$*"; printf '\033]0;\342\240\231 Working\007'; exec /bin/cat`, "sh"}
+	body := agentBody("codexish")
+	body["command"] = script
+	body["adapter"] = "codex"
+	body["signal"] = map[string]any{"kind": "hook", "workingTitle": catalog.CodexWorkingTitle}
+	e.save(body)
+	plain := agentBody("plain")
+	plain["command"] = script
+	plain["adapter"] = "codex"
+	plain["signal"] = map[string]any{"kind": "hook"}
+	e.save(plain)
+
+	info := e.launch("codexish", nil)
+	const want = `tui.terminal_title=["activity","run-state"]`
+	var got []string
+	for _, a := range info["command"].([]any) {
+		got = append(got, a.(string))
+	}
+	if i := slices.Index(got, want); i < 1 || got[i-1] != "-c" {
+		t.Fatalf("command %q has no -c %s", got, want)
+	}
+	plainID := e.launch("plain", nil)["id"].(string)
+	attention := func(id string) map[string]any {
+		_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+		att, _ := got["session"].(map[string]any)["attention"].(map[string]any)
+		return att
+	}
+	id := info["id"].(string)
+	if !waitFor(5*time.Second, func() bool { return attention(id)["state"] == "working" }) {
+		t.Fatalf("attention %v, want working", attention(id))
+	}
+	if att := attention(id); att["source"] != "title" {
+		t.Fatalf("attention %v, want working from the title", att)
+	}
+	time.Sleep(300 * time.Millisecond) // the other session has written its title as long
+	if att := attention(plainID); att["state"] != nil && att["state"] != "" {
+		t.Fatalf("an agent without a working title got attention %v", att)
+	}
+	if b, err := os.ReadFile(config); err != nil || !bytes.Equal(b, own) {
+		t.Fatalf("the person's config.toml changed: %v %q", err, b)
+	}
+}
+
 // The adapter's environment reaches the session, under the agent's own: a
 // variable the agent sets itself keeps its value.
 func TestCreateSessionAdapterEnvYieldsToTheAgent(t *testing.T) {

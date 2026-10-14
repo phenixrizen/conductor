@@ -202,6 +202,14 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's trust prompt is invalid")
 		}
 	}
+	// A window title that says the agent works (Codex's, with the title its
+	// adapter's launch asks for) shows the session working.
+	var workingTitle *regexp.Regexp
+	if sig.WorkingTitle != "" {
+		if workingTitle, err = catalog.CompileWorkingTitle(sig.WorkingTitle); err != nil {
+			return nil, newAPIError(http.StatusInternalServerError, "invalid_agent", "the agent's working title is invalid")
+		}
+	}
 	var questions []session.StartupQuestion
 	for _, q := range agent.Questions {
 		re, err := catalog.CompilePattern(q.Prompt)
@@ -295,6 +303,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		TrustPattern:    trust,
 		TrustAnswers:    trustAnswers(agent.TrustAnswers),
 		Questions:       questions,
+		WorkingTitle:    workingTitle,
 		ConfirmSubmit:   agents.ConfirmsSubmit(agent.Adapter, sig),
 		WatchGit:        true,
 		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},

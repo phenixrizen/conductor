@@ -149,18 +149,19 @@ export function formErrors(f: AgentForm): Partial<Record<Field, string>> {
   return e
 }
 
-/** The signal to save: the bell is what an agent without a signal gets, so it is left out unless the agent had one. The tool-events flag, which the form has no control for, stays. */
+/** The signal to save: the bell is what an agent without a signal gets, so it is left out unless the agent had one. The tool-events flag and the working title (Codex's), which the form has no control for, stay. */
 export function signalOut(kind: SignalKind, pattern: string, prev?: AgentSignal): AgentSignal | undefined {
   const toolEvents = prev?.toolEvents || undefined
+  const workingTitle = prev?.workingTitle || undefined
   switch (kind) {
     case 'pattern':
-      return { kind: 'pattern', pattern, toolEvents }
+      return { kind: 'pattern', pattern, toolEvents, workingTitle }
     case 'hook':
-      return { kind: 'hook', toolEvents }
+      return { kind: 'hook', toolEvents, workingTitle }
     case 'none':
-      return { kind: 'none', toolEvents }
+      return { kind: 'none', toolEvents, workingTitle }
     default:
-      return prev ? { kind: 'bell', toolEvents } : undefined
+      return prev ? { kind: 'bell', toolEvents, workingTitle } : undefined
   }
 }
 

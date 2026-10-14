@@ -3,12 +3,14 @@ package crew
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
@@ -316,6 +318,63 @@ func TestHandoffWaitsForThePrompt(t *testing.T) {
 			t.Fatalf("typed %q, want %q", got, want)
 		}
 	}
+}
+
+// A Codex member that asks a question and goes on with its work (the MCP
+// tool ask returns at once) is counted as waiting, and a handoff to it
+// waits, until its window title says it works: once the question's settle
+// has passed, the member works, the run counts it no more, and the handoff
+// is typed (#186). Its title is Codex 0.161's, as Conductor's launch asks
+// for it.
+func TestAMemberWhoseTitleSaysItWorksTakesItsHandoff(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.workingTitle = regexp.MustCompile(catalog.CodexWorkingTitle)
+	fl.titleSettle = 200 * time.Millisecond
+	run := runningPair(t, e, fl)
+	lead, _ := fl.member("lead")
+	tests, p := fl.member("tests")
+
+	if err := p.Print("\x1b]0;\xe2\xa0\x99 Working\x07"); err != nil {
+		t.Fatal(err)
+	}
+	waitTrue(t, "the title to show working", func() bool { return tests.Info().Attention.State == session.AttentionWorking })
+	if err := tests.TrySetAttentionFull(session.AttentionNeedsInput, "Keep items in ~/.todo.json?", session.SourceAPI, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitTrue(t, "the run to count tests as waiting", func() bool {
+		r, _ := e.Get(run.ID)
+		return r.NeedsInput == 1 && waitsIn(r, "tests")
+	})
+	lead.Record(handoffEntry("tests", "the handlers are in"))
+	waitLogged(t, e, run.ID, "handoff queued from lead to tests: tests is waiting for input", 1, 5*time.Second)
+	// Codex goes on: its spinner's next frames.
+	for _, frame := range []string{"\xe2\xa0\xb9", "\xe2\xa0\xb8", "\xe2\xa0\xbc"} {
+		if err := p.Print("\x1b]0;" + frame + " Working\x07"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := waitTyped(t, p, 5*time.Second); got != "Handoff from lead: the handlers are in\r" {
+		t.Fatalf("typed %q", got)
+	}
+	waitLogged(t, e, run.ID, "handoff delivered from lead to tests", 1, 5*time.Second)
+	r, _ := e.Get(run.ID)
+	if r.NeedsInput != 0 || waitsIn(r, "tests") {
+		t.Fatalf("the run still counts tests as waiting: %+v", r)
+	}
+	if att := tests.Info().Attention; att.State != session.AttentionWorking || att.Source != session.SourceTitle {
+		t.Fatalf("tests shows %+v", att)
+	}
+}
+
+// waitsIn reports whether the run counts its member name as waiting on a
+// prompt.
+func waitsIn(r Run, name string) bool {
+	for _, m := range r.Members {
+		if m.Name == name {
+			return m.NeedsInput
+		}
+	}
+	return false
 }
 
 // Stopping a run drops the handoffs waiting in it, each noted before the run

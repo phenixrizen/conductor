@@ -130,7 +130,8 @@ func TestInjectForEachAdapter(t *testing.T) {
 	}{
 		{"claude", []string{"--settings", filepath.Join(dir, "claude.json")}, nil},
 		{"codex", []string{"-c", `notify=["/opt/conductor","notify","--codex"]`, "-c", `tui.notification_method="bel"`,
-			"-c", `tui.notifications=["approval-requested","plan-mode-prompt","agent-turn-complete"]`}, nil},
+			"-c", `tui.notifications=["approval-requested","plan-mode-prompt","agent-turn-complete"]`,
+			"-c", `tui.terminal_title=["activity","run-state"]`}, nil},
 		{"pi", []string{"--extension", filepath.Join(dir, "pi-conductor.ts")}, nil},
 		{"aider", nil, map[string]string{
 			"AIDER_NOTIFICATIONS":         "true",
@@ -227,6 +228,80 @@ func TestCodexLaunchRingsOnlyForWhatWaits(t *testing.T) {
 	if err != nil || !strings.Contains(string(config), own) || strings.Count(string(config), "notifications") != 1 {
 		t.Fatalf("installed config.toml: %v\n%s", err, config)
 	}
+}
+
+// Codex writes its window title from the items its tui.terminal_title
+// names (Codex 0.161: activity, a spinner's frame while it works, and
+// run-state, the word for what it does), and a session Conductor launches
+// names those two, so that the title reads "⠋ Working" through a turn and
+// "Ready" at rest: the session's sign that Codex works (#186). The value is
+// a TOML array of basic strings, given once, which Codex reads from the -c
+// pair's text after the first "="; Codex's own default names no state. The
+// launch writes nothing: the person's home, a config.toml naming title
+// items of its own included, is what it was; and Install, which does write
+// config.toml, never puts the title there.
+func TestCodexLaunchAsksForItsWorkingTitle(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	own := "model = \"o3\"\n\n[tui]\nterminal_title = [\"project-name\", \"spinner\"]\nanimations = false\n"
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := homeFiles(t, home)
+
+	argv, _ := InjectFor("codex", t.TempDir(), catalog.Signal{Kind: "hook"}, false)
+	var items []string
+	found := 0
+	for i := 0; i+1 < len(argv); i += 2 {
+		key, value, _ := strings.Cut(argv[i+1], "=")
+		if argv[i] != "-c" || key != "tui.terminal_title" {
+			continue
+		}
+		found++
+		if !regexp.MustCompile(`^\["[a-z-]+"(,"[a-z-]+")*\]$`).MatchString(value) || json.Unmarshal([]byte(value), &items) != nil {
+			t.Fatalf("tui.terminal_title is not a TOML array of plain strings: %s", value)
+		}
+	}
+	if found != 1 || !slices.Equal(items, []string{"activity", "run-state"}) {
+		t.Fatalf("codex launch names the title items %q (%d overrides), want activity, run-state", items, found)
+	}
+	if after := homeFiles(t, home); !maps.Equal(after, before) {
+		t.Fatalf("the launch changed the home:\nbefore %q\nafter  %q", before, after)
+	}
+	hooks := t.TempDir()
+	if err := writeAssets(t, hooks, "/opt/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Get("codex")
+	if _, err := a.Install(home, hooks); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil || !strings.Contains(string(config), own) || strings.Count(string(config), "terminal_title") != 1 {
+		t.Fatalf("installed config.toml: %v\n%s", err, config)
+	}
+}
+
+// homeFiles is every file under home with its contents.
+func homeFiles(t *testing.T, home string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	err := filepath.WalkDir(home, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		files[path] = string(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
 }
 
 // Only an agent whose signal is "hook" gets anything at launch, whatever its

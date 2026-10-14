@@ -173,6 +173,18 @@ type Signal struct {
 	Pattern string `json:"pattern,omitempty"` // RE2 on the last screen line, kind=pattern only
 	// ToolEvents asks hook adapters to report tool use as events (chatty; off by default).
 	ToolEvents bool `json:"toolEvents,omitempty"`
+	// WorkingTitle, with any kind, matches the window title (OSC 0 or 2)
+	// the agent writes while it works: RE2, at most 200 bytes, never
+	// matching an empty title (CompileWorkingTitle). A title that matches
+	// shows the session working (source "title"), as a working report
+	// would, but over no question on its screen, no held turn and not the
+	// done of the turn just ended; a wait raised while the title says so
+	// gives way a second later (session.Options.WorkingTitle). Codex's
+	// built-in matches its run state, "Working", "Thinking" or "Waiting",
+	// after its spinner's frame: the title Conductor's launch asks it for
+	// (tui.terminal_title, internal/agents). A saved agent that leaves it
+	// out keeps the one of the agent it replaces (inherit).
+	WorkingTitle string `json:"workingTitle,omitempty"`
 }
 
 // File is the JSON shape operators write.
@@ -551,6 +563,11 @@ func validateSignal(s Signal) error {
 	default:
 		return fmt.Errorf("unknown kind %q", s.Kind)
 	}
+	if s.WorkingTitle != "" {
+		if _, err := CompileWorkingTitle(s.WorkingTitle); err != nil {
+			return fmt.Errorf("workingTitle: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -570,6 +587,25 @@ func CompilePattern(pattern string) (*regexp.Regexp, error) {
 	}
 	if re.MatchString("") {
 		return nil, errors.New("pattern must not match an empty line")
+	}
+	return re, nil
+}
+
+// CompileWorkingTitle compiles a signal's workingTitle: RE2, so matching a
+// title the agent writes ten times a second takes linear time whatever the
+// pattern, at most 200 bytes, and it does not match an empty title, which
+// is what a title cut at the bound the session reads it to is taken as
+// (session.Scanner), and what a program writes to clear its title.
+func CompileWorkingTitle(pattern string) (*regexp.Regexp, error) {
+	if pattern == "" || len(pattern) > maxSignalPattern {
+		return nil, fmt.Errorf("pattern required, at most %d bytes", maxSignalPattern)
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	if re.MatchString("") {
+		return nil, errors.New("pattern must not match an empty title")
 	}
 	return re, nil
 }
@@ -617,7 +653,7 @@ func (c *Catalog) ApplyOverlay(o Overlay) error {
 }
 
 // inherit returns a, an agent saved over prev (had says there was one), with
-// what it leaves to prev filled in: an adapter, a signal, a site, a yolo recipe or a trust prompt it omits,
+// what it leaves to prev filled in: an adapter, a signal (or its working title), a site, a yolo recipe or a trust prompt it omits,
 // and every env value it holds as RedactedValue. The Agents page stores the
 // mask for a key whose value the editor did not change, so a value changed in
 // the config reaches the agent. A value equal to prev's counts as the mask: it
@@ -634,6 +670,11 @@ func inherit(a, prev Agent, had bool) Agent {
 		if a.Signal == nil && prev.Signal != nil {
 			s := *prev.Signal
 			a.Signal = &s
+		} else if a.Signal != nil && a.Signal.WorkingTitle == "" && prev.Signal != nil {
+			// A signal saved without a working title (by an Agents page or
+			// a version that had none) keeps the replaced agent's: the
+			// form has no control for it.
+			a.Signal.WorkingTitle = prev.Signal.WorkingTitle
 		}
 		if a.Site == "" {
 			a.Site = prev.Site
