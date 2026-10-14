@@ -172,3 +172,73 @@ func TestACatchUpAsTheViewerFallsBehindReachesTheHost(t *testing.T) {
 		t.Fatalf("the host was told %v, want caught up", m)
 	}
 }
+
+// However often a viewer passes the marks while the host's connection
+// takes nothing, it has at most one viewer_behind in the host's queue; one
+// that finds the queue full never closes the connection, and goes once the
+// writer takes something; and the host ends with the latest.
+func TestViewerBehindNeverFloodsNorClosesTheHostQueue(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	v := relayedViewer(t, hs, conn, "0123456789abcdef")
+	big := bytes.Repeat([]byte("f"), relayBehindBytes+1)
+	// Behind with the frame, caught up as it is taken.
+	cycle := func() {
+		hs.HostRelayFrame(v.ID, proto.Frame{Type: proto.TypeOutput, Payload: big})
+		f := <-v.Out
+		v.queued.Add(-int64(len(f)))
+		v.noteBacklog()
+	}
+	open := func() {
+		t.Helper()
+		select {
+		case <-conn.Done():
+			t.Fatal("the host's connection was closed")
+		default:
+		}
+	}
+	behindOf := func(o Outbound) (behind, ok bool) {
+		var m map[string]any
+		if json.Unmarshal(o.Text, &m) != nil || m["t"] != proto.HostViewerBehind {
+			return false, false
+		}
+		return m["behind"] == true, true
+	}
+	for range 100 {
+		cycle()
+	}
+	open()
+	if n := len(conn.Send); n != 1 {
+		t.Fatalf("%d messages queued for the host, want the one viewer_behind", n)
+	}
+	// The writer takes the viewer's message as the queue fills to the brim
+	// with the server's own: the latest finds no room, and waits for some.
+	first := <-conn.Send
+	if b, ok := behindOf(first); !ok || !b {
+		t.Fatalf("the host's first message: %s", first.Text)
+	}
+	filler := Outbound{Text: []byte(`{"t":"filler"}`)}
+	for len(conn.Send) < cap(conn.Send) {
+		if !conn.send(filler) {
+			t.Fatal("the queue refused a message with room for it")
+		}
+	}
+	conn.Took(first)
+	for range 100 {
+		cycle()
+	}
+	open()
+	// Room: the latest goes, once, and it says caught up.
+	conn.Took(<-conn.Send)
+	var told []bool
+	for len(conn.Send) > 0 {
+		o := <-conn.Send
+		conn.Took(o)
+		if b, ok := behindOf(o); ok {
+			told = append(told, b)
+		}
+	}
+	open()
+	if len(told) != 1 || told[0] {
+		t.Fatalf("the host was then told %v, want caught up once", told)
+	}
+}

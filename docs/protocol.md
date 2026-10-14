@@ -234,7 +234,10 @@ host's queue) is dropped, and nothing the viewer sent after it goes. What waits 
 `slow_consumer`). Once more than 512 KiB of what its host relays a
 viewer waits for it on the server, the host is told the viewer is behind
 (`viewer_behind{viewerId, behind:true}`), and once no more than 128 KiB
-waits, that it caught up (`behind:false`), each change once and in order;
+waits, that it caught up (`behind:false`): at most one of a viewer's waits
+in the host's queue, the changes made meanwhile going as the latest once it
+is taken, and one that finds the queue full waits for room there rather
+than close the connection, as the server's other messages would;
 a hosted viewer's socket holds at most 128 KiB unsent (on Linux and
 macOS), so what a viewer has not taken waits where the server counts it,
 not in a buffer of megabytes. The host holds a viewer's frames while it is

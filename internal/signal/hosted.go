@@ -75,6 +75,9 @@ const (
 type Outbound struct {
 	Text   []byte // JSON control message
 	Binary []byte // RELAY envelope
+	// took, when set, is called once the writer has taken the message
+	// (Took), holding no lock.
+	took func()
 }
 
 // size is what o counts for in its queue's bytes.
@@ -97,6 +100,10 @@ type HostConn struct {
 	bytes   int
 	waiting []*roomWaiter
 	room    chan struct{}
+	// behindLate are the viewers whose viewer_behind found no room in the
+	// queue (offerBehind): each tries again as the writer next takes a
+	// message (Took). Guarded by mu.
+	behindLate []*Viewer
 }
 
 // roomWaiter is a viewer's message in the line for room in a host's queue:
@@ -115,12 +122,47 @@ func (c *HostConn) Done() <-chan struct{} { return c.done }
 func (c *HostConn) Close() { c.once.Do(func() { close(c.done) }) }
 
 // Took tells the connection its writer took o from Send: o's bytes leave
-// the queue, and the viewers' messages waiting for room try again.
+// the queue, the viewers' messages waiting for room try again, and so do
+// the viewer_behind that found none (offerBehind), after o's own took.
 func (c *HostConn) Took(o Outbound) {
 	c.mu.Lock()
 	c.bytes = max(0, c.bytes-o.size())
 	c.wake()
+	late := c.behindLate
+	c.behindLate = nil
 	c.mu.Unlock()
+	if o.took != nil {
+		o.took()
+	}
+	for _, v := range late {
+		v.behindRoom()
+	}
+}
+
+// offerBehind queues v's viewer_behind o, one of the server's own messages,
+// when the queue has room for it; when it has none, it never closes the
+// connection, as send does, but has v try again as the writer next takes a
+// message (Took), which it will, the queue being full. It reports whether o
+// was queued. Called with v.behindMu held.
+func (c *HostConn) offerBehind(o Outbound, v *Viewer) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	n := o.size()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.bytes+n <= hostQueueBytes {
+		select {
+		case c.Send <- o:
+			c.bytes += n
+			return true
+		default:
+		}
+	}
+	c.behindLate = append(c.behindLate, v)
+	return false
 }
 
 // wake has the viewers' messages waiting for room look again. Called with mu
@@ -304,12 +346,18 @@ type Viewer struct {
 	// charge is ViewerOptions.Charge.
 	charge func(n int) error
 	// conn is the host connection the viewer joined over, told when the
-	// viewer falls behind and when it catches up (noteBacklog); behind is
-	// what it was told last. Both are read and changed under behindMu,
-	// which keeps the messages in the order of the changes.
+	// viewer falls behind and when it catches up (noteBacklog). Under
+	// behindMu: behind is what the marks say of the viewer; told is what
+	// the host was last sent; inQueue says that message is still in the
+	// host's queue, not taken; late says the viewer waits for room there.
+	// So at most one viewer_behind of the viewer's is ever queued, and the
+	// host is sent the latest once it is taken.
 	conn     *HostConn
 	behindMu sync.Mutex
 	behind   bool
+	told     bool
+	inQueue  bool
+	late     bool
 	// joinDone is closed once the viewer's join has gone to the host, or
 	// will not (joinSent false: the viewer or the connection closed first,
 	// or its charge failed); joinSent is written before, and read after.
@@ -510,22 +558,39 @@ func (v *Viewer) push(frame []byte) {
 
 // noteBacklog tells the host, when the viewer is relayed, that it fell
 // behind (more than relayBehindBytes queued) or caught up (relayCaughtUpBytes
-// or less), as it passes either mark: a viewer_behind for each change, in
-// their order, and none once the viewer is closed. It is called after each
-// change of what is queued, as a frame is queued (push) and as one is
-// taken (Pump), and looks at what is queued under behindMu every time: a
-// look that is the last in the lock's order comes after every change, so
-// what the host was told last holds for what is queued once the changes
-// stop (a look outside the lock could miss the change the other end was
-// making). It does not wait: the message is one of the server's own
-// (HostConn.send).
+// or less), as it passes either mark, and none once the viewer is closed.
+// It is called after each change of what is queued, as a frame is queued
+// (push) and as one is taken (Pump), and looks at what is queued under
+// behindMu every time: a look that is the last in the lock's order comes
+// after every change, so what the host is told last holds for what is
+// queued once the changes stop (a look outside the lock could miss the
+// change the other end was making). It does not wait (tellBehind).
 func (v *Viewer) noteBacklog() {
 	if v.conn == nil || !v.relay.Load() {
 		return
 	}
 	v.behindMu.Lock()
 	defer v.behindMu.Unlock()
-	if behindAt(v.queued.Load(), v.behind) == v.behind {
+	if behindAt(v.queued.Load(), v.behind) != v.behind {
+		if behindSeam != nil {
+			behindSeam(v)
+		}
+		v.behind = !v.behind
+	}
+	v.tellBehind()
+}
+
+// tellBehind sends the host what the marks say of the viewer (behind), as
+// one of the server's own messages, when the host was last sent otherwise:
+// unless one of the viewer's is still in the host's queue, when the latest
+// goes once that one is taken (behindTaken), or the queue has no room, when
+// it goes once the writer next takes a message (behindRoom). So the
+// viewer's changes, however many and however fast, never put more than one
+// message in the host's queue, never close it for want of room (as the
+// server's other messages do), and the host ends with the latest. Nothing
+// is sent once the viewer is closed. Called with behindMu held.
+func (v *Viewer) tellBehind() {
+	if v.inQueue || v.late || v.told == v.behind {
 		return
 	}
 	select {
@@ -533,11 +598,33 @@ func (v *Viewer) noteBacklog() {
 		return
 	default:
 	}
-	if behindSeam != nil {
-		behindSeam(v)
+	b, err := jsonMarshal(proto.ViewerBehind{T: proto.HostViewerBehind, ViewerID: v.ID, Behind: v.behind})
+	if err != nil {
+		return
 	}
-	v.behind = !v.behind
-	v.conn.sendJSON(proto.ViewerBehind{T: proto.HostViewerBehind, ViewerID: v.ID, Behind: v.behind})
+	if v.conn.offerBehind(Outbound{Text: b, took: v.behindTaken}, v) {
+		v.inQueue, v.told = true, v.behind
+	} else {
+		v.late = true
+	}
+}
+
+// behindTaken is the viewer's viewer_behind taken by the host connection's
+// writer: the latest goes now, if it differs.
+func (v *Viewer) behindTaken() {
+	v.behindMu.Lock()
+	defer v.behindMu.Unlock()
+	v.inQueue = false
+	v.tellBehind()
+}
+
+// behindRoom is room in the host's queue for the viewer_behind that found
+// none.
+func (v *Viewer) behindRoom() {
+	v.behindMu.Lock()
+	defer v.behindMu.Unlock()
+	v.late = false
+	v.tellBehind()
 }
 
 // behindSeam, when set (a test's), is called in noteBacklog once it has
