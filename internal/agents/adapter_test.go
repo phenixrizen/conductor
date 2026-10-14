@@ -129,7 +129,8 @@ func TestInjectForEachAdapter(t *testing.T) {
 		env  map[string]string
 	}{
 		{"claude", []string{"--settings", filepath.Join(dir, "claude.json")}, nil},
-		{"codex", []string{"-c", `notify=["/opt/conductor","notify","--codex"]`, "-c", `tui.notification_method="bel"`}, nil},
+		{"codex", []string{"-c", `notify=["/opt/conductor","notify","--codex"]`, "-c", `tui.notification_method="bel"`,
+			"-c", `tui.notifications=["approval-requested","plan-mode-prompt","agent-turn-complete"]`}, nil},
 		{"pi", []string{"--extension", filepath.Join(dir, "pi-conductor.ts")}, nil},
 		{"aider", nil, map[string]string{
 			"AIDER_NOTIFICATIONS":         "true",
@@ -146,6 +147,85 @@ func TestInjectForEachAdapter(t *testing.T) {
 	}
 	if a, _ := Get("opencode"); a.Inject != nil {
 		t.Fatal("opencode injects before OPENCODE_CONFIG_DIR is verified to add to the default config")
+	}
+}
+
+// Codex rings the bell for each notification its tui.notifications names
+// (Codex 0.161: approval-requested, plan-mode-prompt, agent-turn-complete and
+// async-question, matched by name and never checked). A session Conductor
+// launches names every one but async-question, a question Codex asks while
+// its turn goes on, whose bell would show the session as waiting until the
+// turn ends (#186). The value is a TOML array of basic strings, which Codex
+// reads from the -c pair's text after the first "=". The launch writes
+// nothing: the person's home, its config.toml with notifications of its own
+// included, is what it was; and Install, which does write config.toml, puts
+// only notify there, never the list.
+func TestCodexLaunchRingsOnlyForWhatWaits(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	own := "model = \"o3\"\n\n[tui]\nnotifications = [\"agent-turn-complete\"]\n"
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := func() map[string]string {
+		files := map[string]string{}
+		err := filepath.WalkDir(home, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			files[path] = string(b)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return files
+	}
+	before := snapshot()
+
+	argv, env := InjectFor("codex", t.TempDir(), catalog.Signal{Kind: "hook"}, false)
+	if len(argv)%2 != 0 || env != nil {
+		t.Fatalf("codex launch: %q %q", argv, env)
+	}
+	var names []string
+	found := 0
+	for i := 0; i < len(argv); i += 2 {
+		if argv[i] != "-c" {
+			t.Fatalf("codex launch: %q is not a -c pair", argv[i:])
+		}
+		key, value, _ := strings.Cut(argv[i+1], "=")
+		if key != "tui.notifications" {
+			continue
+		}
+		found++
+		if !regexp.MustCompile(`^\["[a-z-]+"(,"[a-z-]+")*\]$`).MatchString(value) || json.Unmarshal([]byte(value), &names) != nil {
+			t.Fatalf("tui.notifications is not a TOML array of plain strings: %s", value)
+		}
+	}
+	slices.Sort(names)
+	if found != 1 || !slices.Equal(names, []string{"agent-turn-complete", "approval-requested", "plan-mode-prompt"}) {
+		t.Fatalf("codex launch rings for %q (%d overrides), want every notification but async-question", names, found)
+	}
+	if after := snapshot(); !maps.Equal(after, before) {
+		t.Fatalf("the launch changed the home:\nbefore %q\nafter  %q", before, after)
+	}
+
+	hooks := t.TempDir()
+	if err := writeAssets(t, hooks, "/opt/conductor"); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := Get("codex")
+	if _, err := a.Install(home, hooks); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil || !strings.Contains(string(config), own) || strings.Count(string(config), "notifications") != 1 {
+		t.Fatalf("installed config.toml: %v\n%s", err, config)
 	}
 }
 
