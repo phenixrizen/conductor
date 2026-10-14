@@ -318,8 +318,11 @@ type Local struct {
 	// beforeSettle, a test's hook, runs as the settle timer fires, before
 	// it looks at anything (settled); afterTitle between readTitle's look
 	// at a title that matches and its change.
-	beforeSettle   atomic.Pointer[func()]
-	afterTitle     atomic.Pointer[func()]
+	beforeSettle atomic.Pointer[func()]
+	afterTitle   atomic.Pointer[func()]
+	// beforeEnter, a test's hook, runs as a submission comes to its Enter
+	// (pressEnter), before it looks at anything.
+	beforeEnter    atomic.Pointer[func()]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -342,6 +345,18 @@ type Local struct {
 	// for it), shown again when a person's keys end the hold without
 	// answering it (endHoldTyped); empty when none. Under mu.
 	heldOver Attention
+	// own is the agent's own question (Ask: a needs_input report that says
+	// it is the agent's), kept until it is answered: shown (the attention
+	// showing is it, its id), set aside (ownAside: in the turn it was
+	// asked in, another state took its place, and the turn's done shows it
+	// again, the same Attention), or held over by the hold of the turn
+	// (heldOver is it). ownTurn is the turn it was asked in (turn): it is
+	// in its turn while turn is that and no done has ended it (turnEnded).
+	// A question a reply or a person's keys reached is removed, never set
+	// aside (keepOwnLocked). Empty while none is kept. Under mu.
+	own      Attention
+	ownAside bool
+	ownTurn  uint64
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.
@@ -539,6 +554,9 @@ func (s *Local) markEnded(status Status) {
 		s.info.Attention = Attention{}
 		s.signalAttention()
 	}
+	// Nor is anything kept to show again: the agent's own question goes
+	// with it, shown or set aside.
+	s.dropOwnLocked()
 	s.settleLocked(s.info.Attention)
 	now := time.Now().UTC()
 	s.info.EndedAt = &now
@@ -1190,8 +1208,32 @@ func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind 
 	return s.setAttention(state, message, source, kind, options, spendToken)
 }
 
+// Ask is SetAttentionFull for the agent's own question: needs_input, from a
+// report that says the agent asks it (the MCP tool ask, conductor notify
+// --ask), which the session keeps until it is answered (own). In the turn it
+// was asked in, the agent's work (a working report, its working title) and
+// another wait (a hook's prompt, a dialog on the screen) take its place and
+// set it aside; that turn's done shows it again, the same Attention (its id
+// and Since), and a done leaves it showing. It goes with an answer (a
+// person's keys or reply, which also remove it while it is set aside), the
+// agent's clear or next question, another state after its turn's done (the
+// agent at work in a new turn), or the session's end. The bell, an OSC
+// notification and the screen pattern never take its place. It is for a
+// report that has paid already: the one the server sends on to a hosted
+// session's host.
+func (s *Local) Ask(message, source, kind string, options []Option) {
+	s.setAttention(AttentionNeedsInput, message, source, kind, options, agentAsks)
+}
+
+// TryAsk is Ask for a report from outside the session, as
+// TrySetAttentionFull: it spends a token of the event bucket first, and with
+// none left returns ErrRateLimited having changed nothing.
+func (s *Local) TryAsk(message, source, kind string, options []Option) error {
+	return s.setAttention(AttentionNeedsInput, message, source, kind, options, spendToken|agentAsks)
+}
+
 // attentionRules say how setAttention applies a change.
-type attentionRules uint16
+type attentionRules uint32
 
 const (
 	// unlessWaiting changes nothing when the session is needs_input already.
@@ -1200,16 +1242,17 @@ const (
 	// and refuses the change with ErrRateLimited when there is none.
 	spendToken
 	// unlessChoices changes nothing when the session is needs_input on a
-	// prompt that has choices, or on a question it holds (heldSource): a
-	// wait without anything to answer it with gives way, one with its
-	// answers stays.
+	// prompt that has choices, on a question it holds (heldSource) or on
+	// the agent's own question (own): a wait without anything to answer it
+	// with gives way, one with its answers stays.
 	unlessChoices
-	// unlessTurnEnded changes nothing when the session shows done and no
-	// Enter has been written since (turnEnded): Codex rings the bell it is
-	// asked for as its turn ends, after or before its notify reports done,
-	// and the turn that ended asks nothing more. The next Enter, a person's
-	// or a submission's, starts the next turn, whose bell is a question
-	// again; so does any change of state (a working report, a question).
+	// unlessTurnEnded changes nothing when the session shows done, or the
+	// agent's own question its turn's done kept (own), and no Enter has
+	// been written since (turnEnded): Codex rings the bell it is asked for
+	// as its turn ends, after or before its notify reports done, and the
+	// turn that ended asks nothing more. The next Enter, a person's or a
+	// submission's, starts the next turn, whose bell is a question again;
+	// so does any change of state (a working report, a question).
 	unlessTurnEnded
 	// unlessStartup changes nothing while the session holds a startup
 	// question (source trust): the program shows that one.
@@ -1264,6 +1307,10 @@ const (
 	// the session still shows (settleID), and the last title read still
 	// says the agent works (titleWorking).
 	onlySettling
+	// agentAsks (Ask) marks a needs_input change as the agent's own
+	// question, which the session keeps (own); with another state it
+	// changes nothing.
+	agentAsks
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -1333,17 +1380,22 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		return nil
 	}
 	cur := s.info.Attention
+	// The agent's own question (Ask), and the one the session keeps (own),
+	// shown or not.
+	ask := rules&agentAsks != 0 && state == AttentionNeedsInput
+	own := s.own
+	ownShown := own.ID != "" && cur.ID == own.ID
 	// The hold's words give way to a question drawn on the screen (a
 	// startup question's unlessWaiting): the program waits on that one now.
 	waiting := cur.State == AttentionNeedsInput && !(cur.Source == SourceSubmit && heldSource(source))
-	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source))
+	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source) || ownShown)
 	// A report from outside that the session waits, with choices or
 	// without, does not hide a question asked during the work: the dialog
 	// on the screen is what answers go to (a hook that reports the same
 	// dialog late, say, or another question whose choices would land on
 	// it).
 	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
-	turnsOwn := rules&unlessTurnEnded != 0 && cur.State == AttentionDone && s.turnEnded
+	turnsOwn := rules&unlessTurnEnded != 0 && (cur.State == AttentionDone || ownShown) && s.turnEnded
 	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
@@ -1371,6 +1423,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.mu.Unlock()
 		return nil
 	}
+	// Whether the change comes in the turn the agent's own question was
+	// asked in (no done since), and whether a reply or a person's keys
+	// reached it (answered): weighed before the change moves the turn on.
+	inTurn := own.ID != "" && s.turn.Load() == s.ownTurn && !s.turnEnded
+	reached := own.ID != "" && s.answered == own.ID
 	if s.held != nil && source != SourceSubmit && !heldSource(source) {
 		// The session's turn is held for a typed text (holdTyped): the hold
 		// is what shows, until a person types into the terminal, but for a
@@ -1388,9 +1445,25 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		// The agent reports another state (at work, done, another
 		// question): the question the hold took the place of waits no
-		// longer, and does not show again as the hold ends.
-		if o := s.heldOver; o.ID != "" && !(state == o.State && message == o.Message && source == o.Source && kind == o.Kind && sameOptions(options, o.Options)) {
+		// longer, and does not show again as the hold ends. The agent's
+		// own question waits through its turn's done and its work in that
+		// turn, as it would shown.
+		if o := s.heldOver; o.ID != "" && !(state == o.State && message == o.Message && source == o.Source && kind == o.Kind && sameOptions(options, o.Options)) &&
+			!(o.ID == own.ID && (state == AttentionDone || state == AttentionWorking && inTurn)) {
 			s.heldOver = Attention{}
+		}
+		switch {
+		case own.ID == "" || s.heldOver.ID == own.ID:
+			// None kept, or held over still.
+		case s.ownAside && state == AttentionDone && s.heldOver.ID == "":
+			// Set aside, its turn's done would show it again: the hold
+			// shows, and it shows once a person's keys end the hold
+			// without answering it.
+			s.heldOver, s.ownAside = own, false
+		case s.ownAside && inTurn && !ask && state != AttentionNone:
+			// Set aside still: another state in its turn.
+		default:
+			s.dropOwnLocked()
 		}
 		s.mu.Unlock()
 		if state != AttentionNone {
@@ -1406,6 +1479,39 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// Also a done that changes nothing shown (the same words as the
 		// last turn's): the turn it reports has ended.
 		s.turnEnded = true
+	}
+	if state == AttentionDone && own.ID != "" && (ownShown || s.ownAside) {
+		// The agent's own question outlasts the done (own): a done, any
+		// (its turn's end, with turn or without; Claude Code's idle_prompt
+		// a minute later), leaves it showing, or shows it again from aside
+		// in place of what shows, the same Attention, its id and Since: a
+		// reply under way compares that stamp (pressEnter, answer), and
+		// its line in the chat is the one an answer refers to. The done
+		// has ended the turn, and is recorded as the report it is.
+		now := time.Now().UTC()
+		if !ownShown {
+			s.info.Attention, s.ownAside = own, false
+			s.settleLocked(own)
+			s.signalAttention()
+			s.hub.Broadcast(proto.MustControl(attentionMessage(own)))
+			s.question = own.ID
+		}
+		s.mu.Unlock()
+		label := message
+		if label == "" {
+			label = string(state)
+		}
+		s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionDone)
+		if !ownShown {
+			// Shown again, it has its entry, as any state that shows.
+			label = own.Message
+			if label == "" {
+				label = string(AttentionNeedsInput)
+			}
+			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionNeedsInput)
+			s.notifyChange()
+		}
+		return nil
 	}
 	// The dialog last answered, asked before it has gone (sameDialog): its
 	// question is answered, whatever id it shows with.
@@ -1448,6 +1554,12 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.answered = cur.ID
 			s.holdAskedAgain(cur.ID, words, heldAsked, startupStill)
 		}
+		if ask && cur.ID != "" && !ownShown {
+			// The question showing, now said to be the agent's own: kept
+			// from here, as asked in this turn.
+			s.info.Attention.ask = true
+			s.own, s.ownAside, s.ownTurn = s.info.Attention, false, s.turn.Load()
+		}
 		s.mu.Unlock()
 		return nil
 	}
@@ -1479,6 +1591,26 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.answered = att.ID
 			s.holdAskedAgain(att.ID, words, heldAsked, startupStill)
 		}
+	}
+	// The agent's own question (own) against the change.
+	switch {
+	case ask:
+		// Kept from now, asked in the turn now running; the one kept
+		// before, if any, goes (its next question).
+		att.ask = true
+		s.own, s.ownAside, s.ownTurn = att, false, s.turn.Load()
+	case own.ID == "" || source == SourceSubmit || s.heldOver.ID == own.ID:
+		// None kept; or the hold of the turn takes its place, holding it
+		// over (heldOver, above) or leaving it set aside; or held over
+		// already, a question on the screen showing over the hold.
+	case (ownShown || s.ownAside) && inTurn && !reached && state != AttentionNone:
+		// In its turn: set aside, to show again at the turn's done.
+		s.ownAside = true
+	default:
+		// A state after its turn's done (the agent at work in a new turn,
+		// another wait), a clear, or a question a reply or a person's
+		// keys reached: it goes for good.
+		s.dropOwnLocked()
 	}
 	s.info.Attention = att
 	s.settleLocked(att)
@@ -2181,7 +2313,12 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if !isTerminalReport(data) && !quiet {
 			// Keys that answer the question showing, or the dialog on the
 			// screen, put it behind for the replies queued after them.
-			s.noteAnswering(promptSince, data, maybe, onScreen)
+			s.noteAnswering(promptSince, data, maybe, onScreen, "")
+			if typed {
+				// A person's keys (a reply's choice too) while the agent's
+				// own question is set aside: it does not show again.
+				s.reachedAside()
+			}
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -2442,6 +2579,36 @@ func (s *Local) beginTurn() {
 	s.disarmSettleLocked()
 }
 
+// dropOwnLocked forgets the agent's own question the session keeps (own):
+// it shows again nowhere. The attention showing is the caller's to change.
+// The caller holds s.mu.
+func (s *Local) dropOwnLocked() {
+	s.own, s.ownAside, s.ownTurn = Attention{}, false, 0
+}
+
+// reachedAside removes the agent's own question while it is set aside, as
+// a person's keys or reply are written (input, Submit): the person has
+// taken part, and it does not show again at its turn's done. Conductor's
+// own submissions (a crew's prompt, a handoff, a broadcast) do not: they
+// are no person's answer.
+func (s *Local) reachedAside() {
+	s.mu.Lock()
+	if s.own.ID != "" && s.ownAside {
+		s.dropOwnLocked()
+	}
+	s.mu.Unlock()
+}
+
+// asideOwn is the id of the agent's own question while it is set aside,
+// "" while none is: what a submission notes as it begins (submitState.aside).
+// The caller holds s.mu.
+func (s *Local) asideOwn() string {
+	if s.own.ID != "" && s.ownAside {
+		return s.own.ID
+	}
+	return ""
+}
+
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText
 // bytes once cleaned: nothing was written.
 var ErrTextTooLong = fmt.Errorf("session: text to submit is longer than %d bytes", MaxSubmitText)
@@ -2647,14 +2814,18 @@ func (s *Local) dialogGone(look uint64) {
 // question the session still shows with other words (one answered and
 // asked again, before the watcher has seen the next) is not what they
 // answer.
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView) {
+//
+// except, when set, is the agent's own question Conductor's submission
+// began with set aside (submitState.aside): shown again by its turn's done
+// before the submission's write, it is not what the write answers.
+func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, except string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, keys) {
 		s.noteDialogAnswered(onScreen.words)
 	}
 	att := s.info.Attention
-	if att.State != AttentionNeedsInput || att.ID == "" {
+	if att.State != AttentionNeedsInput || att.ID == "" || att.ID == except {
 		return
 	}
 	var picks bool
@@ -3537,6 +3708,10 @@ func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter 
 	if waiting {
 		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
 		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		if att.ID != "" && att.ID == s.own.ID {
+			// The agent's own question, answered: kept no more.
+			s.dropOwnLocked()
+		}
 		if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
 			// A question answered while the turn is still held for a typed
 			// text (one gone with keys typed before the hold): the hold

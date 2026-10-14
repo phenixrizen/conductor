@@ -65,6 +65,12 @@ type Request struct {
 	// attention state only; the server keeps the id for Resume.
 	AgentSession string `json:"agentSession,omitempty"`
 	Turn         bool   `json:"turn,omitempty"`
+	// Ask, with the state needs_input, says the question is the agent's
+	// own (conductor notify --ask, the MCP tool ask): the session keeps it
+	// through the agent's turn's done, until someone answers. Never a
+	// hook's: a program's wait reported as needs_input (a permission
+	// prompt) gives way to done as before.
+	Ask bool `json:"ask,omitempty"`
 }
 
 // eventBody is what the events route reads: the same report under its own
@@ -172,9 +178,10 @@ func send(ctx context.Context, url, token string, req Request, body []byte) erro
 		if status < 300 {
 			return nil
 		}
-		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn) && req.Event == "" {
-			// A server older than the agent-session fields: the state alone.
-			req.AgentSession, req.Turn = "", false
+		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn || req.Ask) && req.Event == "" {
+			// A server older than the agent-session fields, or than ask:
+			// the state alone (an older server's question shows as any).
+			req.AgentSession, req.Turn, req.Ask = "", false, false
 			if body, err = json.Marshal(req); err != nil {
 				return err
 			}

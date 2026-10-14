@@ -246,7 +246,13 @@ type ViewerError struct {
 // (Attention.ID), which the server keeps for its listings, so that an
 // answer from them names the question the host holds; the server keeps it
 // only when it is a question's id (ValidQuestionID), and an older server
-// ignores it.
+// ignores it. Ask goes both ways, with needs_input only: the agent's own
+// question (an attention report with ask), which a session keeps through
+// its turn's done. Server to host, a report that says so, which the host's
+// session applies as the agent's question; host to server, the question
+// the host's session shows is one, so that the server's copy keeps it
+// through a done it forwards. An older host or server ignores it, and the
+// question shows there as any other.
 type HostAttentionMsg struct {
 	T         string            `json:"t"`
 	SessionID string            `json:"sessionId,omitempty"`
@@ -256,6 +262,7 @@ type HostAttentionMsg struct {
 	Kind      string            `json:"kind,omitempty"`
 	Options   []AttentionOption `json:"options,omitempty"`
 	ID        string            `json:"id,omitempty"`
+	Ask       bool              `json:"ask,omitempty"`
 }
 
 // HostActivityMsg carries one activity-log entry between host and server.

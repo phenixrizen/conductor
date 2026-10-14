@@ -778,23 +778,26 @@ func (a *agent) retryAttention() {
 func sameAttention(x, y session.Attention) bool {
 	// The source too: a switchyard is told no words, and a held turn
 	// (source submit) differs from a bell's wait by its source alone there.
-	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked()
 }
 
 // toServer is an attention change as the server is told it: in full to the
 // owner's own server, and to a switchyard (Options.Switchyard) its state,
-// kind and source alone, never its words (a prompt's text, the start of the
-// agent's reply a "done" carries) or its choices.
+// kind and source alone (with its stamp and id), never its words (a
+// prompt's text, the start of the agent's reply a "done" carries), its
+// choices or its mark as the agent's own question (Attention.Asked).
 func (a *agent) toServer(att session.Attention) session.Attention {
 	if a.opts.Switchyard {
-		att.Message, att.Options = "", nil
+		return session.Attention{State: att.State, Source: att.Source, Kind: att.Kind, Since: att.Since, ID: att.ID}
 	}
 	return att
 }
 
-// hostAttentionMsg encodes an attention change for the control connection.
+// hostAttentionMsg encodes an attention change for the control connection,
+// with its mark as the agent's own question, which the server's copy keeps
+// through a done it forwards (signal.HostedSession.Ask).
 func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID}
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked()}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}
@@ -1223,7 +1226,13 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		for _, o := range m.Options {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
-		a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
+		if m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput {
+			// The agent's own question (the server's Ask): the session
+			// keeps it through its turn's done.
+			a.local.Ask(m.Message, source, m.Kind, opts)
+		} else {
+			a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
+		}
 		// The server's listing took this report without an id (the id is
 		// the session's, given as it applies it), and one the session
 		// takes as changing nothing (the same as it shows), or records and

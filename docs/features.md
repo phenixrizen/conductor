@@ -1057,6 +1057,27 @@ request each from main.
   and Playwright `held.spec.ts` (two tests), which also showed that CI's
   Chromium now draws WebGL2: a spec never reads terminal text from the
   page, only what the stub wrote, the API and `data-*` state.
+- **An agent's own question outlasts its turn** (#193;
+  `docs/plans/codex-needs-you.md`, Part B). An agent asks and then waits by
+  ending its turn, and the turn's done replaced the question: it left Needs
+  you, the sidebar, the Yard and the run's card just as the agent waited. A
+  question the agent says is its own (`conductor notify --ask`, which the
+  skill now uses, and the MCP tool `ask`) shows until it is answered: in the
+  turn it was asked in, the agent's work (a `working` report, Codex's
+  working title) and another wait set it aside, and that turn's done shows
+  it again, the same question (its id and since, so a reply under way keeps
+  its Enter); after the done it goes with a person's keys or reply, the
+  agent's clear or next question, or the agent at work in a new turn. A
+  question a reply or a person's keys reached is never set aside. A plain
+  `--state needs_input` (OpenCode's, DeepSeek Harness's and aider's waits)
+  gives way to done as before. A handoff typed while the question is set
+  aside, its Enter after the done, is entered all the same and answers
+  nothing. Hosted sessions carry the mark both ways (`attention` with
+  `ask`). Tests: Go (the plan's orderings P1 to P29 in `internal/session`,
+  the routes, the CLI and the MCP tool, the host, the crew's handoffs),
+  Playwright `askwait.spec.ts` (a Claude Code stub's question on its row,
+  the Yard and the run's card after its turn, answered from the row; a Codex
+  stub showing Working, then the question at its done).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 

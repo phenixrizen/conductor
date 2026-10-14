@@ -1102,3 +1102,26 @@ func TestCodexTrustArgs(t *testing.T) {
 		t.Fatal("ConfirmsSubmit")
 	}
 }
+
+// The waits Conductor's own assets report for a program (OpenCode's
+// permission.asked, DeepSeek Harness's permission-requested and
+// question-asked, aider's notification) are needs_input without the mark
+// (#193): they give way to the turn's done, as before. Only the skill, for
+// the agent's own question, asks with --ask.
+func TestTheAssetsReportAProgramsWaitWithoutTheMark(t *testing.T) {
+	for name, src := range map[string]string{
+		"opencode": opencodeAssets["opencode/plugins/conductor.ts"],
+		"dsh":      dshAssets["dsh-conductor.js"],
+		"aider":    aiderCommand("/opt/conductor"),
+	} {
+		if src == "" {
+			t.Fatalf("%s: no asset", name)
+		}
+		if strings.Contains(src, "--ask") || !strings.Contains(src, "needs_input") {
+			t.Errorf("%s reports its wait otherwise than --state needs_input:\n%s", name, src)
+		}
+	}
+	if !strings.Contains(Skill, " notify --ask ") {
+		t.Error("the skill does not ask with --ask")
+	}
+}

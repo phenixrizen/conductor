@@ -419,6 +419,68 @@ func TestNotifyChoices(t *testing.T) {
 	}
 }
 
+// --ask reports the agent's own question (#193), with --choices or
+// without: the attention route's ask, with needs_input. A plain --state
+// needs_input carries no mark (OpenCode's, DeepSeek Harness's and aider's
+// permission waits report that way), and no hook payload ever does. --ask
+// with another state, an event or a hook flag is a misuse.
+func TestNotifyAskMarksTheAgentsOwnQuestion(t *testing.T) {
+	ns := startNotifyServer(t)
+	for _, tc := range []struct {
+		args []string
+		want map[string]any
+	}{
+		{[]string{"--ask", "--message", "Which database?"}, map[string]any{"state": "needs_input", "message": "Which database?", "ask": true}},
+		{[]string{"--state", "needs_input", "--ask", "--message", "Which database?", "--choices", "Postgres|SQLite"}, map[string]any{"state": "needs_input", "message": "Which database?", "ask": true, "kind": "prompt", "options": []any{
+			map[string]any{"label": "Postgres", "input": "Postgres\r"},
+			map[string]any{"label": "SQLite", "input": "SQLite\r"},
+		}}},
+		{[]string{"--state", "needs_input", "--message", "OpenCode asks for permission"}, map[string]any{"state": "needs_input", "message": "OpenCode asks for permission"}},
+	} {
+		ns.calls, ns.body = 0, nil
+		if code, stderr, err := runNotifyWith(t, "", tc.args...); code != 0 || err != nil || ns.calls != 1 {
+			t.Fatalf("%v: exit %d %v %q, %d calls", tc.args, code, err, stderr, ns.calls)
+		}
+		if ns.path != "/api/sessions/s1/attention" || !reflect.DeepEqual(ns.body, tc.want) {
+			t.Fatalf("%v: %s %v, want %v", tc.args, ns.path, ns.body, tc.want)
+		}
+	}
+	// No hook payload carries the mark, whatever it maps to.
+	for _, payload := range []string{
+		`{"hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}`,
+		`{"hook_event_name":"Stop","session_id":"s"}`,
+	} {
+		ns.calls, ns.body = 0, nil
+		if code, stderr, err := runNotifyWith(t, payload, "--claude-hook"); code != 0 || err != nil || ns.calls != 1 {
+			t.Fatalf("%s: exit %d %v %q", payload, code, err, stderr)
+		}
+		if _, marked := ns.body["ask"]; marked {
+			t.Fatalf("%s: body %v", payload, ns.body)
+		}
+	}
+	ns.calls, ns.body = 0, nil
+	if code, _, err := runNotifyWith(t, "", "--codex", `{"type":"agent-turn-complete","thread-id":"t","last-assistant-message":"ok"}`); code != 0 || err != nil || ns.calls != 1 || ns.body["ask"] != nil {
+		t.Fatalf("--codex: exit %d %v, body %v", code, err, ns.body)
+	}
+	for _, tc := range []struct {
+		args []string
+		word string
+		exit int
+	}{
+		{[]string{"--ask", "--state", "done", "--message", "x"}, "not with --state done", 2},
+		{[]string{"--ask", "--state", "clear"}, "not with --state clear", 2},
+		{[]string{"--ask", "--event", "progress", "--message", "x"}, "not with --event", 2},
+		{[]string{"--ask", "--claude-hook"}, "not with --claude-hook", 1},
+		{[]string{"--ask", "--codex", "{}"}, "not with --codex", 1},
+	} {
+		ns.calls = 0
+		code, _, err := runNotifyWith(t, "", tc.args...)
+		if code != tc.exit || err == nil || !strings.Contains(err.Error(), tc.word) || ns.calls != 0 {
+			t.Errorf("%v: exit %d %v, %d calls", tc.args, code, err, ns.calls)
+		}
+	}
+}
+
 // --files with a hook payload reports only the files the tool call touched
 // (Claude Code's file-tool hook in the base settings): an Edit is one file
 // event and no tool call; a call that names no file sends nothing; the flag

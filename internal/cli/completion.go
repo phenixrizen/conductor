@@ -87,6 +87,7 @@ func completionSpec() []commandSpec {
 		{name: "--op", kind: flagEnum, values: []string{"read", "edit", "write", "delete"}},
 		{name: "--path", kind: flagFile},
 		{name: "--choices", kind: flagValue},
+		{name: "--ask"},
 		{name: "--codex"},
 		{name: "--files"},
 	}

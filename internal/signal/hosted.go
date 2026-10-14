@@ -838,6 +838,11 @@ type HostedSession struct {
 	// connection also carries its viewers' input, and closes when its queue is
 	// full. Guarded by mu.
 	events session.EventBucket
+	// asked says the attention shown is the agent's own question (Ask, or
+	// the host telling it so: HostAttention), which a done forwarded to the
+	// host does not replace here, as it does not on the host's session.
+	// Guarded by mu.
+	asked bool
 }
 
 // Owner is the hash of the host instance that registered the session, "" when none.
@@ -1074,29 +1079,44 @@ func (h *HostedSession) SetAttention(state session.AttentionState, message, sour
 // is told, so its viewers see the change too; without one the change is held
 // on the server. A change from the host (forward false) never spends one.
 func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
-	return h.setAttention(state, message, source, kind, options, forward, "")
+	return h.setAttention(state, message, source, kind, options, forward, "", false)
+}
+
+// Ask is SetAttentionFull, forwarded, for the agent's own question
+// (session.Local.Ask): needs_input marked as the agent's, which the host is
+// sent with the mark (proto.HostAttentionMsg.Ask), and which a done
+// forwarded later does not replace here while it shows: the host's session
+// keeps it through its turn's done, and tells its attention back after
+// every report forwarded. A question the host has set aside shows here as
+// the host tells it.
+func (h *HostedSession) Ask(message, source, kind string, options []session.Option) error {
+	return h.setAttention(session.AttentionNeedsInput, message, source, kind, options, true, "", true)
 }
 
 // HostAttention records an attention change the host reports (forward
 // false): id is the id the host's session gave it (Attention.ID), kept
 // when it is a question's id (proto.ValidQuestionID), so that an answer
-// from the server's listings names the question the host holds.
-func (h *HostedSession) HostAttention(state session.AttentionState, message, source, kind string, options []session.Option, id string) {
+// from the server's listings names the question the host holds; ask says
+// it is the agent's own question (Attention.Asked).
+func (h *HostedSession) HostAttention(state session.AttentionState, message, source, kind string, options []session.Option, id string, ask bool) {
 	if !proto.ValidQuestionID(id) {
 		id = ""
 	}
-	_ = h.setAttention(state, message, source, kind, options, false, id)
+	_ = h.setAttention(state, message, source, kind, options, false, id, ask)
 }
 
 // setAttention is SetAttentionFull with the change's id: the host's, or,
 // for a change the server makes (id ""), none, the host giving the change
 // its own as it applies it and reporting it back (HostAttention). A
 // forwarded change the host will not apply, the same as the one it holds,
-// keeps that one's id.
-func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string) error {
+// keeps that one's id. ask marks a needs_input change as the agent's own
+// question (Ask); a done forwarded while one shows is sent on to the host
+// and changes nothing here.
+func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool) error {
 	if !state.Valid() {
 		return nil
 	}
+	ask = ask && state == session.AttentionNeedsInput
 	message = session.CleanMessage(message)
 	if !session.ValidKind(kind) {
 		kind = ""
@@ -1112,20 +1132,32 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		return ErrRateLimited
 	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options}
+	if forward && state == session.AttentionDone && h.asked && h.info.Attention.State == session.AttentionNeedsInput {
+		// The agent's own question outlasts its turn's done, here as on the
+		// host, which is told the done and tells its attention back.
+		h.mu.Unlock()
+		if conn != nil {
+			conn.sendJSON(hostAttentionMsg("", att, false))
+		}
+		return nil
+	}
 	if state != session.AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
 		att.ID = id
 		if cur := h.info.Attention; forward && id == "" && sameAttention(cur, att) {
 			// The host keeps what it shows (a change that changes nothing),
-			// and reports nothing back: its question keeps its id here too.
+			// and reports nothing back: its question keeps its id here too,
+			// and its mark.
 			att.ID = cur.ID
+			ask = ask || h.asked
 		}
 	}
 	h.info.Attention = att
+	h.asked = ask
 	h.mu.Unlock()
 	if forward && conn != nil {
-		conn.sendJSON(hostAttentionMsg("", att))
+		conn.sendJSON(hostAttentionMsg("", att, ask))
 	}
 	h.notifyChange()
 	return nil
@@ -1145,9 +1177,10 @@ func sameAttention(a, b session.Attention) bool {
 	return true
 }
 
-// hostAttentionMsg encodes an attention change for the host control link.
-func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind}
+// hostAttentionMsg encodes an attention change for the host control link,
+// ask its mark as the agent's own question.
+func hostAttentionMsg(sessionID string, att session.Attention, ask bool) proto.HostAttentionMsg {
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, Ask: ask}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}
@@ -1759,6 +1792,7 @@ func (h *HostedSession) HostStatus(status session.Status, exitCode *int) {
 		// host that only went away (host_disconnected) may come back: its
 		// session keeps its state.
 		h.info.Attention = session.Attention{}
+		h.asked = false
 	}
 	h.mu.Unlock()
 	h.notifyChange()

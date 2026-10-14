@@ -97,7 +97,10 @@
 # resolves by itself after 30 s), writes "resolved <microseconds since the
 # epoch>" to $HOME/.stub-sessions/<id>.async as it resolves, says Working
 # again and spins; `stub async-ask <question>` also asks it as the agent's
-# own while it is pending.
+# own while it is pending. `stub ask-wait <question>` asks it marked as the
+# agent's own question (notify --ask, #193), spins as `stub ask` does, and
+# then ends its turn as its agent's hooks do (STUB_REPORT): the question
+# outlasts that done.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -763,6 +766,10 @@ answer() {
 	fi
 	if [[ $line =~ ^stub\ ask\ (.{1,200})$ ]]; then
 		report --state needs_input --message "${BASH_REMATCH[1]}"
+		spin 30
+	fi
+	if [[ $line =~ ^stub\ ask-wait\ (.{1,200})$ ]]; then
+		report --ask --message "${BASH_REMATCH[1]}"
 		spin 30
 	fi
 	if [[ $line =~ ^stub\ async\ (.{1,200})$ ]]; then

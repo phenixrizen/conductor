@@ -17,6 +17,11 @@ type attentionRequest struct {
 	// and whether the report is of a turn (Resume).
 	AgentSession string `json:"agentSession"`
 	Turn         bool   `json:"turn"`
+	// Ask, with needs_input, says the question is the agent's own (the MCP
+	// tool ask, conductor notify --ask), which the session keeps through
+	// its turn's done (session.Local.Ask); with another state it changes
+	// nothing.
+	Ask bool `json:"ask"`
 }
 
 // eventRequest is the body of POST /api/sessions/{id}/events. Type is one of
@@ -33,6 +38,9 @@ type eventRequest struct {
 	// A `file` event: what the agent did to the file (read, edit, write, delete) and its path.
 	Op   string `json:"op"`
 	Path string `json:"path"`
+	// Ask goes with the attention word needs_input, as the attention
+	// route's (attentionRequest.Ask).
+	Ask bool `json:"ask"`
 }
 
 // eventActor is the display name on an entry reported through the events
@@ -119,8 +127,9 @@ func eventType(t string) bool {
 // host, and with none left it is refused with 429 rate_limited and nothing
 // changes. The attention route and the attention types of the events route
 // share it, so they cannot drift apart. It writes the response and returns
-// false when the report is refused.
-func reportAttention(w http.ResponseWriter, d session.Driver, source string, state session.AttentionState, message, kind string, options []session.Option) bool {
+// false when the report is refused. ask, with needs_input, reports the
+// agent's own question (session.Local.Ask).
+func reportAttention(w http.ResponseWriter, d session.Driver, source string, state session.AttentionState, message, kind string, options []session.Option, ask bool) bool {
 	if len(message) > 4096 {
 		writeError(w, http.StatusBadRequest, "invalid_request", "message too long")
 		return false
@@ -137,9 +146,16 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 		writeError(w, http.StatusConflict, "session_ended", "the session has ended")
 		return false
 	}
+	ask = ask && state == session.AttentionNeedsInput
 	switch drv := d.(type) {
 	case *session.Local:
-		if err := drv.TrySetAttentionFull(state, message, source, kind, options); err != nil {
+		var err error
+		if ask {
+			err = drv.TryAsk(message, source, kind, options)
+		} else {
+			err = drv.TrySetAttentionFull(state, message, source, kind, options)
+		}
+		if err != nil {
 			if errors.Is(err, session.ErrRateLimited) {
 				writeSessionLimited(w)
 				return false
@@ -149,7 +165,13 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 		}
 	case *signal.HostedSession:
 		// The only refusal is an empty bucket, host or no host.
-		if err := drv.SetAttentionFull(state, message, source, kind, options, true); err != nil {
+		var err error
+		if ask {
+			err = drv.Ask(message, source, kind, options)
+		} else {
+			err = drv.SetAttentionFull(state, message, source, kind, options, true)
+		}
+		if err != nil {
 			writeSessionLimited(w)
 			return false
 		}
@@ -190,7 +212,7 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agentSession is longer than 128 bytes")
 		return
 	}
-	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options) {
+	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
 		return
 	}
 	if local, ok := d.(*session.Local); ok && req.AgentSession != "" {
@@ -226,7 +248,7 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if state, isAttention := attentionState(req.Type); isAttention {
-		if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options) {
+		if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
 			return
 		}
 	} else if eventType(req.Type) {

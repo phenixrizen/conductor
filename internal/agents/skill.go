@@ -61,15 +61,21 @@ them; the commands below do the same.
 
 - A decision you cannot make yourself, such as a choice between designs, a
   missing credential or an approval: ask, then wait for the answer in the
-  terminal. The session shows as needing input until someone replies.
+  terminal. The session shows as needing input until someone replies, also
+  once your turn has ended.
 
-      "${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "…"
+      "${CONDUCTOR_BIN:-conductor}" notify --ask --message "…"
 
 - A question with a few answers: name them in the terminal on their own
   line, then ask with the same words as choices, so one click types the
   answer as a line (at most 6, each at most 40 characters):
 
-      "${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "Which database?" --choices "Postgres|SQLite|Keep both"
+      "${CONDUCTOR_BIN:-conductor}" notify --ask --message "Which database?" --choices "Postgres|SQLite|Keep both"
+
+- A question you no longer need answered (you found the answer yourself):
+  clear it, so nobody answers it for nothing.
+
+      "${CONDUCTOR_BIN:-conductor}" notify --state clear
 
 ## Form a crew
 

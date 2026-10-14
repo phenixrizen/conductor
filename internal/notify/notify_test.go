@@ -276,6 +276,30 @@ func TestSendRetriesWithinItsBudget(t *testing.T) {
 
 // A server that predates the agent-session fields refuses them as unknown:
 // the state goes again without them, once.
+// A server older than ask refuses it as an unknown field: the question is
+// reported again without it, and shows there as any.
+func TestSendDropsTheMarkForAnOlderServer(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if _, ok := body["ask"]; ok {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"invalid_request","message":"json: unknown field \"ask\""}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if err := Send(context.Background(), srv.URL+"/api/sessions/s1/attention", "tok", Request{State: "needs_input", Message: "Which database?", Ask: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || bodies[0]["ask"] != true || bodies[1]["state"] != "needs_input" || bodies[1]["message"] != "Which database?" || bodies[1]["ask"] != nil {
+		t.Fatalf("bodies %v", bodies)
+	}
+}
+
 func TestSendDropsTheAgentSessionForAnOlderServer(t *testing.T) {
 	var bodies []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

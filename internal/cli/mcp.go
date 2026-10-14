@@ -86,7 +86,7 @@ func mcpTools() []mcpTool {
 			}, "event")},
 		{Name: "set_state", Description: "Tell the people watching that you are working, done, or clear the state; use ask for a question.",
 			InputSchema: obj(map[string]any{"state": map[string]any{"type": "string", "enum": []string{"working", "done", "clear"}}, "message": str("one line")}, "state")},
-		{Name: "ask", Description: "Ask the people watching for a decision you cannot make yourself; the session shows as needing input until someone answers in the terminal. With choices (at most 6, each at most 40 characters), name them in the terminal too: a click types the choice as a line.",
+		{Name: "ask", Description: "Ask the people watching for a decision you cannot make yourself; the session shows as needing input until someone answers in the terminal, also once your turn has ended. With choices (at most 6, each at most 40 characters), name them in the terminal too: a click types the choice as a line. If you no longer need the answer, clear the question with set_state clear.",
 			InputSchema: obj(map[string]any{"message": str("the question, one line"), "choices": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 6}}, "message")},
 		{Name: "form_crew", Description: "Form a crew around this session when the work splits into parts that can run side by side: you stay as the member named by self (its agentId and prompt may be empty), the others get sessions of their own. At most 2 a session; never for work you can finish alone.",
 			InputSchema: obj(map[string]any{
@@ -252,7 +252,7 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			if strings.TrimSpace(a.Message) == "" {
 				return "", errors.New("ask needs a message")
 			}
-			req = notify.Request{State: "needs_input", Message: a.Message}
+			req = notify.Request{State: "needs_input", Message: a.Message, Ask: true}
 			if len(a.Choices) > 0 {
 				opts, err := parseChoices(strings.Join(a.Choices, "|"))
 				if err != nil {

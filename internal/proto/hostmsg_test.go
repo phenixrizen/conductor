@@ -199,3 +199,32 @@ func TestHostRunLinkMsgWireShape(t *testing.T) {
 		t.Fatalf("link_created %s", b)
 	}
 }
+
+// The host attention message carries the mark of the agent's own question
+// (#193) as ask, both ways, and leaves it out when unset, so that an older
+// host or server reads the message it always did. The largest message
+// (500 bytes of words, six choices at their bounds, an id, the mark) is far
+// within MaxHostMessage.
+func TestHostAttentionMsgCarriesTheMark(t *testing.T) {
+	b, err := json.Marshal(HostAttentionMsg{T: HostAttention, State: "needs_input", Message: "Which database?", Source: "api", Ask: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"t":"attention","state":"needs_input","message":"Which database?","source":"api","ask":true}`; string(b) != want {
+		t.Fatalf("got %s want %s", b, want)
+	}
+	var back HostAttentionMsg
+	if err := json.Unmarshal(b, &back); err != nil || !back.Ask {
+		t.Fatalf("round trip %+v %v", back, err)
+	}
+	if b, _ := json.Marshal(HostAttentionMsg{T: HostAttention, State: "done"}); strings.Contains(string(b), "ask") {
+		t.Fatalf("an unmarked change %s", b)
+	}
+	big := HostAttentionMsg{T: HostAttention, SessionID: strings.Repeat("s", 64), State: "needs_input", Message: strings.Repeat("é", 250), Source: "question", Kind: "permission", ID: strings.Repeat("0", 32), Ask: true}
+	for range 6 {
+		big.Options = append(big.Options, AttentionOption{Label: strings.Repeat("é", 60), Input: strings.Repeat("\x01", MaxAnswerInput)})
+	}
+	if b, _ := json.Marshal(big); len(b) > MaxHostMessage/8 {
+		t.Fatalf("the largest attention message is %d bytes", len(b))
+	}
+}

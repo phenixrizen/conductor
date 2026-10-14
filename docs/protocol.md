@@ -424,11 +424,14 @@ agent's id or else the program's name, never an argument; `cwd` the folder's las
 and no `branch`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?}`
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?}`
 (`id` the id the host's session gave the change, which the server keeps,
 only as 1–32 bytes of printable ASCII, so that an answer from its listings
 names the question the host holds; an older server ignores it; a question
-asked again with the same words is sent again, its `id` new),
+asked again with the same words is sent again, its `id` new; `ask: true`,
+with `needs_input` only, says the question the host's session shows is the
+agent's own (see Attention), which the server's copy then keeps through a
+`done` it forwards; never sent to a switchyard),
 `activity{sessionId,entry,state?}`,
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
@@ -705,6 +708,11 @@ question), or, to an owner that predates `answer`, an INPUT frame. Clearing the 
 6 choices of 40 bytes) reports `kind:"prompt"` with one option per choice whose
 `input` is the choice and a CR, so a click types it as a line; the agent is
 told to name the choices in the terminal first, so a typed answer matches.
+`conductor notify --ask --message "…" [--choices "a|b|c"]` reports the same
+with `ask: true`, the agent's own question (below); `--ask` with another
+`--state`, an `--event`, a hook flag or `--codex` is a usage error. A server
+that refuses `ask` as an unknown field (an older one) is sent the report
+again without it, and the MCP tool `ask` does the same.
 `conductor notify --claude-hook` maps Claude Code `PermissionRequest` hooks
 (and `permission_prompt` notifications) to `kind:"permission"` with the
 options `Yes`/`1`, `Always for this session`/`2`, `No, explain…`/`3`; other
@@ -761,6 +769,54 @@ viewers get an `attention` message with the empty state: an ended session never
 shows `needs_input`, and its activity log keeps the entries. A hosted session's
 state is cleared when its host reports it ended; a host that disconnects leaves
 it as it was, since the host may come back.
+
+The agent's own question (#193): a `needs_input` report that says the agent
+asks it, `ask: true` on the attention route or the events route's attention
+word (the MCP tool `ask`, `conductor notify --ask`), shows until it is
+answered, also once the turn it was asked in has ended, which is when the
+agent waits for the answer. It is said on purpose, never inferred: a plain
+`needs_input` (a hook's permission prompt, OpenCode's, DeepSeek Harness's and
+aider's waits, `--state needs_input`) gives way to `done` as before, and
+`ask` with another state changes nothing. The session keeps one such
+question, shown or set aside:
+- In its turn (no `done` since it was asked), the agent's work (a `working`
+  report, Codex's working title) and another wait (a hook's report without
+  the mark, a dialog on the screen) take its place and set it aside; a
+  `done`, any (its turn's, with `turn` or without; Claude Code's
+  `idle_prompt` a minute later), leaves it showing, or shows it again from
+  aside in place of what shows, the same question: its `id` and `since`, so
+  that a reply under way to it keeps its carriage return, and its line in the
+  chat, where it is not put a second time. The `done` still ends the turn and
+  is recorded as the report it is: its `attention` entry, with the state
+  `done`, reaches the Events page, the webhooks and a crew's start-after rule;
+  the question shown again records its own `needs_input` entry.
+- After its turn's `done`, it shows until a person's keys or reply answer it
+  (as any question), the agent clears it (`clear`) or asks another, another
+  state takes its place (the agent at work in a new turn: a `working` report
+  after the `done`, or after the first Enter written since), or the session
+  ends; a `done` changes nothing shown and is recorded, and Codex's working
+  title read after the `done` changes nothing until the next Enter, as for a
+  `done`.
+- The bell, an OSC notification and the screen pattern never take its place,
+  shown or set aside. A question a reply has claimed, or that a person's keys
+  reached, is removed, never set aside; one set aside is removed by a
+  person's keys or reply typed meanwhile (the person has taken part), not by
+  Conductor's own submissions (a crew's prompt, a handoff, a broadcast). A
+  handoff typed while it is set aside whose carriage return follows the
+  `done` that shows it again is entered all the same: it answers nothing,
+  and begins the next turn, in which the agent's work removes the question.
+  The hold of the turn (`submit`) holds it over, through its turn's `done`
+  and its work in that turn, as it holds over any question the agent
+  reported. Handoffs and broadcasts wait while it shows, as for any
+  `needs_input`, and a reply naming it while it is set aside is refused, as
+  one to a question no longer shown.
+
+A hosted session's host is sent the mark with the report (`attention` with
+`ask`) and applies the same rules; it tells its attention back with the mark,
+and the server's copy keeps a marked question it shows through a forwarded
+`done` (the host told the `done`), while a question the host has set aside
+shows the forwarded `done` there until the host tells its attention again. An
+older host ignores the field, and the question shows there as before.
 
 An agent with no hook and no bell can be given a screen pattern instead: a
 catalog signal `{"kind": "pattern", "pattern": "<RE2>"}` for server sessions,
@@ -832,7 +888,9 @@ Codex 0.159.0 (`Trust this folder?`). It exists for crew runs: a member's
 prompt is never typed while it shows (see Crew runs).
 
 Explicit updates: `POST /api/sessions/{id}/attention` with
-`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?}` and
+`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?, ask?}` (`ask`
+a boolean: with `needs_input`, the agent's own question, see above; a value
+that is no boolean is `400 invalid_request`) and
 `Authorization: Bearer <agent token>` (or the workbench token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`, which `conductor notify` and `conductor crew` read,
@@ -1269,10 +1327,10 @@ set, so no one sees the state before the time its entry gives.
 
 Reporting: `POST /api/sessions/{id}/events` with `Authorization: Bearer
 <agent token>` (or the workbench token) and the body `{type, message?, url?, to?,
-tool?, kind?, options?}`. `type` is one of the six event types or an
+tool?, kind?, options?, ask?}`. `type` is one of the six event types or an
 attention word: `needs_input`, `working`, `done` or `clear`. An attention word
 is applied exactly as `POST /api/sessions/{id}/attention` applies it, with the
-same checks, `kind`, `options` and effect, and the same `source` (`api` for the
+same checks, `kind`, `options`, `ask` and effect, and the same `source` (`api` for the
 agent token, `admin` for the admin); only the reply differs. The entries a
 session records itself (`attention`, `input`, `join`, `leave`, `link`,
 `status`) cannot be reported: they skip the limit above, and only the session
@@ -1721,7 +1779,9 @@ status, startedAt?, endedAt?, error?, needsInput?, agentSession?, diff?}` with
 derived as it is read: `stopped` once stopped; `finished` when every member
 has ended and none is pending; `needs_input` while the session of a starting
 or running member is `needs_input` (`needsInput` counts them, and each such
-member has `needsInput: true`); `running` otherwise (a member's `done` keeps it
+member has `needsInput: true`; a member whose own question outlasts its
+turn's `done`, see Attention, is one, while the members that start after it
+start at that `done`); `running` otherwise (a member's `done` keeps it
 running: a done agent is idle, not gone). `yolo` is the run's yolo choice,
 fixed at launch. A member's `agentSession` is the one its latest session last
 showed (see Attention), kept after that session leaves the server, for

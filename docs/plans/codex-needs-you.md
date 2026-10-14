@@ -827,6 +827,28 @@ Stub and Playwright:
   its turn open; MCP clients time tools out; it changes the tool's
   contract for every agent.
 
+## Found while building Part B (2026-10-14)
+
+Details the plan left open, settled in the code; none changes the events,
+orders or invariants above.
+
+- **The handoff's Enter claims nothing.** Conductor's own Enter puts the
+  question showing behind (`noteAnswering`: an Enter picks any prompt), so
+  the handoff of P28 would have claimed the question shown again, and a
+  person's reply to it been refused. The question the submission noted
+  aside is left out of that note, its text's write too.
+- **A person's reply is one with `By`.** A reply box's line (`submit`, a
+  chat sent to the agent) removes a question set aside as its text or
+  Enter is written; a run's chat to a member, a broadcast and a handoff
+  (`UnlessWaiting`, no `By`) are Conductor's and do not.
+- **The same words, now marked.** An `ask` with the words, source, kind and
+  choices of the needs_input showing changes nothing shown, as any report
+  of the same; it marks that question as the agent's from then.
+- **Set aside when the hold begins.** The hold shows; the turn's done
+  hidden by it holds the question over, to show once a person's keys end
+  the hold without answering it, as a question the hold took the place of.
+- **A switchyard** is told no mark, as it is told no words.
+
 # The pull requests, in order
 
 1. The host-connection change merges first (its own plan): it changes

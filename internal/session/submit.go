@@ -120,11 +120,27 @@ type Submission struct {
 var ErrSubmitPending = errors.New("session: the program is taking its input slowly; the line is entered once it has")
 
 // submitState is what a submission carries from its text to its Enter.
+// aside is the id of the agent's own question set aside as Conductor's own
+// submission (no By) began (own): shown again at its turn's done before
+// the Enter, it is no prompt that leaves the Enter out (comesAfter).
 type submitState struct {
 	promptSince *time.Time
 	byName      string
 	typedAt     time.Time
 	wait        writeWait
+	aside       string
+}
+
+// comesAfter reports whether att is a prompt come since the submission
+// began, which its Enter must not answer: needs_input, stamped otherwise
+// than the attention it began with, and not the agent's own question it
+// began with set aside (aside), shown again by its turn's done (a handoff
+// typed while the agent worked, its Enter after the done): that Enter is
+// written all the same, so that no text is left typed without it; it
+// answers nothing (answer compares the stamp the submission began with),
+// and begins the next turn, whose work removes the question.
+func (st submitState) comesAfter(att Attention) bool {
+	return att.State == AttentionNeedsInput && att.Since != st.promptSince && !(st.aside != "" && att.ID == st.aside)
 }
 
 // SubmitResult says how far a submission went.
@@ -247,6 +263,13 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	if sub.Question != "" {
 		gone = s.waitsLocked(sub.Question)
 	}
+	// Conductor's own submission notes the agent's own question set aside
+	// as it begins (submitState.comesAfter); a person's reply removes it
+	// as it is written (reachedAside).
+	var aside string
+	if sub.By == nil {
+		aside = s.asideOwn()
+	}
 	s.mu.Unlock()
 	if ended {
 		return res, ErrSessionEnded
@@ -282,7 +305,8 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// while the program is known not to read, and is withdrawn when
 		// the session ends its controller (not when the controller only
 		// goes): its text, and its Enter once the text is typed.
-		wait: writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from},
+		wait:  writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from},
+		aside: aside,
 	}
 	if text != "" {
 		data := text
@@ -296,7 +320,10 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		textWait.guard = s.textGuard(sub)
 		textWait.before = func() {
 			keys, _, _ := s.keysWritten([]byte(data))
-			s.noteAnswering(promptSince, []byte(data), keys, nil)
+			s.noteAnswering(promptSince, []byte(data), keys, nil, st.aside)
+			if sub.By != nil {
+				s.reachedAside()
+			}
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
@@ -502,9 +529,16 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	s.heldOver = Attention{}
 	cur := s.info.Attention
 	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended() && !picksChoice(over.Options, data, maybe)
+	if over.ID != "" && over.ID == s.own.ID && !restore {
+		// The agent's own question held over, answered by the keys (one of
+		// its choices) or gone with the hold: kept no more.
+		s.dropOwnLocked()
+	}
 	if restore {
 		// Shown again, it is a wait a title that says the agent works may
-		// settle from now (settleLocked).
+		// settle from now (settleLocked); the agent's own question while
+		// the session keeps it (own).
+		over.ask = over.ID == s.own.ID
 		s.info.Attention = over
 		s.settleLocked(over)
 		if s.answered == over.ID {
@@ -660,6 +694,9 @@ func (s *Local) enter(ctx context.Context, sub Submission, res SubmitResult, st 
 // write had no turn in time (its context's deadline, InputWait, a stall)
 // and was not made is errEnterLater.
 func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult, st submitState) (SubmitResult, error) {
+	if hook := s.beforeEnter.Load(); hook != nil {
+		(*hook)()
+	}
 	promptSince, byName, wait := st.promptSince, st.byName, st.wait
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
@@ -674,15 +711,13 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		// prompt come meanwhile or not.
 		return res, err
 	}
-	if att.State == AttentionNeedsInput && att.Since != promptSince {
+	if st.comesAfter(att) {
 		return res, nil
 	}
 	// As the writer takes the Enter it looks again: a prompt raised while
 	// the Enter waited behind another write, or a dialog drawn on the
 	// screen meanwhile, is never answered by it.
-	wait.guard = s.enterGuard(func(att Attention) bool {
-		return att.State == AttentionNeedsInput && att.Since != promptSince
-	})
+	wait.guard = s.enterGuard(st.comesAfter)
 	if sub.Question != "" && !res.Typed {
 		// A reply that is an Enter alone: its question still waits, and is
 		// noted answered as the Enter is taken (its text did so for a line).
@@ -724,7 +759,10 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			sub.BeforeEnter()
 		}
 		keys, _, _ := s.keysWritten([]byte{'\r'})
-		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil)
+		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil, st.aside)
+		if sub.By != nil {
+			s.reachedAside()
+		}
 		s.nextTurn()
 	}
 	enterAt := time.Now().UTC()
