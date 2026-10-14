@@ -51,8 +51,8 @@ type Server struct {
 	// when the server was made).
 	pingEvery time.Duration
 	// hostPingEvery is how often a host's control connection is pinged
-	// while its reading is paused or a viewer is attached to its session
-	// through a link (the package's hostPingEvery when the server was made).
+	// while a link a viewer joined its session through still stands (the
+	// package's hostPingEvery when the server was made).
 	hostPingEvery time.Duration
 	// relayBurstFloor is the least burst of a relay bound (relayBurst; the
 	// package's relayBurstFloor when the server was made).

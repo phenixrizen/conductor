@@ -382,12 +382,13 @@ link gone (its text not typed, or typed with no carriage return and the
 session's turn held for a person), as its viewer's attach is refused then.
 Whatever the host reads on the connection counts: a message, a relayed
 frame, a ping or a pong. The server pings the host every 30 s, and every
-5 s while its reading of the connection waits for a relay bound (the
-host's own, or the one it shares with the other open hosts of its
-address), whose pongs, and the answers to the host's own pings, wait for
-that reading, and while a viewer is attached to the session through a
-link; whether or not the last pong has come back: a ping is written
-whatever the server reads. While a viewer who joined through a link, or something of
+5 s while a link a viewer joined the session through stands (one that left
+may have a line under way on the host), whether or not the last pong has
+come back: a ping is written whatever the server reads, where the answers
+to the host's own pings wait behind what the host sent before them (a
+large frame over a slow uplink) and for the server's reading (a relay
+bound, the host's own or the one it shares with the other open hosts of
+its address, pauses it). While a viewer who joined through a link, or something of
 theirs, is there, the host pings the server too (a WebSocket ping, which
 every server answers, an older one too) once the connection has been quiet
 for 5 s, one ping at a time: a live, quiet connection is heard from at

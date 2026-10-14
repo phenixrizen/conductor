@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -149,7 +148,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	go hostKeepalive(ctx, c, s.pingEvery, s.hostPingEvery, func() bool { return hc.waiting() || hs.LinkViewing() })
+	go hostKeepalive(ctx, c, s.pingEvery, s.hostPingEvery, hs.LinkStands)
 
 	for {
 		typ, data, err := c.Read(ctx)
@@ -159,8 +158,10 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		// A switchyard's bound on what the host sends: its relayed output,
 		// and its messages too, an answer or a candidate for a viewer among
 		// them. The host waits for it.
-		if err := hc.take(ctx, len(data)); err != nil {
-			return
+		if hc.relay != nil {
+			if err := hc.relay.take(ctx, len(data)); err != nil {
+				return
+			}
 		}
 		if typ == websocket.MessageBinary {
 			f, err := proto.Decode(data)
@@ -188,16 +189,19 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // hostKeepalive pings a host's control connection every `every` until ctx
-// ends, and every often while often says so: while a relay bound pauses the
-// reading of the connection (the host's own bound, or the one it shares with
-// the other open hosts of its address), whose pongs, and answers to the
-// host's own pings, wait for that reading, or while a viewer is attached to
-// the session through a link. The host types a line of such a viewer only
-// while it has heard from the server lately (docs/protocol.md, the host
-// control connection), and a ping reaches it whatever the server reads. A
-// pong that does not come in time ends nothing, for the reader that takes
-// it may be paused so, and the pings go on; one that cannot be written ends
-// them, as a write's failure ends the connection.
+// ends, and every oftenEvery while often says so: while a link a viewer
+// joined the session through still stands (HostedSession.LinkStands). The
+// host types a line of a viewer who joined through a link, also one that
+// has left with its line under way, only while it has heard from the
+// server lately (docs/protocol.md, the host control connection). Its own
+// pings are answered only as the server reads the connection, behind what
+// the host sent before them, which can be slow (a relay bound pauses the
+// reading, the host's own or the one it shares with the other open hosts
+// of its address; a large frame comes over a slow uplink); a ping of the
+// server's reaches it whatever the server reads. A pong that does not come
+// in time ends nothing, for the reader that takes it may be held so, and
+// the pings go on; one that cannot be written ends them, as a write's
+// failure ends the connection.
 func hostKeepalive(ctx context.Context, c *websocket.Conn, every, oftenEvery time.Duration, often func() bool) {
 	if every <= 0 {
 		every = defaultPingEvery // a Server made without New
@@ -249,25 +253,7 @@ type hostConnState struct {
 	relay       *byteBucket
 	// ctx is the connection's: a wait on relay ends with it.
 	ctx context.Context
-	// paused counts the waits on relay under way: the connection is not
-	// read meanwhile (hostKeepalive).
-	paused atomic.Int32
 }
-
-// take charges n bytes to the connection's bound and waits until it allows
-// them, the connection not read meanwhile (waiting); nil at once without a
-// bound, ctx's error when it ends first.
-func (hc *hostConnState) take(ctx context.Context, n int) error {
-	if hc.relay == nil {
-		return nil
-	}
-	hc.paused.Add(1)
-	defer hc.paused.Add(-1)
-	return hc.relay.take(ctx, n)
-}
-
-// waiting says whether the connection's reading waits for its bound now.
-func (hc *hostConnState) waiting() bool { return hc.paused.Load() > 0 }
 
 // chargeForward charges, before a viewer is sent it, what a host's message
 // brings the viewer (n bytes) past what it was charged as read: a message
@@ -277,7 +263,7 @@ func (hc *hostConnState) chargeForward(n, read int) bool {
 	if hc.relay == nil || n <= read {
 		return true
 	}
-	return hc.take(hc.ctx, n-read) == nil
+	return hc.relay.take(hc.ctx, n-read) == nil
 }
 
 // byteBucket is a token bucket of bytes: rate a second, burst at most (a

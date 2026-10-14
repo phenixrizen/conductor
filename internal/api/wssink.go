@@ -32,10 +32,9 @@ const defaultPingEvery = 30 * time.Second
 var pingEvery = defaultPingEvery
 
 // defaultHostPingEvery is how often a host's control connection is pinged
-// while a relay bound pauses its reading or a viewer is attached to its
-// session through a link (hostKeepalive): the host types such a viewer's
-// lines only while it has heard from the server within 15 s, three of
-// these.
+// while a link a viewer joined its session through still stands
+// (hostKeepalive): the host types such a viewer's lines only while it has
+// heard from the server within 15 s, three of these.
 const defaultHostPingEvery = 5 * time.Second
 
 // hostPingEvery is defaultHostPingEvery, which a server takes when it is

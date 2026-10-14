@@ -768,18 +768,16 @@ func (h *HostedSession) RelayOnly() bool {
 	return h.relayOnly
 }
 
-// LinkViewing says whether a viewer is attached to the session through a
-// link, one not let go: its host then needs to hear from the server often
-// (the api's hostKeepalive).
-func (h *HostedSession) LinkViewing() bool {
+// LinkStands says whether a link a viewer joined the session through still
+// stands (linksJoined): the host may then have a line of that viewer's
+// under way, also once it has left, which it types only while it hears
+// from the server often (the api's hostKeepalive). A link that leaves the
+// list goes with a link_gone to the host (revoked, expired, pushed out) or
+// with the session's end.
+func (h *HostedSession) LinkStands() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, v := range h.viewers {
-		if v.LinkID != "" && v.Reason() == nil {
-			return true
-		}
-	}
-	return false
+	return len(h.linksJoined) > 0
 }
 
 // LinkViewers counts server-side viewers per share link id.

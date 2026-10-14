@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -75,36 +76,76 @@ func pingedYard(t *testing.T, pings *pingLog) (yard *testEnv, host, other *fakeH
 	return yard, host, other
 }
 
-// quietFor fails unless pings logs no ping for d from now: the host is
-// pinged pingEvery (30 s) apart.
-func quietFor(t *testing.T, pings *pingLog, d time.Duration, why string) {
+// answerTo returns the server's message with requestId id, waiting at most
+// d for it.
+func (h *fakeHost) answerTo(id string, d time.Duration) map[string]any {
+	h.t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case m := <-h.msgs:
+			if m["requestId"] == id {
+				return m
+			}
+		case <-h.done:
+			h.t.Fatalf("the host's connection ended: %v", h.err)
+		case <-deadline:
+			h.t.Fatalf("no answer to %s", id)
+		}
+	}
+}
+
+// pingedOften fails unless pings logs a ping at least every 3
+// hostPingEvery over the next n of them.
+func pingedOften(t *testing.T, pings *pingLog, n int, why string) {
 	t.Helper()
 	start := time.Now()
+	time.Sleep(time.Duration(n) * hostPingEvery)
+	if quiet := pings.longestQuiet(start, time.Now()); quiet > 3*hostPingEvery {
+		t.Fatalf("%s: no ping for %v", why, quiet)
+	}
+}
+
+// pingedSeldom fails if pings logs a ping over the next n hostPingEvery: the
+// host is pinged pingEvery (30 s) apart.
+func pingedSeldom(t *testing.T, pings *pingLog, n int, why string) {
+	t.Helper()
+	start := time.Now()
+	d := time.Duration(n) * hostPingEvery
 	time.Sleep(d)
 	if quiet := pings.longestQuiet(start, time.Now()); quiet < d*4/5 {
 		t.Fatalf("%s: pinged within %v", why, quiet)
 	}
 }
 
-// A switchyard pings a host every hostPingEvery while the bound on what
-// the open hosts of its address relay pauses the reading of its
-// connection: another open host of the address spent the bound, and the
-// host's next message waits for it, its pongs and the answers to its own
-// pings unread meanwhile. The host types the line of a viewer who joined
-// through a link only while it has heard from the server lately, also once
-// that viewer has left (a reply box closes its connection once it has
-// sent): it hears the pings. Otherwise, with no viewer through a link,
-// the pings are pingEvery apart.
-func TestAHostIsPingedWhileItsReadingWaits(t *testing.T) {
+// A switchyard pings a host every hostPingEvery while a link a viewer
+// joined its session through stands: while the viewer is attached, once it
+// has left (a reply box closes its connection once it has sent, its line
+// perhaps still under way on the host, which types it only while it has
+// heard from the server lately), and also while the bound on what the open
+// hosts of its address relay pauses the reading of its connection, which
+// holds back the answers to the host's own pings: another open host of the
+// address spent the bound, and the host's next message waits for it. With
+// no such link, before one is joined and once it is revoked, the pings are
+// pingEvery apart.
+func TestAHostIsPingedOftenWhileALinkJoinedThroughStands(t *testing.T) {
 	var pings pingLog
 	yard, host, other := pingedYard(t, &pings)
-	tok := host.link("control", "guest")
+	pingedSeldom(t, &pings, 5, "no link joined through")
+
+	host.send(proto.HostLinkMsg{T: proto.HostLink, RequestID: "guest", Role: "control"})
+	created := host.answerTo("guest", 5*time.Second)
+	u, _ := created["url"].(string)
+	linkID, _ := created["linkId"].(string)
+	_, tok, _ := strings.Cut(u, "/join/")
+	pingedSeldom(t, &pings, 5, "a link minted and not joined through")
 	guest := dialViewer(t, yard, host.sessionID, tok)
 	guest.hello(80, 24)
 	host.expect(proto.HostViewerJoin)
+	pingedOften(t, &pings, 10, "a viewer attached through a link")
 	guest.c.Close(websocket.StatusNormalClosure, "")
 	host.expect(proto.HostViewerLeave)
-	quietFor(t, &pings, 5*hostPingEvery, "no viewer through a link, the reading not paused")
+	pingedOften(t, &pings, 10, "the link's viewer left")
 
 	// The other host spends the address's bound: 32 KiB of burst, then 64
 	// KiB at 16 KiB a second, about 4 s, which the host's next message
@@ -121,55 +162,19 @@ func TestAHostIsPingedWhileItsReadingWaits(t *testing.T) {
 	if err == nil {
 		t.Fatal("the switchyard answered the host's ping while its reading waited")
 	}
-	var answered time.Time
-	deadline := time.After(20 * time.Second)
-	for answered.IsZero() {
-		select {
-		case m := <-host.msgs:
-			if m["t"] == proto.HostLinkCreated && m["requestId"] == "paused" {
-				answered = time.Now()
-			}
-		case <-host.done:
-			t.Fatalf("the host's connection ended: %v", host.err)
-		case <-deadline:
-			t.Fatal("the host's message was never read")
-		}
-	}
+	host.answerTo("paused", 20*time.Second)
+	answered := time.Now()
 	if waited := answered.Sub(paused); waited < 2*time.Second {
 		t.Fatalf("the host's reading waited %v only: the bound was not spent", waited)
 	}
 	if quiet := pings.longestQuiet(paused, answered); quiet > 5*hostPingEvery {
 		t.Fatalf("no ping for %v while the host's reading waited %v", quiet, answered.Sub(paused))
 	}
-	// Read again, the host's pings are answered, and the switchyard's are
-	// pingEvery apart.
-	pctx, cancel = context.WithTimeout(t.Context(), 5*time.Second)
-	err = host.c.Ping(pctx)
-	cancel()
-	if err != nil {
-		t.Fatalf("the host's ping once read again: %v", err)
-	}
-	quietFor(t, &pings, 5*hostPingEvery, "read again")
-}
 
-// A switchyard pings a host every hostPingEvery while a viewer is attached
-// to its session through a link, and pingEvery apart again once it has
-// left.
-func TestAHostWithALinksViewerIsPingedOften(t *testing.T) {
-	var pings pingLog
-	yard, host, _ := pingedYard(t, &pings)
-	quietFor(t, &pings, 5*hostPingEvery, "no viewer")
-	tok := host.link("control", "guest")
-	guest := dialViewer(t, yard, host.sessionID, tok)
-	guest.hello(80, 24)
-	host.expect(proto.HostViewerJoin)
-	start := time.Now()
-	time.Sleep(10 * hostPingEvery)
-	if quiet := pings.longestQuiet(start, time.Now()); quiet > 3*hostPingEvery {
-		t.Fatalf("no ping for %v with a viewer attached through a link", quiet)
+	host.send(proto.HostLinkRevokeMsg{T: proto.HostLinkRevoke, RequestID: "revoke", LinkID: linkID})
+	if m := host.answerTo("revoke", 20*time.Second); m["t"] != proto.HostLinkRevoked {
+		t.Fatalf("the revoke: %v", m)
 	}
-	guest.c.Close(websocket.StatusNormalClosure, "")
-	host.expect(proto.HostViewerLeave)
 	time.Sleep(2 * hostPingEvery)
-	quietFor(t, &pings, 5*hostPingEvery, "the viewer left")
+	pingedSeldom(t, &pings, 5, "the link revoked")
 }
