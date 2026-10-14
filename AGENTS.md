@@ -94,17 +94,19 @@ went.
   shows it: no hard line breaks inside a paragraph (an issue shows each
   one).
 - **A bug in the current stream of work is fixed now; any other is the
-  owner's call.** The current stream of work is the change at hand and
-  what its goal needs: its own code, a defect it introduces or exposes, a
-  test it makes fail or that it touches. Such a bug is fixed in that round,
-  with its tests, and gets an issue all the same, In progress, so the
-  board shows it until its fix merges. A bug outside that stream (a
-  review's finding in code the change does not touch, a defect seen in
-  passing) is not fixed on the spot: it becomes an issue in Backlog, and
-  the owner is asked whether it is fixed now (Ready, its own pull request)
-  or waits. An agent that cannot ask reports it to whoever leads, who
-  asks. A security finding follows the same ask, but goes to the owner's
-  private document instead of an issue (see Reviews).
+  owner's call.** A bug is in the current stream of work when the change
+  introduces it, exposes it (it was harmless until the change), needs it
+  fixed to reach its goal, or makes a test fail; this holds at every round
+  of review, whatever file the bug is in and whatever the plan left out of
+  scope. Such a bug is fixed in that round, with its tests, and gets an
+  issue all the same, In progress, so the board shows it until its fix
+  merges. Any other bug, one that is independent of the change (it behaves
+  the same with or without it: a review's finding in neighbouring code, a
+  defect seen in passing), is not fixed on the spot: it becomes an issue in
+  Backlog, and the owner is asked whether it is fixed now (Ready, its own
+  pull request) or waits. An agent that cannot ask reports it to whoever
+  leads, who asks. A security finding follows the same ask, but goes to
+  the owner's private document instead of an issue (see Reviews).
 - **One change per pull request.** A bug fixed now that is not the change's
   own code (one the owner said to fix now, or a defect the change exposes
   in code it does not otherwise touch) gets its own branch and pull request
@@ -200,24 +202,31 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   `docs/plans/<branch>.md`: the events that can interact and every order
   they can come in, the invariants that must hold in all of them (say,
   "nothing is written to a viewer once its link goes"), what is out of
-  scope, and the tests that will pin each ordering. Codex reviews that
-  commit alone (`codex_review.py "review this plan: <focus>"`) before any
-  code is written; its findings change the plan, not code. The tests for
-  the orderings are written from the plan, before the code that passes
-  them. The plan stays as the change's design record, written as the pull
-  request is (neutral for a security fix). A small fix (one cause, one
-  place, no new state) needs no plan.
+  scope, and the tests that will pin each ordering. Codex reviews the plan
+  alone (`codex_review.py "review this plan: <focus>"`, the branch holding
+  only the plan's commits) before any code is written; its findings change
+  the plan, and each revision is reviewed again until a review finds
+  nothing that blocks. Only then are the tests for the orderings written,
+  from the plan, and then the code that passes them. A design that has to
+  change once code exists goes back to the plan: the plan is revised and
+  reviewed before the code follows it. The pull request's body names the
+  plan's last reviewed commit apart from the code's. The plan stays as the
+  change's design record, written as the pull request is (neutral for a
+  security fix). A small fix (one cause, one place, no new state) needs no
+  plan.
 - `--base` reviews the commits `origin/main...HEAD`, not the working tree:
   commit everything first. The pull request's body names the commit
   reviewed; commits after it (the review's own fixes included) get another
   review before the merge.
 - **A checkpoint after five rounds.** When the fifth review of a change
-  still finds something, stop and sort its findings before going on: one
-  in the change's own new code is fixed and reviewed again; one in code the
-  change does not touch, or an edge case the plan left out of scope, is
-  split off (an issue, and the owner's call, as above), not fixed on the
-  branch. The pull request's body records the checkpoint. A change still
-  finding its own defects after ten rounds goes back to its plan.
+  still finds something, stop and sort its findings before going on. A
+  finding in the current stream of work (the change introduces it,
+  exposes it or needs it fixed; see Issues and the project board) is fixed
+  on the branch and reviewed again, whatever file it is in. One that is
+  independent of the change is split off (an issue, and the owner's call),
+  not fixed on the branch. The pull request's body records the checkpoint
+  and how each finding was sorted. A change still finding its own defects
+  after ten rounds goes back to its plan.
 - The focus names the risks the change touches: races and ownership,
   link scopes and revocation, credentials in logs, what the switchyard can
   see, recovery after a restart, per-connection bounds.
