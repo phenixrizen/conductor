@@ -11,33 +11,62 @@ the same files (`hostagent/agent.go`, `peer.go`).
 1. **A link's keys and saves pass the link's check.** A keystroke (INPUT)
    and a save's part (FILE_WRITE) from a viewer who joined through a link
    are written to the session, or to its folder, only while the link's
-   credential stands (`linkCred`, #172) and the server was heard from
-   within the bound (`vouches`, #182), as a submission's text and its
-   Enter are. The check is the session's (`internal/session`, shared by
-   the server and the host, as AGENTS.md puts anything that changes what a
+   credential stands (`linkCred`, #172) and the host vouches for the
+   server (#182, as changed below), as a submission's text and its Enter
+   are. The check is the session's (`internal/session`, shared by the
+   server and the host, as AGENTS.md puts anything that changes what a
    viewer gets): `input` asks `revoked(sub)` (AttachOptions.Authorize)
    as it queues the write and again as the writer takes it (`procWrite.
-   over`), and `FileWrite` asks it at each part, before `saveFile`. A
-   refusal answers the viewer: an INPUT error `revoked` or `expired`
+   over`); `FileWrite` asks it at each part, and `saveFile` asks it once
+   more immediately before the rename that is the save's commit, after
+   the path checks, the hash and the temporary file: a refusal there
+   removes the temporary file and the target is untouched. A refusal
+   answers the viewer: an INPUT error `revoked` or `expired`
    (`inputError` gains the two), a FILE error of kind `error` with code
    `revoked` or `expired` (new codes in docs/protocol.md, File saves; the
-   browser shows the words it is sent, no change there). A viewer with no
-   link (the owner's window, a paste invite's viewer, the host's own
-   terminal) has no credential and is never refused by this check; the
-   role check (`read_only`) comes first, as it does.
-2. **The server's own messages travel ahead of relayed frames.** A host's
-   connection on the server gets two lanes: the server's own messages
-   (`link_gone`, a `viewer_leave` that gives a reason, `stop`,
-   `attention`, `activity`, the answers to the host's requests,
-   `error`) in a lane the writer takes first, bounded by the room kept
-   for them now (1 MiB, 512 messages; one that finds it full closes the
-   connection, as `send` does); the viewers' messages (`viewer_join`,
-   `offer`, `ice`, `relay_start`, the RELAY envelopes, `viewer_behind`,
-   a `viewer_leave` with no reason) in the viewers' share, as now, in
-   their order. The server's keepalive ping waits for its lane to be
-   empty. No message or field changes: `internal/proto` and
-   `protocol.ts` stay; docs/protocol.md states the order.
-3. **Saves and answers run off the host's read loop (#183).** A save's
+   browser shows the words it is sent). A viewer with no link (the
+   owner's window, a paste invite's viewer, the host's own terminal) has
+   no credential and is never refused by this check; the role check
+   (`read_only`) comes first, as it does.
+2. **The server's own messages travel ahead of relayed frames, and
+   nothing of a closed viewer's follows its close.** A host's connection
+   on the server gets two lanes: the server's own messages (`link_gone`,
+   a `viewer_leave` that gives a reason, `stop`, `attention`, `activity`,
+   the answers to the host's requests, `error`) in a lane the writer
+   takes first, bounded by the room kept for them now (1 MiB, 512
+   messages; one that finds it full closes the connection, as `send`
+   does); the viewers' messages (`viewer_join`, `offer`, `ice`,
+   `relay_start`, the RELAY envelopes, `viewer_behind`, a `viewer_leave`
+   with no reason) in the viewers' share, as now, in their order. Since
+   the lane lets a link's going pass a viewer's messages queued before
+   it, two rules keep a closed viewer from reaching the host after its
+   close: the server closes a link's viewers before it queues the link's
+   `link_gone` (`closeLink`, the other order today), and the writer drops
+   a message of a viewer that is closed as it takes it (`Outbound` names
+   its viewer); a join counts as sent once written, and a leave follows a
+   written join only. A viewer whose join was dropped is never known to
+   the host, older or newer. The host keeps no record of links gone: the
+   server's own push-out of its oldest joined link names a link gone that
+   still opens the session, and a viewer joining through it later must
+   start afresh, as now. No message or field changes; docs/protocol.md
+   states the order.
+3. **The host vouches for the server by its own answered ping.** A line,
+   a key or a save of a link's viewer passes only while a ping the host
+   sent within the last 15 s has been answered (`c.Ping` returns on the
+   pong): the host pings every 5 s while a link is held, quiet or not,
+   one wait of 15 s each, side by side. Nothing else vouches: not a
+   relayed frame, not the server's own ping, not bytes read, which keep
+   only the two-minute give-up. A pong follows everything the server
+   wrote before it, so what the host read before the answer is at most
+   as old as the ping; with the lanes, a going queued before the answer
+   was written but not yet written follows it behind at most one relayed
+   message and the lane's contents. The server's pings every 5 s while a
+   link stands stay, for older hosts. The cost: a server whose reading
+   pauses for longer than the bound (a switchyard's relay bound on open
+   hosts at its worst, about 35 s; a large frame of the host's ahead of
+   its ping on a slow uplink) withholds those lines meanwhile, where
+   #182 let them through on the server's pings.
+4. **Saves and answers run off the host's read loop (#183).** A save's
    part, over the relay or the data channel, goes on a `saving` queue of
    the viewer's (`requestQueue`, as its keys and editor requests, #118
    and #122): in the order sent, one at a time, at most 64 parts and
@@ -49,7 +78,7 @@ the same files (`hostagent/agent.go`, `peer.go`).
    that come before the remote description is set wait for it
    (`pending`, 64 at most), as now; a second offer for the same viewer
    is refused while the first is under way.
-4. **A plain-HTTP server needs saying so.** `conductor host --server
+5. **A plain-HTTP server needs saying so.** `conductor host --server
    http://…` (or `ws://`) to a host that is not loopback (`localhost`,
    `127.0.0.0/8`, `::1`, by name as `LoopbackServer` reads it) is refused
    before anything is dialed, with a message naming `--insecure`; with
@@ -69,22 +98,26 @@ the same files (`hostagent/agent.go`, `peer.go`).
    settings.ts`'s `validate` behind it); the default switchyard is
    `https` and unaffected.
 
+(The brief's four items: 1; 2 and 3 are its second; 4 its third; 5 its
+fourth.)
+
 ## The events that interact
 
-- E1 a link revoked: the server marks the link, sends `link_gone`, closes
-  the link's viewers (`viewer_leave{revoked}` each).
+- E1 a link revoked: the server marks the link, closes its viewers,
+  queues `link_gone`; each viewer's `viewer_leave{revoked}` follows.
 - E2 a link expired: on the server's clock, `link_gone` from the link's
   timer and `viewer_leave{expired}` from each viewer's; the host keeps no
   clock of its own for it.
 - E3 the connection lost and noticed by the host (a read fails, the socket
-  takes nothing for 2 min, nothing heard for 2 min after its pings): every
+  takes nothing for 2 min, nothing read for 2 min after its pings): every
   link counts as gone (`linkCreds.lost`), every peer is closed.
-- E4 the connection half-open (nothing arrives, nothing has failed yet):
-  only the hearing bound (15 s) speaks.
-- E5 a ping or a pong, either side's: counts as heard.
-- E6 relayed frames queued server→host (the viewers' share, up to 7 MiB)
-  and host→server (the writer's relay lane).
-- E7 a save: up to 32 parts, the last of which writes the folder.
+- E4 the connection half-open, or the server's reading paused: the host's
+  pings go unanswered; only the 15 s bound speaks.
+- E5 the host's ping answered: the host vouches 15 s from its send.
+- E6 relayed traffic queued server→host (the viewers' share, up to 7 MiB,
+  and the path's buffers) and host→server (the writer's relay lane).
+- E7 a save: up to 32 parts, the last of which checks, writes a temporary
+  file and renames it over the target.
 - E8 an offer, and the answer that waits for its turn on the writer.
 - E9 a viewer leaving for no reason of its link's: `viewer_leave` with no
   reason, in the viewers' share, after the viewer's frames.
@@ -92,7 +125,7 @@ the same files (`hostagent/agent.go`, `peer.go`).
   `link_gone`); the viewers are detached; the status goes last.
 - E11 a keystroke: queued on the viewer's keys queue, 10 s from arrival.
 - E12 a reconnect: a new connection, new credentials, the viewers rejoin.
-- E13 a relayed viewer behind (`viewer_behind`): the host holds its frames.
+- E13 a viewer's join still queued, or its frames, when its link goes.
 
 ## The orders they come in, and what must happen
 
@@ -105,56 +138,65 @@ the same files (`hostagent/agent.go`, `peer.go`).
   queued before the going is refused at that part.
 - O3 E1 in the middle of a save (parts 1..n-1 taken): the next part is
   refused, the pending write dropped with the viewer.
-- O4 E1 during E4: no `link_gone` arrives; 15 s after the last thing
-  heard, keys and parts are refused as a submission is (`serverQuiet`,
-  a kind of `ErrRevoked`); the moment something is heard they pass again
-  unless the going has arrived meanwhile.
-- O5 E1 while E6 holds 7 MiB server→host: `link_gone` is written after
-  the one message being written when it was queued and before any
-  relayed frame queued after it; the server's next ping waits for it.
-  What the host hears after the going was written before it, but for
-  that one message, whose write the server bounds (15 s, then it closes
-  the connection, E3 for the host). So the going reaches a host that
-  reads within about a message's time on an ordinary path, and on the
-  slowest path a line of the link's viewer can be entered at most about
-  30 s after it (the server's write bound and the host's hearing bound).
-- O6 E1 while the host's read loop is in a save (E7) or an answer (E8):
+- O4 E1 (or E3) while the last part's work is under way (its checks, its
+  hash, its temporary file on a slow disk): the check before the rename
+  refuses; the temporary file is removed; the target is as it was.
+- O5 E1 during E4: no `link_gone` arrives; 15 s after the last ping the
+  host sent that was answered, keys, parts and lines are refused as for
+  a link gone (`serverQuiet`, a kind of `ErrRevoked`); the next answered
+  ping lets them pass unless the going arrived meanwhile.
+- O6 E1 while E6 holds 7 MiB and the path holds more: `link_gone` is
+  written after the message being written when it was queued and before
+  every relayed frame queued after it; a pong written before it is read
+  before it, and vouches at most 15 s from its ping's send; so no line
+  is entered more than 15 s after the host's last answered ping was
+  sent, whatever the path still holds, and the going is read behind that
+  answer after at most one relayed message and the lane.
+- O7 E13: E1 lands while a viewer's join, `relay_start`, hello or frames
+  wait in the viewers' share. The viewer is closed before `link_gone` is
+  queued, so the writer drops each of them as it takes it; the host,
+  older or newer, never knows the viewer, and `linkCreds.gone` forgetting
+  the id mints no credential for it. A join written before the close is
+  followed by its frames taken before the close, then the going; what
+  was queued and not yet taken is dropped.
+- O8 E1 while the host's read loop is in a save (E7) or an answer (E8):
   neither is on the loop any more; `link_gone` is read as it arrives, the
   save's remaining parts then refused.
-- O7 E8 while E6 and E1 arrive: the loop reads them while the answer
+- O9 E8 while E6 and E1 arrive: the loop reads them while the answer
   waits; an answer whose turn never comes within 15 s is dropped and the
   viewer falls back to the relay on its own timeout, as now.
-- O8 E2: the link's `link_gone` and each viewer's `viewer_leave{expired}`
+- O10 E2: the link's `link_gone` and each viewer's `viewer_leave{expired}`
   fire from two timers in either order; both go in the server's lane;
   the credential is gone at the first of them.
-- O9 E3 then E12: the old viewers' keys and parts still queued are
+- O11 E3 then E12: the old viewers' keys and parts still queued are
   dropped (peer closed), nothing of theirs written; a viewer joining
   through the same link on the new connection starts with a fresh
   credential.
-- O10 E10: a viewer detached by the end gets nothing written (the session
+- O12 E10: a viewer detached by the end gets nothing written (the session
   refuses as ended); a part for a detached subscription is dropped in
-  `handle`, as now.
-- O11 E9 while parts wait: dropped unanswered, the viewer being gone
+  `handle`, as now; a save whose last part was taken before the end
+  commits (the folder is the person's own).
+- O13 E9 while parts wait: dropped unanswered, the viewer being gone
   (`request.live`); the folder untouched.
-- O12 a viewer with no link, in every order above: never refused by the
-  credential or the hearing bound; still refused `read_only` by role, as
-  is a view-role viewer's part, by the server (`RelayToHost`) and the
+- O14 a viewer with no link, in every order above: never refused by the
+  credential or the vouching bound; still refused `read_only` by role,
+  as is a view-role viewer's part, by the server (`RelayToHost`) and the
   session, before the credential is asked.
-- O13 two viewers of one link: one's E9 ends nothing of the other's;
-  `link_gone` ends both. E13 with E1: the hold is host→server and does
-  not touch the server's lane; `link_gone` arrives whatever is held.
-- O14 the `saving` queue full: the part refused `too_many_requests`, the
+- O15 two viewers of one link: one's E9 ends nothing of the other's;
+  `link_gone` ends both. The hold (`viewer_behind`) is host→server and
+  does not touch the server's lane.
+- O16 the `saving` queue full: the part refused `too_many_requests`, the
   save fails in the editor with the words, the connection stays, the
   other viewers' frames and the server's messages go on being read.
-- O15 `--server http://host.example`: refused before any dial, exit 2,
+- O17 `--server http://host.example`: refused before any dial, exit 2,
   the message naming `--insecure`; with it, a warning, then as for
   `https`; `http://localhost:8080` and `http://127.0.0.1:…` need nothing.
-- O16 `rendezvous.server: http://host.example` without `insecure`: the
+- O18 `rendezvous.server: http://host.example` without `insecure`: the
   config fails validation; `conductor serve` and `conductor switchyard`
   stop at start with the message; the desktop app shows the server
   failed and its Settings page shows the words at save. With `insecure:
   true` the uplink dials it and warns once per start.
-- O17 a dial of `https://a` redirected to `http://b`: refused as
+- O19 a dial of `https://a` redirected to `http://b`: refused as
   `--server http://b` would be; with `--insecure`, followed.
 
 ## Invariants
@@ -162,32 +204,35 @@ the same files (`hostagent/agent.go`, `peer.go`).
 - I1 Nothing a link's viewer sends (a submission's text and its Enter, a
   keystroke, a save) is written to the session or its folder once the
   link went (`link_gone`, a `viewer_leave` with a reason, the connection
-  lost) or the server was not heard from within the bound.
+  lost) or the host's last answered ping is older than the bound.
 - I2 The check is asked at the write, not only on arrival: what waited in
-  a queue across the going is refused at its turn.
+  a queue across the going is refused at its turn, and a save's commit
+  (the rename) asks last, after its slow work.
 - I3 A viewer with no link is never refused by I1's check; a viewer's role
   still bounds what it may do, checked first.
 - I4 A message of the server's own waits behind at most the one message
   being written when it was queued, never behind the viewers' queue; the
-  lane holds at most 1 MiB and 512 messages; a server's ping is written
-  only while that lane is empty.
-- I5 `link_gone` is written before the leaves of the link's viewers and
-  before any relayed frame queued after it; the viewers' messages keep
-  their order among themselves (a join before the viewer's offer, frames
-  and leave).
-- I6 The host's read loop waits on nothing but the read: no disk, no
+  lane holds at most 1 MiB and 512 messages.
+- I5 Nothing of a viewer's reaches the host after the server closed it:
+  its queued messages are dropped as the writer takes them, and a link's
+  viewers are closed before the link's going is queued. The viewers'
+  messages keep their order among themselves.
+- I6 The host vouches on its own answered pings alone: no line is entered
+  more than 15 s after the send of the last ping that was answered, and
+  nothing read vouches past the answer that followed it.
+- I7 The host's read loop waits on nothing but the read: no disk, no
   viewer's transport, no turn on the writer; every handler returns at
   once or hands off to a queue bounded in count and bytes.
-- I7 A viewer's parts run in the order sent, one save at a time; a full
+- I8 A viewer's parts run in the order sent, one save at a time; a full
   queue refuses a part and never the connection.
-- I8 A host never dials a plain URL to a host off this machine unless
+- I9 A host never dials a plain URL to a host off this machine unless
   told `--insecure` (or `rendezvous.insecure`), and then says so once on
   stderr and in the log; a redirect counts as the URL it leads to.
-- I9 A config that names a plain switchyard off this machine without
+- I10 A config that names a plain switchyard off this machine without
   `insecure` is refused at start, unchanged on disk.
-- I10 No new message, field or frame; the message bounds stay; the browser
-  sees nothing new; docs/protocol.md records the lane's order and the
-  two refusal codes.
+- I11 No new message, field or frame; the message bounds stay; the browser
+  sees nothing new; docs/protocol.md records the lane's order, the
+  vouching rule and the two refusal codes.
 
 ## Out of scope
 
@@ -205,43 +250,55 @@ Go (`go test -race`), each named for what it proves:
 - `internal/session`: `TestInputRefusedOnceCredentialGone` (O1: nothing
   reaches the PTY), `TestInputQueuedBeforeCredentialGoneIsNotWritten`
   (O2, the writer's `over`), `TestFileWriteRefusedOnceCredentialGone`
-  (O1), `TestFileWriteRefusedWhenCredentialGoesMidSave` (O3, the file
-  untouched), `TestInputAndFileWriteNeedNoCredentialWithoutALink` (O12).
+  (O1), `TestFileWriteRefusedWhenCredentialGoesMidSave` (O3),
+  `TestSaveRefusedWhenCredentialGoesBeforeTheRename` (O4: the
+  `afterCheckHook` seam holds the last part, the credential goes, the
+  seam releases; the target unchanged, the temporary file gone),
+  `TestInputAndFileWriteNeedNoCredentialWithoutALink` (O14).
 - `internal/hostagent`: `TestLinkKeysRefusedAfterLinkGone`,
   `TestLinkSaveRefusedAfterLinkGone` (O1, both transports),
-  `TestLinkKeysRefusedWhenServerQuiet`, `TestLinkSaveRefusedWhenServerQuiet`
-  (O4, `liveWithin` short), `TestLinkKeysPassAgainOnceHeard` (O4),
-  `TestOwnerWindowAndPasteViewerKeysNeedNoVouch` (O12),
-  `TestKeysOfAViewerThatLeftAreDropped` (O9, O11);
-  `TestRelayedSaveRunsOffTheReadLoop` (O6: a folder whose write blocks
+  `TestLinkKeysRefusedWhenPingsGoUnanswered`,
+  `TestLinkSaveRefusedWhenPingsGoUnanswered` (O5, `liveWithin` short),
+  `TestLinkLinePassesAgainOnAnAnsweredPing` (O5),
+  `TestBufferedFramesAndServerPingsDoNotVouch` (I6: relayed frames and
+  the server's pings trickle in for longer than the bound, no pong; the
+  line is withheld), `TestOwnerWindowAndPasteViewerKeysNeedNoVouch`
+  (O14), `TestKeysOfAViewerThatLeftAreDropped` (O11, O13);
+  `TestRelayedSaveRunsOffTheReadLoop` (O8: a folder whose write blocks
   through a test seam while another viewer's keys and a `link_gone` are
-  read and acted on), `TestSaveQueueOrderedAndBounded` (I7, O14),
-  `TestSaveOfAViewerThatLeftIsDropped` (O11),
+  read and acted on), `TestSaveQueueOrderedAndBounded` (I8, O16),
+  `TestSaveOfAViewerThatLeftIsDropped` (O13),
   `TestDataChannelSaveUsesTheSameQueue`, `TestAnswerWaitsOffTheReadLoop`
-  (O7: the writer's turn held, the next messages read meanwhile),
-  `TestAnswerDroppedWhenItsTurnNeverComes` (O7),
+  (O9: the writer's turn held, the next messages read meanwhile),
+  `TestAnswerDroppedWhenItsTurnNeverComes` (O9),
   `TestSecondOfferRefusedWhileTheFirstIsUnderWay`;
   `TestRunRefusesPlainServerOffThisMachine`,
   `TestRunAllowsPlainServerOnLoopback`,
   `TestInsecureAllowsPlainServerAndWarns`,
-  `TestRedirectToPlainServerRefused` (O15, O17).
-- `internal/signal`: `TestServerOwnMessagesGoAheadOfRelayedFrames` (O5:
+  `TestRedirectToPlainServerRefused` (O17, O19).
+- `internal/signal`: `TestServerOwnMessagesGoAheadOfRelayedFrames` (O6:
   the viewers' share full, `link_gone` taken next),
-  `TestLinkGoneBeforeTheLeaves`, `TestReasonedLeaveInTheServerLane` (I5,
-  O8), `TestViewersMessagesKeepTheirOrder` (I5),
+  `TestViewersAreClosedBeforeLinkGoneIsQueued` and
+  `TestAClosedViewersQueuedMessagesAreDropped` (O7, I5: a join, a
+  `relay_start`, a hello and frames queued, then the revoke; the writer
+  takes none of them; no leave for the unwritten join),
+  `TestReasonedLeaveInTheServerLane` (O10),
+  `TestViewersMessagesKeepTheirOrder` (I5),
   `TestServerLaneFullClosesTheConnection` (I4).
-- `internal/api`: `TestLinkGoneReachesHostAheadOfQueuedFrames` (O5 over
+- `internal/api`: `TestLinkGoneReachesHostAheadOfQueuedFrames` (O6 over
   a loopback WebSocket: a host that reads slowly, a viewer that floods, a
   revoke; the host reads `link_gone` within one message),
-  `TestServerPingWaitsForItsLane` (I4),
-  `TestLinkLineRefusedAfterRevokeBehindQueue` (O5 end to end, as
+  `TestRevokeOvertakingAQueuedJoinReachesNoHost` (O7, with a host stub
+  that reads as an older host does: it never sees the viewer),
+  `TestLinkLineRefusedAfterRevokeBehindQueue` (O6 end to end, as
   `hostlive_test.go` does it: short bounds, the queue full, the submit
-  refused).
+  refused), `TestLinkLineWithheldWhileTheServerPausesReading` (the cost
+  in change 3, pinned so it is a decision, not a surprise).
 - `internal/cli`: `TestHostRefusesPlainServerWithoutInsecure` (exit 2, the
   message, no dial), `TestHostInsecurePrintsTheWarning`.
 - `internal/config`: `TestRendezvousPlainServerOffThisMachineRefused`,
   `TestRendezvousPlainServerOnLoopbackAllowed`,
-  `TestRendezvousInsecureAllowsIt` (the key and the variable; O16).
+  `TestRendezvousInsecureAllowsIt` (the key and the variable; O18).
 
 UI: `desktop/test/settings.test.ts` (`validate` refuses a plain
 switchyard off this machine with the words, keeps a loopback one and an
@@ -250,8 +307,9 @@ same words); `web/e2e/settings.spec.ts`: "a plain switchyard on another
 machine is refused at save with the words why, and a loopback one is
 kept" (what a person sees, under the bridge stand-in).
 
-Docs: docs/protocol.md (the lane's order; the `revoked`/`expired` codes
-on INPUT and FILE errors; the host's queues), docs/architecture.md
+Docs: docs/protocol.md (the lane's order and what a closed viewer's
+messages become; the vouching rule; the `revoked`/`expired` codes on
+INPUT and FILE errors; the host's queues), docs/architecture.md
 (Developer-hosted sessions; the plain-HTTP rule among the model's
 rules), `conductor host --help` and the Settings card's words.
 
@@ -259,11 +317,12 @@ rules), `conductor host --help` and the Settings card's words.
 
 1. Change 1 on its own: `internal/session` (`input.go`, `write.go`),
    `internal/hostagent/peer.go` (`inputError`), the tests above.
-2. Changes 2 and 3 together: `internal/signal/hosted.go`,
+2. Changes 2, 3 and 4 together: `internal/signal/hosted.go`,
    `internal/api/ws_host.go`, `internal/hostagent` (`agent.go`,
-   `peer.go`, `queue.go`), docs; they share the host's read loop and the
-   tests that time the going against the queues.
-3. Change 4 on its own: `internal/hostagent/agent.go` (`controlURL`,
+   `liveness.go`, `peer.go`, `queue.go`), docs; they share the host's
+   read loop, the lanes and the tests that time the going against the
+   queues, and the older-host test is part of it, not after it.
+3. Change 5 on its own: `internal/hostagent/agent.go` (`controlURL`,
    `Options.Insecure`, the dial's redirect check), `uplink.go`,
    `internal/cli/host.go`, `internal/config`, `desktop/src/settings.ts`,
    `web/app/utils/desktop.ts`, `web/app/pages/settings.vue`, the specs.
