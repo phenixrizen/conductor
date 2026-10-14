@@ -505,8 +505,12 @@ func TestAnApprovalsWordsAreItsWholeCommand(t *testing.T) {
 	}
 	long := "$ " + strings.Repeat("echo abcdefghij && ", 40) + "rm -rf /tmp/x"
 	got := q.words(screen(long))
-	if len(got) > MaxAttentionMessage || !strings.HasSuffix(got, "…") || !strings.Contains(got, "$ echo abcdefghij && echo") || !utf8.ValidString(got) {
+	if len(got) > MaxAttentionMessage || !regexp.MustCompile(`… #[0-9a-f]{8}$`).MatchString(got) || !strings.Contains(got, "$ echo abcdefghij && echo") || !utf8.ValidString(got) {
 		t.Fatalf("words of a long command (%d bytes) %q", len(got), got)
+	}
+	// Alike up to the cut and different after it, two commands' words differ: they are two questions.
+	if other := q.words(screen(strings.TrimSuffix(long, "x") + "y")); other == got || len(other) != len(got) {
+		t.Fatalf("two long commands that differ after the cut: %q and %q", got, other)
 	}
 }
 

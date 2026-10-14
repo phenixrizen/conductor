@@ -2252,3 +2252,71 @@ func TestTwoStartupQuestionsOfOnePatternAreToldByTheLastDrawn(t *testing.T) {
 		t.Fatalf("written %q", got)
 	}
 }
+
+// A startup question a person dealt with by a key Conductor does not offer
+// (an `n` its choices leave out) stays shown, for nothing told it gone; the
+// program draws another screen, which shows no startup question, and the
+// output the watcher keeps still holds the question. A reply to it then is
+// refused, nothing written: it would reach the screen that took its place.
+func TestAReplyToAStartupQuestionGoneFromTheScreenIsRefused(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{{Pattern: regexp.MustCompile(`Confirm read\?`), Answers: []Option{{Label: "Yes", Input: "y"}}}}}))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte("Confirm read? [y/n]\r\n"))
+	q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.Input(jane, []byte("n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "n" {
+		t.Fatalf("written %q", got)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H$ ready\r\n"))
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		text, settled, _, _ := s.asked.Whole()
+		if settled && strings.Contains(text, "$ ready") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the screen never showed the prompt: %q", text)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the question the screen left: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// Two approvals in a row whose commands are alike for longer than a
+// message can hold, and differ after it: each is a question of its own.
+// The second, drawn over the first once that was answered (the queue
+// advanced in place, no quiet screen between), is asked with an id of its
+// own, and a click on it is taken; on the cut words alone it was the first
+// still, answered, and every reply to it was refused.
+func TestTwoLongApprovalsAlikeUpToTheCutAreTwoQuestions(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 500, Rows: 30}, newChanSink(false))
+	head := "echo " + strings.Repeat("abcdefghij", 46) + " && rm -rf /tmp/"
+	p.outW.Write([]byte(approvalDialog(head + "a")))
+	first := waitAttention(t, s, asked)
+	if len(first.Message) > MaxAttentionMessage || !strings.Contains(first.Message, "…") || strings.Contains(first.Message, "/tmp/") {
+		t.Fatalf("the first approval's words are not cut before the commands differ (%d bytes): %q", len(first.Message), first.Message)
+	}
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	p.outW.Write([]byte(approvalNext(head + "b")))
+	next := waitAttention(t, s, func(a Attention) bool {
+		return asked(a) && a.ID != first.ID && a.ID != again.ID && a.Message != first.Message
+	})
+	if err := s.AnswerInput(t.Context(), nater, next.ID, []byte("y")); err != nil {
+		t.Fatalf("a click on the second approval: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+}

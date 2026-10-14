@@ -786,8 +786,12 @@ type StartupQuestion struct {
 //
 // Each run of white space in them (a screen's line breaks and padding among
 // them) is one space, and words longer than a message can be are cut on a
-// character boundary with an ellipsis at their end, so that a long command
-// reads as cut rather than as all there is.
+// character boundary with an ellipsis, so that a long command reads as cut
+// rather than as all there is, then a tag of the whole words (8 hex
+// characters of their SHA-256): the words are what tells one question from
+// the next (a dialog answered, asked again with its words; a startup
+// question still on the screen), and two commands alike up to the cut and
+// different after it are two questions.
 func (q StartupQuestion) words(text string) string {
 	all := q.Pattern.FindAllString(text, -1)
 	if len(all) == 0 || all[len(all)-1] == "" {
@@ -813,8 +817,9 @@ func (q StartupQuestion) words(text string) string {
 		}
 	}
 	words = strings.Join(strings.Fields(words), " ")
-	const more = "…"
 	if len(words) > MaxAttentionMessage {
+		sum := sha256.Sum256([]byte(words))
+		more := fmt.Sprintf("… #%x", sum[:4])
 		cut := MaxAttentionMessage - len(more)
 		for cut > 0 && !utf8.RuneStart(words[cut]) {
 			cut--
@@ -2116,6 +2121,16 @@ func (s *Local) stillOnScreen(id string) error {
 	case att.Source == SourceTrust && s.trust != nil:
 		if s.lastStartup(s.trust.Text()) != att.Message {
 			return ErrQuestionAnswered
+		}
+		// The output the watcher keeps holds what came before a screen
+		// erased: a question the program left by a key Conductor does not
+		// read as an answer (one its choices leave out) is still in it. The
+		// screen as it is now, a whole frame, shows the question, or the
+		// reply would reach what took its place.
+		if s.asked != nil {
+			if text, settled, _, _ := s.asked.Whole(); settled && s.lastStartup(text) != att.Message {
+				return ErrQuestionAnswered
+			}
 		}
 	}
 	return nil
