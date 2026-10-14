@@ -5,8 +5,7 @@ import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/side
 
 /**
  * One session in the list (design 3b, 3c): the agent's initials, the name, a status dot, what it asks when it asks, and a meta
- * line of agent · where · how long. The question reads whole (#187): wrapped over its lines, twelve at most in the sidebar with
- * the full text as its own tooltip, every one while the row is hovered or focused, or in the phone's list. A hosted session's
+ * line of agent · where · how long. The question reads whole (#187): wrapped over its lines, never cut. A hosted session's
  * row carries its machine with a laptop, in place of a heading. The path is the row's tooltip. An exited row says how it ended
  * and when, with Resume beside the link (a link holds no button). Hovering offers Share, Stop and More in place of the dot; Stop
  * asks first, in the row; a right-click or a long press opens the same menu as More. A prompt is answered in the row, below the
@@ -101,10 +100,11 @@ function confirmStop() {
             <span class="text-[11px] leading-snug text-muted">{{ question.detail }}</span>
           </template>
           <template v-else>
-            <!-- The question whole, never cut to one line: a long token (a command, a URL) breaks rather than overflows. Twelve lines
-                 hold a permission prompt that quotes its command (200 characters are nine at the sidebar's default width) and bound
-                 a 4 KB message; a hovered or focused row shows every line. -->
-            <span v-if="row.prompt" class="break-words text-xs" :class="!focused && !big && 'line-clamp-12 group-hover:line-clamp-none'" :title="row.prompt.message" data-row-prompt>{{ row.prompt.message }}</span>
+            <!-- The question whole, never cut: wrapped over its lines, a long token (a command, a URL) breaking rather than overflowing.
+                 No clamp: the server bounds a message at 500 bytes (session.MaxAttentionMessage), two dozen lines at the sidebar's
+                 default width, a clamp would hide the tail from a touch screen and the keyboard, and a disclosure on hover or focus
+                 would move the choices under the pointer. -->
+            <span v-if="row.prompt" class="break-words text-xs" data-row-prompt>{{ row.prompt.message }}</span>
             <span v-if="row.state === 'exited'" class="truncate font-mono text-[11px] text-muted">{{ exitLine }}</span>
             <span v-else class="flex items-center overflow-hidden whitespace-nowrap font-mono text-[11px] text-muted" data-row-meta>
               <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">

@@ -60,8 +60,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <span class="size-2 rounded-full bg-warning flex-none" aria-hidden="true" />
     <div class="min-w-0 flex flex-col gap-0.5">
       <span class="text-sm font-semibold">{{ heading }}</span>
-      <!-- The question whole (#187): wrapped, six lines at most, the full text as the tooltip; a long token breaks rather than overflows. -->
-      <span class="line-clamp-6 break-words text-xs text-muted" :title="attention?.message" data-quick-reply-message>{{ attention?.message || 'Answer here or in the terminal. First reply wins; everyone sees who answered.' }}</span>
+      <!-- The question whole (#187), where it is answered: wrapped over its lines, never cut (the server bounds it at 500 bytes); a long
+           token breaks rather than overflows. -->
+      <span class="break-words text-xs text-muted" data-quick-reply-message>{{ attention?.message || 'Answer here or in the terminal. First reply wins; everyone sees who answered.' }}</span>
     </div>
     <div v-if="options.length" class="ml-auto flex flex-wrap items-center gap-2 flex-none">
       <UButton
