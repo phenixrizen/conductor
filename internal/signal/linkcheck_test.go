@@ -1,6 +1,7 @@
 package signal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -13,16 +14,14 @@ import (
 	"github.com/phenixrizen/conductor/internal/session"
 )
 
-// drainHost reads what the session sends its host for as long as the test
-// runs.
+// drainHost takes what the session sends its host, as its writer does
+// (Next), for as long as the test runs.
 func drainHost(t *testing.T, conn *HostConn) {
-	done := make(chan struct{})
-	t.Cleanup(func() { close(done) })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	go func() {
 		for {
-			select {
-			case <-conn.Send:
-			case <-done:
+			if _, ok := conn.Next(ctx); !ok {
 				return
 			}
 		}
@@ -44,10 +43,8 @@ func TestAddViewerChecksTheLinkAgain(t *testing.T) {
 		Authorize: func() (session.Grant, error) { return session.Grant{}, session.ErrExpired }}); !errors.Is(err, session.ErrExpired) {
 		t.Fatalf("expired link: %v", err)
 	}
-	select {
-	case o := <-conn.Send:
-		t.Fatalf("the host heard of a refused viewer: %s", o.Text)
-	default:
+	if len(conn.Send)+len(conn.Own) != 0 {
+		t.Fatal("the host heard of a refused viewer")
 	}
 	if n := hs.Info().Viewers; n != 0 {
 		t.Fatalf("viewers %d", n)

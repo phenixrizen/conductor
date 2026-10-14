@@ -267,16 +267,16 @@ func TestViewerBehindNeverFloodsNorClosesTheHostQueue(t *testing.T) {
 	if n := len(conn.Send); n != 1 {
 		t.Fatalf("%d messages queued for the host, want the one viewer_behind", n)
 	}
-	// The writer takes the viewer's message as the queue fills to the brim
-	// with the server's own: the latest finds no room, and waits for some.
+	// The writer takes the viewer's message as the viewers' lane fills to
+	// the brim: the latest finds no room, and waits for some.
 	first := <-conn.Send
 	if b, ok := behindOf(first); !ok || !b {
 		t.Fatalf("the host's first message: %s", first.Text)
 	}
 	filler := Outbound{Text: []byte(`{"t":"filler"}`)}
 	for len(conn.Send) < cap(conn.Send) {
-		if !conn.send(filler) {
-			t.Fatal("the queue refused a message with room for it")
+		if err := conn.sendFrom(filler, nil, nil); err != nil {
+			t.Fatalf("the lane refused a message with room for it: %v", err)
 		}
 	}
 	conn.Took(first)
