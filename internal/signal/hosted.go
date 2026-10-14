@@ -305,11 +305,11 @@ type Viewer struct {
 	charge func(n int) error
 	// conn is the host connection the viewer joined over, told when the
 	// viewer falls behind and when it catches up (noteBacklog); behind is
-	// what it was told last, changed under behindMu, which keeps the
-	// messages in the order of the changes.
+	// what it was told last. Both are read and changed under behindMu,
+	// which keeps the messages in the order of the changes.
 	conn     *HostConn
 	behindMu sync.Mutex
-	behind   atomic.Bool
+	behind   bool
 	// joinDone is closed once the viewer's join has gone to the host, or
 	// will not (joinSent false: the viewer or the connection closed first,
 	// or its charge failed); joinSent is written before, and read after.
@@ -511,20 +511,21 @@ func (v *Viewer) push(frame []byte) {
 // noteBacklog tells the host, when the viewer is relayed, that it fell
 // behind (more than relayBehindBytes queued) or caught up (relayCaughtUpBytes
 // or less), as it passes either mark: a viewer_behind for each change, in
-// their order, and none once the viewer is closed. It is called as a frame
-// is queued (push) and as one is taken (Pump), and does not wait: the
-// message is one of the server's own (HostConn.send).
+// their order, and none once the viewer is closed. It is called after each
+// change of what is queued, as a frame is queued (push) and as one is
+// taken (Pump), and looks at what is queued under behindMu every time: a
+// look that is the last in the lock's order comes after every change, so
+// what the host was told last holds for what is queued once the changes
+// stop (a look outside the lock could miss the change the other end was
+// making). It does not wait: the message is one of the server's own
+// (HostConn.send).
 func (v *Viewer) noteBacklog() {
 	if v.conn == nil || !v.relay.Load() {
 		return
 	}
-	if behind := v.behind.Load(); behindAt(v.queued.Load(), behind) == behind {
-		return
-	}
 	v.behindMu.Lock()
 	defer v.behindMu.Unlock()
-	behind := v.behind.Load()
-	if behindAt(v.queued.Load(), behind) == behind {
+	if behindAt(v.queued.Load(), v.behind) == v.behind {
 		return
 	}
 	select {
@@ -532,9 +533,16 @@ func (v *Viewer) noteBacklog() {
 		return
 	default:
 	}
-	v.behind.Store(!behind)
-	v.conn.sendJSON(proto.ViewerBehind{T: proto.HostViewerBehind, ViewerID: v.ID, Behind: !behind})
+	if behindSeam != nil {
+		behindSeam(v)
+	}
+	v.behind = !v.behind
+	v.conn.sendJSON(proto.ViewerBehind{T: proto.HostViewerBehind, ViewerID: v.ID, Behind: v.behind})
 }
+
+// behindSeam, when set (a test's), is called in noteBacklog once it has
+// decided to tell the host of a change, before it does.
+var behindSeam func(v *Viewer)
 
 // behindAt reports whether a relayed viewer with queued bytes queued is
 // behind, given whether it was: past relayBehindBytes it falls behind, and

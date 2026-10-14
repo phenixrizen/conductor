@@ -183,6 +183,32 @@ func TestAViewerBehindLongerThanAFrameMayWaitIsLetGoAlone(t *testing.T) {
 	}
 }
 
+// The session's last output goes to a viewer that is behind as to any:
+// once the session has ended, what waited for the viewer to catch up goes,
+// as it went before the host held a viewer behind, and the end's drain
+// bounds it.
+func TestTheSessionsLastOutputGoesToAViewerBehind(t *testing.T) {
+	a, s, typist, watcher := behindAgent(t, time.Minute)
+	behind(t, a, watcher.id, true)
+	if err := a.local.Input(typist.sub, []byte("last words\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := relayedOutput(t, s, typist.id, "last words", 10*time.Second); !bytes.Contains([]byte(got), []byte("last words")) {
+		t.Fatalf("the typist was sent %q", got)
+	}
+	if got := relayedOutput(t, s, watcher.id, "last words", 300*time.Millisecond); got != "" {
+		t.Fatalf("the watcher, behind, was sent %q", got)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := a.proc.Stop(ctx, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := relayedOutput(t, s, watcher.id, "last words", 10*time.Second); !bytes.Contains([]byte(got), []byte("last words")) {
+		t.Fatalf("the watcher, behind as the session ended, was sent %q", got)
+	}
+}
+
 // viewer_behind names one viewer: one of another length is a protocol
 // error; one the host does not have (it left) changes nothing.
 func TestViewerBehindNamesAViewer(t *testing.T) {
@@ -203,21 +229,26 @@ func TestViewerBehindNamesAViewer(t *testing.T) {
 // leaves, or at its time.
 func TestRelayRoom(t *testing.T) {
 	var r relayRoom
-	if err := r.wait(time.Now().Add(time.Second), nil); err != nil {
+	if err := r.wait(time.Now().Add(time.Second), nil, nil); err != nil {
 		t.Fatalf("a viewer never behind waited: %v", err)
 	}
 	r.set(true)
 	r.set(true)
-	if err := r.wait(time.Now().Add(50*time.Millisecond), nil); !errors.Is(err, session.ErrSlowConsumer) {
+	if err := r.wait(time.Now().Add(50*time.Millisecond), nil, nil); !errors.Is(err, session.ErrSlowConsumer) {
 		t.Fatalf("behind past its time: %v", err)
 	}
 	gone := make(chan struct{})
 	close(gone)
-	if err := r.wait(time.Now().Add(time.Minute), gone); !errors.Is(err, errViewerGone) {
+	if err := r.wait(time.Now().Add(time.Minute), gone, nil); !errors.Is(err, errViewerGone) {
 		t.Fatalf("behind and gone: %v", err)
 	}
+	ended := make(chan struct{})
+	close(ended)
+	if err := r.wait(time.Now().Add(time.Minute), nil, ended); err != nil {
+		t.Fatalf("behind as the session ended: %v", err)
+	}
 	waited := make(chan error, 1)
-	go func() { waited <- r.wait(time.Now().Add(time.Minute), nil) }()
+	go func() { waited <- r.wait(time.Now().Add(time.Minute), nil, nil) }()
 	time.Sleep(20 * time.Millisecond)
 	r.set(false)
 	r.set(false)
@@ -231,7 +262,7 @@ func TestRelayRoom(t *testing.T) {
 	}
 	r.set(true)
 	r.set(false)
-	if err := r.wait(time.Now().Add(time.Second), nil); err != nil {
+	if err := r.wait(time.Now().Add(time.Second), nil, nil); err != nil {
 		t.Fatalf("caught up again: %v", err)
 	}
 }

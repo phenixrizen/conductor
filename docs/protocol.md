@@ -241,7 +241,9 @@ not in a buffer of megabytes. The host holds a viewer's frames while it is
 behind, as it holds a WebRTC viewer's while its data channel is full, so
 its connection, which its relayed viewers share, carries what each of them
 takes; what waits for a viewer waits on the host, under its 1 MiB for a
-viewer. An older host ignores `viewer_behind`, and its viewers are bounded
+viewer. Once the session has ended, what the host held for a viewer goes
+whether it is behind or not, ahead of the end: the session's last output,
+which the server writes the viewer as the end closes it. An older host ignores `viewer_behind`, and its viewers are bounded
 by the 16 MiB alone. On the host's side, what it writes on its control
 connection goes one message at a time: its own messages (its status,
 attention and activity, the answers and candidates for its WebRTC viewers,

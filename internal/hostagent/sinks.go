@@ -151,9 +151,11 @@ func (r *relayRoom) set(behind bool) {
 	}
 }
 
-// wait returns once the viewer is not behind: session.ErrSlowConsumer when
-// it still is at until, errViewerGone when gone closes first.
-func (r *relayRoom) wait(until time.Time, gone <-chan struct{}) error {
+// wait returns once the viewer is not behind, or ended closes (the
+// session's end: its last frames go as before, whether the viewer is behind
+// or not, and the end's drain bounds them): session.ErrSlowConsumer when it
+// still is at until, errViewerGone when gone closes first.
+func (r *relayRoom) wait(until time.Time, gone, ended <-chan struct{}) error {
 	for {
 		r.mu.Lock()
 		caughtUp := r.caughtUp
@@ -169,6 +171,9 @@ func (r *relayRoom) wait(until time.Time, gone <-chan struct{}) error {
 		select {
 		case <-caughtUp:
 			t.Stop()
+		case <-ended:
+			t.Stop()
+			return nil
 		case <-gone:
 			t.Stop()
 			return errViewerGone
@@ -213,7 +218,7 @@ func (s *relaySink) WriteFrame(frame []byte) error {
 	turn := s.a.relayTurn()
 	until := time.Now().Add(turn)
 	if s.room != nil {
-		if err := s.room.wait(until, s.gone); err != nil {
+		if err := s.room.wait(until, s.gone, s.a.sessionEnded()); err != nil {
 			return err
 		}
 	}

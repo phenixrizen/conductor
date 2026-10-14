@@ -429,6 +429,78 @@ func TestAHostIsToldSoonThatARelayedViewerReadsNothing(t *testing.T) {
 	}
 }
 
+// A relayed viewer that is behind as its host's session ends is still sent
+// the session's last output: what its host held for it goes as the session
+// ends, ahead of the end, and the server writes it what it holds once the
+// end closes it (the session's links end with it). The viewer reads nothing
+// while the session prints 800 KB, past the server's mark, and its last
+// line; it reads only once the server shows the session ended.
+func TestAViewerBehindAsTheSessionEndsIsSentItsLastOutput(t *testing.T) {
+	e := newTestEnv(t, nil)
+	// The viewer reads what it is owed once the end has closed it, which
+	// is cut 5 s on: the test is of what it is sent, not of how fast.
+	e.srv.viewerCloseWait = 2 * time.Minute
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	registered := make(chan string, 1)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		_, _ = hostagent.Run(ctx, hostagent.Options{
+			ServerURL: e.http.URL, Token: "test-host-token", Name: "printer", HostName: "laptop", RelayOnly: true,
+			// Waits for the test, prints 800 KB and a last line, and ends.
+			Argv: []string{"/bin/sh", "-c", "while [ ! -e go ]; do sleep 0.05; done; head -c 800000 /dev/zero; printf 'the last line\\n'"},
+			Dir:  e.root, Log: slog.New(slog.DiscardHandler),
+			Registered: func(id, _ string) { registered <- id },
+		})
+	}()
+	defer func() { cancel(); <-ran }()
+	var id string
+	select {
+	case id = <-registered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host never registered")
+	}
+	resp, lo := e.do("POST", "/api/sessions/"+id+"/links", adminToken, map[string]any{"role": "view"})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("link: %d %v", resp.StatusCode, lo)
+	}
+	door := httptest.NewUnstartedServer(e.srv.Handler())
+	door.Listener = smallBufListener{door.Listener}
+	door.Start()
+	t.Cleanup(door.Close)
+	v := dialSmallReader(t, door.URL, id, lo["token"].(string))
+	joinRelay(t, v)
+	hosted, ok := e.srv.hosts.Get(id)
+	if !ok {
+		t.Fatal("no hosted session")
+	}
+	if err := os.WriteFile(filepath.Join(e.root, "go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(30*time.Second, func() bool { return hosted.Info().Status.Ended() }) {
+		t.Fatal("the session never ended")
+	}
+	rctx, rcancel := context.WithTimeout(t.Context(), time.Minute)
+	defer rcancel()
+	var out []byte
+	for {
+		_, data, err := v.c.Read(rctx)
+		if err != nil {
+			if rctx.Err() != nil {
+				t.Fatal("the viewer was never closed")
+			}
+			break
+		}
+		if f, err := proto.Decode(data); err == nil && f.Type == proto.TypeOutput {
+			out = append(out, f.Payload...)
+		}
+	}
+	if !bytes.Contains(out, []byte("the last line")) {
+		t.Fatalf("the viewer was sent %d bytes of output, without the last line", len(out))
+	}
+}
+
 // dialSmallReader is dialViewer through the server at base, the client's
 // socket given a small receive buffer.
 func dialSmallReader(t *testing.T, base, sessionID, token string) *wsClient {

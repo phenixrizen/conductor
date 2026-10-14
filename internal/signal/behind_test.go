@@ -136,3 +136,39 @@ func TestPumpTellsTheHostTheViewerCaughtUp(t *testing.T) {
 	hs.RemoveViewer(v)
 	<-done
 }
+
+// The frame that puts a viewer behind can be taken as the server decides
+// so, before it tells the host, as Pump takes a frame of a file larger
+// than the mark: the take's look comes after the decision, and the host is
+// told the viewer caught up, behind the word that it fell behind.
+func TestACatchUpAsTheViewerFallsBehindReachesTheHost(t *testing.T) {
+	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
+	v := relayedViewer(t, hs, conn, "0123456789abcdef")
+	big := bytes.Repeat([]byte("f"), relayBehindBytes+64<<10)
+	looked := make(chan struct{})
+	t.Cleanup(func() { behindSeam = nil })
+	behindSeam = func(sv *Viewer) {
+		behindSeam = nil
+		// Taken as Pump takes it: off the queue, then a look, which is
+		// given its time to finish before the decision goes on (it waits
+		// for the decision, which is looked at under the same lock).
+		f := <-sv.Out
+		sv.queued.Add(-int64(len(f)))
+		go func() {
+			defer close(looked)
+			sv.noteBacklog()
+		}()
+		select {
+		case <-looked:
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	hs.HostRelayFrame(v.ID, proto.Frame{Type: proto.TypeOutput, Payload: big})
+	<-looked
+	if m := nextToHost(t, conn); m["t"] != proto.HostViewerBehind || m["behind"] != true {
+		t.Fatalf("the host was told %v, want behind", m)
+	}
+	if m := nextToHost(t, conn); m["t"] != proto.HostViewerBehind || m["behind"] != false {
+		t.Fatalf("the host was told %v, want caught up", m)
+	}
+}

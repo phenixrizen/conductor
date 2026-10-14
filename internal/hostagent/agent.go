@@ -1419,6 +1419,15 @@ func (a *agent) sendRelay(viewerID string, frame []byte, gone <-chan struct{}) e
 	return a.sendRelayWithin(viewerID, frame, gone, a.relayTurn())
 }
 
+// sessionEnded is closed once the session has ended; nil (never) for an
+// agent without one.
+func (a *agent) sessionEnded() <-chan struct{} {
+	if a.local == nil {
+		return nil
+	}
+	return a.local.Ended()
+}
+
 // relayTurn is how long a frame relayed to a viewer may wait to be sent:
 // relayTurnWait, or a test's relayWait.
 func (a *agent) relayTurn() time.Duration {
