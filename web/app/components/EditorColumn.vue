@@ -82,7 +82,9 @@ function bringTerminalUp() {
     <div v-if="editorOpen && !terminalFolded" class="-my-2 flex h-2 flex-none cursor-row-resize items-center justify-center touch-none" data-editor-split @pointerdown="splitDown" @pointermove="splitMove" @pointerup="splitUp" @pointercancel="splitUp">
       <span class="h-0.5 w-10 rounded-full bg-accented" />
     </div>
-    <div class="relative" :class="terminalFolded ? 'h-0 flex-none overflow-hidden' : 'flex-1 min-h-32'">
+    <!-- The terminal's least height is the slot's (min-h-32): the terminal fills the slot and no more (main.css), so that it lays out
+         only the rows that show (#189). -->
+    <div class="relative" :class="terminalFolded ? 'h-0 flex-none overflow-hidden' : 'flex-1 min-h-32'" :data-terminal-slot="terminalFolded ? 'folded' : 'open'">
       <slot />
     </div>
     <button v-if="terminalFolded" type="button" class="flex h-11 flex-none items-center gap-2 rounded-md border border-default bg-elevated/60 px-3 text-left text-xs" data-terminal-bar @click="bringTerminalUp">
