@@ -591,7 +591,11 @@ reported another state during the hold, it does not. `id` names the
 change as `since` stamps it: 16 hex characters, new with every change that
 shows a state (the same words again change nothing, the id included; a
 dialog asked again as the question just answered is asked answered, see
-Answering a question), none with the empty state. A hosted session's is its
+Answering a question), none with the empty state. A question read off the
+screen (`trust`, `question`) is told by its words whole, as the screen's
+rows show them: drawn again at another width, its rows broken elsewhere,
+it is the same question; two that differ anywhere, past the 500 bytes of
+`message` too or by one space within a row, are two. A hosted session's is its
 host's, as the host reports
 it; a change the server makes for a hosted session (a report through its
 routes) has none in the server's listings until the host reports it back with

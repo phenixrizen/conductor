@@ -2487,14 +2487,24 @@ func TestAnApprovalDrawnAgainAtAnotherWidthIsTheSameQuestion(t *testing.T) {
 	noWrite(t, p, 200*time.Millisecond)
 }
 
-// Two approvals in a row whose commands differ by a space within a row
-// (`"./build output"`, `"./buildoutput"`) are two questions: the second,
-// drawn over the first, is asked with an id of its own, which a click on
-// it takes, answered first or not, and a reply naming the first is
-// refused, nothing written.
+// Two approvals in a row whose commands differ by white space within a row
+// (`"./build output"`, and `"./buildoutput"` or `"./build  output"`) are
+// two questions: the second, drawn over the first, is asked with an id of
+// its own, which a click on it takes, answered first or not, and a reply
+// naming the first is refused, nothing written. (The message shown may be
+// the same: every run of white space shows as one space.)
 func TestTwoApprovalsThatDifferByASpaceAreTwoQuestions(t *testing.T) {
-	for _, answerFirst := range []bool{false, true} {
-		t.Run(fmt.Sprintf("the first answered %v", answerFirst), func(t *testing.T) {
+	for _, tc := range []struct {
+		second      string
+		answerFirst bool
+	}{
+		{`rm -rf "./buildoutput"`, false},
+		{`rm -rf "./buildoutput"`, true},
+		{`rm -rf "./build  output"`, false},
+		{`rm -rf "./build  output"`, true},
+	} {
+		t.Run(fmt.Sprintf("%s, the first answered %v", tc.second, tc.answerFirst), func(t *testing.T) {
+			answerFirst := tc.answerFirst
 			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
@@ -2510,9 +2520,9 @@ func TestTwoApprovalsThatDifferByASpaceAreTwoQuestions(t *testing.T) {
 				}
 				seen = waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
 			}
-			p.outW.Write([]byte(approvalNext(`rm -rf "./buildoutput"`)))
+			p.outW.Write([]byte(approvalNext(tc.second)))
 			next := waitAttention(t, s, func(a Attention) bool {
-				return asked(a) && a.ID != first.ID && a.ID != seen.ID && strings.Contains(a.Message, "buildoutput")
+				return asked(a) && a.ID != first.ID && a.ID != seen.ID
 			})
 			if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
 				t.Fatalf("a reply naming the first: %v", err)

@@ -846,6 +846,9 @@ func TestSameWordsIsTheQuestionWhateverTheWidth(t *testing.T) {
 	if a, b := q.words(screen(`$ rm -rf "./build output"`)), q.words(screen(`$ rm -rf "./buildoutput"`)); sameWords(a, b) {
 		t.Fatalf("two commands that differ by a space: %q and %q", a, b)
 	}
+	if a, b := q.words(screen(`$ rm -rf "./build output"`)), q.words(screen(`$ rm -rf "./build  output"`)); sameWords(a, b) {
+		t.Fatalf("two commands that differ by one space and two: %q and %q", a, b)
+	}
 	// Broken between two words at one width and not at another, a command is one question.
 	if a, b := q.words(screen(`$ rm -rf "./build`, `output"`)), q.words(screen(`$ rm -rf "./build output"`)); !sameWords(a, b) {
 		t.Fatalf("one command broken between two words: %q and %q", a, b)

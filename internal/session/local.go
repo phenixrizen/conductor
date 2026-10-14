@@ -783,11 +783,14 @@ type StartupQuestion struct {
 }
 
 // words returns the question's words when text shows it, "" when it does
-// not: as rows (row breaks kept, a run of white space in a row one space,
-// each row trimmed, blank rows left out), whole. The rows are what tells one
-// question from the next (sameWords: a dialog answered, asked again; a
-// startup question still on the screen); the message shown is cut from
-// them (shownWords).
+// not: as rows (row breaks kept, each row trimmed, blank rows left out),
+// whole. A dialog asked during the work (Anytime), read off the screen,
+// keeps the white space within its rows as drawn (a command's own: two
+// spaces in a quoted path are not one); a startup question's runs of white
+// space are one space each, as the output its watcher keeps reads them.
+// The rows are what tells one question from the next (sameWords: a dialog
+// answered, asked again; a startup question still on the screen); the
+// message shown is cut from them (shownWords).
 func (q StartupQuestion) words(text string) string {
 	all := q.Pattern.FindAllString(text, -1)
 	if len(all) == 0 || all[len(all)-1] == "" {
@@ -812,16 +815,21 @@ func (q StartupQuestion) words(text string) string {
 			}
 		}
 	}
-	return asRows(words)
+	return asRows(words, q.Anytime)
 }
 
-// asRows is text as a question's rows (words): each row's runs of white
-// space one space, the row trimmed, blank rows left out, the rows joined by
-// line breaks.
-func asRows(text string) string {
+// asRows is text as a question's rows (words): each row trimmed, blank rows
+// left out, the rows joined by line breaks; within a row its white space as
+// it is with keep, else each run of it one space.
+func asRows(text string, keep bool) string {
 	var rows []string
 	for _, row := range strings.Split(text, "\n") {
-		if row = strings.Join(strings.Fields(row), " "); row != "" {
+		if keep {
+			row = strings.TrimSpace(row)
+		} else {
+			row = strings.Join(strings.Fields(row), " ")
+		}
+		if row != "" {
 			rows = append(rows, row)
 		}
 	}
@@ -860,20 +868,21 @@ func shownWords(rows string) string {
 // the words of one question: the same but where a row break in one stands
 // where the other has a space, or nothing (the screen's width broke the
 // rows there: between two words, or inside one the program cut at the
-// edge). A space in both, or in neither, where neither breaks a row, is the
-// same; a space in one and none in the other there ("build output" and
-// "buildoutput", each on one row) is two questions.
+// edge). Elsewhere their white space is the same, run for run: a space in
+// one and none in the other ("build output" and "buildoutput", each on one
+// row), or one space and two ("build output" and "build  output"), is two
+// questions.
 func sameWords(a, b string) bool {
 	if a == b {
 		return true
 	}
-	ta, sa, ba := wordMarks(a)
-	tb, sb, bb := wordMarks(b)
+	ta, ga, ba := wordMarks(a)
+	tb, gb, bb := wordMarks(b)
 	if ta != tb {
 		return false
 	}
-	for i := range sa {
-		if sa[i] != sb[i] && !ba[i] && !bb[i] {
+	for i := range ga {
+		if ga[i] != gb[i] && !ba[i] && !bb[i] {
 			return false
 		}
 	}
@@ -881,31 +890,26 @@ func sameWords(a, b string) bool {
 }
 
 // wordMarks returns words without their white space, and for each place in
-// that (before the byte at its index, its end included), whether words has
-// a space there within a row, and whether a row break.
-func wordMarks(words string) (string, []bool, []bool) {
+// that (before the byte at its index, its end included), the white space
+// words has there within a row ("" for none), and whether a row break.
+func wordMarks(words string) (string, []string, []bool) {
 	var b strings.Builder
-	space, brk := []bool{false}, []bool{false}
+	gap, brk := []string{""}, []bool{false}
 	for _, r := range words {
 		at := b.Len()
 		switch r {
 		case '\n':
 			brk[at] = true
 		case ' ', '\t':
-			space[at] = true
+			gap[at] += string(r)
 		default:
 			b.WriteRune(r)
-			for len(space) <= b.Len() {
-				space, brk = append(space, false), append(brk, false)
+			for len(gap) <= b.Len() {
+				gap, brk = append(gap, ""), append(brk, false)
 			}
 		}
 	}
-	for i := range space {
-		if brk[i] {
-			space[i] = false
-		}
-	}
-	return b.String(), space, brk
+	return b.String(), gap, brk
 }
 
 // words returns the question's words a's are, as rows (StartupQuestion.words):
@@ -1060,7 +1064,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// next, and shows as a message cut from them.
 	var rows string
 	if heldSource(source) && state == AttentionNeedsInput {
-		rows = asRows(cleanRows(message))
+		rows = asRows(cleanRows(message), true)
 		message = shownWords(rows)
 	}
 	message = CleanMessage(message)
