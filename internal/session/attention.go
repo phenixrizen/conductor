@@ -111,6 +111,11 @@ type Attention struct {
 	Kind    string         `json:"kind,omitempty"`
 	Options []Option       `json:"options,omitempty"`
 	ID      string         `json:"id,omitempty"`
+	// rows are the words of a question asked from the screen as its rows
+	// (StartupQuestion.words), whole, which tell it from the next
+	// (sameWords); Message is cut from them. Kept by the session, never
+	// sent.
+	rows string
 }
 
 // CleanName normalises a display name from a client: oneLine at

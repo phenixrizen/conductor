@@ -489,28 +489,35 @@ func TestAnApprovalGoneAfterAKeyTypedIntoItGivesWay(t *testing.T) {
 }
 
 // The words are the command whole: a "$ " inside it does not start them
-// again, rows of it are joined, and a command longer than a message can
-// hold is cut with an ellipsis, never silently.
+// again, its rows are kept as rows (what tells it from the next), and the
+// message shown joins them; a command longer than a message can hold is
+// shown cut with an ellipsis, never silently, and is told whole.
 func TestAnApprovalsWordsAreItsWholeCommand(t *testing.T) {
 	q := approvalQuestions()[0]
 	screen := func(cmdRows ...string) string {
 		return "  Would you like to run the following command?\n\n  Reason: needs the network.\n\n  " + strings.Join(cmdRows, "\n  ") +
 			"\n\n› 1. Yes, proceed (y)\n  2. Yes, and don't ask again for commands that start with `rm` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel"
 	}
-	if got := q.words(screen("$ rm -rf build; printf '$ done'")); got != "Would you like to run the following command? $ rm -rf build; printf '$ done'" {
+	if got := shownWords(q.words(screen("$ rm -rf build; printf '$ done'"))); got != "Would you like to run the following command? $ rm -rf build; printf '$ done'" {
 		t.Fatalf("words %q", got)
 	}
-	if got := q.words(screen("$ cat <<'EOF' > notes.txt", "hello", "EOF")); got != "Would you like to run the following command? $ cat <<'EOF' > notes.txt hello EOF" {
+	rows := q.words(screen("$ cat <<'EOF' > notes.txt", "hello", "EOF"))
+	if rows != "Would you like to run the following command? $ cat <<'EOF' > notes.txt\nhello\nEOF" {
+		t.Fatalf("rows of a command on three rows %q", rows)
+	}
+	if got := shownWords(rows); got != "Would you like to run the following command? $ cat <<'EOF' > notes.txt hello EOF" {
 		t.Fatalf("words of a command on three rows %q", got)
 	}
 	long := "$ " + strings.Repeat("echo abcdefghij && ", 40) + "rm -rf /tmp/x"
-	got := q.words(screen(long))
-	if len(got) > MaxAttentionMessage || !regexp.MustCompile(`… #[0-9a-f]{8}$`).MatchString(got) || !strings.Contains(got, "$ echo abcdefghij && echo") || !utf8.ValidString(got) {
+	whole := q.words(screen(long))
+	got := shownWords(whole)
+	if len(got) > MaxAttentionMessage || !strings.HasSuffix(got, "…") || !strings.Contains(got, "$ echo abcdefghij && echo") || !utf8.ValidString(got) {
 		t.Fatalf("words of a long command (%d bytes) %q", len(got), got)
 	}
-	// Alike up to the cut and different after it, two commands' words differ: they are two questions.
-	if other := q.words(screen(strings.TrimSuffix(long, "x") + "y")); other == got || len(other) != len(got) {
-		t.Fatalf("two long commands that differ after the cut: %q and %q", got, other)
+	// Alike up to the cut and different after it, two commands are two questions, shown alike.
+	other := q.words(screen(strings.TrimSuffix(long, "x") + "y"))
+	if shownWords(other) != got || sameWords(other, whole) || !strings.HasSuffix(whole, "/tmp/x") {
+		t.Fatalf("two long commands that differ after the cut: %q and %q", whole, other)
 	}
 }
 
@@ -834,5 +841,17 @@ func TestSameWordsIsTheQuestionWhateverTheWidth(t *testing.T) {
 	}
 	if sameWords(q.words(screen("$ rm -rf build")), q.words(screen("$ rm -rf built"))) {
 		t.Fatal("two commands are one question")
+	}
+	// A space within a row is the command's own: two commands that differ by one are two questions.
+	if a, b := q.words(screen(`$ rm -rf "./build output"`)), q.words(screen(`$ rm -rf "./buildoutput"`)); sameWords(a, b) {
+		t.Fatalf("two commands that differ by a space: %q and %q", a, b)
+	}
+	// Broken between two words at one width and not at another, a command is one question.
+	if a, b := q.words(screen(`$ rm -rf "./build`, `output"`)), q.words(screen(`$ rm -rf "./build output"`)); !sameWords(a, b) {
+		t.Fatalf("one command broken between two words: %q and %q", a, b)
+	}
+	// What a command shows is never taken for a tag of anything: two commands alike but for one are two questions.
+	if a, b := q.words(screen("$ echo harmless # … #deadbeef")), q.words(screen("$ rm -rf ./backups # … #deadbeef")); sameWords(a, b) {
+		t.Fatalf("two commands that end alike: %q and %q", a, b)
 	}
 }

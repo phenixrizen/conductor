@@ -2310,8 +2310,9 @@ func TestTwoLongApprovalsAlikeUpToTheCutAreTwoQuestions(t *testing.T) {
 	}
 	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
 	p.outW.Write([]byte(approvalNext(head + "b")))
+	// The message shown is the same (cut before the commands differ); the question is not.
 	next := waitAttention(t, s, func(a Attention) bool {
-		return asked(a) && a.ID != first.ID && a.ID != again.ID && a.Message != first.Message
+		return asked(a) && a.ID != first.ID && a.ID != again.ID
 	})
 	if err := s.AnswerInput(t.Context(), nater, next.ID, []byte("y")); err != nil {
 		t.Fatalf("a click on the second approval: %v", err)
@@ -2484,4 +2485,45 @@ func TestAnApprovalDrawnAgainAtAnotherWidthIsTheSameQuestion(t *testing.T) {
 		t.Fatalf("a click on the approval drawn again at another width: %v", err)
 	}
 	noWrite(t, p, 200*time.Millisecond)
+}
+
+// Two approvals in a row whose commands differ by a space within a row
+// (`"./build output"`, `"./buildoutput"`) are two questions: the second,
+// drawn over the first, is asked with an id of its own, which a click on
+// it takes, answered first or not, and a reply naming the first is
+// refused, nothing written.
+func TestTwoApprovalsThatDifferByASpaceAreTwoQuestions(t *testing.T) {
+	for _, answerFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the first answered %v", answerFirst), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(approvalDialog(`rm -rf "./build output"`)))
+			first := waitAttention(t, s, asked)
+			seen := first
+			if answerFirst {
+				if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+					t.Fatal(err)
+				}
+				if got := nextWrite(t, p); got != "y" {
+					t.Fatalf("written %q", got)
+				}
+				seen = waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+			}
+			p.outW.Write([]byte(approvalNext(`rm -rf "./buildoutput"`)))
+			next := waitAttention(t, s, func(a Attention) bool {
+				return asked(a) && a.ID != first.ID && a.ID != seen.ID && strings.Contains(a.Message, "buildoutput")
+			})
+			if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("a reply naming the first: %v", err)
+			}
+			noWrite(t, p, 200*time.Millisecond)
+			if err := s.AnswerInput(t.Context(), jane, next.ID, []byte("y")); err != nil {
+				t.Fatalf("a click on the second: %v", err)
+			}
+			if got := nextWrite(t, p); got != "y" {
+				t.Fatalf("written %q", got)
+			}
+		})
+	}
 }
