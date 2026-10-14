@@ -90,7 +90,10 @@ The server tells the host on that connection when a link goes, so a line of
 a viewer who joined through a link is typed and entered only while the host
 has heard from the server within 15 s (`hostagent/liveness.go`): whatever it
 reads counts, and while such a viewer, or something of theirs, is there it
-pings the server once the connection has been quiet for 5 s. A connection
+pings the server once the connection has been quiet for 5 s; the server,
+for its part, pings the host every 5 s while a viewer is attached through a
+link (`api/ws_host.go`, `hostKeepalive`), which reaches the host also while
+a relay bound pauses the server's reading of it. A connection
 that stops carrying anything without either end closing it is then a link
 gone for those lines, as a connection lost is, and one the host has pinged
 and heard nothing on for two minutes it gives up.

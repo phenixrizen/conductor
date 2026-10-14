@@ -381,13 +381,24 @@ the server within 15 s, and otherwise does with the line what it does for a
 link gone (its text not typed, or typed with no carriage return and the
 session's turn held for a person), as its viewer's attach is refused then.
 Whatever the host reads on the connection counts: a message, a relayed
-frame, a ping (the server pings every 30 s) or a pong. While a viewer who
-joined through a link, or something of theirs, is there, the host pings
-the server (a WebSocket ping, which every server answers, an older one too)
-once the connection has been quiet for 5 s, one ping at a time: a live,
-quiet connection is heard from at least that often and a round trip. Having
-pinged and heard nothing at all for 2 minutes, it gives the connection up
-and connects again (its pings keep a connection that drops what it carries
+frame, a ping or a pong. The server pings the host every 30 s, and every
+5 s while a viewer is attached to the session through a link, whether or
+not the last pong has come back: a ping is written whatever the server
+reads, so it reaches a host whose connection the server reads slowly (a
+relay bound, the host's own or one it shares with the other open hosts of
+its address), whose pongs, and answers to its own pings, wait for that
+reading. While a viewer who joined through a link, or something of
+theirs, is there, the host pings the server too (a WebSocket ping, which
+every server answers, an older one too) once the connection has been quiet
+for 5 s, one ping at a time: a live, quiet connection is heard from at
+least that often and a round trip. An older server pings every 30 s and
+stops at a pong that comes late; with it the host hears its own pings
+answered, which a server that pauses its reading longer than 15 s (only a
+switchyard with a relay bound does) answers late: a line of a link's
+viewer may then be withheld that a newer server's pings would let
+through, never one entered that should not be. Having pinged and heard
+nothing at all for 2 minutes, the host gives the connection up and
+connects again (its pings keep a connection that drops what it carries
 from being idle, which TCP's keepalive would otherwise have ended). The
 lines of the owner's own windows, the host's own terminal and a paste
 invite's viewer need no such word. A host reads a reason it does not know, or

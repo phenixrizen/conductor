@@ -148,7 +148,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-	go keepalive(ctx, c, s.pingEvery)
+	go hostKeepalive(ctx, c, s.pingEvery, s.linkPingEvery, hs.LinkViewing)
 
 	for {
 		typ, data, err := c.Read(ctx)
@@ -183,6 +183,48 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		}
 		if !s.handleHostMessage(hs, hc, data) {
 			c.Close(proto.CloseProtocolError, "bad host message")
+			return
+		}
+	}
+}
+
+// hostKeepalive pings a host's control connection every `every` until ctx
+// ends, and every linkEvery while linked says a viewer is attached to the
+// session through a link: the host types such a viewer's lines only while it
+// has heard from the server lately (docs/protocol.md, the host control
+// connection), and a ping reaches it whatever the server reads, so also
+// while a relay bound pauses the reading of its connection (its own, or
+// that of another open host of its address that shares its bound). A pong
+// that does not come in time ends nothing, for the reader that takes it
+// may be paused so, and the pings go on; one that cannot be written ends
+// them, as a write's failure ends the connection.
+func hostKeepalive(ctx context.Context, c *websocket.Conn, every, linkEvery time.Duration, linked func() bool) {
+	if every <= 0 {
+		every = defaultPingEvery // a Server made without New
+	}
+	if linkEvery <= 0 {
+		linkEvery = defaultLinkPingEvery
+	}
+	tick := min(every, linkEvery)
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	last := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if time.Since(last) < every-tick/2 && !linked() {
+			continue
+		}
+		last = time.Now()
+		// The library gives a ping's write 5 s at most, and closes the
+		// connection when that runs out; this bounds the wait for the pong.
+		pctx, cancel := context.WithTimeout(ctx, min(writeTimeout, tick))
+		err := c.Ping(pctx)
+		cancel()
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			return
 		}
 	}

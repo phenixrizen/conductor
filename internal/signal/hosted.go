@@ -768,6 +768,20 @@ func (h *HostedSession) RelayOnly() bool {
 	return h.relayOnly
 }
 
+// LinkViewing says whether a viewer is attached to the session through a
+// link, one not let go: its host then needs to hear from the server often
+// (the api's hostKeepalive).
+func (h *HostedSession) LinkViewing() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, v := range h.viewers {
+		if v.LinkID != "" && v.Reason() == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // LinkViewers counts server-side viewers per share link id.
 func (h *HostedSession) LinkViewers() map[string]int {
 	h.mu.Lock()
