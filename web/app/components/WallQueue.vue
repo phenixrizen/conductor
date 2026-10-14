@@ -73,7 +73,8 @@ defineExpose({ focusSelected })
         <button type="button" class="truncate text-sm font-semibold hover:underline" @click.stop="emit('open', s)">{{ s.name }}</button>
         <span v-if="s.attention?.since" class="ml-auto font-mono text-[11px] text-muted">{{ relativeTime(s.attention.since, now) }}</span>
       </div>
-      <p class="text-sm leading-snug">{{ s.attention?.message || 'Waiting for input' }}</p>
+      <!-- The question whole (#187): a long token (a command, a URL) breaks rather than scrolls the queue sideways. -->
+      <p class="break-words text-sm leading-snug" data-queue-message>{{ s.attention?.message || 'Waiting for input' }}</p>
       <div v-if="s.attention?.options?.length" class="flex gap-1.5">
         <UButton
           v-for="(o, oi) in s.attention.options"

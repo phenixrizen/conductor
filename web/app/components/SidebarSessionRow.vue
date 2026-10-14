@@ -5,11 +5,12 @@ import { rowMenuItems, rowPrompt, sessionLive, stopQuestion } from '~/utils/side
 
 /**
  * One session in the list (design 3b, 3c): the agent's initials, the name, a status dot, what it asks when it asks, and a meta
- * line of agent · where · how long. A hosted session's row carries its machine with a laptop, in place of a heading. The path is
- * the row's tooltip. An exited row says how it ended and when, with Resume beside the link (a link holds no button). Hovering
- * offers Share, Stop and More in place of the dot; Stop asks first, in the row; a right-click or a long press opens the same
- * menu as More. A prompt is answered in the row, below the link: its choices as numbered buttons, or a reply field. The list
- * drives the keys: `focused` marks the row they act on, `confirming` (a model: the hover Stop sets it too) shows the question.
+ * line of agent · where · how long. The question reads whole (#187): wrapped over its lines, never cut. A hosted session's
+ * row carries its machine with a laptop, in place of a heading. The path is the row's tooltip. An exited row says how it ended
+ * and when, with Resume beside the link (a link holds no button). Hovering offers Share, Stop and More in place of the dot; Stop
+ * asks first, in the row; a right-click or a long press opens the same menu as More. A prompt is answered in the row, below the
+ * link: its choices as numbered buttons, or a reply field. The list drives the keys: `focused` marks the row they act on,
+ * `confirming` (a model: the hover Stop sets it too) shows the question.
  */
 const props = withDefaults(defineProps<{ row: SessionRow; now: number; member?: boolean; needsDot?: boolean; busy?: boolean; focused?: boolean; big?: boolean }>(), { member: false, needsDot: true, busy: false, focused: false, big: false })
 const emit = defineEmits<{ share: [row: SessionRow]; stop: [row: SessionRow]; yard: [row: SessionRow]; openRun: [row: SessionRow]; answer: [row: SessionRow, index: number, question: string | undefined]; reply: [row: SessionRow, text: string, question: string | undefined]; sheet: [row: SessionRow] }>()
@@ -99,7 +100,11 @@ function confirmStop() {
             <span class="text-[11px] leading-snug text-muted">{{ question.detail }}</span>
           </template>
           <template v-else>
-            <span v-if="row.prompt" class="truncate text-xs" data-row-prompt>{{ row.prompt.message }}</span>
+            <!-- The question whole, never cut: wrapped over its lines, a long token (a command, a URL) breaking rather than overflowing.
+                 No clamp: the server bounds a message at 500 bytes (session.MaxAttentionMessage), two dozen lines at the sidebar's
+                 default width, a clamp would hide the tail from a touch screen and the keyboard, and a disclosure on hover or focus
+                 would move the choices under the pointer. -->
+            <span v-if="row.prompt" class="break-words text-xs" data-row-prompt>{{ row.prompt.message }}</span>
             <span v-if="row.state === 'exited'" class="truncate font-mono text-[11px] text-muted">{{ exitLine }}</span>
             <span v-else class="flex items-center overflow-hidden whitespace-nowrap font-mono text-[11px] text-muted" data-row-meta>
               <span v-if="row.machine" class="inline-flex flex-none items-center gap-1" :data-row-machine="row.machine">
