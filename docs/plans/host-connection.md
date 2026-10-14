@@ -1,18 +1,27 @@
 # Plan: how a `conductor host` talks to its server
 
 Branch `host-connection`. Reviewed before any code (AGENTS.md, Reviews):
-two rounds; the second round's findings are taken into this revision,
-which is unreviewed, and the owner decides whether it is reviewed once
-more or stands.
-No code is written until #133 (branch `quick-reply-question`, which also
-changes `internal/hostagent/peer.go`) has merged; each pull request below
-starts from `main` once the one before it has merged, since they touch
-the same files (`hostagent/agent.go`, `peer.go`).
+two rounds; the second round's findings are taken into this revision.
+#133 has merged (#192), so code may start; each pull request below starts
+from `main` once the one before it has merged, since they touch the same
+files (`hostagent/agent.go`, `peer.go`).
+
+**The owner's decisions (2026-10-14).**
+- No third review round of this plan: it stands as revised after round 2.
+- The host vouches for the server only by its own answered ping (change
+  3), and accepts the cost named there: while a server pauses its reading
+  for longer than the bound, a link's line waits rather than being
+  entered.
+- A write already begun when a link goes is the one named exception
+  (change 1): no write deadline is added to the PTY layer.
+- Change 1 also covers a link viewer's file reads, editor opens and chat
+  posts; change 5 also covers the admin client's `--server` (`conductor
+  up`, `conductor crews`).
 
 ## The changes
 
-1. **A link's keys and saves pass the link's check.** A keystroke (INPUT)
-   and a save's part (FILE_WRITE) from a viewer who joined through a link
+1. **What a link's viewer sends passes the link's check.** A keystroke
+   (INPUT) and a save's part (FILE_WRITE) from a viewer who joined through a link
    are written to the session, or to its folder, only while the link's
    credential stands (`linkCred`, #172) and the host vouches for the
    server (change 3), as a submission's text and its Enter are. The check
@@ -33,6 +42,10 @@ the same files (`hostagent/agent.go`, `peer.go`).
    A viewer with no link (the owner's window, a paste invite's viewer,
    the host's own terminal) has no credential and is never refused by
    this check; the role check (`read_only`) comes first, as it does.
+   The same check is asked, once as each is taken, of a file read
+   (FILE_GET), an editor's open (`nvim_open`) and a chat post (`chat`,
+   `chat_send`) from such a viewer: a refusal answers it with the same
+   codes and does nothing, a read reading no byte of the file.
 2. **The server's own messages travel ahead of relayed frames, and
    nothing of a closed viewer's follows its close.** A host's connection
    on the server gets two lanes: the server's own messages (`link_gone`,
@@ -112,7 +125,12 @@ the same files (`hostagent/agent.go`, `peer.go`).
    Settings page refuses such a switchyard as the field is saved, with
    the words why (a check in `web/app/utils/desktop.ts` the page runs,
    and `desktop/src/settings.ts`'s `validate` behind it); the default
-   switchyard is `https` and unaffected.
+   switchyard is `https` and unaffected. The admin client's `--server`
+   (`conductor up`, `conductor crews`, and `CONDUCTOR_SERVER`), which
+   sends the workbench token with every request, follows the same rule:
+   a plain URL to a host that is not loopback is refused before any
+   request, with a message naming `--insecure`, and with the flag a
+   warning is printed.
 
 (The brief's four items: 1; 2 and 3 are its second; 4 its third; 5 its
 fourth.)
@@ -267,9 +285,6 @@ fourth.)
 
 - The hold (#185), the switchyard's bound on what a host relays, the
   relayed frame sizes and the server's write bound: unchanged.
-- The admin API client's `--server` (`conductor up`, `conductor crews`):
-  not a host connection; its rule (http or https with a host) stays.
-- File reads, editor opens and chat posts: not part of this change.
 - Windows and WSL networking: nothing is asked of the person.
 
 ## Tests that pin the orderings
@@ -352,8 +367,10 @@ rules), `conductor host --help` and the Settings card's words.
 
 ## Pull requests
 
-1. Change 1 on its own: `internal/session` (`input.go`, `write.go`),
-   `internal/hostagent/peer.go` (`inputError`), the tests above.
+1. Change 1 on its own: `internal/session` (`input.go`, `write.go`,
+   the read, open and chat paths), `internal/hostagent/peer.go`
+   (`inputError`), the tests above, with one test each for a refused
+   read, open and chat post.
 2. Changes 2, 3 and 4 together: `internal/signal/hosted.go`,
    `internal/api/ws_host.go`, `internal/hostagent` (`agent.go`,
    `liveness.go`, `peer.go`, `queue.go`), docs; they share the host's
@@ -361,9 +378,9 @@ rules), `conductor host --help` and the Settings card's words.
    queues; the older-host test is part of it, not after it.
 3. Change 5 on its own: `internal/hostagent/agent.go` (`controlURL`,
    `Options.Insecure`, the dial's redirect check), `uplink.go`,
-   `internal/cli/host.go`, `internal/config`, `desktop/src/settings.ts`,
+   `internal/cli/host.go`, the admin client in `internal/cli` (`up`,
+   `crews`), `internal/config`, `desktop/src/settings.ts`,
    `web/app/utils/desktop.ts`, `web/app/pages/settings.vue`, the specs.
 
-In that order, each from `main` after the one before merged, and none
-before #133. Each pull request's body names this plan's last reviewed
+In that order, each from `main` after the one before merged. Each pull request's body names this plan's last reviewed
 commit apart from the code's.
