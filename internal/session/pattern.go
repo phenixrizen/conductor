@@ -269,8 +269,20 @@ type PatternWatcher struct {
 	// the last) took, for a fire or a miss to tell which screen it saw
 	// (LookedAt): a callback runs after the text was taken, and the screen
 	// may have moved on meanwhile.
-	looked  uint64
-	stopped bool
+	looked uint64
+	// lookSettled and lookCols are the look's own, taken with its text
+	// under the lock (take): whether the text was a whole frame
+	// (Screen.Settled) and the screen's width then. A callback decides on
+	// them (Look), not on the screen as it is when it runs: output since
+	// the look (a frame's end, a resize) must not change what the look
+	// decides.
+	lookSettled bool
+	lookCols    int
+	// afterLook, when set, runs once the timer's look has taken its text
+	// and before its callback: a test's, to feed the watcher between the
+	// two.
+	afterLook func()
+	stopped   bool
 	// held is Hold's: CheckNow finds nothing until output comes.
 	held bool
 }
@@ -323,14 +335,25 @@ func (w *PatternWatcher) CheckNow() bool {
 		w.mu.Unlock()
 		return false
 	}
-	line := w.tracker.Last()
-	w.looked = w.feeds
+	line := w.take()
 	w.mu.Unlock()
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
 		return true
 	}
 	return false
+}
+
+// take is a look's capture, under the lock: the text, and with it what
+// the look's callback decides on (looked, lookSettled, lookCols: Look).
+func (w *PatternWatcher) take() string {
+	w.looked = w.feeds
+	w.lookSettled, w.lookCols = true, 0
+	if sc, ok := w.tracker.(*Screen); ok {
+		w.lookSettled = sc.Settled()
+		w.lookCols, _ = sc.Size()
+	}
+	return w.tracker.Last()
 }
 
 // LookedAt returns how many Feeds the text the look in progress took had
@@ -340,6 +363,16 @@ func (w *PatternWatcher) LookedAt() uint64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.looked
+}
+
+// Look is LookedAt with what the look took with its text: whether the
+// text was a whole frame (a screen's Settled; always for the others) and
+// the screen's width then (0 for the others). A fire or a miss reads
+// these, not Settled and Size, which say what the screen is now.
+func (w *PatternWatcher) Look() (looked uint64, settled bool, cols int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.looked, w.lookSettled, w.lookCols
 }
 
 // Watching reports whether the watcher still watches (not Stopped).
@@ -382,6 +415,17 @@ func (w *PatternWatcher) Text() string {
 	return w.tracker.Last()
 }
 
+// TextAt is Text with the screen's width it was read at (Size), taken
+// together; 0 for a watcher with no screen.
+func (w *PatternWatcher) TextAt() (text string, cols int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		cols, _ = sc.Size()
+	}
+	return w.tracker.Last(), cols
+}
+
 // Whole returns all the text the watcher keeps: a screen watcher's whole
 // screen (Screen.Lines, every row, a row autowrap went on from read with
 // the next as one line, where Text is its last rows), the others'
@@ -397,17 +441,6 @@ func (w *PatternWatcher) Whole() (text string, settled bool, cols, rows int) {
 		return sc.Lines(), sc.Settled(), cols, rows
 	}
 	return w.tracker.Last(), true, 0, 0
-}
-
-// Settled reports whether a screen watcher's screen is a whole frame
-// (Screen.Settled); always for the others.
-func (w *PatternWatcher) Settled() bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if sc, ok := w.tracker.(*Screen); ok {
-		return sc.Settled()
-	}
-	return true
 }
 
 // Size returns a screen watcher's screen size, 0 by 0 for the others.
@@ -457,9 +490,12 @@ func (w *PatternWatcher) expire() {
 	}
 	w.checked = w.feeds
 	w.held = false // the screen after the answer has been looked at
-	line := w.tracker.Last()
-	w.looked = w.feeds
+	line := w.take()
+	hook := w.afterLook
 	w.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	if strings.TrimSpace(line) != "" && w.re.MatchString(line) {
 		w.fire(line)
 	} else if w.miss != nil {

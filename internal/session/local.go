@@ -703,14 +703,15 @@ func (s *Local) fireTrust(text string) {
 // what came next), is answered by that key, as when it goes (missAsked).
 func (s *Local) fireAsked(text string) {
 	s.escGone()
-	cols, _ := s.asked.Size()
-	// Half a frame (a synchronized update under way, or one drawn at
-	// another size not yet erased and drawn again) shows what the program
-	// has not finished drawing: it asks, and forgets no dialog answered.
-	settled := s.asked.Settled()
+	// The look's own (Look): the width text was read at, and whether it
+	// is a whole frame. Half a frame (a synchronized update under way, or
+	// one drawn at another size not yet erased and drawn again) shows what
+	// the program has not finished drawing: it asks, and forgets no dialog
+	// answered. Output since the look (the frame's end, a resize) does not
+	// change that: the look decides on the screen it saw.
+	look, settled, cols := s.asked.Look()
 	for _, q := range s.askedQuestions {
 		if words := atWidth(q.words(text), cols); words != "" {
-			look := s.asked.LookedAt()
 			s.mu.Lock()
 			if settled && !sameWords(s.dialogAnswered, words) {
 				s.dialogGone(look)
@@ -738,12 +739,12 @@ func (s *Local) fireAsked(text string) {
 // question keeps every Enter from the screen.
 func (s *Local) missAsked(string) {
 	s.escGone()
-	if !s.asked.Settled() {
-		// Half a frame (fireAsked): the dialog answered may be drawn
-		// again in the rest of it.
+	look, settled, _ := s.asked.Look()
+	if !settled {
+		// Half a frame (fireAsked), the look's own: the dialog answered
+		// may be drawn again in the rest of it.
 		return
 	}
-	look := s.asked.LookedAt()
 	s.mu.Lock()
 	s.dialogGone(look)
 	att, typed := s.info.Attention, s.typedAtAsked
@@ -1239,6 +1240,17 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 	}
 	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
+		if rows != "" && rows != cur.rows {
+			// The same question read at another width (the window
+			// resized, its rows broken elsewhere): it is told by its rows
+			// as they are now, so that at this width a row break is the
+			// program's own against the next question (sameWords), and
+			// so is the dialog last answered, when it is this one.
+			s.info.Attention.rows = rows
+			if rules&sameDialog != 0 && s.dialogAnswered != "" && sameWords(s.dialogAnswered, words) {
+				s.dialogAnswered = words
+			}
+		}
 		if stillAnswered && cur.ID != "" {
 			s.answered = cur.ID
 			s.holdAskedAgain(cur.ID, words, heldAsked, startupStill)
@@ -1928,9 +1940,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		var words string
 		var onScreen *dialogView
 		if s.asked != nil && mayAnswerDialog(maybe) && !isTerminalReport(data) {
-			screen := s.asked.Text()
+			screen, cols := s.asked.TextAt()
 			var q *StartupQuestion
-			if q, words = s.askedIn(screen); q != nil {
+			if q, words = s.askedIn(screen, cols); q != nil {
 				onScreen = readDialog(q, words, screen)
 			}
 		}
@@ -2144,9 +2156,9 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time
 }
 
 // askedIn returns the question asked during the work that text (the
-// screen's) shows, and its words; nil and "" when it shows none.
-func (s *Local) askedIn(text string) (*StartupQuestion, string) {
-	cols, _ := s.asked.Size()
+// screen's, read cols wide: TextAt) shows, and its words; nil and ""
+// when it shows none.
+func (s *Local) askedIn(text string, cols int) (*StartupQuestion, string) {
 	for i := range s.askedQuestions {
 		if words := s.askedQuestions[i].words(text); words != "" {
 			return &s.askedQuestions[i], atWidth(words, cols)
@@ -2276,7 +2288,8 @@ func (s *Local) stillOnScreen(id string) error {
 		return nil
 	}
 	if s.asked != nil {
-		_, words := s.askedIn(s.asked.Text())
+		text, cols := s.asked.TextAt()
+		_, words := s.askedIn(text, cols)
 		if att.Source == SourceQuestion && !sameWords(words, att.words()) || att.Source != SourceQuestion && words != "" {
 			return ErrQuestionAnswered
 		}

@@ -2655,3 +2655,104 @@ func TestAReplyWaitingBehindAnothersWriteIsWithdrawnOnceItsLinkNoLongerStands(t 
 		t.Fatalf("written %q", got)
 	}
 }
+
+// An approval whose command the program broke on two rows (`printf '%s'
+// 'build` and `output'`), the window then made wider and the approval
+// drawn again at that width (the same question, its id kept), answered
+// first or not; then the next approval, `printf '%s' 'buildoutput'`, at
+// the new width. The first is told by its rows at the new width from the
+// redraw on, so the row break is the program's own against the second:
+// two questions, the second asked with an id of its own, a reply naming
+// the first refused, a click on the second written. Before the redraw
+// refreshed the rows kept, they stayed at the old width, the two were
+// compared across widths (a row break read as nothing), and the second
+// kept the first's id: a stale reply to the first answered it, or,
+// answered first, it was never asked with an id of its own.
+func TestAnApprovalDrawnAgainAtAnotherWidthIsToldByItsRowsThere(t *testing.T) {
+	for _, answerFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the first answered %v", answerFirst), func(t *testing.T) {
+			s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+			nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+			jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+			p.outW.Write([]byte(approvalWrapped(`printf '%s' 'build`, `output'`)))
+			first := waitAttention(t, s, asked)
+			seen := first
+			if answerFirst {
+				if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+					t.Fatal(err)
+				}
+				if got := nextWrite(t, p); got != "y" {
+					t.Fatalf("written %q", got)
+				}
+				seen = waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+			}
+			// Wider: the program erases its screen and draws the same rows at 100 columns.
+			if err := s.Resize(nater, 100, 24); err != nil {
+				t.Fatal(err)
+			}
+			p.outW.Write([]byte("\x1b[H\x1b[2J" + approvalWrapped(`printf '%s' 'build`, `output'`)))
+			time.Sleep(patternQuiet + 200*time.Millisecond)
+			if a := s.Info().Attention; !asked(a) || a.ID != seen.ID {
+				t.Fatalf("drawn again at another width: %+v, want the id %s", a, seen.ID)
+			}
+			p.outW.Write([]byte(approvalWrapped(`printf '%s' 'buildoutput'`)))
+			next := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID && a.ID != seen.ID })
+			if err := s.AnswerInput(t.Context(), jane, first.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+				t.Fatalf("a reply naming the first: %v", err)
+			}
+			noWrite(t, p, 200*time.Millisecond)
+			if err := s.AnswerInput(t.Context(), jane, next.ID, []byte("y")); err != nil {
+				t.Fatalf("a click on the second: %v", err)
+			}
+			if got := nextWrite(t, p); got != "y" {
+				t.Fatalf("written %q", got)
+			}
+		})
+	}
+}
+
+// An approval answered, then a synchronized redraw begun (its screen
+// erased) and left unfinished past the watcher's quiet period, so that a
+// look takes the blank half frame; the rest of the frame, the same
+// approval and the frame's end, lands after that look took its text and
+// before its callback ran (the watcher's afterLook). The callback decides
+// on the half frame it saw, not on the whole one the screen shows by
+// then: the dialog answered is kept, the approval is asked answered once
+// the screen is looked at again, and a click on it is refused, nothing
+// written. Before the look carried its own frame state, the callback read
+// the screen's, took its blank text for a whole frame, and forgot the
+// dialog answered.
+func TestAFrameFinishedAfterTheLookForgetsNoApprovalAnswered(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
+	dialog := approvalDialog("curl -sI https://example.com")
+	p.outW.Write([]byte(dialog))
+	first := waitAttention(t, s, asked)
+	if err := s.AnswerInput(t.Context(), nater, first.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	// The rest of the frame lands between the next look's text and its
+	// callback (approvalDialog begins a synchronized update of its own and
+	// ends it).
+	var once sync.Once
+	s.asked.mu.Lock()
+	s.asked.afterLook = func() {
+		once.Do(func() { s.asked.Feed([]byte(dialog + "\x1b[?2026l")) })
+	}
+	s.asked.mu.Unlock()
+	p.outW.Write([]byte("\x1b[?2026h\x1b[2J"))
+	time.Sleep(2 * (patternQuiet + 300*time.Millisecond))
+	a := s.Info().Attention
+	if !asked(a) {
+		t.Fatalf("the approval is not asked: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), jane, a.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a click on the approval the frame finished with: %v", err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}

@@ -595,7 +595,8 @@ dialog asked again as the question just answered is asked answered, see
 Answering a question), none with the empty state. A question read off the
 screen (`trust`, `question`) is told by its words whole, as the screen's
 rows show them: drawn again at another width, its rows broken elsewhere,
-it is the same question; at one width its rows are the program's own;
+it is the same question, told by its rows at that width from then on; at
+one width its rows are the program's own;
 two that differ anywhere, past the 500 bytes of `message` too, by one
 space within a row or by a row break at one width, are two. Half a frame
 (a synchronized update under way) forgets no dialog answered. A hosted session's is its
