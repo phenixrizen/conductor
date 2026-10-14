@@ -218,8 +218,10 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   scope, and the tests that will pin each ordering. Codex reviews the plan
   alone (`codex_review.py "review this plan: <focus>"`, the branch holding
   only the plan's commits) before any code is written; its findings change
-  the plan, and each revision is reviewed again until a review finds
-  nothing that blocks. Only then are the tests for the orderings written,
+  the plan, and the revision is reviewed once more. A plan still blocked
+  after its second review is not revised again on the agent's own: the
+  agent reports it, and the owner decides. Only then are the tests for the
+  orderings written,
   from the plan, and then the code that passes them. A design that has to
   change once code exists goes back to the plan: the plan is revised and
   reviewed before the code follows it. The pull request's body names the
@@ -238,17 +240,21 @@ python3 scripts/codex_review.py "<focus: the risks this change touches>"
   branch stacked on another (see Parallel work) names its parent with
   `--base`; once the parent merges it is rebased onto main and reviewed
   again before it merges.
-- **A checkpoint after five rounds.** When the fifth review of a change
-  still finds something, stop and sort its findings before going on. A
-  finding in the current stream of work (the change introduces it,
-  exposes it or needs it fixed; see Issues and the project board) is fixed
-  before the change merges, where One change per pull request puts it: on
-  the branch when it is in code the change touches, in a pull request of
-  its own that merges first when it is in code the change does not
-  otherwise touch. One that is independent of the change is split off (an issue, and
-  the owner's call), not fixed on the branch. The pull request's body
-  records the checkpoint and how each finding was sorted. A change still
-  finding its own defects after ten rounds goes back to its plan.
+- **Review rounds are bounded.** Every round costs; the limits (the owner,
+  2026-10-14) are a budget, not a target. A docs or process change gets
+  one round. Code gets **three**: when the third review still finds
+  something, stop and sort its findings before going on. A finding in the
+  current stream of work (the change introduces it, exposes it or needs
+  it fixed; see Issues and the project board) is fixed before the change
+  merges, where One change per pull request puts it: on the branch when it
+  is in code the change touches, in a pull request of its own that merges
+  first when it is in code the change does not otherwise touch. One that
+  is independent of the change is split off (an issue, and the owner's
+  call), not fixed on the branch. The pull request's body records the
+  checkpoint and how each finding was sorted. **Five** rounds is the stop:
+  a change still finding its own defects then goes back to its plan, the
+  agent reports where it stands, and the owner says whether more is spent
+  on it. An agent never passes a limit on its own.
 - The focus names the risks the change touches: races and ownership,
   link scopes and revocation, credentials in logs, what the switchyard can
   see, recovery after a restart, per-connection bounds.

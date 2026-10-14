@@ -68,30 +68,36 @@ def base_of(argv: list[str]) -> str:
     return found[0] if found else "origin/main"
 
 
-def remote_of(base: str, run=subprocess.run, env: dict[str, str] | None = None) -> str:
-    """The remote whose branch base names, by its full ref (refs/remotes/<remote>/...), else ""."""
+def remote_of(base: str, run=subprocess.run, env: dict[str, str] | None = None) -> tuple[str, str]:
+    """The remote whose branch base names, by its full ref
+    (refs/remotes/<remote>/<branch>), and that branch; ("", "") for a local
+    base."""
     r = run(["git", "rev-parse", "--symbolic-full-name", base], capture_output=True, text=True, env=env)
     full = r.stdout.strip() if r.returncode == 0 else ""
     if not full.startswith("refs/remotes/"):
-        return ""
+        return "", ""
     rest = full[len("refs/remotes/"):]
     remotes = run(["git", "remote"], capture_output=True, text=True, env=env)
     names = remotes.stdout.split() if remotes.returncode == 0 else []
     for name in sorted(names, key=len, reverse=True):
-        if rest == name or rest.startswith(name + "/"):
-            return name
-    return ""
+        if rest.startswith(name + "/"):
+            return name, rest[len(name) + 1:]
+    return "", ""
 
 
 def behind(base: str, run=subprocess.run, env: dict[str, str] | None = None) -> int:
     """How many commits base has that HEAD lacks, once base's remote is
-    fetched when base is a remote's branch (however it is spelled). A fetch
-    that fails refuses the review: what the remote holds is unknown."""
-    remote = remote_of(base, run, env)
+    fetched by its own refspec when base is a remote's branch (however it is
+    spelled). A fetch that fails refuses the review: what the remote holds
+    is unknown."""
+    remote, branch = remote_of(base, run, env)
     if remote:
-        f = run(["git", "fetch", "-q", remote], capture_output=True, text=True, env=env)
+        # The branch itself, by refspec: a plain fetch of the remote refreshes only
+        # the refspecs the checkout is configured with (a single-branch clone's one).
+        f = run(["git", "fetch", "-q", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"],
+                capture_output=True, text=True, env=env)
         if f.returncode != 0:
-            raise BaseUnknown(f"could not fetch {remote} ({f.stderr.strip() or 'fetch failed'}): the review needs the current {base}")
+            raise BaseUnknown(f"could not fetch {remote}/{branch} ({f.stderr.strip() or 'fetch failed'}): the review needs the current {base}")
     r = run(["git", "rev-list", "--count", f"HEAD..{base}"], capture_output=True, text=True, env=env)
     if r.returncode != 0:
         raise BaseUnknown(f"cannot compare this branch with {base}: {r.stderr.strip() or 'unknown revision'}")

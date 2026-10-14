@@ -127,7 +127,7 @@ class FakeGit:
         return subprocess.CompletedProcess(argv, 0, f"{self.behind_by[base]}\n", "")
 
     def fetched(self):
-        return [c[3] for c in self.calls if c[:2] == ["git", "fetch"]]
+        return [c[3:] for c in self.calls if c[:2] == ["git", "fetch"]]
 
 
 class Behind(unittest.TestCase):
@@ -141,25 +141,27 @@ class Behind(unittest.TestCase):
             with self.assertRaises(BaseRepeated):
                 base_of(argv)
 
-    def test_the_remote_comes_from_the_base_s_full_ref(self):
+    def test_the_remote_and_branch_come_from_the_base_s_full_ref(self):
         git = FakeGit({}, full={"origin/main": "refs/remotes/origin/main", "refs/remotes/origin/main": "refs/remotes/origin/main",
-                                "main": "refs/heads/main", "parent": "refs/heads/parent"})
-        self.assertEqual(remote_of("origin/main", git), "origin")
-        self.assertEqual(remote_of("refs/remotes/origin/main", git), "origin")
-        self.assertEqual(remote_of("main", git), "")
-        self.assertEqual(remote_of("parent", git), "")
-        self.assertEqual(remote_of("nope", git), "")
+                                "origin/feature/x": "refs/remotes/origin/feature/x", "main": "refs/heads/main", "parent": "refs/heads/parent"})
+        self.assertEqual(remote_of("origin/main", git), ("origin", "main"))
+        self.assertEqual(remote_of("refs/remotes/origin/main", git), ("origin", "main"))
+        self.assertEqual(remote_of("origin/feature/x", git), ("origin", "feature/x"))
+        self.assertEqual(remote_of("main", git), ("", ""))
+        self.assertEqual(remote_of("parent", git), ("", ""))
+        self.assertEqual(remote_of("nope", git), ("", ""))
 
     def test_a_remote_whose_name_holds_a_slash_is_found(self):
         git = FakeGit({}, remotes=("origin", "up/stream"), full={"up/stream/main": "refs/remotes/up/stream/main"})
-        self.assertEqual(remote_of("up/stream/main", git), "up/stream")
+        self.assertEqual(remote_of("up/stream/main", git), ("up/stream", "main"))
 
-    def test_the_base_s_remote_is_fetched_before_counting_however_the_base_is_spelled(self):
+    def test_the_base_branch_is_fetched_by_its_own_refspec_before_counting_however_the_base_is_spelled(self):
         for base in ("origin/main", "refs/remotes/origin/main"):
             git = FakeGit({base: 3}, full={base: "refs/remotes/origin/main"})
             self.assertEqual(behind(base, git), 3, base)
-            self.assertEqual(git.fetched(), ["origin"], base)
-            self.assertLess(git.calls.index(["git", "fetch", "-q", "origin"]), git.calls.index(["git", "rev-list", "--count", f"HEAD..{base}"]))
+            fetch = ["git", "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main"]
+            self.assertIn(fetch, git.calls, base)
+            self.assertLess(git.calls.index(fetch), git.calls.index(["git", "rev-list", "--count", f"HEAD..{base}"]))
 
     def test_a_local_base_fetches_nothing(self):
         git = FakeGit({"parent-branch": 0}, full={"parent-branch": "refs/heads/parent-branch"})
@@ -169,7 +171,7 @@ class Behind(unittest.TestCase):
     def test_a_failed_fetch_refuses_even_when_the_base_last_fetched_is_caught_up(self):
         with self.assertRaises(BaseUnknown) as e:
             behind("origin/main", FakeGit({"origin/main": 0}, fetch_ok=False))
-        self.assertIn("could not fetch origin", str(e.exception))
+        self.assertIn("could not fetch origin/main", str(e.exception))
 
     def test_an_unknown_base_is_refused(self):
         with self.assertRaises(BaseUnknown):
