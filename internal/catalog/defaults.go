@@ -12,6 +12,17 @@ const uuidPattern = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 // is part of it.
 const codexApprovalWords = `(?ism)((?:would\s+you\s+like|do\s+you\s+want)\s+to\s+[^?]{1,120}\?)(?:.*?^[ \t]*(\$ .*?)\s*^\s*›?\s*1\.\s+yes,\s+proceed)?`
 
+// CodexWorkingTitle matches Codex's window title while a turn runs, with the
+// items Conductor's launch asks for (activity, run-state): "⠋ Working",
+// "⠋ Thinking" or "⠋ Waiting" (a background terminal), the braille frame
+// changing every 100 ms, or the word alone with animations off. Not
+// "Starting" (its MCP servers starting), "Ready" (at rest), nor "[ ! ]
+// Action Required" and its blink "[ . ] Action Required", which Codex
+// writes in place of the spinner and the run state while a view waits on a
+// person (tui/src/chatwidget/status_surfaces.rs and
+// bottom_pane/action_required_title.rs, Codex 0.161).
+const CodexWorkingTitle = `^(?:\S+\s+)?(?:Working|Thinking|Waiting)$`
+
 // codexApprovalFooter ends a pattern of Codex's approval dialog: its footer,
 // on one of the last rows the screen shows (the dialog is the bottom of
 // what Codex draws), so that a dialog's words in a file or a log on the
@@ -55,7 +66,11 @@ func defaults() []Agent {
 			Icon:        "i-lucide-code-xml",
 			Site:        "https://learn.chatgpt.com/docs/codex/cli",
 			Adapter:     "codex",
-			Signal:      &Signal{Kind: SignalHook},
+			// Its window title says what it does (the launch asks for
+			// tui.terminal_title=["activity","run-state"]): a spinner's
+			// frame and "Working" while a turn runs, Ready at rest (seen
+			// with 0.161 on 2026-10-14; #186).
+			Signal:      &Signal{Kind: SignalHook, WorkingTitle: CodexWorkingTitle},
 			Yolo:        &Yolo{Args: []string{"--dangerously-bypass-approvals-and-sandbox"}},
 			TrustPrompt: `Trust\s*this\s*folder\?`,
 			// Codex highlights the trusting answer: Enter alone. Codex 0.161's

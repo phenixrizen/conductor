@@ -50,6 +50,10 @@ type fakeLauncher struct {
 	// and questions its other questions (Options.Questions).
 	trust     *regexp.Regexp
 	questions []session.StartupQuestion
+	// workingTitle, when set, is every session's Options.WorkingTitle, and
+	// titleSettle its Options.TitleSettle.
+	workingTitle *regexp.Regexp
+	titleSettle  time.Duration
 	// pause is every session's pause before an Enter; 5 ms when zero.
 	pause time.Duration
 	// inputWait is every session's Options.InputWait; the default when zero.
@@ -93,7 +97,8 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	p := sessiontest.NewFakeProc()
 	info := session.Info{ID: session.NewID(), Name: name, AgentID: spec.AgentID, Cwd: spec.Cwd, Crew: &ref, Cols: 80, Rows: 24}
 	l := session.NewLocal(info, p, session.Options{Log: quietLog, OnActivity: f.activity, OnChange: f.change,
-		SubmitPause: cmp.Or(f.pause, 5*time.Millisecond), TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait})
+		SubmitPause: cmp.Or(f.pause, 5*time.Millisecond), TrustPattern: f.trust, Questions: f.questions, InputWait: f.inputWait,
+		WorkingTitle: f.workingTitle, TitleSettle: f.titleSettle})
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l
 	f.mu.Unlock()

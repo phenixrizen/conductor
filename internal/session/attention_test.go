@@ -15,8 +15,8 @@ func TestScannerEvents(t *testing.T) {
 	}{
 		{"bare bell", []string{"hello\a world"}, []Event{{Source: SourceBell}}},
 		{"two bells", []string{"\a\a"}, []Event{{Source: SourceBell}, {Source: SourceBell}}},
-		{"bell inside window title is not a bell", []string{"\x1b]0;my title\a"}, nil},
-		{"title with ST then bell", []string{"\x1b]2;title\x1b\\\a"}, []Event{{Source: SourceBell}}},
+		{"bell inside window title is not a bell", []string{"\x1b]0;my title\a"}, []Event{{Source: SourceTitle, Message: "my title"}}},
+		{"title with ST then bell", []string{"\x1b]2;title\x1b\\\a"}, []Event{{Source: SourceTitle, Message: "title"}, {Source: SourceBell}}},
 		{"osc 9", []string{"\x1b]9;Claude needs your input\a"}, []Event{{Source: SourceOSC, Message: "Claude needs your input"}}},
 		{"osc 9 split across chunks", []string{"\x1b]9;wait", "ing for approval\x1b\\"}, []Event{{Source: SourceOSC, Message: "waiting for approval"}}},
 		{"osc 777 notify", []string{"\x1b]777;notify;Codex;turn complete\a"}, []Event{{Source: SourceOSC, Message: "Codex: turn complete"}}},

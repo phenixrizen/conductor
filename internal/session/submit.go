@@ -474,6 +474,7 @@ func (s *Local) holdTyped() {
 	shown := s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceSubmit
 	if shown {
 		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		s.settleLocked(s.info.Attention)
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 	}
@@ -502,7 +503,10 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	cur := s.info.Attention
 	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended() && !picksChoice(over.Options, data, maybe)
 	if restore {
+		// Shown again, it is a wait a title that says the agent works may
+		// settle from now (settleLocked).
 		s.info.Attention = over
+		s.settleLocked(over)
 		if s.answered == over.ID {
 			s.answered = ""
 		}

@@ -607,7 +607,8 @@ screen-pattern detector, below), `trust` (the agent's workspace-trust
 question, below), `question` (a question asked during the work, below),
 `submit` (a submission's text typed and its carriage return not written, its
 link revoked or expired: the session's turn is held until a person types into
-the terminal; see `submit`), `input` (cleared by a controller typing). While
+the terminal; see `submit`), `title` (`working`: the agent's window title says
+it works, below), `input` (cleared by a controller typing). While
 that turn is held, the hold is what shows, but for a `trust` or `question`
 prompt on the screen, which shows over it whether it came first or after
 (and, answered while the hold still stands, gives it its words back);
@@ -722,6 +723,39 @@ own message, kind and options, and the same prompt does not report itself twice.
 Output that never pauses (a spinner, a TUI that redraws continuously) never
 gives the 500 ms of silence, so such an agent is not served by a pattern. A
 host reports the change to the server like any other attention change.
+
+An agent's catalog signal can carry a `workingTitle` (RE2, at most 200 bytes,
+not matching an empty title; with any `kind`): the window title it writes while
+it works. Codex's built-in has one, `^(?:\S+\s+)?(?:Working|Thinking|Waiting)$`,
+and Conductor launches Codex with `-c tui.terminal_title=["activity","run-state"]`
+(the person's `config.toml` is not written), so Codex 0.161 titles its window
+"⠋ Working" (a braille frame, changing every 100 ms; the word alone with
+animations off) through a turn, "Ready" at rest, "⠋ Starting" while its MCP
+servers start and "[ ! ] Action Required" while a view waits on a person. A
+server session of such an agent reads every window title (`ESC ] 0 ;` or
+`ESC ] 2 ;` to BEL or ST), control characters dropped; a title longer than the
+256 bytes the scanner keeps of a sequence, with its number, matches nothing,
+nor does any title of an agent without a `workingTitle`. A title that matches
+shows `working` with `source:"title"`, as the agent's own working report would,
+over a bell, an OSC notification, the agent's report (with choices or without),
+the pattern's prompt, the empty state, or the `done` of a turn an Enter has
+followed; it changes nothing over `working`, over a question the session holds
+(`trust`, `question`), while the session's turn is held (`submit`; nothing is
+recorded), over the `done` of the turn just ended (until the next Enter, as for
+the bell, with the same rule for a title read in the ended turn and looked at
+in the next), on an ended session, or over a wait shown less than 1 second ago:
+Codex rings the bell for an approval as it draws the dialog, and its title then
+says Action Required. A wait (a bell, an OSC notification, the agent's report
+or the pattern's prompt, not a question the session holds) shown while the last
+title read matched, or met within its second by a title that matches, gives
+way to `working` once its second has passed, unless a title that does not match
+came meanwhile (Action Required, Ready): Codex writes its title only when its
+text changes, once a turn with animations off. A title asks the event bucket
+for nothing, does not start the bell's 500 ms, and records an attention entry
+only when it changes the state. While one of Codex's async questions is
+pending its title says Action Required although Codex works on: a wait raised
+then stands until the title says Working again, when the question is answered
+or resolves by itself. Hosted sessions (`conductor host`) do not read titles.
 
 An agent's catalog entry can carry a `trustPrompt`, the words of its
 workspace-trust question (RE2, at most 200 bytes, not matching an empty text).
@@ -1427,7 +1461,7 @@ its run, and on no other.
 | `GET /api/switchyard/status` | admin | on a switchyard only (`404` elsewhere): the landing page's operator figures, `{hosts, sessions, viewers, relayBytesHour, hostList: [{name, since, sessions, viewers}]}`, the live hosted sessions grouped by the publishing host, earliest first, and the bytes the relay carried in the last sixty minutes |
 | `GET /api/whoami` | admin | OS user running the server (the default display name); `host` is the machine's name (`""` when it cannot tell) and `switchyard` whether this server launches nothing; `home` the server user's home directory, when it has one (the settings picker's Home); `version` the server's version, as `conductor version` prints it (Settings → The app) |
 | `GET /api/catalog` | admin | `{agents, hidden, yoloDefault}`: the launchable agents, `env` values masked as `***`, and the IDs hidden from the catalog; each agent, here and in the replies of the catalog routes below, also carries `source` (`built-in`, `config` or `saved`) and, for a saved agent that replaces a built-in or configured one, `replaces` (where that one came from); `available`, whether `command[0]` resolves on the server (the check of `POST /api/catalog/check`; any program of that name on the server's `PATH` counts, and a relative `command[0]` with a path separator counts without a lookup, since it resolves in the session's directory, which the server's own cannot stand for; the answer is kept 30 s per program, and the programs with no fresh answer are looked up together, at most 8 lookups at a time across all requests; a lookup that does not answer within 2 s (a `PATH` entry on a mount that stalls), or before the client goes away, counts as available, so the launch of such an agent is allowed and its spawn fails if the program is missing, and the lookup's answer is kept when it lands); and `site` when the agent has a website (an `https` URL: a built-in's, or the saved agent's); each agent also carries, when it has them, its `yolo` recipe `{args?, env?}` (its `env` values shown as they are: switches, not secrets), its `trustPrompt` and its `session` recipe `{startArgs?, newId?, idFrom?, idPolicy?, resumeArgs?, idPattern?, resumeNeedsCwd?}` (limits below); `yoloDefault` is the server's `yolo` setting, which a launch or a crew without `yolo` follows; each agent whose adapter has an identity probe (the real agent's `--version` line, checked against what it prints: Claude Code and Codex verified live, the others from their docs until the nightly recipes job confirms them) and whose program the lookup found at an absolute path also carries `identity` `{ran, pending?, identified, impostor?, verified, name?, version?, output?, error?}`: the program on the server run with its version flag (argv only, a spartan environment, 3 s, 4 KiB), its answer kept 10 min; `identified` with `version` when it is the agent, `impostor` when it is a known other program of that name (the Go migrations tool called goose; the agent's `available` is then `false`: it is not offered, and `POST /api/sessions` refuses it), `output` the first line it printed otherwise, `pending` when the probe is still under way (ask again), `verified` whether the adapter's expectation was checked against the real CLI (a verified probe that matches nothing means the program is not the agent; an unverified one leaves it unidentified and refuses nothing); an agent with `probe: false` is not probed |
-| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt` or `session` takes those of the agent it replaces, and `"yolo": {}` or `"session": {}` says it has none; `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
+| `POST /api/catalog` | admin | add an agent or replace the one with the same `id` (a built-in too); body is the agent, reply `{agent}`; `source`, `replaces` and `available` in the body are ignored; an `env` value of `***` (what `GET /api/catalog` shows) keeps the value the saved entry holds for that key; for an agent that replaces a built-in or configured one, a `***` value the saved entry does not hold is stored as `***` and means "the replaced agent's value", so a change in the config reaches it, and a value equal to the replaced agent's is stored as `***` too; a saved agent that leaves out `adapter`, `signal`, `site`, `yolo`, `trustPrompt` or `session` takes those of the agent it replaces, and a `signal` without `workingTitle` the replaced agent's `workingTitle`, and `"yolo": {}` or `"session": {}` says it has none; `***` is rejected for a key neither has; `site`, when present, must be an `https://` URL with a host name, a valid port if it has one, no user info and no white space, at most 200 bytes, a rule that also holds for the config's agents and for `catalog.json`; `400 invalid_agent` carries the validation message, an unknown `adapter` or a bad `site` included (the adapter check also runs for the config's agents and for `catalog.json` at startup); `503 store_unavailable` when there is no data directory |
 | `DELETE /api/catalog/{id}` | admin | remove the saved override with that `id`, which restores a built-in it replaced; an agent with no override is hidden instead; `204`, `404` when unknown |
 | `POST /api/catalog/{id}/unhide` | admin | take a hidden `id` off the hidden list, which brings back the agent it hid as it was; reply `{agent}`, or `{}` when no agent has that `id` any more; `404` when the `id` is not hidden |
 | `POST /api/catalog/check` | admin | body `{command, adapter?, env?}`, reply `{found, path?, unknown?, identity?}` (`identity` as `GET /api/catalog` carries it, when `adapter` names an adapter with a probe and the program was found: the probe runs now on the program found, with `env` as the agent's variables; `400 invalid_request` for an unknown adapter): whether `command[0]` resolves on the server (`exec.LookPath`), asked now and kept 30 s for the `available` of `GET /api/catalog`; nothing is run, and a missing program is `found:false`, not an error; `unknown` (with `found:false`) says the server did not judge the program, which `available` counts as installed: `relative` for a relative `command[0]` with a path separator, resolved at launch in the session's directory and not looked up here, and `timeout` when the lookup does not answer within 2 s (its answer is kept when it lands) |
@@ -1482,16 +1516,18 @@ when the file cannot be parsed or an agent in it is invalid. An env value of an
 entry that equals the replaced agent's is saved back as `***` at startup (once;
 a failure to save stops the server), as a save stores it. An entry of
 `catalog.json` with the ID of a built-in or configured agent replaces it but
-inherits what it leaves out (`adapter`, `signal`, `site`, `yolo`,
-`trustPrompt`, `session`, `***` env values and env values equal to the
-replaced agent's; `"yolo": {}` and `"session": {}` say it has none); env keys it does not list are not
+inherits what it leaves out (`adapter`, `signal`, a `signal`'s
+`workingTitle`, `site`, `yolo`, `trustPrompt`, `session`, `***` env values
+and env values equal to the replaced agent's; `"yolo": {}` and `"session": {}`
+say it has none); env keys it does not list are not
 inherited, so an API client that omits `env` drops every value of the replaced
 agent, and a key the config adds later does not reach it. An agent in the
 config file that replaces a built-in replaces it whole. Agents are
 held to these limits everywhere: `id` matches `^[a-z0-9-]{1,32}$`, `name` at
 most 60 characters, `description` 200, `command` 1 to 32 elements of at most
 4096 bytes each, `env` 32 keys, `envPassthrough` 32 names, a signal `pattern`
-200 bytes that does not match an empty line, `cwd` at most 4096 bytes without
+200 bytes that does not match an empty line, a signal `workingTitle` 200 bytes
+that does not match an empty title, `cwd` at most 4096 bytes without
 NUL, `icon` matching `^[a-z0-9][a-z0-9:-]{0,63}$`, `site` an `https://` URL
 with a host name, a valid port if any and no user info or white space, at most
 200 bytes, `adapter` matching `^[a-z0-9-]{1,32}$` and naming an adapter

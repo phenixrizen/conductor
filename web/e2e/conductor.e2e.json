@@ -19,12 +19,12 @@
       {
         "id": "codex",
         "name": "Codex CLI (e2e stub)",
-        "description": "web/e2e/stub-agent.sh in place of Codex, with its notify, yolo, trust and session recipes, and its hidden title thread.",
+        "description": "web/e2e/stub-agent.sh in place of Codex, with its notify, yolo, trust and session recipes, its working title, and its hidden title thread.",
         "command": ["/bin/bash", "@STUB@"],
         "allowArgs": true,
         "env": { "STUB_IDENTITY": "codex", "STUB_REPORT": "codex", "STUB_CODEX_TITLE": "1" },
         "adapter": "codex",
-        "signal": { "kind": "hook" },
+        "signal": { "kind": "hook", "workingTitle": "^(?:\\S+\\s+)?(?:Working|Thinking|Waiting)$" },
         "yolo": { "args": ["--dangerously-bypass-approvals-and-sandbox"] },
         "trustPrompt": "Trust\\s*this\\s*folder\\?",
         "questions": [
@@ -46,7 +46,7 @@
         "allowArgs": true,
         "env": { "STUB_IDENTITY": "codex", "STUB_REPORT": "codex", "STUB_TRUST_DIALOG": "1" },
         "adapter": "codex",
-        "signal": { "kind": "hook" },
+        "signal": { "kind": "hook", "workingTitle": "^(?:\\S+\\s+)?(?:Working|Thinking|Waiting)$" },
         "yolo": { "args": ["--dangerously-bypass-approvals-and-sandbox"] },
         "trustPrompt": "Trust\\s*this\\s*folder\\?",
         "trustAnswers": [{ "label": "Yes, trust this folder", "input": "\r" }, { "label": "No, quit", "input": "\u001b[B\r" }],

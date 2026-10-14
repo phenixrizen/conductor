@@ -79,6 +79,25 @@
 # holds no text. .line and .mouse are appended a record a line, the last
 # whole one what is now; .spin is written whole (a new file renamed over
 # it): a reader never sees one half written.
+# Launched with -c tui.terminal_title=["activity","run-state"] (Conductor's
+# Codex launch), the stub writes its window title as Codex 0.161 does
+# (ESC ] 0 ; title BEL, seen on 2026-10-14): "Ready" at rest, a braille
+# frame and "Working" while it answers a line or spins, the frame changing
+# every 100 ms, and "[ ! ] Action Required", blinking with "[ . ] Action
+# Required" every second, while a dialog waits on a person (`stub approve`)
+# or an async question is pending. With STUB_TITLE_STILL=1, or -c
+# tui.animations=false, it writes "Working" once a turn and no frames, as
+# Codex with animations off. Two lines are Codex's questions while it
+# works: `stub ask <question>` asks it as the agent's own (notify --state
+# needs_input) and spins (as `stub spin 30`, ended by a test's "stop");
+# `stub async <question>` draws Codex's "? 1 question" under its status row
+# (request_user_input_async), rings the bell only when the launch's
+# tui.notifications names async-question, says Action Required in its title
+# while the question is pending (STUB_ASYNC_S seconds, 5 by default; Codex's
+# resolves by itself after 30 s), writes "resolved <microseconds since the
+# epoch>" to $HOME/.stub-sessions/<id>.async as it resolves, says Working
+# again and spins; `stub async-ask <question>` also asks it as the agent's
+# own while it is pending.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -136,9 +155,11 @@ handed_off=
 # done.
 ring_at_end=
 
-# The arguments: the session, the trust override, the yolo flags. Anything
-# else is taken and ignored, as a flag of the real agent would be.
-session_id= resume_id= trusted= yolo=
+# The arguments: the session, the trust override, the yolo flags, the
+# title and the notifications Codex is launched with. Anything else is
+# taken and ignored, as a flag of the real agent would be.
+session_id= resume_id= trusted= yolo= titles= still=${STUB_TITLE_STILL:-} async_bell=
+[[ $still == 1 ]] || still=
 args=("$@")
 i=0
 while ((i < ${#args[@]})); do
@@ -162,7 +183,12 @@ while ((i < ${#args[@]})); do
 		fi
 		;;
 	-c)
-		[[ ${args[i + 1]:-} == projects=* ]] && trusted=1
+		case ${args[i + 1]:-} in
+		projects=*) trusted=1 ;;
+		'tui.terminal_title=["activity","run-state"]') titles=1 ;;
+		tui.animations=false) still=1 ;;
+		tui.notifications=*'"async-question"'*) async_bell=1 ;;
+		esac
 		i=$((i + 2))
 		continue
 		;;
@@ -265,8 +291,10 @@ tool_replay() {
 approval() {
 	local cmd=$1 key seq answer= pasted
 	# The dialog takes the screen, as Codex's overlay takes its view, and
-	# goes with the answer.
+	# goes with the answer; the title says Action Required meanwhile.
+	title_stop
 	printf '\a\e[2J\e[H  Would you like to run the following command?\n\n  Environment: local\n\n  Reason: May I run this with network access? The sandboxed attempt failed.\n\n  $ %s\n\n› 1. Yes, proceed (y)\n  2. Yes, and don'"'"'t ask again for commands that start with `%s` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n' "$cmd" "$cmd"
+	title_action
 	while IFS= read -rsn1 key; do
 		case $key in
 		y | 1 | '' | $'\r') answer=approved ;;
@@ -290,6 +318,7 @@ approval() {
 		esac
 		break
 	done
+	title_working
 	printf 'approval: %s\n' "$answer" >>"$transcript"
 	ring_at_end=1
 	printf '\e[2J\e[H'
@@ -298,6 +327,114 @@ approval() {
 	else
 		printf '✔ You approved codex to run %s\n' "$cmd"
 	fi
+}
+
+# The window title, as Codex 0.161 writes it with the launch's
+# tui.terminal_title (titles set): title_pid is the loop that animates it,
+# title_runs counts the loops started, and <id>.title names the one that
+# may write (put), "stop" none.
+title_pid= title_runs=0
+
+# title_loop writes the title of mode $1 while <id>.title names loop $2,
+# checked before each write: working, a braille frame and "Working" every
+# 100 ms; action, "[ ! ] Action Required" and "[ . ] Action Required" in
+# turn, every second.
+title_loop() {
+	local -a frames=(⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏ ⠋)
+	local i=0 st
+	while :; do
+		st=
+		IFS= read -r st <"$transcripts/$id.title" || true
+		[[ $st == "$2" ]] || return 0
+		if [[ $1 == working ]]; then
+			printf '\e]0;%s Working\a' "${frames[i % 10]}"
+		elif ((i % 10 == 0)); then
+			if ((i % 20 == 0)); then
+				printf '\e]0;[ ! ] Action Required\a'
+			else
+				printf '\e]0;[ . ] Action Required\a'
+			fi
+		fi
+		i=$((i + 1))
+		sleep 0.1
+	done
+}
+
+# title_start starts a loop of mode $1 in the background.
+title_start() {
+	title_runs=$((title_runs + 1))
+	put "$transcripts/$id.title" "$title_runs"$'\n'
+	title_loop "$1" "$title_runs" &
+	title_pid=$!
+}
+
+# title_stop ends the loop and returns once it has written its last.
+title_stop() {
+	if [[ -n $title_pid ]]; then
+		put "$transcripts/$id.title" $'stop\n'
+		wait "$title_pid" 2>/dev/null || true
+		title_pid=
+	fi
+}
+
+# title_working says the stub works: frames, or "Working" once (still).
+title_working() {
+	[[ -n $titles ]] || return 0
+	title_stop
+	if [[ -n $still ]]; then
+		printf '\e]0;Working\a'
+		return 0
+	fi
+	title_start working
+}
+
+# title_action says a person is needed: Action Required, blinking (once,
+# still).
+title_action() {
+	[[ -n $titles ]] || return 0
+	title_stop
+	if [[ -n $still ]]; then
+		printf '\e]0;[ ! ] Action Required\a'
+		return 0
+	fi
+	title_start action
+}
+
+# title_ready says the stub is at rest.
+title_ready() {
+	[[ -n $titles ]] || return 0
+	title_stop
+	printf '\e]0;Ready\a'
+}
+
+# async_question draws the question $1 Codex asks while it works
+# (request_user_input_async) as Codex 0.161 shows it, under its status row,
+# with the bell only when the launch's notifications name async-question;
+# its title says Action Required while the question is pending (STUB_ASYNC_S
+# seconds), its status row redrawn meanwhile. With $2 = ask the agent asks
+# its own question then too. The question resolves by itself: noted with
+# its time in <id>.async, the title says Working again, and the stub spins.
+async_question() {
+	local q=$1 n=${STUB_ASYNC_S:-5} k
+	[[ $n =~ ^[1-9][0-9]?$ ]] || n=5
+	title_stop
+	if [[ -n $async_bell ]]; then
+		printf '\a'
+	fi
+	printf '\n  ? 1 question \xc2\xb7 0:%02d  %s\n' "$n" "$q"
+	title_action
+	if [[ ${2:-} == ask ]]; then
+		report --state needs_input --message "$q"
+	fi
+	for ((k = 0; k < n * 10; k++)); do
+		printf .
+		sleep 0.1
+	done
+	now_us
+	printf 'resolved %s\n' "$us" >>"$transcripts/$id.async"
+	printf '\n  question resolved\n'
+	title_working
+	spin 30
 }
 
 # report_done reports the answer $1 to the line $2.
@@ -606,6 +743,7 @@ answer() {
 	local -a merged=() failed=()
 	printf 'got: %s\n' "$line"
 	printf '%s\n' "${line:0:200}" >>"$transcript"
+	title_working
 	report_working
 	if [[ $line =~ ^stub\ tools\ (codex|copilot|agy|goose)$ ]]; then
 		tool_replay "${BASH_REMATCH[1]}"
@@ -622,6 +760,16 @@ answer() {
 				approval "$cmd"
 			fi
 		done
+	fi
+	if [[ $line =~ ^stub\ ask\ (.{1,200})$ ]]; then
+		report --state needs_input --message "${BASH_REMATCH[1]}"
+		spin 30
+	fi
+	if [[ $line =~ ^stub\ async\ (.{1,200})$ ]]; then
+		async_question "${BASH_REMATCH[1]}"
+	fi
+	if [[ $line =~ ^stub\ async-ask\ (.{1,200})$ ]]; then
+		async_question "${BASH_REMATCH[1]}" ask
 	fi
 	while [[ $rest =~ $target_re ]]; do
 		kind=${BASH_REMATCH[1]}
@@ -666,6 +814,7 @@ answer() {
 	fi
 	printf 'stub: merged [%s] failed [%s]\n' "${merged[*]-}" "${failed[*]-}"
 	msg="got: ${line:0:100}; merged: ${merged[*]-none}; failed: ${failed[*]-none}"
+	title_ready
 	report_done "$msg" "$line"
 	if [[ -n $ring_at_end ]]; then
 		# Codex rings the bell it is asked for (tui.notification_method="bel")
@@ -700,6 +849,7 @@ fi
 if [[ -e ${HOME:-/nonexistent}/.codex/stub-update ]]; then
 	update_question
 fi
+title_ready
 if [[ -n ${STUB_CHOICES:-} ]]; then
 	printf '%s [%s]\n' "${STUB_ASK:-Which one?}" "$STUB_CHOICES"
 	report --state needs_input --message "${STUB_ASK:-Which one?}" --choices "$STUB_CHOICES"
@@ -709,7 +859,9 @@ fi
 handle_line() {
 	local line=$1
 	if [[ $line =~ ^stub\ spin\ ([1-9][0-9]?)$ ]]; then
+		title_working
 		spin "${BASH_REMATCH[1]}"
+		title_ready
 	elif [[ $line == 'stub tui on' ]]; then
 		# Any-event mouse tracking in SGR, and keys read one by one with the
 		# terminal's line editing and echo off, as Claude Code and Codex do.

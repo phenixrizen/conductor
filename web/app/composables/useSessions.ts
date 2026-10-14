@@ -75,6 +75,8 @@ export interface AgentSignal {
   pattern?: string
   /** Ask hook adapters to report tool use as events (chatty; off by default). */
   toolEvents?: boolean
+  /** RE2 on the window title the agent writes while it works (Codex's "⠋ Working"): a title it matches shows the session working. Any kind. */
+  workingTitle?: string
 }
 
 export interface AgentInfo {

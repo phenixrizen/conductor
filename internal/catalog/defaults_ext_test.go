@@ -24,7 +24,7 @@ func TestDefaultsHaveAdaptersAndValidSignals(t *testing.T) {
 		icon    string
 	}{
 		{"claude", []string{"claude"}, "claude", catalog.Signal{Kind: "hook"}, "i-lucide-sparkles"},
-		{"codex", []string{"codex"}, "codex", catalog.Signal{Kind: "hook"}, "i-lucide-code-xml"},
+		{"codex", []string{"codex"}, "codex", catalog.Signal{Kind: "hook", WorkingTitle: catalog.CodexWorkingTitle}, "i-lucide-code-xml"},
 		{"agy", []string{"agy"}, "agy", catalog.Signal{Kind: "bell"}, "i-lucide-rocket"},
 		{"copilot", []string{"copilot"}, "copilot", catalog.Signal{Kind: "hook"}, "i-lucide-github"},
 		{"cursor", []string{"cursor-agent"}, "cursor", catalog.Signal{Kind: "pattern", Pattern: `^› $`}, "i-lucide-mouse-pointer-2"},

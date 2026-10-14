@@ -437,6 +437,36 @@ work were checked on 2026-10-14 (above).
   person's motion preference is not Conductor's to override. The title as
   a state works either way.
 
+## Found while building Part A (2026-10-14)
+
+Details the plan left open, settled in the code; none changes the events,
+orders or invariants above.
+
+- **The working title survives the Agents page.** The page saves a signal
+  with only what its form controls (`signalOut`, which keeps `toolEvents`):
+  a person adding a variable to the Codex agent would have saved its signal
+  without `workingTitle`, and an overlay saved before this change has none.
+  `signalOut` keeps it as it keeps `toolEvents`, and a saved signal without
+  one inherits the replaced agent's (`inherit`), as a saved agent without a
+  signal inherits the signal.
+- **A title cut at the capture** is reported with no text: `workingTitle`
+  never matches an empty title, so it is a title that does not match (E2).
+- **The rules the plan describes in words** are flags too: `unlessWorking`
+  ("`working` itself: no change, nothing recorded"), `unlessEnded` (O13,
+  O20) and `onlySettling` (O19, the timer acts only on its wait). The
+  settle window is the wait's own, on the monotonic clock, from when it
+  showed: a question a hold took the place of starts a new one when it
+  shows again (O7).
+- **Codex's Action Required title** is "[ ! ] Action Required" alone (its
+  blink "[ . ] Action Required"): Codex leaves the spinner and the run state
+  out of it (`build_action_required_title_text`). The pattern does not
+  match it either way.
+- **The stub** reads still titles from `-c tui.animations=false` as Codex
+  does, as well as `STUB_TITLE_STILL=1`; `stub async-ask <question>` is the
+  ask during a pending async question; an async question pends
+  `STUB_ASYNC_S` seconds (5 by default) and notes when it resolves in
+  `<id>.async`.
+
 # Part B: an agent's question shows until it is answered (#193)
 
 ## What happens, and why
