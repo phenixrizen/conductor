@@ -96,6 +96,10 @@ type pacedConn struct {
 	stall time.Duration
 	// limit is unsentLimit (a test's own).
 	limit int
+	// heard, when set, is called each time a read takes something from the
+	// socket: the server is heard from, also as a large frame comes in
+	// slowly, before it is whole (connLive).
+	heard func()
 
 	mu sync.Mutex
 	// kept is what waits for the socket; sending, what pump is handing it
@@ -110,12 +114,28 @@ type pacedConn struct {
 }
 
 func newPacedConn(c net.Conn, stall time.Duration) *pacedConn {
+	return newPacedConnHearing(c, stall, nil)
+}
+
+// newPacedConnHearing is newPacedConn whose reads call heard (when set) as
+// they take something from the socket.
+func newPacedConnHearing(c net.Conn, stall time.Duration, heard func()) *pacedConn {
 	if stall <= 0 {
 		stall = writeStall
 	}
-	p := &pacedConn{Conn: c, stall: stall, limit: unsentLimit, more: make(chan struct{}, 1), less: make(chan struct{})}
+	p := &pacedConn{Conn: c, stall: stall, limit: unsentLimit, heard: heard, more: make(chan struct{}, 1), less: make(chan struct{})}
 	go p.pump()
 	return p
+}
+
+// Read reads the socket, and says the server was heard from (heard) when
+// it took something.
+func (p *pacedConn) Read(b []byte) (int, error) {
+	n, err := p.Conn.Read(b)
+	if n > 0 && p.heard != nil {
+		p.heard()
+	}
+	return n, err
 }
 
 // Write keeps b to be sent, after what was written before, and returns at
@@ -245,8 +265,9 @@ var errNotPaced = errors.New("host: the control connection was not dialed throug
 // connection it upgraded: the one the upgrade request went out on, as the
 // request's trace saw it, which after a redirect need not be the last one
 // dialed. The transport is the dial's own and keeps no idle connection.
-// heard, when set, is called as each ping or pong is read on the
-// connection.
+// heard, when set, is called each time a read takes something from the
+// connection's socket (the upgrade's answer, a frame or a part of one, a
+// ping, a pong).
 func pacedDial(ctx context.Context, url string, header http.Header, base *http.Client, stall time.Duration, heard func()) (*websocket.Conn, *pacedConn, *http.Response, error) {
 	if base == nil {
 		base = &http.Client{}
@@ -268,7 +289,7 @@ func pacedDial(ctx context.Context, url string, header http.Header, base *http.C
 		if err != nil {
 			return nil, err
 		}
-		return newPacedConn(c, stall), nil
+		return newPacedConnHearing(c, stall, heard), nil
 	}
 	// The transport layers TLS over what it dials.
 	t.DialTLSContext = nil
@@ -282,15 +303,7 @@ func pacedDial(ctx context.Context, url string, header http.Header, base *http.C
 		used = info.Conn
 		mu.Unlock()
 	}})
-	opts := &websocket.DialOptions{HTTPHeader: header, HTTPClient: &client}
-	if heard != nil {
-		opts.OnPingReceived = func(context.Context, []byte) bool {
-			heard()
-			return true
-		}
-		opts.OnPongReceived = func(context.Context, []byte) { heard() }
-	}
-	c, resp, err := websocket.Dial(ctx, url, opts)
+	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: header, HTTPClient: &client})
 	if err != nil {
 		return nil, nil, resp, err
 	}

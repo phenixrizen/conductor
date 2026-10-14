@@ -380,8 +380,9 @@ viewer who joined through a link (a `submit`, a `chat` to the agent, a
 the server within 15 s, and otherwise does with the line what it does for a
 link gone (its text not typed, or typed with no carriage return and the
 session's turn held for a person), as its viewer's attach is refused then.
-Whatever the host reads on the connection counts: a message, a relayed
-frame, a ping or a pong. The server pings the host every 30 s, and every
+Whatever the host reads on the connection counts, as its socket gives it
+(a large frame that comes in slowly counts before it is whole): a message,
+a relayed frame, a ping or a pong. The server pings the host every 30 s, and every
 5 s while a link a viewer joined the session through stands (one that left
 may have a line under way on the host), whether or not the last pong has
 come back: a ping is written whatever the server reads, where the answers

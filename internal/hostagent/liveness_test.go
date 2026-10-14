@@ -51,6 +51,9 @@ func heardFromServer(t *testing.T, a *agent) {
 type stallProxy struct {
 	ln     net.Listener
 	target string
+	// slow, when above 0, has what the server sends carried that many bytes
+	// every 50 ms (trickle).
+	slow atomic.Int64
 
 	mu    sync.Mutex
 	open  chan struct{} // closed while it carries
@@ -88,13 +91,14 @@ func (p *stallProxy) accept() {
 		p.mu.Lock()
 		p.conns = append(p.conns, c, s)
 		p.mu.Unlock()
-		go p.pipe(s, c)
-		go p.pipe(c, s)
+		go p.pipe(s, c, false)
+		go p.pipe(c, s, true)
 	}
 }
 
-// pipe carries what src sends to dst, each read once the proxy carries.
-func (p *stallProxy) pipe(dst, src net.Conn) {
+// pipe carries what src sends to dst, each read once the proxy carries;
+// down, what the server sends, at the trickle's pace.
+func (p *stallProxy) pipe(dst, src net.Conn, down bool) {
 	buf := make([]byte, 32<<10)
 	for {
 		n, err := src.Read(buf)
@@ -104,8 +108,19 @@ func (p *stallProxy) pipe(dst, src net.Conn) {
 			case <-p.done:
 				return
 			}
-			if _, err := dst.Write(buf[:n]); err != nil {
-				return
+			for out := buf[:n]; len(out) > 0; {
+				k := len(out)
+				slow := int(p.slow.Load())
+				if down && slow > 0 {
+					k = min(k, slow)
+				}
+				if _, err := dst.Write(out[:k]); err != nil {
+					return
+				}
+				out = out[k:]
+				if down && slow > 0 {
+					time.Sleep(50 * time.Millisecond)
+				}
 			}
 		}
 		if err != nil {
@@ -124,6 +139,9 @@ func (p *stallProxy) gate() <-chan struct{} {
 	defer p.mu.Unlock()
 	return p.open
 }
+
+// trickle has what the server sends carried n bytes every 50 ms.
+func (p *stallProxy) trickle(n int) { p.slow.Store(int64(n)) }
 
 // stall stops carrying anything, closing nothing.
 func (p *stallProxy) stall() {
@@ -404,6 +422,53 @@ func TestAConnectionPingedAndNeverHeardIsGivenUp(t *testing.T) {
 			t.Fatal("the host did not connect again")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A frame of the server's that comes in slowly, larger than what comes in
+// within the bound, is the server heard from as it comes: a link's line is
+// typed and entered meanwhile, though nothing whole, not a pong, comes
+// before the frame is done.
+func TestALinksLineIsEnteredWhileALargeFrameComesInSlowly(t *testing.T) {
+	conns := make(chan *websocket.Conn, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		c.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
+		ctx := r.Context()
+		if _, _, err := c.Read(ctx); err != nil {
+			return
+		}
+		reg, _ := json.Marshal(proto.Registered{T: proto.HostRegistered, SessionID: "s1", Secret: "secret", ShareBaseURL: "http://yard.invalid"})
+		if c.Write(ctx, websocket.MessageText, reg) != nil {
+			return
+		}
+		conns <- c
+		for {
+			if _, _, err := c.Read(ctx); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	px := newStallProxy(t, strings.TrimPrefix(srv.URL, "http://"))
+	a, viewer := liveHostAt(t, px.url(), 1500*time.Millisecond, 0)
+	guest := viewer("0123456789abcdef", "l1")
+	server := <-conns
+	// 64 KiB at 5 KiB a second: about 13 s, the host's pongs behind it.
+	px.trickle(256)
+	big := []byte(`{"t":"something_else","pad":"` + strings.Repeat("p", 64<<10) + `"}`)
+	go server.Write(context.Background(), websocket.MessageText, big)
+	time.Sleep(2 * liveTestWithin)
+	guest.send(proto.Submit{T: proto.CtlSubmit, Text: "guest line"})
+	if typed := guest.typed(guest.release(), 2); strings.Join(typed, "|") != "guest line|\r" {
+		t.Fatalf("typed %q", typed)
+	}
+	if a.local.Held() {
+		t.Fatal("the turn is held")
 	}
 }
 
