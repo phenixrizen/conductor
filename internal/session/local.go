@@ -1835,7 +1835,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	typedEnter := enter
 	var quiet bool
 	var startupSince *time.Time
-	o.from, o.anyEnd = sub, true
+	// A reply to a question is withdrawn as a submission is too, once the
+	// connection's credential no longer stands (writeWait.credential).
+	o.from, o.anyEnd, o.credential = sub, true, question != ""
 	// Whether a person typed anything here, or only the terminal reported
 	// (its replies, the pointer moved or clicked), as many reports as the
 	// write holds, one the connection's last write began included.

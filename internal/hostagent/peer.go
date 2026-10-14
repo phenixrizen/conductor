@@ -441,7 +441,11 @@ func (p *peer) keyIn(sub *session.Subscription, data []byte) {
 // writer takes it, after whatever was queued before it: of two replies to
 // one question, from this viewer or another, the second is refused
 // (question_answered), nothing written. A view-role viewer's is refused
-// (read_only), as its keystrokes are.
+// (read_only), as its keystrokes are. Either is held to a submission's
+// check of the viewer's credential as the session's writer takes it
+// (authorize): a link's viewer's is written only while the link stands
+// and the server was heard from lately, else refused (input_failed),
+// nothing written.
 func (p *peer) answerIn(sub *session.Subscription, m proto.Answer) {
 	refuse := func(err error) {
 		if f := session.AnswerResult(m.ReqID, err); f != nil {

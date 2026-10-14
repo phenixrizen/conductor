@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2612,5 +2613,45 @@ func TestTwoApprovalsThatDifferByASpaceAreTwoQuestions(t *testing.T) {
 				t.Fatalf("written %q", got)
 			}
 		})
+	}
+}
+
+// A reply's keys (AnswerInput) waiting behind another's write are
+// withdrawn once the link's credential no longer stands, asked again as
+// the writer takes them (AttachOptions.Authorize: a revoke, or on a host
+// the server not heard from lately), the connection still open: as a
+// submission's text is, and a keystroke's is not. Nothing of them is
+// written when the program reads again, the question still waits with its
+// id, and another controller's reply to it is written.
+func TestAReplyWaitingBehindAnothersWriteIsWithdrawnOnceItsLinkNoLongerStands(t *testing.T) {
+	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 5 * time.Second, SubmitPause: 10 * time.Millisecond})
+	takeAgain := stopTaking(t, p)
+	other := ownerOf(t, s)
+	go s.Input(other, []byte("other's"))
+	untilWaiting(t, s, 0)
+	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}})
+	q := s.Info().Attention.ID
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	done := make(chan error, 1)
+	go func() { done <- s.AnswerInput(t.Context(), guest, q, []byte("1")) }()
+	untilWaiting(t, s, 1)
+	linkRevoked.Store(true)
+	takeAgain()
+	if got := written(t, p); got != "other's" {
+		t.Fatalf("written %q", got)
+	}
+	if err := returnsWithin(t, 5*time.Second, "the reply", func() error { return <-done }); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("the reply of a link that no longer stands: %v", err)
+	}
+	nothingWritten(t, p, 300*time.Millisecond)
+	if a := s.Info().Attention; a.ID != q || a.State != AttentionNeedsInput {
+		t.Fatalf("the question after the withdrawal: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), other, q, []byte("1")); err != nil {
+		t.Fatalf("the owner's reply: %v", err)
+	}
+	if got := written(t, p); got != "1" {
+		t.Fatalf("written %q", got)
 	}
 }
