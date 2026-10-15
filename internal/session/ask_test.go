@@ -1132,3 +1132,96 @@ func TestANotificationLeavesTheQuestionHeldOver(t *testing.T) {
 	written(t, p)
 	showsOwn(t, s, q, "once the hold ended")
 }
+
+// Ctrl+U begun while the question is set aside under the hold, written
+// once the turn's done has held it over: it ends the hold and shows the
+// question again, unanswered. A reply to the question then claims it and
+// types its text before Ctrl+U's own follow-up runs, and its link is let
+// go before its Enter: Ctrl+U answers nothing of the question (the reply's
+// claim is not its own), the reply's text holds the turn again, and once a
+// person's keys end that hold the question shows, answerable, and nothing
+// was recorded as its answer. (Codex's review of the code, round 4.)
+func TestKeysThatOnlyShowTheQuestionAgainNeverTakeAReplysClaim(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond})
+	hold, takeAgain := gateWrites(t, p)
+	owner := ownerOf(t, s)
+	var linkRevoked atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &linkRevoked)
+	q := askOwn(t, s, "Which name?")
+	reportState(t, s, AttentionWorking, "")
+	go s.holdTyped()
+	heldShows(t, s)
+	// Ctrl+U waits behind a terminal's own report while the question is
+	// set aside; the done holds it over.
+	hold()
+	go s.Input(owner, []byte("\x1b[3;1R"))
+	untilWaiting(t, s, 0)
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	afterCtrlU := func(data []byte) {
+		if string(data) == "\x15" {
+			once.Do(func() { close(reached); <-gate })
+		}
+	}
+	s.beforeWritten.Store(&afterCtrlU)
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	})
+	ctrlU := make(chan error, 1)
+	go func() { ctrlU <- s.Input(owner, []byte{0x15}) }()
+	untilWaiting(t, s, 1)
+	reportState(t, s, AttentionDone, "asked")
+	heldShows(t, s)
+	takeAgain()
+	written(t, p)
+	if got := written(t, p); got != "\x15" {
+		t.Fatalf("written %q", got)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ctrl+U's write never came to what follows it")
+	}
+	showsOwn(t, s, q, "once Ctrl+U ended the hold")
+	// The reply claims the question and types its text before Ctrl+U's
+	// follow-up runs, and waits at its Enter.
+	at, release := pauseEnter(t, s)
+	reply := submitAsync(s, Submission{Text: "Ada", By: guest, Question: q.ID})
+	if got := written(t, p); got != "Ada" {
+		t.Fatalf("written %q", got)
+	}
+	atEnter(t, at)
+	close(gate)
+	if err := returnsWithin(t, 5*time.Second, "Ctrl+U", func() error { return <-ctrlU }); err != nil {
+		t.Fatal(err)
+	}
+	showsOwn(t, s, q, "after Ctrl+U's follow-up")
+	if a := s.Info().LastAnswer; a != nil {
+		t.Fatalf("Ctrl+U was recorded as the answer: %+v", a)
+	}
+	// The reply's link is let go before its Enter: its text holds the turn.
+	linkRevoked.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	release()
+	if got := returnsWithin(t, 5*time.Second, "the reply", func() submitted { return <-reply }); !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("the reply: %+v, %v", got.res, got.err)
+	}
+	heldShows(t, s)
+	if err := s.Input(owner, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\x15" {
+		t.Fatalf("written %q", got)
+	}
+	showsOwn(t, s, q, "once the second hold ended")
+	if err := s.questionWaits(q.ID); err != nil {
+		t.Fatalf("a reply to it: %v", err)
+	}
+	if a := s.Info().LastAnswer; a != nil {
+		t.Fatalf("an answer was recorded: %+v", a)
+	}
+}

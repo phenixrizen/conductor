@@ -122,13 +122,17 @@ var ErrSubmitPending = errors.New("session: the program is taking its input slow
 // submitState is what a submission carries from its text to its Enter.
 // aside is the id of the agent's own question set aside as the submission
 // began (own): shown again at its turn's done before the Enter, it is no
-// prompt that leaves the Enter out (comesAfter).
+// prompt that leaves the Enter out (comesAfter). claimed is set when a
+// person's text or Enter claimed that question, shown again, as the writer
+// took it (noteAnswering): the submission answers it once its Enter is
+// written (answerReached), and never one another write claimed.
 type submitState struct {
 	promptSince *time.Time
 	byName      string
 	typedAt     time.Time
 	wait        writeWait
 	aside       string
+	claimed     *atomic.Bool
 }
 
 // comesAfter reports whether att is a prompt come since the submission
@@ -304,8 +308,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// while the program is known not to read, and is withdrawn when
 		// the session ends its controller (not when the controller only
 		// goes): its text, and its Enter once the text is typed.
-		wait:  writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from},
-		aside: aside,
+		wait:    writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait, from: from},
+		aside:   aside,
+		claimed: new(atomic.Bool),
 	}
 	if text != "" {
 		data := text
@@ -319,7 +324,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		textWait.guard = s.textGuard(sub)
 		textWait.before = func() {
 			keys, _, _ := s.keysWritten([]byte(data))
-			s.noteAnswering(promptSince, []byte(data), keys, nil, st.aside, sub.By != nil)
+			if s.noteAnswering(promptSince, []byte(data), keys, nil, st.aside, sub.By != nil) {
+				st.claimed.Store(true)
+			}
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
 		if errors.Is(err, errWaiting) {
@@ -757,7 +764,9 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			sub.BeforeEnter()
 		}
 		keys, _, _ := s.keysWritten([]byte{'\r'})
-		s.noteAnswering(promptSince, []byte{'\r'}, keys, nil, st.aside, sub.By != nil)
+		if s.noteAnswering(promptSince, []byte{'\r'}, keys, nil, st.aside, sub.By != nil) {
+			st.claimed.Store(true)
+		}
 		s.nextTurn()
 	}
 	enterAt := time.Now().UTC()
@@ -791,7 +800,9 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if sub.By != nil {
 		s.stampTyping(sub.By)
 		s.answer(promptSince, sub.By.ID, sub.By.Name, true, true)
-		s.answerReached(st.aside, sub.By.ID, sub.By.Name)
+		if st.claimed != nil && st.claimed.Load() {
+			s.answerReached(st.aside, sub.By.ID, sub.By.Name)
+		}
 	} else {
 		s.answer(promptSince, "", byName, false, true)
 	}

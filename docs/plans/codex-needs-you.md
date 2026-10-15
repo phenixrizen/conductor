@@ -867,6 +867,14 @@ orders or invariants above.
   nothing of the question they show again. The same held for any question
   the hold took the place of before this change (one the agent reported
   without the mark, no done needed); the one rule covers both.
+- **Round 4** (an extra round the owner asked for). The claim a write
+  answers once it is made was read from the session's `answered`, which
+  every write shares: Ctrl+U that only showed the question again, its
+  follow-up run after a reply had claimed the question, answered it for
+  the reply, before the reply's Enter, and a reply whose link then went
+  could not hold it over. `noteAnswering` now reports the claim it made,
+  each write keeps its own (input's `claimed`, `submitState.claimed`), and
+  only a write's own claim is answered by it.
 - **The same words, now marked.** An `ask` with the words, source, kind and
   choices of the needs_input showing changes nothing shown, as any report
   of the same; it marks that question as the agent's from then.

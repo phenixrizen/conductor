@@ -321,8 +321,10 @@ type Local struct {
 	beforeSettle atomic.Pointer[func()]
 	afterTitle   atomic.Pointer[func()]
 	// beforeEnter, a test's hook, runs as a submission comes to its Enter
-	// (pressEnter), before it looks at anything.
+	// (pressEnter), before it looks at anything; beforeWritten as keys
+	// written (input) come to what follows their write, with the keys.
 	beforeEnter    atomic.Pointer[func()]
+	beforeWritten  atomic.Pointer[func(data []byte)]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -2125,7 +2127,8 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	promptSince := s.info.Attention.Since
 	// The agent's own question set aside as the keys begin (own): they
 	// remove it as they are written, or, shown again by its turn's done
-	// meanwhile, answer it (noteAnswering, answerReached).
+	// meanwhile, claim it as the writer takes them (claimed) and answer
+	// it once written (noteAnswering, answerReached).
 	aside := s.asideOwn()
 	// A question's own choice answers it, with an Enter or without: some
 	// dialogs pick on a digit (Codex's background-server question) or skip on
@@ -2171,6 +2174,11 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// time run out, a stall, a connection gone): noted is set then, and
 	// read once the write is made.
 	var noted bool
+	// claimed is set as the writer takes the keys when they claim the
+	// agent's own question set aside as they began (aside), shown again
+	// since: they answer it once written, and nothing claimed by another
+	// write is answered by them.
+	var claimed bool
 	// Set as the writer takes the keys, as keysWritten reads them (a paste
 	// or an escape sequence a write before left unfinished carried in):
 	// typedEnter says they answer the prompt they were typed at as answer
@@ -2334,7 +2342,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			if restored {
 				noteAside = ""
 			}
-			s.noteAnswering(promptSince, data, maybe, onScreen, noteAside, typed)
+			claimed = s.noteAnswering(promptSince, data, maybe, onScreen, noteAside, typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -2446,7 +2454,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	written := func() {
 		if !quiet {
 			s.typedKeys(sub, data, promptSince, typedEnter, noted, typed)
-			if typed && aside != "" {
+			if claimed {
 				s.answerReached(aside, sub.ID, sub.Name)
 			}
 		}
@@ -2472,6 +2480,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			}()
 		}
 		return err
+	}
+	if hook := s.beforeWritten.Load(); hook != nil {
+		(*hook)(data)
 	}
 	written()
 	return nil
@@ -2607,7 +2618,9 @@ func (s *Local) dropOwnLocked() {
 
 // answerReached answers the agent's own question named id, once a person's
 // write that began while it was set aside is made, when its turn's done
-// showed it again meanwhile and the write claimed it (noteAnswering): the
+// showed it again meanwhile and that write claimed it (noteAnswering
+// reported its own claim, which its caller keeps: another write's claim of
+// the same question is not this one's), while it still shows claimed: the
 // person's keys or reply reached it. Nothing otherwise.
 func (s *Local) answerReached(id, by, byName string) {
 	s.mu.Lock()
@@ -2846,8 +2859,9 @@ func (s *Local) dialogGone(look uint64) {
 // write's caller to answer once it is made (answerReached), unless the
 // write's own keys ended the hold that held it over and showed it again
 // without answering it (its caller passes no aside then). Conductor's own
-// write leaves it as it is, aside or shown, and answers nothing of it.
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, aside string, person bool) {
+// write leaves it as it is, aside or shown, and answers nothing of it. It
+// reports whether this write made that claim.
+func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, aside string, person bool) (claimed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, keys) {
@@ -2859,10 +2873,11 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte
 			s.dropOwnLocked()
 		}
 	case aside != "" && s.own.ID == aside && s.info.Attention.ID == aside:
-		if person {
+		if person && s.answered != aside {
 			s.markAnswered(s.info.Attention)
+			claimed = true
 		}
-		return
+		return claimed
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
@@ -2879,9 +2894,10 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte
 	}
 	typedAt := att.Since == promptSince && !heldSource(att.Source)
 	if !picks && !typedAt {
-		return
+		return false
 	}
 	s.markAnswered(att)
+	return false
 }
 
 // dialogView is a dialog asked during the work as the screen shows it: its
