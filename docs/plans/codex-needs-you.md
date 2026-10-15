@@ -1192,6 +1192,62 @@ These are behaviours the brief changes, each with a recommendation.
    **Recommended:** accept it. The terminal's typing still shows on the
    roster ("typing"), and the agent's next state follows.
 
+## The owner's decisions (2026-10-15)
+
+- No third review round of this plan: it stands as revised after round 2.
+- **Decision 1, with an addition.** As recommended: keys with an Enter
+  withdraw a wait whose source is the bell, OSC or the pattern, as the
+  writer takes them, and aider's notifications command reports
+  `--state done --message "aider is waiting"` (each time aider waits for
+  its next line, which is a turn's end; its adapter's events say `done`).
+  Added: **a screen snapshot withdraws a bell wait.** A bell or OSC wait
+  has no rows of its own, so the session reads the agent moving on from
+  its screen:
+  - Every session keeps a model of its screen for this (`Screen`, as the
+    dialogs' watcher has one; a second, with no pattern, for every
+    session, server and host alike), fed by the pump.
+  - The baseline is taken at the first quiet of the screen (`patternQuiet`,
+    500 ms without output) after the wait showed, not at the bell: the
+    program draws what it rang for in the same read or the next (Goose's
+    permission prompt, Codex's approval overlay), and that drawing is the
+    wait's own screen, not the agent moving on.
+  - At each later quiet, while that wait still shows and is OPEN (a claim
+    stands while its write can land, and its resolve ends it; a hidden
+    wait is not compared), the rows are compared with the baseline, each
+    row's text with its trailing spaces trimmed. The wait is withdrawn
+    (the empty state, `source:"screen"`, no answer recorded, no entry) when
+    **at least 3 rows have changed, a row counting as changed when more
+    than 8 of its cells differ** (a blank row filled, or a filled row
+    blanked, counts by the same measure).
+
+    Why 3 rows and 8 cells: a spinner frame changes 1 cell; a countdown
+    ("0:29" to "0:28"), a clock or Codex's "(12s • esc to interrupt)"
+    change 1 to 3 cells of one row; a status line whose words change
+    wholesale ("Thinking" to "Running the tests") changes many cells of
+    one row; a cursor is not drawn. The agent moving on prints output
+    (every row shifts up: nearly all change), or redraws its prompt area
+    (Claude Code's and Codex's input box is 3 rows or more). Two rows is
+    where a status line and a spinner row can both change in a frame;
+    three is beyond what any one-row redraw does. The measure is cells
+    that differ, not rows that are rewritten, so a frame that redraws the
+    same text counts nothing.
+  - A resize drops the baseline; it is taken again at the next quiet
+    (the program redraws everything after a resize).
+  - The snapshot is only for a wait with no rows: the bell and an OSC
+    notification, including a plain shell's bell. A question read off the
+    screen (`trust`, `question`, #121) has rows and is withdrawn by its
+    watcher as today (consumed, then gone from the screen). The pattern's
+    prompt has a line, and Enter withdraws it (above). A bell rung with a
+    dialog (O1): the dialogs' watcher and the snapshot both run at the
+    first quiet, where the snapshot only takes its baseline, so the dialog
+    replaces the bell's wait and nothing is withdrawn before it.
+  - So a bell wait closes on any of: the agent's hooks (`working`,
+    `done`), Codex's title, the screen moving on past the threshold, or an
+    Enter typed in the terminal. Reading the prompt's text per agent, to
+    turn a bell into a screen question with rows and choices, is out of
+    scope: #195.
+- **Decisions 2, 3 and 4:** as recommended above.
+
 ## No timeouts end a question (audit)
 
 Nothing in the code expires a question. Each timer on an answer's path is
