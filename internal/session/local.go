@@ -2274,6 +2274,13 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// text killed) leave the question the hold took the place of
 			// waiting still: it shows again (endHoldTyped).
 			restored = s.endHoldTyped(data, maybe)
+			if restored {
+				// Nor are they an answer to it if they were typed while it
+				// showed, before the hold took its place (queued behind
+				// another write): what they answer is what showed as they
+				// were typed, and that is it, shown again unanswered.
+				promptSince = nil
+			}
 		}
 		own := ownKeys(data, keys) && !held
 		quiet = unkeyed || allReports(keys) && !held

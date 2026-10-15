@@ -1057,6 +1057,60 @@ func TestKeysThatEndTheHoldLeaveTheQuestionTheDoneHeldOver(t *testing.T) {
 	shows(t, s, AttentionNone, "answered by the reply")
 }
 
+// Keys typed while the question showed, queued behind another write, and
+// written once the hold has taken its place (and, for the agent's own
+// question, the turn's done held it over): when they end the hold without
+// answering it (Ctrl+U), the question shows again, unanswered, though they
+// were typed at it; a reply then answers it. (Codex's review of the code,
+// round 3.)
+func TestKeysQueuedBeforeTheHoldDoNotAnswerTheQuestionTheyShowAgain(t *testing.T) {
+	for _, own := range []bool{true, false} {
+		t.Run(fmt.Sprintf("own %v", own), func(t *testing.T) {
+			s, p, _ := asking(t, Options{})
+			hold, takeAgain := gateWrites(t, p)
+			owner := ownerOf(t, s)
+			var q Attention
+			if own {
+				q = askOwn(t, s, "Which name?")
+			} else {
+				reportState(t, s, AttentionNeedsInput, "Which name?")
+				q = s.Info().Attention
+			}
+			hold()
+			go s.Input(owner, []byte("\x1b[3;1R"))
+			untilWaiting(t, s, 0)
+			typed := make(chan error, 1)
+			go func() { typed <- s.Input(owner, []byte{0x15}) }()
+			untilWaiting(t, s, 1)
+			go s.holdTyped()
+			heldShows(t, s)
+			if own {
+				reportState(t, s, AttentionDone, "asked")
+				heldShows(t, s)
+			}
+			takeAgain()
+			written(t, p)
+			if got := written(t, p); got != "\x15" {
+				t.Fatalf("written %q", got)
+			}
+			if err := returnsWithin(t, 5*time.Second, "the keys", func() error { return <-typed }); err != nil {
+				t.Fatal(err)
+			}
+			if a := s.Info().Attention; a.ID != q.ID || a.Since != q.Since || a.State != AttentionNeedsInput {
+				t.Fatalf("once Ctrl+U ended the hold: %+v, want the question %+v", a, q)
+			}
+			if s.Info().LastAnswer != nil {
+				t.Fatalf("Ctrl+U was recorded as the answer: %+v", s.Info().LastAnswer)
+			}
+			res, err := s.Submit(context.Background(), Submission{Text: "Ada", By: owner, Question: q.ID})
+			if err != nil || !res.Entered {
+				t.Fatalf("the reply: %+v %v", res, err)
+			}
+			shows(t, s, AttentionNone, "answered by the reply")
+		})
+	}
+}
+
 // The question held over by the hold through its turn's done: an OSC
 // notification (its turn's, or the ended turn's) changes nothing, and keys
 // that end the hold without answering it show it again, the same

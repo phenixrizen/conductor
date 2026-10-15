@@ -860,6 +860,13 @@ orders or invariants above.
   done had held it over, claimed it as the hold's end showed it again:
   keys that end the hold without answering it claim nothing of the
   question they show again (`endHoldTyped` reports it).
+- **Round 3** (fixed after the third review, unreviewed). Keys typed while
+  the question showed, queued behind another write and written once the
+  hold had taken its place, ended the hold, showed the question again, and
+  then answered it as the prompt they were typed at. Such keys now answer
+  nothing of the question they show again. The same held for any question
+  the hold took the place of before this change (one the agent reported
+  without the mark, no done needed); the one rule covers both.
 - **The same words, now marked.** An `ask` with the words, source, kind and
   choices of the needs_input showing changes nothing shown, as any report
   of the same; it marks that question as the agent's from then.
