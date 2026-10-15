@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { test as base, expect, type Page } from '@playwright/test'
 import { git } from './server'
@@ -134,7 +136,7 @@ export function sidebarLinks(page: Page): Promise<string[]> {
  * answered (`conductor: hosting session <id> at …`, internal/cli/host.go), read from `log`, which must be this one host's file so
  * that the first such line is its own.
  */
-export function registeredId(log: string): string {
+function registeredId(log: string): string {
   if (!existsSync(log)) return ''
   return /conductor: hosting session ([0-9a-f]+) at /.exec(readFileSync(log, 'utf8'))?.[1] ?? ''
 }
@@ -157,27 +159,48 @@ export async function hostedSession(api: Api, log: string, name: string): Promis
   return session
 }
 
+/** A name for a hosted session that this run's host alone is given: `base` and eight random characters. */
+export function hostedName(base: string): string {
+  return `${base}-${randomUUID().slice(0, 8)}`
+}
+
 /**
- * Ends the session the host logging to `log` registered (registeredId), if it did, through its host, and removes it: for a spec's
- * teardown before it kills the host. The spec holds the log's path from before it starts the host, so that a test that failed
- * anywhere, even before it had the id itself, still leaves nothing behind. Killing the host alone leaves the session listed for a
- * minute and more (signal.DisconnectGrace, then the sweep), where a later spec or repetition finds it (#211, #218). 200: the host
- * was told to stop its command, and the session ends, then is removed; 204: it had ended already, and is removed; 404: gone.
- * Anything else (a 500: the host left on its own) fails here, where the leftover begins, rather than in whatever spec meets it
- * next. Bounded by `ms`, so that a server that stops answering cannot hold the hook past its own deadline.
+ * A spec's teardown for its `conductor host`, in place of killing it: every session listed under `name` (this run's own, from
+ * hostedName) is ended through the host and removed, then the host is killed, and a session still listed under the name after that
+ * fails the teardown, where the leftover begins rather than in whatever spec meets it next. Killed alone, the host leaves its session
+ * listed for a minute and more (signal.DisconnectGrace, then the sweep), where a later spec or repetition finds it (#211, #218). The
+ * session is found by the name, not by the id on the host's banner, which a host that failed between registering and printing it
+ * never printed. Per session, DELETE answers 200: the host was told to stop its command, and the session ends, then is removed; 204:
+ * it had ended already, and is removed; 404: gone; anything else (a 500: the host left on its own) fails. The ending is bounded by
+ * `ms`, so that a server that stops answering cannot hold the hook past its own deadline, and the host is killed whatever became of it.
  */
-export async function endHostedSession(api: Api, log: string, ms = 45_000): Promise<void> {
-  const id = log ? registeredId(log) : ''
-  if (!id) return
-  await within(ms, `ending the hosted session ${id}`, async () => {
-    const r = await api.stopSession(id)
-    if (r.status === 200) {
-      await expect.poll(async () => (await api.session(id)).status, { timeout: 15_000, message: `the hosted session ${id} ends` }).toMatch(/^(exited|stopped)$/)
-      await api.ok('DELETE', `/api/sessions/${encodeURIComponent(id)}`)
-    } else if (r.status !== 204 && r.status !== 404) {
-      throw new Error(`the hosted session ${id} could not be ended: ${r.status} ${JSON.stringify(r.body)}`)
+export async function endHosted(api: Api, name: string, host: ChildProcess | null, ms = 45_000): Promise<void> {
+  try {
+    if (name) {
+      await within(ms, `ending the hosted session ${name}`, async () => {
+        for (const { id } of await listedAs(api, name)) {
+          const r = await api.stopSession(id)
+          if (r.status === 200) {
+            await expect.poll(async () => (await api.session(id)).status, { timeout: 15_000, message: `the hosted session ${id} ends` }).toMatch(/^(exited|stopped)$/)
+            await api.ok('DELETE', `/api/sessions/${encodeURIComponent(id)}`)
+          } else if (r.status !== 204 && r.status !== 404) {
+            throw new Error(`the hosted session ${id} could not be ended: ${r.status} ${JSON.stringify(r.body)}`)
+          }
+        }
+      })
     }
-  })
+  } finally {
+    host?.kill('SIGKILL')
+  }
+  if (!name) return
+  const left = await listedAs(api, name)
+  if (left.length) throw new Error(`${name} is still listed after its host was killed: ${left.map((s) => `${s.id} (${s.status})`).join(', ')}`)
+}
+
+/** The sessions the server lists under `name`, whatever their status. */
+async function listedAs(api: Api, name: string): Promise<Session[]> {
+  const r = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
+  return (Array.isArray(r) ? r : (r.sessions ?? [])).filter((s) => s.name === name)
 }
 
 /** What `f` returns, or a failure naming `what` once `ms` have passed without it. */

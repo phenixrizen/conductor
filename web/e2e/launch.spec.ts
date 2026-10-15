@@ -23,15 +23,14 @@ test('on a workbench at this computer the launch dialog has one answer and launc
     return Array.isArray(r) ? r : (r.sessions ?? [])
   }
   const before = new Set((await list()).map((s) => s.id))
+  // The session the launch made is held for the teardown from its answer, before anything else here can fail.
+  const created = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
   await dialog.getByRole('button', { name: 'Launch' }).click()
-  let launched: string[] = []
-  await expect
-    .poll(async () => {
-      launched = (await list()).map((s) => s.id).filter((id) => !before.has(id))
-      return launched.length
-    }, { timeout: 15_000 })
-    .toBe(1)
-  sessions.push(...launched)
+  const answer = await created
+  const launched = answer.ok() ? ((await answer.json()) as Session).id : ''
+  if (launched) sessions.push(launched)
+  expect(answer.status(), 'the launch made a session').toBe(201)
+  await expect.poll(async () => (await list()).map((s) => s.id).filter((id) => !before.has(id)), { timeout: 15_000 }).toEqual([launched])
 })
 
 // The dialog's first open on a page says it is checking while the catalog is

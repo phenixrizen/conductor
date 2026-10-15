@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { openSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { endHostedSession, expect, hostedSession, test } from './fixtures'
+import { endHosted, expect, hostedName, hostedSession, test } from './fixtures'
 import { serverBinary } from './server'
 
 // A session another machine hosts (`conductor host`, its terminal through
@@ -13,16 +13,12 @@ import { serverBinary } from './server'
 // session's last output is checked against the frames themselves, in Go:
 // internal/api/hostend_test.go.)
 let host: ChildProcess | null = null
-/** The host's own log: the teardown ends the session it names. */
-let hostLog = ''
+/** The hosted session's name, this run's own: the teardown ends whatever is listed under it. */
+let hostName = ''
 
 test.afterAll(async ({ api }) => {
-  try {
-    // Ended (or, after a failure, still running), it is removed before the host dies, so that no later spec or repetition meets it.
-    await endHostedSession(api, hostLog)
-  } finally {
-    host?.kill('SIGKILL')
-  }
+  // Ended (or, after a failure, still running), it is removed before the host dies, so that no later spec or repetition meets it.
+  await endHosted(api, hostName, host)
 })
 
 test("a guest on a hosted session's link is told the session ended as it ends, not that its link was revoked", async ({ api, state, browser }) => {
@@ -31,15 +27,15 @@ test("a guest on a hosted session's link is told the session ended as it ends, n
   const run = randomUUID()
   const start = join(state.root, `hosted-end-start-${run}`)
   const logFile = join(state.root, `hosted-end-${run}.log`)
-  hostLog = logFile
   const log = openSync(logFile, 'a')
+  hostName = hostedName('hosted-end')
   // Waits for the start file, prints, and exits.
   const script = 'while [ ! -e "$1" ]; do sleep 0.05; done; seq 1 2000; printf "the %s line\\n" final'
-  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', 'hosted-end', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/sh', '-c', script, 'sh', start], {
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/sh', '-c', script, 'sh', start], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home },
     stdio: ['ignore', log, log],
   })
-  const id = (await hostedSession(api, logFile, 'hosted-end')).id
+  const id = (await hostedSession(api, logFile, hostName)).id
   const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${id}/links`, { role: 'view', label: 'guest' })
 
   const guestCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } })

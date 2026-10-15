@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Page } from '@playwright/test'
-import { endHostedSession, expect, hostedSession, test, type Session } from './fixtures'
+import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
 import { serverBinary, stubPath } from './server'
 
 // Chat beside the terminal (design 2a, 2b, 2c, 2d, 2e, 2f, 2h): the people
@@ -24,17 +24,16 @@ let runId = ''
 let askingCrewId = ''
 let askingRunId = ''
 let host: ChildProcess | null = null
-/** The host's own log: the teardown ends the session it names. */
-let hostLog = ''
+/** The hosted session's name, this run's own: the teardown ends whatever is listed under it. */
+let hostName = ''
 
 test.afterAll(async ({ api }) => {
   try {
     // The hosted session ends through its host and is removed before the host dies: killed alone, it stays listed for a minute and
     // more, where a later spec or repetition finds it (#218).
-    await endHostedSession(api, hostLog)
+    await endHosted(api, hostName, host)
   } finally {
-    // Whatever became of that, the host dies and the rest is stopped; a failure above is still reported.
-    host?.kill('SIGKILL')
+    // Whatever became of that, the rest is stopped; a failure above is still reported.
     await other?.close()
     if (runId) await api.stopRun(runId)
     if (askingRunId) await api.stopRun(askingRunId)
@@ -411,13 +410,13 @@ test('unread elsewhere: the sidebar row, the rail and a run header count what ot
 test("a session another machine hosts: what is said in its chat counts on another person's row too", async ({ page, api, state, browser }) => {
   // This host's own log: the session is found by the id on the line the host prints once registered, never by its name (#202).
   const logFile = join(state.root, `chat-host-${randomUUID()}.log`)
-  hostLog = logFile
   const log = openSync(logFile, 'a')
-  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', 'hosted-chat', '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
+  hostName = hostedName('hosted-chat')
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
-  const hostedId = (await hostedSession(api, logFile, 'hosted-chat')).id
+  const hostedId = (await hostedSession(api, logFile, hostName)).id
   // Priya watches the list; Nate opens the hosted session (over the relay) and writes.
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const priya = await personPage(ctx, state.token, 'Priya')
