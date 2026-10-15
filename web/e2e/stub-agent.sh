@@ -499,6 +499,15 @@ trust_dialog() {
 	fi
 }
 
+# erase_dialog erases a startup dialog's $1 lines above the cursor's, and
+# the cursor's, as Codex takes a dialog away once it is answered (its TUI
+# redraws without it), the screen not erased whole.
+erase_dialog() {
+	local n=$1 up=''
+	while ((n-- > 0)); do up+='\e[1A\e[2K'; done
+	printf '\r\e[2K%b' "$up"
+}
+
 # hooks_review draws Codex's "Hooks need review" and waits for Enter; a
 # digit moves the highlight.
 hooks_review() {
@@ -512,6 +521,7 @@ hooks_review() {
 		1 | 2 | 3) sel=$key ;;
 		esac
 	done
+	erase_dialog 6
 	printf '%s\n' "$sel" >"${HOME:-/tmp}/.codex/stub-hooks-answer"
 	case $sel in
 	2) printf 'Hooks trusted.\n' ;;
@@ -529,6 +539,7 @@ background_question() {
 		1 | 2 | 3) break ;;
 		esac
 	done
+	erase_dialog 5
 	printf '%s\n' "$key" >"${HOME:-/tmp}/.codex/stub-background-answer"
 	if [[ $key == 3 ]]; then
 		exit 0
@@ -560,6 +571,7 @@ update_question() {
 		esac
 		break
 	done
+	erase_dialog 8
 	printf '%s\n' "$answer" >"${HOME:-/tmp}/.codex/stub-update-answer"
 	if [[ $answer == update ]]; then
 		printf 'Updating Codex...\n'

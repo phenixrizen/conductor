@@ -1666,6 +1666,25 @@ events, orders or invariants above, but for the two marked.
   keys were written: the window grown since counts, a redraw at a smaller
   size then widened does not (`TestAClippedStartupQuestionIsNotGone`
   keeps that); the stub erases the dialog's lines as Codex does.
+- **Round 10 of Codex's review** (four findings, each reproduced with a
+  test, fixed after it; round 11 reviewed the fixes). A screen grown lost
+  the marks of the rows autowrap went on from, so a startup question
+  whose words wrapped at a narrow window read broken ("r", "uns") once the
+  window grew, and the held Escape's look took it for gone: the marks
+  survive a resize, a grown screen reads such rows joined (their blank
+  cells from the growth left out), and the startup guard reads a grown
+  screen too. The claim was one slot, which a dialog's reply over the hold
+  took from the question held over: claims are kept per question (the one
+  shown and the one held over), and the held-over question's claim
+  resolves it hidden. The keys that enter a stranded line's text before
+  its hold is installed were recognised only for a reply's line: they
+  are recognised for any line (holdPending), the question consumed, no
+  hold following; a question on the screen keeps its hold. And any window
+  made smaller counted as cutting the screen: only one that loses a
+  character does (`Screen.loses`). The startup guard read as it now is
+  held the e2e crew's prompt back after the stub's "Hooks need review":
+  the stub left the dialog's words on the screen where Codex takes them
+  away; it erases its startup dialogs' lines as Codex does (`erase_dialog`).
 
 # The pull requests, in order
 

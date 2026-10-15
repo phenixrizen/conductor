@@ -73,9 +73,10 @@ type Screen struct {
 	// size (cut, or laid out narrower), and what it lacks is not gone. A
 	// frame that erases nothing, or only some rows, leaves it so.
 	clipped, unclipAtEnd bool
-	// cut says the screen was made narrower or shorter with something on
-	// it, and the program has not erased it all since: what it shows may
-	// be cut short. drawnCols and drawnRows are the size the screen had
+	// cut says the screen was made narrower or shorter with a character
+	// beyond the new size (loses), lost, and the program has not erased
+	// it all since: what it shows is cut short (one that cuts only blank
+	// cells loses nothing). drawnCols and drawnRows are the size the screen had
 	// when what it shows was last laid out (the last erase of the whole
 	// screen, or the resize of an empty one): grown since, it still shows
 	// everything drawn then, laid out for that size.
@@ -133,9 +134,11 @@ func (s *Screen) Resize(cols, rows int) {
 		if s.syncing || strings.TrimSpace(s.text(len(s.cells))) != "" {
 			// What the screen shows, or the frame under way, was drawn at
 			// another size (cut, or laid out narrower) until the program
-			// erases it all and draws it again (Settled).
+			// erases it all and draws it again (Settled). Made smaller
+			// with a character beyond the new size, or with a frame under
+			// way (what it draws cannot be told), it is cut.
 			s.clipped = true
-			if cols < s.cols || rows < s.rows {
+			if s.syncing && (cols < s.cols || rows < s.rows) || s.loses(cols, rows) {
 				s.cut = true
 			}
 		} else {
@@ -160,15 +163,30 @@ func (s *Screen) Resize(cols, rows int) {
 		}
 		return out
 	}
+	// The rows autowrap went on from keep that mark: grown, the screen
+	// shows them as they were laid out, and Lines reads them joined (their
+	// blank cells from the growth left out); made smaller, what they held
+	// is cut (cut), and the mark tells nothing a reader trusts.
+	fitSoft := func(old []bool, shift int) []bool {
+		out := make([]bool, rows)
+		for r := range out {
+			src := r + shift
+			if src >= len(old) {
+				break
+			}
+			out[r] = old[src]
+		}
+		return out
+	}
 	mainShift, altShift := shift, 0
 	if s.altOn {
 		mainShift, altShift = 0, shift
 	}
 	s.main = fit(s.main, mainShift)
-	s.softMain = make([]bool, rows)
+	s.softMain = fitSoft(s.softMain, mainShift)
 	if s.alt != nil {
 		s.alt = fit(s.alt, altShift)
-		s.softAlt = make([]bool, rows)
+		s.softAlt = fitSoft(s.softAlt, altShift)
 	}
 	if s.altOn {
 		s.cells, s.soft = s.alt, s.softAlt
@@ -180,6 +198,36 @@ func (s *Screen) Resize(cols, rows int) {
 	s.x = min(s.x, cols-1)
 	s.top, s.bot = 0, rows-1
 	s.wrap = false
+}
+
+// loses reports whether making the screen cols by rows, rows leaving at
+// the top as Resize has them leave, loses a character: one in a row that
+// leaves, one beyond the new width, or a wide character cut in half. Blank
+// cells count for nothing.
+func (s *Screen) loses(cols, rows int) bool {
+	shift := max(0, s.y-rows+1)
+	mainShift, altShift := shift, 0
+	if s.altOn {
+		mainShift, altShift = 0, shift
+	}
+	lost := func(old [][]rune, shift int) bool {
+		for r, row := range old {
+			from := 0
+			if kept := r >= shift && r-shift < rows; kept {
+				from = cols
+				if cols < len(row) && row[cols] == wideTail {
+					return true
+				}
+			}
+			for c := from; c < len(row); c++ {
+				if row[c] != ' ' && row[c] != wideTail {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return lost(s.main, mainShift) || s.alt != nil && lost(s.alt, altShift)
 }
 
 // Write applies a chunk of the program's output.
@@ -712,9 +760,12 @@ func (s *Screen) rowsText(n int, soft bool) string {
 				line = append(line, c)
 			}
 		}
-		if soft && s.soft[r] && r < last {
+		if soft && s.soft[r] && r < last && !s.clipped {
 			b.WriteString(string(line))
 		} else {
+			// A row autowrap went on from holds, on a screen grown since
+			// (clipped), the growth's blank cells after its text: left
+			// out, so that a word split by the wrap reads whole.
 			b.WriteString(strings.TrimRight(string(line), " "))
 		}
 	}

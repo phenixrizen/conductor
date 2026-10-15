@@ -34,7 +34,14 @@ type claimState struct {
 func stateOf(s *Local) claimState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return claimState{claim: s.claim, consumed: s.consumed, shown: s.info.Attention}
+	claim := s.claims[s.info.Attention.ID]
+	if claim == (questionClaim{}) {
+		for _, c := range s.claims {
+			claim = c
+			break
+		}
+	}
+	return claimState{claim: claim, consumed: s.consumed, shown: s.info.Attention}
 }
 
 // open fails unless the question q shows OPEN: shown, no claim on it, not
@@ -1506,5 +1513,218 @@ func TestAStartupQuestionAnsweredInTheTerminalGoesAsItsLinesAreErased(t *testing
 	}
 	if s.Info().LastAnswer != nil {
 		t.Fatalf("recorded: %+v", s.Info().LastAnswer)
+	}
+}
+
+// Round 10, finding 1: a startup question drawn narrow enough that its
+// words autowrap (the update prompt's "runs" split at 18 columns), held by
+// an Escape a write ended with, then the window grown and unrelated output
+// drawn: the screen, laid out narrower, still shows the question, read
+// with its wrapped rows joined (Lines), and nothing takes it for gone; a
+// submission is still held back from it.
+func TestAWrappedStartupQuestionStaysWhenTheWindowGrows(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 18, Rows: 24}, newChanSink(false))
+	// The update question as a program draws it line by line, which at 18
+	// columns autowraps its heading and splits "runs" over two rows.
+	p.outW.Write([]byte("\x1b[2J\x1b[HUpdate available · 0.161.0 → 0.162.1\r\n\r\n› 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\nenter continue · esc skip"))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if rows := s.asked.Text(); !strings.Contains(rows, "(r\nuns") {
+		t.Fatalf("the screen's rows at 18 columns: %q", rows)
+	}
+	for _, part := range []string{"\x1b", "z"} {
+		if err := s.Input(nater, []byte(part)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	p.outW.Write([]byte("\x1b[24;1Hstatus: ready"))
+	fed := s.asked.Fed()
+	deadline := time.Now().Add(3 * time.Second)
+	for s.asked.Fed() == fed && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := s.ResizeWith(nater, 80, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	p.outW.Write([]byte("\x1b[24;1Hstatus: still ready"))
+	time.Sleep(3 * patternQuiet)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("the window grown took the wrapped question for gone: %+v", a)
+	}
+	if !s.startupOnScreen() {
+		t.Fatal("the screen grown is not read as still showing the question")
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	// The program moving on, the screen erased whole: gone.
+	p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+}
+
+// Round 10, finding 2: a reply's keys written for a question, the question
+// then held over by the hold of a line let go, and a dialog shown over the
+// hold answered by another reply: the dialog's claim leaves the held-over
+// question's claim standing, which resolves it once its keys' word comes,
+// and the hold's end shows it no more.
+func TestAHeldOverQuestionsClaimSurvivesADialogsClaim(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: approvalQuestions()})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	// The guest's line, no question named, typed and paused at its Enter.
+	at, release := pauseEnter(t, s)
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	if got := written(t, p); got != "note" {
+		t.Fatalf("written %q", got)
+	}
+	atEnter(t, at)
+	// Nate's reply to the question: its keys written, paused before their
+	// word (the claim stands, the write done).
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	pause := func(data []byte) {
+		if string(data) == "Postgres\r" {
+			once.Do(func() { close(reached); <-gate })
+		}
+	}
+	s.beforeWritten.Store(&pause)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	word := make(chan error, 1)
+	go func() { word <- s.AnswerInput(context.Background(), nate, q.ID, []byte("Postgres\r")) }()
+	if got := written(t, p); got != "Postgres\r" {
+		t.Fatalf("written %q", got)
+	}
+	<-reached
+	// The guest's link goes and its Enter is left out: the hold, the
+	// question held over with Nate's claim standing on it.
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	release()
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	heldShows(t, s)
+	// A dialog over the hold, answered by a reply of its own.
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	d := waitAttention(t, s, asked)
+	if err := s.AnswerInput(context.Background(), nate, d.ID, []byte("y")); err != nil {
+		t.Fatalf("the dialog's reply: %v", err)
+	}
+	if got := written(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	resolved(t, s, d, "Nate", "the dialog")
+	// Nate's word for the question comes: resolved, hidden, by Nate.
+	let.Do(func() { close(gate) })
+	if err := returnsWithin(t, 5*time.Second, "the word", func() error { return <-word }); err != nil {
+		t.Fatalf("the word: %v", err)
+	}
+	resolved(t, s, q, "Nate", "the held-over question")
+	// Ctrl+U ends the hold: nothing shows again, and a reply to the
+	// question gets its result.
+	heldShows(t, s)
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	time.Sleep(100 * time.Millisecond)
+	if a := s.Info().Attention; a.ID == q.ID || a.State == AttentionNeedsInput {
+		t.Fatalf("once the hold ended: %+v", a)
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), "this question was already answered by Nate: nothing was sent", "a reply after the result")
+	nothingWritten(t, p, 100*time.Millisecond)
+}
+
+// Round 10, finding 3: the pre-hold Enter for a line naming no question. A
+// guest's line, no question named, typed at a question the agent reported
+// and let go before its Enter; an Enter typed in the terminal before the
+// hold of the turn is installed enters the text: the program has its
+// answer, no hold follows, the question shows consumed, and Ctrl+U shows
+// nothing OPEN.
+func TestAnEnterBeforeTheHoldOfAnUnnamedLineConsumesTheQuestion(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line })
+	if !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID {
+		t.Fatalf("after the Enter: %+v", st)
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), QuestionConsumedWords, "a reply after the Enter")
+	nothingWritten(t, p, 100*time.Millisecond)
+	let.Do(func() { close(gate) })
+	time.Sleep(100 * time.Millisecond)
+	if s.Held() {
+		t.Fatal("a hold followed the text entered")
+	}
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID {
+		t.Fatalf("after Ctrl+U: %+v", st)
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), QuestionConsumedWords, "a reply after Ctrl+U")
+	nothingWritten(t, p, 100*time.Millisecond)
+	if s.Info().LastAnswer != nil {
+		t.Fatalf("recorded: %+v", s.Info().LastAnswer)
+	}
+}
+
+// Round 10, finding 4: a window made narrower by a column that cuts only
+// blank cells loses nothing: a startup question answered in the terminal
+// after it goes once the program erases the dialog's lines and shows its
+// prompt, as it would with the window as it was.
+func TestAShrinkThatCutsNothingKeepsNoAnsweredStartupQuestion(t *testing.T) {
+	s, p, _ := asking(t, Options{Questions: []StartupQuestion{{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Yes", Input: "\r"}}}}})
+	nate := controller(t, s, "Nate")
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit\r\n"))
+	q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.Resize(nate, 79, 24); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID {
+		t.Fatalf("after the Enter: %+v", st)
+	}
+	out(p, "\r\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2KTrusted.\r\n> ")
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen {
+		t.Fatalf("the question gone: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nate}); err != nil {
+		t.Fatalf("a submission after the question went: %v", err)
 	}
 }

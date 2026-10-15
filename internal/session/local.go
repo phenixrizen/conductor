@@ -237,9 +237,13 @@ type Local struct {
 	// watcher had seen as it was noted (PatternWatcher.Fed): a look that
 	// took its text before that (LookedAt) does not see it go. results
 	// keeps the last resultsKept questions' results by id, oldest first
-	// in resultIDs, for the word a late or duplicate reply gets. Guarded
-	// by mu.
-	claim    questionClaim
+	// in resultIDs, for the word a late or duplicate reply gets. claims
+	// are the claims standing, by question: on the one shown, and on one
+	// held over by the hold of the turn (a dialog shown over the hold
+	// takes a reply of its own, and the held-over question keeps its
+	// claim, which resolves it hidden); a fresh token for every claim
+	// (claimSeq). Guarded by mu.
+	claims   map[string]questionClaim
 	claimSeq uint64
 	consumed string
 	// strandedClaim is the claim of a reply's line typed and not entered
@@ -604,7 +608,7 @@ func (s *Local) markEnded(status Status) {
 	// with it, shown or set aside, and so do a claim on it, its
 	// consumption and the screen's baseline.
 	s.dropOwnLocked()
-	s.claim, s.consumed = questionClaim{}, ""
+	s.claims, s.consumed = nil, ""
 	s.shotWait, s.shotRows = "", nil
 	s.settleLocked(s.info.Attention)
 	now := time.Now().UTC()
@@ -974,19 +978,23 @@ func (s *Local) missAsked(string) {
 	}
 }
 
-// startupOnScreen reports whether the screen, a whole frame, still shows a
-// startup question while the startup questions' watch lasts (before the
-// first submission's Enter): typed text is refused meanwhile (Submit), the
+// startupOnScreen reports whether the screen still shows a startup
+// question while the startup questions' watch lasts (before the first
+// submission's Enter): typed text is refused meanwhile (Submit), the
 // question asked, answered or not, since its Enter would pick what the
 // dialog highlights (Claude Code's "No, exit") and its letters reach the
-// dialog's keys. Nothing without the screen the questions asked during
-// the work are read from, kept for this with startup questions alone.
+// dialog's keys. The screen is read as a frame the program has finished
+// drawing with nothing lost to a window made smaller (Screen.DrawnAt), the
+// window grown since counting, its wrapped rows joined. Nothing without
+// the screen the questions asked during the work are read from, kept for
+// this with startup questions alone.
 func (s *Local) startupOnScreen() bool {
 	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
 		return false
 	}
-	whole, settled, _, _ := s.asked.Whole()
-	return settled && s.lastStartup(whole) != ""
+	whole, _, _, _ := s.asked.Whole()
+	uncut, _, _ := s.asked.DrawnAt()
+	return uncut && s.lastStartup(whole) != ""
 }
 
 // heldSource reports whether a prompt of source src is a question the
@@ -1469,7 +1477,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// A startup question answered and still shown (its write not made yet,
 	// or the session slow to clear it) waits on nothing: the next startup
 	// question takes its place.
-	answeredStartup := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && cur.ID != "" && (cur.ID == s.claim.id || cur.ID == s.consumed)
+	answeredStartup := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && cur.ID != "" && (s.claimedLocked(cur.ID) || cur.ID == s.consumed)
 	// A startup question still waiting that the screen has left for
 	// another (drawn after it, lastStartupQ: the program took an answer not
 	// read as one) waits on nothing either: the question the screen shows
@@ -1488,7 +1496,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// question reached is never set aside to show again at the done,
 	// where a reply would be taken for an answer the program has.
 	inTurn := own.ID != "" && s.turn.Load() == s.ownTurn && !s.turnEnded
-	reached := own.ID != "" && (s.claim.id == own.ID || s.consumed == own.ID)
+	reached := own.ID != "" && (s.claimedLocked(own.ID) || s.consumed == own.ID)
 	if s.held != nil && source != SourceSubmit && !heldSource(source) {
 		// The session's turn is held for a typed text (holdTyped): the hold
 		// is what shows, until a person types into the terminal, but for a
@@ -2682,7 +2690,11 @@ func (s *Local) claimLocked(id string) (uint64, error) {
 		return 0, ErrInputBusy
 	}
 	s.claimSeq++
-	s.claim = questionClaim{id: id, token: s.claimSeq}
+	c := questionClaim{id: id, token: s.claimSeq}
+	if s.claims == nil {
+		s.claims = map[string]questionClaim{}
+	}
+	s.claims[id] = c
 	att := s.info.Attention
 	switch att.Source {
 	case SourceQuestion:
@@ -2690,7 +2702,19 @@ func (s *Local) claimLocked(id string) (uint64, error) {
 	case SourceTrust:
 		s.startupAnsweredWords = att.words()
 	}
-	return s.claim.token, nil
+	return c.token, nil
+}
+
+// claimedLocked reports whether a claim stands on the question named id.
+// The caller holds s.mu.
+func (s *Local) claimedLocked(id string) bool { return id != "" && s.claims[id].id == id }
+
+// dropClaimLocked lets the claim c go, if it still stands. The caller
+// holds s.mu.
+func (s *Local) dropClaimLocked(c questionClaim) {
+	if c.id != "" && s.claims[c.id] == c {
+		delete(s.claims, c.id)
+	}
 }
 
 // claimQuestion is claimLocked, asked as the writer takes a reply's write,
@@ -2708,9 +2732,7 @@ func (s *Local) claimQuestion(id string) (uint64, error) {
 // claim still stands.
 func (s *Local) release(id string, token uint64) {
 	s.mu.Lock()
-	if s.claim == (questionClaim{id: id, token: token}) {
-		s.claim = questionClaim{}
-	}
+	s.dropClaimLocked(questionClaim{id: id, token: token})
 	s.mu.Unlock()
 }
 
@@ -2728,11 +2750,11 @@ func (s *Local) release(id string, token uint64) {
 // input entry with the question records the answer.
 func (s *Local) resolve(id string, token uint64, by, byName string) {
 	s.mu.Lock()
-	if s.claim != (questionClaim{id: id, token: token}) {
+	if s.claims[id] != (questionClaim{id: id, token: token}) {
 		s.mu.Unlock()
 		return
 	}
-	s.claim = questionClaim{}
+	delete(s.claims, id)
 	att := s.info.Attention
 	shown := att.State == AttentionNeedsInput && att.ID == id
 	over := s.heldOver.ID == id
@@ -2799,7 +2821,7 @@ func (s *Local) keepResultLocked(id string, result *Answer) {
 // an OPEN instance: one being answered keeps its claim, which resolves it
 // or lets it go. The caller holds s.mu.
 func (s *Local) consumeLocked(id string) {
-	if id == "" || s.claim.id == id {
+	if id == "" || s.claimedLocked(id) {
 		return
 	}
 	s.consumed = id
@@ -2815,9 +2837,7 @@ func (s *Local) releaseStrandedLocked() {
 		return
 	}
 	s.strandedClaim = questionClaim{}
-	if s.claim == c {
-		s.claim = questionClaim{}
-	}
+	s.dropClaimLocked(c)
 }
 
 // forgetLocked is the question instance named id leaving (withdrawn, or
@@ -2827,9 +2847,7 @@ func (s *Local) forgetLocked(id string) {
 	if id == "" {
 		return
 	}
-	if s.claim.id == id {
-		s.claim = questionClaim{}
-	}
+	delete(s.claims, id)
 	if s.consumed == id {
 		s.consumed = ""
 	}
@@ -2866,7 +2884,7 @@ func (s *Local) withdrawShownLocked(source string) {
 func (s *Local) withdraw(id string) bool {
 	s.mu.Lock()
 	att := s.info.Attention
-	if id == "" || att.State != AttentionNeedsInput || att.ID != id || s.claim.id == id {
+	if id == "" || att.State != AttentionNeedsInput || att.ID != id || s.claimedLocked(id) {
 		s.mu.Unlock()
 		return false
 	}
@@ -2910,7 +2928,7 @@ func (s *Local) screenQuiet(string) {
 		return
 	}
 	att := s.info.Attention
-	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC || s.claim.id == att.ID {
+	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC || s.claimedLocked(att.ID) {
 		s.shotWait, s.shotRows = "", nil
 		s.mu.Unlock()
 		return
@@ -3034,7 +3052,7 @@ func (s *Local) waitsLocked(id string) error {
 	// it writes nothing.
 	if att.State == AttentionNeedsInput && att.ID == id && att.Source != SourceSubmit {
 		switch {
-		case s.claim.id == id:
+		case s.claimedLocked(id):
 			return &questionAnsweredError{QuestionClaimedWords}
 		case s.consumed == id:
 			return &questionAnsweredError{QuestionConsumedWords}
@@ -3173,12 +3191,14 @@ func (s *Local) dialogGone(look uint64) {
 // person typed a line into the program. The agent's own question set
 // aside is withdrawn by a person's keys (person): the person has taken
 // part, and it does not show again at the done. A question being answered
-// (claimed) is left as it is: the claim resolves it or lets it go; but a
-// stranded line's claim (its text typed, its Enter never written, the hold
-// of the turn to follow: strandedClaim) goes with keys that enter its text
-// or pick the question's choice, before the hold is installed: the program
-// has its answer, no hold follows (holdPending), and the question is
-// consumed, or withdrawn when it is a wait with no words.
+// (claimed) is left as it is: the claim resolves it or lets it go. Keys
+// that enter the text of a stranded line (typed, its Enter never written,
+// the hold of the turn to follow: holdPending), or pick the question's
+// choice, before the hold is installed give the program its answer: no
+// hold follows, the stranded line's claim (a reply's, strandedClaim) goes,
+// and the question is consumed, or withdrawn when it is a wait with no
+// words; a question on the screen (a dialog, a startup question) keeps its
+// hold, the keys having reached the dialog and not the text.
 func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3192,18 +3212,13 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter
 	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
-	if s.claim.id == att.ID {
-		if c := s.strandedClaim; c == (questionClaim{}) || c != s.claim || s.held != nil || !picksChoice(att.Options, data, maybe) {
-			return
-		}
-		s.releaseStrandedLocked()
+	entered := s.holdPending && s.held == nil && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
+	if entered {
 		s.holdPending = false
-		switch att.Source {
-		case SourceQuestion, SourceBell, SourceOSC, SourcePattern:
-		default:
-			s.consumeLocked(att.ID)
-			return
-		}
+		s.releaseStrandedLocked()
+	}
+	if s.claimedLocked(att.ID) {
+		return
 	}
 	switch att.Source {
 	case SourceQuestion:
@@ -3220,6 +3235,10 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter
 		if enter {
 			s.withdrawShownLocked(SourceInput)
 			go s.notifyChange()
+		}
+	default:
+		if entered {
+			s.consumeLocked(att.ID)
 		}
 	}
 }

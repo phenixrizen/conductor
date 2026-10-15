@@ -1186,7 +1186,10 @@ question as one of:
   own, see Attention) or held over by a held turn is not shown and takes no
   reply (`question_answered`) until it shows again.
 - **claimed:** one reply's keys are being written. Every other reply is
-  refused (`this question is being answered`). The claim stands while the
+  refused (`this question is being answered`). A claim is kept per
+  question, the one shown and one held over by the held turn: a dialog
+  shown over the hold takes a reply of its own, and the held-over
+  question's claim stands and resolves it hidden. The claim stands while the
   write can still land: a program not reading (the keys, a line's text or
   its Enter land when it reads; a line's Enter had no turn in time) keeps
   it, and no
@@ -1262,11 +1265,12 @@ program slow to move on) is asked consumed, a reply to it refused, and
 withdrawn once the screen the questions asked during the work are read
 from shows no startup question (the program moved on to its prompt; looked
 at as a held Escape's is, below: a frame the program has finished drawing,
-nothing of it cut by a window made smaller since the program last erased
-the screen, as it is and as it was laid out at least the size the screen
-had when the keys were written; the window grown since counts, since a
-program that erases its dialog's lines rather than the whole screen draws
-nothing for a resize); one answered never keeps the next from
+nothing of it lost to a window made smaller since the program last erased
+the screen (one that cuts only blank cells loses nothing), as it is and as
+it was laid out at least the size the screen had when the keys were
+written; the window grown since counts, its rows autowrap went on from
+read joined, since a program that erases its dialog's lines rather than
+the whole screen draws nothing for a resize); one answered never keeps the next from
 being asked, and nor does one still waiting that the screen has left for
 another drawn after it (the program took an answer not read as one): the
 question drawn last is asked with an `id` of its own, and a reply naming
