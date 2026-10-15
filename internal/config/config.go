@@ -243,6 +243,41 @@ type Rendezvous struct {
 	// RelayOnly serves viewers through the rendezvous's relay only, without
 	// WebRTC.
 	RelayOnly bool `json:"relayOnly"`
+	// Insecure allows a Server that is plain http on another machine
+	// (PlainOffMachine): what is published there then travels in the clear
+	// and unverified, and the server says so in its log as it starts.
+	// Without it, such a Server is a config error. A switchyard on this
+	// machine needs nothing.
+	Insecure bool `json:"insecure,omitempty"`
+}
+
+// LoopbackHost reports whether host, a URL's host without brackets or port,
+// names this machine: localhost (by that name, in any case) or a loopback
+// address (127.0.0.0/8, ::1, written as an address).
+func LoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLoopback()
+}
+
+// PlainOffMachine reports whether server is a plain URL (http or ws) to a
+// host that is not this machine (LoopbackHost): what passes on it travels in
+// the clear and unverified on the way. A host dials one, and the admin client
+// sends its token to one, only when told to (--insecure,
+// rendezvous.insecure). A URL that does not parse is not one: its callers
+// refuse it as they refuse any malformed URL.
+func PlainOffMachine(server string) bool {
+	u, err := url.Parse(server)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "ws":
+		return !LoopbackHost(u.Hostname())
+	}
+	return false
 }
 
 // RendezvousServer is the switchyard this server publishes to: none when
@@ -694,6 +729,12 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	if v := getenv("CONDUCTOR_RENDEZVOUS_RELAY_ONLY"); v == "1" || v == "true" {
 		cfg.Rendezvous.RelayOnly = true
 	}
+	switch getenv("CONDUCTOR_RENDEZVOUS_INSECURE") {
+	case "1", "true":
+		cfg.Rendezvous.Insecure = true
+	case "0", "false":
+		cfg.Rendezvous.Insecure = false
+	}
 	str("CONDUCTOR_REACH", &cfg.Reach.Mode)
 	str("CONDUCTOR_PATHS_BROWSE", &cfg.Paths.Browse)
 	str("CONDUCTOR_REACH_STUN", &cfg.Reach.STUNServer)
@@ -856,6 +897,8 @@ func (c *Config) Validate() error {
 		r.Server = strings.TrimRight(r.Server, "/")
 		if u, err := url.Parse(r.Server); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, errors.New("rendezvous.server must be an http or https URL with a host"))
+		} else if PlainOffMachine(r.Server) && !r.Insecure {
+			errs = append(errs, fmt.Errorf("rendezvous.server %s is plain http on another machine: what this server publishes there would travel in the clear and unverified; use https, or set rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1) to allow it", u.Host))
 		}
 	}
 	if server := c.RendezvousServer(); server != "" && server == strings.TrimRight(c.PublicURL, "/") {

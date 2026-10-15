@@ -175,3 +175,107 @@ test('the app\'s publishing notice says what is published and leads to Settings'
   await expect(page.locator('[data-switchyard-settings]')).toBeVisible()
   await expect(page.getByText('Sessions are published to a switchyard')).toHaveCount(0)
 })
+
+// A switchyard named as plain http on another machine is refused as it is
+// saved, with the words why, and nothing reaches the app; one on this
+// machine is saved and kept. Settings saved with such a switchyard before
+// the app refused it show the words as the page opens.
+test('a plain switchyard on another machine is refused at save with the words why, and a loopback one is kept', async ({ page, state }) => {
+  const words = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
+  const form = {
+    dataDir: state.data,
+    allowedRoots: [state.root],
+    defaultCwd: state.root,
+    yolo: false,
+    reach: 'off',
+    closeToTray: true,
+    wslDistro: '',
+    wslWindowsHome: false,
+    switchyardEnabled: true,
+    switchyardServer: '',
+    switchyardToken: '',
+    switchyardName: '',
+    noticed: ['publishing'],
+  }
+  await page.addInitScript(
+    ({ token, form, url }) => {
+      // The app's settings across reloads of the page, and every save the page asked of it.
+      const kept = sessionStorage.getItem('e2e.settings')
+      const settings = kept ? JSON.parse(kept) : { ...form }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[] }
+      w.e2eSets = JSON.parse(sessionStorage.getItem('e2e.sets') ?? '[]')
+      w.conductorDesktop = {
+        version: 'e2e',
+        platform: 'linux',
+        token: async () => token,
+        openExternal: async () => {},
+        settings: {
+          get: async () => ({ ...settings }),
+          set: async (p: object) => {
+            w.e2eSets.push(p)
+            sessionStorage.setItem('e2e.sets', JSON.stringify(w.e2eSets))
+            Object.assign(settings, p)
+            sessionStorage.setItem('e2e.settings', JSON.stringify(settings))
+            return { ...settings }
+          },
+        },
+        restartServer: async () => {},
+        openInBrowser: async () => {},
+        showLog: async () => {},
+        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        notice: async () => '',
+        ice: async () => ({ forwarding: false, port: 0, publicIp: '', wslAddress: '', firewall: 'unknown' }),
+        allowIceFirewall: async () => 'unknown',
+        versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+        onServerState: () => () => {},
+      }
+    },
+    { token: state.token, form, url: state.baseURL },
+  )
+  const sets = () => page.evaluate(() => (window as unknown as { e2eSets: Array<{ switchyardServer?: string }> }).e2eSets)
+  await page.goto('/settings')
+  const field = page.locator('[data-switchyard-server]')
+  const input = field.locator('input')
+  const save = page.locator('[data-save-settings]')
+  await expect(input).toBeEnabled()
+  await expect(field).not.toContainText(words)
+
+  // Another machine, plain: refused at save, the words under the field and at the top, nothing sent to the app.
+  await input.fill('http://yard.example:8080')
+  await expect(field).not.toContainText(words)
+  await save.click()
+  await expect(field).toContainText(words)
+  await expect(page.locator('[data-settings-error]')).toContainText(words)
+  expect(await sets()).toEqual([])
+  // Changing the field takes the words away until the next save.
+  await input.fill('http://yard.example:808')
+  await expect(field).not.toContainText(words)
+  await save.click()
+  await expect(field).toContainText(words)
+  expect(await sets()).toEqual([])
+
+  // This machine: saved, and kept.
+  await input.fill('http://localhost:9090')
+  await expect(field).not.toContainText(words)
+  await save.click()
+  await expect(page.locator('[data-settings-error]')).toHaveCount(0)
+  await expect(field).not.toContainText(words)
+  await expect.poll(async () => (await sets()).map((s) => s.switchyardServer)).toEqual(['http://localhost:9090'])
+  await page.reload()
+  await expect(page.locator('[data-switchyard-server] input')).toHaveValue('http://localhost:9090')
+  await expect(page.locator('[data-switchyard-server]')).not.toContainText(words)
+
+  // Settings saved with one before the app refused it: the words as the page opens.
+  await page.evaluate(() => {
+    const s = JSON.parse(sessionStorage.getItem('e2e.settings')!)
+    sessionStorage.setItem('e2e.settings', JSON.stringify({ ...s, switchyardServer: 'http://192.168.1.10:8080' }))
+  })
+  await page.reload()
+  await expect(page.locator('[data-switchyard-server] input')).toHaveValue('http://192.168.1.10:8080')
+  await expect(page.locator('[data-switchyard-server]')).toContainText(words)
+  // An https one is saved.
+  await page.locator('[data-switchyard-server] input').fill('https://yard.example')
+  await page.locator('[data-save-settings]').click()
+  await expect.poll(async () => (await sets()).map((s) => s.switchyardServer)).toEqual(['http://localhost:9090', 'https://yard.example'])
+  await expect(page.locator('[data-switchyard-server]')).not.toContainText(words)
+})

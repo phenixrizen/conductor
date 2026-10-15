@@ -16,6 +16,40 @@ export interface DesktopSettings {
   noticed?: string[]
 }
 
+/** The words for a switchyard that is plain http on another machine: the desktop app's validate (desktop/src/settings.ts PLAIN_SWITCHYARD) says the same. */
+export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
+
+/**
+ * switchyardProblem is what the Settings page says before it saves a switchyard that is plain http on another machine, which the
+ * app and its server refuse (PLAIN_SWITCHYARD); '' for one it may save, and while publishing is off. This machine is localhost by
+ * that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or 127 mapped into IPv6), as the server reads it
+ * (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is not. The app checks the rest of the URL.
+ */
+export function switchyardProblem(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): string {
+  if (!s.switchyardEnabled || !s.switchyardServer) return ''
+  let u: URL
+  try {
+    u = new URL(s.switchyardServer)
+  } catch {
+    return ''
+  }
+  return u.protocol === 'http:' && !thisMachine(s.switchyardServer, u) ? PLAIN_SWITCHYARD : ''
+}
+
+function thisMachine(raw: string, u: URL): boolean {
+  const host = u.hostname.toLowerCase()
+  if (host.startsWith('[')) return host === '[::1]' || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(host)
+  // The host as written: the URL parser reads 127.1 or 0x7f.0.0.1 as 127.0.0.1, and the server does not; nor does it read a
+  // backslash as the parser does.
+  if (raw.includes('\\')) return false
+  const authority = raw.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
+  const typed = authority.slice(authority.lastIndexOf('@') + 1).split(':', 1)[0]!.toLowerCase()
+  if (typed !== host) return false
+  if (typed === 'localhost') return true
+  const quad = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(typed)
+  return !!quad && quad.slice(1).every((p) => (p === '0' || !p.startsWith('0')) && Number(p) <= 255)
+}
+
 /** The words of a one-time notice the desktop app hands the workbench; null for one this build does not know. */
 export function noticeWords(notice: string): { title: string; description: string } | null {
   if (notice === 'publishing') {

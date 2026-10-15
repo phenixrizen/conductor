@@ -30,6 +30,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -47,6 +48,13 @@ type Options struct {
 	Argv      []string
 	Dir       string
 	RelayOnly bool
+	// Insecure allows a ServerURL that is plain (http or ws) on another
+	// machine (config.PlainOffMachine), and a redirect to one: what passes
+	// between the host and that server then travels in the clear and
+	// unverified, and Run logs a warning saying so. Without it, Run refuses
+	// such a server before anything is dialed, and the dial refuses such a
+	// redirect (PlainServerError). A server on this machine needs nothing.
+	Insecure bool
 	// ServerIsOwners says the server this host reports to is the owner's
 	// own, on this machine (conductor host --server-is-mine, for a server on
 	// localhost): a viewer it sends with no link is then one of the owner's
@@ -126,6 +134,10 @@ type Options struct {
 	// publishes to the owner's own server, which shows the session in its
 	// workbench, stops it and forwards its agent's reports, and leaves it off.
 	Switchyard bool
+
+	// transport, when set (tests), is the control connection's transport in
+	// place of the standard one: a test's names dialed to its own servers.
+	transport *http.Transport
 }
 
 // Result reports how the hosted process ended.
@@ -139,8 +151,15 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if len(opts.Argv) == 0 {
 		return Result{}, errors.New("host: no command given")
 	}
+	// Before anything is written or dialed.
+	if err := plainRefused(opts.ServerURL, opts.Insecure); err != nil {
+		return Result{}, err
+	}
 	if opts.Log == nil {
 		opts.Log = slog.Default()
+	}
+	if opts.Insecure && config.PlainOffMachine(opts.ServerURL) {
+		opts.Log.Warn("--insecure: the server is plain http on another machine; what passes between it and this host travels in the clear and unverified", "server", serverHost(opts.ServerURL))
 	}
 	if opts.ReconnectMax <= 0 {
 		opts.ReconnectMax = 30 * time.Second
@@ -522,10 +541,15 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if a.opts.Token != "" {
 		header["Authorization"] = []string{"Bearer " + a.opts.Token}
 	}
-	var base *http.Client
+	base := &http.Client{}
 	if a.opts.ServerIsOwners {
 		base = ownersServerClient()
+	} else if a.opts.transport != nil {
+		base.Transport = a.opts.transport
 	}
+	// A redirect the dial follows is held to the rule the URL given was
+	// (Run, Uplink.Publish): plain to another machine only with Insecure.
+	base.CheckRedirect = a.redirectRule(base.CheckRedirect)
 	// The connection's socket is a pacedConn (controlWriter). Whatever the
 	// host reads on the connection, a frame's part included, as its TLS
 	// gives it, it notes as heard (hearingTransport), for its give-up alone:
@@ -1701,7 +1725,7 @@ func ownersServerClient() *http.Client {
 	}}
 	t.DialContext = dialer.DialContext
 	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
-		if !loopbackHost(req.URL.Hostname()) {
+		if !config.LoopbackHost(req.URL.Hostname()) {
 			return fmt.Errorf("host: refusing a redirect off this machine to %s", req.URL.Host)
 		}
 		return nil
@@ -1713,13 +1737,60 @@ func ownersServerClient() *http.Client {
 // with no link is one of the owner's own windows (Options.ServerIsOwners).
 func LoopbackServer(raw string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && loopbackHost(u.Hostname())
+	return err == nil && config.LoopbackHost(u.Hostname())
 }
 
-func loopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
+// PlainServerError refuses a server, or a redirect's target, that is plain
+// (http or ws) on another machine without Options.Insecure (Uplink.Insecure):
+// what passes between the host and it would travel in the clear and
+// unverified. Host is the server's host and port, nothing else of its URL.
+type PlainServerError struct {
+	Host string
+}
+
+func (e *PlainServerError) Error() string {
+	return fmt.Sprintf("host: %s is a plain http server on another machine: what passes between it and this host would travel in the clear and unverified; use https, or allow it with --insecure (rendezvous.insecure for a server's switchyard)", e.Host)
+}
+
+// plainRefused is the rule a server URL, or a redirect's, is held to:
+// a PlainServerError for one plain on another machine unless insecure.
+func plainRefused(server string, insecure bool) error {
+	if insecure || !config.PlainOffMachine(server) {
+		return nil
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return &PlainServerError{Host: serverHost(server)}
+}
+
+// serverHost is a server URL's host and port alone, for a message or the
+// log: never its user information, path or query.
+func serverHost(server string) string {
+	if u, err := url.Parse(server); err == nil {
+		return u.Host
+	}
+	return ""
+}
+
+// redirectRule is the control connection's dial's redirect policy: no dial
+// follows more than ten; next (the owner's client's, which keeps to this
+// machine) has its say; then a redirect is refused as the URL it leads to
+// would be (plainRefused), and one followed to a plain server on another
+// machine with Insecure is logged.
+func (a *agent) redirectRule(next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("host: stopped after 10 redirects")
+		}
+		if next != nil {
+			if err := next(req, via); err != nil {
+				return err
+			}
+		}
+		if err := plainRefused(req.URL.String(), a.opts.Insecure); err != nil {
+			return err
+		}
+		if config.PlainOffMachine(req.URL.String()) {
+			a.log.Warn("--insecure: following a redirect to a plain http server on another machine; what passes between it and this host travels in the clear and unverified", "server", req.URL.Host)
+		}
+		return nil
+	}
 }

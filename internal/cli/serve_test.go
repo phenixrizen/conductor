@@ -1001,3 +1001,49 @@ func TestServeLogsThePublicSwitchyard(t *testing.T) {
 		t.Fatalf("by default:\n%s", logs)
 	}
 }
+
+// A config that names a plain switchyard on another machine without
+// rendezvous.insecure stops conductor serve and conductor switchyard at
+// start, with the words why, before anything listens; the file is left as
+// it was.
+func TestServeRefusesAPlainSwitchyardOffThisMachine(t *testing.T) {
+	clearConductorEnv(t)
+	dir := t.TempDir()
+	body := fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://yard.example:8080"}}`, dir, dir, filepath.Join(dir, "state"))
+	cfg := writeServeConfig(t, dir, body)
+	for _, args := range [][]string{{"serve"}, {"switchyard"}} {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		var logs syncBuffer
+		code, err := Run(ctx, append(args, "--config", cfg, "--listen", "127.0.0.1:0"), strings.NewReader(""), io.Discard, &logs)
+		cancel()
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "rendezvous.server yard.example:8080 is plain http on another machine") || !strings.Contains(err.Error(), "CONDUCTOR_RENDEZVOUS_INSECURE=1") {
+			t.Errorf("%s: exit %d, %v", args[0], code, err)
+		}
+		if strings.Contains(logs.String(), "conductor serving") {
+			t.Errorf("%s served:\n%s", args[0], logs.String())
+		}
+	}
+	if got, err := os.ReadFile(cfg); err != nil || string(got) != body {
+		t.Fatalf("the config file changed: %q %v", got, err)
+	}
+}
+
+// With rendezvous.insecure the server starts and says once that what it
+// publishes there travels in the clear; it dials nothing until a session is
+// launched. The environment's 0 over the file's true refuses it again.
+func TestServeWarnsOnceForAnInsecureSwitchyard(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://yard.example:8080", "insecure": true}}`, dir, dir, filepath.Join(dir, "state")))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "level=WARN", "rendezvous.insecure", "travels in the clear and unverified"); len(lines) != 1 {
+		t.Fatalf("want one warning:\n%s", logs)
+	}
+	t.Setenv("CONDUCTOR_RENDEZVOUS_INSECURE", "0")
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, io.Discard); code != 1 || err == nil || !strings.Contains(err.Error(), "plain http on another machine") {
+		t.Fatalf("CONDUCTOR_RENDEZVOUS_INSECURE=0 over the file: exit %d, %v", code, err)
+	}
+}

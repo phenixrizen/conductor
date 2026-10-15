@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/crew"
 )
 
@@ -37,16 +38,18 @@ const (
 var requestTimeout = 30 * time.Second
 
 const crewsUsage = `Usage:
-  conductor up <crew-id> [--server URL] [--token T] [--name N] [--open]
+  conductor up <crew-id> [--server URL] [--token T] [--insecure] [--name N] [--open]
       launch a saved crew as a run; prints the run and the URL of its page,
       and the crew's view link when it has one; --name names the run
-  conductor crews [--server URL] [--token T] [--ids]
+  conductor crews [--server URL] [--token T] [--insecure] [--ids]
       list the saved crews: id, name and members; with --ids the ids only,
       one per line, for shell completion (nothing, and exit 0, when the
       server cannot be asked)
 
 The server defaults to CONDUCTOR_SERVER, else http://localhost:8080; the
-workbench token to CONDUCTOR_WORKBENCH_TOKEN.
+workbench token to CONDUCTOR_WORKBENCH_TOKEN. A plain http:// server on
+another machine is refused unless --insecure says to go ahead: the token
+would travel to it in the clear.
 `
 
 // errNoOpener is what openBrowser returns when the platform has no command to
@@ -100,7 +103,7 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 		fs.Usage()
 		return 2, errors.New("up: name one crew: conductor up <crew-id>")
 	}
-	c, err := api.client()
+	c, err := api.client(stderr)
 	if err != nil {
 		return 2, err
 	}
@@ -187,9 +190,9 @@ func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 		return 2, errors.New("crews: takes no arguments")
 	}
 	if *ids {
-		return runCrewIDs(ctx, api, stdout)
+		return runCrewIDs(ctx, api, stdout, stderr)
 	}
-	c, err := api.client()
+	c, err := api.client(stderr)
 	if err != nil {
 		return 2, err
 	}
@@ -212,12 +215,13 @@ func runCrews(ctx context.Context, args []string, stdout, stderr io.Writer) (int
 }
 
 // runCrewIDs prints the saved crews' ids, one per line, for shell
-// completion: nothing and exit 0 when no client can be made (no token) or the
-// server does not answer within idsTimeout, and never an error, since the
-// output lands on a command line. An id not shaped like a crew's
-// (crew.ValidID) is left out.
-func runCrewIDs(ctx context.Context, api apiFlags, stdout io.Writer) (int, error) {
-	c, err := api.client()
+// completion: nothing and exit 0 when no client can be made (no token, or a
+// plain server on another machine without --insecure) or the server does not
+// answer within idsTimeout, and never an error, since the output lands on a
+// command line (a warning --insecure prints goes to stderr). An id not shaped
+// like a crew's (crew.ValidID) is left out.
+func runCrewIDs(ctx context.Context, api apiFlags, stdout, stderr io.Writer) (int, error) {
+	c, err := api.client(stderr)
 	if err != nil {
 		return 0, nil
 	}
@@ -270,20 +274,30 @@ func (c *apiClient) crewList(ctx context.Context) ([]crewLine, error) {
 }
 
 // apiFlags are the flags both commands take.
-type apiFlags struct{ server, token *string }
+type apiFlags struct {
+	server, token *string
+	insecure      *bool
+}
 
 func addAPIFlags(fs *flag.FlagSet) apiFlags {
 	return apiFlags{
 		server: fs.String("server", "", "conductor server URL (env CONDUCTOR_SERVER, default "+defaultServer+")"),
 		// No default is shown or read here: -h would print the token.
-		token: fs.String("token", "", "workbench token (env CONDUCTOR_WORKBENCH_TOKEN)"),
+		token:    fs.String("token", "", "workbench token (env CONDUCTOR_WORKBENCH_TOKEN)"),
+		insecure: fs.Bool("insecure", false, "allow a plain http:// server on another machine, which is refused without it: the workbench token sent with every request, and the replies, then travel in the clear and unverified; a server on this machine (localhost) needs nothing"),
 	}
 }
 
+// plainAdmin is what the admin client would send and read in the clear from
+// a plain server on another machine.
+const plainAdmin = "what this client sends and reads, the workbench token on every request among it,"
+
 // client checks the flags and the environment. Its errors are usage errors,
 // and never repeat what was given: the server URL may carry a password, and
-// the token is a secret.
-func (f apiFlags) client() (*apiClient, error) {
+// the token is a secret. A server that is plain http on another machine is
+// refused without --insecure, before any request, and with it the warning
+// goes to stderr.
+func (f apiFlags) client(stderr io.Writer) (*apiClient, error) {
 	server := strings.TrimRight(cmp.Or(*f.server, os.Getenv("CONDUCTOR_SERVER"), defaultServer), "/")
 	u, err := url.Parse(server)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.ContainsAny(server, "?#") {
@@ -292,6 +306,12 @@ func (f apiFlags) client() (*apiClient, error) {
 	token := cmp.Or(*f.token, os.Getenv("CONDUCTOR_WORKBENCH_TOKEN"), os.Getenv("CONDUCTOR_ADMIN_TOKEN"))
 	if token == "" {
 		return nil, errors.New("a workbench token is required (--token or CONDUCTOR_WORKBENCH_TOKEN)")
+	}
+	if config.PlainOffMachine(server) {
+		if !*f.insecure {
+			return nil, plainServerRefusal(server, plainAdmin)
+		}
+		fmt.Fprintln(stderr, "conductor: "+plainServerWarning(server, plainAdmin))
 	}
 	// Userinfo in the URL is never used (the token travels in a header) and
 	// must not be printed or handed to a browser with the run URL.
