@@ -168,28 +168,31 @@ type submitState struct {
 func (st submitState) claimed() bool { return st.claim != nil && st.claim.Load() != 0 }
 
 // strand is the submission's line typed and its Enter not written for
-// good: its claim is let go, so that the question, held over by the hold
-// of the turn, can be answered again once a person's keys show it. res and
-// err are how the line ended; it reports whether the line is stranded (the
-// hold follows, holdTyped), and ErrLineStranded is the word for one that
-// ended with no error.
-func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err error) (bool, error) {
+// good: its claim is taken from it, to be let go as the hold of the turn
+// shows in the question's place (holdTyped, in one step with it: let go
+// before, a reply could claim the question and write its keys after the
+// text), so that the question, held over, can be answered again once a
+// person's keys show it. res and err are how the line ended; it reports
+// whether the line is stranded (the hold follows), the claim to let go,
+// and ErrLineStranded as the word for one that ended with no error.
+func (st submitState) strand(sub Submission, res SubmitResult, err error) (bool, questionClaim, error) {
 	if !res.Typed || res.Entered {
-		return false, err
+		return false, questionClaim{}, err
 	}
 	stranded := errors.Is(err, ErrRevoked) || err == nil && st.claimed()
 	if !stranded {
-		return false, err
+		return false, questionClaim{}, err
 	}
+	var claim questionClaim
 	if st.claim != nil {
 		if token := st.claim.Swap(0); token != 0 {
-			s.release(sub.Question, token)
+			claim = questionClaim{id: sub.Question, token: token}
 		}
 	}
 	if err == nil {
 		err = ErrLineStranded
 	}
-	return true, err
+	return true, claim, err
 }
 
 // comesAfter reports whether att is a prompt come since the submission
@@ -216,6 +219,10 @@ type SubmitResult struct {
 	Entered bool
 	// Reentered is set when a second Enter was written (Confirm).
 	Reentered bool
+	// landed, when set, is the Enter's write begun and not finished when
+	// its time ran out: the program has not taken it yet, and it gives the
+	// write's result once it has (landEnter).
+	landed <-chan error
 }
 
 // Submit types sub.Text and presses Enter, as two writes Options.SubmitPause
@@ -422,17 +429,27 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	res, err = s.enter(ctx, sub, res, st)
 	err = st.withdrawnTyped(res, err)
-	if stranded, why := st.strand(s, sub, res, err); stranded {
+	if stranded, claim, why := st.strand(sub, res, err); stranded {
 		// Its text is typed and its Enter not written for good (its link no
 		// longer opens the session; a reply's, a question come in its
-		// pause): its claim let go, and the turn held for a person
-		// (holdTyped), who deals with the text.
+		// pause): the turn held for a person (holdTyped), who deals with
+		// the text, its claim let go as the hold shows.
 		release = false
 		go func() {
 			defer func() { <-s.submitting }()
-			s.holdTyped()
+			s.holdTyped(claim)
 		}()
 		return res, why
+	}
+	if err == nil && res.landed != nil {
+		// Its Enter's write began and its time ran out: accepted, entered
+		// as the program reads, the question its claim holds resolved and
+		// its word given then (finishEntered), never before the last byte
+		// lands. The turn is given back: the Enter is in the writer's
+		// hands ahead of whatever comes next.
+		go s.finishEntered(sub, res, st)
+		res.landed = nil
+		return res, ErrSubmitPending
 	}
 	if res.Typed && !res.Entered && (errors.Is(err, errEnterLater) || errors.Is(err, context.DeadlineExceeded)) {
 		// Its text is typed and its time ran out before its Enter (in its
@@ -512,11 +529,16 @@ func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
 	if errors.Is(err, errEnterLater) {
 		res, err = s.pressEnterHeld(sub, res, st)
 	}
+	if err == nil && res.landed != nil {
+		// Its Enter's write began and its time ran out: its word once the
+		// Enter has landed, the turn held till then.
+		res, err = s.landEnter(sub, res, st)
+	}
 	err = st.withdrawnTyped(res, err)
-	stranded, err := st.strand(s, sub, res, err)
+	stranded, claim, err := st.strand(sub, res, err)
 	s.finished(sub, res, err)
 	if stranded {
-		s.holdTyped()
+		s.holdTyped(claim)
 	}
 }
 
@@ -544,9 +566,11 @@ func (st submitState) withdrawnTyped(res SubmitResult, err error) error {
 // session ends. The session shows needs_input meanwhile, with HeldWords
 // (source SourceSubmit), which the keys clear; another attention change is
 // recorded and not shown, but for a question on the screen (setAttention).
-func (s *Local) holdTyped() {
+func (s *Local) holdTyped(claim questionClaim) {
 	s.mu.Lock()
 	if s.info.Status.Ended() {
+		s.strandedClaim = claim
+		s.releaseStrandedLocked()
 		s.mu.Unlock()
 		return
 	}
@@ -557,9 +581,23 @@ func (s *Local) holdTyped() {
 		close(s.heldNext)
 		s.heldNext = nil
 	}
+	// The stranded line's claim (claim, the empty claim for a line naming
+	// no question) stands until the hold's words take the question's
+	// place, and is let go in that step (releaseStrandedLocked), so that
+	// no reply claims the question meanwhile and writes its keys after
+	// the text.
+	s.strandedClaim = claim
 	s.mu.Unlock()
+	if hook := s.beforeHold.Load(); hook != nil {
+		(*hook)()
+	}
 	s.log.Info("a submission's text was typed and not entered; the next waits for keys typed in the terminal")
 	s.setAttention(AttentionNeedsInput, HeldWords, SourceSubmit, "", nil, whileHeld)
+	s.mu.Lock()
+	// The hold's words refused (a question on the screen shows over the
+	// hold, or keys ended the hold as it began): the claim goes now.
+	s.releaseStrandedLocked()
+	s.mu.Unlock()
 	select {
 	case <-held:
 	case <-s.ended:
@@ -771,7 +809,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if hook := s.beforeEnter.Load(); hook != nil {
 		(*hook)()
 	}
-	byName, wait := st.byName, st.wait
+	wait := st.wait
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	att := s.info.Attention
@@ -874,23 +912,73 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if sub.By != nil {
 		s.stampTyping(sub.By)
 	}
-	if token := st.claim.Load(); token != 0 {
-		// A reply's Enter: its question resolved by the claim its text or
-		// this Enter made (resolve), by whoever sent it.
-		by, name := "", byName
-		if sub.By != nil {
-			by, name = sub.By.ID, sub.By.Name
-		}
-		s.resolve(sub.Question, token, by, name)
-	}
 	if pending {
+		// Begun, the Enter lands when the program reads again: the
+		// question a reply's claim holds is resolved then, and the line's
+		// word comes then (landEnter: through Submit's ErrSubmitPending,
+		// or the held turn's finishLine), never before the last byte
+		// lands.
 		s.log.Info("a submission's Enter waits for the program to take input")
+		res.landed = landed
 		return res, nil
 	}
+	s.resolveLine(sub, st)
 	if sub.Confirm && s.opts.ConfirmSubmit && !s.confirmed(ctx, enterAt) {
 		res.Reentered = s.enterAgain(ctx)
 	}
 	return res, nil
+}
+
+// resolveLine resolves the question a reply's line claimed (its text's
+// write or its Enter: submitState.claim), by whoever sent it, once its
+// Enter has landed; nothing for a line naming no question or whose claim
+// was let go.
+func (s *Local) resolveLine(sub Submission, st submitState) {
+	token := st.claim.Load()
+	if token == 0 {
+		return
+	}
+	by, name := "", st.byName
+	if sub.By != nil {
+		by, name = sub.By.ID, sub.By.Name
+	}
+	s.resolve(sub.Question, token, by, name)
+}
+
+// landEnter waits for a submission's Enter whose write had begun when its
+// time ran out (SubmitResult.landed) to land, as the program reads again
+// or the session ends: entered then, the question its claim holds
+// resolved (resolveLine); or never entered (the write failed: the session
+// ended), its claim let go.
+func (s *Local) landEnter(sub Submission, res SubmitResult, st submitState) (SubmitResult, error) {
+	landed := res.landed
+	res.landed = nil
+	var err error
+	select {
+	case err = <-landed:
+	case <-s.ended:
+		select {
+		case err = <-landed:
+		default:
+			err = ErrSessionEnded
+		}
+	}
+	if err != nil {
+		res.Entered = false
+		if token := st.claim.Swap(0); token != 0 {
+			s.release(sub.Question, token)
+		}
+		return res, err
+	}
+	s.resolveLine(sub, st)
+	return res, nil
+}
+
+// finishEntered is landEnter for a submission accepted with its Enter
+// pending (Submit's ErrSubmitPending): its word once the Enter has landed.
+func (s *Local) finishEntered(sub Submission, res SubmitResult, st submitState) {
+	res, err := s.landEnter(sub, res, st)
+	s.finished(sub, res, err)
 }
 
 // lookAsked looks at the screen for a question asked during the work, quiet

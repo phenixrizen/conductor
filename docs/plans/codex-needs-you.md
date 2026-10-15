@@ -1618,6 +1618,21 @@ events, orders or invariants above, but for the two marked.
   session knows: `being answered` (CLAIMED), `answered in the terminal`
   (consumed), `already answered by <name>` (a result kept), else the
   generic `already answered`; the page shows each.
+- **Round 7 of Codex's review of the code** (fixed after it, reviewed in
+  round 8). A stranded line's claim was let go as the line ended and the
+  hold installed on another goroutine after: a reply between the two
+  claimed the question and wrote its keys after the text. The claim now
+  stands until the hold's words take the question's place, and is let go
+  in that step (`strandedClaim`, `releaseStrandedLocked`), as S26 says.
+  An Enter whose write began and whose time ran out resolved the question
+  and gave `answer_ok` at once: it resolves and gives its word once the
+  Enter lands (`landEnter`, `ErrSubmitPending` meanwhile, over both
+  transports), and a session that ends under it records nothing. The
+  agent's own question consumed by the Enter that entered the held text
+  was set aside by the agent's work and shown again OPEN at its done: a
+  consumed question is reached (`reached`), and the work withdraws it.
+  And the snapshot's rows were read before the session's lock, where a
+  resize could drop the baseline between: they are read under it.
 
 # The pull requests, in order
 

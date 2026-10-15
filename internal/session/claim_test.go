@@ -790,11 +790,12 @@ func TestEveryClearingPathThroughReleaseAndReclaim(t *testing.T) {
 					if !got.res.Typed || got.res.Entered || !(errors.Is(got.err, ErrRevoked) || errors.Is(got.err, ErrLineStranded)) {
 						t.Fatalf("%s: %+v %v", how, got.res, got.err)
 					}
+					// The hold of the turn shows over the question, held over,
+					// and the claim is let go in that step.
+					heldShows(t, s)
 					if st := stateOf(s); st.claim != (questionClaim{}) {
 						t.Fatalf("%s: the claim stands: %+v", how, st)
 					}
-					// The hold of the turn shows over the question, held over.
-					heldShows(t, s)
 					if how == "the Enter left out" {
 						// The startup question on the screen under the hold
 						// is answered in the terminal (the first keys typed
@@ -804,6 +805,14 @@ func TestEveryClearingPathThroughReleaseAndReclaim(t *testing.T) {
 						}
 						written(t, p)
 						p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
+						// The screen as the session has it shows the program
+						// moved on (a reply looks at it: stillOnScreen).
+						if !waitFor(5*time.Second, func() bool {
+							text, settled, _, _ := s.asked.Whole()
+							return settled && strings.Contains(text, "Ask Codex")
+						}) {
+							t.Fatal("the screen never showed the program moved on")
+						}
 					} else {
 						// Ctrl+U ends the hold: the question back, OPEN.
 						if err := s.Input(nate, []byte{0x15}); err != nil {
@@ -1080,4 +1089,215 @@ func sourceOf(t *testing.T, names ...string) []string {
 		out = append(out, string(b))
 	}
 	return out
+}
+
+// Round 7, finding 1: a reply's line typed and its Enter not written for
+// good (its link revoked) keeps its claim until the hold of the turn shows
+// in the question's place, in one step: a reply that comes between is
+// refused as being answered, never written after the text. The hold's end
+// shows the question OPEN, and a new reply claims and resolves it.
+func TestAStrandedLinesClaimGoesAsTheHoldShows(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	// The hold paused as it is installed, before its words show: the
+	// window in which the claim used to be let go already.
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "Postgres", By: guest, Question: q.ID})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	// The claim stands: a reply now is refused, nothing written.
+	if st := stateOf(s); st.claim.id != q.ID || st.shown.ID != q.ID {
+		t.Fatalf("under the hold's installation: %+v", st)
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), QuestionClaimedWords, "a reply as the hold is installed")
+	nothingWritten(t, p, 100*time.Millisecond)
+	let.Do(func() { close(gate) })
+	got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line })
+	if !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	heldShows(t, s)
+	if st := stateOf(s); st.claim != (questionClaim{}) {
+		t.Fatalf("the claim stands under the hold: %+v", st)
+	}
+	// Ctrl+U ends the hold: the question OPEN, and a reply resolves it.
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	open(t, s, q, "once the hold ended")
+	if err := s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "SQLite\r" {
+		t.Fatalf("written %q", got)
+	}
+	resolved(t, s, q, "Nate", "the reclaim")
+}
+
+// Round 7, finding 2: a reply's Enter whose write began and whose time ran
+// out (the program not reading) keeps the claim until the Enter lands: no
+// answer is recorded and no word given before, another reply is refused
+// as being answered meanwhile; once it lands the question is resolved and
+// the word is answer_ok. A session that ends under it never records an
+// answer, and the word says so.
+func TestAPendingEnterKeepsTheClaimUntilItLands(t *testing.T) {
+	for _, how := range []string{"lands", "the session ends"} {
+		t.Run(how, func(t *testing.T) {
+			s, p, _ := asking(t, Options{SubmitPause: 50 * time.Millisecond, InputWait: 200 * time.Millisecond})
+			nate := controller(t, s, "Nate")
+			other := controller(t, s, "Other")
+			q := reported(t, s, "Which database?")
+			hold, takeAgain := gateWrites(t, p)
+			word := make(chan submitted, 1)
+			line := submitAsync(s, Submission{Text: "Postgres", By: nate, Question: q.ID, Finished: func(res SubmitResult, err error) { word <- submitted{res, err} }})
+			if got := written(t, p); got != "Postgres" {
+				t.Fatalf("written %q", got)
+			}
+			// The program stops reading: the Enter's write begins and its
+			// time runs out.
+			hold()
+			got := returnsWithin(t, 5*time.Second, "the submission", func() submitted { return <-line })
+			if !errors.Is(got.err, ErrSubmitPending) || !got.res.Typed {
+				t.Fatalf("the submission: %+v %v", got.res, got.err)
+			}
+			if st := stateOf(s); st.claim.id != q.ID || st.shown.ID != q.ID {
+				t.Fatalf("with the Enter pending: %+v", st)
+			}
+			if s.Info().LastAnswer != nil {
+				t.Fatalf("answered before the Enter landed: %+v", s.Info().LastAnswer)
+			}
+			refusedAs(t, s.AnswerInput(context.Background(), other, q.ID, []byte("SQLite\r")), QuestionClaimedWords, "a reply while the Enter is pending")
+			select {
+			case w := <-word:
+				t.Fatalf("a word before the Enter landed: %+v %v", w.res, w.err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			if how == "lands" {
+				takeAgain()
+				if got := written(t, p); got != "\r" {
+					t.Fatalf("written %q", got)
+				}
+				w := returnsWithin(t, 5*time.Second, "the word", func() submitted { return <-word })
+				if w.err != nil || !w.res.Entered {
+					t.Fatalf("the word: %+v %v", w.res, w.err)
+				}
+				resolved(t, s, q, "Nate", "the Enter landed")
+				return
+			}
+			p.exit()
+			<-s.Ended()
+			w := returnsWithin(t, 5*time.Second, "the word", func() submitted { return <-word })
+			if !errors.Is(w.err, ErrSessionEnded) || w.res.Entered {
+				t.Fatalf("the word: %+v %v", w.res, w.err)
+			}
+			if s.Info().LastAnswer != nil {
+				t.Fatalf("an Enter that never landed was an answer: %+v", s.Info().LastAnswer)
+			}
+		})
+	}
+}
+
+// Round 7, finding 3: the agent's own question, held over by the hold of
+// the turn and shown again consumed by the Enter that entered the held
+// text, is reached: the agent's work in that turn withdraws it rather than
+// setting it aside, so its done does not show it again OPEN for a reply
+// the program would take as a second answer.
+func TestAConsumedOwnQuestionIsNotSetAside(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	// A guest's line, no question named, let go before its Enter: the
+	// hold, the question held over.
+	line := submitAsync(s, Submission{Text: "Postgres", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	heldShows(t, s)
+	// An Enter typed in the terminal enters the held text: the question
+	// shows again, consumed.
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID {
+		t.Fatalf("after the Enter: %+v", st)
+	}
+	// The agent works on the answer it has, in the question's turn, and
+	// ends its turn: the question is gone, not shown again.
+	reportState(t, s, AttentionWorking, "")
+	if a := s.Info().Attention; a.State != AttentionWorking {
+		t.Fatalf("after working: %+v", a)
+	}
+	reportState(t, s, AttentionDone, "finished")
+	if a := s.Info().Attention; a.State != AttentionDone || a.ID == q.ID {
+		t.Fatalf("after the done: %+v", a)
+	}
+	if err := s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply after the done: %v", err)
+	}
+	nothingWritten(t, p, 100*time.Millisecond)
+	if s.Info().LastAnswer != nil {
+		t.Fatalf("recorded: %+v", s.Info().LastAnswer)
+	}
+}
+
+// Round 7, finding 4: the snapshot's rows are read under the session's
+// lock, so a resize that comes as a quiet look begins (the baseline dropped
+// by it) does not get the rows before the resize installed as the baseline:
+// the next quiet compares the screen with itself as it is, and the window
+// resized withdraws nothing.
+func TestASnapshotTakenAsTheWindowResizesIsNotTheBaseline(t *testing.T) {
+	s, p, _ := asking(t, Options{})
+	nate := controller(t, s, "Nate")
+	// Five long rows, then the bell: the baseline at 80 columns.
+	out(p, "\x1b[2J\x1b[H"+strings.Repeat("abcdefghijklmnopqrstuvwxyz0123456789ABCD\r\n", 5)+"Allow? [y/n]\a")
+	q := waitAttention(t, s, isBell)
+	time.Sleep(2 * patternQuiet)
+	// The next quiet look paused as it begins; the window shrinks
+	// meanwhile, cutting every row.
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeShot.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	out(p, "\x1b[24;1H.")
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the quiet look never began")
+	}
+	if err := s.Resize(nate, 20, 24); err != nil {
+		t.Fatal(err)
+	}
+	let.Do(func() { close(gate) })
+	time.Sleep(4 * patternQuiet)
+	if a := s.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the resize withdrew the wait: %+v", a)
+	}
+	// The agent moving on still does.
+	out(p, "\r\nmoving on: one\r\nmoving on: two\r\nmoving on: three\r\nmoving on: four\r\n")
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen {
+		t.Fatalf("the lines after the resize: %+v", a)
+	}
 }

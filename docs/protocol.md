@@ -1187,8 +1187,9 @@ question as one of:
   reply (`question_answered`) until it shows again.
 - **claimed:** one reply's keys are being written. Every other reply is
   refused (`this question is being answered`). The claim stands while the
-  write can still land: a program not reading (the keys, or a line's text,
-  land when it reads; a line's Enter had no turn in time) keeps it, and no
+  write can still land: a program not reading (the keys, a line's text or
+  its Enter land when it reads; a line's Enter had no turn in time) keeps
+  it, and no
   timer on the way (the session's 10 s wait for the program, a connection's
   10 s for a submission, a host's deadline, a page's 15 s for the word) ends
   a question or a claim whose write began. Only a write refused before it
@@ -1196,7 +1197,9 @@ question as one of:
   revoked or expired, a prompt or a startup question come in its pause),
   *releases* the claim: the question is open again, and for a stranded line
   the session's turn is held (`source:"submit"`) with the question held
-  over, so no other line joins the text; keys that end the hold without
+  over, the claim let go in the step that shows the hold (no reply claims
+  the question between the two and writes its keys after the text), so no
+  other line joins the text; keys that end the hold without
   entering it (Ctrl+U) show the question again open, keys that enter it or
   pick its choice show it consumed.
 - **resolved:** the claimer's last byte was written while its claim was still

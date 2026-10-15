@@ -510,7 +510,7 @@ func TestATitleNeverShowsOverAHeldTurn(t *testing.T) {
 	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	go s.holdTyped()
+	go s.holdTyped(questionClaim{})
 	heldShows(t, s)
 	before := len(entries(s))
 	stop := make(chan struct{})

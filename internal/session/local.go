@@ -239,9 +239,16 @@ type Local struct {
 	// keeps the last resultsKept questions' results by id, oldest first
 	// in resultIDs, for the word a late or duplicate reply gets. Guarded
 	// by mu.
-	claim            questionClaim
-	claimSeq         uint64
-	consumed         string
+	claim    questionClaim
+	claimSeq uint64
+	consumed string
+	// strandedClaim is the claim of a reply's line typed and not entered
+	// for good (holdTyped), let go in the step that shows the hold of the
+	// turn in the question's place (setAttentionLooked,
+	// releaseStrandedLocked): until then it stands, so that no reply
+	// claims the question and writes its keys after the text. The empty
+	// claim while none waits.
+	strandedClaim    questionClaim
 	dialogAnswered   string
 	dialogAnsweredAt uint64
 	results          map[string]*Answer
@@ -343,8 +350,14 @@ type Local struct {
 	// beforeEnter, a test's hook, runs as a submission comes to its Enter
 	// (pressEnter), before it looks at anything; beforeWritten as keys
 	// written (input) come to what follows their write, with the keys.
-	beforeEnter    atomic.Pointer[func()]
-	beforeWritten  atomic.Pointer[func(data []byte)]
+	beforeEnter   atomic.Pointer[func()]
+	beforeWritten atomic.Pointer[func(data []byte)]
+	// beforeShot, a test's hook, runs as the screen snapshot's quiet look
+	// begins (screenQuiet), before it takes the session's lock; beforeHold
+	// as the hold of the turn is installed (holdTyped), before its words
+	// show.
+	beforeShot     atomic.Pointer[func()]
+	beforeHold     atomic.Pointer[func()]
 	agentTokenHash [32]byte
 	hasAgentToken  bool
 
@@ -1464,9 +1477,12 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	}
 	// Whether the change comes in the turn the agent's own question was
 	// asked in (no done since), and whether a reply or a person's keys
-	// reached it (answered): weighed before the change moves the turn on.
+	// reached it (a claim on it, or consumed: the held text entered, its
+	// choice picked), weighed before the change moves the turn on: a
+	// question reached is never set aside to show again at the done,
+	// where a reply would be taken for an answer the program has.
 	inTurn := own.ID != "" && s.turn.Load() == s.ownTurn && !s.turnEnded
-	reached := own.ID != "" && s.claim.id == own.ID
+	reached := own.ID != "" && (s.claim.id == own.ID || s.consumed == own.ID)
 	if s.held != nil && source != SourceSubmit && !heldSource(source) {
 		// The session's turn is held for a typed text (holdTyped): the hold
 		// is what shows, until a person types into the terminal, but for a
@@ -1628,6 +1644,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		if cur.State == AttentionNeedsInput && cur.ID != "" && cur.Source != SourceSubmit && !heldSource(cur.Source) {
 			s.heldOver = cur
 		}
+		// The stranded line's claim is let go here, in the step that
+		// hides the question (strandedClaim): let go before it, a reply
+		// could claim the question and write its keys after the text.
+		s.releaseStrandedLocked()
 	}
 	if state != AttentionNone {
 		now := time.Now().UTC()
@@ -2778,6 +2798,21 @@ func (s *Local) consumeLocked(id string) {
 	s.consumed = id
 }
 
+// releaseStrandedLocked lets the stranded line's claim go (strandedClaim),
+// if it still stands: as the hold of the turn shows (setAttentionLooked),
+// or, its words refused, as holdTyped goes on without them. The caller
+// holds s.mu.
+func (s *Local) releaseStrandedLocked() {
+	c := s.strandedClaim
+	if c == (questionClaim{}) {
+		return
+	}
+	s.strandedClaim = questionClaim{}
+	if s.claim == c {
+		s.claim = questionClaim{}
+	}
+}
+
 // forgetLocked is the question instance named id leaving (withdrawn, or
 // replaced by the next): a claim on it resolves nothing, its consumption
 // and the screen's baseline for it go. The caller holds s.mu.
@@ -2854,11 +2889,19 @@ const (
 // (movedOn). A question read off the screen has rows of its own and its
 // watcher; the pattern's prompt its line.
 func (s *Local) screenQuiet(string) {
-	rows, drawn := s.shot.Rows()
-	if !drawn {
-		return
+	if hook := s.beforeShot.Load(); hook != nil {
+		(*hook)()
 	}
 	s.mu.Lock()
+	// The rows are read under the session's lock, which a resize holds
+	// as it changes them and drops the baseline (sized): rows read before
+	// one would be installed as the baseline, and the next quiet would
+	// find the screen moved on by the resize alone.
+	rows, drawn := s.shot.Rows()
+	if !drawn {
+		s.mu.Unlock()
+		return
+	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC || s.claim.id == att.ID {
 		s.shotWait, s.shotRows = "", nil

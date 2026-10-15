@@ -503,8 +503,9 @@ func TestKeystrokesWaitingWhenTheirConnectionEndsAreNeverWritten(t *testing.T) {
 }
 
 // A submission whose Enter's write has begun when its time runs out is
-// entered: the Enter lands when the program reads again, and Confirm
-// presses nothing more for it.
+// accepted (ErrSubmitPending) and entered as the Enter lands, when the
+// program reads again: its word comes then (Finished), and Confirm presses
+// nothing more for it.
 func TestASubmissionWhoseEnterWaitsForTheProgramIsEntered(t *testing.T) {
 	s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, InputWait: 200 * time.Millisecond, SubmitPause: 10 * time.Millisecond, ConfirmSubmit: true, ConfirmWait: 50 * time.Millisecond})
 	release := make(chan struct{})
@@ -522,23 +523,28 @@ func TestASubmissionWhoseEnterWaitsForTheProgramIsEntered(t *testing.T) {
 			<-release
 		}
 	}
-	type submitted struct {
-		res SubmitResult
-		err error
-	}
+	word := make(chan submitted, 1)
 	got := returnsWithin(t, 5*time.Second, "the submission", func() submitted {
-		res, err := s.Submit(context.Background(), Submission{Text: "line", ByName: "run", Confirm: true})
+		res, err := s.Submit(context.Background(), Submission{Text: "line", ByName: "run", Confirm: true, Finished: func(res SubmitResult, err error) { word <- submitted{res, err} }})
 		return submitted{res, err}
 	})
-	if got.err != nil || !got.res.Typed || !got.res.Entered || got.res.Reentered {
+	if !errors.Is(got.err, ErrSubmitPending) || !got.res.Typed || !got.res.Entered || got.res.Reentered {
 		t.Fatalf("result %+v, %v", got.res, got.err)
 	}
 	if got := written(t, p); got != "line" {
 		t.Fatalf("written %q", got)
 	}
+	select {
+	case w := <-word:
+		t.Fatalf("a word before the Enter landed: %+v %v", w.res, w.err)
+	case <-time.After(100 * time.Millisecond):
+	}
 	close(release)
 	if got := written(t, p); got != "\r" {
 		t.Fatalf("written %q", got)
+	}
+	if w := returnsWithin(t, 5*time.Second, "the word", func() submitted { return <-word }); w.err != nil || !w.res.Entered || w.res.Reentered {
+		t.Fatalf("the word: %+v %v", w.res, w.err)
 	}
 	nothingWritten(t, p, 300*time.Millisecond)
 }
