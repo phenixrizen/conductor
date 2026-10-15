@@ -19,7 +19,8 @@ function terminal(size: Size, scrollback: number) {
 /**
  * Where the cursor is drawn against where the buffer has it. The screen shows the buffer from its viewport, which the browser's scroll
  * keeps inside the buffer (no further down than its length less the rows); the cursor's line is the buffer's line at its base plus the
- * cursor's row, drawn that many rows below the top of what shows. xterm keeps its input box on the cursor's row only while the two agree.
+ * cursor's row, drawn that many rows below the top of what shows. In the broken buffer that line is one past the end, and the buffer,
+ * a ring, paints it on the top row; xterm keeps its input box on the cursor's row only while the two agree.
  */
 function cursor(term: Terminal) {
   const b = term.buffer.active
