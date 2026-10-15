@@ -1,4 +1,12 @@
-import { expect, test } from './fixtures'
+import { expect, test, type Session } from './fixtures'
+
+const sessions: string[] = []
+
+// What a test launched stops as it ends: a session left running stays on the Yard's wall for the rest of the suite, where it narrows
+// the tiles later specs measure (#219).
+test.afterEach(async ({ api }) => {
+  for (const id of sessions.splice(0)) await api.stopSession(id)
+})
 
 // The launch dialog asks where the agent runs only when there are two
 // answers. The e2e workbench is opened at 127.0.0.1, this computer, so the
@@ -10,13 +18,19 @@ test('on a workbench at this computer the launch dialog has one answer and launc
   await expect(dialog.getByRole('button', { name: 'Launch' })).toBeVisible()
   await expect(dialog.locator('[data-runs-on]')).toHaveCount(0)
   await expect(dialog.getByText('My machine')).toHaveCount(0)
-  const count = async () => {
-    const r = await api.ok<{ sessions?: unknown[] } | unknown[]>('GET', '/api/sessions')
-    return (Array.isArray(r) ? r : (r.sessions ?? [])).length
+  const list = async () => {
+    const r = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
+    return Array.isArray(r) ? r : (r.sessions ?? [])
   }
-  const before = await count()
+  const before = new Set((await list()).map((s) => s.id))
+  // The session the launch made is held for the teardown from its answer, before anything else here can fail.
+  const created = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/sessions')
   await dialog.getByRole('button', { name: 'Launch' }).click()
-  await expect.poll(count, { timeout: 15_000 }).toBe(before + 1)
+  const answer = await created
+  const launched = answer.ok() ? ((await answer.json()) as Session).id : ''
+  if (launched) sessions.push(launched)
+  expect(answer.status(), 'the launch made a session').toBe(201)
+  await expect.poll(async () => (await list()).map((s) => s.id).filter((id) => !before.has(id)), { timeout: 15_000 }).toEqual([launched])
 })
 
 // The dialog's first open on a page says it is checking while the catalog is

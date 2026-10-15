@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { endHosted, expect, hostedName, hostedSession, test } from './fixtures'
 import { serverBinary } from './server'
 
 // A guest on a control link of a session another machine hosts (`conductor
@@ -14,10 +15,18 @@ import { serverBinary } from './server'
 // file as it was; once the connection carries again, the save goes through.
 let host: ChildProcess | null = null
 let proxy: StallProxy | null = null
+/** The hosted session's name, this run's own: the teardown ends whatever is listed under it. */
+let hostName = ''
 
-test.afterAll(() => {
-  host?.kill('SIGKILL')
-  proxy?.close()
+test.afterAll(async ({ api }) => {
+  try {
+    // The hosted session ends through its host and is removed before the host dies, so that no later spec or repetition meets it:
+    // the host must hear the server for that, so a proxy left stalled (the test failed in its stall) carries again first.
+    proxy?.resume()
+    await endHosted(api, hostName, host)
+  } finally {
+    proxy?.close()
+  }
 })
 
 /** A TCP proxy to the server that can stop carrying anything either way, closing nothing, and carry again. */
@@ -61,7 +70,9 @@ class StallProxy {
     }
   }
 
+  /** Carries again; once only, since a second pipe would send everything twice. */
   resume() {
+    if (!this.stalled) return
     this.stalled = false
     for (const [a, b] of this.pairs) this.carry(a, b)
   }
@@ -83,23 +94,16 @@ test("a link guest's save on a hosted session is refused with the words while th
   writeFileSync(file, 'alpha\n')
   proxy = new StallProxy(Number(new URL(state.baseURL).port))
   const proxyPort = await proxy.listen()
-  const log = openSync(join(state.root, 'hosted-linkcheck.log'), 'a')
-  host = spawn(serverBinary(), ['host', '--server', `http://127.0.0.1:${proxyPort}`, '--token', state.hostToken, '--host-name', 'e2e-desk', '--name', 'hosted-linkcheck', '--cwd', cwd, '--no-local', '--', '/bin/cat'], {
+  // This run's own host log: the session is found by the id on the line the host prints once registered, never by its name, which
+  // an earlier run's (a repetition's, a parallel run's) has too (#217).
+  const logFile = join(state.root, `hosted-linkcheck-${randomUUID()}.log`)
+  const log = openSync(logFile, 'a')
+  hostName = hostedName('hosted-linkcheck')
+  host = spawn(serverBinary(), ['host', '--server', `http://127.0.0.1:${proxyPort}`, '--token', state.hostToken, '--host-name', 'e2e-desk', '--name', hostName, '--cwd', cwd, '--no-local', '--', '/bin/cat'], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home },
     stdio: ['ignore', log, log],
   })
-  let id = ''
-  await expect
-    .poll(
-      async () => {
-        const list = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
-        const all = Array.isArray(list) ? list : (list.sessions ?? [])
-        id = all.find((s) => s.name === 'hosted-linkcheck' && s.status === 'running')?.id ?? ''
-        return id
-      },
-      { timeout: 30_000, message: 'the hosted session is listed' },
-    )
-    .not.toBe('')
+  const id = (await hostedSession(api, logFile, hostName)).id
   const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${id}/links`, { role: 'control', label: 'guest' })
 
   const guestCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } })

@@ -4,8 +4,17 @@ import { expect, test, type Session } from './fixtures'
 // says where it reaches; opening it again on the same session shows the
 // same link rather than minting another. The e2e server publishes nowhere
 // (CONDUCTOR_RENDEZVOUS=0) and has reach off, so the link is local.
+const sessions: string[] = []
+
+// Its session stops as the test ends: one left running stays on the Yard's wall for the rest of the suite, where it narrows the
+// tiles later specs measure (#219).
+test.afterEach(async ({ api }) => {
+  for (const id of sessions.splice(0)) await api.stopSession(id)
+})
+
 test('Share makes a link in one click, says where it reaches, and keeps it for the next open', async ({ page, api }) => {
   const session = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'share me' })
+  sessions.push(session.id)
   await page.goto(`/sessions/${session.id}`)
   await page.getByRole('button', { name: 'Share', exact: true }).first().click()
   const dialog = page.getByRole('dialog')
