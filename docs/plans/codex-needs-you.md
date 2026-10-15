@@ -890,307 +890,474 @@ orders or invariants above.
   the hold without answering it, as a question the hold took the place of.
 - **A switchyard** is told no mark, as it is told no words.
 
-# Who may answer a question (Part B's claim rule, 2026-10-15)
+# Who may answer a question: first response wins (2026-10-15)
 
-Reviews 4, 5 and 6 of #207's code each found one more way a write clears a
-question it no longer owns. Each fix closed one path: a per-write claim
-(round 4), then a count of claims (round 5); round 6 found the
-timestamp-only path. The three are one fault, because the session has two
-ways to say which question a write answers, and only one is protected:
+The owner's brief, 2026-10-15, replacing the first draft of this section
+(one review round, superseded). #207 (Part B) stays a draft and is held out
+of rc.11; its code changes to this section once it is reviewed.
 
-- **The prompt showing as the write began** (`promptSince`, the question's
-  `Since` pointer). `answer(promptSince)` clears whatever still shows with
-  that stamp.
-- **The claim** (`answered`, now counted by `claims`), made as the writer
-  takes the write. A reply naming its question is refused while another
-  claim stands.
+## Why
 
-A question keeps its id and `Since` when it shows again: the done showing
-it from aside, or a hold's end restoring it. The plan chose this on
-purpose (review round 1 of the plan), so that a reply under way keeps its
-Enter. So a stamp captured before the question went away still matches
-after it comes back, and any path that clears by the stamp alone can clear
-a question that another write has claimed since.
+Reviews 4, 5 and 6 of #207's code each found one more path where a write
+clears a question it no longer owns. Two things combine to cause this:
 
-#207 is held as a draft and patched no further until this section is
-reviewed. Its code then changes to this one rule; nothing else in Part B
-changes (below).
+- **Keys typed in the terminal "answer" a question.** Any key typed while
+  a question shows clears it once written (`typedKeys` →
+  `answer(promptSince)`), and keys that pick a choice or an Enter claim it
+  as the writer takes them (`noteAnswering`).
+- **A question can come back with the same id.** It returns after a hold
+  (#172), and, under #193, when its turn's `done` shows it again. A write
+  begun before it went away therefore still matches it after it returns.
 
-## Every path that clears or answers a question
+Each fix closed one path, and the next review found another. This section
+makes questions single-assignment: one serialized resolution, claimed only
+by a structured answer under a fresh token. Raw keys never resolve a
+question.
 
-From the code at 36ee67e (`internal/session`). "Clears" means the attention
-showing becomes the empty state as answered, or a kept question (`own`,
-`heldOver`) is dropped.
+## The goal
 
-**A. A write's own completion: it cleared what it took to be its answer
-once written.**
+The session on the agent's machine (a server session, or a `conductor
+host`'s session) owns each question. It offers the question to the
+connected participants over the existing transports. The question waits
+indefinitely, until the first valid answer from an eligible participant is
+accepted. That answer resolves it for everyone and is written to the
+agent, once. Later answers cannot change the result. There is no consensus,
+no vote, no quorum and no waiting for everyone.
 
-1. Keys (`input`: INPUT, a host's own terminal through `InputWaiting` and
-   `InputContext`, a page's choice): `written` → `typedKeys` →
-   `answer(promptSince, enter)`. Today this path is stamp-only (round 6).
-2. A quick reply (#192, the `answer` message: `AnswerInput`, `input` with a
-   question): the guard claims (`claimQuestion`), then the same
-   `typedKeys` → `answer(promptSince)`.
-3. Keys that surely answer a startup question: `before` marks it answered
-   (`markAnswered`) and keeps its `Since` (`startupSince`); `written` →
-   `answer(startupSince)`.
-4. Keys begun while the agent's own question was set aside, which claimed
-   it once its turn's done had shown it again: `written` →
-   `answerReached(aside, claim)` (rounds 1, 4 and 5).
-5. A submission's Enter (`pressEnter`): a reply's line (`Submit` with `By`,
-   a chat sent to the agent, with or without `Question`) →
-   `answer(promptSince, By)`; Conductor's own line (a crew's prompt, a
-   handoff, a broadcast, a run's chat to a member) →
-   `answer(promptSince, "", byName)`. The text's guard claims for a reply
-   naming its question (`textGuard` → `claimQuestion`); an Enter-only
-   reply's guard claims (`pressEnter`'s guard). The same applies when the
-   line is finished later (`finishSubmission`, `finishLine`,
-   `pressEnterHeld`).
-6. A person's reply begun while the question was set aside, which claimed
-   it at its text or Enter: `answerReached(st.aside, st.claim)`.
+## What a question is
 
-**B. The session's own observation of the screen.**
+A question is any `needs_input` the session shows with an id (`Attention.ID`):
+- the agent's report, with the `--ask` mark or without;
+- the bell, an OSC notification, the screen pattern;
+- a startup question (`trust`) or a dialog on the screen (`question`).
 
-7. `fireAsked`: a dialog with other words is asked while the one a person
-   typed at still shows (`typedAtAsked`) → `answer(cur.Since, typed.by)`.
-8. `missAsked`: a quiet screen shows no dialog after a key was typed at the
-   one showing → `answer(att.Since, typed.by)`.
-9. `escGone`: a startup question held answered by an Escape
-   (`holdStartupAnswered`) that the screen shows gone →
-   `answer(att.Since, held.by)`.
+The hold of the turn (`source:"submit"`) is no question: no answer names
+it, as today. Each question instance is its id. A question shown again with
+the same id (after a hold, or by the turn's `done` under #193) is the same
+instance; its claim tokens tell one claim from the next.
 
-**C. Claims: the right a write or observation takes to clear later.**
+## The state machine
 
-10. `claimQuestion`: a reply naming its question (the text's guard, an
-    Enter-only reply's guard, `AnswerInput`'s guard).
-11. `noteAnswering` → `markAnswered`, as the writer takes keys, a text or an
-    Enter: keys typed at the prompt showing as they began (`typedAt`),
-    keys that pick its choice or Enter (`picksChoice`, a dialog's `picks`),
-    the own question shown again since a person's write began aside;
-    `noteDialogAnswered` for the dialog on the screen.
-12. `input`'s startup paths: `markAnswered(att)` when keys surely answer a
-    startup question.
-13. `holdStartupAnswered`: an Escape that may answer a startup question.
-14. `setAttentionLooked`'s `stillAnswered` (a dialog or startup question
-    asked again before it went): the session claims it itself
-    (`setAnsweredLocked`, `holdAskedAgain`).
-15. `endHoldTyped` lets the held text's claim go as it restores the
-    question (`setAnsweredLocked("")`).
+The machine is per question instance, under the session's mutex (`s.mu`).
 
-**D. Changes of what shows that answer nothing.**
+```
+            claim (a structured answer's guard)          resolve(token)
+   OPEN ──────────────────────────────────────▶ CLAIMED(token) ─────────────▶ RESOLVED
+    ▲  ▲                                          │
+    │  └────────── release(token) ────────────────┘
+    │
+    └── hidden ⇄ shown (set aside, held over / shown again, restored)
 
-16. `setAttentionLooked` applying any report or observation: the agent's
-    `working`, `done`, `needs_input` (with the mark or without), its or an
-    admin's `clear`; the bell, an OSC notification, the screen pattern; a
-    startup question (`fireTrust`); a dialog (`fireAsked`); Codex's title
-    and its settle timer; the hold (`holdTyped`'s `whileHeld`).
-17. The done showing the agent's own question again from aside (the same
-    `Attention`).
-18. `endHoldTyped`: restores the question the hold held over, or drops the
-    agent's own question held over when the keys pick one of its choices
-    (an answer made and settled in one critical section, with no deferred
-    step).
-19. `holdTyped`'s end clears the hold's own words (`source:"submit"`, which
-    no reply may answer: `waitsLocked`).
-20. `answer` showing the hold again after answering a question that showed
-    over it.
-21. `markEnded`: the session's end clears everything and drops what is kept.
-22. Dropping the agent's own question while it is not shown:
-    `noteAnswering` (a person's write while it is set aside), the held
-    branch of `setAttentionLooked`, its default case, `answer` on it, and
-    `markEnded`.
+   OPEN, CLAIMED ── withdraw (the agent or the screen moves on, the session ends) ──▶ WITHDRAWN
+```
 
-**What clears nothing.** `enterAgain` (a crew's second Enter, written only
-while no question shows), the hosted session's server copy (its answers go
-to the host's session, which follows this rule), and `comesAfter` (it only
-decides whether an Enter is written).
+- **OPEN.** Not answered and not claimed. It is either *shown*, in which
+  case structured answers are taken, or *hidden*: set aside in its turn
+  (#193), or held over by the hold (#172). A hidden question takes no
+  answer; one naming it is refused, as today, and taken once it shows
+  again.
+- **CLAIMED(token).** A structured answer won the claim, and its bytes are
+  being written. Every other answer is refused while the claim stands.
+  The token is fresh for every claim (`s.claimSeq`, a counter under
+  `s.mu`), so a later claim on the same id is never mistaken for an
+  earlier one.
+- **RESOLVED.** The claimer's last byte was written (a choice's keys, or a
+  line's Enter) while its token was still current. The result is recorded
+  under the same lock before anything is broadcast and before the
+  claimer's caller is answered: who answered (from the connection), when,
+  and what. The question then leaves the screen as the empty state with
+  `source:"input"`, as an answer does today.
+- **WITHDRAWN.** The question ended without an answer:
+  - the agent moved on: its report, its clear, its next question, its work
+    in a new turn, or the done rules as they stand;
+  - the screen moved on: the startup question or dialog is gone;
+  - the session ended.
 
-## The rule
+  A claim on it ends with it, and the claimer's completion finds nothing to
+  resolve.
 
-A question's claim is a ticket: **(question id, generation)**.
+**The transitions, and the only code that makes each:**
+- **claim:** OPEN, shown → CLAIMED. A structured answer's guard
+  (`claimQuestion`), the last check as the session's writer takes the
+  write, in the same critical section that checks the question is shown
+  and OPEN.
+- **resolve(token):** CLAIMED(token) → RESOLVED. Exactly one function,
+  `resolve`, called from the claimer's completion: in `input`, once a
+  choice's keys are written; in `pressEnter`, once a line's Enter is
+  written. The writer finishes on its own goroutine, so `resolve` checks
+  under `s.mu`, in the critical section that clears the question, that the
+  question's claim (`s.claim`: its id and token) is still this token.
+  Shown, the question becomes the empty state; held over by a hold another
+  write made, it is dropped and is not shown again. Nothing else may clear
+  a question as answered: `answer(promptSince)` goes, and so does every
+  clear by stamp or by id alone.
+- **release(token):** CLAIMED(token) → OPEN. The claimer's write did not
+  happen, or did not finish into an answer:
+  - refused or withdrawn before it began: a link revoked or expired, the
+    host not vouching, its context or `InputWait` run out, the input busy,
+    the session ending;
+  - a line's text typed and its link let go before its Enter (#172): the
+    hold takes the question's place and holds it over, OPEN and hidden.
+    The person's keys that end the hold show it again OPEN (Ctrl+U bringing
+    it back).
 
-- **The generation** (`s.gen`, under `s.mu`) changes whenever what may be
-  answered changes, and at no other time. That means:
-  - a question shows (a new id), or one shows again (paths 17, 18 and 20);
-  - the attention showing is replaced or cleared (paths 16, 19 and 21);
-  - a claim is made (paths 10–14) or let go (path 15).
+  `release` is a no-op unless the token is still current.
+- **hide and show:**
+  - set aside in its turn by the agent's work or another wait (#193), and
+    shown again by the turn's done;
+  - held over by the hold (#172), and restored as a person's keys end it.
 
-  It does not change when nothing shown changes: a done that leaves the
-  question showing, the same report again, the same dialog read at another
-  width (its `rows`), a bell that changes nothing, or a report recorded
-  under the hold without being shown. This is what lets a reply under way
-  keep its claim across them (P23).
-- **A ticket is made only by a claim or by an observation**, in the
-  critical section that makes it:
-  - a write's claim (paths 10–12) gives that write its ticket;
-  - the session's own claim (13, 14) gives the observer that will settle
-    it a ticket, kept with what it holds (`heldAnswer` for 13);
-  - an observation (paths 7–9) takes the current ticket in the critical
-    section where it decides that the question it saw is gone.
+  A question that is CLAIMED is not set aside: the agent's work withdraws
+  it (P24). A hold made by another write leaves the claim standing, and the
+  claimer resolves the question hidden (it is not shown again). A hold
+  made by the claimer's own line releases the claim first.
+- **withdraw:** any change of what shows that is not an answer:
+  `setAttentionLooked` applying a report or an observation, the screen's
+  watchers finding the question gone, `markEnded`. It drops any claim.
 
-  A claim is taken only while none stands on the question: the first one
-  holds. A write that already holds the claim makes no second one, and
-  another write reaching a claimed question claims nothing.
-- **Every clear is one function**, `answerWith(ticket, by, byName, record,
-  enter)`. It clears only if, in the critical section that clears, the
-  question showing has the ticket's id and the generation is still the
-  ticket's (and, for a question the session holds, `enter`). Paths 1–9 all
-  go through it. `answer(promptSince)`, `answerReached` and `answerWhen` go
-  away.
-- **No clear by stamp alone.** `promptSince` remains a write's view of
-  what it began at, taken as a ticket at the start: the id and generation
-  of the attention showing then. It counts only for a claim (`typedAt`),
-  and only while that ticket is still current when the writer takes the
-  write, meaning the same question has showed throughout with nothing
-  claimed, released or shown again. A write that made no claim can never
-  clear a question.
+**A program not reading.** A claimer's write that has begun lands when the
+program reads (`ErrSubmitPending`, and a key's write that has begun). The
+question stays CLAIMED, and other answers are refused as "being answered",
+until the write lands and resolves it, or the question is withdrawn (the
+session ends). A write refused before it began releases the claim.
 
-What each path captures, and when:
+## Raw keys never resolve a question
 
-| Path | Captures | When | Clears with |
-|---|---|---|---|
-| 1 keys | begin ticket; claim ticket if `typedAt` (begin ticket current) or the keys pick the showing question | `input`'s first lock; `before` (as the writer takes them) | its claim ticket, in `written` |
-| 2 quick reply | claim ticket from its guard | the guard, the last check before the write | that ticket |
-| 3 startup keys | claim ticket from `markAnswered` | `before` | that ticket, in `written` (replaces `startupSince`) |
-| 4 keys begun aside | claim ticket for the own question shown again since | `before` (`noteAnswering`) | that ticket (replaces `answerReached`) |
-| 5 a line's Enter | begin ticket; claim ticket from the text's guard or `noteAnswering`, or else the Enter's | `Submit`'s first lock; the text's and the Enter's guard and `before` | its ticket, once the Enter is written |
-| 5 Conductor's line | as 5; no claim of the own question it began with set aside (`except`, P28) | as 5 | its ticket, if it claimed one |
-| 6 reply begun aside | as 4, for its text or Enter | as 5 | as 5 (replaces `answerReached`) |
-| 7, 8 dialog gone | the current ticket | the critical section that decides "gone" | that ticket |
-| 9 startup gone | the current ticket | `escGone`'s second check, under its lock | that ticket |
+Only a structured answer claims and resolves: a choice (`answer` with
+`input`, a row's or the chat's or the Yard's button) or a reply naming the
+question (`answer` with `text`, or `submit` with `question`). These come
+from the server's WebSocket, from WebRTC, or from the relay through the
+switchyard, and all of them end at the same `session.Local`
+(`AnswerInput`, `Submit`). The rule lives there, the same for every
+transport.
+
+A person's keystrokes in the terminal (INPUT, a host's own terminal), and a
+line that names no question (`submit` without `question`, a chat sent to
+the agent, Conductor's own lines), are written as they are and resolve
+nothing. The question clears when the agent moves on:
+- its hook (Claude Code's `UserPromptSubmit` or `PreToolUse`, Copilot's
+  `userPromptSubmitted`), Codex's working title, its next report, its done
+  rules;
+- its screen: the screen's watchers find a startup question or a dialog
+  gone.
+
+Three owner decisions where this changes what a person sees (below,
+"Decisions") keep the protections that are not answers.
+
+## The code that goes
+
+All of it in `internal/session` unless named:
+- **Raw keys answering:**
+  - `typedKeys`'s `s.answer(promptSince, …)`. `typedKeys` keeps marking
+    the viewer as typing and poking the dialogs' watcher.
+  - `input`'s `promptSince` as an answer's key, and `answersQuestion`'s
+    use for answering.
+- **Raw writes claiming:** `noteAnswering`'s claims (`typedAt`, `picksChoice` and a
+  dialog's `picks` → `markAnswered`), the agent's own question claimed when
+  shown again (the aside case), its `aside`/`person` parameters and its
+  return value; `Submit`'s and `pressEnter`'s calls to it.
+- **The patches of rounds 1–6:**
+  - `answerReached`, `answerWhen`, `claims` and `setAnsweredLocked`;
+  - input's `aside`, `claim`, `restored` and `noteAside`, and its
+    `promptSince = nil` on a restore;
+  - `endHoldTyped`'s return value;
+  - `submitState.claim`.
+- **Lines answering by stamp:** `pressEnter`'s `s.answer(promptSince, …)`.
+  A line answers only through its `Question`'s claim, and a line naming no
+  question answers nothing.
+- **Startup questions answered by keys:** `input`'s `startupSince` path and its `s.answer`;
+  `escGone`'s `s.answer` (an Escape that may have answered becomes a
+  withdrawal once the screen shows the question gone).
+- **Dialogs answered by keys:** `fireAsked`'s and `missAsked`'s
+  `s.answer(…, typed.by)` (a dialog gone is withdrawn); `typedAtAsked` and
+  `noteTyped`, which only credit raw keys.
+- **`answered` (one string for claims and protections) splits in two:**
+  - `claim` (id and token: CLAIMED);
+  - `touched` (decision 2: a question raw keys reached, which structured
+    answers may no longer take; never resolves anything).
+
+  `markAnswered` becomes `claimLocked` for claims and `touchLocked` for
+  decision 2.
+- **What stays as it is:** the hold (#172), the screen's watchers, `stillOnScreen` (a reply's
+  check that the screen still shows its question), `comesAfter` and its
+  aside exception (P28: a handoff's Enter after the done is written and
+  answers nothing), and #193's set aside and shown again.
+
+## Decisions for the owner
+
+These are behaviours the brief changes, each with a recommendation.
+
+1. **Waits that have no "moving on" signal.** Typing in the terminal
+   cleared these, and will not:
+   - the bell (Antigravity, Goose), the screen pattern (Cursor), an OSC
+     notification;
+   - a report from an agent that never reports working: aider's "aider is
+     waiting" (its notifications command).
+
+   Without keys clearing them, they stay Needs you until the agent's next
+   state. For aider that may be never.
+
+   **Recommended:** keys with an Enter *withdraw* (not answer) a wait whose
+   source is the bell, OSC or the pattern, as the writer takes them. This
+   is atomic, has no deferred step and records no answer. aider's
+   notifications command reports `--state done --message "aider is
+   waiting"` instead of `needs_input`: it fires each time aider waits for
+   its next line, which is a turn's end. A report from any other agent is
+   never cleared by keys.
+2. **Keys at a question read off the screen** (a startup question, a
+   dialog). Raw keys that pick its answer (an Enter, its choice's keys, a
+   dialog's digit or Ctrl+C) reach the program's dialog. A structured
+   answer after them could land on what the program shows next: the
+   owner's update-question incident, and #192.
+
+   **Recommended:** such keys *touch* the question. Structured answers to
+   it are refused ("answered in the terminal") until the screen shows it
+   gone (withdrawn) or shows the next question. Touch never clears, has no
+   token and no back edge. This is today's protection
+   (`startupAnswered`, `heldAnswer`, `dialogAnswered`, `sameDialog`) minus
+   its answering. Arrow keys touch nothing, as today.
+3. **The agent's own question set aside while a person types** (#193's
+   P12 and P25: the person answers in the terminal while the agent works).
+
+   **Recommended:** a person's keys written while it is set aside
+   *withdraw* it, in the critical section where the writer takes them. It
+   does not show again at the done. Nothing is recorded as an answer, and
+   there is no deferred step. Round 1's race (the done showing it again
+   before the writer takes the keys) is then harmless: the keys find it
+   shown, and shown questions are not cleared by keys. It stays until the
+   agent moves on.
+4. **"Answered by" for terminal answers.** The Events page and `LastAnswer`
+   will name only structured answers. A question the agent moved on from
+   shows as gone, not as answered by a person at the terminal.
+
+   **Recommended:** accept it. The terminal's typing still shows on the
+   roster ("typing"), and the agent's next state follows.
+
+## No timeouts end a question (audit)
+
+Nothing in the code expires a question. These timers end one answer's
+attempt, releasing its claim (CLAIMED → OPEN), and never the question:
+
+- `session.InputWait` (10 s): a write's wait for the program.
+- `submitTimeout` (10 s): `internal/api/ws_viewer.go` and
+  `internal/hostagent/queue.go`.
+- The host's `inputDeadline`.
+- The page's `ANSWER_WAIT_SECONDS` (15 s): the page notes the answer was
+  not confirmed, and the question stays.
+
+These are observations, not expiries: Part A's `TitleSettle` (the agent's
+title says it works, so the agent moved on), `patternQuiet`, `lookBudget`,
+`ConfirmWait`. The events bucket refuses a report, which changes nothing.
+A viewer detaching, or every viewer detaching, changes no attention. The
+plan adds no timer.
+
+## Notify, recover, refuse late answers
+
+- **Recorded before broadcast.** `resolve` sets the result (`LastAnswer`,
+  the chat's answered line naming the question id, and a bounded map of
+  recent results by question id: the last 64, in memory) under `s.mu`. It
+  then broadcasts the attention change and the chat line, and only then
+  answers the claimer's caller.
+- **`answer_ok` means the claimer's answer resolved the question.** It is
+  sent once its last byte is written with its token current. Until then
+  the page shows the answer as submitted. When the question was withdrawn
+  first (P24: the agent moved on as the answer was typed), `answer_ok` is
+  still sent, because the answer was written, and the attention says the
+  question went. Broadcasting is not delivery.
+- **A late or duplicate answer gets the recorded result.**
+  `error{question_answered}` names who answered and when, from the map,
+  and says "no longer asked" for a withdrawn question. No new frame and no
+  new field: the error's message words.
+- **Reconnection.** It uses the existing sync: an attaching viewer gets the
+  current attention (OPEN shown, with its id) and the kept chat (the
+  question and its answered line). A retry naming the question gets the
+  recorded result. A hosted session's server listing learns from the
+  host's `attention` and `chat` messages, as today.
+- **Limits.**
+  - The question's state lives in memory, in the process that runs the
+    session. A server restart or a host's restart ends the session and its
+    question.
+  - A host that reconnects keeps the server's last told attention until
+    its next change (the pre-existing reconnect issue, reported apart).
+  - There is no host election, consensus or durable store.
+
+## Events
+
+- **G1.** A question shows: the agent's report (with or without the mark),
+  the bell, OSC, the pattern, a startup question, a dialog.
+- **G2.** A structured answer arrives: an `answer` with `input` or `text`,
+  or a `submit` with `question`, from the server's WebSocket, WebRTC, the
+  relay, or the owner's own page.
+- **G3.** The claimer's write: begun, written, landed late, or refused
+  before it began.
+- **G4.** The claimer's link revoked or expired, before its text or between
+  its text and its Enter (#172).
+- **G5.** The hold ends by a person's keys (Ctrl+U), showing the question
+  again.
+- **G6.** Raw keys: INPUT, a host's terminal, and a line naming no
+  question.
+- **G7.** The agent moves on: its report, clear, next question, working in
+  a new turn, done.
+- **G8.** #193's set aside and shown again, the turn's done, Codex's title.
+- **G9.** The screen moves on: a startup question or dialog gone, or the
+  next one drawn.
+- **G10.** The session ends; viewers detach and attach.
+- **G11.** A late or duplicate answer naming a resolved or withdrawn
+  question.
+
+## The orderings, and what must happen
+
+- **S1. G1, G2, G3 written:** RESOLVED, exactly once. The result is
+  recorded, then broadcast, then `answer_ok` is sent.
+- **S2. G1, then two G2 at once** (two pages, or the owner and a guest):
+  one claim wins under `s.mu`. The other is refused with the result (or
+  "being answered" while the claim stands). There is one write, one
+  resolution and one continuation.
+- **S3. A duplicate** (the same page twice, a retry after a lost
+  `answer_ok`): refused with the recorded result, nothing written.
+- **S4. An invalid G2** (a view role, a revoked link, a malformed answer,
+  an id that is not the shown question, a choice not offered): refused,
+  and the question stays OPEN.
+- **S5. G1, then time passes** past every timeout above: OPEN.
+- **S6. G1, then every viewer detaches:** OPEN. A viewer that attaches
+  sees it with its id and answers it.
+- **S7. G1, G2, G3 refused before it began** (a stall, an expired context,
+  a revoked link): release, OPEN. The next answer claims with a new token.
+- **S8. Revoke before Enter.** G1, G2 (its text typed), G4: release; the
+  hold holds the question over, OPEN and hidden. Then G5 (Ctrl+U): shown
+  again, OPEN. A new answer claims (a new token) and resolves. The first
+  claimer's completion, when it runs, finds its token stale and resolves
+  nothing.
+- **S9. A program not reading.** G1, G2, G3 begun and not landed:
+  CLAIMED. Another answer is refused as being answered. The write lands
+  and resolves; or the session ends and the question is withdrawn.
+- **S10. Round 3.** Raw keys typed at Q, queued; the hold takes Q's place;
+  the done; the keys end the hold: Q is shown again, OPEN. The keys
+  resolve nothing.
+- **S11. Round 4.** Ctrl+U begins with Q set aside; the done holds Q over;
+  Ctrl+U shows it again, OPEN. A reply claims (token t1) and is revoked
+  before its Enter: release(t1), and the hold holds Q over. Keys end the
+  hold: Q is OPEN, and nothing is recorded.
+- **S12. Round 5.** Raw keys A, then a guest's line let go, Ctrl+U, and
+  reply C's claim (t2). A's completion resolves nothing (raw keys never
+  do). C resolves with t2, or, revoked, releases.
+- **S13. Round 6.** As S12, with Q showing as A began: the same. There is
+  no stamp path left.
+- **S14. A done during a hold** (P16): the done is recorded; Q is held
+  over, OPEN and hidden; the hold's end shows it, OPEN.
+- **S15. The agent moves on during a claim** (P24): withdrawn. The
+  claimer's completion finds nothing; `answer_ok` is sent; the attention
+  says gone.
+- **S16. A reply under way across the turn's done** (P23): the done leaves
+  Q showing and CLAIMED, and the Enter resolves.
+- **S17. A handoff's Enter after the done shows Q again** (P28): written;
+  Conductor's line claims nothing; Q stays OPEN.
+- **S18. Cancellation against submission:** G7 and G2 at once. Either the
+  claim wins and the answer resolves (or is withdrawn by the later G7), or
+  the withdrawal wins and the answer is refused as "no longer asked".
+  Never both a resolution and a withdrawal.
+- **S19. A late answer after RESOLVED or WITHDRAWN:** refused with the
+  recorded result or "no longer asked"; nothing written.
+- **S20. Two sessions, and a new question in one session:** an answer
+  naming another id is refused. Questions are isolated by id.
+- **S21. A dialog answered by raw keys, then a structured answer**
+  (decision 2): refused as answered in the terminal. The dialog is
+  withdrawn once the screen shows it gone.
+- **S22. A bell's wait, then keys with an Enter** (decision 1): withdrawn
+  as the writer takes them. An agent's report is not withdrawn by keys.
+- **S23. The agent's question set aside, then a person types** (decision
+  3): withdrawn as the writer takes the keys. Typed after the done showed
+  it again: it stays OPEN until the agent moves on.
 
 ## Invariants
 
-1. Every clear of a question as answered goes through `answerWith`, with a
-   ticket made by a claim or an observation of that question that is still
-   current where it clears.
-2. A question shown again (the done from aside, a hold's end) is a new
-   generation. No write begun, and no claim made, before it showed again
-   can clear it; only a claim made after it can.
-3. Keys or a line count as typed at a question only while that question
-   has showed, unclaimed and unchanged, from the moment they began until
-   the writer takes them.
-4. At most one claim stands: the first. A reply naming a claimed question
-   is refused (#192, `waitsLocked`), and keys or a line reaching it claim
-   nothing. Only a release (a hold's end letting the held text's claim
-   go) or the question shown anew frees it, and that makes the old ticket
-   stale.
-5. A claim survives what changes nothing shown: a reply under way keeps its
-   Enter and answers its question (P23).
-6. The agent's reports and clear, the program's screen (dialogs, startup
-   questions) and the session's end answer nothing. They need no ticket,
-   and they make every older ticket stale.
-7. Each clear as answered records exactly one answer (`LastAnswer`, the
-   chat's answered line, the input entry), credited to the holder of the
-   ticket.
+1. A question is RESOLVED only by `resolve`, for the token of the claim
+   that stands, inside the critical section that clears it. Exactly once,
+   and recorded before it is broadcast.
+2. Only a structured answer's guard claims, and only a shown, OPEN
+   question. At most one claim stands. A claim's token is never reused.
+3. A released, withdrawn or replaced claim can never resolve anything.
+4. Raw keys and lines naming no question resolve nothing. Their only
+   effects are decisions 1–3, each made in one critical section as the
+   writer takes them, with no deferred step.
+5. Nothing expires a question, and no viewer's departure changes it.
+6. Every transport reaches the same `Local` and the same rule.
+7. A late answer never changes a result, and gets it.
+8. #193 stands: the mark, set aside and shown again, the clearing events.
+   #172's hold, #192's ids and answers, #170's turn rules and Part A's
+   title stand, all expressed through the transitions above.
 
-## The orderings these must hold under
+## Tests
 
-- **R3 (round 3).** Keys are typed at Q, which shows (begin ticket
-  `(Q, g)`). They wait behind another write; the hold takes Q's place; the
-  done comes; the keys are written, and as they end the hold Q is restored
-  (`g` moves on). `typedAt` fails because the begin ticket is stale, so the
-  keys claim nothing and answer nothing. Q shows answerable.
-- **R4 (round 4).** Ctrl+U begins with Q set aside. The done holds Q over;
-  Ctrl+U restores Q (`g` moves) and claims nothing. A reply claims Q (`g`
-  moves) and waits at its Enter. Ctrl+U's completion has no ticket. The
-  reply's link goes, the hold holds Q over again, and keys that end it
-  show Q, answerable.
-- **R5 (round 5).** Keys A claim Q (ticket `(Q, g1)`) and their completion
-  waits. Meanwhile:
-  - a guest's line typed at Q is let go before its Enter, and the hold
-    holds Q over;
-  - Ctrl+U restores Q and lets the claim go;
-  - reply C claims Q.
+Go (`go test -race`):
 
-  A's completion finds `g1` stale and answers nothing. C settles.
-- **R6 (round 6).** The same as R5, but Q shows as A begins: A claims by
-  `typedAt` (`(Q, g1)`). A's completion finds `g1` stale. Today the
-  stamp-only path clears Q here.
-- **P23.** A reply's text claims Q. The turn's done leaves Q showing (no
-  change, so `g` stays). The Enter is written and settles.
-- **P24.** A reply claims Q. The agent's work drops Q, since it was
-  reached, not set aside. The Enter's ticket names a question no longer
-  showing, so nothing is cleared, and the done shows done.
-- **P28.** A handoff begins with Q set aside, and the done shows Q again.
-  The Enter is written (`comesAfter`'s exception) and claims nothing
-  (`except`). Q stays, answerable.
-- **Two replies to one question (#192).** The first claims, and the second
-  is refused at its guard.
-- **Keys and a quick reply at once.** The first to claim holds the only
-  ticket. The other is refused at its guard (a reply) or claims nothing
-  (keys), and the question is answered once, by the first.
-- **A dialog gone against a reply.** `missAsked` decides the dialog is gone
-  and takes its ticket. If a reply claims meanwhile, the observer's clear
-  is refused and the reply settles; otherwise the observer settles.
-- **A startup question held answered (`escGone`) against keys that surely
-  answer it.** Whichever ticket is current settles, and only once.
-- **A claim made, then the question replaced by the agent** (working, a
-  dialog, another question) **and asked again with the same words.** The
-  new question has a new id, the old ticket names the old one, and it
-  clears nothing.
-- **The session's end between a claim and its completion.** The ticket is
-  stale and nothing is cleared after the end (P17 stands).
+- **`internal/session`, the brief's list:**
+  - one answer resolves;
+  - two near-simultaneous answers from two goroutines, run many times:
+    exactly one winner, one write and one resolution;
+  - duplicates and retries are idempotent and get the recorded result;
+  - invalid and unauthorized answers leave the question OPEN;
+  - time past every timeout, with short `InputWait` and context deadlines,
+    never expires it;
+  - every viewer detaching leaves it OPEN;
+  - attaching after the result gives the empty attention and the chat's
+    answered line, and a retry gets the recorded result;
+  - late answers cannot overwrite;
+  - questions are isolated by id;
+  - cancellation (the agent's clear, its next state, the session's end)
+    races safely with a claim.
+- **`internal/session`, Conductor's:**
+  - S8, a revoke before Enter, with the test hooks pausing the claimer at
+    its Enter;
+  - S8 to S11, Ctrl+U bringing the question back;
+  - S9, a program not reading (the fake process holding its read);
+  - S14, a done during a hold;
+  - S10 to S13: rounds 3 to 6, the existing regressions rewritten to the
+    rule, and round 6's variant (Q showing as A began);
+  - S21 to S23, the decisions.
+- **One table test: every clearing path through release and reclaim.**
+  Each row is one path that can end a claim or a question:
+  - `resolve` from a choice's keys, from a line's Enter, and from an
+    Enter-only reply;
+  - `release` from a refusal before the write, a revoke before the text, a
+    revoke before the Enter, an expired context, and a stall;
+  - withdrawal by the agent's clear, its next question, working in a new
+    turn, a dialog gone, a startup question gone, and the session's end.
 
-## Tests that pin them
+  The test pauses the path at its decision point (`beforeWritten`,
+  `beforeEnter`, and one hook added for the watchers). Meanwhile it
+  releases and reclaims the question: a line let go, the hold, Ctrl+U,
+  then another answer's claim. It then resumes the path. The paused path
+  must end with no effect on the new claim, and the new claim resolves
+  once. A second run of each row without the release shows that the path
+  still does what it does.
+- **No other clear.** `resolve` is the only function that sets `LastAnswer`
+  or the answered chat line, and a test fails if another does: no fifth
+  path.
+- **`internal/api` and `internal/hostagent`:** the same answer through the
+  server's WebSocket, and through a host's peer (WebRTC and the relay share
+  its frame loop), claims, refuses a second answer with the result, and
+  resolves once.
 
-Go (`go test -race`), in `internal/session`:
-
-- The existing regressions, kept as they are:
-  - `TestKeysThatEndTheHoldLeaveTheQuestionTheDoneHeldOver` (round 2);
-  - `TestKeysQueuedBeforeTheHoldDoNotAnswerTheQuestionTheyShowAgain` (R3);
-  - `TestKeysThatOnlyShowTheQuestionAgainNeverTakeAReplysClaim` (R4);
-  - `TestAClaimLetGoIsNotTheClaimMadeAgain` (R5).
-- The round 6 variant: `TestAClaimLetGoIsNotTheClaimMadeAgain` with its
-  first working report left out, so that Q shows as A begins. It fails at
-  36ee67e.
-- **One table test, every path through a release and a reclaim.** For each
-  of paths 1–9, the test starts the path and pauses it after its claim or
-  observation and before its clear. The test hooks already exist for keys
-  (`beforeWritten`) and an Enter (`beforeEnter`); one is added for an
-  observer's clear. While the path is paused, the test releases and
-  reclaims the question:
-  - for a question the agent reported: a line let go, the hold, keys that
-    end it showing the question again, then another reply's claim;
-  - for a dialog or a startup question: the question answered and asked
-    again (`stillAnswered`), or replaced and asked anew.
-
-  It then resumes the paused path and asserts that the question still
-  shows, that nothing was recorded as its answer, and that the reclaimer's
-  write answers it once, credited to the reclaimer. A second row for each
-  path runs it with no release, to show that the path still answers: real
-  answers still count.
-- P1–P29, #192's answer tests (`answer_test.go`), the hold tests
-  (`hold_test.go`) and the question tests (`question_test.go`) pass
-  unchanged.
-- **Every clear goes through `answerWith`.** A unit test fails if any
-  function other than `answerWith` writes the empty state as answered (a
-  set-up `LastAnswer`), so a fifth path cannot be added beside it.
-
-No new Playwright spec: the orderings need a paused writer, which only the
-Go tests can hold. `askwait.spec.ts` and the existing specs pass unchanged.
+Web: if the refusal's words or the reply's states change, vitest for
+`reply.ts`'s helpers. Playwright, `answered.spec.ts` extended: two pages
+answer one question, one wins, and the other page shows the result. A page
+that reconnects after the result shows it. A person typing in the terminal
+leaves the row's question until the agent moves on. The existing
+`askwait.spec.ts` changes its reply to come from the row, as it already
+does.
 
 ## What stays as #207 has it
 
-- The `--ask` mark (`notify --ask`, the MCP tool `ask`, the routes' `ask`,
-  `HostAttentionMsg.ask` both ways, no mark for a switchyard), and a plain
-  `--state needs_input` without it.
-- The agent's own question: set aside in its turn, shown again at the
-  turn's done as the same `Attention`, kept shown through a done, held over
-  by the hold, and every clearing event of P1–P29 (an answer, a person's
-  keys or reply, the agent's clear or next question, the agent at work in a
-  new turn, the session's end).
-- Conductor's submissions: the aside note (`comesAfter`), the Enter that
-  answers and claims nothing (P28), and a person's write removing a
-  question set aside.
-- The words, the docs and the e2e spec.
-
-What changes is how a clear is allowed:
-- `answer(promptSince)`, `answerReached`, `answerWhen`, `claims` and
-  `setAnsweredLocked` give way to the generation, the ticket and
-  `answerWith`;
-- `endHoldTyped`'s `promptSince = nil` and the `restored` special case
-  become what the generation already says.
+- The `--ask` mark through `notify`, the MCP tool, both routes and the
+  host's message (none for a switchyard), and a plain `--state
+  needs_input` without it.
+- #193's events: set aside in its turn, shown again at its done as the same
+  instance, kept through a done, held over by the hold, and every clearing
+  event of P1–P29 that is not a raw key. P4's "a person's keys" becomes "a
+  structured answer". P12 and P25 follow decision 3.
+- Conductor's lines (handoffs, broadcasts) and P28's Enter. The words, the
+  docs and the e2e spec.
 
 # The pull requests, in order
 
