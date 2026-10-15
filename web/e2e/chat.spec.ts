@@ -400,20 +400,23 @@ test('unread elsewhere: the sidebar row, the rail and a run header count what ot
 })
 
 test("a session another machine hosts: what is said in its chat counts on another person's row too", async ({ page, api, state, browser }) => {
-  const log = openSync(join(state.root, 'chat-host.log'), 'a')
+  // This host's own log: the line it prints once the server has registered it names its session. The session is found by that id,
+  // never by its name, which an earlier run's hosted session (a repetition's, still listed) has too (#202).
+  const logFile = join(state.root, `chat-host-${randomUUID()}.log`)
+  const log = openSync(logFile, 'a')
   host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', 'hosted-chat', '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
   let hostedId = ''
   await expect
-    .poll(async () => {
-      const list = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
-      const all = Array.isArray(list) ? list : (list.sessions ?? [])
-      hostedId = all.find((s) => s.name === 'hosted-chat')?.id ?? ''
+    .poll(() => {
+      hostedId = /conductor: hosting session ([0-9a-f]+) at /.exec(readFileSync(logFile, 'utf8'))?.[1] ?? ''
       return hostedId
-    }, { timeout: 30_000 })
+    }, { timeout: 30_000, message: 'the host is registered' })
     .not.toBe('')
+  const hosted = await api.session(hostedId)
+  expect(hosted.name).toBe('hosted-chat')
   // Priya watches the list; Nate opens the hosted session (over the relay) and writes.
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const priya = await personPage(ctx, state.token, 'Priya')
