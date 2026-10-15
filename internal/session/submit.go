@@ -585,8 +585,9 @@ func (s *Local) holdTyped(claim questionClaim) {
 	// no question) stands until the hold's words take the question's
 	// place, and is let go in that step (releaseStrandedLocked), so that
 	// no reply claims the question meanwhile and writes its keys after
-	// the text.
-	s.strandedClaim = claim
+	// the text. Keys that end the hold before then (endHoldTyped) let it
+	// go themselves, the question consumed when they entered the text.
+	s.strandedClaim, s.holdPending = claim, true
 	s.mu.Unlock()
 	if hook := s.beforeHold.Load(); hook != nil {
 		(*hook)()
@@ -596,6 +597,7 @@ func (s *Local) holdTyped(claim questionClaim) {
 	s.mu.Lock()
 	// The hold's words refused (a question on the screen shows over the
 	// hold, or keys ended the hold as it began): the claim goes now.
+	s.holdPending = false
 	s.releaseStrandedLocked()
 	s.mu.Unlock()
 	select {
@@ -628,7 +630,9 @@ func (s *Local) holdTyped(claim questionClaim) {
 // answers it), or consumed when the keys entered the held text or picked
 // one of its choices (the program has its answer; a reply to it is refused
 // until the agent moves on). A claim on it (a reply's, made before the hold
-// or over it) stands: that reply resolves it.
+// or over it) stands: that reply resolves it. Keys that end the hold before
+// its words show (holdPending) deal the same way with the question shown,
+// the one the hold was to hold over, and let the stranded line's claim go.
 func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	s.mu.Lock()
 	if s.held == nil {
@@ -640,6 +644,13 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	over := s.heldOver
 	s.heldOver = Attention{}
 	cur := s.info.Attention
+	if s.holdPending {
+		s.holdPending = false
+		s.releaseStrandedLocked()
+		if cur.State == AttentionNeedsInput && cur.ID != "" && cur.Source != SourceSubmit && !heldSource(cur.Source) && picksChoice(cur.Options, data, maybe) {
+			s.consumeLocked(cur.ID)
+		}
+	}
 	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended()
 	if over.ID != "" && !restore {
 		// Gone with the hold (the session ended, or a question on the

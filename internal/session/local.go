@@ -247,8 +247,12 @@ type Local struct {
 	// turn in the question's place (setAttentionLooked,
 	// releaseStrandedLocked): until then it stands, so that no reply
 	// claims the question and writes its keys after the text. The empty
-	// claim while none waits.
+	// claim while none waits. holdPending says the hold of the turn is
+	// installed (held) and its words not shown yet (holdTyped): keys that
+	// end it meanwhile deal with the question shown as its end would with
+	// the question held over (endHoldTyped).
 	strandedClaim    questionClaim
+	holdPending      bool
 	dialogAnswered   string
 	dialogAnsweredAt uint64
 	results          map[string]*Answer
@@ -1647,6 +1651,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// The stranded line's claim is let go here, in the step that
 		// hides the question (strandedClaim): let go before it, a reply
 		// could claim the question and write its keys after the text.
+		s.holdPending = false
 		s.releaseStrandedLocked()
 	}
 	if state != AttentionNone {

@@ -1633,6 +1633,14 @@ events, orders or invariants above, but for the two marked.
   consumed question is reached (`reached`), and the work withdraws it.
   And the snapshot's rows were read before the session's lock, where a
   resize could drop the baseline between: they are read under it.
+- **Round 8** (fixed after it, reviewed in round 9). An Enter typed in the
+  terminal after the hold was installed and before its words showed
+  entered the stranded text, ended the hold with nothing held over, and
+  the stranded claim, let go after, left the question OPEN for a second
+  reply. Keys that end a hold not shown yet (`holdPending`) let the
+  stranded claim go themselves and consume the question shown when they
+  entered the text or picked its choice, as the hold's end does with the
+  question held over.
 
 # The pull requests, in order
 

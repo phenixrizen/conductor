@@ -1301,3 +1301,63 @@ func TestASnapshotTakenAsTheWindowResizesIsNotTheBaseline(t *testing.T) {
 		t.Fatalf("the lines after the resize: %+v", a)
 	}
 }
+
+// Round 8: an Enter typed in the terminal as the hold of the turn is
+// installed, before its words show, enters the stranded text: the program
+// has its answer. The hold ends, the stranded line's claim goes, and the
+// question shows consumed: a reply is refused, nothing written, until the
+// agent moves on.
+func TestAnEnterThatEndsTheHoldBeforeItShowsConsumesTheQuestion(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "Postgres", By: guest, Question: q.ID})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	// The Enter typed in the terminal: the text entered, the hold over.
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID || st.claim != (questionClaim{}) {
+		t.Fatalf("after the Enter: %+v", st)
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), QuestionConsumedWords, "a reply after the Enter")
+	nothingWritten(t, p, 100*time.Millisecond)
+	let.Do(func() { close(gate) })
+	got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line })
+	if !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	// The hold's words never show; the question stands consumed until the
+	// agent moves on.
+	time.Sleep(100 * time.Millisecond)
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID || s.Held() {
+		t.Fatalf("once the hold's installation went on: %+v, held %v", st, s.Held())
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), QuestionConsumedWords, "a reply later")
+	nothingWritten(t, p, 100*time.Millisecond)
+	if s.Info().LastAnswer != nil {
+		t.Fatalf("recorded: %+v", s.Info().LastAnswer)
+	}
+	reportState(t, s, AttentionWorking, "")
+	if a := s.Info().Attention; a.ID == q.ID {
+		t.Fatalf("after the agent moved on: %+v", a)
+	}
+}
