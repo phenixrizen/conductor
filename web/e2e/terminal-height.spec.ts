@@ -1,32 +1,68 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Browser, BrowserContext, Page } from '@playwright/test'
-import { expect, test, type Api, type Session } from './fixtures'
+import type { Browser, BrowserContext, Locator, Page } from '@playwright/test'
+import { expect, member, test, type Api, type Run, type Session } from './fixtures'
 
-// A short pane (#189): the terminal's slot in the editor column can be 8rem tall, and the terminal fits the rows that show in
-// it, never more: its last row and the cursor's row lie inside the pane, on the session page, in the Yard's focus and on a
-// guest's join page, on a short window and with a file open in the editor above it. Measured by geometry, whatever the renderer:
-// the screen's box over the session's rows, and the cursor where xterm keeps its input box; never the text.
+// A short pane (#189, #201): the terminal fits the rows that show in its pane, never more: its last row and the cursor's row lie
+// inside the pane. In the editor column (the session page, the Yard's focus, a guest's join page), whose slot can be 8rem tall, on a
+// short window and with a file open in the editor above it; and in every other pane a terminal is shown in: a tile on the wall and on
+// a run's page, the Roundhouse, a crew's tiles on a control link and the paste page. Measured by geometry, whatever the renderer: the
+// screen's box over the session's rows, and the cursor where xterm keeps its input box; never the text.
 
 /** A window a few lines tall: the terminal's slot is all the column has, under 192 px. */
 const SHORT = { width: 1440, height: 230 }
 /** With a file open the editor takes the column's top 60 % and the terminal's slot is under 192 px. */
 const EDITOR = { width: 1440, height: 480 }
+/** A low window for the panes under a page's own header: the Roundhouse's and a run page's tile are under 192 px (#201). */
+const LOW = { width: 1440, height: 360 }
 
+let made = 0
 const sessions: string[] = []
+const runs: Array<{ run: string; crew: string }> = []
 
-test.afterAll(async ({ api }) => {
-  for (const id of sessions) await api.stopSession(id)
+// Each test's sessions stop as it ends, so that the wall and the Roundhouse show few of them.
+test.afterEach(async ({ api }) => {
+  for (const id of sessions.splice(0)) await api.stopSession(id)
+  for (const { run, crew } of runs.splice(0)) {
+    await api.stopRun(run)
+    await api.call('DELETE', `/api/crews/${encodeURIComponent(crew)}`)
+  }
 })
 
-/** A shell in a folder with a file to open. */
-async function shell(api: Api, root: string, name: string): Promise<{ s: Session; cwd: string }> {
+/** A folder of its own, with a file to open. */
+function folder(root: string, name: string): string {
   const cwd = join(root, name)
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.md'), '# notes\n')
+  return cwd
+}
+
+/** A shell in a folder with a file to open. */
+async function shell(api: Api, root: string, prefix: string): Promise<{ s: Session; cwd: string }> {
+  const name = `${prefix}-${++made}`
+  const cwd = folder(root, name)
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'shell', name, cwd })
   sessions.push(s.id)
   return { s, cwd }
+}
+
+/** A run of a crew of one shell, started at once: its run and the shell's session. */
+async function crewShell(api: Api, root: string): Promise<{ run: Run; id: string; cwd: string }> {
+  const name = `crew-${++made}`
+  const cwd = folder(root, name)
+  const { crew } = await api.ok<{ crew: { id: string } }>('POST', '/api/crews', {
+    name,
+    goal: '',
+    cwd,
+    where: 'server',
+    isolation: 'none',
+    openAfterLaunch: false,
+    members: [{ name: 'sh', agentId: 'shell', prompt: '', start: { when: 'immediately' } }],
+  })
+  const run = await api.launchCrew(crew.id)
+  runs.push({ run: run.id, crew: crew.id })
+  await expect.poll(async () => member(await api.run(run.id), 'sh').sessionId ?? '', { timeout: 30_000, message: 'the shell starts' }).not.toBe('')
+  return { run, id: member(await api.run(run.id), 'sh').sessionId!, cwd }
 }
 
 async function rows(api: Api, id: string): Promise<number> {
@@ -36,11 +72,14 @@ async function rows(api: Api, id: string): Promise<number> {
 let marks = 0
 
 /**
- * Fills the terminal with output once the session's size has settled, so that the cursor is on its last row, then checks the
- * last row and the cursor's row lie inside the pane: what of the terminal shows, every box that clips it and the window.
+ * Fills the terminal (the one in `pane`, else the page's first) with output once the session's size has settled, so that the cursor
+ * is on its last row, then checks the last row and the cursor's row lie inside the pane: what of the terminal shows, every box that
+ * clips it and the window.
  */
-async function expectRowsInPane(page: Page, api: Api, id: string, cwd: string, where: string): Promise<void> {
-  await expect(page.locator('.terminal-host.terminal-scale'), `${where}: this window sizes the session`).toHaveCount(0)
+async function expectRowsInPane(page: Page, api: Api, id: string, cwd: string, where: string, pane: Page | Locator = page): Promise<void> {
+  const host = pane.locator('.terminal-host:has(.xterm-screen)').first()
+  await expect(host, `${where}: the terminal`).toBeVisible({ timeout: 30_000 })
+  await expect(pane.locator('.terminal-host.terminal-scale'), `${where}: no scaled view`).toHaveCount(0)
   let last = 0
   await expect
     .poll(
@@ -54,13 +93,13 @@ async function expectRowsInPane(page: Page, api: Api, id: string, cwd: string, w
     )
     .toBe(true)
   const mark = `mark-${++marks}`
-  await page.locator('.terminal-host .xterm-helper-textarea').first().focus()
+  await host.locator('.xterm-helper-textarea').focus()
   await page.keyboard.type(`seq 300; touch ${mark}\n`)
   await expect.poll(() => existsSync(join(cwd, mark)), { timeout: 15_000, message: `${where}: the shell ran the line` }).toBe(true)
 
   const measure = async () => {
     const n = await rows(api, id)
-    const g = await page.locator('.terminal-host').first().evaluate((host) => {
+    const g = await host.evaluate((host) => {
       // The pane: the host and every box around it that clips, and the window.
       let top = 0
       let bottom = window.innerHeight
@@ -138,15 +177,71 @@ test.afterEach(async () => {
 
 for (const where of ['the session page', "the Yard's focus", "a guest's join page"] as const) {
   test(`${where}, a short window: the terminal's last row and the cursor's row show`, async ({ page, browser, api, state }) => {
-    const { s, cwd } = await shell(api, state.root, `short-${sessions.length}`)
+    const { s, cwd } = await shell(api, state.root, 'short')
     const p = await open(where, page, browser, api, s, SHORT)
     await expectRowsInPane(p, api, s.id, cwd, `${where}, a short window`)
   })
 
   test(`${where}, a file open above the terminal: its last row and the cursor's row show`, async ({ page, browser, api, state }) => {
-    const { s, cwd } = await shell(api, state.root, `editor-${sessions.length}`)
+    const { s, cwd } = await shell(api, state.root, 'editor')
     const p = await open(where, page, browser, api, s, EDITOR)
     await openFile(where, p, cwd)
     await expectRowsInPane(p, api, s.id, cwd, `${where}, a file open`)
   })
 }
+
+// Every other pane a terminal is shown in (#201): no slot holds a least height for it, and the terminal fills the pane and no more.
+
+test("a tile on the wall, a short window: the terminal's last row and the cursor's row show", async ({ page, api, state }) => {
+  const { s, cwd } = await shell(api, state.root, 'wall')
+  await page.setViewportSize(SHORT)
+  await page.goto('/yard')
+  await expectRowsInPane(page, api, s.id, cwd, 'a tile on the wall', page.locator(`[data-session-tile][data-session-id="${s.id}"]`))
+})
+
+test("the Roundhouse, a low window: the terminal's last row and the cursor's row show", async ({ page, api, state }) => {
+  const { s, cwd } = await shell(api, state.root, 'roundhouse')
+  // Held on the session: no rotation and no following another session's prompt.
+  await page.addInitScript(() => localStorage.setItem('conductor.carousel.settings', JSON.stringify({ intervalMs: 60000, autoplay: false, follow: false })))
+  await page.setViewportSize(LOW)
+  await page.goto('/roundhouse')
+  await page.locator('[data-carousel-strip] button').filter({ has: page.getByText(s.name, { exact: true }) }).click()
+  const slide = page.locator('[aria-roledescription="slide"]').filter({ has: page.getByText(s.name, { exact: true }) })
+  await expectRowsInPane(page, api, s.id, cwd, 'the Roundhouse', slide)
+})
+
+test("a tile on a run's page, a low window: the terminal's last row and the cursor's row show", async ({ page, api, state }) => {
+  const { run, id, cwd } = await crewShell(api, state.root)
+  await page.setViewportSize(LOW)
+  await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+  await expectRowsInPane(page, api, id, cwd, "a tile on a run's page", page.locator(`[data-run-grid] [data-session-tile][data-session-id="${id}"]`))
+})
+
+// A guest's tile follows the session's size and shows it scaled to the tile. Its row is 18rem tall, so its pane (about 228 px) was
+// never under the old least height: here so that the terminal stays inside it.
+test("a crew's tile on a control link: the terminal's last row and the cursor's row show", async ({ browser, api, state }) => {
+  const { run, id, cwd } = await crewShell(api, state.root)
+  const { token } = await api.ok<{ token: string }>('POST', `/api/runs/${encodeURIComponent(run.id)}/links`, { role: 'control', ttlSeconds: 3600 })
+  const ctx = await browser.newContext({ viewport: EDITOR })
+  contexts.push(ctx)
+  await ctx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Jane'))
+  const jane = await ctx.newPage()
+  await jane.goto(`/join/${token}`)
+  await jane.getByRole('button', { name: 'Join crew' }).click()
+  await expectRowsInPane(jane, api, id, cwd, "a crew's tile on a control link", jane.locator('[data-join-tiles] [data-member="sh"]'))
+})
+
+test("the paste page, a short window: the terminal's last row and the cursor's row show", async ({ page, api, state }) => {
+  const { s, cwd } = await shell(api, state.root, 'paste')
+  await page.goto('/paste')
+  await page.getByLabel('Your name').fill('paste guest')
+  await page.locator('[data-paste-make]').click()
+  const offer = page.locator('[data-paste-offer]')
+  await expect(offer).toBeVisible({ timeout: 15_000 })
+  const { answer } = await api.ok<{ answer: string }>('POST', `/api/sessions/${encodeURIComponent(s.id)}/paste`, { offer: await offer.inputValue(), role: 'control', label: 'paste guest' })
+  await page.locator('[data-paste-answer]').fill(answer)
+  await page.locator('[data-paste-connect]').click()
+  await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+  await page.setViewportSize(SHORT)
+  await expectRowsInPane(page, api, s.id, cwd, 'the paste page')
+})
