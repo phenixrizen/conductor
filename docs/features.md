@@ -1117,6 +1117,94 @@ request each from main.
   the agent moves on; a page that joins after the answer shows who gave it;
   a bell's wait gone with the screen moving on, and with an Enter).
 
+- **v0.7.0-rc.10 in the app** (2026-10-14, 64629ca). The switchyard runs
+  it (rc.8 kept as `conductor.prev`; rc.9 was tagged but never deployed)
+  and the owner's Windows app was updated to it. The by-hand check left by
+  #124 passed: a guest in Chrome on a view link through the switchyard,
+  connected over WebRTC directly, saw a hosted session's last output line,
+  then "session ended" with its exit code, not "link revoked".
+- **The review process** (#184, 2026-10-14, the owner's rules after review
+  loops of 20 to 30 rounds). A change to a state machine, a protocol,
+  concurrency or a security behaviour starts with `docs/plans/<branch>.md`
+  (the events, their orders, the invariants, the scope, the tests),
+  reviewed before code. A bug the change introduces, exposes or needs is
+  fixed with it; an independent one becomes an issue and the owner says
+  whether it is fixed now, in a pull request of its own. Review rounds are
+  bounded: one for docs, two for a plan, three for code before the
+  findings are sorted, five the stop where the owner decides. The review
+  script refuses a branch behind its base, so a review is of what will
+  merge, and changes that touch the same files are worked one after
+  another.
+- **A host's line waits for its server to be heard** (#182). Before it
+  enters a line typed by a viewer who joined through a link, a `conductor
+  host` requires its server to have been heard from within 15 s; it pings a
+  quiet connection every 5 s and gives a connection up after 2 minutes
+  unanswered, and the server pings every 5 s while a link someone joined
+  through stands.
+- **A relayed viewer that falls behind waits on its host** (#185). Past
+  512 KiB queued for a relayed viewer, the server tells its host
+  (`viewer_behind`), and the host holds that viewer's frames until it
+  catches up, so the host's one connection carries what each relayed
+  viewer takes; a hosted viewer's socket holds at most 128 KiB unsent on
+  Linux.
+- **The editor's Neovim takes a substitute** (#188, issues #164, #178–#180).
+  Neovim previews `:%s/a/b` as its replacement begins and reports the
+  preview with no changedtick, which the bridge could not decode, so it
+  lost Neovim at the second `/`. The bridge now reads every notification
+  itself, never relays a preview, and turns `inccommand` off. A Neovim lost
+  rather than quit keeps its tab's text under a banner with Copy and
+  Reopen; keys on their way settle before a tab is let go (`settled`);
+  keys Neovim's full input buffer refuses are shown, not dropped.
+- **A quick reply names the question it was shown for** (#192, issue #133).
+  Every question has an id; a choice or a reply (the sidebar, the Yard, the
+  reply bar, the chat, the number keys, a guest on a link) carries it, and
+  one whose question is no longer waiting is refused, nothing typed, the
+  next question kept. Codex's startup questions take only their own
+  answers, read from the screen.
+- **A question reads whole** (#191, issue #187): the sidebar's row, the
+  Yard's card, the reply bar and a run's card wrap the question rather than
+  cutting it to one line; the Yard's focus column scrolls on a short
+  window.
+- **Codex's bell and its state** (#194, #205, issue #186). Codex launches
+  with no bell for a question it asks while it keeps working
+  (`tui.notifications` without `async-question`) and with its state in its
+  window title (`tui.terminal_title`): checked with the real Codex 0.161,
+  the title reads "Starting", then "Working", then "Ready". A title that
+  says Codex works is read as a `working` report, so a Codex member's
+  stale Needs you gives way while it works; it never overrides a question
+  on the screen, a held turn or the done of the turn just ended.
+- **What a link's viewer sends passes the link's check** (#198). A
+  keystroke, a save (each part, and again before its commit), a file read,
+  an editor's open and a chat post from a viewer who joined through a link
+  are acted on only while the link still opens the session; a refusal says
+  `revoked` or `expired` in words the page shows. A write the program had
+  begun to take when the link went still lands (the owner's decision).
+- **A host's connection to its server** (#204, issue #183). The server's
+  own messages to a host go ahead of the frames it relays, and nothing still
+  queued for a link's viewers is written after that link's going; the host
+  vouches for its server only by its own answered pings (the owner's
+  stricter choice: while a server pauses its reading past the bound, a
+  link's line waits within its own time and is then refused); a relayed
+  save and an offer's answer run off the host's read loop.
+- **A plain connection to another machine needs saying so** (#212).
+  `conductor host`, `conductor up` and `conductor crews` refuse a plain
+  `http://` (or `ws://`) server that is not this machine unless
+  `--insecure`, then warn; a server's uplink needs `rendezvous.insecure`;
+  the app's Settings refuse such a switchyard with the words why. Only
+  lower-case `localhost` and loopback addresses count as this machine.
+- **The terminal fills its pane** (#200, #209, issues #189, #201): the
+  terminal's 12rem minimum is gone wherever it is shown (the editor
+  column, wall tiles, the Roundhouse, run tiles, the paste page), so its
+  last row and cursor stay inside a short pane.
+- **Two test races** (#199, #210, issues #190, #202): `chat.spec` waits for
+  a member's first turn to end before posting its question, and finds its
+  hosted session by the id its host registered.
+- **Set aside for later, by the owner:** [#193](https://github.com/phenixrizen/conductor/issues/193)'s
+  change (an asked question outlasting its turn's done) is a draft (#207):
+  review rounds 4 to 6 each found one more way a write could count as the
+  answer to a question, so its answer-claim rules are being redesigned as
+  one model in `docs/plans/codex-needs-you.md` before more code.
+
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
 The bugs in `docs/tasks-todo.md` the owner found using the rc.4 desktop
