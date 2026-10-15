@@ -172,7 +172,8 @@ export function hostedName(base: string): string {
  * session is found by the name, not by the id on the host's banner, which a host that failed between registering and printing it
  * never printed. Per session, DELETE answers 200: the host was told to stop its command, and the session ends, then is removed; 204:
  * it had ended already, and is removed; 404: gone; anything else (a 500: the host left on its own) fails. The ending is bounded by
- * `ms`, so that a server that stops answering cannot hold the hook past its own deadline, and the host is killed whatever became of it.
+ * `ms`, and the check after the kill by 15 s more, so that a server that stops answering cannot hold the hook past its own deadline;
+ * the host is killed whatever became of the ending.
  */
 export async function endHosted(api: Api, name: string, host: ChildProcess | null, ms = 45_000): Promise<void> {
   try {
@@ -193,7 +194,7 @@ export async function endHosted(api: Api, name: string, host: ChildProcess | nul
     host?.kill('SIGKILL')
   }
   if (!name) return
-  const left = await listedAs(api, name)
+  const left = await within(15_000, `listing ${name} once its host was killed`, () => listedAs(api, name))
   if (left.length) throw new Error(`${name} is still listed after its host was killed: ${left.map((s) => `${s.id} (${s.status})`).join(', ')}`)
 }
 
