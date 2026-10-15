@@ -1728,3 +1728,120 @@ func TestAShrinkThatCutsNothingKeepsNoAnsweredStartupQuestion(t *testing.T) {
 		t.Fatalf("a submission after the question went: %v", err)
 	}
 }
+
+// Round 11, finding 1: a dialog drawn after a line was stranded and before
+// the hold of the turn is installed, not asked yet (its watcher waits for
+// a quiet screen), takes the Enter typed in the terminal: the keys reached
+// the dialog, not the stranded text, so the question the agent reported
+// is not consumed and the hold follows; the dialog, asked consumed, shows
+// over the hold, and once the program takes it away the hold shows, its
+// text still waiting for a person.
+func TestAnEnterAtADialogDrawnBeforeTheHoldKeepsTheHold(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: approvalQuestions()})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	// The dialog drawn, on the screen and not asked yet; the Enter typed
+	// at it.
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	if !waitFor(2*time.Second, func() bool {
+		text, _, _, _ := s.asked.Whole()
+		return strings.Contains(text, "Would you like to run")
+	}) {
+		t.Fatal("the dialog never reached the screen")
+	}
+	if a := s.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the dialog was asked before the Enter: %+v", a)
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.consumed == q.ID {
+		t.Fatalf("the Enter at the dialog consumed the question: %+v", st)
+	}
+	let.Do(func() { close(gate) })
+	if !waitFor(5*time.Second, s.Held) {
+		t.Fatal("no hold followed the stranded text")
+	}
+	// The dialog, asked consumed, then taken away by the program: the
+	// hold shows, and Ctrl+U shows the question again OPEN.
+	d := waitAttention(t, s, asked)
+	if st := stateOf(s); st.consumed != d.ID {
+		t.Fatalf("the dialog the Enter reached: %+v", st)
+	}
+	p.outW.Write([]byte(approvalGone("■ Conversation interrupted\r\n› ")))
+	heldShows(t, s)
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	open(t, s, q, "once the hold ended")
+}
+
+// Round 11, finding 2: the main screen grown with a wrapped startup
+// question on it, then the alternate screen entered, erased whole and
+// left: what the alternate screen did says nothing of the main screen,
+// whose rows autowrap went on from still read joined at their extent, and
+// the question held by an Escape stays protected.
+func TestAnAlternateScreenErasedLeavesTheMainScreensWrappedQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 18, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte("\x1b[2J\x1b[HUpdate available · 0.161.0 → 0.162.1\r\n\r\n› 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\nenter continue · esc skip"))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	for _, part := range []string{"\x1b", "z"} {
+		if err := s.Input(nater, []byte(part)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	p.outW.Write([]byte("\x1b[24;1Hstatus: ready"))
+	fed := s.asked.Fed()
+	deadline := time.Now().Add(3 * time.Second)
+	for s.asked.Fed() == fed && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := s.ResizeWith(nater, 80, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	// The alternate screen entered, erased whole, and left; then output.
+	p.outW.Write([]byte("\x1b[?1049h\x1b[2J\x1b[H\x1b[?1049l"))
+	time.Sleep(100 * time.Millisecond)
+	p.outW.Write([]byte("\x1b[24;1Hstatus: still ready"))
+	time.Sleep(3 * patternQuiet)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("the alternate screen erased took the main screen's question for gone: %+v", a)
+	}
+	if text, _, _, _ := s.asked.Whole(); !strings.Contains(text, "Update now (runs") {
+		t.Fatalf("the main screen's wrapped rows read: %q", text)
+	}
+	if !s.startupOnScreen() {
+		t.Fatal("the screen is not read as still showing the question")
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}

@@ -3212,7 +3212,9 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter
 	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
-	entered := s.holdPending && s.held == nil && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
+	// A dialog on the screen and not asked yet (onScreen) took the keys,
+	// as a question on the screen shown would: not the stranded text.
+	entered := s.holdPending && s.held == nil && onScreen == nil && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
 	if entered {
 		s.holdPending = false
 		s.releaseStrandedLocked()

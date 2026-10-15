@@ -1685,6 +1685,18 @@ events, orders or invariants above, but for the two marked.
   held the e2e crew's prompt back after the stub's "Hooks need review":
   the stub left the dialog's words on the screen where Codex takes them
   away; it erases its startup dialogs' lines as Codex does (`erase_dialog`).
+- **Round 11** (two findings, each reproduced with a test, fixed after
+  it; round 12 reviewed the fixes). Keys typed before a stranded line's
+  hold was installed were read as entering its text by the attention's
+  source alone, where a dialog drawn and not asked yet (on the screen as
+  the keys are written) had taken them: such keys leave the hold to
+  follow and consume no question (`rawKeys`, `onScreen`). And the screen
+  kept one layout (clipped, cut, the size laid out for) for both of its
+  buffers, so the alternate screen erased whole cleared the main screen's,
+  whose wrapped rows then read with the growth's blank cells between the
+  halves of a word: the layout is kept per buffer (`Screen.layout`), and
+  each row autowrap went on from keeps the width it had then (`wrapAt`),
+  read joined to that extent whatever the screen's size since.
 
 # The pull requests, in order
 

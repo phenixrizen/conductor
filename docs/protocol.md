@@ -1269,7 +1269,7 @@ nothing of it lost to a window made smaller since the program last erased
 the screen (one that cuts only blank cells loses nothing), as it is and as
 it was laid out at least the size the screen had when the keys were
 written; the window grown since counts, its rows autowrap went on from
-read joined, since a program that erases its dialog's lines rather than
+read joined to the width they had then, since a program that erases its dialog's lines rather than
 the whole screen draws nothing for a resize); one answered never keeps the next from
 being asked, and nor does one still waiting that the screen has left for
 another drawn after it (the program took an answer not read as one): the
