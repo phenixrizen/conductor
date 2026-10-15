@@ -1187,9 +1187,10 @@ request each from main.
   link's line waits within its own time and is then refused); a relayed
   save and an offer's answer run off the host's read loop.
 - **A plain connection to another machine needs saying so** (#212).
-  `conductor host`, `conductor up` and `conductor crews` refuse a plain
-  `http://` (or `ws://`) server that is not this machine unless
-  `--insecure`, then warn; a server's uplink needs `rendezvous.insecure`;
+  `conductor host` refuses a plain `http://` or `ws://` server that is not
+  this machine unless `--insecure`, then warns; `conductor up` and
+  `conductor crews` the same for a plain `http://` server (they take no
+  `ws://`); a server's uplink needs `rendezvous.insecure`;
   the app's Settings refuse such a switchyard with the words why. Only
   lower-case `localhost` and loopback addresses count as this machine.
 - **The terminal fills its pane** (#200, #209, issues #189, #201): the
