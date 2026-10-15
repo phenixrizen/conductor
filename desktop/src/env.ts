@@ -1,4 +1,4 @@
-import type { DesktopSettings } from './settings'
+import { plainSwitchyard, type DesktopSettings } from './settings'
 
 /**
  * serverEnv is the environment the server runs with: the app's own minus any CONDUCTOR_* that was set, the login shell's PATH, and
@@ -25,8 +25,13 @@ export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, to
   out.CONDUCTOR_PATHS_BROWSE = 'any'
   // Publishing is the server's default; off is a choice. The server's own
   // default switchyard stands when none is named, and a token is optional.
-  out.CONDUCTOR_RENDEZVOUS = settings.switchyardEnabled ? '1' : '0'
-  if (settings.switchyardServer) out.CONDUCTOR_RENDEZVOUS_SERVER = settings.switchyardServer.replace(/\/+$/, '')
+  // A plain http switchyard on another machine, which the server refuses to
+  // start with (settings saved before the app refused it too), is never
+  // handed to it: the server starts without publishing, and the Settings
+  // page says why.
+  const plain = !!settings.switchyardServer && plainSwitchyard(settings.switchyardServer)
+  out.CONDUCTOR_RENDEZVOUS = settings.switchyardEnabled && !plain ? '1' : '0'
+  if (settings.switchyardServer && !plain) out.CONDUCTOR_RENDEZVOUS_SERVER = settings.switchyardServer.replace(/\/+$/, '')
   if (settings.switchyardToken) out.CONDUCTOR_RENDEZVOUS_TOKEN = settings.switchyardToken
   if (settings.switchyardName) out.CONDUCTOR_RENDEZVOUS_HOST_NAME = settings.switchyardName
   if (!out.HOME && base.HOME) out.HOME = base.HOME

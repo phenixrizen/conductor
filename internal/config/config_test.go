@@ -3,11 +3,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http/httpproxy"
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -974,6 +977,180 @@ func TestRendezvousDefaultsToThePublicSwitchyard(t *testing.T) {
 	self.PublicURL = DefaultRendezvousServer + "/"
 	if err := self.Validate(); err == nil || !strings.Contains(err.Error(), "not this one's publicUrl") {
 		t.Fatalf("itself by default: %v", err)
+	}
+}
+
+// A plain switchyard on another machine is a config error unless the config
+// says insecure: from the file, the environment, with publishing on or off,
+// and in a switchyard's config alike. A config file that names one is
+// refused at Load, and left as it was.
+func TestRendezvousPlainServerOffThisMachineRefused(t *testing.T) {
+	const want = "rendezvous.server yard.example:8080 is plain http and not localhost or a loopback address"
+	for name, mutate := range map[string]func(*Config){
+		"the file": func(c *Config) { c.Rendezvous.Server = "http://yard.example:8080/" },
+		"the environment": func(c *Config) {
+			if err := applyEnv(c, func(k string) string {
+				return map[string]string{"CONDUCTOR_RENDEZVOUS_SERVER": "http://yard.example:8080"}[k]
+			}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"publishing off": func(c *Config) {
+			off := false
+			c.Rendezvous = Rendezvous{Enabled: &off, Server: "http://yard.example:8080"}
+		},
+		"a switchyard": func(c *Config) {
+			c.Switchyard.Enabled = true
+			c.Rendezvous.Server = "http://yard.example:8080"
+		},
+		"a password in it": func(c *Config) { c.Rendezvous.Server = "http://me:pw@yard.example:8080" },
+		"an address":       func(c *Config) { c.Rendezvous.Server = "http://192.0.2.7:8080"; c.Rendezvous.Token = "t" },
+	} {
+		c := Defaults()
+		mutate(c)
+		err := c.Validate()
+		if name == "an address" {
+			if err == nil || !strings.Contains(err.Error(), "rendezvous.server 192.0.2.7:8080 is plain http and not localhost or a loopback address") {
+				t.Errorf("%s: %v", name, err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1)") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "pw") {
+			t.Errorf("%s: the message repeats the password: %v", name, err)
+		}
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.json")
+	body := []byte(`{"allowedRoots":["` + dir + `"],"rendezvous":{"server":"http://yard.example:8080"}}`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONDUCTOR_RENDEZVOUS_SERVER", "")
+	t.Setenv("CONDUCTOR_RENDEZVOUS_INSECURE", "")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Load: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(body) {
+		t.Fatalf("the file changed: %q %v", got, err)
+	}
+}
+
+// A plain switchyard on this machine needs nothing: localhost by name, in
+// any case, and the loopback addresses.
+func TestRendezvousPlainServerOnLoopbackAllowed(t *testing.T) {
+	for _, server := range []string{"http://localhost:9090", "http://localhost:9090/", "http://127.0.0.1:9000", "http://127.8.9.10", "http://[::1]:8080", "http://[::ffff:127.0.0.1]:8080", "https://yard.example"} {
+		c := Defaults()
+		c.Rendezvous.Server = server
+		if err := c.Validate(); err != nil {
+			t.Errorf("%s: %v", server, err)
+		}
+	}
+}
+
+// rendezvous.insecure, from the file or CONDUCTOR_RENDEZVOUS_INSECURE, lets
+// a plain switchyard on another machine through; the environment's 0 turns
+// the file's off.
+func TestRendezvousInsecureAllowsIt(t *testing.T) {
+	file := Defaults()
+	file.Rendezvous = Rendezvous{Server: "http://yard.example:8080", Insecure: true}
+	if err := file.Validate(); err != nil || file.RendezvousServer() != "http://yard.example:8080" {
+		t.Fatalf("insecure in the file: %v %q", err, file.RendezvousServer())
+	}
+	for v, want := range map[string]bool{"1": true, "true": true, "0": false, "false": false, "": true} {
+		c := Defaults()
+		c.Rendezvous = Rendezvous{Server: "http://yard.example:8080", Insecure: true}
+		if err := applyEnv(c, func(k string) string { return map[string]string{"CONDUCTOR_RENDEZVOUS_INSECURE": v}[k] }); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); (err == nil) != want || c.Rendezvous.Insecure != want {
+			t.Errorf("CONDUCTOR_RENDEZVOUS_INSECURE=%q over the file's true: %v, insecure %v", v, err, c.Rendezvous.Insecure)
+		}
+	}
+	env := Defaults()
+	if err := applyEnv(env, func(k string) string {
+		return map[string]string{"CONDUCTOR_RENDEZVOUS_SERVER": "http://yard.example:8080", "CONDUCTOR_RENDEZVOUS_INSECURE": "1"}[k]
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Validate(); err != nil || !env.Rendezvous.Insecure {
+		t.Fatalf("CONDUCTOR_RENDEZVOUS_INSECURE=1: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(path, []byte(`{"allowedRoots":["`+dir+`"],"rendezvous":{"server":"http://yard.example:8080","insecure":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONDUCTOR_RENDEZVOUS_SERVER", "")
+	t.Setenv("CONDUCTOR_RENDEZVOUS_INSECURE", "")
+	if cfg, err := Load(path); err != nil || !cfg.Rendezvous.Insecure {
+		t.Fatalf("Load with insecure: %v", err)
+	}
+}
+
+// PlainOffMachine is the rule's one predicate: plain (http or ws) to a host
+// that is not this machine. A name that only starts like localhost, an
+// address written in a short form or one that is not a loopback address is
+// another machine.
+func TestPlainOffMachine(t *testing.T) {
+	for server, want := range map[string]bool{
+		"http://yard.example":            true,
+		"ws://yard.example/ws/host":      true,
+		"HTTP://yard.example":            true,
+		"http://192.168.1.10:8080":       true,
+		"http://0.0.0.0:8080":            true,
+		"http://127.1:8080":              true,
+		"http://localhost.yard.example":  true,
+		"http://127.0.0.1.yard.example":  true,
+		"http://[fe80::1]:8080":          true,
+		"https://yard.example":           false,
+		"wss://yard.example":             false,
+		"http://localhost:8080":          false,
+		"ws://LocalHost:8080":            true,
+		"http://127.0.0.1:8080":          false,
+		"http://127.255.0.1":             false,
+		"http://[::1]:8080":              false,
+		"http://[::ffff:127.0.0.1]:8080": false,
+		"http://user:pw@localhost:8080":  false,
+		"ftp://yard.example":             false,
+		"::not a url":                    false,
+	} {
+		if got := PlainOffMachine(server); got != want {
+			t.Errorf("PlainOffMachine(%q) = %v, want %v", server, got, want)
+		}
+	}
+}
+
+// What the rule lets through in the clear stays on this machine: no plain
+// URL it takes for this machine goes through a proxy the environment names
+// (HTTP_PROXY, as the standard library reads it), and every one that would
+// go through it is refused without --insecure.
+func TestPlainOnThisMachineIsNeverProxied(t *testing.T) {
+	proxy := (&httpproxy.Config{HTTPProxy: "http://proxy.example:3128"}).ProxyFunc()
+	for _, server := range []string{
+		"http://localhost:8080", "http://LOCALHOST:8080", "http://LocalHost", "http://localhost.:8080",
+		"http://127.0.0.1:8080", "http://127.255.0.1", "http://127.1:8080", "http://[::1]:8080",
+		"http://[::ffff:127.0.0.1]:8080", "http://[0:0:0:0:0:0:0:1]:8080", "http://[::1%25lo]:8080",
+		"http://yard.example", "http://0.0.0.0", "http://user:pw@localhost:8080", "http://me@yard.example",
+	} {
+		u, err := url.Parse(server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		via, err := proxy(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain := PlainOffMachine(server); plain != (via != nil) {
+			t.Errorf("%s: refused without --insecure %v, proxied %v", server, plain, via)
+		}
+		ws := strings.Replace(server, "http://", "ws://", 1)
+		if PlainOffMachine(ws) != PlainOffMachine(server) {
+			t.Errorf("%s: ws and http differ", ws)
+		}
 	}
 }
 

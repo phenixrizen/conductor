@@ -460,13 +460,89 @@ func TestRunDispatchesUpAndCrews(t *testing.T) {
 }
 
 func TestClientDropsUserinfoFromTheServerURL(t *testing.T) {
-	server, token := "http://user:pw@example.test/", "tok"
-	c, err := apiFlags{server: &server, token: &token}.client()
+	server, token, insecure := "https://user:pw@example.test/", "tok", false
+	c, err := apiFlags{server: &server, token: &token, insecure: &insecure}.client(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.base != "http://example.test" || strings.Contains(c.base, "pw") {
+	if c.base != "https://example.test" || strings.Contains(c.base, "pw") {
 		t.Fatalf("base %q keeps the userinfo", c.base)
+	}
+}
+
+// The admin client sends the workbench token with every request: to a plain
+// server on another machine (--server or CONDUCTOR_SERVER) it is refused
+// before any request, exit 2, with words that name the host alone and
+// --insecure; --ids stays silent. One on this machine needs nothing.
+func TestAdminClientRefusesPlainServerWithoutInsecure(t *testing.T) {
+	clearConductorEnv(t)
+	const want = "the server yard.example:8080 is plain http and not localhost or a loopback address: what this client sends and reads, the workbench token on every request among it, would travel in the clear and unverified; use https, or pass --insecure to go ahead"
+	for _, fn := range []struct {
+		name string
+		run  func(*testing.T, ...string) (int, string, string, error)
+		args []string
+	}{{"up", up, []string{"crew-1"}}, {"crews", crews, nil}} {
+		for _, server := range []string{"http://yard.example:8080", "http://user:pw@yard.example:8080/"} {
+			code, stdout, stderr, err := fn.run(t, append(fn.args, "--server", server, "--token", secretToken)...)
+			if code != 2 || err == nil || err.Error() != want || stdout != "" || stderr != "" {
+				t.Errorf("%s %s: exit %d, %v\nstdout %q\nstderr %q", fn.name, server, code, err, stdout, stderr)
+			}
+			noSecret(t, stdout, stderr, err)
+		}
+		t.Setenv("CONDUCTOR_SERVER", "http://yard.example:8080")
+		if code, _, _, err := fn.run(t, append(fn.args, "--token", secretToken)...); code != 2 || err == nil || err.Error() != want {
+			t.Errorf("%s with CONDUCTOR_SERVER: exit %d, %v", fn.name, code, err)
+		}
+		t.Setenv("CONDUCTOR_SERVER", "")
+	}
+	if code, stdout, stderr, err := crews(t, "--server", "http://yard.example:8080", "--token", secretToken, "--ids"); code != 0 || err != nil || stdout != "" || stderr != "" {
+		t.Errorf("--ids: exit %d, %v, %q, %q", code, err, stdout, stderr)
+	}
+	// On this machine: asked, and nothing said.
+	srv, seen := stubServer(t, http.StatusOK, `{"crews":[],"total":0}`)
+	local := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
+	for _, server := range []string{srv.URL, local} {
+		if code, stdout, stderr, err := crews(t, "--server", server, "--token", secretToken); code != 0 || err != nil || stdout != "no crews\n" || stderr != "" {
+			t.Errorf("%s: exit %d, %v, %q, %q", server, code, err, stdout, stderr)
+		}
+	}
+	if len(*seen) != 2 {
+		t.Fatalf("requests on this machine: %d", len(*seen))
+	}
+}
+
+// With --insecure the admin client goes ahead to a plain server on another
+// machine and says on stderr what travels in the clear; to one that is not
+// plain it says nothing.
+func TestAdminClientInsecurePrintsTheWarning(t *testing.T) {
+	clearConductorEnv(t)
+	server, token, insecure := "http://user:pw@yard.example:8080/", secretToken, true
+	var stderr bytes.Buffer
+	c, err := apiFlags{server: &server, token: &token, insecure: &insecure}.client(&stderr)
+	if err != nil || c.base != "http://yard.example:8080" {
+		t.Fatalf("client: %v %+v", err, c)
+	}
+	const want = "conductor: warning: --insecure: the server yard.example:8080 is plain http and not localhost or a loopback address: what this client sends and reads, the workbench token on every request among it, travels in the clear and unverified\n"
+	if stderr.String() != want {
+		t.Fatalf("stderr %q, want %q", stderr.String(), want)
+	}
+	noSecret(t, stderr.String())
+	if strings.Contains(stderr.String(), "pw") {
+		t.Fatalf("the warning repeats the password: %q", stderr.String())
+	}
+	stderr.Reset()
+	https := "https://yard.example"
+	if _, err := (apiFlags{server: &https, token: &token, insecure: &insecure}).client(&stderr); err != nil || stderr.Len() != 0 {
+		t.Fatalf("https with --insecure: %v %q", err, stderr.String())
+	}
+	// Both commands take the flag; on this machine it changes nothing.
+	srv, seen := stubServer(t, http.StatusOK, `{"crews":[],"total":0}`)
+	if code, stdout, errOut, err := crews(t, "--server", srv.URL, "--token", secretToken, "--insecure"); code != 0 || err != nil || stdout != "no crews\n" || errOut != "" || len(*seen) != 1 {
+		t.Fatalf("crews --insecure on this machine: exit %d, %v, %q, %q", code, err, stdout, errOut)
+	}
+	launch, _ := stubServer(t, http.StatusCreated, launchReply)
+	if code, _, errOut, err := up(t, "crew-1", "--server", launch.URL, "--token", secretToken, "--insecure"); code != 0 || err != nil || errOut != "" {
+		t.Fatalf("up --insecure on this machine: exit %d, %v, %q", code, err, errOut)
 	}
 }
 

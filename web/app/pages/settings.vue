@@ -2,7 +2,7 @@
 import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
-import type { DesktopIceStatus, DesktopSettings } from '~/utils/desktop'
+import { switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
 
 // The desktop app's settings: what its shell starts the server with. In a
 // browser against a server configured by its file, the page says so.
@@ -43,6 +43,13 @@ const reachItems = [
   { label: 'Off', value: 'off' },
 ]
 const dirty = computed(() => !!settings.value && JSON.stringify({ ...settings.value }) !== JSON.stringify({ ...form }))
+// The switchyard as last loaded or saved: a plain one on another machine is
+// refused with the words why (switchyardProblem, which the app's validate
+// repeats) until the field or the switch changes. Loaded so (settings saved
+// before the app refused it), the app publishes nowhere meanwhile.
+const switchyardChecked = ref('')
+const switchyardKey = () => JSON.stringify([form.switchyardEnabled, form.switchyardServer])
+const switchyardError = computed(() => (switchyardChecked.value === switchyardKey() ? switchyardProblem(form) : ''))
 const restarts = computed(() => {
   if (!settings.value) return false
   const keys: Array<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
@@ -56,6 +63,7 @@ async function load() {
     const s = await b.settings.get()
     settings.value = s
     Object.assign(form, s)
+    switchyardChecked.value = switchyardKey()
     versions.value = await b.versions()
     if (b.platform === 'win32') ice.value = await b.ice()
   } catch (e) {
@@ -70,8 +78,14 @@ async function load() {
 async function save() {
   const b = desktop.bridge.value
   if (!b) return
-  saving.value = true
   error.value = ''
+  switchyardChecked.value = switchyardKey()
+  const refused = switchyardProblem(form)
+  if (refused) {
+    error.value = refused
+    return
+  }
+  saving.value = true
   try {
     const next = await b.settings.set({ ...form })
     settings.value = next
@@ -123,7 +137,7 @@ onMounted(load)
         <AboutCard />
       </div>
       <div v-else class="flex w-full flex-col gap-6" data-desktop-settings>
-        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" />
+        <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-settings-error />
         <UAlert
           v-if="desktop.serverState.value"
           :color="desktop.serverState.value.state === 'running' ? 'success' : desktop.serverState.value.state === 'failed' ? 'error' : 'neutral'"
@@ -156,7 +170,7 @@ onMounted(load)
             <p class="text-sm text-muted">
               Every session here is published to a switchyard, switchyard.rslabs.net unless you name another. It is told each session's name, agent and folder name, this machine's name, and whether the session waits on you; never its chat, activity or command line. It mints and checks the links and decides who joins, and the terminal goes between the viewer and this machine over WebRTC, or through the switchyard's relay, which can read it, when no direct path forms. Publish only to a switchyard whose operator you trust. Off, links work where this machine is reachable.
             </p>
-            <UFormField label="Switchyard" description="Leave empty for the public one.">
+            <UFormField label="Switchyard" description="Leave empty for the public one. https://, or http:// only for one on this machine (localhost)." :error="switchyardError || undefined" data-switchyard-server>
               <UInput v-model="form.switchyardServer" class="w-full font-mono text-xs" placeholder="https://switchyard.rslabs.net" :disabled="!form.switchyardEnabled" />
             </UFormField>
             <UFormField label="Host token" description="Optional: a host token for a private switchyard, or a trusted seat on the public one, outside its per-address limits.">

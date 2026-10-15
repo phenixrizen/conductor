@@ -28,6 +28,10 @@ type Uplink struct {
 	Token     string
 	HostName  string
 	RelayOnly bool
+	// Insecure allows a ServerURL that is plain http on another machine, and
+	// a redirect to one (Options.Insecure; rendezvous.insecure). The caller
+	// says so in its log once; Publish refuses such a server without it.
+	Insecure bool
 	// ICEServers override the rendezvous's.
 	ICEServers []proto.ICEServer
 	// ICE is how the peers gather (Options.ICE).
@@ -146,6 +150,9 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	if local == nil {
 		return nil, errors.New("uplink: no session")
 	}
+	if err := plainRefused(u.ServerURL, u.Insecure); err != nil {
+		return nil, err
+	}
 	log := u.Log
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -153,7 +160,7 @@ func (u *Uplink) Publish(ctx context.Context, local *session.Local) (*Published,
 	info := local.Info()
 	opts := Options{
 		ServerURL: u.ServerURL, Token: u.Token, Name: info.Name, HostName: u.HostName, AgentID: info.AgentID,
-		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
+		Argv: info.Command, Dir: info.Cwd, RelayOnly: u.RelayOnly, Insecure: u.Insecure, ICEServers: u.ICEServers, ICE: u.ICE, ReconnectMax: u.ReconnectMax, Log: log,
 		Switchyard: true,
 	}
 	if opts.HostName == "" {

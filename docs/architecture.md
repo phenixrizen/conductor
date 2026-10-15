@@ -305,6 +305,23 @@ registers the `conductor:` scheme: an invite opens its own join page with
   its viewers: a viewer attaching meanwhile is either refused or closed.
 - Host tokens allow registering hosted sessions. A host never receives admin or
   share tokens.
+- A plain connection to another machine is said out loud. `conductor host`
+  refuses a plain `http://` (or `ws://`) server that is not this machine
+  (`localhost` in lower case, `127.0.0.0/8`, `::1`: the hosts a proxy the
+  environment names never carries; `config.PlainOffMachine`) before it
+  writes or dials anything, unless `--insecure` says to go ahead, and then
+  says on stderr and in its log that what passes travels in the clear and
+  unverified; a redirect the dial follows is held to the same rule as the URL
+  given. A server's own uplink follows it through its config: such a
+  `rendezvous.server` is a config error unless `rendezvous.insecure`
+  (`CONDUCTOR_RENDEZVOUS_INSECURE=1`), so `conductor serve` and `conductor
+  switchyard` stop at start with the words, and the file is left as it is.
+  The admin client (`conductor up`, `conductor crews`), which sends the
+  workbench token with every request, refuses such a `--server` (or
+  `CONDUCTOR_SERVER`) before any request unless `--insecure`. The desktop
+  app's Settings page refuses such a switchyard as it is saved; settings
+  saved with one before are kept, and the app starts its server without
+  publishing until Settings names an `https` one.
 - Commands are argv arrays from the catalog; user-supplied extra arguments are
   appended element-wise only for agents that allow it. Server sessions get an
   allowlisted environment; `CONDUCTOR_*` from the server's own environment never

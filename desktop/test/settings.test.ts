@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, saveSettings, serverAffecting, validate } from '../src/settings'
+import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, switchyardRefused, validate } from '../src/settings'
 import { serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -92,6 +92,54 @@ describe('switchyard settings', () => {
     const s = { ...defaultSettings('/home/me', '/home/me/.config/conductor'), switchyardEnabled: false, switchyardServer: 'https://switchyard.example.net', switchyardToken: 'sy-token', switchyardName: 'laptop' }
     saveSettings(file, s)
     expect(loadSettings(file, defaultSettings('/home/me', '/home/me/.config/conductor'))).toEqual(s)
+  })
+})
+
+describe('a plain switchyard', () => {
+  const base = defaultSettings('/home/me', '/home/me/.config/conductor')
+  const words = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
+  it('is refused on another machine, with the words why', () => {
+    expect(PLAIN_SWITCHYARD).toBe(words)
+    for (const server of ['http://yard.example:8080', 'http://192.168.1.10:8080', 'HTTP://yard.example', 'http://localhost.yard.example', 'http://127.0.0.1.yard.example', 'http://127.1:8080', 'http://0x7f.0.0.1', 'http://127.000.0.1', 'http://0.0.0.0:8080', 'http://[fe80::1]:8080', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example', 'http://LOCALHOST:8080', 'http://LocalHost:8080/']) {
+      expect(plainSwitchyard(server), server).toBe(true)
+      expect(validate({ ...base, switchyardServer: server }), server).toEqual([words])
+    }
+  })
+  it('is kept on this machine, and an https one anywhere', () => {
+    for (const server of ['http://localhost:8080', 'http://localhost:8080/', 'http://127.0.0.1:8080', 'http://127.20.30.40', 'http://[::1]:8080', 'http://[::ffff:127.0.0.1]:8080', 'https://yard.example', 'https://192.168.1.10:8443']) {
+      expect(plainSwitchyard(server), server).toBe(false)
+      expect(validate({ ...base, switchyardServer: server }), server).toEqual([])
+    }
+    // Off, nothing is published there: no refusal, and nothing handed to the server.
+    expect(validate({ ...base, switchyardEnabled: false, switchyardServer: 'http://yard.example' })).toEqual([])
+    // A malformed one is the shape check's.
+    expect(validate({ ...base, switchyardServer: 'http://' })).toEqual(['the switchyard must be an http(s) URL with a host and nothing after it'])
+  })
+  it('saved before it was refused, is kept, never handed to the server, and the server publishes nowhere', () => {
+    const s = { ...base, switchyardServer: 'http://yard.example:8080', yolo: true }
+    expect(switchyardRefused(s)).toBe(true)
+    expect(switchyardRefused({ ...s, switchyardEnabled: false })).toBe(false)
+    const env = serverEnv({}, s, 'tok', '/usr/bin', '')
+    expect(env.CONDUCTOR_RENDEZVOUS).toBe('0')
+    expect(env).not.toHaveProperty('CONDUCTOR_RENDEZVOUS_SERVER')
+    expect(serverEnv({}, { ...s, switchyardEnabled: false }, 'tok', '/usr/bin', '')).not.toHaveProperty('CONDUCTOR_RENDEZVOUS_SERVER')
+    // On this machine it is handed over as before.
+    const here = serverEnv({}, { ...s, switchyardServer: 'http://localhost:9090/' }, 'tok', '/usr/bin', '')
+    expect(here.CONDUCTOR_RENDEZVOUS).toBe('1')
+    expect(here.CONDUCTOR_RENDEZVOUS_SERVER).toBe('http://localhost:9090')
+  })
+  it.skipIf(win)('loaded from a file saved before it was refused, keeps every setting, and the file as it was', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-settings-plain-'))
+    const file = join(dir, 'settings.json')
+    const s = { ...base, switchyardServer: 'http://yard.example:8080', yolo: true, allowedRoots: ['/home/me', '/srv'] }
+    saveSettings(file, s)
+    const before = readFileSync(file, 'utf8')
+    // Not the defaults, which would publish to the public switchyard.
+    expect(loadSettings(file, base)).toEqual(s)
+    expect(readFileSync(file, 'utf8')).toBe(before)
+    // Another problem still gives the defaults.
+    writeFileSync(file, JSON.stringify({ ...s, defaultCwd: '/elsewhere' }))
+    expect(loadSettings(file, base)).toEqual(base)
   })
 })
 

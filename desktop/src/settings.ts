@@ -44,6 +44,45 @@ export function defaultSettings(home: string, userData: string): DesktopSettings
   return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [], zoomLevel: 0 }
 }
 
+/** The words for a switchyard that is plain http on another machine; web/app/utils/desktop.ts's check, which the Settings page runs first, says the same. */
+export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
+
+/**
+ * plainSwitchyard says whether url is a plain http:// URL to a host that is not this machine, as the server's own check
+ * (config.PlainOffMachine) reads it, which refuses such a switchyard: localhost written in lower case, an address in 127.0.0.0/8 written as
+ * four decimal numbers, or ::1 (or 127 mapped into IPv6) is this machine, and any other host is not, a name or a short form of an
+ * address that a browser would read as 127.0.0.1 among them. A URL that does not parse, or is not http, is not one.
+ */
+export function plainSwitchyard(url: string): boolean {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return false
+  }
+  return u.protocol === 'http:' && !thisMachine(url, u)
+}
+
+function thisMachine(raw: string, u: URL): boolean {
+  const host = u.hostname.toLowerCase()
+  if (host.startsWith('[')) return host === '[::1]' || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(host)
+  // The host as written: the URL parser reads 127.1 or 0x7f.0.0.1 as 127.0.0.1, and the server does not; nor does it read a
+  // backslash as the parser does.
+  if (raw.includes('\\')) return false
+  const authority = raw.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
+  const typed = authority.slice(authority.lastIndexOf('@') + 1).split(':', 1)[0]!
+  if (typed.toLowerCase() !== host) return false
+  // localhost written so, in lower case, as the server reads it: the one spelling of it that a proxy the environment names never takes.
+  if (typed === 'localhost') return true
+  const quad = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(typed)
+  return !!quad && quad.slice(1).every((p) => (p === '0' || !p.startsWith('0')) && Number(p) <= 255)
+}
+
+/** switchyardRefused says whether s publishes to a switchyard that is plain http on another machine, which the server refuses to start with. */
+export function switchyardRefused(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): boolean {
+  return !!s.switchyardEnabled && !!s.switchyardServer && plainSwitchyard(s.switchyardServer)
+}
+
 /**
  * validate returns the problems with s, in words; none for good settings. With posix the paths must be the WSL distribution's
  * (absolute Linux paths), whatever the host: Windows, where the server runs inside WSL.
@@ -67,6 +106,7 @@ export function validate(s: DesktopSettings, posix = false): string[] {
       ok = false
     }
     if (!ok) out.push('the switchyard must be an http(s) URL with a host and nothing after it')
+    else if (switchyardRefused(s)) out.push(PLAIN_SWITCHYARD)
   }
   if ((s.switchyardName ?? '').length > 64) out.push('the name at the switchyard is at most 64 characters')
   return out
@@ -95,12 +135,16 @@ export function migrateToWsl(s: DesktopSettings, linuxHome: string): { settings:
   return { settings: next, changed: JSON.stringify(next) !== JSON.stringify(s) }
 }
 
-/** loadSettings reads the file, filling what it lacks from the defaults; a missing or broken file gives the defaults. */
+/**
+ * loadSettings reads the file, filling what it lacks from the defaults; a missing or broken file gives the defaults. Settings saved
+ * before a plain switchyard on another machine was refused keep it, and everything else: the server is started without publishing
+ * for them (serverEnv), the Settings page shows why, and nothing is rewritten. The defaults would publish to the public switchyard.
+ */
 export function loadSettings(file: string, defaults: DesktopSettings): DesktopSettings {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<DesktopSettings>
     const merged: DesktopSettings = { ...defaults, ...pick(raw) }
-    return validate(merged).length ? defaults : merged
+    return validate(merged).some((p) => p !== PLAIN_SWITCHYARD) ? defaults : merged
   } catch {
     return defaults
   }

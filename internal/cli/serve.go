@@ -285,8 +285,12 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	if server := cfg.RendezvousServer(); server != "" {
 		rv := cfg.Rendezvous
-		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
+		srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: server, Token: rv.Token, HostName: rv.HostName, RelayOnly: rv.RelayOnly, Insecure: rv.Insecure, ICE: hostagent.ICE{UDPPort: cfg.ICE.UDPPort, PublicIP: cfg.ICE.PublicIP}, Log: log}})
 		log.Info("sessions are published to the switchyard", "server", server, "hostToken", rv.Token != "")
+		if rv.Insecure && config.PlainOffMachine(server) {
+			// Once per start: the config allowed it (rendezvous.insecure).
+			log.Warn("rendezvous.insecure: the switchyard is plain http and not localhost or a loopback address; what this server publishes there travels in the clear and unverified", "server", urlHost(server))
+		}
 	} else if !cfg.Switchyard.Enabled {
 		log.Info("sessions are not published to a switchyard; share links work where this server is reachable")
 	}
