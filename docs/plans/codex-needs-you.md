@@ -1045,7 +1045,14 @@ it began releases at once.
 **Consumed.** A question instance can be *consumed*: it takes no answer
 (refused as answered, with the result when one is recorded), holds no
 claim, never resolves, and ends only by withdrawal. This replaces
-`answered`'s use as a protection. A question becomes consumed when:
+`answered`'s use as a protection.
+
+Only an OPEN instance is consumed. Raw keys, or the hold's end, reaching a
+CLAIMED question change nothing of it: the writer goes on to the next
+write once one is made, before the claimer's completion runs, so raw keys
+can come between a structured answer's last byte and its `resolve`. The
+claimer then resolves it, or releases it, after which it is OPEN and what
+comes next applies. A question becomes consumed when:
 - raw keys reach a question read off the screen (decision 2);
 - the hold's end enters held text or picks its choice (above);
 - a screen question is asked again with the words of the one last resolved
@@ -1193,7 +1200,7 @@ classified by where the write stands when it runs out:
 | Timer | Write never began | Write begun or text typed |
 |---|---|---|
 | `session.InputWait` (10 s), a write's wait for the program | release | the claim stands; the write lands when the program reads |
-| `submitTimeout` (10 s; `internal/api/ws_viewer.go`, `internal/hostagent/queue.go`), the host's `inputDeadline` | release | the claim stands: the submission goes on (`ErrSubmitPending` → `finishSubmission`, `errEnterLater` → `finishEnter`); the claimer is told `answer_ok` (accepted), and the result follows |
+| `submitTimeout` (10 s; `internal/api/ws_viewer.go`, `internal/hostagent/queue.go`), the host's `inputDeadline` | release | the claim stands: the submission goes on (`ErrSubmitPending` → `finishSubmission`, `errEnterLater` → `finishEnter`), and the claimer's word waits for its outcome (below) |
 | the page's `ANSWER_WAIT_SECONDS` (15 s) | presentation only: the page says it was not confirmed; nothing on the owner changes | |
 
 A retry after any of these deadlines, while the claim stands, is refused as
@@ -1212,18 +1219,26 @@ plan adds no timer.
   recent results by question id: the last 64, in memory) under `s.mu`. It
   then broadcasts the attention change and the chat line, and only then
   answers the claimer's caller.
-- **`answer_ok` means the owner accepted this answer as the winner.** It is
-  sent:
-  - once its last byte is written with its token current (RESOLVED);
-  - for a line the program takes slowly, once its write has begun under
-    the claim (`ErrSubmitPending`; the result follows when it lands);
-  - when the question was withdrawn first (P24: the agent moved on as the
-    answer was typed), because the answer was written; the attention says
-    the question went.
+- **`answer_ok` is the final word, sent once the answer's outcome is
+  known.** It is sent when its last byte is written with its token current
+  (RESOLVED). It is also sent when the question was withdrawn first (P24:
+  the agent moved on as the answer was typed), because the answer was
+  written; the attention says the question went.
 
-  It is never sent for a stranded line (an error says so) or a refusal.
-  Until it arrives the page shows the answer as submitted. Broadcasting is
-  not delivery.
+  It is never sent while the outcome is pending. A line the program takes
+  slowly (`ErrSubmitPending`, `errEnterLater`) can still be stranded by an
+  Enter left out or its link going. So the transports
+  (`internal/api/ws_viewer.go`'s `answer`, `internal/hostagent/peer.go`'s
+  `answerIn`) register the submission's `Finished` and answer from it.
+  For a choice's keys whose write began and landed late, they answer from
+  `input`'s landed callback. Today they answer `answer_ok` at once for a
+  pending line; that goes.
+
+  A stranded or released answer gets an error naming why. The page's
+  `repliedQuestions` releases the question on any error, so its sender can
+  answer again once the question shows OPEN. Until the word arrives the
+  page shows the answer as submitted; `ANSWER_WAIT_SECONDS` only says it
+  is not confirmed yet. Broadcasting is not delivery.
 - **A late or duplicate answer gets the recorded result.**
   `error{question_answered}` names who answered and when, from the map,
   and says "no longer asked" for a withdrawn question. No new frame and no
@@ -1356,7 +1371,21 @@ plan adds no timer.
   - a line whose Enter had no turn in time (`errEnterLater`).
 
   In both, the claim stands, a retry is refused as being answered, and
-  the line resolves when it lands.
+  the line resolves when it lands. No `answer_ok` is sent before then.
+- **S29. A pending line stranded later.** Its text's write began as
+  `submitTimeout` ran out; then, as it finishes, a prompt comes in its
+  pause, or its link goes, and its Enter is left out. No `answer_ok` was
+  sent. The stranded step follows: the hold, the release, the question
+  held over. The claimer gets the error and its page releases the id. A
+  person's keys end the hold (Ctrl+U), the question shows OPEN, and a new
+  answer (the same page's retry, or another's) claims and resolves it.
+  This runs through the server's WebSocket and through a host's peer.
+- **S30. Raw keys between a structured answer's last byte and its
+  `resolve`:** a choice's keys written, then another viewer's raw Enter
+  taken by the writer before the choice's completion runs. The question
+  is CLAIMED, so the raw keys change nothing of it, and the choice's token
+  resolves it, once. The same holds for the hold's end over a question
+  that another write's claim holds.
 
 ## Invariants
 
@@ -1415,7 +1444,10 @@ Go (`go test -race`):
   - S27, the hold's end by Ctrl+U, by an Enter and by a choice's keys,
     asserting the question's id, its claim and its consumed state (the
     `hold_test.go` case "the text entered" rewritten);
-  - S28, deadlines with a live continuation.
+  - S28, deadlines with a live continuation;
+  - S29, a pending line stranded later, with no early `answer_ok`;
+  - S30, raw keys or a hold's end between a claim's last byte and its
+    `resolve`, which `beforeWritten` pauses.
 - **One table test: every clearing path through release and reclaim.**
   Each row is one path that can end a claim or a question:
   - `resolve` from a choice's keys, from a line's Enter, and from an
@@ -1446,10 +1478,12 @@ Go (`go test -race`):
 - **`internal/api` and `internal/hostagent`:** the same answer through the
   server's WebSocket, and through a host's peer (WebRTC and the relay share
   its frame loop), claims, refuses a second answer with the result, and
-  resolves once.
+  resolves once. A pending line gets its word only from `Finished`: S29
+  through each transport.
 
-Web: if the refusal's words or the reply's states change, vitest for
-`reply.ts`'s helpers. Playwright, `answered.spec.ts` extended: two pages
+Web: vitest for `reply.ts`: an error after a reply releases its question,
+so the page can answer again once the question shows OPEN (S29), and the
+refusal's words. Playwright, `answered.spec.ts` extended: two pages
 answer one question, one wins, and the other page shows the result. A page
 that reconnects after the result shows it. A person typing in the terminal
 leaves the row's question until the agent moves on. The existing
