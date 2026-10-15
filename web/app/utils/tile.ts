@@ -3,6 +3,13 @@ import { FOLLOW_SIZE } from './protocol'
 /** A tile's terminal font size, in pixels: fixed, so a tile fits more columns than a scaled view of the PTY's grid. */
 export const TILE_FONT_SIZE = 11
 
+/**
+ * A tile's scrollback, in rows (#221). Never none: narrowing a terminal that keeps no scrollback while its cursor is above the last row,
+ * xterm.js 6.0's reflow moves the screen one row past the end of its buffer, so the rows are drawn one off (the cursor's line on top)
+ * and the input box stays where it was. With any scrollback the buffer has the row to move into. The wheel scrolls a tile's history.
+ */
+export const TILE_SCROLLBACK = 1000
+
 /** How long a terminal waits after its own pane last changed size before it fits and resizes the session (the full view uses the same). */
 export const FIT_DEBOUNCE_MS = 100
 
@@ -22,6 +29,20 @@ export function helloSize(sizes: boolean, cols: number, rows: number): { cols: n
 export interface Box {
   width: number
   height: number
+}
+
+/**
+ * The columns and rows a tile's terminal fits in its pane, measured as the fit addon measures them (the pane less the terminal's
+ * padding, over the cell; at least 2 × 1) but with no gutter kept for a scrollbar: the addon keeps 14 px for one whenever the terminal
+ * has a scrollback, every pane hides it, and a tile would leave a blank strip beside its grid. Undefined while the cell has no size (not
+ * rendered yet) or a box is not a number.
+ */
+export function tileFit(pane: Box, padding: Box, cell: Box): { cols: number; rows: number } | undefined {
+  if (![pane.width, pane.height, padding.width, padding.height].every(Number.isFinite) || !(cell.width > 0) || !(cell.height > 0)) return undefined
+  return {
+    cols: Math.max(2, Math.floor(Math.max(0, pane.width - padding.width) / cell.width)),
+    rows: Math.max(1, Math.floor((pane.height - padding.height) / cell.height)),
+  }
 }
 
 /**

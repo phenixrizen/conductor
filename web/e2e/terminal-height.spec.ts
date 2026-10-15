@@ -196,12 +196,87 @@ test("a tile on the wall, a short window: the terminal's last row and the cursor
   const { s, cwd } = await shell(api, state.root, 'wall')
   await page.setViewportSize(SHORT)
   await page.goto('/yard')
-  // The wall holds this tile alone, as wide as the wall: what is measured here is the tile's height. Beside sessions earlier specs
-  // left running the tile was narrow, the shell's prompt wrapped, and as the wall narrowed the tile again xterm.js's reflow, with no
-  // scrollback (a tile keeps none), moved the screen one row past the end of its buffer: the tile drew its rows one off, the
-  // cursor's on top, and this check failed (#219). That fault is the terminal's, apart from this test.
+  // The wall holds this tile alone, as wide as the wall: what is measured here is the tile's height. A tile narrowed beside another
+  // is the next test's (#219, #221).
   await expect(page.locator('[data-session-tile]'), 'the wall holds this tile alone: another spec left a session running').toHaveCount(1)
   await expectRowsInPane(page, api, s.id, cwd, 'a tile on the wall', page.locator(`[data-session-tile][data-session-id="${s.id}"]`))
+})
+
+/** The session's size once it holds still: the same on two reads 700 ms apart (a tile fits FIT_DEBOUNCE_MS after its pane changes). */
+async function settledSize(api: Api, id: string): Promise<{ cols: number; rows: number }> {
+  let last = ''
+  let size = { cols: 0, rows: 0 }
+  await expect
+    .poll(
+      async () => {
+        const s = (await api.session(id)) as Session & { cols: number; rows: number }
+        size = { cols: s.cols, rows: s.rows }
+        const now = `${s.cols}x${s.rows}`
+        const same = now === last
+        last = now
+        return same
+      },
+      { timeout: 15_000, intervals: [700], message: 'the size settles' },
+    )
+    .toBe(true)
+  return size
+}
+
+/**
+ * Sizes the window until the session's tile on the wall gives it the `target` size: each step moves the window by what the columns and
+ * rows still to go take at the tile's cell, the width times the tiles `across` the wall, until the session has that size.
+ */
+async function sizeTileTo(page: Page, api: Api, tile: Locator, id: string, target: { cols: number; rows: number }, across: number): Promise<void> {
+  const seen: Array<{ cols: number; rows: number }> = []
+  for (let i = 0; i < 15; i++) {
+    const now = await settledSize(api, id)
+    seen.push(now)
+    if (now.cols === target.cols && now.rows === target.rows) return
+    const box = await tile.locator('.xterm-screen').evaluate((el) => {
+      const r = el.getBoundingClientRect()
+      return { width: r.width, height: r.height }
+    })
+    const vp = page.viewportSize()!
+    await page.setViewportSize({
+      width: Math.round(vp.width + (target.cols - now.cols) * (box.width / now.cols) * across),
+      height: Math.round(vp.height + (target.rows - now.rows) * (box.height / now.rows)),
+    })
+  }
+  throw new Error(`the tile did not size its session to ${target.cols}x${target.rows}: ${JSON.stringify(seen.slice(-5))}`)
+}
+
+// #221: a wall tile narrowed beside a second tile while its cursor is above its last row and longer lines are above it, through the
+// sizes CI's tile had (42 × 6, then 36 × 5). With no scrollback, xterm.js 6.0's reflow moved the screen one row past the end of its
+// buffer: the tile drew its rows one off, the cursor's line on top, and kept its input box where it was, off the cursor's row.
+test("a tile on the wall beside a second, narrowed with its cursor above the last row: the cursor's row shows where the cursor is", async ({ page, api, state }) => {
+  const { s, cwd } = await shell(api, state.root, 'narrowed')
+  await shell(api, state.root, 'beside')
+  await page.setViewportSize({ width: 900, height: 230 })
+  await page.goto('/yard')
+  await expect(page.locator('[data-session-tile]'), 'the wall holds the two tiles: another spec left a session running').toHaveCount(2, { timeout: 30_000 })
+  const tile = page.locator(`[data-session-tile][data-session-id="${s.id}"]`)
+  await expect(tile.locator('.terminal-host .xterm-screen')).toBeVisible({ timeout: 30_000 })
+  await sizeTileTo(page, api, tile, s.id, { cols: 42, rows: 6 }, 2)
+
+  // A screen that has not scrolled: three lines of 38 columns (a 30-column prompt and a command) and the prompt the cursor is on,
+  // two rows blank below it. At 36 columns each of the three takes two rows.
+  await tile.locator('.xterm-helper-textarea').focus()
+  await page.keyboard.type(`PS1='tile-221-prompt-012345678901$ '; printf '\\033[H\\033[2J'\n`)
+  for (const mark of ['a1', 'a2', 'a3']) {
+    await page.keyboard.type(`touch ${mark}\n`)
+    await expect.poll(() => existsSync(join(cwd, mark)), { timeout: 15_000, message: `the shell ran touch ${mark}` }).toBe(true)
+  }
+  // Where xterm keeps its input box, the cursor's row as it draws it: measured on the screen, never read from its text.
+  const cursorRow = async () =>
+    tile.locator('.terminal-host').evaluate((host) => {
+      const screen = host.querySelector('.xterm-screen')!.getBoundingClientRect()
+      const box = host.querySelector('.xterm-helper-textarea')!.getBoundingClientRect()
+      return Math.round(((box.top - screen.top) / (screen.height / 6)) * 100) / 100
+    })
+  await expect.poll(cursorRow, { timeout: 15_000, message: 'the cursor on the fourth row of six' }).toBe(3)
+
+  await sizeTileTo(page, api, tile, s.id, { cols: 36, rows: 5 }, 2)
+  await expectRowsInPane(page, api, s.id, cwd, 'a tile on the wall, narrowed', tile)
 })
 
 test("the Roundhouse, a low window: the terminal's last row and the cursor's row show", async ({ page, api, state }) => {
