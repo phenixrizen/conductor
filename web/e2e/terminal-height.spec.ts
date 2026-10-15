@@ -196,6 +196,11 @@ test("a tile on the wall, a short window: the terminal's last row and the cursor
   const { s, cwd } = await shell(api, state.root, 'wall')
   await page.setViewportSize(SHORT)
   await page.goto('/yard')
+  // The wall holds this tile alone, as wide as the wall: what is measured here is the tile's height. Beside sessions earlier specs
+  // left running the tile was narrow, the shell's prompt wrapped, and as the wall narrowed the tile again xterm.js's reflow, with no
+  // scrollback (a tile keeps none), moved the screen one row past the end of its buffer: the tile drew its rows one off, the
+  // cursor's on top, and this check failed (#219). That fault is the terminal's, apart from this test.
+  await expect(page.locator('[data-session-tile]'), 'the wall holds this tile alone: another spec left a session running').toHaveCount(1)
   await expectRowsInPane(page, api, s.id, cwd, 'a tile on the wall', page.locator(`[data-session-tile][data-session-id="${s.id}"]`))
 })
 
