@@ -873,8 +873,15 @@ orders or invariants above.
   follow-up run after a reply had claimed the question, answered it for
   the reply, before the reply's Enter, and a reply whose link then went
   could not hold it over. `noteAnswering` now reports the claim it made,
-  each write keeps its own (input's `claimed`, `submitState.claimed`), and
+  each write keeps its own (input's `claim`, `submitState.claim`), and
   only a write's own claim is answered by it.
+- **Round 5** (fixed after it, unreviewed). A claim a hold's end let go and
+  another write made again was the same `answered`: keys whose follow-up
+  waited across both answered the question for the reply that claimed it
+  again. Each change of `answered` is counted (`claims`,
+  `setAnsweredLocked`); a write keeps the count its claim made, and
+  `answerReached` answers only while it stands, weighed under the lock
+  that clears the question (`answerWhen`).
 - **The same words, now marked.** An `ask` with the words, source, kind and
   choices of the needs_input showing changes nothing shown, as any report
   of the same; it marks that question as the agent's from then.

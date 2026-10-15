@@ -233,6 +233,11 @@ type Local struct {
 	answered         string
 	dialogAnswered   string
 	dialogAnsweredAt uint64
+	// claims counts the changes of answered (setAnsweredLocked): a claim
+	// is the count as it was made, and one changed since (another write's
+	// claim, a hold's end letting it go) is no longer that claim
+	// (answerReached). Guarded by mu.
+	claims uint64
 	// keysIn splits what is written to the program into the keys it reads
 	// (keysWritten), every write made, in the writer's order. Guarded by mu.
 	keysIn keyReader
@@ -1555,7 +1560,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			}
 		}
 		if stillAnswered && cur.ID != "" {
-			s.answered = cur.ID
+			s.setAnsweredLocked(cur.ID)
 			s.holdAskedAgain(cur.ID, words, heldAsked, startupStill)
 		}
 		if ask && cur.ID != "" && !ownShown {
@@ -1592,7 +1597,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		att.Since = &now
 		att.ID = NewID()
 		if stillAnswered {
-			s.answered = att.ID
+			s.setAnsweredLocked(att.ID)
 			s.holdAskedAgain(att.ID, words, heldAsked, startupStill)
 		}
 	}
@@ -2174,11 +2179,12 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// time run out, a stall, a connection gone): noted is set then, and
 	// read once the write is made.
 	var noted bool
-	// claimed is set as the writer takes the keys when they claim the
+	// claim is set as the writer takes the keys when they claim the
 	// agent's own question set aside as they began (aside), shown again
-	// since: they answer it once written, and nothing claimed by another
-	// write is answered by them.
-	var claimed bool
+	// since: they answer it once written while that claim stands, and
+	// nothing claimed by another write, or claimed again, is answered by
+	// them.
+	var claim uint64
 	// Set as the writer takes the keys, as keysWritten reads them (a paste
 	// or an escape sequence a write before left unfinished carried in):
 	// typedEnter says they answer the prompt they were typed at as answer
@@ -2342,7 +2348,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			if restored {
 				noteAside = ""
 			}
-			claimed = s.noteAnswering(promptSince, data, maybe, onScreen, noteAside, typed)
+			claim = s.noteAnswering(promptSince, data, maybe, onScreen, noteAside, typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -2454,8 +2460,8 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	written := func() {
 		if !quiet {
 			s.typedKeys(sub, data, promptSince, typedEnter, noted, typed)
-			if claimed {
-				s.answerReached(aside, sub.ID, sub.Name)
+			if claim != 0 {
+				s.answerReached(aside, claim, sub.ID, sub.Name)
 			}
 		}
 		if startupSince != nil {
@@ -2619,17 +2625,25 @@ func (s *Local) dropOwnLocked() {
 // answerReached answers the agent's own question named id, once a person's
 // write that began while it was set aside is made, when its turn's done
 // showed it again meanwhile and that write claimed it (noteAnswering
-// reported its own claim, which its caller keeps: another write's claim of
-// the same question is not this one's), while it still shows claimed: the
-// person's keys or reply reached it. Nothing otherwise.
-func (s *Local) answerReached(id, by, byName string) {
+// reported the claim it made, claim, which its caller keeps), while that
+// claim stands: weighed under the lock that clears the question, so that
+// a claim another write made, or one made again after a hold's end let it
+// go (setAnsweredLocked), is not this one's. The person's keys or reply
+// reached it. Nothing otherwise.
+func (s *Local) answerReached(id string, claim uint64, by, byName string) {
 	s.mu.Lock()
-	att := s.info.Attention
-	reached := id != "" && att.ID == id && att.State == AttentionNeedsInput && s.answered == id
+	since := s.info.Attention.Since
 	s.mu.Unlock()
-	if reached {
-		s.answer(att.Since, by, byName, true, true)
-	}
+	s.answerWhen(since, by, byName, true, true, func() bool {
+		return id != "" && claim != 0 && s.info.Attention.ID == id && s.answered == id && s.claims == claim
+	})
+}
+
+// setAnsweredLocked notes id as the question a write is being made to
+// answer (answered), a claim of its own (claims). The caller holds s.mu.
+func (s *Local) setAnsweredLocked(id string) {
+	s.answered = id
+	s.claims++
 }
 
 // asideOwn is the id of the agent's own question while it is set aside,
@@ -2795,7 +2809,7 @@ func (s *Local) claimQuestion(id string) error {
 // answer (answered), and a dialog asked during the work by its words
 // (dialogAnswered). The caller holds s.mu.
 func (s *Local) markAnswered(att Attention) {
-	s.answered = att.ID
+	s.setAnsweredLocked(att.ID)
 	switch att.Source {
 	case SourceQuestion:
 		s.noteDialogAnswered(att.words())
@@ -2860,8 +2874,9 @@ func (s *Local) dialogGone(look uint64) {
 // write's own keys ended the hold that held it over and showed it again
 // without answering it (its caller passes no aside then). Conductor's own
 // write leaves it as it is, aside or shown, and answers nothing of it. It
-// reports whether this write made that claim.
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, aside string, person bool) (claimed bool) {
+// returns the claim this write made (setAnsweredLocked's count), 0 for
+// none.
+func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView, aside string, person bool) (claim uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, keys) {
@@ -2875,9 +2890,9 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte
 	case aside != "" && s.own.ID == aside && s.info.Attention.ID == aside:
 		if person && s.answered != aside {
 			s.markAnswered(s.info.Attention)
-			claimed = true
+			claim = s.claims
 		}
-		return claimed
+		return claim
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
@@ -2894,10 +2909,10 @@ func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte
 	}
 	typedAt := att.Since == promptSince && !heldSource(att.Source)
 	if !picks && !typedAt {
-		return false
+		return 0
 	}
 	s.markAnswered(att)
-	return false
+	return 0
 }
 
 // dialogView is a dialog asked during the work as the screen shows it: its
@@ -3754,9 +3769,15 @@ func AnswerResult(reqID string, err error) []byte {
 // both claim the prompt. With record, an input entry with the question
 // records the answer.
 func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter bool) {
+	s.answerWhen(promptSince, by, byName, record, enter, nil)
+}
+
+// answerWhen is answer, which also asks owns, when set, in the same
+// critical section: nothing is answered unless it says so.
+func (s *Local) answerWhen(promptSince *time.Time, by, byName string, record, enter bool, owns func() bool) {
 	s.mu.Lock()
 	att := s.info.Attention
-	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || !heldSource(att.Source))
+	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || !heldSource(att.Source)) && (owns == nil || owns())
 	question := att.Message
 	var answered ChatMessage
 	var answeredID string

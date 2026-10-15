@@ -1225,3 +1225,115 @@ func TestKeysThatOnlyShowTheQuestionAgainNeverTakeAReplysClaim(t *testing.T) {
 		t.Fatalf("an answer was recorded: %+v", a)
 	}
 }
+
+// A person's keys begun while the question is set aside claim it once the
+// turn's done has shown it again, and their follow-up waits. Meanwhile a
+// guest's line is typed at the question and let go before its Enter (the
+// hold holds the question over), Ctrl+U ends that hold and lets the claim
+// go, and another reply claims the question and waits at its Enter: the
+// first keys' follow-up answers nothing (their claim is gone; the reply's
+// is not theirs), and once that reply is let go too and a person's keys
+// end the hold, the question shows, answerable, nothing recorded as its
+// answer. (Codex's review of the code, round 5.)
+func TestAClaimLetGoIsNotTheClaimMadeAgain(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond})
+	hold, takeAgain := gateWrites(t, p)
+	owner := ownerOf(t, s)
+	var firstGone, secondGone atomic.Bool
+	first := linkedController(t, s, newChanSink(false), &firstGone)
+	second := linkedController(t, s, newChanSink(false), &secondGone)
+	q := askOwn(t, s, "Which name?")
+	reportState(t, s, AttentionWorking, "")
+	// The person's keys wait behind a terminal's own report, begun while
+	// the question is set aside; the done shows it again.
+	hold()
+	go s.Input(owner, []byte("\x1b[3;1R"))
+	untilWaiting(t, s, 0)
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	afterKeys := func(data []byte) {
+		if string(data) == "Ad" {
+			once.Do(func() { close(reached); <-gate })
+		}
+	}
+	s.beforeWritten.Store(&afterKeys)
+	var gateOnce sync.Once
+	openGate := func() { gateOnce.Do(func() { close(gate) }) }
+	t.Cleanup(openGate)
+	keys := make(chan error, 1)
+	go func() { keys <- s.Input(owner, []byte("Ad")) }()
+	untilWaiting(t, s, 1)
+	reportState(t, s, AttentionDone, "asked")
+	showsOwn(t, s, q, "the done with the keys queued")
+	takeAgain()
+	written(t, p)
+	if got := written(t, p); got != "Ad" {
+		t.Fatalf("written %q", got)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the keys never came to what follows their write")
+	}
+	// A guest's line typed at the question, let go before its Enter: the
+	// hold holds the question over.
+	at, release := pauseEnter(t, s)
+	line := submitAsync(s, Submission{Text: "x", By: first})
+	if got := written(t, p); got != "x" {
+		t.Fatalf("written %q", got)
+	}
+	atEnter(t, at)
+	firstGone.Store(true)
+	s.DisconnectLink(first.LinkID)
+	release()
+	if got := returnsWithin(t, 5*time.Second, "the guest's line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("the guest's line: %+v, %v", got.res, got.err)
+	}
+	heldShows(t, s)
+	// Ctrl+U ends the hold, the question shows again, and the claim is let go.
+	if err := s.Input(owner, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\x15" {
+		t.Fatalf("written %q", got)
+	}
+	showsOwn(t, s, q, "once Ctrl+U ended the hold")
+	// Another reply claims it and waits at its Enter.
+	at, release = pauseEnter(t, s)
+	reply := submitAsync(s, Submission{Text: "Ada", By: second, Question: q.ID})
+	if got := written(t, p); got != "Ada" {
+		t.Fatalf("written %q", got)
+	}
+	atEnter(t, at)
+	// The first keys' follow-up runs now: it answers nothing.
+	openGate()
+	if err := returnsWithin(t, 5*time.Second, "the first keys", func() error { return <-keys }); err != nil {
+		t.Fatal(err)
+	}
+	showsOwn(t, s, q, "after the first keys' follow-up")
+	if a := s.Info().LastAnswer; a != nil {
+		t.Fatalf("the first keys were recorded as the answer: %+v", a)
+	}
+	// The reply is let go before its Enter: the hold holds the question
+	// over, and a person's keys that end it show it again, answerable.
+	secondGone.Store(true)
+	s.DisconnectLink(second.LinkID)
+	release()
+	if got := returnsWithin(t, 5*time.Second, "the reply", func() submitted { return <-reply }); !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("the reply: %+v, %v", got.res, got.err)
+	}
+	heldShows(t, s)
+	if err := s.Input(owner, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\x15" {
+		t.Fatalf("written %q", got)
+	}
+	showsOwn(t, s, q, "once the last hold ended")
+	if err := s.questionWaits(q.ID); err != nil {
+		t.Fatalf("a reply to it: %v", err)
+	}
+	if a := s.Info().LastAnswer; a != nil {
+		t.Fatalf("an answer was recorded: %+v", a)
+	}
+}
