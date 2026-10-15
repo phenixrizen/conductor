@@ -890,6 +890,308 @@ orders or invariants above.
   the hold without answering it, as a question the hold took the place of.
 - **A switchyard** is told no mark, as it is told no words.
 
+# Who may answer a question (Part B's claim rule, 2026-10-15)
+
+Reviews 4, 5 and 6 of #207's code each found one more way a write clears a
+question it no longer owns. Each fix closed one path: a per-write claim
+(round 4), then a count of claims (round 5); round 6 found the
+timestamp-only path. The three are one fault, because the session has two
+ways to say which question a write answers, and only one is protected:
+
+- **The prompt showing as the write began** (`promptSince`, the question's
+  `Since` pointer). `answer(promptSince)` clears whatever still shows with
+  that stamp.
+- **The claim** (`answered`, now counted by `claims`), made as the writer
+  takes the write. A reply naming its question is refused while another
+  claim stands.
+
+A question keeps its id and `Since` when it shows again: the done showing
+it from aside, or a hold's end restoring it. The plan chose this on
+purpose (review round 1 of the plan), so that a reply under way keeps its
+Enter. So a stamp captured before the question went away still matches
+after it comes back, and any path that clears by the stamp alone can clear
+a question that another write has claimed since.
+
+#207 is held as a draft and patched no further until this section is
+reviewed. Its code then changes to this one rule; nothing else in Part B
+changes (below).
+
+## Every path that clears or answers a question
+
+From the code at 36ee67e (`internal/session`). "Clears" means the attention
+showing becomes the empty state as answered, or a kept question (`own`,
+`heldOver`) is dropped.
+
+**A. A write's own completion: it cleared what it took to be its answer
+once written.**
+
+1. Keys (`input`: INPUT, a host's own terminal through `InputWaiting` and
+   `InputContext`, a page's choice): `written` → `typedKeys` →
+   `answer(promptSince, enter)`. Today this path is stamp-only (round 6).
+2. A quick reply (#192, the `answer` message: `AnswerInput`, `input` with a
+   question): the guard claims (`claimQuestion`), then the same
+   `typedKeys` → `answer(promptSince)`.
+3. Keys that surely answer a startup question: `before` marks it answered
+   (`markAnswered`) and keeps its `Since` (`startupSince`); `written` →
+   `answer(startupSince)`.
+4. Keys begun while the agent's own question was set aside, which claimed
+   it once its turn's done had shown it again: `written` →
+   `answerReached(aside, claim)` (rounds 1, 4 and 5).
+5. A submission's Enter (`pressEnter`): a reply's line (`Submit` with `By`,
+   a chat sent to the agent, with or without `Question`) →
+   `answer(promptSince, By)`; Conductor's own line (a crew's prompt, a
+   handoff, a broadcast, a run's chat to a member) →
+   `answer(promptSince, "", byName)`. The text's guard claims for a reply
+   naming its question (`textGuard` → `claimQuestion`); an Enter-only
+   reply's guard claims (`pressEnter`'s guard). The same applies when the
+   line is finished later (`finishSubmission`, `finishLine`,
+   `pressEnterHeld`).
+6. A person's reply begun while the question was set aside, which claimed
+   it at its text or Enter: `answerReached(st.aside, st.claim)`.
+
+**B. The session's own observation of the screen.**
+
+7. `fireAsked`: a dialog with other words is asked while the one a person
+   typed at still shows (`typedAtAsked`) → `answer(cur.Since, typed.by)`.
+8. `missAsked`: a quiet screen shows no dialog after a key was typed at the
+   one showing → `answer(att.Since, typed.by)`.
+9. `escGone`: a startup question held answered by an Escape
+   (`holdStartupAnswered`) that the screen shows gone →
+   `answer(att.Since, held.by)`.
+
+**C. Claims: the right a write or observation takes to clear later.**
+
+10. `claimQuestion`: a reply naming its question (the text's guard, an
+    Enter-only reply's guard, `AnswerInput`'s guard).
+11. `noteAnswering` → `markAnswered`, as the writer takes keys, a text or an
+    Enter: keys typed at the prompt showing as they began (`typedAt`),
+    keys that pick its choice or Enter (`picksChoice`, a dialog's `picks`),
+    the own question shown again since a person's write began aside;
+    `noteDialogAnswered` for the dialog on the screen.
+12. `input`'s startup paths: `markAnswered(att)` when keys surely answer a
+    startup question.
+13. `holdStartupAnswered`: an Escape that may answer a startup question.
+14. `setAttentionLooked`'s `stillAnswered` (a dialog or startup question
+    asked again before it went): the session claims it itself
+    (`setAnsweredLocked`, `holdAskedAgain`).
+15. `endHoldTyped` lets the held text's claim go as it restores the
+    question (`setAnsweredLocked("")`).
+
+**D. Changes of what shows that answer nothing.**
+
+16. `setAttentionLooked` applying any report or observation: the agent's
+    `working`, `done`, `needs_input` (with the mark or without), its or an
+    admin's `clear`; the bell, an OSC notification, the screen pattern; a
+    startup question (`fireTrust`); a dialog (`fireAsked`); Codex's title
+    and its settle timer; the hold (`holdTyped`'s `whileHeld`).
+17. The done showing the agent's own question again from aside (the same
+    `Attention`).
+18. `endHoldTyped`: restores the question the hold held over, or drops the
+    agent's own question held over when the keys pick one of its choices
+    (an answer made and settled in one critical section, with no deferred
+    step).
+19. `holdTyped`'s end clears the hold's own words (`source:"submit"`, which
+    no reply may answer: `waitsLocked`).
+20. `answer` showing the hold again after answering a question that showed
+    over it.
+21. `markEnded`: the session's end clears everything and drops what is kept.
+22. Dropping the agent's own question while it is not shown:
+    `noteAnswering` (a person's write while it is set aside), the held
+    branch of `setAttentionLooked`, its default case, `answer` on it, and
+    `markEnded`.
+
+**What clears nothing.** `enterAgain` (a crew's second Enter, written only
+while no question shows), the hosted session's server copy (its answers go
+to the host's session, which follows this rule), and `comesAfter` (it only
+decides whether an Enter is written).
+
+## The rule
+
+A question's claim is a ticket: **(question id, generation)**.
+
+- **The generation** (`s.gen`, under `s.mu`) changes whenever what may be
+  answered changes, and at no other time. That means:
+  - a question shows (a new id), or one shows again (paths 17, 18 and 20);
+  - the attention showing is replaced or cleared (paths 16, 19 and 21);
+  - a claim is made (paths 10–14) or let go (path 15).
+
+  It does not change when nothing shown changes: a done that leaves the
+  question showing, the same report again, the same dialog read at another
+  width (its `rows`), a bell that changes nothing, or a report recorded
+  under the hold without being shown. This is what lets a reply under way
+  keep its claim across them (P23).
+- **A ticket is made only by a claim or by an observation**, in the
+  critical section that makes it:
+  - a write's claim (paths 10–12) gives that write its ticket;
+  - the session's own claim (13, 14) gives the observer that will settle
+    it a ticket, kept with what it holds (`heldAnswer` for 13);
+  - an observation (paths 7–9) takes the current ticket in the critical
+    section where it decides that the question it saw is gone.
+
+  A claim is taken only while none stands on the question: the first one
+  holds. A write that already holds the claim makes no second one, and
+  another write reaching a claimed question claims nothing.
+- **Every clear is one function**, `answerWith(ticket, by, byName, record,
+  enter)`. It clears only if, in the critical section that clears, the
+  question showing has the ticket's id and the generation is still the
+  ticket's (and, for a question the session holds, `enter`). Paths 1–9 all
+  go through it. `answer(promptSince)`, `answerReached` and `answerWhen` go
+  away.
+- **No clear by stamp alone.** `promptSince` remains a write's view of
+  what it began at, taken as a ticket at the start: the id and generation
+  of the attention showing then. It counts only for a claim (`typedAt`),
+  and only while that ticket is still current when the writer takes the
+  write, meaning the same question has showed throughout with nothing
+  claimed, released or shown again. A write that made no claim can never
+  clear a question.
+
+What each path captures, and when:
+
+| Path | Captures | When | Clears with |
+|---|---|---|---|
+| 1 keys | begin ticket; claim ticket if `typedAt` (begin ticket current) or the keys pick the showing question | `input`'s first lock; `before` (as the writer takes them) | its claim ticket, in `written` |
+| 2 quick reply | claim ticket from its guard | the guard, the last check before the write | that ticket |
+| 3 startup keys | claim ticket from `markAnswered` | `before` | that ticket, in `written` (replaces `startupSince`) |
+| 4 keys begun aside | claim ticket for the own question shown again since | `before` (`noteAnswering`) | that ticket (replaces `answerReached`) |
+| 5 a line's Enter | begin ticket; claim ticket from the text's guard or `noteAnswering`, or else the Enter's | `Submit`'s first lock; the text's and the Enter's guard and `before` | its ticket, once the Enter is written |
+| 5 Conductor's line | as 5; no claim of the own question it began with set aside (`except`, P28) | as 5 | its ticket, if it claimed one |
+| 6 reply begun aside | as 4, for its text or Enter | as 5 | as 5 (replaces `answerReached`) |
+| 7, 8 dialog gone | the current ticket | the critical section that decides "gone" | that ticket |
+| 9 startup gone | the current ticket | `escGone`'s second check, under its lock | that ticket |
+
+## Invariants
+
+1. Every clear of a question as answered goes through `answerWith`, with a
+   ticket made by a claim or an observation of that question that is still
+   current where it clears.
+2. A question shown again (the done from aside, a hold's end) is a new
+   generation. No write begun, and no claim made, before it showed again
+   can clear it; only a claim made after it can.
+3. Keys or a line count as typed at a question only while that question
+   has showed, unclaimed and unchanged, from the moment they began until
+   the writer takes them.
+4. At most one claim stands: the first. A reply naming a claimed question
+   is refused (#192, `waitsLocked`), and keys or a line reaching it claim
+   nothing. Only a release (a hold's end letting the held text's claim
+   go) or the question shown anew frees it, and that makes the old ticket
+   stale.
+5. A claim survives what changes nothing shown: a reply under way keeps its
+   Enter and answers its question (P23).
+6. The agent's reports and clear, the program's screen (dialogs, startup
+   questions) and the session's end answer nothing. They need no ticket,
+   and they make every older ticket stale.
+7. Each clear as answered records exactly one answer (`LastAnswer`, the
+   chat's answered line, the input entry), credited to the holder of the
+   ticket.
+
+## The orderings these must hold under
+
+- **R3 (round 3).** Keys are typed at Q, which shows (begin ticket
+  `(Q, g)`). They wait behind another write; the hold takes Q's place; the
+  done comes; the keys are written, and as they end the hold Q is restored
+  (`g` moves on). `typedAt` fails because the begin ticket is stale, so the
+  keys claim nothing and answer nothing. Q shows answerable.
+- **R4 (round 4).** Ctrl+U begins with Q set aside. The done holds Q over;
+  Ctrl+U restores Q (`g` moves) and claims nothing. A reply claims Q (`g`
+  moves) and waits at its Enter. Ctrl+U's completion has no ticket. The
+  reply's link goes, the hold holds Q over again, and keys that end it
+  show Q, answerable.
+- **R5 (round 5).** Keys A claim Q (ticket `(Q, g1)`) and their completion
+  waits. Meanwhile:
+  - a guest's line typed at Q is let go before its Enter, and the hold
+    holds Q over;
+  - Ctrl+U restores Q and lets the claim go;
+  - reply C claims Q.
+
+  A's completion finds `g1` stale and answers nothing. C settles.
+- **R6 (round 6).** The same as R5, but Q shows as A begins: A claims by
+  `typedAt` (`(Q, g1)`). A's completion finds `g1` stale. Today the
+  stamp-only path clears Q here.
+- **P23.** A reply's text claims Q. The turn's done leaves Q showing (no
+  change, so `g` stays). The Enter is written and settles.
+- **P24.** A reply claims Q. The agent's work drops Q, since it was
+  reached, not set aside. The Enter's ticket names a question no longer
+  showing, so nothing is cleared, and the done shows done.
+- **P28.** A handoff begins with Q set aside, and the done shows Q again.
+  The Enter is written (`comesAfter`'s exception) and claims nothing
+  (`except`). Q stays, answerable.
+- **Two replies to one question (#192).** The first claims, and the second
+  is refused at its guard.
+- **Keys and a quick reply at once.** The first to claim holds the only
+  ticket. The other is refused at its guard (a reply) or claims nothing
+  (keys), and the question is answered once, by the first.
+- **A dialog gone against a reply.** `missAsked` decides the dialog is gone
+  and takes its ticket. If a reply claims meanwhile, the observer's clear
+  is refused and the reply settles; otherwise the observer settles.
+- **A startup question held answered (`escGone`) against keys that surely
+  answer it.** Whichever ticket is current settles, and only once.
+- **A claim made, then the question replaced by the agent** (working, a
+  dialog, another question) **and asked again with the same words.** The
+  new question has a new id, the old ticket names the old one, and it
+  clears nothing.
+- **The session's end between a claim and its completion.** The ticket is
+  stale and nothing is cleared after the end (P17 stands).
+
+## Tests that pin them
+
+Go (`go test -race`), in `internal/session`:
+
+- The existing regressions, kept as they are:
+  - `TestKeysThatEndTheHoldLeaveTheQuestionTheDoneHeldOver` (round 2);
+  - `TestKeysQueuedBeforeTheHoldDoNotAnswerTheQuestionTheyShowAgain` (R3);
+  - `TestKeysThatOnlyShowTheQuestionAgainNeverTakeAReplysClaim` (R4);
+  - `TestAClaimLetGoIsNotTheClaimMadeAgain` (R5).
+- The round 6 variant: `TestAClaimLetGoIsNotTheClaimMadeAgain` with its
+  first working report left out, so that Q shows as A begins. It fails at
+  36ee67e.
+- **One table test, every path through a release and a reclaim.** For each
+  of paths 1–9, the test starts the path and pauses it after its claim or
+  observation and before its clear. The test hooks already exist for keys
+  (`beforeWritten`) and an Enter (`beforeEnter`); one is added for an
+  observer's clear. While the path is paused, the test releases and
+  reclaims the question:
+  - for a question the agent reported: a line let go, the hold, keys that
+    end it showing the question again, then another reply's claim;
+  - for a dialog or a startup question: the question answered and asked
+    again (`stillAnswered`), or replaced and asked anew.
+
+  It then resumes the paused path and asserts that the question still
+  shows, that nothing was recorded as its answer, and that the reclaimer's
+  write answers it once, credited to the reclaimer. A second row for each
+  path runs it with no release, to show that the path still answers: real
+  answers still count.
+- P1–P29, #192's answer tests (`answer_test.go`), the hold tests
+  (`hold_test.go`) and the question tests (`question_test.go`) pass
+  unchanged.
+- **Every clear goes through `answerWith`.** A unit test fails if any
+  function other than `answerWith` writes the empty state as answered (a
+  set-up `LastAnswer`), so a fifth path cannot be added beside it.
+
+No new Playwright spec: the orderings need a paused writer, which only the
+Go tests can hold. `askwait.spec.ts` and the existing specs pass unchanged.
+
+## What stays as #207 has it
+
+- The `--ask` mark (`notify --ask`, the MCP tool `ask`, the routes' `ask`,
+  `HostAttentionMsg.ask` both ways, no mark for a switchyard), and a plain
+  `--state needs_input` without it.
+- The agent's own question: set aside in its turn, shown again at the
+  turn's done as the same `Attention`, kept shown through a done, held over
+  by the hold, and every clearing event of P1–P29 (an answer, a person's
+  keys or reply, the agent's clear or next question, the agent at work in a
+  new turn, the session's end).
+- Conductor's submissions: the aside note (`comesAfter`), the Enter that
+  answers and claims nothing (P28), and a person's write removing a
+  question set aside.
+- The words, the docs and the e2e spec.
+
+What changes is how a clear is allowed:
+- `answer(promptSince)`, `answerReached`, `answerWhen`, `claims` and
+  `setAnsweredLocked` give way to the generation, the ticket and
+  `answerWith`;
+- `endHoldTyped`'s `promptSince = nil` and the `restored` special case
+  become what the generation already says.
+
 # The pull requests, in order
 
 1. The host-connection change merges first (its own plan): it changes
