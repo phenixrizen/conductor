@@ -101,20 +101,20 @@ html, body, #__nuxt {
   height: 100%;
 }
 
-/* The terminal canvas is the UI background so panes blend with the page. */
+/* The terminal canvas is the UI background so panes blend with the page. The host fills its pane and no more, so that the fit lays
+   out only the rows that show (#189, #201): every pane gives it a definite height, and a least height is the pane's to hold (the
+   editor column's slot: EditorColumn's min-h-32). */
 .terminal-host {
   position: relative;
   height: 100%;
-  min-height: 12rem;
   overflow: hidden;
   background: var(--ui-bg);
 }
 
-/* In the editor column the slot holds the terminal's least height (EditorColumn's min-h-32, 8rem): the host fills the slot and no
-   more, so that the fit lays out only the rows that show (#189). Folded (h-0: a phone with a file open), the host keeps its own
-   minimum. */
-[data-terminal-slot="open"] .terminal-host {
-  min-height: 0;
+/* Folded in the editor column (h-0: a phone with a file open), the host keeps the least height it always had, out of sight, as #189
+   left it; a scaled view keeps none, as before. */
+[data-terminal-slot="folded"] .terminal-host:not(.terminal-scale) {
+  min-height: 12rem;
 }
 
 .terminal-host .xterm {
@@ -128,10 +128,6 @@ html, body, #__nuxt {
 
 /* Scale mode: the terminal renders at its owner's size and is scaled down
    with a transform to fit the pane (wall tiles, session thumbnails). */
-.terminal-scale {
-  min-height: 0;
-}
-
 .terminal-scale .xterm {
   position: absolute;
   left: 0;
