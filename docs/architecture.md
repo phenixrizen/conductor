@@ -307,7 +307,8 @@ registers the `conductor:` scheme: an invite opens its own join page with
   share tokens.
 - A plain connection to another machine is said out loud. `conductor host`
   refuses a plain `http://` (or `ws://`) server that is not this machine
-  (`localhost`, `127.0.0.0/8`, `::1`; `config.PlainOffMachine`) before it
+  (`localhost` in lower case, `127.0.0.0/8`, `::1`: the hosts a proxy the
+  environment names never carries; `config.PlainOffMachine`) before it
   writes or dials anything, unless `--insecure` says to go ahead, and then
   says on stderr and in its log that what passes travels in the clear and
   unverified; a redirect the dial follows is held to the same rule as the URL

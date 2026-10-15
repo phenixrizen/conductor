@@ -284,7 +284,7 @@ func addAPIFlags(fs *flag.FlagSet) apiFlags {
 		server: fs.String("server", "", "conductor server URL (env CONDUCTOR_SERVER, default "+defaultServer+")"),
 		// No default is shown or read here: -h would print the token.
 		token:    fs.String("token", "", "workbench token (env CONDUCTOR_WORKBENCH_TOKEN)"),
-		insecure: fs.Bool("insecure", false, "allow a plain http:// server on another machine, which is refused without it: the workbench token sent with every request, and the replies, then travel in the clear and unverified; a server on this machine (localhost) needs nothing"),
+		insecure: fs.Bool("insecure", false, "allow a plain http:// server that is not localhost or a loopback address (127.0.0.0/8, ::1), which is refused without it: the workbench token sent with every request, and the replies, then travel in the clear and unverified"),
 	}
 }
 

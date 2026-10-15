@@ -49,7 +49,7 @@ export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs 
 
 /**
  * plainSwitchyard says whether url is a plain http:// URL to a host that is not this machine, as the server's own check
- * (config.PlainOffMachine) reads it, which refuses such a switchyard: localhost by that name, an address in 127.0.0.0/8 written as
+ * (config.PlainOffMachine) reads it, which refuses such a switchyard: localhost written in lower case, an address in 127.0.0.0/8 written as
  * four decimal numbers, or ::1 (or 127 mapped into IPv6) is this machine, and any other host is not, a name or a short form of an
  * address that a browser would read as 127.0.0.1 among them. A URL that does not parse, or is not http, is not one.
  */
@@ -70,8 +70,9 @@ function thisMachine(raw: string, u: URL): boolean {
   // backslash as the parser does.
   if (raw.includes('\\')) return false
   const authority = raw.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
-  const typed = authority.slice(authority.lastIndexOf('@') + 1).split(':', 1)[0]!.toLowerCase()
-  if (typed !== host) return false
+  const typed = authority.slice(authority.lastIndexOf('@') + 1).split(':', 1)[0]!
+  if (typed.toLowerCase() !== host) return false
+  // localhost written so, in lower case, as the server reads it: the one spelling of it that a proxy the environment names never takes.
   if (typed === 'localhost') return true
   const quad = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(typed)
   return !!quad && quad.slice(1).every((p) => (p === '0' || !p.startsWith('0')) && Number(p) <= 255)

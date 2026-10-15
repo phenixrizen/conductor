@@ -100,13 +100,13 @@ describe('a plain switchyard', () => {
   const words = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
   it('is refused on another machine, with the words why', () => {
     expect(PLAIN_SWITCHYARD).toBe(words)
-    for (const server of ['http://yard.example:8080', 'http://192.168.1.10:8080', 'HTTP://yard.example', 'http://localhost.yard.example', 'http://127.0.0.1.yard.example', 'http://127.1:8080', 'http://0x7f.0.0.1', 'http://127.000.0.1', 'http://0.0.0.0:8080', 'http://[fe80::1]:8080', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example']) {
+    for (const server of ['http://yard.example:8080', 'http://192.168.1.10:8080', 'HTTP://yard.example', 'http://localhost.yard.example', 'http://127.0.0.1.yard.example', 'http://127.1:8080', 'http://0x7f.0.0.1', 'http://127.000.0.1', 'http://0.0.0.0:8080', 'http://[fe80::1]:8080', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example', 'http://LOCALHOST:8080', 'http://LocalHost:8080/']) {
       expect(plainSwitchyard(server), server).toBe(true)
       expect(validate({ ...base, switchyardServer: server }), server).toEqual([words])
     }
   })
   it('is kept on this machine, and an https one anywhere', () => {
-    for (const server of ['http://localhost:8080', 'http://LocalHost:8080/', 'http://127.0.0.1:8080', 'http://127.20.30.40', 'http://[::1]:8080', 'http://[::ffff:127.0.0.1]:8080', 'https://yard.example', 'https://192.168.1.10:8443']) {
+    for (const server of ['http://localhost:8080', 'http://localhost:8080/', 'http://127.0.0.1:8080', 'http://127.20.30.40', 'http://[::1]:8080', 'http://[::ffff:127.0.0.1]:8080', 'https://yard.example', 'https://192.168.1.10:8443']) {
       expect(plainSwitchyard(server), server).toBe(false)
       expect(validate({ ...base, switchyardServer: server }), server).toEqual([])
     }

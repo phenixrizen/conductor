@@ -21,7 +21,7 @@ export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs 
 
 /**
  * switchyardProblem is what the Settings page says before it saves a switchyard that is plain http on another machine, which the
- * app and its server refuse (PLAIN_SWITCHYARD); '' for one it may save, and while publishing is off. This machine is localhost by
+ * app and its server refuse (PLAIN_SWITCHYARD); '' for one it may save, and while publishing is off. This machine is localhost, in lower case, by
  * that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or 127 mapped into IPv6), as the server reads it
  * (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is not. The app checks the rest of the URL.
  */
@@ -43,8 +43,9 @@ function thisMachine(raw: string, u: URL): boolean {
   // backslash as the parser does.
   if (raw.includes('\\')) return false
   const authority = raw.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
-  const typed = authority.slice(authority.lastIndexOf('@') + 1).split(':', 1)[0]!.toLowerCase()
-  if (typed !== host) return false
+  const typed = authority.slice(authority.lastIndexOf('@') + 1).split(':', 1)[0]!
+  if (typed.toLowerCase() !== host) return false
+  // localhost written so, in lower case, as the server reads it: the one spelling of it that a proxy the environment names never takes.
   if (typed === 'localhost') return true
   const quad = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(typed)
   return !!quad && quad.slice(1).every((p) => (p === '0' || !p.startsWith('0')) && Number(p) <= 255)

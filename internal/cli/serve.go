@@ -289,7 +289,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		log.Info("sessions are published to the switchyard", "server", server, "hostToken", rv.Token != "")
 		if rv.Insecure && config.PlainOffMachine(server) {
 			// Once per start: the config allowed it (rendezvous.insecure).
-			log.Warn("rendezvous.insecure: the switchyard is plain http on another machine; what this server publishes there travels in the clear and unverified", "server", server)
+			log.Warn("rendezvous.insecure: the switchyard is plain http and not localhost or a loopback address; what this server publishes there travels in the clear and unverified", "server", urlHost(server))
 		}
 	} else if !cfg.Switchyard.Enabled {
 		log.Info("sessions are not published to a switchyard; share links work where this server is reachable")

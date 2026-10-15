@@ -50,7 +50,7 @@ Your terminal is attached as a controller; the session appears in the UI as
 `hosted`. Add `--relay-only` to skip WebRTC entirely, `--no-local` to run it
 headless, or `--stun stun:host:3478` to override the ICE servers.
 A server on another machine is `https://`: a plain `http://` (or `ws://`)
-one that is not this machine (`localhost`, `127.0.0.0/8`, `::1`) is refused
+one that is not this machine (`localhost` in lower case, `127.0.0.0/8`, `::1`) is refused
 before anything is dialed, unless `--insecure` says to go ahead, and then
 the host says that what passes between it and the server (the session's
 output, its viewers' keys) travels in the clear and unverified. A redirect
@@ -1471,7 +1471,7 @@ file must run `compinit` before that line.
 | `tls.acme.caDirectory`, `tls.acme.profile` | `CONDUCTOR_TLS_ACME_CA`, `CONDUCTOR_TLS_ACME_PROFILE` | Let's Encrypt; `shortlived` for IP addresses | the ACME directory (`https`), and the certificate profile |
 | `rendezvous.enabled` | `CONDUCTOR_RENDEZVOUS` (`1`/`true` on, `0`/`false` off) | `true` | publish every session to a switchyard, where share links are minted and work from anywhere; off, links work where this server is reachable |
 | `rendezvous.server`, `rendezvous.token` | `CONDUCTOR_RENDEZVOUS_SERVER`, `CONDUCTOR_RENDEZVOUS_TOKEN` | `https://switchyard.rslabs.net`, no token | the switchyard every session is published to, through the host protocol (as `conductor host` does); the token is optional (a host token of a private switchyard, or a trusted seat on the public one); the session is listed there as hosted by this server (`rendezvous.hostName`, the machine's name by default), its viewers served over WebRTC or the relay (`rendezvous.relayOnly`), and share links minted there; the local session's activity records where it is published. The switchyard is told the session's name, agent and folder's last element and its status and attention state, never its command line, OS user, branch, chat or activity; a stop it sends ends the publication, not the session |
-| `rendezvous.insecure` | `CONDUCTOR_RENDEZVOUS_INSECURE` (`1`/`true`, `0`/`false`) | `false` | allows a `rendezvous.server` that is plain `http://` on another machine (not `localhost`, `127.0.0.0/8` or `::1`), which is otherwise a config error that stops the server at start; what is published there then travels in the clear and unverified, and the server logs a warning as it starts. A switchyard on this machine needs nothing |
+| `rendezvous.insecure` | `CONDUCTOR_RENDEZVOUS_INSECURE` (`1`/`true`, `0`/`false`) | `false` | allows a `rendezvous.server` that is plain `http://` on another machine (not `localhost` in lower case, `127.0.0.0/8` or `::1`), which is otherwise a config error that stops the server at start; what is published there then travels in the clear and unverified, and the server logs a warning as it starts. A switchyard on this machine needs nothing |
 | `ice.udpPort`, `ice.publicIp` | `CONDUCTOR_ICE_UDP_PORT`, `CONDUCTOR_ICE_PUBLIC_IP` | none | how this server's published sessions (`rendezvous`) gather their WebRTC candidates: one UDP port for every connection, and the address advertised as this machine's in place of its interfaces' own, for a forwarder in front of it (the desktop app on Windows, in front of WSL) |
 | `tls.certFile`, `tls.keyFile` | `CONDUCTOR_TLS_CERT_FILE`, `CONDUCTOR_TLS_KEY_FILE` | none | a certificate of your own (PEM, with its chain), re-read when the files change; exclusive with `tls.acme` |
 

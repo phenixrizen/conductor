@@ -311,7 +311,7 @@ func TestHostRefusesPlainServerWithoutInsecure(t *testing.T) {
 	t.Cleanup(func() { runHostAgent = hostagent.Run })
 	for _, server := range []string{"http://yard.example:8080", "ws://yard.example:8080", "http://me:pw@yard.example:8080/", "HTTP://yard.example:8080"} {
 		code, stderr, err := runHostWith(t, "--server", server, "--no-local", "--", "sh")
-		if code != 2 || err == nil || !strings.Contains(err.Error(), "the server yard.example:8080 is plain http on another machine") || !strings.Contains(err.Error(), "pass --insecure to go ahead") {
+		if code != 2 || err == nil || !strings.Contains(err.Error(), "the server yard.example:8080 is plain http and not localhost or a loopback address") || !strings.Contains(err.Error(), "pass --insecure to go ahead") {
 			t.Errorf("%s: exit %d, %v, %q", server, code, err, stderr)
 		}
 		if err != nil && strings.Contains(err.Error(), "pw") {
@@ -319,8 +319,14 @@ func TestHostRefusesPlainServerWithoutInsecure(t *testing.T) {
 		}
 	}
 	t.Setenv("CONDUCTOR_SERVER", "http://192.0.2.7:8080")
-	if code, _, err := runHostWith(t, "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), "the server 192.0.2.7:8080 is plain http on another machine") {
+	if code, _, err := runHostWith(t, "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), "the server 192.0.2.7:8080 is plain http and not localhost or a loopback address") {
 		t.Errorf("CONDUCTOR_SERVER: exit %d, %v", code, err)
+	}
+	// localhost in another case is not taken for this machine: a proxy the
+	// environment names would carry it.
+	t.Setenv("CONDUCTOR_SERVER", "")
+	if code, _, err := runHostWith(t, "--server", "http://LOCALHOST:8080", "--no-local", "--", "sh"); code != 2 || err == nil || !strings.Contains(err.Error(), "the server LOCALHOST:8080 is plain http and not localhost or a loopback address") {
+		t.Errorf("LOCALHOST: exit %d, %v", code, err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("hosted with a plain server on another machine: %+v", got)
@@ -350,7 +356,7 @@ func TestHostInsecurePrintsTheWarning(t *testing.T) {
 	if code != 0 || err != nil || len(got) != 1 || !got[0].Insecure {
 		t.Fatalf("exit %d, %v, %+v", code, err, got)
 	}
-	const want = "conductor host: warning: --insecure: the server yard.example:8080 is plain http on another machine: what passes between it and this host, the session's output and its viewers' keys among it, travels in the clear and unverified\n"
+	const want = "conductor host: warning: --insecure: the server yard.example:8080 is plain http and not localhost or a loopback address: what passes between it and this host, the session's output and its viewers' keys among it, travels in the clear and unverified\n"
 	if stderr != want {
 		t.Fatalf("stderr %q, want %q", stderr, want)
 	}

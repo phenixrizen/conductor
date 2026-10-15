@@ -3,11 +3,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http/httpproxy"
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/catalog"
@@ -982,7 +985,7 @@ func TestRendezvousDefaultsToThePublicSwitchyard(t *testing.T) {
 // and in a switchyard's config alike. A config file that names one is
 // refused at Load, and left as it was.
 func TestRendezvousPlainServerOffThisMachineRefused(t *testing.T) {
-	const want = "rendezvous.server yard.example:8080 is plain http on another machine"
+	const want = "rendezvous.server yard.example:8080 is plain http and not localhost or a loopback address"
 	for name, mutate := range map[string]func(*Config){
 		"the file": func(c *Config) { c.Rendezvous.Server = "http://yard.example:8080/" },
 		"the environment": func(c *Config) {
@@ -1007,7 +1010,7 @@ func TestRendezvousPlainServerOffThisMachineRefused(t *testing.T) {
 		mutate(c)
 		err := c.Validate()
 		if name == "an address" {
-			if err == nil || !strings.Contains(err.Error(), "rendezvous.server 192.0.2.7:8080 is plain http on another machine") {
+			if err == nil || !strings.Contains(err.Error(), "rendezvous.server 192.0.2.7:8080 is plain http and not localhost or a loopback address") {
 				t.Errorf("%s: %v", name, err)
 			}
 			continue
@@ -1039,7 +1042,7 @@ func TestRendezvousPlainServerOffThisMachineRefused(t *testing.T) {
 // A plain switchyard on this machine needs nothing: localhost by name, in
 // any case, and the loopback addresses.
 func TestRendezvousPlainServerOnLoopbackAllowed(t *testing.T) {
-	for _, server := range []string{"http://localhost:9090", "http://LOCALHOST:9090/", "http://127.0.0.1:9000", "http://127.8.9.10", "http://[::1]:8080", "http://[::ffff:127.0.0.1]:8080", "https://yard.example"} {
+	for _, server := range []string{"http://localhost:9090", "http://localhost:9090/", "http://127.0.0.1:9000", "http://127.8.9.10", "http://[::1]:8080", "http://[::ffff:127.0.0.1]:8080", "https://yard.example"} {
 		c := Defaults()
 		c.Rendezvous.Server = server
 		if err := c.Validate(); err != nil {
@@ -1106,7 +1109,7 @@ func TestPlainOffMachine(t *testing.T) {
 		"https://yard.example":           false,
 		"wss://yard.example":             false,
 		"http://localhost:8080":          false,
-		"ws://LocalHost:8080":            false,
+		"ws://LocalHost:8080":            true,
 		"http://127.0.0.1:8080":          false,
 		"http://127.255.0.1":             false,
 		"http://[::1]:8080":              false,
@@ -1117,6 +1120,36 @@ func TestPlainOffMachine(t *testing.T) {
 	} {
 		if got := PlainOffMachine(server); got != want {
 			t.Errorf("PlainOffMachine(%q) = %v, want %v", server, got, want)
+		}
+	}
+}
+
+// What the rule lets through in the clear stays on this machine: no plain
+// URL it takes for this machine goes through a proxy the environment names
+// (HTTP_PROXY, as the standard library reads it), and every one that would
+// go through it is refused without --insecure.
+func TestPlainOnThisMachineIsNeverProxied(t *testing.T) {
+	proxy := (&httpproxy.Config{HTTPProxy: "http://proxy.example:3128"}).ProxyFunc()
+	for _, server := range []string{
+		"http://localhost:8080", "http://LOCALHOST:8080", "http://LocalHost", "http://localhost.:8080",
+		"http://127.0.0.1:8080", "http://127.255.0.1", "http://127.1:8080", "http://[::1]:8080",
+		"http://[::ffff:127.0.0.1]:8080", "http://[0:0:0:0:0:0:0:1]:8080", "http://[::1%25lo]:8080",
+		"http://yard.example", "http://0.0.0.0", "http://user:pw@localhost:8080", "http://me@yard.example",
+	} {
+		u, err := url.Parse(server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		via, err := proxy(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plain := PlainOffMachine(server); plain != (via != nil) {
+			t.Errorf("%s: refused without --insecure %v, proxied %v", server, plain, via)
+		}
+		ws := strings.Replace(server, "http://", "ws://", 1)
+		if PlainOffMachine(ws) != PlainOffMachine(server) {
+			t.Errorf("%s: ws and http differ", ws)
 		}
 	}
 }

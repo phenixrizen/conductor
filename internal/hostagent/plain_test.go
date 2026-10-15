@@ -111,7 +111,7 @@ func runUntilRegistered(t *testing.T, opts Options) {
 // is written or dialed: no hook assets, no connection, the error naming the
 // server's host alone and --insecure. The uplink refuses one the same way.
 func TestRunRefusesPlainServerOffThisMachine(t *testing.T) {
-	for server, host := range map[string]string{"http://yard.example:8080": "yard.example:8080", "ws://yard.example:8080": "yard.example:8080", "http://me:pw@yard.example:8080/": "yard.example:8080", "http://192.0.2.7:8080": "192.0.2.7:8080", "HTTP://yard.example": "yard.example"} {
+	for server, host := range map[string]string{"http://yard.example:8080": "yard.example:8080", "ws://yard.example:8080": "yard.example:8080", "http://me:pw@yard.example:8080/": "yard.example:8080", "http://192.0.2.7:8080": "192.0.2.7:8080", "HTTP://yard.example": "yard.example", "http://LOCALHOST:8080": "LOCALHOST:8080"} {
 		d := &namedDialer{}
 		hooks := t.TempDir()
 		_, err := Run(t.Context(), Options{
@@ -205,6 +205,11 @@ func TestRedirectToPlainServerRefused(t *testing.T) {
 			http.Redirect(w, r, plain.URL+rest, http.StatusTemporaryRedirect)
 			return
 		}
+		// Under /secret, to it with a password and a query in the URL.
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/secret"); ok {
+			http.Redirect(w, r, "http://me:pw-secret@example.com:"+plainPort+rest+"?token=q-secret", http.StatusTemporaryRedirect)
+			return
+		}
 		http.Redirect(w, r, target+r.URL.Path, http.StatusTemporaryRedirect)
 	}))
 	t.Cleanup(redirector.Close)
@@ -226,11 +231,17 @@ func TestRedirectToPlainServerRefused(t *testing.T) {
 			t.Fatalf("dialed the plain server it was redirected to: %v", d.dialed())
 		}
 	}
+	// The refusal's words are the whole error: nothing else of the URL the
+	// redirect gave.
+	_, err = Run(t.Context(), Options{ServerURL: server + "/secret", Token: hostToken, Argv: []string{"/bin/cat"}, RelayOnly: true, Log: slog.New(slog.NewTextHandler(io.Discard, nil)), transport: (&namedDialer{to: names}).transport(base)})
+	if !errors.As(err, &refused) || refused.Host != "example.com:"+plainPort || err.Error() != refused.Error() || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("redirected with a password and a query: %v", err)
+	}
 
 	d = &namedDialer{to: names}
 	var logs syncLog
 	runUntilRegistered(t, Options{ServerURL: server, Insecure: true, Token: hostToken, Argv: []string{"/bin/cat"}, RelayOnly: true, Log: slog.New(slog.NewTextHandler(&logs, nil)), transport: d.transport(base)})
-	if !strings.Contains(logs.String(), "following a redirect to a plain http server on another machine") || !strings.Contains(logs.String(), "server=example.com:"+plainPort) {
+	if !strings.Contains(logs.String(), "following a redirect to a plain http server that is not localhost or a loopback address") || !strings.Contains(logs.String(), "server=example.com:"+plainPort) {
 		t.Fatalf("no warning for the redirect followed:\n%s", logs.String())
 	}
 

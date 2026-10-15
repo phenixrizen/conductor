@@ -243,7 +243,7 @@ type Rendezvous struct {
 	// RelayOnly serves viewers through the rendezvous's relay only, without
 	// WebRTC.
 	RelayOnly bool `json:"relayOnly"`
-	// Insecure allows a Server that is plain http on another machine
+	// Insecure allows a Server that is plain http and not localhost or a loopback address
 	// (PlainOffMachine): what is published there then travels in the clear
 	// and unverified, and the server says so in its log as it starts.
 	// Without it, such a Server is a config error. A switchyard on this
@@ -263,11 +263,15 @@ func LoopbackHost(host string) bool {
 }
 
 // PlainOffMachine reports whether server is a plain URL (http or ws) to a
-// host that is not this machine (LoopbackHost): what passes on it travels in
-// the clear and unverified on the way. A host dials one, and the admin client
-// sends its token to one, only when told to (--insecure,
-// rendezvous.insecure). A URL that does not parse is not one: its callers
-// refuse it as they refuse any malformed URL.
+// host that is not this machine: what passes on it travels in the clear and
+// unverified on the way. A host dials one, and the admin client sends its
+// token to one, only when told to (--insecure, rendezvous.insecure). This
+// machine is localhost, written so in lower case, or a loopback address
+// (127.0.0.0/8, ::1): exactly the hosts the standard library's proxy
+// settings never send through a proxy the environment names (HTTP_PROXY),
+// so what the rule lets through in the clear stays on this machine. Any
+// other spelling (LOCALHOST) is another machine for it. A URL that does not
+// parse is not one: its callers refuse it as they refuse any malformed URL.
 func PlainOffMachine(server string) bool {
 	u, err := url.Parse(server)
 	if err != nil {
@@ -275,7 +279,12 @@ func PlainOffMachine(server string) bool {
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "ws":
-		return !LoopbackHost(u.Hostname())
+		host := u.Hostname()
+		if host == "localhost" {
+			return false
+		}
+		ip, err := netip.ParseAddr(host)
+		return err != nil || !ip.Unmap().IsLoopback()
 	}
 	return false
 }
@@ -898,7 +907,7 @@ func (c *Config) Validate() error {
 		if u, err := url.Parse(r.Server); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, errors.New("rendezvous.server must be an http or https URL with a host"))
 		} else if PlainOffMachine(r.Server) && !r.Insecure {
-			errs = append(errs, fmt.Errorf("rendezvous.server %s is plain http on another machine: what this server publishes there would travel in the clear and unverified; use https, or set rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1) to allow it", u.Host))
+			errs = append(errs, fmt.Errorf("rendezvous.server %s is plain http and not localhost or a loopback address: what this server publishes there would travel in the clear and unverified; use https, or set rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1) to allow it", u.Host))
 		}
 	}
 	if server := c.RendezvousServer(); server != "" && server == strings.TrimRight(c.PublicURL, "/") {

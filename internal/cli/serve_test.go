@@ -1016,7 +1016,7 @@ func TestServeRefusesAPlainSwitchyardOffThisMachine(t *testing.T) {
 		var logs syncBuffer
 		code, err := Run(ctx, append(args, "--config", cfg, "--listen", "127.0.0.1:0"), strings.NewReader(""), io.Discard, &logs)
 		cancel()
-		if code != 1 || err == nil || !strings.Contains(err.Error(), "rendezvous.server yard.example:8080 is plain http on another machine") || !strings.Contains(err.Error(), "CONDUCTOR_RENDEZVOUS_INSECURE=1") {
+		if code != 1 || err == nil || !strings.Contains(err.Error(), "rendezvous.server yard.example:8080 is plain http and not localhost or a loopback address") || !strings.Contains(err.Error(), "CONDUCTOR_RENDEZVOUS_INSECURE=1") {
 			t.Errorf("%s: exit %d, %v", args[0], code, err)
 		}
 		if strings.Contains(logs.String(), "conductor serving") {
@@ -1035,15 +1035,16 @@ func TestServeWarnsOnceForAnInsecureSwitchyard(t *testing.T) {
 	clearConductorEnv(t)
 	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
 	dir := t.TempDir()
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://yard.example:8080", "insecure": true}}`, dir, dir, filepath.Join(dir, "state")))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://me:pw-secret@yard.example:8080/yard?k=q-secret", "insecure": true}}`, dir, dir, filepath.Join(dir, "state")))
 	logs := serveUntilListening(t, "--config", cfg)
-	if lines := logLines(logs, "level=WARN", "rendezvous.insecure", "travels in the clear and unverified"); len(lines) != 1 {
-		t.Fatalf("want one warning:\n%s", logs)
+	// It names the switchyard's host and port, nothing else of its URL.
+	if lines := logLines(logs, "level=WARN", "rendezvous.insecure", "travels in the clear and unverified"); len(lines) != 1 || !strings.Contains(lines[0], "server=yard.example:8080") || strings.Contains(lines[0], "secret") {
+		t.Fatalf("want one warning naming the host alone:\n%s", logs)
 	}
 	t.Setenv("CONDUCTOR_RENDEZVOUS_INSECURE", "0")
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	if code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, io.Discard); code != 1 || err == nil || !strings.Contains(err.Error(), "plain http on another machine") {
+	if code, err := runServe(ctx, []string{"--config", cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, io.Discard); code != 1 || err == nil || !strings.Contains(err.Error(), "plain http and not localhost or a loopback address") {
 		t.Fatalf("CONDUCTOR_RENDEZVOUS_INSECURE=0 over the file: exit %d, %v", code, err)
 	}
 }

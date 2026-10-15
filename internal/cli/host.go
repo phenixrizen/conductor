@@ -44,7 +44,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	cwd := fs.String("cwd", "", "working directory for the command (default: current)")
 	relayOnly := fs.Bool("relay-only", false, "never use WebRTC; relay through the server")
 	serverIsMine := fs.Bool("server-is-mine", false, "the server is your own, on this machine: a window its workbench opens with no link is yours and gets the editor's Neovim")
-	insecure := fs.Bool("insecure", false, "allow a plain http:// (or ws://) server on another machine, which is refused without it: what passes between this host and the server, the session's output and its viewers' keys among it, then travels in the clear and unverified; a server on this machine (localhost) needs nothing")
+	insecure := fs.Bool("insecure", false, "allow a plain http:// (or ws://) server that is not localhost or a loopback address (127.0.0.0/8, ::1), which is refused without it: what passes between this host and the server, the session's output and its viewers' keys among it, then travels in the clear and unverified")
 	noLocal := fs.Bool("no-local", false, "do not attach this terminal to the session")
 	stun := fs.String("stun", "", "comma separated ICE server URLs overriding the server's list")
 	iceUDPPort := fs.Int("ice-udp-port", envInt("CONDUCTOR_ICE_UDP_PORT"), "one UDP port for every WebRTC connection (env CONDUCTOR_ICE_UDP_PORT); 0 lets each connection pick its own")
@@ -235,13 +235,13 @@ func serverIsMineOK(mine bool, server string) error {
 // the clear, and the flag that allows it. It names the server's host alone:
 // the URL may carry a password.
 func plainServerRefusal(server, what string) error {
-	return fmt.Errorf("the server %s is plain http on another machine: %s would travel in the clear and unverified; use https, or pass --insecure to go ahead", urlHost(server), what)
+	return fmt.Errorf("the server %s is plain http and not localhost or a loopback address: %s would travel in the clear and unverified; use https, or pass --insecure to go ahead", urlHost(server), what)
 }
 
 // plainServerWarning is what is printed on stderr when --insecure lets such
 // a server through.
 func plainServerWarning(server, what string) string {
-	return fmt.Sprintf("warning: --insecure: the server %s is plain http on another machine: %s travels in the clear and unverified", urlHost(server), what)
+	return fmt.Sprintf("warning: --insecure: the server %s is plain http and not localhost or a loopback address: %s travels in the clear and unverified", urlHost(server), what)
 }
 
 // urlHost is a URL's host and port, nothing else of it; "" for one that does

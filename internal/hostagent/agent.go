@@ -159,7 +159,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		opts.Log = slog.Default()
 	}
 	if opts.Insecure && config.PlainOffMachine(opts.ServerURL) {
-		opts.Log.Warn("--insecure: the server is plain http on another machine; what passes between it and this host travels in the clear and unverified", "server", serverHost(opts.ServerURL))
+		opts.Log.Warn("--insecure: the server is plain http and not localhost or a loopback address; what passes between it and this host travels in the clear and unverified", "server", serverHost(opts.ServerURL))
 	}
 	if opts.ReconnectMax <= 0 {
 		opts.ReconnectMax = 30 * time.Second
@@ -560,6 +560,13 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 	if err != nil {
 		if refused := refusal(resp); refused != nil {
 			return nil, proto.Registered{}, refused
+		}
+		// A redirect refused by the plain rule: its words alone, which name
+		// the host and nothing else of the URL the redirect gave (the
+		// client's wrapping repeats that URL whole).
+		var plain *PlainServerError
+		if errors.As(err, &plain) {
+			return nil, proto.Registered{}, plain
 		}
 		return nil, proto.Registered{}, err
 	}
@@ -1749,7 +1756,7 @@ type PlainServerError struct {
 }
 
 func (e *PlainServerError) Error() string {
-	return fmt.Sprintf("host: %s is a plain http server on another machine: what passes between it and this host would travel in the clear and unverified; use https, or allow it with --insecure (rendezvous.insecure for a server's switchyard)", e.Host)
+	return fmt.Sprintf("host: %s is a plain http server, and not localhost or a loopback address: what passes between it and this host would travel in the clear and unverified; use https, or allow it with --insecure (rendezvous.insecure for a server's switchyard)", e.Host)
 }
 
 // plainRefused is the rule a server URL, or a redirect's, is held to:
@@ -1789,7 +1796,7 @@ func (a *agent) redirectRule(next func(*http.Request, []*http.Request) error) fu
 			return err
 		}
 		if config.PlainOffMachine(req.URL.String()) {
-			a.log.Warn("--insecure: following a redirect to a plain http server on another machine; what passes between it and this host travels in the clear and unverified", "server", req.URL.Host)
+			a.log.Warn("--insecure: following a redirect to a plain http server that is not localhost or a loopback address; what passes between it and this host travels in the clear and unverified", "server", req.URL.Host)
 		}
 		return nil
 	}

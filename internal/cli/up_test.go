@@ -476,7 +476,7 @@ func TestClientDropsUserinfoFromTheServerURL(t *testing.T) {
 // --insecure; --ids stays silent. One on this machine needs nothing.
 func TestAdminClientRefusesPlainServerWithoutInsecure(t *testing.T) {
 	clearConductorEnv(t)
-	const want = "the server yard.example:8080 is plain http on another machine: what this client sends and reads, the workbench token on every request among it, would travel in the clear and unverified; use https, or pass --insecure to go ahead"
+	const want = "the server yard.example:8080 is plain http and not localhost or a loopback address: what this client sends and reads, the workbench token on every request among it, would travel in the clear and unverified; use https, or pass --insecure to go ahead"
 	for _, fn := range []struct {
 		name string
 		run  func(*testing.T, ...string) (int, string, string, error)
@@ -522,7 +522,7 @@ func TestAdminClientInsecurePrintsTheWarning(t *testing.T) {
 	if err != nil || c.base != "http://yard.example:8080" {
 		t.Fatalf("client: %v %+v", err, c)
 	}
-	const want = "conductor: warning: --insecure: the server yard.example:8080 is plain http on another machine: what this client sends and reads, the workbench token on every request among it, travels in the clear and unverified\n"
+	const want = "conductor: warning: --insecure: the server yard.example:8080 is plain http and not localhost or a loopback address: what this client sends and reads, the workbench token on every request among it, travels in the clear and unverified\n"
 	if stderr.String() != want {
 		t.Fatalf("stderr %q, want %q", stderr.String(), want)
 	}
