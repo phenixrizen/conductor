@@ -499,11 +499,19 @@ func TestAttentionFromBellAndClearOnInput(t *testing.T) {
 	if err := s.Input(vsub, []byte("x")); !errors.Is(err, ErrReadOnly) || s.Info().Attention.State != AttentionNeedsInput {
 		t.Fatalf("view input: %v %+v", err, s.Info().Attention)
 	}
+	// Keys without an Enter leave a notification's wait; an Enter withdraws it.
 	if err := s.Input(csub, []byte("y")); err != nil {
 		t.Fatal(err)
 	}
 	<-p.input
-	if a := s.Info().Attention; a.State != AttentionNone || a.Since != nil {
+	if a := s.Info().Attention; a.State != AttentionNeedsInput {
+		t.Fatalf("keys without an Enter cleared it: %+v", a)
+	}
+	if err := s.Input(csub, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	<-p.input
+	if a := s.Info().Attention; a.State != AttentionNone || a.Since != nil || a.Source != SourceInput {
 		t.Fatalf("not cleared: %+v", a)
 	}
 	// a late attach sees the current attention immediately
@@ -648,7 +656,7 @@ func TestSetAttentionFullBroadcastsOptionsAndInputClears(t *testing.T) {
 	if got := s.Info().Attention; got.Kind != "permission" || len(got.Options) != 2 || got.Options[1].Input != "3" {
 		t.Fatalf("info: %+v", got)
 	}
-	_ = s.Input(sub, []byte("1"))
+	_ = s.AnswerInput(t.Context(), sub, s.Info().Attention.ID, []byte("1"))
 	deadline = time.Now().Add(time.Second)
 	for s.Info().Attention.State != AttentionNone && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -688,7 +696,7 @@ func TestInputDuringNeedsInputRecordsOneAnswer(t *testing.T) {
 	sink := newChanSink(false)
 	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Priya", Cols: 80, Rows: 24}, sink)
 	s.SetAttention(AttentionNeedsInput, "Apply edit?", SourceAPI)
-	_ = s.Input(sub, []byte("1"))
+	_ = s.AnswerInput(t.Context(), sub, s.Info().Attention.ID, []byte("1"))
 	_ = s.Input(sub, []byte("\r"))
 	info := s.Info()
 	if info.LastAnswer == nil || info.LastAnswer.ByName != "Priya" || info.LastAnswer.Message != "Apply edit?" || info.LastAnswer.At.IsZero() {
@@ -746,12 +754,12 @@ func TestInputDoesNotClearAPromptItsOwnOutputRaised(t *testing.T) {
 	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceBell {
 		t.Fatalf("typing cleared the prompt its own output raised: %+v", att)
 	}
-	// The next input does answer it.
-	if err := s.Input(sub, []byte("y")); err != nil {
+	// The next line entered withdraws the bell's wait.
+	if err := s.Input(sub, []byte("y\r")); err != nil {
 		t.Fatal(err)
 	}
 	if att := s.Info().Attention; att.State != AttentionNone {
-		t.Fatalf("the answer left %+v", att)
+		t.Fatalf("the line left %+v", att)
 	}
 }
 
@@ -778,11 +786,12 @@ func TestConcurrentAnswersRecordExactlyOne(t *testing.T) {
 		subA, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Priya", Cols: 80, Rows: 24}, a)
 		subB, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Marco", Cols: 80, Rows: 24}, b)
 		s.SetAttention(AttentionNeedsInput, "Apply edit?", SourceAPI)
+		q := s.Info().Attention.ID
 		var wg sync.WaitGroup
 		wg.Add(2)
 		start := make(chan struct{})
-		go func() { defer wg.Done(); <-start; _ = s.Input(subA, []byte("1")) }()
-		go func() { defer wg.Done(); <-start; _ = s.Input(subB, []byte("1")) }()
+		go func() { defer wg.Done(); <-start; _ = s.AnswerInput(t.Context(), subA, q, []byte("1")) }()
+		go func() { defer wg.Done(); <-start; _ = s.AnswerInput(t.Context(), subB, q, []byte("1")) }()
 		close(start)
 		wg.Wait()
 		if got := activityTypes(s)["input"]; got != 1 {

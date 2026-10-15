@@ -615,12 +615,37 @@ func (s *Screen) erasedWhole() {
 	}
 }
 
+// Rows returns every row of the screen as its characters, a wide
+// character's tail left out and trailing spaces trimmed: what the screen
+// snapshot compares (Local.screenQuiet).
+func (s *Screen) Rows() []string {
+	out := make([]string, len(s.cells))
+	for r, row := range s.cells {
+		line := make([]rune, 0, len(row))
+		for _, c := range row {
+			if c != wideTail {
+				line = append(line, c)
+			}
+		}
+		out[r] = strings.TrimRight(string(line), " ")
+	}
+	return out
+}
+
 // Settled reports whether the screen is a whole frame: no synchronized
 // update (2026) begun and not ended, which a terminal would not show yet,
 // and nothing drawn at another size that the program has not erased whole
 // since (a resize keeps what showed, cut or as laid out before; the
 // program erases and redraws it).
 func (s *Screen) Settled() bool { return !s.syncing && !s.clipped }
+
+// Drawn reports whether the screen is a frame the program has finished:
+// no synchronized update begun and not ended. Unlike Settled, what was
+// drawn at another size and not erased since counts: a program that never
+// erases its screen (a shell, a line reader) is compared with itself all
+// the same (Local.screenQuiet), a resize dropping that comparison's
+// baseline.
+func (s *Screen) Drawn() bool { return !s.syncing }
 
 // Size returns the screen's columns and rows.
 func (s *Screen) Size() (cols, rows int) { return s.cols, s.rows }

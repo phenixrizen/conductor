@@ -175,7 +175,8 @@ func TestHostRelayEndToEnd(t *testing.T) {
 	v.expectOutput("through the relay")
 
 	// A bell echoed by cat marks the hosted session as needing input on the
-	// server; typing clears it. An API-set state reaches the relay viewer.
+	// server; a line entered withdraws it (keys answer no question). An
+	// API-set state reaches the relay viewer.
 	v.send(proto.Encode(proto.TypeInput, []byte("\a\n")))
 	waitAttention := func(state string) {
 		t.Helper()
@@ -189,7 +190,7 @@ func TestHostRelayEndToEnd(t *testing.T) {
 		t.Fatalf("server attention %+v, want %q", d.Info().Attention, state)
 	}
 	waitAttention("needs_input")
-	v.send(proto.Encode(proto.TypeInput, []byte("z")))
+	v.send(proto.Encode(proto.TypeInput, []byte("z\r")))
 	waitAttention("")
 	req0, _ := http.NewRequest("POST", hs.URL+"/api/sessions/"+sessionID+"/attention", strings.NewReader(`{"state":"needs_input","message":"from api"}`))
 	req0.Header.Set("Authorization", "Bearer "+adminToken)

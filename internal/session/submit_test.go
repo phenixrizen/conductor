@@ -89,22 +89,33 @@ func TestSubmitPastesWhileTheProgramAsksForIt(t *testing.T) {
 
 // The Enter answers the prompt that showed when the submission began, as a
 // person's typing does.
-func TestSubmitAnswersThePromptItWasTypedInto(t *testing.T) {
+// Conductor's own line (a crew's prompt) typed at the agent's report
+// answers nothing of it: the report stays until the agent moves on (its
+// hook reports working as it takes the line). A line naming the question
+// (a reply) answers it.
+func TestSubmitAnswersNoPromptItWasTypedInto(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{}))
+	owner := ownerOf(t, s)
 	s.SetAttention(AttentionNeedsInput, "Name the branch?", SourceAPI)
-	go s.Submit(t.Context(), Submission{Text: "main", ByName: "crew"})
-	nextWrite(t, p)
-	if st := s.Info().Attention.State; st != AttentionNeedsInput {
-		t.Fatalf("the text alone answered the prompt: %q", st)
+	q := s.Info().Attention
+	if res, err := s.Submit(t.Context(), Submission{Text: "main", ByName: "crew"}); err != nil || !res.Entered {
+		t.Fatalf("the crew's line: %+v %v", res, err)
+	}
+	for _, want := range []string{"main", "\r"} {
+		if got := nextWrite(t, p); got != want {
+			t.Fatalf("written %q, want %q", got, want)
+		}
+	}
+	if info := s.Info(); info.Attention.ID != q.ID || info.LastAnswer != nil {
+		t.Fatalf("the crew's line answered the report: %+v %+v", info.Attention, info.LastAnswer)
+	}
+	if res, err := s.Submit(t.Context(), Submission{Text: "main", By: owner, Question: q.ID}); err != nil || !res.Entered {
+		t.Fatalf("the reply: %+v %v", res, err)
 	}
 	nextWrite(t, p)
-	deadline := time.Now().Add(3 * time.Second)
-	for s.Info().Attention.State != AttentionNone && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	info := s.Info()
-	if info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.ByName != "crew" || info.LastAnswer.Message != "Name the branch?" {
-		t.Fatalf("after the Enter: %+v %+v", info.Attention, info.LastAnswer)
+	nextWrite(t, p)
+	if info := s.Info(); info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.ByName != "owner" || info.LastAnswer.Message != "Name the branch?" {
+		t.Fatalf("after the reply's Enter: %+v %+v", info.Attention, info.LastAnswer)
 	}
 }
 
@@ -371,10 +382,14 @@ func TestATrustQuestionIsAnsweredByEnter(t *testing.T) {
 	}
 	s.Input(sub, []byte("\r"))
 	nextWrite(t, p)
-	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("Enter did not answer: %q", st)
+	// Consumed by the Enter: it shows until the screen shows the program moved on.
+	if st := s.Info().Attention; st.State != AttentionNeedsInput || st.Source != SourceTrust {
+		t.Fatalf("Enter cleared the question before the program moved on: %+v", st)
 	}
 	p.outW.Write([]byte("\x1b[2J> ")) // the agent's own screen: the old question does not count again
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen {
+		t.Fatalf("withdrawn: %+v", a)
+	}
 	time.Sleep(700 * time.Millisecond)
 	if st := s.Info().Attention.State; st != AttentionNone {
 		t.Fatalf("the answered question came back: %+v", s.Info().Attention)
@@ -447,9 +462,16 @@ func TestATrustQuestionCarriesItsAnswersAndRefusesTypedText(t *testing.T) {
 	if got := nextWrite(t, p); got != "\x1b[B\r" {
 		t.Fatalf("written %q", got)
 	}
-	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("the choice did not answer: %q", st)
+	// Consumed: typed text is still refused while the screen shows the
+	// question; once the program moved on, it is withdrawn and a line goes.
+	if st := s.Info().Attention; st.State != AttentionNeedsInput {
+		t.Fatalf("the choice's keys cleared the question before the program moved on: %+v", st)
 	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "too soon", By: sub}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("typed text while the screen shows the question: %v", err)
+	}
+	p.outW.Write([]byte("\x1b[2J> "))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 	if _, err := s.Submit(t.Context(), Submission{Text: "now fine", By: sub}); err != nil {
 		t.Fatalf("after the answer: %v", err)
 	}
@@ -497,9 +519,9 @@ func TestAStartupQuestionIsHeldLikeTheTrustQuestion(t *testing.T) {
 	if got := nextWrite(t, p); got != "2\r" {
 		t.Fatalf("written %q", got)
 	}
-	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("the choice did not answer: %q", st)
-	}
+	// Consumed: withdrawn once the program moved on.
+	p.outW.Write([]byte("\x1b[2J\x1b[1;1HHooks trusted."))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 	// The trust question, drawn anew once the answer has landed, carries its own answers.
 	time.Sleep(700 * time.Millisecond)
 	p.outW.Write([]byte("\x1b[2J\x1b[1;1HTrust this folder?\r\n› 1. Yes"))
@@ -535,9 +557,13 @@ func TestAStartupQuestionsChoiceAnswersWithoutEnter(t *testing.T) {
 	if got := nextWrite(t, p); got != "1" {
 		t.Fatalf("written %q", got)
 	}
-	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("the choice did not answer: %q", st)
+	// Consumed by the choice: a reply refused, and withdrawn once the
+	// program moved on.
+	if err := s.AnswerInput(t.Context(), sub, s.Info().Attention.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) || err.Error() != QuestionConsumedWords {
+		t.Fatalf("a reply after the choice's key: %v", err)
 	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H› Ask Codex to do anything"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
 // A program that draws its next startup question the moment the first is

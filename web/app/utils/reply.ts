@@ -121,9 +121,15 @@ export class ReplyError extends Error {
 export function replyFailure(e: unknown, name?: string): { title: string; description?: string; color: 'warning' | 'error' } {
   const code = (e as { code?: unknown } | null)?.code
   if (code === QUESTION_ANSWERED) {
+    // The owner's words say what became of the question when it knows: answered by whom (its recorded result), being
+    // answered by another reply, or answered in its terminal.
+    const words = (e as { message?: unknown } | null)?.message
+    const said = typeof words === 'string' ? words : ''
+    const by = /answered by (.+?): nothing was sent$/.exec(said)?.[1]
+    const what = by ? `was answered by ${by}` : /being answered/.test(said) ? 'is being answered by someone else' : /in the terminal/.test(said) ? 'was answered in its terminal' : 'was answered before your reply arrived'
     return {
       title: 'Already answered',
-      description: `${name ? `${name}'s` : 'This'} question was answered before your reply arrived. Nothing was sent. If the agent still asks, answer it in its terminal.`,
+      description: `${name ? `${name}'s` : 'This'} question ${what}. Nothing was sent. If the agent still asks, answer it in its terminal.`,
       color: 'warning',
     }
   }

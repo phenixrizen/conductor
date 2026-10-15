@@ -106,27 +106,55 @@ type Submission struct {
 	Finished func(SubmitResult, error)
 	// Question, when set, makes the line a reply to the question of that id
 	// (Attention.ID, as the person was shown it): it is typed only while
-	// that question is the one waiting and no write was made to answer it,
-	// looked at as the submission begins and again, together with noting
-	// the line as its answer, as the writer takes its text (its Enter, for
-	// a line with no text); ErrQuestionAnswered otherwise, nothing written.
+	// that question is the one shown, nobody is answering it and nobody
+	// answered it in the terminal, looked at as the submission begins and
+	// again, together with claiming the question, as the writer takes its
+	// text (its Enter, for a line with no text); ErrQuestionAnswered
+	// otherwise, nothing written. Its Enter resolves the question; a line
+	// typed whose Enter is not written lets the claim go (ErrLineStranded,
+	// the turn held). A line naming no question answers nothing.
 	Question string
 }
 
 // ErrSubmitPending says a submission's text was being taken when its time
 // ran out: the program has not read it all yet. The submission is accepted:
 // it is finished as the program reads (its Enter, as it would have been),
-// holding the session's turn until then, and it is never typed again.
+// holding the session's turn until then, and it is never typed again. Its
+// word comes once it is finished (Submission.Finished): never before.
 var ErrSubmitPending = errors.New("session: the program is taking its input slowly; the line is entered once it has")
+
+// LineStrandedWords say why a reply's line answered nothing: its text was
+// typed and its Enter not written (a question came in its pause, or its
+// link went), and the session's turn is held until a person types in the
+// terminal (holdTyped).
+const LineStrandedWords = "the line was typed and not entered: type in the terminal to continue"
+
+// ErrLineStranded is a reply's word when its line was typed and its Enter
+// not written: its claim let go, the question held over by the hold of the
+// turn (Submit).
+var ErrLineStranded = errors.New(LineStrandedWords)
+
+// AnswerWord is the word a reply's line gets once finished (a transport's
+// Submission.Finished): err when it ended with one, nil when it was
+// entered, ErrLineStranded when its text was typed and its Enter not.
+func AnswerWord(res SubmitResult, err error) error {
+	switch {
+	case err != nil:
+		return err
+	case res.Entered:
+		return nil
+	}
+	return ErrLineStranded
+}
 
 // submitState is what a submission carries from its text to its Enter.
 // aside is the id of the agent's own question set aside as the submission
 // began (own): shown again at its turn's done before the Enter, it is no
-// prompt that leaves the Enter out (comesAfter). claim is the claim a
-// person's text or Enter made on that question, shown again, as the writer
-// took it (noteAnswering), 0 for none: the submission answers it once its
-// Enter is written while that claim stands (answerReached), and never one
-// another write claimed.
+// prompt that leaves the Enter out (comesAfter). claim is the token of the
+// claim a reply's text or Enter made on its question (Submission.Question)
+// as the writer took it (claimQuestion), 0 for none: the reply resolves
+// the question once its Enter is written (resolve), or lets the claim go
+// when its line is stranded (release).
 type submitState struct {
 	promptSince *time.Time
 	byName      string
@@ -136,15 +164,42 @@ type submitState struct {
 	claim       *atomic.Uint64
 }
 
+// claimed reports whether the submission holds a claim on its question.
+func (st submitState) claimed() bool { return st.claim != nil && st.claim.Load() != 0 }
+
+// strand is the submission's line typed and its Enter not written for
+// good: its claim is let go, so that the question, held over by the hold
+// of the turn, can be answered again once a person's keys show it. res and
+// err are how the line ended; it reports whether the line is stranded (the
+// hold follows, holdTyped), and ErrLineStranded is the word for one that
+// ended with no error.
+func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err error) (bool, error) {
+	if !res.Typed || res.Entered {
+		return false, err
+	}
+	stranded := errors.Is(err, ErrRevoked) || err == nil && st.claimed()
+	if !stranded {
+		return false, err
+	}
+	if st.claim != nil {
+		if token := st.claim.Swap(0); token != 0 {
+			s.release(sub.Question, token)
+		}
+	}
+	if err == nil {
+		err = ErrLineStranded
+	}
+	return true, err
+}
+
 // comesAfter reports whether att is a prompt come since the submission
 // began, which its Enter must not answer: needs_input, stamped otherwise
 // than the attention it began with, and not the agent's own question it
 // began with set aside (aside), shown again by its turn's done (a line
 // typed while the agent worked, its Enter after the done): that Enter is
 // written all the same, so that no text is left typed without it. A
-// handoff's answers nothing (answer compares the stamp the submission
-// began with), and begins the next turn, whose work removes the question;
-// a person's reply answers it (noteAnswering, answerReached).
+// line naming no question answers nothing, and begins the next turn, whose
+// work removes the question; a reply naming it claims and resolves it.
 func (st submitState) comesAfter(att Attention) bool {
 	return att.State == AttentionNeedsInput && att.Since != st.promptSince && !(st.aside != "" && att.ID == st.aside)
 }
@@ -270,9 +325,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		gone = s.waitsLocked(sub.Question)
 	}
 	// The agent's own question set aside as the submission begins
-	// (submitState.comesAfter): a person's reply removes it as it is
-	// written, or answers it if its turn's done shows it again meanwhile;
-	// Conductor's own line answers nothing of it (noteAnswering).
+	// (submitState.comesAfter): a person's line withdraws it as its text
+	// is written (rawKeys); Conductor's own leaves it, and its Enter,
+	// written after the done showed the question again, answers nothing.
 	aside := s.asideOwn()
 	s.mu.Unlock()
 	if ended {
@@ -301,6 +356,14 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		}
 		return res, ErrQuestion
 	}
+	// A startup question the screen still shows, answered or not (the
+	// program slow to move on from it): nothing is typed into it either.
+	if s.startupOnScreen() {
+		if sub.UnlessWaiting {
+			return res, nil
+		}
+		return res, ErrTrustQuestion
+	}
 	st := submitState{
 		promptSince: promptSince,
 		byName:      CleanName(sub.ByName),
@@ -322,11 +385,13 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		// meanwhile, or a dialog drawn, holds it as one seen before does;
 		// a reply's question is noted answered as it is written.
 		textWait := st.wait
-		textWait.guard = s.textGuard(sub)
+		textWait.guard = s.textGuard(sub, st)
 		textWait.before = func() {
 			keys, _, _ := s.keysWritten([]byte(data))
-			if claim := s.noteAnswering(promptSince, []byte(data), keys, nil, st.aside, sub.By != nil); claim != 0 {
-				st.claim.Store(claim)
+			if sub.Question == "" {
+				// A line naming no question answers nothing: a person's
+				// withdraws the agent's own question set aside (rawKeys).
+				s.rawKeys([]byte(data), keys, nil, false, sub.By != nil)
 			}
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
@@ -357,15 +422,17 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	res, err = s.enter(ctx, sub, res, st)
 	err = st.withdrawnTyped(res, err)
-	if res.Typed && !res.Entered && errors.Is(err, ErrRevoked) {
-		// Its text is typed and its link no longer opens the session: no
-		// Enter, and the turn held for a person (holdTyped).
+	if stranded, why := st.strand(s, sub, res, err); stranded {
+		// Its text is typed and its Enter not written for good (its link no
+		// longer opens the session; a reply's, a question come in its
+		// pause): its claim let go, and the turn held for a person
+		// (holdTyped), who deals with the text.
 		release = false
 		go func() {
 			defer func() { <-s.submitting }()
 			s.holdTyped()
 		}()
-		return res, err
+		return res, why
 	}
 	if res.Typed && !res.Entered && (errors.Is(err, errEnterLater) || errors.Is(err, context.DeadlineExceeded)) {
 		// Its text is typed and its time ran out before its Enter (in its
@@ -446,8 +513,9 @@ func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
 		res, err = s.pressEnterHeld(sub, res, st)
 	}
 	err = st.withdrawnTyped(res, err)
+	stranded, err := st.strand(s, sub, res, err)
 	s.finished(sub, res, err)
-	if res.Typed && !res.Entered && errors.Is(err, ErrRevoked) {
+	if stranded {
 		s.holdTyped()
 	}
 }
@@ -517,27 +585,28 @@ func (s *Local) holdTyped() {
 
 // endHoldTyped ends the hold of the session's turn for a typed text, if
 // one stands, as a person's keys (data, read as maybe) are written: the
-// question the hold took the place of (heldOver), still waiting unless the
-// keys answer it (an Enter, one of its choices), shows again, with its id,
-// and the claim the held text made on it (answered) is let go, so that a
-// reply to it waiting for the turn (Submit, its Question) answers it. It
-// reports whether that question showed again.
-func (s *Local) endHoldTyped(data []byte, maybe [][]byte) bool {
+// question the hold took the place of (heldOver) shows again, with its id,
+// OPEN (Ctrl+U, the held text killed: a reply to it waiting for the turn
+// answers it), or consumed when the keys entered the held text or picked
+// one of its choices (the program has its answer; a reply to it is refused
+// until the agent moves on). A claim on it (a reply's, made before the hold
+// or over it) stands: that reply resolves it.
+func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 	s.mu.Lock()
 	if s.held == nil {
 		s.mu.Unlock()
-		return false
+		return
 	}
 	close(s.held)
 	s.held = nil
 	over := s.heldOver
 	s.heldOver = Attention{}
 	cur := s.info.Attention
-	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended() && !picksChoice(over.Options, data, maybe)
-	if over.ID != "" && over.ID == s.own.ID && !restore {
-		// The agent's own question held over, answered by the keys (one of
-		// its choices) or gone with the hold: kept no more.
-		s.dropOwnLocked()
+	restore := over.ID != "" && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit && !s.info.Status.Ended()
+	if over.ID != "" && !restore {
+		// Gone with the hold (the session ended, or a question on the
+		// screen took the hold's place and the agent's went meanwhile).
+		s.forgetLocked(over.ID)
 	}
 	if restore {
 		// Shown again, it is a wait a title that says the agent works may
@@ -546,8 +615,8 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) bool {
 		over.ask = over.ID == s.own.ID
 		s.info.Attention = over
 		s.settleLocked(over)
-		if s.answered == over.ID {
-			s.setAnsweredLocked("")
+		if picksChoice(over.Options, data, maybe) {
+			s.consumeLocked(over.ID)
 		}
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(over)))
@@ -556,7 +625,6 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) bool {
 	if restore {
 		s.notifyChange()
 	}
-	return restore
 }
 
 // Held reports whether the session's turn is held for a submission's text
@@ -703,7 +771,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	if hook := s.beforeEnter.Load(); hook != nil {
 		(*hook)()
 	}
-	promptSince, byName, wait := st.promptSince, st.byName, st.wait
+	byName, wait := st.byName, st.wait
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
 	att := s.info.Attention
@@ -738,7 +806,12 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 			if err := s.stillOnScreen(sub.Question); err != nil {
 				return err
 			}
-			return s.claimQuestion(sub.Question)
+			token, err := s.claimQuestion(sub.Question)
+			if err != nil {
+				return err
+			}
+			st.claim.Store(token)
+			return nil
 		}
 	} else if sub.Question != "" {
 		// A reply's line, its text typed: its Enter is left out once the
@@ -757,16 +830,16 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		}
 	}
 	// As the writer takes the Enter, never for one not written: the
-	// caller's BeforeEnter, the prompt it answers put behind for the
-	// replies after it (noteAnswering), and the turn a done ended is behind
-	// (nextTurn).
+	// caller's BeforeEnter, what an Enter naming no question does to the
+	// questions (rawKeys: a bell's wait withdrawn), and the turn a done
+	// ended is behind (nextTurn).
 	wait.before = func() {
 		if sub.BeforeEnter != nil {
 			sub.BeforeEnter()
 		}
 		keys, _, _ := s.keysWritten([]byte{'\r'})
-		if claim := s.noteAnswering(promptSince, []byte{'\r'}, keys, nil, st.aside, sub.By != nil); claim != 0 {
-			st.claim.Store(claim)
+		if sub.Question == "" {
+			s.rawKeys([]byte{'\r'}, keys, nil, true, sub.By != nil)
 		}
 		s.nextTurn()
 	}
@@ -800,14 +873,15 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 	}
 	if sub.By != nil {
 		s.stampTyping(sub.By)
-		s.answer(promptSince, sub.By.ID, sub.By.Name, true, true)
-		if st.claim != nil {
-			if claim := st.claim.Load(); claim != 0 {
-				s.answerReached(st.aside, claim, sub.By.ID, sub.By.Name)
-			}
+	}
+	if token := st.claim.Load(); token != 0 {
+		// A reply's Enter: its question resolved by the claim its text or
+		// this Enter made (resolve), by whoever sent it.
+		by, name := "", byName
+		if sub.By != nil {
+			by, name = sub.By.ID, sub.By.Name
 		}
-	} else {
-		s.answer(promptSince, "", byName, false, true)
+		s.resolve(sub.Question, token, by, name)
 	}
 	if pending {
 		s.log.Info("a submission's Enter waits for the program to take input")
@@ -867,9 +941,9 @@ var errWaiting = errors.New("session: the session waits on a prompt")
 // question (ErrTrustQuestion), a question asked during the work or a
 // dialog on the screen now or Held (ErrQuestion). A reply to a question
 // (Question) is refused once that question no longer waits
-// (ErrQuestionAnswered), and passing, it notes the question answered in
-// the same critical section (claimQuestion).
-func (s *Local) textGuard(sub Submission) func() error {
+// (ErrQuestionAnswered), and passing, it claims the question in the same
+// critical section (claimQuestion), the claim kept in st.
+func (s *Local) textGuard(sub Submission, st submitState) func() error {
 	return func() error {
 		if sub.Question != "" {
 			if err := s.questionWaits(sub.Question); err != nil {
@@ -881,10 +955,11 @@ func (s *Local) textGuard(sub Submission) func() error {
 		att := s.info.Attention
 		s.mu.Unlock()
 		showing := att.State == AttentionNeedsInput
+		startup := s.startupOnScreen()
 		switch {
-		case sub.UnlessWaiting && (showing || dialog):
+		case sub.UnlessWaiting && (showing || dialog || startup):
 			return errWaiting
-		case showing && att.Source == SourceTrust:
+		case showing && att.Source == SourceTrust || startup:
 			return ErrTrustQuestion
 		case dialog || showing && att.Source == SourceQuestion:
 			return ErrQuestion
@@ -896,7 +971,12 @@ func (s *Local) textGuard(sub Submission) func() error {
 			if err := s.stillOnScreen(sub.Question); err != nil {
 				return err
 			}
-			return s.claimQuestion(sub.Question)
+			token, err := s.claimQuestion(sub.Question)
+			if err != nil {
+				return err
+			}
+			st.claim.Store(token)
+			return nil
 		}
 		return nil
 	}

@@ -338,16 +338,23 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		if m.Text != "" {
 			// A line is a submission: it waits for the session's turn as a
 			// submit does, on the read loop but no longer once the turn is
-			// held for a person (typeIn); the owner's word names it.
+			// held for a person (typeIn); the owner's word names it, once
+			// its outcome is known (a line the program takes slowly is
+			// finished later, and its word comes then).
 			held.typeIn(sub, local, m.ReqID, func() error {
-				reply(s.answer(sub, local, m))
+				if err := s.answer(sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
+					reply(err)
+				}
 				return nil
 			}, reply)
 			return true
 		}
 		// A choice's keys on the read loop, as a keystroke is, so what the
-		// client sends next comes after them; the owner's word names them.
-		reply(s.answer(sub, local, m))
+		// client sends next comes after them; the owner's word names them,
+		// once they have landed.
+		if err := s.answer(sub, local, m, reply); !errors.Is(err, session.ErrSubmitPending) {
+			reply(err)
+		}
 	case proto.CtlChat:
 		var m proto.ChatPost
 		if json.Unmarshal(payload, &m) != nil {
@@ -390,14 +397,20 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 
 // answer types a viewer's reply to a question (proto.Answer): a choice's
 // keys as a keystroke is written, a line as a submit is, each only while
-// the question it names still waits (ErrQuestionAnswered otherwise).
-func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto.Answer) error {
+// the question it names still waits (ErrQuestionAnswered otherwise). The
+// word is the error returned, but for one accepted whose outcome is not
+// known yet (session.ErrSubmitPending): finished gets it then, on another
+// goroutine (nil once the keys landed or the line was entered,
+// session.ErrLineStranded for a line typed and not entered).
+func (s *Server) answer(sub *session.Subscription, local *session.Local, m proto.Answer, finished func(error)) error {
 	if m.Input != "" {
-		return local.AnswerInput(context.Background(), sub, m.Question, []byte(m.Input))
+		return local.AnswerInputFinished(context.Background(), sub, m.Question, []byte(m.Input), finished)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
 	defer cancel()
-	_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question})
+	_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, Finished: func(res session.SubmitResult, err error) {
+		finished(session.AnswerWord(res, err))
+	}})
 	return err
 }
 

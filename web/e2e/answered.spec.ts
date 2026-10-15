@@ -8,8 +8,12 @@ import { expect, member, test, type Api, type Session } from './fixtures'
 // clicks Yes in his sidebar; Priya, whose page still shows the first
 // approval (her live stream held back, as a slow network would), clicks Yes
 // after him. Her click names the question she was shown, which is answered:
-// the session refuses it and her page says so, the stub reads exactly one
-// answer, and the next approval waits, untouched, until its own answer.
+// the session refuses it with the result (who answered), her page says so,
+// the stub reads exactly one answer, and the next approval waits, untouched,
+// until its own answer. Then: keys typed in the terminal answer no question
+// the agent reported, a page that connects after the answer shows who gave
+// it, and a bell's wait goes once the screen moves on or an Enter is typed
+// (`docs/plans/codex-needs-you.md`, "first response wins").
 test.describe.configure({ mode: 'serial' })
 
 let crewId = ''
@@ -285,6 +289,7 @@ test('a choice clicked once its question was answered is refused, says so, and n
   const listed = (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions
   other = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const priya = await heldBackPage(other, state.token, listed)
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
   await page.goto('/crews')
   await priya.goto('/crews')
   const row = (p: Page) => p.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${id}"]`).first()
@@ -301,12 +306,12 @@ test('a choice clicked once its question was answered is refused, says so, and n
   const next = await asked()
   expect(next.id).not.toBe(first.id)
 
-  // Priya's page still shows the first; her Yes names it, and is refused.
+  // Priya's page still shows the first; her Yes names it, and is refused with the result: who answered it.
   await expect(row(priya).locator('[data-row-prompt]')).toContainText('curl -sI https://example.com')
   await row(priya).locator('[data-row-choice="1"]').click()
   const toast = priya.locator('li').filter({ hasText: 'Already answered' }).last()
   await expect(toast).toBeVisible({ timeout: 15_000 })
-  await expect(toast).toContainText('answered before your reply arrived. Nothing was sent.')
+  await expect(toast).toContainText('was answered by Nate. Nothing was sent.')
 
   // Exactly one answer reached the stub; the next approval waits, untouched.
   await priya.waitForTimeout(1_500)
@@ -319,4 +324,108 @@ test('a choice clicked once its question was answered is refused, says so, and n
   await expect(row(page).locator('[data-row-prompt]')).toContainText('ls -la', { timeout: 15_000 })
   await row(page).locator('[data-row-choice="1"]').click()
   await expect.poll(approvals, { timeout: 15_000, message: 'the stub read the next approval\'s y' }).toEqual(['approval: approved', 'approval: approved'])
+})
+
+/** The line typed into the stub (reading as a TUI) and not yet entered: undefined before the stub reads so. */
+function pendingLine(home: string, s: Session): string | undefined {
+  const file = join(home, '.stub-sessions', `${s.agentSession?.id ?? ''}.line`)
+  if (!existsSync(file)) return undefined
+  const log = readFileSync(file, 'utf8')
+  return log.slice(0, log.lastIndexOf('\n') + 1).split('\n').slice(0, -1).at(-1) ?? ''
+}
+
+// Keys typed in the terminal answer no question the agent reported: the stub has them, the question stands with its id until the
+// agent moves on, and nobody is recorded as having answered. A reply from the bar resolves the next question, recorded by name;
+// Priya, who joins through a control link after that, sees no question and the chat's line saying who answered.
+test('keys typed in the terminal leave the question until the agent moves on; a page that connects after the answer shows who gave it', async ({ page, browser, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e first wins' })
+  const line = () => pendingLine(state.home, s)
+  let guestCtx: BrowserContext | undefined
+  try {
+    await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+    await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
+    await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+    const terminal = page.locator('.terminal-host .xterm-helper-textarea').first()
+    await terminal.focus()
+    await page.keyboard.type('stub tui on')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => line() !== undefined, { timeout: 30_000, message: 'the stub reads as a TUI' }).toBe(true)
+
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch?' })
+    const bar = page.locator('[data-quick-reply]')
+    await expect(bar).toContainText('Which branch?', { timeout: 15_000 })
+    const first = (await api.session(s.id)).attention
+    expect(first?.id).toMatch(/^[0-9a-f]{16}$/)
+    await terminal.focus()
+    await page.keyboard.type('k')
+    await expect.poll(line, { timeout: 10_000, message: 'the key reached the stub' }).toBe('k')
+    await page.waitForTimeout(1_000)
+    expect((await api.session(s.id)).attention).toMatchObject({ state: 'needs_input', id: first?.id })
+    await expect(bar).toContainText('Which branch?')
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'working' })
+    await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).toBe('working')
+    await expect(bar).toBeHidden()
+    expect((await api.session(s.id)).lastAnswer, 'keys in the terminal are nobody\'s answer').toBeUndefined()
+    await page.keyboard.press('Control+U')
+    await expect.poll(line, { timeout: 10_000, message: 'Ctrl+U cleared the key' }).toBe('')
+
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which database?', options: [{ label: 'Postgres', input: 'p' }, { label: 'SQLite', input: 's' }] })
+    await expect(bar).toContainText('Which database?', { timeout: 15_000 })
+    await bar.getByRole('button', { name: 'Postgres' }).click()
+    await expect.poll(line, { timeout: 10_000, message: 'the choice reached the stub' }).toBe('p')
+    await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
+    expect((await api.session(s.id)).lastAnswer).toMatchObject({ byName: 'Nate', message: 'Which database?' })
+
+    const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'control' })
+    guestCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    await guestCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Priya'))
+    const priya = await guestCtx.newPage()
+    await priya.goto(`/join/${token}`)
+    await priya.getByRole('button', { name: 'Join session' }).click()
+    await expect(priya.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 15_000 })
+    await expect(priya.locator('[data-chat-aside] [data-chat] [data-chat-system]').filter({ hasText: 'Answered by Nate' })).toBeVisible({ timeout: 15_000 })
+    await expect(priya.locator('[data-quick-reply]')).toBeHidden()
+  } finally {
+    await guestCtx?.close()
+    await api.stopSession(s.id)
+  }
+})
+
+// A bell with nothing drawn after it is a wait with no words (an agent with no hooks). It goes when the screen moves on (the
+// stub prints four lines after its pause: the snapshot's threshold) or when an Enter is typed in the terminal, with no answer
+// recorded either way.
+test("a bell's wait goes once the screen moves on, or with an Enter typed in the terminal, and records no answer", async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e bell wait' })
+  const attention = async () => (await api.session(s.id)).attention ?? { state: '' }
+  try {
+    await page.goto(`/sessions/${encodeURIComponent(s.id)}`)
+    await expect(page.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+    const terminal = page.locator('.terminal-host .xterm-helper-textarea').first()
+    const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${s.id}"]`).first()
+
+    await terminal.focus()
+    await page.keyboard.type('stub bell 3')
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await attention()).source, { timeout: 15_000, message: 'the bell is a wait' }).toBe('bell')
+    await expect(row).toHaveAttribute('data-row-state', 'needs', { timeout: 15_000 })
+    await expect.poll(async () => (await attention()).state, { timeout: 15_000, message: 'the screen moved on' }).toBe('')
+    expect((await attention()).source).toBe('screen')
+    expect((await api.session(s.id)).lastAnswer).toBeUndefined()
+    await expect(row).not.toHaveAttribute('data-row-state', 'needs', { timeout: 15_000 })
+
+    // The stub spins after its lines; stopped, it reads the next line: a long pause, and an Enter typed in the terminal.
+    const spin = join(state.home, '.stub-sessions', `${s.agentSession?.id ?? ''}.spin`)
+    await expect.poll(() => (existsSync(spin) ? readFileSync(spin, 'utf8').trim() : ''), { timeout: 15_000, message: 'the stub spins' }).toBe('spinning')
+    writeFileSync(spin, 'stop\n')
+    await terminal.focus()
+    await page.keyboard.type('stub bell 60')
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await attention()).source, { timeout: 45_000, message: 'the bell is a wait again' }).toBe('bell')
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await attention()).state, { timeout: 15_000, message: 'the Enter withdrew the wait' }).toBe('')
+    expect((await attention()).source).toBe('input')
+    expect((await api.session(s.id)).lastAnswer).toBeUndefined()
+  } finally {
+    await api.stopSession(s.id)
+  }
 })

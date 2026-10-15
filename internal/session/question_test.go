@@ -47,9 +47,13 @@ func TestAQuestionsWordsAreItsHeading(t *testing.T) {
 	if got := nextWrite(t, p); got != "3" {
 		t.Fatalf("written %q", got)
 	}
-	info := s.Info()
-	if info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.Message != "Update available 0.161.0 → 0.162.1" {
-		t.Fatalf("the choice did not answer the question by its words: %+v %+v", info.Attention, info.LastAnswer)
+	// Consumed by its words: a reply refused, and withdrawn once the screen moves on.
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) || err.Error() != QuestionConsumedWords {
+		t.Fatalf("a reply after the key: %v", err)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen || s.Info().LastAnswer != nil {
+		t.Fatalf("the question withdrawn: %+v, answered %+v", a, s.Info().LastAnswer)
 	}
 	// Without its words a question is told by what found it; a words pattern that matches nothing changes nothing.
 	q := StartupQuestion{Pattern: regexp.MustCompile(`(?i)update\s*now\s*\(\s*runs`), Words: regexp.MustCompile(`never here`)}
@@ -172,9 +176,17 @@ func TestAnApprovalAfterTheFirstPromptIsAskedWithItsChoices(t *testing.T) {
 	if got := nextWrite(t, p); got != "y" {
 		t.Fatalf("written %q", got)
 	}
-	info := s.Info()
-	if info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.Message != approvalWords || info.LastAnswer.ByName != "nater" {
-		t.Fatalf("the choice did not answer: %+v %+v", info.Attention, info.LastAnswer)
+	// Consumed: the program's dialog has the key, a reply to it is refused,
+	// and it is withdrawn once the dialog has gone from the screen.
+	if a := s.Info().Attention; !asked(a) || a.ID != att.ID {
+		t.Fatalf("the key changed the dialog shown: %+v", a)
+	}
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) || err.Error() != QuestionConsumedWords {
+		t.Fatalf("a reply after the key: %v", err)
+	}
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\n› ")))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen || s.Info().LastAnswer != nil {
+		t.Fatalf("the dialog withdrawn: %+v, answered %+v", a, s.Info().LastAnswer)
 	}
 }
 
@@ -221,10 +233,11 @@ func TestTheSameApprovalAnsweredThenShownAgainIsAskedAgain(t *testing.T) {
 	first := waitAttention(t, s, asked)
 	s.Input(sub, []byte("y"))
 	nextWrite(t, p)
-	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("not answered: %q", st)
+	if a := s.Info().Attention; !asked(a) || a.ID != first.ID {
+		t.Fatalf("the key changed the dialog shown: %+v", a)
 	}
 	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\nHTTP/2 200\r\n\x1b[2m• Working\x1b[22m")))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 	time.Sleep(800 * time.Millisecond)
 	if a := s.Info().Attention; a.State != AttentionNone {
 		t.Fatalf("the answered dialog was asked again without being drawn: %+v", a)
@@ -390,10 +403,8 @@ func TestAQueuedApprovalDrawnAsWhatChangedIsAskedAgain(t *testing.T) {
 		if next.Message != "Would you like to run the following command? $ rm -rf build" || len(next.Options) != 3 || !next.Since.After(*first.Since) {
 			t.Fatalf("%q, the queued approval: %+v", key, next)
 		}
-		if key != "d" {
-			if info := s.Info(); info.LastAnswer == nil || info.LastAnswer.Message != approvalWords || info.LastAnswer.ByName != "nater" {
-				t.Fatalf("%q did not answer the first: %+v", key, info.LastAnswer)
-			}
+		if info := s.Info(); info.LastAnswer != nil {
+			t.Fatalf("%q was recorded as an answer: %+v", key, info.LastAnswer)
 		}
 	}
 }
@@ -458,7 +469,10 @@ func TestAnApprovalDrawnAsTheLookRunsOutHoldsTheEnter(t *testing.T) {
 // typed it stays: the dialog cannot have been answered, and the held
 // question keeps every Enter off it.
 func TestAnApprovalGoneAfterAKeyTypedIntoItGivesWay(t *testing.T) {
-	for _, key := range []string{"d", "\x1b[<0;12;23M"} {
+	// After a key the dialog names (d), a click, or nothing at all (Codex
+	// moved on by itself): the dialog gone from the screen is withdrawn, no
+	// answer recorded.
+	for _, key := range []string{"d", "\x1b[<0;12;23M", ""} {
 		s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 		sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
 		if err != nil {
@@ -466,25 +480,18 @@ func TestAnApprovalGoneAfterAKeyTypedIntoItGivesWay(t *testing.T) {
 		}
 		p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
 		waitAttention(t, s, asked)
-		s.Input(sub, []byte(key))
-		nextWrite(t, p)
+		if key != "" {
+			s.Input(sub, []byte(key))
+			nextWrite(t, p)
+		}
 		if a := s.Info().Attention; !asked(a) {
 			t.Fatalf("%q answered the question before the dialog went: %+v", key, a)
 		}
 		p.outW.Write([]byte(approvalGone("■ Conversation interrupted - tell the model what to do differently.\r\n› ")))
 		a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
-		if info := s.Info(); info.LastAnswer == nil || info.LastAnswer.ByName != "nater" || info.LastAnswer.Message != approvalWords {
+		if info := s.Info(); a.Source != SourceScreen || info.LastAnswer != nil {
 			t.Fatalf("%q: %+v %+v", key, a, info.LastAnswer)
 		}
-	}
-
-	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
-	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
-	att := waitAttention(t, s, asked)
-	p.outW.Write([]byte(approvalGone("› ")))
-	time.Sleep(900 * time.Millisecond)
-	if a := s.Info().Attention; !asked(a) || *a.Since != *att.Since {
-		t.Fatalf("the question went without a key: %+v", a)
 	}
 }
 
@@ -590,9 +597,7 @@ func TestALookBeforeASubmissionLeavesTheQuietLook(t *testing.T) {
 	if res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
 		t.Fatalf("the handoff: %+v %v", res, err)
 	}
-	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil {
-		t.Fatalf("not answered: %+v", a)
-	}
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
 // A dialog drawn while the session shows a report with choices of its own,
@@ -703,7 +708,7 @@ func TestAKeyBeforeTheDialogIsAskedAnswersItWhenItGoesLate(t *testing.T) {
 	nextWrite(t, p)
 	waitAttention(t, s, asked) // the program has not drawn since: the dialog is asked
 	p.outW.Write([]byte(approvalGone("■ Conversation interrupted\r\n› ")))
-	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil || s.Info().LastAnswer.ByName != "nater" {
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen || s.Info().LastAnswer != nil {
 		t.Fatalf("%+v %+v", a, s.Info().LastAnswer)
 	}
 }
@@ -731,7 +736,7 @@ func TestAKeyIsNotedAgainstTheDialogOnTheScreen(t *testing.T) {
 	nextWrite(t, p)
 	waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Message == approvalWords })
 	p.outW.Write([]byte(approvalGone("■ Conversation interrupted\r\n› ")))
-	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil || s.Info().LastAnswer.Message != approvalWords {
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen || s.Info().LastAnswer != nil {
 		t.Fatalf("%+v %+v", a, s.Info().LastAnswer)
 	}
 }
@@ -774,17 +779,21 @@ func TestAnAnswerTheProgramTakesLateLeavesNoQuestion(t *testing.T) {
 	first := waitAttention(t, s, asked)
 	s.Input(sub, []byte("y"))
 	nextWrite(t, p)
-	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
+	time.Sleep(2 * patternQuiet)
+	if a := s.Info().Attention; !asked(a) || a.ID != first.ID {
+		t.Fatalf("the dialog the program is slow to take away: %+v", a)
+	}
 	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\n› ")))
-	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); s.Info().LastAnswer == nil || s.Info().LastAnswer.ByName != "nater" {
-		t.Fatalf("after the late answer %+v (asked again %+v): %+v", a, again, s.Info().LastAnswer)
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen || s.Info().LastAnswer != nil {
+		t.Fatalf("after the late answer %+v: %+v", a, s.Info().LastAnswer)
 	}
 }
 
 // A handoff that comes as a person answers the dialog, before the program
-// has drawn what follows, does not ask the answered dialog again (the look
-// before a submission finds nothing until output comes): it is typed with
-// its Enter once the dialog is gone, and no question is left held.
+// has drawn what follows, writes nothing (the dialog consumed still shows,
+// and the look before a submission finds it until output comes); once the
+// dialog is gone it is withdrawn, and the handoff is typed with its Enter,
+// no question left held.
 func TestAHandoffAsTheDialogIsAnsweredLeavesNoQuestion(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
@@ -797,20 +806,14 @@ func TestAHandoffAsTheDialogIsAnsweredLeavesNoQuestion(t *testing.T) {
 	waitAttention(t, s, asked)
 	s.Input(sub, []byte("y"))
 	nextWrite(t, p)
-	type result struct {
-		res SubmitResult
-		err error
+	if res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
+		t.Fatalf("the handoff at the dialog consumed: %+v %v", res, err)
 	}
-	done := make(chan result, 1)
-	go func() {
-		res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
-		done <- result{res, err}
-	}()
-	time.Sleep(20 * time.Millisecond)
 	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\n› ")))
-	r := <-done
-	if r.err != nil || !r.res.Typed || !r.res.Entered {
-		t.Fatalf("the handoff: %+v %v", r.res, r.err)
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
+	if err != nil || !res.Typed || !res.Entered {
+		t.Fatalf("the handoff: %+v %v", res, err)
 	}
 	time.Sleep(900 * time.Millisecond)
 	if a := s.Info().Attention; a.State == AttentionNeedsInput {

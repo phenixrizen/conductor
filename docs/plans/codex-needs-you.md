@@ -1558,6 +1558,67 @@ does.
 - Conductor's lines (handoffs, broadcasts) and P28's Enter. The words, the
   docs and the e2e spec.
 
+## Found while building (2026-10-15)
+
+Details the section left open, settled in the code; none changes the
+events, orders or invariants above, but for the two marked.
+
+- **A dialog gone from the screen under a claim is left to the claim**
+  (an amendment to "withdraw: … it drops any claim"). A reply to a dialog
+  is its choice's keys, claimed as the writer takes them and resolved as
+  their write returns; the program takes them in between and removes the
+  dialog. The screen's watchers (`missAsked`, `escGone`, `screenQuiet`)
+  therefore withdraw only a question nobody answers (`withdraw`): one the
+  screen shows gone while a claim stands is resolved by that claim, with
+  its result, rather than withdrawn under it with the result lost. The
+  agent's own clear, its next question, its work in a new turn and the
+  session's end withdraw a claimed question as the section says.
+- **The screen withdraws any dialog gone**, not only one keys answered:
+  a dialog the program took away itself (an interrupt, a key Conductor
+  does not read as an answer) left the question standing before; now a
+  settled screen without it withdraws it (`missAsked`).
+- **The startup guard reads the screen.** Typed text is refused while a
+  whole, settled frame still shows a startup question during the startup
+  watch, answered or not (`startupOnScreen`), in place of the stamp that
+  said a key had answered it until the screen moved on. Conductor's own
+  line waits for the screen.
+- **A reply's stranded line holds the turn.** S26 as written: a claimed
+  line whose Enter is left out releases its claim, and the hold follows
+  as for a revoked link's (`strand`), so no other line joins the text. A
+  line naming no question stranded the same way is left as before, no
+  hold: it answers nothing and nobody waits on it.
+- **A startup question is never claimed past its write**, so the table's
+  "a startup question gone" row has no claim to withdraw from: a reply to
+  it is its choice's keys, resolved as they are written, and the screen
+  gone is the consumed path (S24). The row is a startup question answered
+  in the terminal under the hold instead (the "Enter left out" release
+  row).
+- **Keys that land late tell their word late.** A reply's choice whose
+  write began and lands when the program reads again (`ErrSubmitPending`)
+  is told through `finished` (`AnswerInputFinished`), as a line's is, over
+  both transports: `answer_ok` only once the keys landed, never before.
+- **A page's Escape is a structured answer.** Sent as a reply naming the
+  question, it resolves the question as it is written; the held Escape
+  (one that may be the start of a sequence) is the raw keys' rule only.
+- **A done drops an unmarked held-over question**, as before: a question
+  the agent reported without the mark, held over by the hold, is withdrawn
+  by its done; the agent's own question survives the done held over (S14
+  is tested with the agent's own).
+- **The snapshot compares a screen never erased.** A program that
+  never erases its screen (a shell, a line reader; the e2e stub) resized
+  with something on it is "clipped" for the dialogs' watcher (what shows
+  was drawn at another size) and never a whole frame again; the snapshot
+  compares the screen with itself, so it needs only a finished frame
+  (`Screen.Drawn`: no synchronized update under way), and a resize, the
+  baseline dropped, pokes a quiet look so that a program drawing nothing
+  for it has its baseline before its next output.
+- **The hold is no question.** A reply naming the hold's own id
+  (`source:"submit"`) is refused, and raw keys do nothing to it but end it.
+- **The refusal's words** say what became of the question when the
+  session knows: `being answered` (CLAIMED), `answered in the terminal`
+  (consumed), `already answered by <name>` (a result kept), else the
+  generic `already answered`; the page shows each.
+
 # The pull requests, in order
 
 1. The host-connection change merges first (its own plan): it changes

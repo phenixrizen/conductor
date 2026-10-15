@@ -20,6 +20,7 @@ func TestAMemberWaitsOnItsOwnQuestionAfterItsTurn(t *testing.T) {
 	if err := tests.TryAsk("Keep the items in ~/.todo.json?", session.SourceAPI, "", nil); err != nil {
 		t.Fatal(err)
 	}
+	q := tests.Info().Attention
 	if err := tests.TrySetAttentionFull(session.AttentionDone, "asked", session.SourceAPI, session.KindDone, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestAMemberWaitsOnItsOwnQuestionAfterItsTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tests.Input(sub, []byte("yes\r")); err != nil {
+	if err := tests.AnswerInput(t.Context(), sub, q.ID, []byte("yes\r")); err != nil {
 		t.Fatal(err)
 	}
 	if got := waitTyped(t, p, 5*time.Second); got != "yes\r" {

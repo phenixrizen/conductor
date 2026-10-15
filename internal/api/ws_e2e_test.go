@@ -377,9 +377,11 @@ func TestAttentionViaAgentTokenBellAndEvents(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("agent token: %d %v", resp.StatusCode, out)
 	}
-	if m := c.expectControl(proto.CtlAttention); m["state"] != "needs_input" || m["message"] != "approve the plan" || m["source"] != "api" {
+	m := c.expectControl(proto.CtlAttention)
+	if m["state"] != "needs_input" || m["message"] != "approve the plan" || m["source"] != "api" {
 		t.Fatalf("attention frame %v", m)
 	}
+	qid, _ := m["id"].(string)
 	waitEvent(func(ev string) bool {
 		return strings.HasPrefix(ev, "session ") && strings.Contains(ev, `"state":"needs_input"`)
 	})
@@ -392,10 +394,31 @@ func TestAttentionViaAgentTokenBellAndEvents(t *testing.T) {
 		t.Fatalf("bogus state: %d", resp.StatusCode)
 	}
 
-	// Typing clears it.
-	c.send(proto.Encode(proto.TypeInput, []byte("k")))
-	if m := c.expectControl(proto.CtlAttention); m["state"] != "" || m["source"] != "input" {
-		t.Fatalf("clear frame %v", m)
+	// A reply naming it clears it (keys alone answer no question the agent
+	// reported): the clear frame, and the reply's word.
+	c.send(proto.MustControl(proto.Answer{T: proto.CtlAnswer, ReqID: "k1", Question: qid, Text: "k"}))
+	for cleared, taken := false, false; !cleared || !taken; {
+		f, err := c.read()
+		if err != nil {
+			t.Fatalf("waiting for the reply's clear and word: %v", err)
+		}
+		if f.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		json.Unmarshal(f.Payload, &m)
+		switch m["t"] {
+		case proto.CtlAttention:
+			if m["state"] != "" || m["source"] != "input" {
+				t.Fatalf("clear frame %v", m)
+			}
+			cleared = true
+		case proto.CtlAnswerOK, proto.CtlError:
+			if m["t"] != proto.CtlAnswerOK || m["requestId"] != "k1" {
+				t.Fatalf("the reply's word %v", m)
+			}
+			taken = true
+		}
 	}
 	// A bell in the output sets it again with source bell.
 	c.send(proto.Encode(proto.TypeInput, []byte("\a\n")))
@@ -1223,7 +1246,8 @@ func (w *wsClient) verdict(reqID string) map[string]any {
 // (question_answered naming it), and the program reads the choice once.
 // One that comes late is refused too; a view link may not answer; an
 // answer past its bounds is a bad frame naming its request; a plain
-// keystroke still answers a question as before.
+// keystroke answers no question the agent reported: it is written and the
+// question stands for a reply naming it.
 func TestTwoAnswersToOneQuestionOverTheWire(t *testing.T) {
 	e := newTestEnv(t, nil)
 	id := e.createSession("cat")
@@ -1256,7 +1280,9 @@ func TestTwoAnswersToOneQuestionOverTheWire(t *testing.T) {
 		switch {
 		case m["t"] == proto.CtlAnswerOK:
 			ok++
-		case m["code"] == proto.ErrCodeQuestionAnswered && m["message"] == session.QuestionAnsweredWords:
+		case m["code"] == proto.ErrCodeQuestionAnswered && (m["message"] == session.QuestionClaimedWords || strings.HasPrefix(m["message"].(string), "this question was already answered by ")):
+			// Refused as the other's keys were being written (CLAIMED), or
+			// once they had resolved it.
 			refused++
 		default:
 			t.Fatalf("a word %v", m)
@@ -1286,18 +1312,24 @@ func TestTwoAnswersToOneQuestionOverTheWire(t *testing.T) {
 	if m := a.verdict("a2"); m["code"] != proto.ErrCodeBadFrame {
 		t.Fatalf("an answer past its bounds: %v", m)
 	}
-	// An older page's click: the keys alone, answering what shows.
+	// An older page's click: the keys alone, written, answering nothing;
+	// the question stands, and a reply naming it resolves it.
 	a.send(proto.Encode(proto.TypeInput, []byte("2")))
-	deadline := time.Now().Add(3 * time.Second)
-	for l.Info().Attention.State != session.AttentionNone {
-		if time.Now().After(deadline) {
-			t.Fatalf("a keystroke did not answer: %+v", l.Info().Attention)
-		}
-		time.Sleep(10 * time.Millisecond)
+	watch.outputUntil("12")
+	if att := l.Info().Attention; att.State != session.AttentionNeedsInput || att.ID != next {
+		t.Fatalf("a keystroke answered: %+v", att)
 	}
-	// What cat read: one 1 of the two answers, then the 2, then the line.
+	a.send(answer("a3", next, "1"))
+	if m := a.verdict("a3"); m["t"] != proto.CtlAnswerOK {
+		t.Fatalf("the reply naming it: %v", m)
+	}
+	if att := l.Info().Attention; att.State != session.AttentionNone {
+		t.Fatalf("not answered: %+v", att)
+	}
+	// What cat read: one 1 of the two answers, then the 2, the 1 of the
+	// reply, then the line.
 	a.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "end"}))
-	if out := watch.outputUntil("12end\r\n12end"); strings.Contains(out, "11") {
+	if out := watch.outputUntil("1end\r\n121end"); strings.Contains(out, "11") {
 		t.Fatalf("the program read the choice twice: %q", out)
 	}
 }

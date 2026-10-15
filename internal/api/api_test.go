@@ -1120,7 +1120,7 @@ func TestCreateSessionAdapterEnvYieldsToTheAgent(t *testing.T) {
 	e := newTestEnv(t, nil)
 	_, env := agents.InjectFor("aider", filepath.Join(e.srv.cfg.DataDir, "hooks"), catalog.Signal{Kind: "hook"}, false)
 	command := env["AIDER_NOTIFICATIONS_COMMAND"]
-	if !strings.Contains(command, " notify --state needs_input") {
+	if !strings.Contains(command, " notify --state done") {
 		t.Fatalf("aider's command %q", command)
 	}
 	script := []string{"/bin/sh", "-c", `echo "N=[$AIDER_NOTIFICATIONS] C=[$AIDER_NOTIFICATIONS_COMMAND] END"; exec /bin/cat`}

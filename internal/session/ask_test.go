@@ -235,8 +235,8 @@ func TestAQuestionSetAsideByWorkShowsAgainAtTheDone(t *testing.T) {
 	}
 }
 
-// P4, P5: after the done, the question is answered as any: a person's
-// keys clear it, with the last answer and the chat's answered line, and
+// P4, P5: after the done, the question is answered as any: a reply naming
+// it clears it, with the last answer and the chat's answered line, and
 // the next done shows done. Or the agent works again, in a new turn: its
 // working report takes the question's place for good, and the next done
 // shows done.
@@ -244,9 +244,9 @@ func TestAnAnsweredOrWorkedQuestionGoesForGood(t *testing.T) {
 	t.Run("answered", func(t *testing.T) {
 		s, p, _ := asking(t, Options{})
 		owner := ownerOf(t, s)
-		askOwn(t, s, "Which database?", dbChoices...)
+		q := askOwn(t, s, "Which database?", dbChoices...)
 		reportState(t, s, AttentionDone, "asked")
-		if err := s.Input(owner, []byte("Postgres\r")); err != nil {
+		if err := s.AnswerInput(context.Background(), owner, q.ID, []byte("Postgres\r")); err != nil {
 			t.Fatal(err)
 		}
 		written(t, p)
@@ -288,11 +288,11 @@ func TestCodexsTitleAndTheQuestion(t *testing.T) {
 		reportState(t, s, AttentionDone, "asked")
 		out(p, codexWorking(1), codexRedraw, codexWorking(2))
 		showsOwn(t, s, q, "a title after the done")
-		if err := s.Input(owner, []byte("\r")); err != nil {
+		if err := s.AnswerInput(context.Background(), owner, q.ID, []byte("\r")); err != nil {
 			t.Fatal(err)
 		}
 		written(t, p)
-		shows(t, s, AttentionNone, "answered by the Enter")
+		shows(t, s, AttentionNone, "answered by the reply's Enter")
 		out(p, codexWorking(3))
 		shows(t, s, AttentionWorking, "the title once the next turn began", SourceTitle)
 	})
@@ -498,14 +498,14 @@ func TestAHandoffEnteredWhileTheQuestionIsAsideLeavesIt(t *testing.T) {
 func TestAHandoffWaitsForTheQuestionsAnswer(t *testing.T) {
 	s, p, _ := asking(t, Options{})
 	owner := ownerOf(t, s)
-	askOwn(t, s, "Which database?")
+	q := askOwn(t, s, "Which database?")
 	reportState(t, s, AttentionDone, "asked")
 	res, err := s.Submit(context.Background(), Submission{Text: "Handoff from core: over to you", ByName: "run", UnlessWaiting: true})
 	if err != nil || res.Typed {
 		t.Fatalf("the handoff typed into the question: %+v %v", res, err)
 	}
 	nothingWritten(t, p, 100*time.Millisecond)
-	if err := s.Input(owner, []byte("Postgres\r")); err != nil {
+	if err := s.AnswerInput(context.Background(), owner, q.ID, []byte("Postgres\r")); err != nil {
 		t.Fatal(err)
 	}
 	written(t, p)
@@ -598,12 +598,18 @@ func TestAHeldTurnHoldsTheQuestionOver(t *testing.T) {
 			}
 			got := returnsWithin(t, 5*time.Second, "the reply", func() submitted { return <-reply })
 			if c.keys == "\r" {
-				if !errors.Is(got.err, ErrQuestionAnswered) {
+				// The held text entered: the question shows again consumed
+				// (the program has its answer), kept, and a reply to it is
+				// refused until the agent moves on.
+				if !errors.Is(got.err, ErrQuestionAnswered) || got.err.Error() != QuestionConsumedWords {
 					t.Fatalf("the reply after the Enter: %+v, %v", got.res, got.err)
 				}
-				heldCleared(t, s)
-				if kept, _ := keeps(s); kept {
-					t.Fatal("the question answered by the Enter is kept")
+				if s.Held() {
+					t.Fatal("the hold did not end")
+				}
+				showsOwn(t, s, q, "once the Enter ended the hold")
+				if kept, _ := keeps(s); !kept {
+					t.Fatal("the question the Enter reached is not kept")
 				}
 				return
 			}
@@ -739,7 +745,7 @@ func TestRacesWithTheDoneEndAsTheSequentialRulesSay(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if err := s.Input(owner, []byte("x")); err != nil {
+				if err := s.AnswerInput(context.Background(), owner, q.ID, []byte("x")); err != nil {
 					t.Error(err)
 				}
 			}()
@@ -758,7 +764,6 @@ func TestRacesWithTheDoneEndAsTheSequentialRulesSay(t *testing.T) {
 			if kept, _ := keeps(s); kept {
 				t.Fatal("the answered question is kept")
 			}
-			_ = q
 
 			s2, _, _ := asking(t, Options{})
 			q2 := askOwn(t, s2, "Which port?")
@@ -926,13 +931,13 @@ func TestAPersonsReplyWhileTheQuestionIsAsideRemovesIt(t *testing.T) {
 	}
 }
 
-// A person's reply, or keys, begun while the question is set aside and
-// written once its turn's done has shown it again (the writer busy with
-// another write meanwhile): weighed with the done in one critical section,
-// the write reaches the question shown again and answers it, and the
-// reply's Enter is written, never left out for the question's return.
-// (Codex's review of the code, round 1.)
-func TestAPersonsWriteBegunAsideAnswersTheQuestionShownAgain(t *testing.T) {
+// A person's keys, or a line naming no question, begun while the question
+// is set aside and written once its turn's done has shown it again (the
+// writer busy with another write meanwhile): they answer nothing of it
+// (keys never resolve a question), the line's Enter is written all the
+// same, the question stays, and a reply naming it answers it. (Codex's
+// review of the code, round 1; the question's claim rule, 2026-10-15.)
+func TestAPersonsWriteBegunAsideAnswersNothingOnceItShowsAgain(t *testing.T) {
 	for _, reply := range []bool{true, false} {
 		t.Run(fmt.Sprintf("reply %v", reply), func(t *testing.T) {
 			s, p, _ := asking(t, Options{})
@@ -975,10 +980,15 @@ func TestAPersonsWriteBegunAsideAnswersTheQuestionShownAgain(t *testing.T) {
 			if err := returnsWithin(t, 5*time.Second, "the person's write", func() error { return <-done }); err != nil {
 				t.Fatal(err)
 			}
-			info := s.Info()
-			if info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.Message != "Which database?" {
-				t.Fatalf("the person's write did not answer the question: %+v %+v", info.Attention, info.LastAnswer)
+			showsOwn(t, s, q, "after the person's write")
+			if s.Info().LastAnswer != nil {
+				t.Fatalf("the person's write answered the question: %+v", s.Info().LastAnswer)
 			}
+			if err := s.AnswerInput(context.Background(), owner, q.ID, []byte("SQLite\r")); err != nil {
+				t.Fatalf("a reply after it: %v", err)
+			}
+			written(t, p)
+			shows(t, s, AttentionNone, "answered by the reply")
 			if kept, _ := keeps(s); kept {
 				t.Fatal("the answered question is kept")
 			}

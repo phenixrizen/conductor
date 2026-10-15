@@ -1095,8 +1095,9 @@ func TestASubmissionWhoseTimeRunsOutInItsPauseIsFinished(t *testing.T) {
 }
 
 // A key answering a startup question that the program takes late (its
-// write begun when its time ran out) answers the question once it lands:
-// the question is not left held.
+// write begun when its time ran out) reaches the question once it lands:
+// consumed, it is withdrawn once the screen shows the program moved on,
+// not left held.
 func TestALateKeyAnswersTheQuestionItWasTypedAt(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{
 		InputWait:    100 * time.Millisecond,
@@ -1115,6 +1116,10 @@ func TestALateKeyAnswersTheQuestionItWasTypedAt(t *testing.T) {
 	if got := written(t, p); got != "\r" {
 		t.Fatalf("written %q", got)
 	}
+	if err := s.AnswerInput(t.Context(), sub, s.Info().Attention.ID, []byte("\r")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply after the late key: %v", err)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H> "))
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
@@ -1188,10 +1193,10 @@ func TestAKeyNotWrittenIsNotNotedAgainstTheDialog(t *testing.T) {
 	}
 	nothingWritten(t, p, 100*time.Millisecond)
 	s.mu.Lock()
-	noted := s.typedAtAsked
+	consumed := s.consumed
 	s.mu.Unlock()
-	if noted != nil || s.asked.Held() {
-		t.Fatalf("a key not written was noted (%+v), held %v", noted, s.asked.Held())
+	if consumed != "" || s.asked.Held() {
+		t.Fatalf("a key not written consumed the dialog (%q), held %v", consumed, s.asked.Held())
 	}
 	if a := s.Info().Attention; !asked(a) {
 		t.Fatalf("attention %+v", a)

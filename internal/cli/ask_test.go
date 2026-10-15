@@ -10,8 +10,9 @@ import (
 )
 
 // aider's notification command, as its launch sets it, run as aider runs
-// it (the shell reads its words), reports aider's wait without the mark
-// (#193): a program's wait gives way to the turn's done, as before.
+// it (the shell reads its words), reports aider waiting for its next line
+// as done, with no mark (#193): keys typed in the terminal answer no
+// question, so a wait reported would stay until aider's next report.
 func TestAidersNotificationReportsNoMark(t *testing.T) {
 	ns := startNotifyServer(t)
 	a, ok := agents.Get("aider")
@@ -33,7 +34,7 @@ func TestAidersNotificationReportsNoMark(t *testing.T) {
 	if code, stderr, err := runNotifyWith(t, "", args...); code != 0 || err != nil || ns.calls != 1 {
 		t.Fatalf("%q: exit %d %v %q", args, code, err, stderr)
 	}
-	if ns.body["state"] != "needs_input" || ns.body["message"] != "aider is waiting" {
+	if ns.body["state"] != "done" || ns.body["message"] != "aider is waiting" {
 		t.Fatalf("body %v", ns.body)
 	}
 	if _, marked := ns.body["ask"]; marked {

@@ -560,7 +560,8 @@ func TestTheHoldShowsAgainOnceAQuestionIsAnswered(t *testing.T) {
 		t.Fatalf("written %q", got)
 	}
 	untilIdle(t, s)
-	s.fireTrust("Trust this folder?")
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Yes"))
+	att := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
 	linkRevoked.Store(true)
 	s.DisconnectLink(guest.LinkID)
 	<-done
@@ -571,12 +572,17 @@ func TestTheHoldShowsAgainOnceAQuestionIsAnswered(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	att := s.Info().Attention
-	if att.Source != SourceTrust {
-		t.Fatalf("attention %+v", att)
+	if a := s.Info().Attention; a.ID != att.ID {
+		t.Fatalf("attention %+v", a)
 	}
-	// As keys typed before the hold, written late, answer it.
-	s.answer(att.Since, "someone", "someone", true, true)
+	// Its own answer resolves it: the hold shows again.
+	owner := ownerOf(t, s)
+	if err := s.AnswerInput(context.Background(), owner, att.ID, []byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
 	heldShows(t, s)
 	nothingWritten(t, p, 100*time.Millisecond)
 }
@@ -711,8 +717,9 @@ func TestRepliesToAQuestionOverAHeldTurn(t *testing.T) {
 // for the turn. A person's keys that answer it not (Ctrl+U, the text
 // killed) end the hold and the question waits still: it shows again, its
 // id the same, and the reply answers it, a line of its own. An Enter (the
-// text entered as its answer), or the agent reporting it went on, leaves
-// it answered: the reply is refused, nothing written.
+// text entered as its answer) shows it again consumed: the reply is
+// refused, nothing written, and it goes once the agent moves on. The agent
+// reporting it went on takes it away: the reply is refused.
 func TestAQuestionTheHoldTookThePlaceOfShowsAgainUnlessAnswered(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -776,6 +783,15 @@ func TestAQuestionTheHoldTookThePlaceOfShowsAgainUnlessAnswered(t *testing.T) {
 					t.Fatalf("the reply: %+v, %v", got.res, got.err)
 				}
 				nothingWritten(t, p, 100*time.Millisecond)
+			}
+			if c.keys == "\r" && !c.wentOn {
+				if got.err.Error() != QuestionConsumedWords {
+					t.Fatalf("the reply after the text was entered: %v", got.err)
+				}
+				if a := s.Info().Attention; a.ID != q.ID || s.Held() {
+					t.Fatalf("the question consumed by the Enter: %+v (held %v)", a, s.Held())
+				}
+				return
 			}
 			heldCleared(t, s)
 		})

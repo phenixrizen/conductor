@@ -1078,6 +1078,44 @@ request each from main.
   Playwright `askwait.spec.ts` (a Claude Code stub's question on its row,
   the Yard and the run's card after its turn, answered from the row; a Codex
   stub showing Working, then the question at its done).
+- **A question is answered once: first response wins** (#207, the rest of
+  #193; `docs/plans/codex-needs-you.md`, "Who may answer a question: first
+  response wins", with the owner's decisions of 2026-10-15). A question the
+  session shows is open, claimed, resolved, consumed or withdrawn, and one
+  function (`resolve`) records an answer. A reply naming the question (the
+  row's 1–9, the bar's choice or line, the chat's choice: `answer` over the
+  server's WebSocket, WebRTC or the relay) claims it as the writer takes
+  its keys, a fresh token each time, and resolves it once the last byte is
+  written, recorded by the sender's name (`lastAnswer`, the chat's
+  "Answered by", an `input` entry). Meanwhile every other reply is refused
+  as being answered, and afterwards as answered by that person (the result
+  is kept by id for the last 64 questions, so a late click or a retry gets
+  it), the page's toast saying which. No timer ends a question or a claim
+  whose write began; only a write refused before it began, or a reply's
+  line whose Enter is left out (a prompt or a startup question in its
+  pause, its link gone), releases the claim, the session's turn then held
+  with the question held over (Ctrl+U shows it open again; an Enter, or
+  its choice, consumed). Keys typed in the terminal, a line naming no
+  question (`submit`, a chat to the agent, a crew's prompt, a handoff, a
+  broadcast) and the terminal's own reports answer nothing: they consume a
+  question read off the screen whose answer they pick, an Enter among them
+  withdraws a bell's, an OSC notification's or the pattern's wait, a
+  person's keys withdraw the agent's own question set aside, and a question
+  the agent reported stands until the agent moves on or a reply names it;
+  nobody is recorded as answering in the terminal. A bell's or an OSC
+  notification's wait is also withdrawn by the screen moving on: every
+  session keeps a model of its screen, the baseline is its first quiet
+  after the wait, and three rows changed by more than eight cells each
+  withdraw it (`source:"screen"`). aider's notifications command reports
+  `done`. Gone: the answer by stamp (`answered`, `claims`, `noteAnswering`,
+  `answerReached`, `answerWhen`, `typedAt`). Tests: Go (`claim_test.go`:
+  the brief's list, and one table of every clearing path through release
+  and reclaim; the orderings S1 to S30 across `internal/session`, the
+  server's WebSocket, the host's peer, the crew's handoffs and aider's
+  assets), vitest (`reply.ts`'s words), Playwright `answered.spec.ts` (the
+  refusal names who answered; keys in the terminal leave the question until
+  the agent moves on; a page that joins after the answer shows who gave it;
+  a bell's wait gone with the screen moving on, and with an Enter).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 

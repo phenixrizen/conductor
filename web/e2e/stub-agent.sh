@@ -100,7 +100,10 @@
 # own while it is pending. `stub ask-wait <question>` asks it marked as the
 # agent's own question (notify --ask, #193), spins as `stub ask` does, and
 # then ends its turn as its agent's hooks do (STUB_REPORT): the question
-# outlasts that done.
+# outlasts that done. `stub bell <seconds>` rings the bell and draws nothing
+# for that many seconds (a wait with no words), then prints four lines (the
+# agent moving on: the wait is withdrawn by the screen), pauses two seconds
+# and spins as `stub spin 30` does.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -770,6 +773,17 @@ answer() {
 	fi
 	if [[ $line =~ ^stub\ ask-wait\ (.{1,200})$ ]]; then
 		report --ask --message "${BASH_REMATCH[1]}"
+		spin 30
+	fi
+	if [[ $line =~ ^stub\ bell\ ([1-9][0-9]?)$ ]]; then
+		# A bell with nothing drawn after it, as an agent with no hooks
+		# rings for a prompt it does not name; then, the pause over, the
+		# agent moves on: output, a pause for the screen to be looked at,
+		# and the spin a test ends.
+		printf '\a'
+		sleep "${BASH_REMATCH[1]}"
+		printf '\nmoving on: one\nmoving on: two\nmoving on: three\nmoving on: four\n'
+		sleep 2
 		spin 30
 	fi
 	if [[ $line =~ ^stub\ async\ (.{1,200})$ ]]; then

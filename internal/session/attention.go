@@ -45,6 +45,12 @@ const (
 	// SourceTitle: the agent's window title says it works (Options.WorkingTitle:
 	// Codex's "⠋ Working").
 	SourceTitle = "title"
+	// SourceScreen: the empty state after the screen moved on from a
+	// question without an answer (withdrawn): a bell or OSC wait whose
+	// screen changed past the snapshot's threshold (Local.screenQuiet), a
+	// startup question or a dialog gone after keys typed in the terminal
+	// reached it.
+	SourceScreen = "screen"
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can

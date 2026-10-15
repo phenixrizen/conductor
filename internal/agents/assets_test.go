@@ -548,12 +548,12 @@ func TestAssetsEscapeTheBinaryPath(t *testing.T) {
 		t.Fatalf("codex notify %q", argv)
 	}
 	_, env := InjectFor("aider", hooks, hook, false)
-	if got := runShell(t, env["AIDER_NOTIFICATIONS_COMMAND"], out); got != "notify\n--state\nneeds_input\n--message\naider is waiting\n" {
+	if got := runShell(t, env["AIDER_NOTIFICATIONS_COMMAND"], out); got != "notify\n--state\ndone\n--message\naider is waiting\n" {
 		t.Fatalf("aider command ran with %q", got)
 	}
 	// The snippet a user pastes into a shell sets the same command.
 	a, _ := Get("aider")
-	if got := runShell(t, a.Snippet(hooks)+"\n/bin/sh -c \"$AIDER_NOTIFICATIONS_COMMAND\"", out); got != "notify\n--state\nneeds_input\n--message\naider is waiting\n" {
+	if got := runShell(t, a.Snippet(hooks)+"\n/bin/sh -c \"$AIDER_NOTIFICATIONS_COMMAND\"", out); got != "notify\n--state\ndone\n--message\naider is waiting\n" {
 		t.Fatalf("aider snippet ran with %q", got)
 	}
 

@@ -8,11 +8,15 @@ import (
 // aider runs a notifications command, through the shell, whenever it waits
 // for the user, and reads the setting from the environment. That is its only
 // route: there is nothing to install. Its yes/no confirmations are not
-// notifications; a screen pattern on "(Y)es/(N)o" catches those.
+// notifications; a screen pattern on "(Y)es/(N)o" catches those. It waits
+// for the user each time it has answered a line, which is a turn's end:
+// the command reports done (a wait reported as needs_input would stay
+// until aider's next report, since keys typed in the terminal answer no
+// question: docs/plans/codex-needs-you.md, the owner's decisions).
 
 // aiderCommand is the notifications command, a shell command line.
 func aiderCommand(bin string) string {
-	return shellQuote(bin) + ` notify --state needs_input --message "aider is waiting"`
+	return shellQuote(bin) + ` notify --state done --message "aider is waiting"`
 }
 
 func aiderAdapter() Adapter {
@@ -38,6 +42,6 @@ func aiderAdapter() Adapter {
 			}
 			return "export AIDER_NOTIFICATIONS=true\nexport AIDER_NOTIFICATIONS_COMMAND=" + shellQuote(aiderCommand(bin)) + "\n"
 		},
-		Events: []string{"needs_input"},
+		Events: []string{"done"},
 	}
 }
