@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, test, type Session } from './fixtures'
+import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
 import { serverBinary, stubPath } from './server'
 
 // The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
@@ -19,12 +19,20 @@ let runId = ''
 let reviewId = ''
 let alive: Session | null = null
 let host: ChildProcess | null = null
+/** The hosted session's name, this run's own: the teardown ends whatever is listed under it. */
+let hostName = ''
 
 test.afterAll(async ({ api }) => {
-  host?.kill('SIGKILL')
-  if (runId) await api.stopRun(runId)
-  for (const id of sessions) await api.stopSession(id)
-  if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+  try {
+    // The hosted session ends through its host and is removed before the host dies: killed alone, it stays listed for a minute and
+    // more, where a later repetition finds it and the rail counts its machine (#211).
+    await endHosted(api, hostName, host)
+  } finally {
+    // Whatever became of that, the rest is stopped; a failure above is still reported.
+    if (runId) await api.stopRun(runId)
+    for (const id of sessions) await api.stopSession(id)
+    if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
+  }
 })
 
 function transcript(home: string, s: Session): string {
@@ -150,20 +158,15 @@ test('a new prompt opens a folded Needs you by itself', async ({ page, api }) =>
 })
 
 test('a session hosted on another machine carries its machine on the row, under no heading', async ({ page, api, state }) => {
-  const log = openSync(join(state.root, 'sidebar-host.log'), 'a')
-  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', 'hosted-e2e', '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
+  // This host's own log: the session is found by the id on the line the host prints once registered, never by its name (#211).
+  const logFile = join(state.root, `sidebar-host-${randomUUID()}.log`)
+  const log = openSync(logFile, 'a')
+  hostName = hostedName('hosted-e2e')
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
-  let hostedId = ''
-  await expect
-    .poll(async () => {
-      const list = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
-      const all = Array.isArray(list) ? list : (list.sessions ?? [])
-      hostedId = all.find((s) => s.name === 'hosted-e2e')?.id ?? ''
-      return hostedId
-    }, { timeout: 30_000 })
-    .not.toBe('')
+  const hostedId = (await hostedSession(api, logFile, hostName)).id
   await page.goto('/')
   const row = page.locator(`[data-session-list] [data-sidebar-row="s:${hostedId}"]`).first()
   await expect(row).toBeVisible()
