@@ -1652,6 +1652,20 @@ events, orders or invariants above, but for the two marked.
   one resolved (a dialog drawn over the hold and gone, the held-over
   question restored by Ctrl+U): it refers to the resolved question's own
   line (`answeredInChat(id, …)`).
+- **A startup question gone from a screen never erased whole** (found by
+  the whole Playwright suite on the round 9 commit: `trust.spec.ts`'s
+  member stayed held after Enter in the page's terminal). A startup
+  question answered in the terminal is withdrawn once the screen shows no
+  startup question, which asked for a whole frame: the page's terminal had
+  sized the PTY, and Codex (the stub as it) erases the dialog's lines and
+  not the screen, so the frame was "clipped" for good and the question
+  never went. It asks now for a frame the program has finished drawing
+  with nothing cut by a window made smaller since the program last erased
+  the screen (`Screen.DrawnAt`: the size the screen shows was laid out
+  for), as it is and as laid out at least the size the screen had when the
+  keys were written: the window grown since counts, a redraw at a smaller
+  size then widened does not (`TestAClippedStartupQuestionIsNotGone`
+  keeps that); the stub erases the dialog's lines as Codex does.
 
 # The pull requests, in order
 

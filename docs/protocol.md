@@ -1261,7 +1261,12 @@ question answered and drawn again before another takes its place (the
 program slow to move on) is asked consumed, a reply to it refused, and
 withdrawn once the screen the questions asked during the work are read
 from shows no startup question (the program moved on to its prompt; looked
-at as a held Escape's is, below); one answered never keeps the next from
+at as a held Escape's is, below: a frame the program has finished drawing,
+nothing of it cut by a window made smaller since the program last erased
+the screen, as it is and as it was laid out at least the size the screen
+had when the keys were written; the window grown since counts, since a
+program that erases its dialog's lines rather than the whole screen draws
+nothing for a resize); one answered never keeps the next from
 being asked, and nor does one still waiting that the screen has left for
 another drawn after it (the program took an answer not read as one): the
 question drawn last is asked with an `id` of its own, and a reply naming

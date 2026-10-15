@@ -490,7 +490,9 @@ trust_dialog() {
 	if ((sel == 0)); then
 		mkdir -p "${HOME:-/tmp}/.codex"
 		printf '[projects.%s]\ntrust_level = "trusted"\n' "$(json_str "$PWD")" >>"${HOME:-/tmp}/.codex/config.toml"
-		printf 'Trusted.\n'
+		# The dialog's lines go as Codex takes them away (its TUI redraws
+		# without them), the screen not erased whole.
+		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2KTrusted.\n'
 	else
 		printf 'Quit.\n'
 		exit 0

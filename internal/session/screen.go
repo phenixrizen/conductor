@@ -73,6 +73,14 @@ type Screen struct {
 	// size (cut, or laid out narrower), and what it lacks is not gone. A
 	// frame that erases nothing, or only some rows, leaves it so.
 	clipped, unclipAtEnd bool
+	// cut says the screen was made narrower or shorter with something on
+	// it, and the program has not erased it all since: what it shows may
+	// be cut short. drawnCols and drawnRows are the size the screen had
+	// when what it shows was last laid out (the last erase of the whole
+	// screen, or the resize of an empty one): grown since, it still shows
+	// everything drawn then, laid out for that size.
+	cut                  bool
+	drawnCols, drawnRows int
 
 	// softMain, softAlt and soft (main's or alt's, as cells is) mark the
 	// rows whose text goes on in the row below: autowrap took the cursor
@@ -127,6 +135,12 @@ func (s *Screen) Resize(cols, rows int) {
 			// another size (cut, or laid out narrower) until the program
 			// erases it all and draws it again (Settled).
 			s.clipped = true
+			if cols < s.cols || rows < s.rows {
+				s.cut = true
+			}
+		} else {
+			// Nothing on it: what comes is laid out for the new size.
+			s.drawnCols, s.drawnRows = cols, rows
 		}
 		// An erase before the resize settles nothing after it.
 		s.unclipAtEnd = false
@@ -457,7 +471,7 @@ func (s *Screen) csi(final byte) {
 				case 2026:
 					if final == 'l' && s.syncing && s.unclipAtEnd {
 						// The end of a frame that erased the screen whole.
-						s.clipped = false
+						s.laidOut()
 					}
 					s.syncing, s.unclipAtEnd = final == 'h', false
 				}
@@ -611,8 +625,15 @@ func (s *Screen) erasedWhole() {
 	if s.syncing {
 		s.unclipAtEnd = true
 	} else {
-		s.clipped = false
+		s.laidOut()
 	}
+}
+
+// laidOut notes the screen erased whole and drawn again at its size now:
+// nothing of what it shows was drawn at another size or cut.
+func (s *Screen) laidOut() {
+	s.clipped, s.cut = false, false
+	s.drawnCols, s.drawnRows = s.cols, s.rows
 }
 
 // Rows returns every row of the screen as its characters, a wide
@@ -646,6 +667,19 @@ func (s *Screen) Settled() bool { return !s.syncing && !s.clipped }
 // the same (Local.screenQuiet), a resize dropping that comparison's
 // baseline.
 func (s *Screen) Drawn() bool { return !s.syncing }
+
+// DrawnAt reports whether the screen shows everything the program drew,
+// as it drew it (no synchronized update under way, nothing cut by a
+// resize since the program last erased the screen whole), and the size it
+// was laid out for (drawnCols, drawnRows): the window grown since shows it
+// all, laid out for that smaller size; made narrower or shorter since, it
+// may be cut (uncut false). What reads the screen for words no longer on
+// it (Local.screenShowsNoStartup) asks this, not Settled: a program that
+// erases its dialog's lines rather than the whole screen (Codex) draws
+// nothing for a window grown, and its screen would never settle again.
+func (s *Screen) DrawnAt() (uncut bool, cols, rows int) {
+	return !s.syncing && !s.cut, s.drawnCols, s.drawnRows
+}
 
 // Size returns the screen's columns and rows.
 func (s *Screen) Size() (cols, rows int) { return s.cols, s.rows }

@@ -3550,6 +3550,7 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 		held := heldStartup{id: id, fed: s.startupAnsweredFed}
 		if s.asked != nil {
 			held.cols, held.rows = s.asked.Size()
+			_, held.drawnCols, held.drawnRows = s.asked.DrawnAt()
 		}
 		if last := s.info.LastAnswer; last != nil && sameWords(last.Message, words) {
 			held.by, held.name = last.By, last.ByName
@@ -3565,10 +3566,13 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 type heldStartup struct {
 	id, words, by, name string
 	fed                 uint64
-	// cols and rows are that screen's size then: on a smaller one the
-	// question may not read as itself (cut, or drawn narrower), and what
-	// it shows proves nothing gone.
-	cols, rows int
+	// cols and rows are that screen's size then, drawnCols and drawnRows
+	// the size what it showed was laid out for (Screen.DrawnAt): on a
+	// smaller one, or laid out for a smaller one, the question may not
+	// read as itself (cut, or drawn narrower), and what it shows proves
+	// nothing gone.
+	cols, rows           int
+	drawnCols, drawnRows int
 }
 
 // holdStartupAnswered notes the startup question showing, or (words, not
@@ -3584,6 +3588,7 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 	if s.asked != nil {
 		held.fed = s.asked.Fed()
 		held.cols, held.rows = s.asked.Size()
+		_, held.drawnCols, held.drawnRows = s.asked.DrawnAt()
 	}
 	att := s.info.Attention
 	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || sameWords(att.words(), words)) {
@@ -3595,6 +3600,7 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 			// asks no less), output after this key.
 			held.by, held.name = prev.by, prev.name
 			held.cols, held.rows = max(held.cols, prev.cols), max(held.rows, prev.rows)
+			held.drawnCols, held.drawnRows = max(held.drawnCols, prev.drawnCols), max(held.drawnRows, prev.drawnRows)
 		}
 		s.heldAnswer = held
 		return
@@ -3604,6 +3610,7 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 		if prev := s.heldAnswer; sameWords(prev.words, held.words) {
 			held.by, held.name = prev.by, prev.name
 			held.cols, held.rows = max(held.cols, prev.cols), max(held.rows, prev.rows)
+			held.drawnCols, held.drawnRows = max(held.drawnCols, prev.drawnCols), max(held.drawnRows, prev.drawnRows)
 		}
 		s.heldAnswer = held
 	}
@@ -3647,14 +3654,20 @@ func (s *Local) escGone() {
 }
 
 // screenShowsNoStartup reports whether the screen the questions asked
-// during the work are read from, whole, shows no startup question, and is
-// a whole frame (no synchronized update under way, which a terminal would
-// still show the frame before; nothing clipped), at least the size it was
-// when the question was held (held): smaller, the question may not read
-// as itself. The caller holds feedMu.
+// during the work are read from, whole, shows no startup question, and
+// shows everything the program drew as it drew it (no synchronized update
+// under way, which a terminal would still show the frame before; nothing
+// cut by a window made smaller since the program last erased the screen:
+// Screen.DrawnAt), at least the size it was when the question was held
+// (held), and laid out for at least the size it was laid out for then:
+// smaller, the question may not read as itself. The window grown since,
+// which a program that erases its dialog's lines rather than the whole
+// screen (Codex) draws nothing for, counts: the question is read as it
+// was drawn. The caller holds feedMu.
 func (s *Local) screenShowsNoStartup(held heldStartup) bool {
-	text, settled, cols, rows := s.asked.Whole()
-	return settled && cols >= held.cols && rows >= held.rows && s.lastStartup(text) == ""
+	text, _, cols, rows := s.asked.Whole()
+	uncut, drawnCols, drawnRows := s.asked.DrawnAt()
+	return uncut && cols >= held.cols && rows >= held.rows && drawnCols >= held.drawnCols && drawnRows >= held.drawnRows && s.lastStartup(text) == ""
 }
 
 // heldGone reports whether the startup question with words, about to be

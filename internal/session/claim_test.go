@@ -1479,3 +1479,32 @@ func TestTheChatsAnsweredLineNamesTheQuestionResolved(t *testing.T) {
 		t.Fatalf("the chat's answered line %+v, want one of the question %s (the dialog was %s)", last, q.ID, d.ID)
 	}
 }
+
+// A startup question answered in the terminal (consumed) goes once the
+// screen shows no startup question: the program erasing the dialog's lines
+// and printing its prompt, the screen not erased whole, after the window
+// grew (the page's terminal sized the PTY, and the program drew nothing
+// for it): what was drawn is read as it was, nothing cut.
+func TestAStartupQuestionAnsweredInTheTerminalGoesAsItsLinesAreErased(t *testing.T) {
+	s, p, _ := asking(t, Options{Questions: []StartupQuestion{{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Yes", Input: "\r"}}}}})
+	nate := controller(t, s, "Nate")
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit\r\n"))
+	q := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if err := s.Resize(nate, 120, 40); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID {
+		t.Fatalf("after the Enter: %+v", st)
+	}
+	out(p, "\r\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2KTrusted.\r\n> ")
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen {
+		t.Fatalf("the question gone: %+v", a)
+	}
+	if s.Info().LastAnswer != nil {
+		t.Fatalf("recorded: %+v", s.Info().LastAnswer)
+	}
+}
