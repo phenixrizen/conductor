@@ -1641,6 +1641,17 @@ events, orders or invariants above, but for the two marked.
   stranded claim go themselves and consume the question shown when they
   entered the text or picked its choice, as the hold's end does with the
   question held over.
+- **Round 9** (fixed after it, unreviewed). The same Enter typed before
+  the hold was installed at all (between the line's end and the hold's
+  goroutine) reached nothing: the claim stood, the hold followed, and
+  its end showed the question OPEN again. The stranded claim is now
+  marked as the line ends (`strand`), and keys that enter the text or
+  pick the question's choice before the hold is installed let it go and
+  consume the question (`rawKeys`); no hold follows then. And the chat's
+  answered line referred to the question asked last in the chat, not the
+  one resolved (a dialog drawn over the hold and gone, the held-over
+  question restored by Ctrl+U): it refers to the resolved question's own
+  line (`answeredInChat(id, …)`).
 
 # The pull requests, in order
 

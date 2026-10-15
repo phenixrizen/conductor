@@ -27,6 +27,16 @@ func submitAsync(s *Local, sub Submission) <-chan submitted {
 	return done
 }
 
+// holdNow holds the session's turn as a stranded line's end would (strand,
+// then holdTyped), with no line of its own: the hold to follow is marked,
+// then installed.
+func holdNow(s *Local) {
+	s.mu.Lock()
+	s.strandedClaim, s.holdPending = questionClaim{}, true
+	s.mu.Unlock()
+	s.holdTyped()
+}
+
 // heldShows fails unless the session shows the hold of its turn.
 func heldShows(t *testing.T, s *Local) {
 	t.Helper()

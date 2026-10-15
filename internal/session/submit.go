@@ -168,20 +168,22 @@ type submitState struct {
 func (st submitState) claimed() bool { return st.claim != nil && st.claim.Load() != 0 }
 
 // strand is the submission's line typed and its Enter not written for
-// good: its claim is taken from it, to be let go as the hold of the turn
+// good: its claim is taken from it and kept as the stranded line's
+// (strandedClaim, with holdPending), to be let go as the hold of the turn
 // shows in the question's place (holdTyped, in one step with it: let go
 // before, a reply could claim the question and write its keys after the
-// text), so that the question, held over, can be answered again once a
-// person's keys show it. res and err are how the line ended; it reports
-// whether the line is stranded (the hold follows), the claim to let go,
-// and ErrLineStranded as the word for one that ended with no error.
-func (st submitState) strand(sub Submission, res SubmitResult, err error) (bool, questionClaim, error) {
+// text) or as keys typed in the terminal deal with the text before the
+// hold (rawKeys, endHoldTyped), so that the question, held over, can be
+// answered again once a person's keys show it. res and err are how the
+// line ended; it reports whether the line is stranded (the hold follows),
+// and ErrLineStranded is the word for one that ended with no error.
+func (st submitState) strand(s *Local, sub Submission, res SubmitResult, err error) (bool, error) {
 	if !res.Typed || res.Entered {
-		return false, questionClaim{}, err
+		return false, err
 	}
 	stranded := errors.Is(err, ErrRevoked) || err == nil && st.claimed()
 	if !stranded {
-		return false, questionClaim{}, err
+		return false, err
 	}
 	var claim questionClaim
 	if st.claim != nil {
@@ -189,10 +191,13 @@ func (st submitState) strand(sub Submission, res SubmitResult, err error) (bool,
 			claim = questionClaim{id: sub.Question, token: token}
 		}
 	}
+	s.mu.Lock()
+	s.strandedClaim, s.holdPending = claim, true
+	s.mu.Unlock()
 	if err == nil {
 		err = ErrLineStranded
 	}
-	return true, claim, err
+	return true, err
 }
 
 // comesAfter reports whether att is a prompt come since the submission
@@ -429,7 +434,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 	}
 	res, err = s.enter(ctx, sub, res, st)
 	err = st.withdrawnTyped(res, err)
-	if stranded, claim, why := st.strand(sub, res, err); stranded {
+	if stranded, why := st.strand(s, sub, res, err); stranded {
 		// Its text is typed and its Enter not written for good (its link no
 		// longer opens the session; a reply's, a question come in its
 		// pause): the turn held for a person (holdTyped), who deals with
@@ -437,7 +442,7 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 		release = false
 		go func() {
 			defer func() { <-s.submitting }()
-			s.holdTyped(claim)
+			s.holdTyped()
 		}()
 		return res, why
 	}
@@ -535,10 +540,10 @@ func (s *Local) finishLine(sub Submission, res SubmitResult, st submitState) {
 		res, err = s.landEnter(sub, res, st)
 	}
 	err = st.withdrawnTyped(res, err)
-	stranded, claim, err := st.strand(sub, res, err)
+	stranded, err := st.strand(s, sub, res, err)
 	s.finished(sub, res, err)
 	if stranded {
-		s.holdTyped(claim)
+		s.holdTyped()
 	}
 }
 
@@ -566,10 +571,15 @@ func (st submitState) withdrawnTyped(res SubmitResult, err error) error {
 // session ends. The session shows needs_input meanwhile, with HeldWords
 // (source SourceSubmit), which the keys clear; another attention change is
 // recorded and not shown, but for a question on the screen (setAttention).
-func (s *Local) holdTyped(claim questionClaim) {
+func (s *Local) holdTyped() {
+	if hook := s.beforeHold.Load(); hook != nil {
+		(*hook)()
+	}
 	s.mu.Lock()
-	if s.info.Status.Ended() {
-		s.strandedClaim = claim
+	if s.info.Status.Ended() || !s.holdPending {
+		// Ended; or keys typed in the terminal dealt with the stranded
+		// text before the hold was installed (rawKeys): none follows.
+		s.holdPending = false
 		s.releaseStrandedLocked()
 		s.mu.Unlock()
 		return
@@ -581,15 +591,15 @@ func (s *Local) holdTyped(claim questionClaim) {
 		close(s.heldNext)
 		s.heldNext = nil
 	}
-	// The stranded line's claim (claim, the empty claim for a line naming
-	// no question) stands until the hold's words take the question's
-	// place, and is let go in that step (releaseStrandedLocked), so that
-	// no reply claims the question meanwhile and writes its keys after
-	// the text. Keys that end the hold before then (endHoldTyped) let it
-	// go themselves, the question consumed when they entered the text.
-	s.strandedClaim, s.holdPending = claim, true
+	// The stranded line's claim (strandedClaim, the empty claim for a line
+	// naming no question) stands until the hold's words take the
+	// question's place, and is let go in that step
+	// (releaseStrandedLocked), so that no reply claims the question
+	// meanwhile and writes its keys after the text. Keys that end the
+	// hold before then (endHoldTyped) let it go themselves, the question
+	// consumed when they entered the text.
 	s.mu.Unlock()
-	if hook := s.beforeHold.Load(); hook != nil {
+	if hook := s.beforeHoldShown.Load(); hook != nil {
 		(*hook)()
 	}
 	s.log.Info("a submission's text was typed and not entered; the next waits for keys typed in the terminal")

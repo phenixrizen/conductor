@@ -247,10 +247,11 @@ type Local struct {
 	// turn in the question's place (setAttentionLooked,
 	// releaseStrandedLocked): until then it stands, so that no reply
 	// claims the question and writes its keys after the text. The empty
-	// claim while none waits. holdPending says the hold of the turn is
-	// installed (held) and its words not shown yet (holdTyped): keys that
-	// end it meanwhile deal with the question shown as its end would with
-	// the question held over (endHoldTyped).
+	// claim while none waits. holdPending says a hold of the turn is to
+	// follow a stranded line (strand) and its words are not shown yet
+	// (holdTyped): keys meanwhile deal with the question shown as the
+	// hold's end would with the question held over, before the hold is
+	// installed (rawKeys: then none is) or after (endHoldTyped).
 	strandedClaim    questionClaim
 	holdPending      bool
 	dialogAnswered   string
@@ -358,12 +359,13 @@ type Local struct {
 	beforeWritten atomic.Pointer[func(data []byte)]
 	// beforeShot, a test's hook, runs as the screen snapshot's quiet look
 	// begins (screenQuiet), before it takes the session's lock; beforeHold
-	// as the hold of the turn is installed (holdTyped), before its words
-	// show.
-	beforeShot     atomic.Pointer[func()]
-	beforeHold     atomic.Pointer[func()]
-	agentTokenHash [32]byte
-	hasAgentToken  bool
+	// as holdTyped begins, before the hold of the turn is installed;
+	// beforeHoldShown once it is installed, before its words show.
+	beforeShot      atomic.Pointer[func()]
+	beforeHold      atomic.Pointer[func()]
+	beforeHoldShown atomic.Pointer[func()]
+	agentTokenHash  [32]byte
+	hasAgentToken   bool
 
 	ended chan struct{}
 
@@ -2765,7 +2767,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string) {
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
 	}
-	answered, answeredID, told := s.answeredInChat(by, byName)
+	answered, answeredID, told := s.answeredInChat(id, by, byName)
 	s.mu.Unlock()
 	if told {
 		s.chatHook(answeredID, answered)
@@ -3171,7 +3173,12 @@ func (s *Local) dialogGone(look uint64) {
 // person typed a line into the program. The agent's own question set
 // aside is withdrawn by a person's keys (person): the person has taken
 // part, and it does not show again at the done. A question being answered
-// (claimed) is left as it is: the claim resolves it or lets it go.
+// (claimed) is left as it is: the claim resolves it or lets it go; but a
+// stranded line's claim (its text typed, its Enter never written, the hold
+// of the turn to follow: strandedClaim) goes with keys that enter its text
+// or pick the question's choice, before the hold is installed: the program
+// has its answer, no hold follows (holdPending), and the question is
+// consumed, or withdrawn when it is a wait with no words.
 func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3182,8 +3189,21 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter
 		s.dropOwnLocked()
 	}
 	att := s.info.Attention
-	if att.State != AttentionNeedsInput || att.ID == "" || s.claim.id == att.ID {
+	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
+	}
+	if s.claim.id == att.ID {
+		if c := s.strandedClaim; c == (questionClaim{}) || c != s.claim || s.held != nil || !picksChoice(att.Options, data, maybe) {
+			return
+		}
+		s.releaseStrandedLocked()
+		s.holdPending = false
+		switch att.Source {
+		case SourceQuestion, SourceBell, SourceOSC, SourcePattern:
+		default:
+			s.consumeLocked(att.ID)
+			return
+		}
 	}
 	switch att.Source {
 	case SourceQuestion:

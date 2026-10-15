@@ -1316,7 +1316,7 @@ func TestAnEnterThatEndsTheHoldBeforeItShowsConsumesTheQuestion(t *testing.T) {
 	reached, gate := make(chan struct{}), make(chan struct{})
 	var once, let sync.Once
 	hook := func() { once.Do(func() { close(reached); <-gate }) }
-	s.beforeHold.Store(&hook)
+	s.beforeHoldShown.Store(&hook)
 	t.Cleanup(func() { let.Do(func() { close(gate) }) })
 	line := submitAsync(s, Submission{Text: "Postgres", By: guest, Question: q.ID})
 	written(t, p)
@@ -1359,5 +1359,123 @@ func TestAnEnterThatEndsTheHoldBeforeItShowsConsumesTheQuestion(t *testing.T) {
 	reportState(t, s, AttentionWorking, "")
 	if a := s.Info().Attention; a.ID == q.ID {
 		t.Fatalf("after the agent moved on: %+v", a)
+	}
+}
+
+// Round 9, finding 1: an Enter typed in the terminal after a reply's line
+// is stranded (its link revoked) and before the hold of the turn is
+// installed enters the text: the program has its answer. The stranded
+// claim goes with it, no hold follows, and the question shows consumed:
+// a reply is refused, Ctrl+U shows nothing OPEN, until the agent moves on.
+func TestKeysBeforeTheHoldIsInstalledConsumeTheQuestion(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "Postgres", By: guest, Question: q.ID})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line })
+	if !errors.Is(got.err, ErrRevoked) || !got.res.Typed || got.res.Entered {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	// Before the hold is installed: the Enter enters the text.
+	if st := stateOf(s); st.claim.id != q.ID || st.shown.ID != q.ID || s.Held() {
+		t.Fatalf("before the hold: %+v, held %v", st, s.Held())
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID || st.claim != (questionClaim{}) {
+		t.Fatalf("after the Enter: %+v", st)
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), QuestionConsumedWords, "a reply after the Enter")
+	nothingWritten(t, p, 100*time.Millisecond)
+	// The hold's installation goes on: none follows, and Ctrl+U shows
+	// nothing OPEN.
+	let.Do(func() { close(gate) })
+	time.Sleep(100 * time.Millisecond)
+	if s.Held() {
+		t.Fatal("a hold followed the text entered")
+	}
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	if st := stateOf(s); st.shown.ID != q.ID || st.consumed != q.ID {
+		t.Fatalf("after Ctrl+U: %+v", st)
+	}
+	refusedAs(t, s.AnswerInput(context.Background(), nate, q.ID, []byte("SQLite\r")), QuestionConsumedWords, "a reply after Ctrl+U")
+	nothingWritten(t, p, 100*time.Millisecond)
+	if s.Info().LastAnswer != nil {
+		t.Fatalf("recorded: %+v", s.Info().LastAnswer)
+	}
+	reportState(t, s, AttentionWorking, "")
+	if a := s.Info().Attention; a.ID == q.ID {
+		t.Fatalf("after the agent moved on: %+v", a)
+	}
+}
+
+// Round 9, finding 2: the chat's line that says a question was answered
+// refers to that question's own line, not to the one asked last: a
+// dialog drawn over the hold of the turn and gone without an answer, then
+// the question the hold held over shown again by Ctrl+U and resolved.
+func TestTheChatsAnsweredLineNamesTheQuestionResolved(t *testing.T) {
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: approvalQuestions()})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	heldShows(t, s)
+	// A dialog over the hold, asked in the chat too, then gone without an
+	// answer: the hold shows again.
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	d := waitAttention(t, s, asked)
+	p.outW.Write([]byte(approvalGone("■ Conversation interrupted\r\n› ")))
+	heldShows(t, s)
+	// Ctrl+U ends the hold: the question OPEN, and a reply resolves it.
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	open(t, s, q, "once the hold ended")
+	if err := s.AnswerInput(context.Background(), nate, q.ID, []byte("Postgres\r")); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	resolved(t, s, q, "Nate", "the reply")
+	var last *ChatMessage
+	for _, m := range s.ChatHistory() {
+		if m.Kind == proto.ChatKindSystem && m.Event == "answered" {
+			m := m
+			last = &m
+		}
+	}
+	if last == nil || last.Ref != q.ID || last.Ref == d.ID {
+		t.Fatalf("the chat's answered line %+v, want one of the question %s (the dialog was %s)", last, q.ID, d.ID)
 	}
 }
