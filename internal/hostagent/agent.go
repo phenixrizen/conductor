@@ -561,12 +561,12 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		if refused := refusal(resp); refused != nil {
 			return nil, proto.Registered{}, refused
 		}
-		// A redirect refused by the plain rule: its words alone, which name
-		// the host and nothing else of the URL the redirect gave (the
-		// client's wrapping repeats that URL whole).
-		var plain *PlainServerError
-		if errors.As(err, &plain) {
-			return nil, proto.Registered{}, plain
+		// A redirect the policy refused (redirectRule): the refusal's words
+		// alone, which name the host and nothing else of the URL the
+		// redirect gave (the client's wrapping repeats that URL whole).
+		var refusedRedirect *redirectRefused
+		if errors.As(err, &refusedRedirect) {
+			return nil, proto.Registered{}, refusedRedirect.err
 		}
 		return nil, proto.Registered{}, err
 	}
@@ -1759,6 +1759,15 @@ func (e *PlainServerError) Error() string {
 	return fmt.Sprintf("host: %s is a plain http server, and not localhost or a loopback address: what passes between it and this host would travel in the clear and unverified; use https, or allow it with --insecure (rendezvous.insecure for a server's switchyard)", e.Host)
 }
 
+// redirectRefused is a redirect the dial's policy refused (redirectRule):
+// err is why, in words that name the redirect's host at most. The HTTP
+// client wraps it with the whole URL the redirect gave, which the dial
+// drops (dialAndRegister).
+type redirectRefused struct{ err error }
+
+func (r *redirectRefused) Error() string { return r.err.Error() }
+func (r *redirectRefused) Unwrap() error { return r.err }
+
 // plainRefused is the rule a server URL, or a redirect's, is held to:
 // a PlainServerError for one plain on another machine unless insecure.
 func plainRefused(server string, insecure bool) error {
@@ -1782,18 +1791,20 @@ func serverHost(server string) string {
 // machine) has its say; then a redirect is refused as the URL it leads to
 // would be (plainRefused), and one followed to a plain server on another
 // machine with Insecure is logged.
+// Each refusal is a redirectRefused, whose words name the host at most: the
+// dial returns those words alone (dialAndRegister).
 func (a *agent) redirectRule(next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
-			return errors.New("host: stopped after 10 redirects")
+			return &redirectRefused{errors.New("host: stopped after 10 redirects")}
 		}
 		if next != nil {
 			if err := next(req, via); err != nil {
-				return err
+				return &redirectRefused{err}
 			}
 		}
 		if err := plainRefused(req.URL.String(), a.opts.Insecure); err != nil {
-			return err
+			return &redirectRefused{err}
 		}
 		if config.PlainOffMachine(req.URL.String()) {
 			a.log.Warn("--insecure: following a redirect to a plain http server that is not localhost or a loopback address; what passes between it and this host travels in the clear and unverified", "server", req.URL.Host)

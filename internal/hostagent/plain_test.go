@@ -263,3 +263,39 @@ func TestRedirectToPlainServerRefused(t *testing.T) {
 		t.Fatalf("a warning for a redirect to this machine:\n%s", quiet.String())
 	}
 }
+
+// Whatever refuses a redirect (the plain rule, the owner's server kept to
+// this machine, the bound on how many are followed), the dial's error is the
+// refusal's words alone: nothing of the URL the redirect gave beyond its
+// host, neither a password nor a query.
+func TestARefusedRedirectNamesItsHostAlone(t *testing.T) {
+	away := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/loop") {
+			http.Redirect(w, r, "http://me:pw-secret@"+r.Host+"/loop/ws/host?token=q-secret", http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, "http://me:pw-secret@switchyard.example.invalid/ws/host?token=q-secret", http.StatusFound)
+	}))
+	defer away.Close()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	for _, tc := range []struct {
+		name   string
+		mine   bool
+		server string
+		want   string
+	}{
+		{"the plain rule", false, away.URL, (&PlainServerError{Host: "switchyard.example.invalid"}).Error()},
+		{"the owner's server", true, away.URL, "host: refusing a redirect off this machine to switchyard.example.invalid"},
+		{"ten redirects", false, away.URL + "/loop", "host: stopped after 10 redirects"},
+	} {
+		wsURL, err := controlURL(tc.server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := &agent{opts: Options{ServerIsOwners: tc.mine}, wsURL: wsURL, peers: map[string]*peer{}, log: log}
+		_, _, err = a.dialAndRegister(context.Background())
+		if err == nil || err.Error() != tc.want || strings.Contains(err.Error(), "secret") {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+}
