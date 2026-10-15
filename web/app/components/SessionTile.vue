@@ -3,7 +3,7 @@ import type { SessionInfo } from '~/composables/useSessions'
 import type { TerminalTransport } from '~/utils/transport/types'
 import { isEnded } from '~/utils/attention'
 import { agentInitials } from '~/utils/sessions'
-import { TILE_FONT_SIZE } from '~/utils/tile'
+import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
 
 /**
  * A session as a live tile: its terminal fits the tile and takes keys in place (a click on it focuses it); the full view is one action
@@ -57,7 +57,7 @@ const host = computed(() => (props.session.kind === 'hosted' ? `hosted · ${prop
         </UTooltip>
       </div>
       <div class="flex-1 min-h-0" data-tile-terminal>
-        <TerminalView :create-transport="props.createTransport" fit="tile" compact :auto-focus="false" :font-size="TILE_FONT_SIZE" :scrollback="0" />
+        <TerminalView :create-transport="props.createTransport" fit="tile" compact :auto-focus="false" :font-size="TILE_FONT_SIZE" :scrollback="TILE_SCROLLBACK" />
       </div>
       <div class="flex items-center gap-2 border-t border-default px-2.5 py-1 font-mono text-[11px] text-muted shrink-0">
         <slot name="footer">

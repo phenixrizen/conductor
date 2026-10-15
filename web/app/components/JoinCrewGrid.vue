@@ -4,7 +4,7 @@ import type { Role } from '~/utils/protocol'
 import type { TerminalTransport } from '~/utils/transport/types'
 import { joinTileStatus } from '~/utils/crews'
 import { agentInitials } from '~/utils/sessions'
-import { TILE_FONT_SIZE } from '~/utils/tile'
+import { TILE_FONT_SIZE, TILE_SCROLLBACK } from '~/utils/tile'
 
 /**
  * The member tiles of a run link: a live terminal for each member that runs, a placeholder for the rest. With a control link a tile
@@ -66,7 +66,7 @@ const interactive = computed(() => props.role === 'control')
             compact
             :auto-focus="false"
             :font-size="interactive ? TILE_FONT_SIZE : 13"
-            :scrollback="interactive ? 0 : 5000"
+            :scrollback="interactive ? TILE_SCROLLBACK : 5000"
             @status="(s) => hear(m.name, { status: s })"
             @attention="(a) => hear(m.name, { attention: a.state })"
           />

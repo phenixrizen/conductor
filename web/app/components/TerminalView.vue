@@ -11,7 +11,7 @@ import { NEWLINE_IN_PROMPT, newlineChord } from '~/utils/terminalKeys'
 import { closeReason, encodeText, FOLLOW_SIZE, type ActivityEntry, type ChatHistory, type ChatMessage, type ChatPost, type ChatRoster, type ChatSend, type ControlMessage, type FileGetExtra, type FileResponse, type FileWriteOptions, type NvimSwapChoice, type Role, type TransportKind, type ViewerInfo, type Welcome } from '~/utils/protocol'
 import type { CloseInfo, TerminalTransport, TransportState } from '~/utils/transport/types'
 import { ReplyError, type QuestionReply } from '~/utils/reply'
-import { FIT_DEBOUNCE_MS, helloSize, tileScale } from '~/utils/tile'
+import { FIT_DEBOUNCE_MS, helloSize, tileFit, tileScale } from '~/utils/tile'
 
 const props = withDefaults(
   defineProps<{
@@ -22,6 +22,7 @@ const props = withDefaults(
     /** Connect on mount. Vue casts absent booleans to false, hence the explicit default. */
     autoConnect?: boolean
     fontSize?: number
+    /** Rows of history; never none (TILE_SCROLLBACK says why), so 0 keeps one. */
     scrollback?: number
     /** Tile mode: no frame, overlays or notices, just the terminal. */
     compact?: boolean
@@ -29,7 +30,7 @@ const props = withDefaults(
      * How the terminal meets its pane. `fill` (default, the full view) fits
      * the pane and, with control, sizes the session to it. `tile` does the
      * same for a wall or crew tile, at the font size given and with no
-     * scrollback (so no scrollbar gutter is reserved), and scales the screen
+     * gutter kept for a scrollbar (tileFit), and scales the screen
      * down to show it whole while another viewer has made the session larger
      * than the tile. `scale` keeps the session's cols × rows and scales the
      * whole terminal into the pane: a view-only tile; its hello asks for no
@@ -276,6 +277,35 @@ function scaled(): boolean {
   return showsScaled(sizerView())
 }
 
+/** What the fit addon reads of xterm.js's render service, which xterm.js keeps private: the cell's size in CSS pixels. */
+type RenderService = { dimensions: { css: { cell: { width: number; height: number } } }; clear(): void }
+
+/**
+ * Fits the terminal to its pane: a full view with the fit addon; a tile as the addon does, but with no gutter kept for the scrollbar
+ * every pane hides (tileFit), now that a tile keeps a scrollback.
+ */
+function fitPane() {
+  if (!term || !fit) return
+  if (props.fit !== 'tile') return fit.fit()
+  const el = term.element
+  const pane = el?.parentElement
+  const render = (term as unknown as { _core?: { _renderService?: RenderService } })._core?._renderService
+  const cell = render?.dimensions?.css?.cell
+  if (!el || !pane || !render || !cell) return
+  const ps = getComputedStyle(pane)
+  const es = getComputedStyle(el)
+  const px = (v: string) => Number.parseInt(v) || 0
+  const size = tileFit(
+    { width: px(ps.width), height: px(ps.height) },
+    { width: px(es.paddingLeft) + px(es.paddingRight), height: px(es.paddingTop) + px(es.paddingBottom) },
+    cell,
+  )
+  if (!size || (size.cols === term.cols && size.rows === term.rows)) return
+  // As the addon does: the whole screen is drawn again at the new size.
+  render.clear()
+  term.resize(size.cols, size.rows)
+}
+
 /**
  * Fits the terminal to its pane when this view sizes the session (or, asking, may: the hello says the size its window would give the
  * session, which the owner decides on), and returns the size to ask for: 0 × 0 (follow) otherwise, or before the pane is laid out.
@@ -283,7 +313,7 @@ function scaled(): boolean {
 function measure(asking = false): { cols: number; rows: number } {
   const h = host.value
   if (!(asking ? mayFit() : sizes()) || !term || !fit || !h?.clientWidth || !h.clientHeight) return helloSize(false, 0, 0)
-  fit.fit()
+  fitPane()
   return helloSize(true, term.cols, term.rows)
 }
 
@@ -414,7 +444,7 @@ function takeSize() {
   const el = term.element
   if (el) el.style.transform = ''
   term.options.fontSize = props.fontSize
-  fit.fit()
+  fitPane()
   transport.resize(term.cols, term.rows, true)
   sizedBy.value = subscriberId.value
   applyFitMode()
@@ -647,7 +677,7 @@ defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput,
 onMounted(() => {
   term = new Terminal({
     cursorBlink: !props.compact,
-    scrollback: props.scrollback,
+    scrollback: Math.max(1, props.scrollback),
     allowProposedApi: true,
     disableStdin: !!props.readOnly,
     fontSize: props.fontSize,
@@ -731,7 +761,7 @@ onMounted(() => {
     for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff
     transport?.sendInput(bytes)
   })
-  if (sizes() && host.value?.clientWidth && host.value.clientHeight) fit.fit()
+  if (sizes() && host.value?.clientWidth && host.value.clientHeight) fitPane()
   observer = new ResizeObserver((entries) => {
     if (scaledView.value) {
       if (entries.some((e) => e.target === host.value)) fontAdjustments = 0
