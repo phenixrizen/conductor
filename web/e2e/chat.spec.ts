@@ -24,13 +24,14 @@ let runId = ''
 let askingCrewId = ''
 let askingRunId = ''
 let host: ChildProcess | null = null
-let hostedId = ''
+/** The host's own log: the teardown ends the session it names. */
+let hostLog = ''
 
 test.afterAll(async ({ api }) => {
   try {
     // The hosted session ends through its host and is removed before the host dies: killed alone, it stays listed for a minute and
     // more, where a later spec or repetition finds it (#218).
-    if (hostedId) await endHostedSession(api, hostedId)
+    await endHostedSession(api, hostLog)
   } finally {
     // Whatever became of that, the host dies and the rest is stopped; a failure above is still reported.
     host?.kill('SIGKILL')
@@ -410,12 +411,13 @@ test('unread elsewhere: the sidebar row, the rail and a run header count what ot
 test("a session another machine hosts: what is said in its chat counts on another person's row too", async ({ page, api, state, browser }) => {
   // This host's own log: the session is found by the id on the line the host prints once registered, never by its name (#202).
   const logFile = join(state.root, `chat-host-${randomUUID()}.log`)
+  hostLog = logFile
   const log = openSync(logFile, 'a')
   host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', 'hosted-chat', '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
-  hostedId = (await hostedSession(api, logFile, 'hosted-chat')).id
+  const hostedId = (await hostedSession(api, logFile, 'hosted-chat')).id
   // Priya watches the list; Nate opens the hosted session (over the relay) and writes.
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const priya = await personPage(ctx, state.token, 'Priya')

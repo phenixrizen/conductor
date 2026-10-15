@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { test as base, expect, type Page } from '@playwright/test'
 import { git } from './server'
 import { readState, type E2EState } from './state'
@@ -130,17 +130,25 @@ export function sidebarLinks(page: Page): Promise<string[]> {
 }
 
 /**
- * The session a `conductor host` registered: its id is on the line the host prints once the server has answered
- * (`conductor: hosting session <id> at …`, internal/cli/host.go), read from `log`, which must be this one host's file so
- * that the first such line is its own. The session is then read back through the API, and must carry `name`, the name
- * the host was given. A hosted session is found this way, never by its name alone: an earlier run's (a repetition's,
- * its host gone but listed for a minute more) has the same name (#202, #211).
+ * The id of the session a `conductor host` registered, or '' before it has: it is on the line the host prints once the server has
+ * answered (`conductor: hosting session <id> at …`, internal/cli/host.go), read from `log`, which must be this one host's file so
+ * that the first such line is its own.
+ */
+export function registeredId(log: string): string {
+  if (!existsSync(log)) return ''
+  return /conductor: hosting session ([0-9a-f]+) at /.exec(readFileSync(log, 'utf8'))?.[1] ?? ''
+}
+
+/**
+ * The session a `conductor host` registered (registeredId), read back through the API: it must carry `name`, the name the host was
+ * given. A hosted session is found this way, never by its name alone: an earlier run's (a repetition's, its host gone but listed for
+ * a minute more) has the same name (#202, #211).
  */
 export async function hostedSession(api: Api, log: string, name: string): Promise<Session> {
   let id = ''
   await expect
     .poll(() => {
-      id = /conductor: hosting session ([0-9a-f]+) at /.exec(readFileSync(log, 'utf8'))?.[1] ?? ''
+      id = registeredId(log)
       return id
     }, { timeout: 30_000, message: 'the host is registered' })
     .not.toBe('')
@@ -150,14 +158,18 @@ export async function hostedSession(api: Api, log: string, name: string): Promis
 }
 
 /**
- * Ends a hosted session through its host and removes it, for a spec's teardown before it kills the host: killing the host alone
- * leaves the session listed for a minute and more (signal.DisconnectGrace, then the sweep), where a later spec or repetition finds
- * it (#211, #218). 200: the host was told to stop its command, and the session ends, then is removed; 204: it had ended already,
- * and is removed; 404: gone. Anything else (a 500: the host left on its own) fails here, where the leftover begins, rather than in
- * whatever spec meets it next. Bounded by `ms`, so that a server that stops answering cannot hold the hook past its own deadline.
+ * Ends the session the host logging to `log` registered (registeredId), if it did, through its host, and removes it: for a spec's
+ * teardown before it kills the host. The spec holds the log's path from before it starts the host, so that a test that failed
+ * anywhere, even before it had the id itself, still leaves nothing behind. Killing the host alone leaves the session listed for a
+ * minute and more (signal.DisconnectGrace, then the sweep), where a later spec or repetition finds it (#211, #218). 200: the host
+ * was told to stop its command, and the session ends, then is removed; 204: it had ended already, and is removed; 404: gone.
+ * Anything else (a 500: the host left on its own) fails here, where the leftover begins, rather than in whatever spec meets it
+ * next. Bounded by `ms`, so that a server that stops answering cannot hold the hook past its own deadline.
  */
-export function endHostedSession(api: Api, id: string, ms = 45_000): Promise<void> {
-  return within(ms, `ending the hosted session ${id}`, async () => {
+export async function endHostedSession(api: Api, log: string, ms = 45_000): Promise<void> {
+  const id = log ? registeredId(log) : ''
+  if (!id) return
+  await within(ms, `ending the hosted session ${id}`, async () => {
     const r = await api.stopSession(id)
     if (r.status === 200) {
       await expect.poll(async () => (await api.session(id)).status, { timeout: 15_000, message: `the hosted session ${id} ends` }).toMatch(/^(exited|stopped)$/)
