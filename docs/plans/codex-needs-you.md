@@ -996,12 +996,26 @@ The machine is per question instance, under the session's mutex (`s.mu`).
   - refused or withdrawn before it began: a link revoked or expired, the
     host not vouching, its context or `InputWait` run out, the input busy,
     the session ending;
-  - a line's text typed and its link let go before its Enter (#172): the
-    hold takes the question's place and holds it over, OPEN and hidden.
-    The person's keys that end the hold show it again OPEN (Ctrl+U bringing
-    it back).
+  - a line's text typed and its Enter not written for good: its link let
+    go before the Enter (#172, `ErrRevoked`), or the Enter left out
+    because a prompt or a startup question came during its pause
+    (`comesAfter`, `stillOnScreen` → `errPromptCame`, a nil error with
+    `Typed && !Entered`). The text waits in the program's input. So the
+    session holds the turn (`holdTyped`, for this case too), releases the
+    claim in the same step, and the hold takes the question's place and
+    holds it over, OPEN and hidden. No other line can join the text, and
+    no answer is taken while the question is hidden. The hold ends by a
+    person's keys:
+    - keys that neither enter the held text nor pick the question's choice
+      (Ctrl+U, the text killed) show the question again, OPEN (Ctrl+U
+      bringing it back);
+    - keys that enter the held text or pick its choice show it again
+      *consumed* (below): those keys gave the program an answer, and no
+      structured answer is taken after it.
 
-  `release` is a no-op unless the token is still current.
+  `release` is a no-op unless the token is still current. A claimer whose
+  line is stranded so is answered with an error (`input_failed`, its words
+  naming the held text), never `answer_ok`.
 - **hide and show:**
   - set aside in its turn by the agent's work or another wait (#193), and
     shown again by the turn's done;
@@ -1015,11 +1029,32 @@ The machine is per question instance, under the session's mutex (`s.mu`).
   `setAttentionLooked` applying a report or an observation, the screen's
   watchers finding the question gone, `markEnded`. It drops any claim.
 
-**A program not reading.** A claimer's write that has begun lands when the
-program reads (`ErrSubmitPending`, and a key's write that has begun). The
-question stays CLAIMED, and other answers are refused as "being answered",
-until the write lands and resolves it, or the question is withdrawn (the
-session ends). A write refused before it began releases the claim.
+**A program not reading, and continuations.** A claim stands as long as its
+write can still land:
+- a write that has begun lands when the program reads: a key's write, or a
+  line's text (`ErrSubmitPending`, finished by `finishSubmission`);
+- a line whose text is typed and whose Enter had no turn in time
+  (`errEnterLater`) is finished by `finishEnter` and `pressEnterHeld`,
+  holding the session's turn.
+
+Meanwhile other answers are refused as "being answered". The claim ends
+by `resolve` when the last byte lands; by the stranded-text release
+(above); or by withdrawal (the session ends). Only a write refused before
+it began releases at once.
+
+**Consumed.** A question instance can be *consumed*: it takes no answer
+(refused as answered, with the result when one is recorded), holds no
+claim, never resolves, and ends only by withdrawal. This replaces
+`answered`'s use as a protection. A question becomes consumed when:
+- raw keys reach a question read off the screen (decision 2);
+- the hold's end enters held text or picks its choice (above);
+- a screen question is asked again with the words of the one last resolved
+  or consumed before the program redrew: today's `sameDialog` and
+  `startupStill`, `dialogAnswered` and `startupAnsweredWords`.
+
+  A redraw of the same instance (the same words at another width) keeps
+  its id, its claim or its result: no new instance and no new claim. A
+  redraw while a structured answer's write is under way keeps that claim.
 
 ## Raw keys never resolve a question
 
@@ -1042,7 +1077,9 @@ nothing. The question clears when the agent moves on:
   gone.
 
 Three owner decisions where this changes what a person sees (below,
-"Decisions") keep the protections that are not answers.
+"Decisions") keep the protections that are not answers: withdrawal (an
+end with no result) and consumption (no further answers), each decided in
+one critical section as the writer takes the keys.
 
 ## The code that goes
 
@@ -1071,13 +1108,26 @@ All of it in `internal/session` unless named:
 - **Dialogs answered by keys:** `fireAsked`'s and `missAsked`'s
   `s.answer(…, typed.by)` (a dialog gone is withdrawn); `typedAtAsked` and
   `noteTyped`, which only credit raw keys.
+- **The hold's end answering by keys:** `endHoldTyped`'s `picksChoice`
+  drop of the question it held over, and its `dropOwnLocked`. The hold's
+  end always shows the question again: OPEN, or consumed when the keys
+  entered the held text or picked its choice.
 - **`answered` (one string for claims and protections) splits in two:**
   - `claim` (id and token: CLAIMED);
-  - `touched` (decision 2: a question raw keys reached, which structured
-    answers may no longer take; never resolves anything).
+  - `consumed` (the instance takes no answer; decisions 1 and 2, the
+    hold's end, a screen question redrawn after its answer).
 
-  `markAnswered` becomes `claimLocked` for claims and `touchLocked` for
-  decision 2.
+  `markAnswered` becomes `claimLocked` for a structured answer's guard and
+  `consumeLocked` for the rest. `setAttentionLooked`'s `stillAnswered` and
+  `holdAskedAgain` mark the re-asked instance consumed, never claimed.
+- **Startup questions withdrawn by the screen:** `heldAnswer` and `escGone`,
+  today armed only by an Escape that may answer, are armed by every
+  consumption of a startup question (raw keys picking its answer, a
+  resolved structured answer). The feed-count and screen-size checks
+  (`fed`, `cols`, `rows`, `screenShowsNoStartup`) stay. A digit or Enter
+  that the program takes, drawing its normal prompt without the question
+  again, then withdraws it; the turn is no longer refused with
+  `ErrTrustQuestion`.
 - **What stays as it is:** the hold (#172), the screen's watchers, `stillOnScreen` (a reply's
   check that the screen still shows its question), `comesAfter` and its
   aside exception (P28: a handoff's Enter after the done is written and
@@ -1110,12 +1160,14 @@ These are behaviours the brief changes, each with a recommendation.
    answer after them could land on what the program shows next: the
    owner's update-question incident, and #192.
 
-   **Recommended:** such keys *touch* the question. Structured answers to
-   it are refused ("answered in the terminal") until the screen shows it
-   gone (withdrawn) or shows the next question. Touch never clears, has no
-   token and no back edge. This is today's protection
-   (`startupAnswered`, `heldAnswer`, `dialogAnswered`, `sameDialog`) minus
-   its answering. Arrow keys touch nothing, as today.
+   **Recommended:** such keys *consume* the question as the writer takes
+   them. Structured answers to it are refused ("answered in the terminal")
+   until the screen shows it gone (withdrawn) or shows the next question.
+   Consumption never clears, has no token and no back edge. A startup
+   question so consumed arms the screen's withdrawal (`heldAnswer`,
+   `escGone`). This is today's protection (`startupAnswered`,
+   `heldAnswer`, `dialogAnswered`, `sameDialog`) minus its answering. Arrow
+   keys consume nothing, as today.
 3. **The agent's own question set aside while a person types** (#193's
    P12 and P25: the person answers in the terminal while the agent works).
 
@@ -1135,15 +1187,17 @@ These are behaviours the brief changes, each with a recommendation.
 
 ## No timeouts end a question (audit)
 
-Nothing in the code expires a question. These timers end one answer's
-attempt, releasing its claim (CLAIMED → OPEN), and never the question:
+Nothing in the code expires a question. Each timer on an answer's path is
+classified by where the write stands when it runs out:
 
-- `session.InputWait` (10 s): a write's wait for the program.
-- `submitTimeout` (10 s): `internal/api/ws_viewer.go` and
-  `internal/hostagent/queue.go`.
-- The host's `inputDeadline`.
-- The page's `ANSWER_WAIT_SECONDS` (15 s): the page notes the answer was
-  not confirmed, and the question stays.
+| Timer | Write never began | Write begun or text typed |
+|---|---|---|
+| `session.InputWait` (10 s), a write's wait for the program | release | the claim stands; the write lands when the program reads |
+| `submitTimeout` (10 s; `internal/api/ws_viewer.go`, `internal/hostagent/queue.go`), the host's `inputDeadline` | release | the claim stands: the submission goes on (`ErrSubmitPending` → `finishSubmission`, `errEnterLater` → `finishEnter`); the claimer is told `answer_ok` (accepted), and the result follows |
+| the page's `ANSWER_WAIT_SECONDS` (15 s) | presentation only: the page says it was not confirmed; nothing on the owner changes | |
+
+A retry after any of these deadlines, while the claim stands, is refused as
+being answered.
 
 These are observations, not expiries: Part A's `TitleSettle` (the agent's
 title says it works, so the agent moved on), `patternQuiet`, `lookBudget`,
@@ -1158,12 +1212,18 @@ plan adds no timer.
   recent results by question id: the last 64, in memory) under `s.mu`. It
   then broadcasts the attention change and the chat line, and only then
   answers the claimer's caller.
-- **`answer_ok` means the claimer's answer resolved the question.** It is
-  sent once its last byte is written with its token current. Until then
-  the page shows the answer as submitted. When the question was withdrawn
-  first (P24: the agent moved on as the answer was typed), `answer_ok` is
-  still sent, because the answer was written, and the attention says the
-  question went. Broadcasting is not delivery.
+- **`answer_ok` means the owner accepted this answer as the winner.** It is
+  sent:
+  - once its last byte is written with its token current (RESOLVED);
+  - for a line the program takes slowly, once its write has begun under
+    the claim (`ErrSubmitPending`; the result follows when it lands);
+  - when the question was withdrawn first (P24: the agent moved on as the
+    answer was typed), because the answer was written; the attention says
+    the question went.
+
+  It is never sent for a stranded line (an error says so) or a refusal.
+  Until it arrives the page shows the answer as submitted. Broadcasting is
+  not delivery.
 - **A late or duplicate answer gets the recorded result.**
   `error{question_answered}` names who answered and when, from the map,
   and says "no longer asked" for a withdrawn question. No new frame and no
@@ -1268,6 +1328,35 @@ plan adds no timer.
 - **S23. The agent's question set aside, then a person types** (decision
   3): withdrawn as the writer takes the keys. Typed after the done showed
   it again: it stays OPEN until the agent moves on.
+- **S24. A startup question answered by a raw digit or Enter**, after which
+  the program draws its normal prompt with no redraw of the question:
+  consumed as the writer takes the keys, and withdrawn once the screen
+  shows no startup question (the feed and size checks). The next
+  submission is not refused.
+- **S25. A screen question redrawn**:
+  - while a structured answer's write is under way: the same instance,
+    still CLAIMED, and the write resolves it;
+  - after it resolved, before the program drew what follows: a new
+    instance, consumed, with no claim and no answer taken, withdrawn when
+    the screen shows it gone.
+- **S26. A reply's text typed, and its Enter left out** because a startup
+  question or a prompt came in its pause: the line is stranded. The hold,
+  the release and the question held over follow in one step; the claimer
+  gets an error, not `answer_ok`. A second reply is refused while the
+  question is hidden. The hold's end:
+  - with Ctrl+U: the question is OPEN, and a new answer claims it;
+  - with an Enter (the text entered): consumed.
+- **S27. The hold's end by keys**: Ctrl+U shows the held-over question
+  OPEN, with the same id. An Enter, or one of its choice's keys, shows it
+  consumed. A marked question stays kept, through all three (no
+  `dropOwnLocked`).
+- **S28. Deadlines with a live continuation:**
+  - a line whose text's write began when `submitTimeout` ran out
+    (`ErrSubmitPending`);
+  - a line whose Enter had no turn in time (`errEnterLater`).
+
+  In both, the claim stands, a retry is refused as being answered, and
+  the line resolves when it lands.
 
 ## Invariants
 
@@ -1314,13 +1403,29 @@ Go (`go test -race`):
   - S14, a done during a hold;
   - S10 to S13: rounds 3 to 6, the existing regressions rewritten to the
     rule, and round 6's variant (Q showing as A began);
-  - S21 to S23, the decisions.
+  - S21 to S23, the decisions;
+  - S24, a startup question answered by a raw digit, then the program's
+    normal prompt;
+  - S25, a screen question redrawn during a pending write and after its
+    resolution (`TestADialogAskedAgainBeforeTheProgramDrewIsStillAnswered`
+    kept, rewritten to "consumed");
+  - S26, a stranded line (`answer_test.go`'s startup screen drawn in a
+    reply's pause, kept, now asserting the hold, the release, the error
+    and no `answer_ok`);
+  - S27, the hold's end by Ctrl+U, by an Enter and by a choice's keys,
+    asserting the question's id, its claim and its consumed state (the
+    `hold_test.go` case "the text entered" rewritten);
+  - S28, deadlines with a live continuation.
 - **One table test: every clearing path through release and reclaim.**
   Each row is one path that can end a claim or a question:
   - `resolve` from a choice's keys, from a line's Enter, and from an
     Enter-only reply;
   - `release` from a refusal before the write, a revoke before the text, a
-    revoke before the Enter, an expired context, and a stall;
+    revoke before the Enter, an Enter left out by a prompt in the pause,
+    an expired context before the write began, and a stall before it
+    began;
+  - consumption by raw keys at a screen question, by the hold's end with
+    an Enter, and by a redraw after a resolution;
   - withdrawal by the agent's clear, its next question, working in a new
     turn, a dialog gone, a startup question gone, and the session's end.
 
@@ -1332,8 +1437,12 @@ Go (`go test -race`):
   once. A second run of each row without the release shows that the path
   still does what it does.
 - **No other clear.** `resolve` is the only function that sets `LastAnswer`
-  or the answered chat line, and a test fails if another does: no fifth
-  path.
+  or the answered chat line. Every transition goes through its one
+  function (`claimLocked`, `resolve`, `release`, `consumeLocked`,
+  withdrawal in `setAttentionLooked` and `markEnded`). The table test
+  asserts each question's state (id, claim token, consumed, shown or
+  hidden) after every step, not only `LastAnswer`, so a path that drops or
+  hides a question by another route fails it.
 - **`internal/api` and `internal/hostagent`:** the same answer through the
   server's WebSocket, and through a host's peer (WebRTC and the relay share
   its frame loop), claims, refuses a second answer with the result, and
