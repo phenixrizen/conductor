@@ -1697,6 +1697,16 @@ events, orders or invariants above, but for the two marked.
   halves of a word: the layout is kept per buffer (`Screen.layout`), and
   each row autowrap went on from keeps the width it had then (`wrapAt`),
   read joined to that extent whatever the screen's size since.
+- **A test that waits for the attention waits for nothing after a page's
+  Escape** (CI's one failure on the round 11 commit, 2 in 30 runs on the
+  round 10 commit too). The page's Escape resolves the update question as
+  it is written, so the attention is clear before the program moves on;
+  the submission's guard reads the screen as the session has read it
+  (`startupOnScreen`), and a frame written and submitted into in the same
+  instant may not be read yet. The test waits for the screen to show the
+  program moved on, as its words say; the guard is as it was: a line
+  typed as the program erases its screen is refused, and goes a moment
+  later.
 
 # The pull requests, in order
 

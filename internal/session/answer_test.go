@@ -1741,7 +1741,16 @@ func TestAnEscapeFromAPageHoldsTheQuestionUntilItGoes(t *testing.T) {
 			if !reply && s.Info().LastAnswer != nil {
 				t.Fatalf("the terminal's Escape was recorded as an answer: %+v", s.Info().LastAnswer)
 			}
-			// The program moved on: a line is typed.
+			// The program moved on, on the screen as the session has read
+			// it (a submission looks at that: startupOnScreen; with the
+			// page's Escape the attention was clear already, and says
+			// nothing of the screen): a line is typed.
+			if !waitFor(5*time.Second, func() bool {
+				text, _, _, _ := s.asked.Whole()
+				return strings.Contains(text, "Ask Codex")
+			}) {
+				t.Fatal("the screen never showed the program moved on")
+			}
 			if res, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); err != nil || !res.Entered {
 				t.Fatalf("a submission once the screen moved on: %+v %v", res, err)
 			}
