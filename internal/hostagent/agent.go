@@ -717,6 +717,11 @@ func (a *agent) onLocalChange(info session.Info) {
 	att := a.toServer(info.Attention)
 	a.mu.Lock()
 	changed := a.attentionUntold || !sameAttention(att, a.lastAttention)
+	// The mark is taken here, under the lock that set it, not after the
+	// send: one set while a send was under way would be cleared by that
+	// send's end and its re-tell lost; taken here, it makes the next
+	// change tell, at worst the same attention once more.
+	a.attentionUntold = false
 	a.lastAttention, a.attentionOf = att, info.ID
 	retrying := a.attentionRetry
 	a.mu.Unlock()
@@ -727,9 +732,6 @@ func (a *agent) onLocalChange(info session.Info) {
 	err := a.send(hostAttentionMsg(info.ID, att))
 	switch {
 	case err == nil:
-		a.mu.Lock()
-		a.attentionUntold = false
-		a.mu.Unlock()
 	case errors.Is(err, errConnDown):
 		// No connection: the session's next change tells it, and a new
 		// connection is told the current attention as it starts.
@@ -1226,13 +1228,6 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		for _, o := range m.Options {
 			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
 		}
-		if m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput {
-			// The agent's own question (the server's Ask): the session
-			// keeps it through its turn's done.
-			a.local.Ask(m.Message, source, m.Kind, opts)
-		} else {
-			a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
-		}
 		// The server's listing took this report without an id (the id is
 		// the session's, given as it applies it), and one the session
 		// takes as changing nothing (the same as it shows), or records and
@@ -1240,10 +1235,20 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		// session.HeldWords), makes no change to tell: the host tells its
 		// attention, with its id, all the same, in its turn among its
 		// changes, so that the server never holds an id or a change the
-		// session does not show, or none.
+		// session does not show, or none. The mark is set before the
+		// report is applied, so that the session's own change and the
+		// re-tell below make one message between them, whichever is
+		// forwarded first (the other finds the same attention told).
 		a.mu.Lock()
 		a.attentionUntold = true
 		a.mu.Unlock()
+		if m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput {
+			// The agent's own question (the server's Ask): the session
+			// keeps it through its turn's done.
+			a.local.Ask(m.Message, source, m.Kind, opts)
+		} else {
+			a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
+		}
 		a.noteChange(a.local.Info())
 	case proto.HostActivity:
 		if a.opts.Switchyard {

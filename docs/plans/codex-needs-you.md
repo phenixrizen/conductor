@@ -1707,6 +1707,19 @@ events, orders or invariants above, but for the two marked.
   program moved on, as its words say; the guard is as it was: a line
   typed as the program erases its screen is refused, and goes a moment
   later.
+- **A forwarded report told back twice, or its re-tell lost** (CI's one
+  failure on d43c8eb, `TestTheHostAppliesTheAgentsOwnQuestion`; 1 in 300
+  local runs each way once looked for). A report the server forwards to
+  its host is told back as the session's own change and once more as the
+  host's forced re-tell (the id for the server's listing); whether the two
+  coalesced into one message depended on the goroutines' timing, and a
+  second message for the question read as the wait's in the test. The
+  other way: the mark that forces the re-tell was cleared at a send's end,
+  so one set while that send was under way was lost with its re-tell. The
+  mark is set before the report is applied and taken under the lock as a
+  change is looked at, never after a send: one message per report, and a
+  mark set during a send makes the next change tell (at worst the same
+  attention once more).
 
 # The pull requests, in order
 
