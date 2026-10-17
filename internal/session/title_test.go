@@ -640,7 +640,9 @@ func TestATitleReadInTheEndedTurnIsItsOwn(t *testing.T) {
 	// the Enter, held as soon as it is read.
 	read, look = make(chan struct{}), make(chan struct{})
 	var again sync.Once
-	hook = func(chunk []byte) {
+	// A hook of its own: the pump reads the one stored through its pointer,
+	// so assigning the first variable again would race its read.
+	heldHook := func(chunk []byte) {
 		if string(chunk) == "\x1b]0;\xe2\xa0" {
 			again.Do(func() {
 				close(read)
@@ -648,7 +650,7 @@ func TestATitleReadInTheEndedTurnIsItsOwn(t *testing.T) {
 			})
 		}
 	}
-	s.beforeScan.Store(&hook)
+	s.beforeScan.Store(&heldHook)
 	go p.outW.Write([]byte("\x1b]0;\xe2\xa0"))
 	<-read
 	if err := s.TrySetAttentionFull(AttentionDone, "again", SourceAPI, KindDone, nil); err != nil {
