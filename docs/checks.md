@@ -1,0 +1,38 @@
+# Checks by affected surface
+
+Run the narrow tests while iterating, then the complete checks for every affected surface. A Python workflow change runs the full scripts suite; it does not require unrelated Go, UI, desktop, network or hardware tests. A change spanning server and UI requires tests at both ends: Go race tests, vitest and Playwright. Runtime changes run the relevant runtime suites below. A skipped or unavailable check is a limitation, never a pass.
+
+
+```bash
+make lint                      # gofmt -l, go vet
+go test -race -count=1 ./...   # includes PTY, WebSocket and pion loopback tests
+npm --prefix web run typecheck
+npm --prefix web test          # vitest (link detection)
+make web-build                 # nuxt generate + copy into internal/web/dist
+make build-go                  # embeds whatever is in internal/web/dist
+make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
+make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
+make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
+make desktop-test              # the Electron shell: tsc --noEmit and vitest (desktop/)
+make lint-static               # staticcheck, pinned
+make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
+make test-network              # the built-in agents' sites on the network (nightly)
+make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
+python3 scripts/brand_assets.py --check
+python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (codex_review.py)
+```
+
+The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
+impostor by `STUB_IDENTITY`, reports as its agent's hooks do by
+`STUB_REPORT`, keeps a transcript per agent session, draws the trust
+question with `STUB_TRUST_DIALOG=1` and Codex's "Hooks need review" when
+`$HOME/.codex/stub-hooks-review` exists, and on the line `stub tools codex`
+(or `copilot`, `agy`) replays that agent's captured hook payloads through
+`conductor notify`; `web/e2e/conductor.e2e.json` wires it
+with the real recipes. Run the narrowest package tests while iterating, then
+the full set for affected surfaces before finishing. Every harness that launches sessions sets
+`CONDUCTOR_RENDEZVOUS=0` (the cli tests' `clearConductorEnv`, `web/e2e/server.ts`):
+a server publishes its sessions to the public switchyard by default, and a
+test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
+reported limitation, not a pass.

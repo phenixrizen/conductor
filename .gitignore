@@ -17,3 +17,6 @@ web/dist
 desktop/node_modules/
 desktop/dist/
 desktop/release/
+
+# Python workflow execution artifacts
+__pycache__/
