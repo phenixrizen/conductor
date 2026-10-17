@@ -261,7 +261,15 @@ func TestAWaitRaisedWhileCodexWorksGivesWay(t *testing.T) {
 				if d := time.Since(raised); d < settle {
 					t.Fatalf("the wait gave way within %v, before its settle", d)
 				}
-				got := entries(s)
+				// The attention reads as working before the entry that records
+				// the change is in the log: wait for the third entry, within
+				// the usual bound, rather than read once (#247).
+				var got []string
+				for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+					if got = entries(s); len(got) >= 3 || time.Now().After(deadline) {
+						break
+					}
+				}
 				if len(got) != 3 || got[0] != "working" || got[1] != asked.Message || got[2] != "working" {
 					t.Fatalf("entries %q", got)
 				}
