@@ -1123,6 +1123,18 @@ request each from main.
   #124 passed: a guest in Chrome on a view link through the switchyard,
   connected over WebRTC directly, saw a hosted session's last output line,
   then "session ended" with its exit code, not "link revoked".
+- **v0.7.0-rc.11 in the app** (2026-10-17, c3666d9). Tagged after #207,
+  #216, #223, the notes (#215), the AGENTS.md rule (#244) and the four
+  flaky-test fixes (#245, #246, #248, #249), with main green at the tag.
+  Published as a prerelease, not a draft, on the owner's decision, so the
+  desktop app's updater can find it; the switchyard runs it (rc.10 kept as
+  `conductor.prev`; health 200, an open host re-registered in 4 s). The
+  owner installed the Windows package by hand six minutes after it was
+  published, so the rc.10 app's own update was not exercised; what the
+  prerelease did show: the rc.11 app's start-up check answers "update not
+  available (latest 0.7.0-rc.11)" where the draft releases had answered a
+  `latest.yml` 404. The self-update from a running rc.11 app to the next
+  prerelease is the check left for the next cut.
 - **The historical review process** (#184, 2026-10-14; superseded for current
   work by `AGENTS.md` and `docs/review-policy.md`, including planning triggers,
   budgets, behind-base review and parallel work). These were the owner's rules
