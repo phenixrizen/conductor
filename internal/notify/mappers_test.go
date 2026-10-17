@@ -36,6 +36,9 @@ func TestMapCopilotHookByFields(t *testing.T) {
 		// An event name, when Copilot sends one, is enough on its own.
 		{`{"hook_event_name":"agentStop"}`, Request{State: "done", Kind: "done"}},
 		{`{"hook_event_name":"userPromptSubmitted"}`, Request{State: "working"}},
+		{`{"hook_event_name":"preToolUse","toolName":"bash","toolArgs":{"command":"ls"}}`, Request{State: "working"}},
+		// A tool about to run (preToolUse) has its arguments and no result yet.
+		{`{"sessionId":"s","toolName":"bash","toolArgs":{"command":"ls"}}`, Request{State: "working"}},
 		{`{"hook_event_name":"postToolUse","toolName":"edit"}`, Request{Event: "tool_use", Tool: "edit"}},
 		{`{"hook_event_name":"errorOccurred","error":{"message":"boom"}}`, Request{Event: "error", Message: "boom"}},
 	}
@@ -45,7 +48,7 @@ func TestMapCopilotHookByFields(t *testing.T) {
 			t.Errorf("%s: %+v %v, want %+v", c.in, got, ok, c.want)
 		}
 	}
-	for _, in := range []string{`{"sessionId":"s","source":"new"}`, `{"toolName":"bash","toolArgs":{}}`, `{"toolResult":null}`, `not json`} {
+	for _, in := range []string{`{"sessionId":"s","source":"new"}`, `{"toolArgs":{}}`, `{"toolName":"bash"}`, `{"toolResult":null}`, `not json`} {
 		if got, ok := MapCopilotHook([]byte(in)); ok {
 			t.Errorf("%s mapped to %+v", in, got)
 		}
@@ -69,6 +72,15 @@ func TestMapCursorHook(t *testing.T) {
 	if !ok || r.Event != "tool_use" || r.Tool != "Shell" {
 		t.Fatalf("postToolUse: %+v %v", r, ok)
 	}
+	// The agent is working from the prompt it was given (a turn's start) and as each tool is about to run (#195).
+	r, ok = MapCursorHook([]byte(`{"conversation_id":"c","hook_event_name":"beforeSubmitPrompt","prompt":"fix it"}`))
+	if !ok || !sameRequest(r, Request{State: "working", AgentSession: "c", Turn: true}) {
+		t.Fatalf("beforeSubmitPrompt: %+v %v", r, ok)
+	}
+	r, ok = MapCursorHook([]byte(`{"conversation_id":"c","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"ls"}}`))
+	if !ok || !sameRequest(r, Request{State: "working"}) {
+		t.Fatalf("preToolUse: %+v %v", r, ok)
+	}
 	for _, in := range []string{`{"hook_event_name":"beforeShellExecution","command":"ls"}`, `{"status":"completed"}`, `[]`} {
 		if got, ok := MapCursorHook([]byte(in)); ok {
 			t.Errorf("%s mapped to %+v", in, got)
@@ -76,16 +88,25 @@ func TestMapCursorHook(t *testing.T) {
 	}
 }
 
-// Antigravity's payload names no event: a toolCall is PostToolUse, a
-// terminationReason is Stop.
+// Antigravity's payload names no event: a toolCall with the error field
+// (empty when the tool succeeded) is PostToolUse, one without it PreToolUse
+// (the agent is working, #195), a terminationReason is Stop.
 func TestMapAgyHook(t *testing.T) {
 	r, ok := MapAgyHook([]byte(`{"terminationReason":"completed","conversationId":"c"}`))
 	if !ok || r.State != "done" || r.Message != "completed" || r.Kind != "done" {
 		t.Fatalf("stop: %+v %v", r, ok)
 	}
-	r, ok = MapAgyHook([]byte(`{"toolCall":{"name":"run_command","args":{"command":"ls"}}}`))
+	r, ok = MapAgyHook([]byte(`{"toolCall":{"name":"run_command","args":{"command":"ls"}},"error":""}`))
 	if !ok || r.Event != "tool_use" || r.Tool != "run_command" {
 		t.Fatalf("tool: %+v %v", r, ok)
+	}
+	r, ok = MapAgyHook([]byte(`{"toolCall":{"name":"run_command","args":{"command":"ls"}},"error":"denied"}`))
+	if !ok || r.Event != "tool_use" || r.Tool != "run_command" || r.Files != nil {
+		t.Fatalf("failed tool: %+v %v", r, ok)
+	}
+	r, ok = MapAgyHook([]byte(`{"toolCall":{"name":"run_command","args":{"command":"ls"}},"stepIdx":2}`))
+	if !ok || !sameRequest(r, Request{State: "working"}) {
+		t.Fatalf("tool about to run: %+v %v", r, ok)
 	}
 	for _, in := range []string{`{}`, `{"toolCall":null}`, `{"other":1}`, `nope`} {
 		if got, ok := MapAgyHook([]byte(in)); ok {
@@ -103,7 +124,12 @@ func TestMapGooseHook(t *testing.T) {
 	if !ok || r.Event != "tool_use" || r.Tool != "developer__shell" {
 		t.Fatalf("tool: %+v %v", r, ok)
 	}
-	for _, in := range []string{`{"event":"SessionStart"}`, `{}`, `nope`} {
+	for _, in := range []string{`{"event":"UserPromptSubmit","session_id":"s","message":"do the steps"}`, `{"event":"PreToolUse","tool_name":"shell","tool_input":{"command":"ls"}}`} {
+		if r, ok := MapGooseHook([]byte(in)); !ok || !sameRequest(r, Request{State: "working"}) {
+			t.Errorf("%s: %+v %v, want working", in, r, ok)
+		}
+	}
+	for _, in := range []string{`{"event":"SessionStart"}`, `{"event":"BeforeShellExecution","tool_name":"shell"}`, `{}`, `nope`} {
 		if got, ok := MapGooseHook([]byte(in)); ok {
 			t.Errorf("%s mapped to %+v", in, got)
 		}

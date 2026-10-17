@@ -19,7 +19,7 @@ const (
 
 var agyAssets = map[string]string{
 	"agy-hooks.json": jsonAsset(`{"conductor":{"enabled":true,` +
-		hookLists(`{"matcher":"*","hooks":[{"type":"command","command":"{{BIN}} notify --agy-hook"}]}`, "PostToolUse") + `,` +
+		hookLists(`{"matcher":"*","hooks":[{"type":"command","command":"{{BIN}} notify --agy-hook"}]}`, "PreToolUse", "PostToolUse") + `,` +
 		hookLists(`{"type":"command","command":"{{BIN}} notify --agy-hook"}`, "Stop") + `}}`),
 }
 
