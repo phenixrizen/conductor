@@ -50,106 +50,194 @@ Codex, `anytime: true`, match them on the screen's tail).
 
 ## The change
 
-**The rule.** A title that does not say Working is read as working all the
-same when the screen shows the async question's summary row and no blocking
-question: Codex works on, with a question a person may answer in passing.
-It is read as before (a wait stands) when a blocking dialog is on the screen,
-when the editor is open (no summary row), or when neither is there.
+**Two witnesses, kept apart.** The title stays what it is today: `titleWorking`
+is the last title read, matched against `WorkingTitle`, and nothing else
+writes it. Beside it the session keeps `asyncShowing`: whether the last
+completed frame of the screen model shows Codex's async summary in its
+bottom pane and no blocking question. What the attention rules take for "the
+title says the agent works" is the two together: the title matches, or the
+title does not match and `asyncShowing` is true. Every place that reads
+`titleWorking` for that meaning (the working path of `readTitle`, the arming
+of the settle timer in `settleLocked`, the settle's own check in
+`setAttentionLooked` under `onlySettling`) reads the pair. A wait the title
+cannot settle today (a held turn, the trust question, a question the session
+holds on the screen, `Attention.Asked` under its own rules) is as untouched
+by the pair as by the title alone: the eligible waits are exactly
+`titleRules`' and `settleLocked`'s, whatever their source (the API's, a
+hook's, the bell's, OSC's), with no rule of their own for the async case.
+
+**What counts as the summary showing.** The screen is read where the asked
+questions are read from: `s.asked`, the screen model watcher, through
+`Look`/`Whole` and `DrawnAt`, a whole frame drawn at the current width with
+nothing cut. The frame shows the summary when, in its last six rows, a row
+matches `asyncQuestion` (the catalog pattern) and the next non-blank row is
+Codex's key hint, ending in `to answer`, and no row below the hint but the
+composer's and blank ones. That is where Codex's bottom pane draws the
+collapsed questions, and the only place: a blocking view (an approval, a
+`request_user_input` form, an MCP form) replaces the summary in the pane,
+and a transcript line that happens to read `? 1 question` is never followed
+by the hint in the pane's rows. A frame that shows the summary row without
+the hint, or elsewhere than the pane, is ambiguous and counts as not
+showing: the wait stands, as today.
+
+The frame must also show no blocking question, checked against the same
+frame text: the startup patterns (`s.lastStartup(whole)`, while the startup
+watch lasts, which is what `startupOnScreen` checks) and the anytime
+patterns (`s.askedQuestions`, each `q.words(whole)` at the frame's width, as
+`fireAsked` matches them), whether or not the watcher has fired for them yet.
+Codex's approvals are anytime questions; a form of Codex's that no pattern
+knows is caught by the pane rule above (it replaces the summary).
 
 **Where the words come from.** A catalog signal field, `asyncQuestion`, an
 RE2 pattern (at most `maxSignalPattern` bytes, compiled as `workingTitle` is
-by `catalog.CompileWorkingTitle`'s twin) matched against the screen's rows.
-Codex's default entry gets
-`^\s*\?\s+\d+\s+questions?(?:\s+·\s+\d+s)?\s*$`. It travels as `workingTitle`
-does: `internal/api/sessions.go` compiles it into `session.Options`, the
-Agents form keeps it as it keeps `workingTitle` (`web/app/utils/agentForm.ts`
-`signalOut`), the catalog's JSON and `docs/protocol.md` name it. No frame or
-message changes.
+by a twin of `catalog.CompileWorkingTitle`) for the summary row. Codex's
+default entry gets `^\s*\?\s+\d+\s+questions?(?:\s+·\s+(?:\d+s|\d+:\d{2}))?\s*$`:
+the row as Codex draws it today (`15s`) and as 0.161 drew it (`0:05`). The
+hint row is Conductor's own rule (`\bto answer\s*$`), not configurable.
+It travels as `workingTitle` does: `internal/api/sessions.go` compiles it
+into `session.Options.AsyncQuestion`, the Agents form keeps it as it keeps
+`workingTitle` (`web/app/utils/agentForm.ts` `signalOut`), the catalog's JSON
+and `docs/protocol.md` name it. No frame or message changes.
 
-**Where it is read.** `readTitle` keeps its shape. Its `working` becomes:
-the title matches `WorkingTitle`, or the title does not match and the
-session's screen shows the async row with no blocking question
-(`asyncQuestionOnScreen`: `Screen.Rows()` of the settled screen matched
-row by row against `Options.AsyncQuestion`, and `startupOnScreen()` false,
-which is how a startup or anytime question on the screen is known today).
-The rest of `readTitle` is unchanged: the working path with `titleRules`
-(`unlessFresh` leaves a wait younger than its `TitleSettle` to the settle
-timer), the non-working path disarms the timer.
+**When the screen is looked at.** After every feed of the screen model in
+`pump` (`s.asked.Feed`, which `scanOutput` precedes, so a title and a row
+read in one chunk meet the screen only here), the session looks once the
+frame is whole (`Settled` and `DrawnAt` uncut): a look is a regular
+expression over at most six rows, spends nothing from the event bucket and
+records nothing by itself. The look sets `asyncShowing` and acts on its
+transitions only:
 
-**The frame after the title.** The row and the title arrive in separate
-chunks, in either order, and the row stays while the title does not change
-(Codex writes its title only when the text changes). So the per-frame pass
-that already looks at the settled screen for a question that went away
-(`missAsked`) also asks: is the last title read a non-working one, is a
-bell's wait standing (`needs_input` from `SourceBell`, no held turn, no
-question the session holds), and is the async row on the screen with no
-blocking question? Then the title is weighed again as working, through the
-same working path and rules, so the wait settles as a Working title would
-settle it. A blocking dialog drawn later (the person opens the editor, or a
-real approval comes) is a frame with no async row: the next title or bell
-is read as today.
+- false to true, with the last title not matching: the pair now says the
+  agent works, and the title is weighed again as a matching one would be,
+  with `titleRules`, in the turn the frame was read: a wait younger than its
+  `TitleSettle` is left to the settle timer, armed for what is left of it; an
+  older one gives way. One attention event at most, as a Working title's.
+- true to false (the summary replaced by a view, the questions expired, the
+  editor opened), with the last title not matching: as a title that does
+  not match is treated today, the settle timer is disarmed and the wait
+  showing stands. A wait raised by the view then (the bell of an approval,
+  a hook's report) is not settled by anything the screen said before.
 
-**What is left as it is.** A question the agent asked through its hooks
-(`Attention.Asked`) is never touched by the title (today's rule). Hosted
-sessions read no titles (today's rule). An expanded question editor shows
-Needs you, since the person is answering. The 30 s expiry needs no timer of
-Conductor's: when the questions expire the row goes and the title says
-Working again, which is read as today.
+`readTitle` reads the same pair: a title that does not match arriving while
+`asyncShowing` is true (the row drawn before the title) takes the working
+path at once, rather than disarming the timer.
+
+**Revalidation at the settle.** `settled` runs the settle under
+`onlySettling`, which today requires the last title to still say working.
+With the pair it requires the title to match, or `asyncShowing` as recomputed
+from the screen as it is at that moment (the same look, on the current
+frame), never the value stored earlier: a form that replaced the summary
+between the arming and the fire leaves the wait standing, title unchanged
+or not. Codex writes its title only when the text changes, so an unchanged
+`[ ! ] Action Required` over a new blocking form is the ordinary case, and
+this is what keeps it from settling the form's wait.
+
+**What is left as it is.** Hosted sessions read no titles and no screen
+for this (today's rule). The 30 s expiry needs no timer of Conductor's: when
+the questions expire the row goes (a negative transition, no change to the
+wait showing) and the title says Working again, read as today.
 
 ## Interleavings and failure paths
 
-- Bell, then row, then title Action Required: the bell raises the wait;
-  the row changes nothing on its own; the title is read as working through
-  the screen; the wait settles after its `TitleSettle`. Needs you shows for
-  up to that second, as for every title-settled wait.
-- Title first, then row: the title is read as non-working (no row yet) and
-  disarms the settle timer; the frame that draws the row weighs the title
-  again, as working; the wait settles.
-- Row and title, then an approval dialog while the question is still
-  pending: the frame with the dialog has the row too, but
-  `startupOnScreen()` is true, so the title is not read as working; the
-  approval's wait stands. The approval answered, the dialog goes; the row
-  alone is read as working again.
-- The person opens the editor: no row; the title stays Action Required;
-  nothing is re-read; the wait raised by the bell (if still standing) stays,
-  and the person is at the keyboard anyway.
-- The questions expire: the row goes, the title says Working; `readTitle`
-  as today.
-- A false row: a program printing `? 1 question` on a line of its own
-  under an Action Required title. Only Codex's entry carries the pattern,
-  and only a non-working title opens the look; the cost of a false match is
-  a wait settled a second after a bell, the same as a stale Working title's.
-- The screen clipped or mid-frame (`Screen.Settled()` false): no look;
-  the next settled frame looks.
+- Hook report (needs_input, the API's) under Action Required with the
+  summary and hint on screen (`TestActionRequiredHoldsAWaitUntilTheTitleSaysWorking`'s
+  case, which this changes): the report raises the wait; the next frame, or
+  the title read, finds the pair working; the wait settles after its
+  `TitleSettle`, at the settle revalidated against the screen. Needs you
+  shows for up to that second, as for every title-settled wait.
+- Title first, row later, output going on (no quiet): the title alone
+  disarms nothing new (no wait yet) or keeps a wait; the feed that completes
+  the frame with the summary and hint flips `asyncShowing` and weighs the
+  title again; the wait settles. The quiet-time watcher (`expire`,
+  `missAsked`) plays no part.
+- Title and row in one chunk: `scanOutput` reads the title against the
+  previous frame (`asyncShowing` false): non-working, as today; the feed
+  that follows in the same pump pass completes the frame and flips it: the
+  same outcome, in the same pass.
+- Summary showing, then a blocking view (an approval, or a form no pattern
+  knows) replaces it under an unchanged title: the frame flips
+  `asyncShowing` to false and disarms the timer; the view's wait, raised by
+  its bell or report, stands. A timer already armed for an earlier wait
+  finds, at its fire, the title not matching and the screen without the
+  summary: nothing settles.
+- Summary showing with an approval dialog on the same frame (both drawn):
+  the anytime pattern matches the frame: not showing; the approval's wait
+  stands. Answered, the dialog goes; a frame with the summary alone flips
+  it back.
+- Transcript text `? 1 question` on a row of the output, under Action
+  Required: no hint row in the pane beneath it, or not in the last rows: not
+  showing; as today.
+- The person opens the editor: the summary goes (negative transition), the
+  title stays; a wait standing stands; the person is at the keyboard.
+- The questions expire: the row goes (negative transition), then the title
+  says Working, read as today.
+- A half frame (`Settled` false, or `DrawnAt` cut): no look; the next whole
+  frame looks. The screen clipped by a window made smaller: the same.
+- Looks per frame and events: a look is bounded by the six rows it reads;
+  `asyncShowing` changes at most once per frame, and only a change with a
+  non-matching title weighs the title (one `setAttentionRead`, recorded only
+  if it changes the state, no token). No loop: the look reads, it writes
+  nothing the next feed reads back but the boolean.
 
 ## Tests
 
-- `internal/session`: frames reconstructed from Codex's source (the title
-  sequences of `status_surfaces.rs`, the summary row of
-  `questions.rs`): (1) bell, row, Action Required title: the session shows
-  working within its settle; (2) title before row: the same, settled by the
-  frame; (3) row with the approval dialog on screen: `needs_input` stands;
-  (4) the row alone with a Working title: no change; (5) the title alone,
-  no row: the wait stands, as today; (6) a hooks-asked question is untouched.
-  Under `-race`.
-- `internal/catalog`: the field is validated and compiled; Codex's default
-  pattern matches the snapshot's row, its singular, and the row without a
-  countdown, and not the editor's lines or the approval's.
+- `internal/session` (`title_test.go`, the helpers of
+  `TestActionRequiredHoldsAWaitUntilTheTitleSaysWorking`: `titled`,
+  `codexAction`, `codexWorking`), frames reconstructed from Codex's source,
+  under `-race`: (1) the API wait under Action Required with the summary and
+  hint drawn: working within the settle, not before; (2) the same with the
+  summary and hint in one chunk with the title, and split across chunks with
+  output going on and no quiet at all: the same, no `expire` involved;
+  (3) the summary without the hint, and the summary mid-screen with the
+  composer rows below the hint missing: the wait stands; (4) the summary
+  then a blocking form replacing it under an unchanged title before the
+  settle: the wait stands, the timer disarmed, and a bell's wait raised for
+  the form stands too; (5) the summary with Codex's approval dialog on the
+  same frame: stands; (6) a held turn and the trust question under the
+  summary: untouched; an `Ask`ed question under it: as under a Working
+  title today; (7) the attention entries recorded: one working per
+  transition, none for a look that changes nothing, the event bucket
+  untouched (as `TestATitleSpendsNoTokenWhenTheBucketIsEmpty` checks the
+  title); (8) hosted session: no look.
+- `internal/catalog`: the field validated and compiled; Codex's default
+  pattern matches the snapshot's row, its singular, the row without a
+  countdown and the 0.161 form, and not the editor's lines, the approval's
+  rows or a transcript line with more words.
 - `internal/api`: a session launched with the entry gets the compiled
   pattern (as `WorkingTitle` is tested).
-- e2e stub: `stub ask-async <words>` rings the bell, draws the summary row
-  with a countdown and sets the title to `[ ! ] Action Required`, keeps
-  working (its working title thread stays), then clears both after 5 s; a
-  Playwright spec sees the Codex member as working, never Needs you past
-  the settle, and a `stub approve` under the same title as Needs you.
+- e2e: the stub's `async_question` draws the summary as Codex draws it
+  today, two rows (`  ? 1 question · 15s`, then the key hint `to answer`),
+  the question's words on their own row above, the title at Action Required
+  throughout, its status row redrawn meanwhile; `web/e2e/codexworking.spec.ts`:
+  `stub async` never shows Needs you (as today); `stub async-ask`, the agent's
+  own question while one is pending, shows Needs you for its second and then
+  Working while the question is still pending (today it shows Needs you until
+  the question resolves: the assertion changes); `stub approve` under the
+  same title shows Needs you with its choices until answered.
 - `docs/protocol.md`: the Attention paragraph on the async question says
   how it is told; `docs/features.md`'s Codex row names `asyncQuestion`.
 
 ## Coverage limits
 
-The frames are reconstructed from Codex's source, not captured from a live
-run: the live tier (`make test-live`) with Codex 0.163 is where the real
-row and title are seen; it is run by hand before the release, not here.
-The pattern is Codex's today; a wording change in Codex breaks the
+The frames are reconstructed from Codex's source (the summary from
+`question_summary`, the title from `status_surfaces.rs`), not captured from
+a live run: the live tier (`make test-live`) with Codex 0.163 is where the
+real row and title are seen; run by hand before the release, not here. The
+pattern is Codex's today and 0.161's; a wording change in Codex breaks the
 detection, and the member reads as it does now (Needs you until the title
-says Working), never worse.
+says Working), never worse: a frame that is not recognized is a frame that
+changes nothing.
+
+## Revision after review round 1 (2026-10-17)
+
+The first version read the override off the title alone, checked blocking
+dialogs with `startupOnScreen` (startup questions only, while that watch
+lasts), re-read the screen in `missAsked` (the quiet-time pass, 500 ms after
+output stops, never while output goes on), limited the recovery to the bell's
+waits (Conductor's launch rings no bell for an async question; the waits are
+hooks' reports and the agent's own questions), and accepted the summary row
+anywhere on the screen. Each is replaced above: the pair of witnesses with
+transitions and the settle revalidated against the current frame; both
+pattern sets against the frame; a look after every feed of the screen model;
+`titleRules`' eligible waits; the summary required in the pane's two-row
+shape with no view below it.
