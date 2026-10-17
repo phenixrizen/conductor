@@ -52,10 +52,50 @@ const clip = (page: Page) => page.evaluate(() => navigator.clipboard.readText())
 const setClip = (page: Page, text: string) => page.evaluate((t) => navigator.clipboard.writeText(t), text)
 
 /** The middle of a cell of the page's terminal: the screen's box over the session's size. */
-async function cell(page: Page, api: Api, id: string, col: number, row: number) {
-  const { cols, rows } = (await api.session(id)) as Session & { cols: number; rows: number }
-  const box = (await page.locator('.terminal-host .xterm-screen').first().boundingBox())!
-  return { x: box.x + ((col + 0.5) * box.width) / cols, y: box.y + ((row + 0.5) * box.height) / rows }
+async function cell(page: Page, col: number, row: number) {
+  // The grid is the one the page draws (the host's data-cols and data-rows, xterm's own), read with the box and both read
+  // again after: the session's size from the API can lag a fit the page just made, and a box of one grid with the size of
+  // another misplaces the cell.
+  for (let i = 0; i < 10; i++) {
+    const box = await settledBox(page, '.terminal-host .xterm-screen')
+    const grid = await drawnGrid(page)
+    const again = await page.locator('.terminal-host .xterm-screen').first().boundingBox()
+    const gridAgain = await drawnGrid(page)
+    if (again && sameBox(box, again) && grid.cols === gridAgain.cols && grid.rows === gridAgain.rows && grid.cols > 0 && grid.rows > 0) {
+      return { x: box.x + ((col + 0.5) * box.width) / grid.cols, y: box.y + ((row + 0.5) * box.height) / grid.rows }
+    }
+  }
+  throw new Error('the terminal kept moving while its cell was measured')
+}
+
+/** drawnGrid is the terminal's columns and rows as the page draws them (TerminalView's data-cols and data-rows). */
+async function drawnGrid(page: Page) {
+  const host = page.locator('.terminal-host').first()
+  const [cols, rows] = await Promise.all([host.getAttribute('data-cols'), host.getAttribute('data-rows')])
+  return { cols: Number(cols ?? 0), rows: Number(rows ?? 0) }
+}
+
+type Box = { x: number; y: number; width: number; height: number }
+
+function sameBox(a: Box, b: Box) {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+}
+
+/**
+ * settledBox is the first match's bounding box once the layout has stopped moving: two reads 150 ms apart that agree,
+ * within 10 s. The join page's roster and chat mount a moment after the terminal's transport opens and push the terminal
+ * down, so a box measured before that put a Shift+drag above the text and selected nothing (#243).
+ */
+async function settledBox(page: Page, selector: string): Promise<Box> {
+  const el = page.locator(selector).first()
+  let last = await el.boundingBox()
+  for (let i = 0; i < 66; i++) {
+    await page.waitForTimeout(150)
+    const next = await el.boundingBox()
+    if (next && last && sameBox(next, last)) return next
+    last = next
+  }
+  throw new Error(`${selector} never settled`)
 }
 
 /**
@@ -82,7 +122,7 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await screen.click()
     await page.keyboard.type('python3 app.py\n')
     await expect.poll(() => existsSync(join(cwd, 'ready.txt')), { timeout: 15_000 }).toBe(true)
-    const mid = await cell(page, api, s.id, 40, 10)
+    const mid = await cell(page, 40, 10)
     await reporting(page, true)
 
     // A right-click is the program's: a press and a release of the right button, nothing pasted, no menu.
@@ -115,8 +155,8 @@ test('while the program holds the mouse, clicks are its own and Shift reaches th
     await expect(page.getByRole('menu')).toHaveCount(0)
 
     // Shift+drag selects the word on the first row, and Ctrl+Shift+C copies it, the program hearing neither.
-    const from = await cell(page, api, s.id, 0, 0)
-    const to = await cell(page, api, s.id, 12, 0) // the middle of the cell after the word: xterm ends a drag at the nearer cell edge
+    const from = await cell(page, 0, 0)
+    const to = await cell(page, 12, 0) // the middle of the cell after the word: xterm ends a drag at the nearer cell edge
     await page.keyboard.down('Shift')
     await page.mouse.move(from.x - 2, from.y)
     await page.mouse.down()
@@ -230,16 +270,16 @@ async function probe(page: Page, api: Api, root: string, name: string, args: str
 
 /** The middle of the terminal's padding left of its screen, at y: xterm reports a move there too, at the nearest cell. */
 async function padding(page: Page, y: number) {
-  const outer = (await page.locator('.terminal-host .xterm').first().boundingBox())!
-  const screen = (await page.locator('.terminal-host .xterm-screen').first().boundingBox())!
+  const outer = await settledBox(page, '.terminal-host .xterm')
+  const screen = await settledBox(page, '.terminal-host .xterm-screen')
   expect(screen.x - outer.x).toBeGreaterThan(2)
   return { x: (outer.x + screen.x) / 2, y }
 }
 
 /** Shift+drags over the word on the first row, then moves with Shift held and let go, no button, through the padding, to rest. */
-async function shiftDragWord(page: Page, api: Api, id: string, rest: { x: number; y: number }) {
-  const from = await cell(page, api, id, 0, 0)
-  const to = await cell(page, api, id, 12, 0) // the middle of the cell after the word: xterm ends a drag at the nearer cell edge
+async function shiftDragWord(page: Page, rest: { x: number; y: number }) {
+  const from = await cell(page, 0, 0)
+  const to = await cell(page, 12, 0) // the middle of the cell after the word: xterm ends a drag at the nearer cell edge
   await page.keyboard.down('Shift')
   await page.mouse.move(from.x - 2, from.y)
   await page.mouse.down()
@@ -273,14 +313,14 @@ test('over a program that asks for every move, a Shift+drag selection stays unti
   const { s, got } = await probe(page, api, state.root, 'mouse-any', 'any')
   try {
     // A move with no button held is the program's (35: a move, no button), up to the cell it ends on.
-    const mid = await cell(page, api, s.id, 40, 10)
+    const mid = await cell(page, 40, 10)
     await page.mouse.move(mid.x, mid.y, { steps: 4 })
     await expect.poll(() => got()).toMatch(/\x1b\[<35;41;11M$/)
     await setClip(page, 'nothing-copied')
     const before = got().length
 
     // With Shift held the program hears no move, and xterm still finds the link under the pointer: a Shift+click opens it.
-    const first = await cell(page, api, s.id, 12, 1)
+    const first = await cell(page, 12, 1)
     await page.keyboard.down('Shift')
     await page.mouse.move(first.x, first.y, { steps: 4 })
     await page.mouse.click(first.x, first.y)
@@ -289,7 +329,7 @@ test('over a program that asks for every move, a Shift+drag selection stays unti
 
     // Shift+drag selects the word on the first row; the moves after it, Shift held and then let go, leave the selection, and
     // Ctrl+Shift+C copies it. Shift+right-click then shows the menu's Copy to take, and the program has read nothing.
-    await shiftDragWord(page, api, s.id, mid)
+    await shiftDragWord(page, mid)
     await page.keyboard.press('Control+Shift+C')
     await expect.poll(() => clip(page)).toBe('select-me-42')
     await copyEnabled(page, mid, true)
@@ -298,7 +338,7 @@ test('over a program that asks for every move, a Shift+drag selection stays unti
 
     // A click is the program's, as ever, and clears the selection: the program reads its press and release and not the moves to it.
     // On a link it opens the link too: xterm saw those moves.
-    const second = await cell(page, api, s.id, 12, 2)
+    const second = await cell(page, 12, 2)
     await page.mouse.move(second.x, second.y, { steps: 4 })
     await page.mouse.click(second.x, second.y)
     await expect.poll(() => got().slice(before)).toMatch(/^\x1b\[<0;\d+;\d+M\x1b\[<0;\d+;\d+m$/)
@@ -319,19 +359,19 @@ test('a click clears the selection under the first encoding and on a view link',
   const { s, got } = await probe(page, api, state.root, 'mouse-any-plain', 'any plain')
   try {
     // A move with no button held is the program's: ESC [ M, then 32 + 3 (no button) + 32 (a move), and the cell.
-    const mid = await cell(page, api, s.id, 40, 10)
+    const mid = await cell(page, 40, 10)
     await page.mouse.move(mid.x, mid.y, { steps: 4 })
     await expect.poll(() => got()).toMatch(/\x1b\[MC[\s\S]{2}$/)
     await setClip(page, 'nothing-copied')
     const before = got().length
-    await shiftDragWord(page, api, s.id, mid)
+    await shiftDragWord(page, mid)
     await page.keyboard.press('Control+Shift+C')
     await expect.poll(() => clip(page)).toBe('select-me-42')
     await page.waitForTimeout(300)
     expect(got().slice(before)).toBe('')
 
     // A click is the program's (a press, 32, and a release, 35) and clears the selection; the moves after it are the program's again.
-    const far = await cell(page, api, s.id, 20, 5)
+    const far = await cell(page, 20, 5)
     await page.mouse.click(far.x, far.y)
     await expect.poll(() => got().slice(before)).toMatch(/^\x1b\[M [\s\S]{2}\x1b\[M#[\s\S]{2}$/)
     await copyEnabled(page, far, false)
@@ -350,12 +390,12 @@ test('a click clears the selection under the first encoding and on a view link',
       await expect(guest.locator('.terminal-host .xterm-screen').first()).toBeVisible({ timeout: 30_000 })
       await expect(guest.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
       await reporting(guest, true)
-      const gmid = await cell(guest, api, s.id, 40, 10)
+      const gmid = await cell(guest, 40, 10)
       await setClip(guest, 'nothing-copied')
-      await shiftDragWord(guest, api, s.id, gmid)
+      await shiftDragWord(guest, gmid)
       await guest.keyboard.press('Control+Shift+C')
       await expect.poll(() => clip(guest)).toBe('select-me-42')
-      const link = await cell(guest, api, s.id, 12, 2)
+      const link = await cell(guest, 12, 2)
       await guest.mouse.move(link.x, link.y, { steps: 4 })
       await guest.mouse.click(link.x, link.y)
       await expect(linkToast(guest, 'https://example.test/after-select')).toBeVisible()
