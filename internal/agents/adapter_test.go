@@ -610,7 +610,7 @@ func TestInstallAgyMergesItsOwnKey(t *testing.T) {
 		t.Fatalf("the user's key changed: %v", doc["mine"])
 	}
 	c := doc["conductor"]
-	if c["enabled"] != true || !strings.Contains(string(b), `"command": "/opt/conductor notify --agy-hook"`) || c["Stop"] == nil || c["PostToolUse"] == nil {
+	if c["enabled"] != true || !strings.Contains(string(b), `"command": "/opt/conductor notify --agy-hook"`) || c["Stop"] == nil || c["PreToolUse"] == nil || c["PostToolUse"] == nil {
 		t.Fatalf("conductor key: %s", b)
 	}
 	// agy's layout (antigravity.google/docs/hooks): a tool event's entry is a
@@ -623,6 +623,10 @@ func TestInstallAgyMergesItsOwnKey(t *testing.T) {
 	}
 	if post["matcher"] != "*" || len(post["hooks"].([]any)) != 1 {
 		t.Fatalf("PostToolUse entry: %v", post)
+	}
+	// A tool about to run reports working (#195): the same matcher form.
+	if pre := c["PreToolUse"].([]any)[0].(map[string]any); pre["matcher"] != "*" || len(pre["hooks"].([]any)) != 1 {
+		t.Fatalf("PreToolUse entry: %v", pre)
 	}
 	if strings.Index(string(b), `"mine"`) > strings.Index(string(b), `"conductor"`) {
 		t.Fatalf("keys reordered:\n%s", b)
@@ -655,7 +659,7 @@ func TestInstallCursorMergesIntoHooksJSON(t *testing.T) {
 	if doc.Version != 1 || len(stop) != 2 || stop[0].Command != "say done" || stop[1].Command != "/opt/conductor notify --cursor-hook" {
 		t.Fatalf("hooks.json:\n%s", b)
 	}
-	for _, event := range []string{"postToolUse", "afterFileEdit"} {
+	for _, event := range []string{"beforeSubmitPrompt", "preToolUse", "postToolUse", "afterFileEdit"} {
 		if l := doc.Hooks[event]; len(l) != 1 || l[0].Command != "/opt/conductor notify --cursor-hook" {
 			t.Fatalf("%s: %+v", event, l)
 		}

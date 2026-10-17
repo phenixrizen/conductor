@@ -13,7 +13,7 @@ const (
 
 var cursorAssets = map[string]string{
 	"cursor-hooks.json": jsonAsset(`{"version":1,"hooks":{` + hookLists(`{"command":"{{BIN}} notify --cursor-hook"}`,
-		"stop", "postToolUse", "afterFileEdit") + `}}`),
+		"stop", "beforeSubmitPrompt", "preToolUse", "postToolUse", "afterFileEdit") + `}}`),
 }
 
 func cursorSteps(hooksDir string) []step {

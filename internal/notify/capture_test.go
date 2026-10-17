@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -70,6 +71,51 @@ func TestMappersReadTheCapturedPayloads(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s:\n got  %v\n want %v", c.file, got, c.want)
+		}
+	}
+}
+
+// The same captured runs: a tool about to run (and, where the agent reports
+// it, a prompt submitted) is the agent working, as Claude Code's PreToolUse
+// is (#195): the agent's question set aside during a turn, or a needs_input
+// set mid-turn, gives way while it works, not only at the turn's end.
+func TestMappersReadTheCapturedPreToolPayloadsAsWorking(t *testing.T) {
+	cases := []struct {
+		file   string
+		events []string
+		mapper func([]byte) (Request, bool)
+		least  int
+	}{
+		{"codex-hooks.json", []string{"PreToolUse"}, MapCodexHook, 5},
+		{"copilot-hooks.json", []string{"preToolUse", "userPromptSubmitted"}, MapCopilotHook, 6},
+		{"agy-hooks.json", []string{"PreToolUse"}, MapAgyHook, 7},
+		{"goose-hooks.json", []string{"PreToolUse", "UserPromptSubmit"}, MapGooseHook, 5},
+	}
+	for _, c := range cases {
+		raw, err := os.ReadFile(filepath.Join("testdata", c.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var hooks []struct {
+			Event   string          `json:"event"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(raw, &hooks); err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, h := range hooks {
+			if !slices.Contains(c.events, h.Event) {
+				continue
+			}
+			n++
+			got, ok := c.mapper(h.Payload)
+			if !ok || got.State != "working" || got.Event != "" {
+				t.Errorf("%s %s: %+v %v, want working", c.file, h.Event, got, ok)
+			}
+		}
+		if n < c.least {
+			t.Errorf("%s: %d payloads of %v, want at least %d", c.file, n, c.events, c.least)
 		}
 	}
 }

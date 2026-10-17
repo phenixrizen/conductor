@@ -9,7 +9,7 @@ const copilotFile = ".copilot/hooks/conductor.json"
 
 var copilotAssets = map[string]string{
 	"copilot.json": jsonAsset(`{"version":1,"hooks":{` + hookLists(`{"type":"command","bash":"{{BIN}} notify --copilot-hook"}`,
-		"notification", "agentStop", "userPromptSubmitted", "postToolUse", "errorOccurred") + `}}`),
+		"notification", "agentStop", "userPromptSubmitted", "preToolUse", "postToolUse", "errorOccurred") + `}}`),
 }
 
 func copilotSteps(hooksDir string) []step {
