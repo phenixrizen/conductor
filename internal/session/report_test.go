@@ -52,12 +52,12 @@ func TestATerminalReportAnswersNothing(t *testing.T) {
 			t.Fatalf("the report %q answered the prompt", report)
 		}
 	}
-	if err := s.Input(sub, []byte("y")); err != nil {
+	if err := s.AnswerInput(t.Context(), sub, s.Info().Attention.ID, []byte("y")); err != nil {
 		t.Fatal(err)
 	}
 	nextWrite(t, p)
 	if st := s.Info().Attention.State; st != AttentionNone {
-		t.Fatalf("typing did not answer: %q", st)
+		t.Fatalf("the reply did not answer: %q", st)
 	}
 	for in, want := range map[string]bool{"\x1b[A": false, "\x1b[12;40Ry": false, "y\x1b[12;40R": false, "": false,
 		strings.Repeat("\x1b[1;1R", 50): false, strings.Repeat("\x1b[1;1R", 30): true,

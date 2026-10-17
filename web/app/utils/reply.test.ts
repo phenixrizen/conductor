@@ -133,6 +133,14 @@ describe('replyFailure', () => {
     expect(replyFailure(refused).description).toMatch(/^This question was answered before your reply arrived\. Nothing was sent\./)
   })
 
+  it("says who answered, that another reply is being written, or that the terminal answered, from the owner's words", () => {
+    expect(replyFailure(new ReplyError('question_answered', 'this question was already answered by Nate: nothing was sent'), 'fix-auth').description).toBe(
+      "fix-auth's question was answered by Nate. Nothing was sent. If the agent still asks, answer it in its terminal.",
+    )
+    expect(replyFailure(new ReplyError('question_answered', 'this question is being answered: nothing was sent')).description).toMatch(/^This question is being answered by someone else\. Nothing was sent\./)
+    expect(replyFailure(new ReplyError('question_answered', 'this question was answered in the terminal: nothing was sent')).description).toMatch(/^This question was answered in its terminal\. Nothing was sent\./)
+  })
+
   it('says a reply the session did not confirm in time, or before the connection closed, was not confirmed, and to look first', () => {
     const late = replyFailure(new ReplyError('no_word', 'x'), 'fix-auth')
     expect(late).toMatchObject({ title: 'Not confirmed', color: 'warning' })

@@ -63,8 +63,11 @@ func runningPair(t *testing.T, e *Engine, fl *fakeLauncher, more ...Member) Run 
 	}
 	for _, name := range []string{"lead", "tests"} {
 		waitStatus(t, e, run.ID, name, MemberRunning, 5*time.Second)
-		_, p := fl.member(name)
+		l, p := fl.member(name)
 		typed(p)
+		// The agent takes its prompt: its hook reports working (a line typed
+		// answers no question of its own).
+		l.SetAttention(session.AttentionWorking, "", session.SourceAPI)
 	}
 	return *run
 }

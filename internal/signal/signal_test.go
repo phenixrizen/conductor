@@ -812,15 +812,15 @@ func TestAHostedQuestionKeepsItsHostsID(t *testing.T) {
 	hub := NewHub(session.NewRegistry(4), nil)
 	hs, conn := register(t, hub)
 	opts := []session.Option{{Label: "Yes", Input: "y"}}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false)
 	if a := hs.Info().Attention; a.ID != "0123456789abcdef" || a.State != session.AttentionNeedsInput {
 		t.Fatalf("the host's question: %+v", a)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "has space")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "has space", false)
 	if a := hs.Info().Attention; a.ID != "" {
 		t.Fatalf("an id that is no question's: %q", a.ID)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, "fedcba9876543210")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, "fedcba9876543210", false)
 	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, true); err != nil {
 		t.Fatal(err)
 	}

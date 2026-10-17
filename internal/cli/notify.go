@@ -29,6 +29,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	op := fs.String("op", "", "with --event file: what was done to it, read, edit, write or delete")
 	filePath := fs.String("path", "", "with --event file: the file, as you name it")
 	choices := fs.String("choices", "", "with --state needs_input: answers to offer as buttons, separated by |, at most 6 of 40 bytes; a click types the choice as a line")
+	ask := fs.Bool("ask", false, "your own question (--message, and --choices): the session shows it as needing input until someone answers, also once your turn has ended")
 	codex := fs.Bool("codex", false, "read a Codex notify payload from the last argument and map it")
 	files := fs.Bool("files", false, "with --<agent>-hook: report only the files the tool call touched, not the call (Claude Code's file-tool hook)")
 	// Each agent's hooks write their payload to stdin; the flag says whose it is.
@@ -43,7 +44,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	}
 	quiet := fs.Bool("quiet", true, "exit 0 silently when not running inside a conductor session")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] [--choices \"a|b|c\"] | --event E [--message M] [--url U] [--to T] [--tool N] [--op O --path P] | --<agent>-hook [--files] | --codex <json>")
+		fmt.Fprintln(stderr, "Usage: conductor notify [--state S] [--message M] [--choices \"a|b|c\"] | --ask --message M [--choices \"a|b|c\"] | --event E [--message M] [--url U] [--to T] [--tool N] [--op O --path P] | --<agent>-hook [--files] | --codex <json>")
 		fs.PrintDefaults()
 	}
 	// Agents' hooks run this command, and a hook runner reads exit 2 as
@@ -73,6 +74,19 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	}
 	if *files && (len(payload) == 0 || payload[0] == "--codex") {
 		return misuse, errors.New("--files goes with a hook payload: conductor notify --claude-hook --files")
+	}
+	// The agent's own question is said on purpose, and only as one: never
+	// with an event, a hook's payload (a program's wait is no question of
+	// the agent's) or another state.
+	if *ask {
+		switch {
+		case *event != "":
+			return misuse, errors.New("--ask asks a question: conductor notify --ask --message M [--choices \"a|b|c\"], not with --event")
+		case len(payload) > 0:
+			return misuse, fmt.Errorf("--ask asks a question: conductor notify --ask --message M [--choices \"a|b|c\"], not with %s", strings.Join(payload, " or "))
+		case *state != "needs_input":
+			return misuse, fmt.Errorf("--ask asks a question: it goes with --state needs_input or none, not with --state %s", *state)
+		}
 	}
 	if *event != "" {
 		// --state has a default, so only Visit can tell that it was given.
@@ -125,7 +139,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		}
 		return 1, err
 	}
-	req := notify.Request{State: *state, Message: *message}
+	req := notify.Request{State: *state, Message: *message, Ask: *ask}
 	if len(options) > 0 {
 		req.Kind = "prompt"
 		req.Options = options

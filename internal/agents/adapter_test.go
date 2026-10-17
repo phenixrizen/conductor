@@ -135,7 +135,7 @@ func TestInjectForEachAdapter(t *testing.T) {
 		{"pi", []string{"--extension", filepath.Join(dir, "pi-conductor.ts")}, nil},
 		{"aider", nil, map[string]string{
 			"AIDER_NOTIFICATIONS":         "true",
-			"AIDER_NOTIFICATIONS_COMMAND": `/opt/conductor notify --state needs_input --message "aider is waiting"`,
+			"AIDER_NOTIFICATIONS_COMMAND": `/opt/conductor notify --state done --message "aider is waiting"`,
 		}},
 		{"agy", nil, nil}, {"copilot", nil, nil}, {"cursor", nil, nil}, {"opencode", nil, nil},
 		{"omp", nil, nil}, {"goose", nil, nil}, {"amp", nil, nil}, {"dsh", nil, nil},
@@ -738,7 +738,7 @@ func TestAiderHasOnlyALaunchRoute(t *testing.T) {
 		t.Fatalf("aider: install %v status %v assets %v inject %v", a.Install != nil, a.Status != nil, a.Assets, a.Inject != nil)
 	}
 	useBin(t, "/opt/conductor")
-	if s := a.Snippet(t.TempDir()); !strings.Contains(s, "AIDER_NOTIFICATIONS=true") || !strings.Contains(s, "/opt/conductor notify --state needs_input") {
+	if s := a.Snippet(t.TempDir()); !strings.Contains(s, "AIDER_NOTIFICATIONS=true") || !strings.Contains(s, "/opt/conductor notify --state done") {
 		t.Fatalf("snippet:\n%s", s)
 	}
 }
@@ -1100,5 +1100,32 @@ func TestCodexTrustArgs(t *testing.T) {
 	}
 	if !ConfirmsSubmit("claude", catalog.Signal{Kind: "hook"}) || ConfirmsSubmit("claude", catalog.Signal{Kind: "bell"}) || ConfirmsSubmit("codex", catalog.Signal{Kind: "hook"}) {
 		t.Fatal("ConfirmsSubmit")
+	}
+}
+
+// The waits Conductor's own assets report for a program (OpenCode's
+// permission.asked, DeepSeek Harness's permission-requested and
+// question-asked) are needs_input without the mark (#193): they give way
+// to the turn's done, as before. aider's notification, which fires each
+// time aider waits for its next line, reports done (keys typed in the
+// terminal answer no question, so a wait would stay). Only the skill, for
+// the agent's own question, asks with --ask.
+func TestTheAssetsReportAProgramsWaitWithoutTheMark(t *testing.T) {
+	for name, src := range map[string]string{
+		"opencode": opencodeAssets["opencode/plugins/conductor.ts"],
+		"dsh":      dshAssets["dsh-conductor.js"],
+	} {
+		if src == "" {
+			t.Fatalf("%s: no asset", name)
+		}
+		if strings.Contains(src, "--ask") || !strings.Contains(src, "needs_input") {
+			t.Errorf("%s reports its wait otherwise than --state needs_input:\n%s", name, src)
+		}
+	}
+	if src := aiderCommand("/opt/conductor"); strings.Contains(src, "--ask") || strings.Contains(src, "needs_input") || !strings.Contains(src, "--state done") {
+		t.Errorf("aider reports its wait otherwise than --state done:\n%s", src)
+	}
+	if !strings.Contains(Skill, " notify --ask ") {
+		t.Error("the skill does not ask with --ask")
 	}
 }

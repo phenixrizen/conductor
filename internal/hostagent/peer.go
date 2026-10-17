@@ -521,8 +521,15 @@ func (p *peer) answerIn(sub *session.Subscription, m proto.Answer) {
 	}
 	if m.Text != "" {
 		p.typeIn(sub, m.ReqID, func(ctx context.Context) error {
-			_, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question})
-			if err == nil || errors.Is(err, session.ErrSubmitPending) {
+			// Its word comes once its outcome is known: a line the program
+			// takes slowly is finished later, and its word comes then.
+			_, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub, Question: m.Question, Finished: func(res session.SubmitResult, err error) {
+				refuse(session.AnswerWord(res, err))
+			}})
+			if errors.Is(err, session.ErrSubmitPending) {
+				return nil
+			}
+			if err == nil {
 				refuse(nil)
 				return nil
 			}
@@ -540,7 +547,9 @@ func (p *peer) answerIn(sub *session.Subscription, m proto.Answer) {
 				refuse(err)
 				return
 			}
-			refuse(p.a.local.AnswerInput(ctx, sub, m.Question, []byte(m.Input)))
+			// Keys that land late (the program not reading) get their word
+			// then (session.ErrSubmitPending meanwhile, no word).
+			refuse(p.a.local.AnswerInputFinished(ctx, sub, m.Question, []byte(m.Input), refuse))
 		},
 		live: p.attached(sub),
 	}) {

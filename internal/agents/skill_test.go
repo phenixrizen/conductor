@@ -30,8 +30,12 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" notify --event progress --message "4/7 handlers"`,
 		`"${CONDUCTOR_BIN:-conductor}" notify --event artifact --url <url>`,
 		`"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to <member> --message "…"`,
-		`"${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "…"`,
-		`"${CONDUCTOR_BIN:-conductor}" notify --state needs_input --message "Which database?" --choices "Postgres|SQLite|Keep both"`,
+		// The agent's own question, marked (#193): it shows until someone
+		// replies, also once the turn has ended; and its clear.
+		`"${CONDUCTOR_BIN:-conductor}" notify --ask --message "…"`,
+		`"${CONDUCTOR_BIN:-conductor}" notify --ask --message "Which database?" --choices "Postgres|SQLite|Keep both"`,
+		`"${CONDUCTOR_BIN:-conductor}" notify --state clear`,
+		"The session shows as needing input until someone replies, also\n  once your turn has ended.",
 		`"${CONDUCTOR_BIN:-conductor}" notify --event file --op edit --path internal/api/users.go`,
 		`"${CONDUCTOR_BIN:-conductor}" crew create crew.json --self lead --open`,
 		`"${CONDUCTOR_BIN:-conductor}" crew status`,
@@ -44,8 +48,11 @@ func TestSkillText(t *testing.T) {
 			t.Errorf("the skill does not say %q", want)
 		}
 	}
-	if n := strings.Count(body, " notify --"); n != 6 {
-		t.Errorf("%d notify commands, want the 6 above", n)
+	if n := strings.Count(body, " notify --"); n != 7 {
+		t.Errorf("%d notify commands, want the 7 above", n)
+	}
+	if strings.Contains(body, "--state needs_input") {
+		t.Error("the skill asks without the mark (--state needs_input)")
 	}
 	if strings.Contains(Skill, binPlaceholder) || !strings.HasSuffix(Skill, "\n") {
 		t.Fatalf("skill:\n%s", Skill)

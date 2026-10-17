@@ -775,12 +775,12 @@ func TestAQuestionGoesIntoTheChatAndItsAnswerFollows(t *testing.T) {
 	if runQ == nil || runQ.On != "review" || runQ.Scope != "run" || len(runQ.Options) != 2 {
 		t.Fatalf("the run's copy %+v", runQ)
 	}
-	// Answered by a person's input, with Enter: the line says who, and names the question.
+	// Answered by a person's reply naming it: the line says who, and names the question.
 	go func() {
 		for range p.input {
 		}
 	}()
-	if err := s.Input(sub, []byte("y\r")); err != nil {
+	if err := s.AnswerInput(t.Context(), sub, q["id"].(string), []byte("y\r")); err != nil {
 		t.Fatal(err)
 	}
 	a := waitControl(sink, func(m map[string]any) bool { return m["t"] == proto.CtlChat && m["event"] == "answered" })

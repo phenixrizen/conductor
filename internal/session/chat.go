@@ -200,18 +200,27 @@ func (s *Local) askInChat(att Attention) (ChatMessage, string) {
 	return q, s.keepChat(q)
 }
 
-// answeredInChat keeps the line that says the question was answered, by whom
-// (Conductor itself when by is ""). The caller holds s.mu; nothing when no
-// question was asked in the chat.
-func (s *Local) answeredInChat(by, byName string) (ChatMessage, string, bool) {
-	if s.question == "" {
+// answeredInChat keeps the line that says the question named id was
+// answered, by whom (Conductor itself when by is ""): it refers to that
+// question's own line in the chat (Ref: its id, the line's), not to the
+// one asked last (another question may have shown over a held turn since,
+// and gone, the first restored by the hold's end). The caller holds s.mu;
+// nothing when no question was asked in the chat.
+func (s *Local) answeredInChat(id, by, byName string) (ChatMessage, string, bool) {
+	ref := id
+	if ref == "" {
+		ref = s.question
+	}
+	if ref == "" {
 		return ChatMessage{}, "", false
 	}
 	if byName == "" {
 		byName = "Conductor"
 	}
-	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "answered", Ref: s.question, By: ChatBy{ID: by, Name: byName, Role: RoleControl}}
-	s.question = ""
+	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "answered", Ref: ref, By: ChatBy{ID: by, Name: byName, Role: RoleControl}}
+	if s.question == ref {
+		s.question = ""
+	}
 	return m, s.keepChat(m), true
 }
 

@@ -67,18 +67,20 @@ type Screen struct {
 	// not ended it: a terminal shows the frame before it until it ends,
 	// and this screen holds half of the next.
 	syncing bool
-	// clipped says the screen was resized with something on it, and the
-	// program has not erased it all since (ED 2, or ED 0 from its first
-	// cell; in a synchronized update, once that ends: unclipAtEnd): what it shows was drawn at another
-	// size (cut, or laid out narrower), and what it lacks is not gone. A
-	// frame that erases nothing, or only some rows, leaves it so.
-	clipped, unclipAtEnd bool
+	// layMain and layAlt are what each buffer's rows were laid out for
+	// (layout), lay the current buffer's (main's or alt's, as cells is):
+	// what one buffer draws or erases says nothing of the other.
+	layMain, layAlt layout
+	lay             *layout
 
 	// softMain, softAlt and soft (main's or alt's, as cells is) mark the
 	// rows whose text goes on in the row below: autowrap took the cursor
-	// past the row's end. An erase to a row's end ends that. Lines reads
+	// past the row's end; wrapMain, wrapAlt and wrapAt the width such a
+	// row had then, its extent (grown since, its cells beyond are the
+	// growth's blanks). An erase to a row's end ends that. Lines reads
 	// such rows as one line, as the program wrote them.
-	softMain, softAlt, soft []bool
+	softMain, softAlt, soft   []bool
+	wrapMain, wrapAlt, wrapAt []int
 
 	st      screenState
 	params  []byte
@@ -92,8 +94,101 @@ type Screen struct {
 // when either is zero), bounded by maxScreenCols and maxScreenRows.
 func NewScreen(cols, rows int) *Screen {
 	s := &Screen{}
+	s.lay = &s.layMain
 	s.Resize(cols, rows)
 	return s
+}
+
+// layout is what a buffer's rows were laid out for. clipped says the
+// buffer was resized with something on it, and the program has not erased
+// it all since (ED 2, or ED 0 from its first cell; in a synchronized
+// update, once that ends: unclipAtEnd): what it shows was drawn at another
+// size (cut, or laid out narrower), and what it lacks is not gone; a frame
+// that erases nothing, or only some rows, leaves it so. cut says it was
+// made narrower or shorter with a character beyond the new size lost
+// (loses), and not erased whole since: what it shows is cut short (a
+// resize that cuts only blank cells loses nothing). drawnCols and
+// drawnRows are the size it had when what it shows was last laid out (the
+// last erase of the whole buffer, or the resize of an empty one): grown
+// since, it still shows everything drawn then, laid out for that size.
+type layout struct {
+	clipped, unclipAtEnd bool
+	cut                  bool
+	drawnCols, drawnRows int
+}
+
+// resized notes the buffer's rows (old) made cols by rows from oldCols by
+// oldRows, rows leaving at the top by shift (Resize), with a frame under
+// way on it (syncing) or not.
+func (l *layout) resized(syncing bool, old [][]rune, shift, oldCols, oldRows, cols, rows int) {
+	if syncing || hasContent(old) {
+		l.clipped = true
+		if syncing && (cols < oldCols || rows < oldRows) || loses(old, shift, cols, rows) {
+			// A character lost, or a frame under way made smaller (what
+			// it draws cannot be told): cut.
+			l.cut = true
+		}
+	} else {
+		// Nothing on it: what comes is laid out for the new size.
+		l.drawnCols, l.drawnRows = cols, rows
+	}
+	// An erase before the resize settles nothing after it.
+	l.unclipAtEnd = false
+}
+
+// laidOut notes the buffer erased whole and drawn again at cols by rows:
+// nothing of what it shows was drawn at another size or cut.
+func (l *layout) laidOut(cols, rows int) {
+	l.clipped, l.cut = false, false
+	l.drawnCols, l.drawnRows = cols, rows
+}
+
+// hasContent reports whether rows hold a character.
+func hasContent(rows [][]rune) bool {
+	for _, row := range rows {
+		for _, c := range row {
+			if c != ' ' && c != wideTail {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// loses reports whether making rows (old) cols wide by rows tall, rows
+// leaving at the top by shift, loses a character: one in a row that
+// leaves, one beyond the new width, or a wide character cut in half.
+// Blank cells count for nothing.
+func loses(old [][]rune, shift, cols, rows int) bool {
+	for r, row := range old {
+		from := 0
+		if kept := r >= shift && r-shift < rows; kept {
+			from = cols
+			if cols < len(row) && row[cols] == wideTail {
+				return true
+			}
+		}
+		for c := from; c < len(row); c++ {
+			if row[c] != ' ' && row[c] != wideTail {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fitRows is per-row marks (old) for rows rows, rows leaving at the top by
+// shift, as Resize fits the cells.
+func fitRows[T any](old []T, shift, rows int) []T {
+	out := make([]T, rows)
+	for r := range out {
+		src := r + shift
+		if src >= len(old) {
+			break
+		}
+		out[r] = old[src]
+	}
+	return out
 }
 
 func blankRows(rows, cols int) [][]rune {
@@ -121,18 +216,21 @@ func (s *Screen) Resize(cols, rows int) {
 		cols, rows = 80, 24
 	}
 	cols, rows = min(cols, maxScreenCols), min(rows, maxScreenRows)
-	if cols != s.cols || rows != s.rows {
-		if s.syncing || strings.TrimSpace(s.text(len(s.cells))) != "" {
-			// What the screen shows, or the frame under way, was drawn at
-			// another size (cut, or laid out narrower) until the program
-			// erases it all and draws it again (Settled).
-			s.clipped = true
-		}
-		// An erase before the resize settles nothing after it.
-		s.unclipAtEnd = false
-	}
 	// Rows leave at the top when the cursor would fall off the bottom.
 	shift := max(0, s.y-rows+1)
+	mainShift, altShift := shift, 0
+	if s.altOn {
+		mainShift, altShift = 0, shift
+	}
+	if cols != s.cols || rows != s.rows {
+		// Each buffer's layout, for itself: what it shows, or the frame
+		// under way on it, was drawn at another size until the program
+		// erases it all and draws it again (Settled, DrawnAt).
+		s.layMain.resized(!s.altOn && s.syncing, s.main, mainShift, s.cols, s.rows, cols, rows)
+		if s.alt != nil {
+			s.layAlt.resized(s.altOn && s.syncing, s.alt, altShift, s.cols, s.rows, cols, rows)
+		}
+	}
 	fit := func(old [][]rune, shift int) [][]rune {
 		out := blankRows(rows, cols)
 		for r := range out {
@@ -146,20 +244,20 @@ func (s *Screen) Resize(cols, rows int) {
 		}
 		return out
 	}
-	mainShift, altShift := shift, 0
-	if s.altOn {
-		mainShift, altShift = 0, shift
-	}
+	// The rows autowrap went on from keep that mark and their extent:
+	// grown, the screen shows them as they were laid out, and Lines reads
+	// them joined to their extent; made smaller, what they held is cut
+	// (cut), and the mark tells nothing a reader trusts.
 	s.main = fit(s.main, mainShift)
-	s.softMain = make([]bool, rows)
+	s.softMain, s.wrapMain = fitRows(s.softMain, mainShift, rows), fitRows(s.wrapMain, mainShift, rows)
 	if s.alt != nil {
 		s.alt = fit(s.alt, altShift)
-		s.softAlt = make([]bool, rows)
+		s.softAlt, s.wrapAlt = fitRows(s.softAlt, altShift, rows), fitRows(s.wrapAlt, altShift, rows)
 	}
 	if s.altOn {
-		s.cells, s.soft = s.alt, s.softAlt
+		s.cells, s.soft, s.wrapAt = s.alt, s.softAlt, s.wrapAlt
 	} else {
-		s.cells, s.soft = s.main, s.softMain
+		s.cells, s.soft, s.wrapAt = s.main, s.softMain, s.wrapMain
 	}
 	s.rows, s.cols = rows, cols
 	s.y = min(s.y-shift, rows-1)
@@ -306,7 +404,7 @@ func (s *Screen) put(r rune) {
 		return
 	}
 	if s.wrap {
-		s.soft[s.y] = true
+		s.soft[s.y], s.wrapAt[s.y] = true, s.cols
 		s.x, s.wrap = 0, false
 		s.index()
 	}
@@ -314,7 +412,7 @@ func (s *Screen) put(r rune) {
 		if w > s.cols {
 			return
 		}
-		s.soft[s.y] = true
+		s.soft[s.y], s.wrapAt[s.y] = true, s.cols
 		s.x = 0
 		s.index()
 	}
@@ -365,9 +463,10 @@ func (s *Screen) scrollUp(top, bot, n int) {
 	n = min(n, bot-top+1)
 	copy(s.cells[top:bot+1], s.cells[top+n:bot+1])
 	copy(s.soft[top:bot+1], s.soft[top+n:bot+1])
+	copy(s.wrapAt[top:bot+1], s.wrapAt[top+n:bot+1])
 	for r := bot - n + 1; r <= bot; r++ {
 		s.cells[r] = blankRow(s.cols)
-		s.soft[r] = false
+		s.soft[r], s.wrapAt[r] = false, 0
 	}
 }
 
@@ -379,16 +478,19 @@ func (s *Screen) scrollDown(top, bot, n int) {
 	n = min(n, bot-top+1)
 	copy(s.cells[top+n:bot+1], s.cells[top:bot+1-n])
 	copy(s.soft[top+n:bot+1], s.soft[top:bot+1-n])
+	copy(s.wrapAt[top+n:bot+1], s.wrapAt[top:bot+1-n])
 	for r := top; r < top+n; r++ {
 		s.cells[r] = blankRow(s.cols)
-		s.soft[r] = false
+		s.soft[r], s.wrapAt[r] = false, 0
 	}
 }
 
 func (s *Screen) reset() {
 	s.main, s.alt = blankRows(s.rows, s.cols), nil
 	s.softMain, s.softAlt = make([]bool, s.rows), nil
-	s.cells, s.soft, s.altOn = s.main, s.softMain, false
+	s.wrapMain, s.wrapAlt = make([]int, s.rows), nil
+	s.layMain, s.layAlt = layout{drawnCols: s.cols, drawnRows: s.rows}, layout{}
+	s.cells, s.soft, s.wrapAt, s.lay, s.altOn = s.main, s.softMain, s.wrapMain, &s.layMain, false
 	s.x, s.y, s.top, s.bot, s.wrap = 0, 0, 0, s.rows-1, false
 }
 
@@ -455,11 +557,11 @@ func (s *Screen) csi(final byte) {
 				case 1049, 1047, 47:
 					s.altScreen(final == 'h', m == 1049)
 				case 2026:
-					if final == 'l' && s.syncing && s.unclipAtEnd {
+					if final == 'l' && s.syncing && s.lay.unclipAtEnd {
 						// The end of a frame that erased the screen whole.
-						s.clipped = false
+						s.lay.laidOut(s.cols, s.rows)
 					}
-					s.syncing, s.unclipAtEnd = final == 'h', false
+					s.syncing, s.lay.unclipAtEnd = final == 'h', false
 				}
 			}
 		}
@@ -578,10 +680,11 @@ func (s *Screen) altScreen(on, cursor bool) {
 			s.savedMain = [2]int{s.x, s.y}
 		}
 		s.alt = blankRows(s.rows, s.cols)
-		s.softAlt = make([]bool, s.rows)
-		s.cells, s.soft, s.altOn = s.alt, s.softAlt, true
+		s.softAlt, s.wrapAlt = make([]bool, s.rows), make([]int, s.rows)
+		s.layAlt = layout{drawnCols: s.cols, drawnRows: s.rows}
+		s.cells, s.soft, s.wrapAt, s.lay, s.altOn = s.alt, s.softAlt, s.wrapAlt, &s.layAlt, true
 	} else {
-		s.cells, s.soft, s.altOn = s.main, s.softMain, false
+		s.cells, s.soft, s.wrapAt, s.lay, s.altOn = s.main, s.softMain, s.wrapMain, &s.layMain, false
 		if cursor {
 			s.x, s.y = s.savedMain[0], s.savedMain[1]
 			s.clampCursor()
@@ -609,10 +712,27 @@ const maxLookRows = 80
 // size now (in a synchronized update, once it ends).
 func (s *Screen) erasedWhole() {
 	if s.syncing {
-		s.unclipAtEnd = true
+		s.lay.unclipAtEnd = true
 	} else {
-		s.clipped = false
+		s.lay.laidOut(s.cols, s.rows)
 	}
+}
+
+// Rows returns every row of the screen as its characters, a wide
+// character's tail left out and trailing spaces trimmed: what the screen
+// snapshot compares (Local.screenQuiet).
+func (s *Screen) Rows() []string {
+	out := make([]string, len(s.cells))
+	for r, row := range s.cells {
+		line := make([]rune, 0, len(row))
+		for _, c := range row {
+			if c != wideTail {
+				line = append(line, c)
+			}
+		}
+		out[r] = strings.TrimRight(string(line), " ")
+	}
+	return out
 }
 
 // Settled reports whether the screen is a whole frame: no synchronized
@@ -620,7 +740,28 @@ func (s *Screen) erasedWhole() {
 // and nothing drawn at another size that the program has not erased whole
 // since (a resize keeps what showed, cut or as laid out before; the
 // program erases and redraws it).
-func (s *Screen) Settled() bool { return !s.syncing && !s.clipped }
+func (s *Screen) Settled() bool { return !s.syncing && !s.lay.clipped }
+
+// Drawn reports whether the screen is a frame the program has finished:
+// no synchronized update begun and not ended. Unlike Settled, what was
+// drawn at another size and not erased since counts: a program that never
+// erases its screen (a shell, a line reader) is compared with itself all
+// the same (Local.screenQuiet), a resize dropping that comparison's
+// baseline.
+func (s *Screen) Drawn() bool { return !s.syncing }
+
+// DrawnAt reports whether the screen shows everything the program drew,
+// as it drew it (no synchronized update under way, nothing cut by a
+// resize since the program last erased the screen whole), and the size it
+// was laid out for (drawnCols, drawnRows): the window grown since shows it
+// all, laid out for that smaller size; made narrower or shorter since, it
+// may be cut (uncut false). What reads the screen for words no longer on
+// it (Local.screenShowsNoStartup) asks this, not Settled: a program that
+// erases its dialog's lines rather than the whole screen (Codex) draws
+// nothing for a window grown, and its screen would never settle again.
+func (s *Screen) DrawnAt() (uncut bool, cols, rows int) {
+	return !s.syncing && !s.lay.cut, s.lay.drawnCols, s.lay.drawnRows
+}
 
 // Size returns the screen's columns and rows.
 func (s *Screen) Size() (cols, rows int) { return s.cols, s.rows }
@@ -647,13 +788,23 @@ func (s *Screen) rowsText(n int, soft bool) string {
 		if r > first && !joined {
 			b.WriteByte('\n')
 		}
-		line := make([]rune, 0, len(s.cells[r]))
-		for _, c := range s.cells[r] {
+		cells := s.cells[r]
+		wrapped := soft && s.soft[r] && r < last
+		if wrapped {
+			// To its extent when autowrap went on from it (wrapAt): a
+			// screen grown since holds the growth's blank cells beyond,
+			// which would split a word the wrap split.
+			if n := s.wrapAt[r]; n > 0 && n < len(cells) {
+				cells = cells[:n]
+			}
+		}
+		line := make([]rune, 0, len(cells))
+		for _, c := range cells {
 			if c != wideTail {
 				line = append(line, c)
 			}
 		}
-		if soft && s.soft[r] && r < last {
+		if wrapped {
 			b.WriteString(string(line))
 		} else {
 			b.WriteString(strings.TrimRight(string(line), " "))

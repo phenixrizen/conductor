@@ -450,10 +450,14 @@ func TestATitleLeavesAQuestionOnTheScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextWrite(t, p)
-	if a := s.Info().Attention; a.State != AttentionNone {
-		t.Fatalf("the answer: %+v", a)
+	if a := s.Info().Attention; !asked(a) {
+		t.Fatalf("the key cleared the dialog before the screen moved on: %+v", a)
 	}
 	out(p, approvalGone("\x1b[12;1H\xe2\x80\xa2 Ran curl -sI https://example.com"), codexWorking(5))
+	// The dialog gone from the screen is withdrawn at the quiet look; the
+	// next frame shows working.
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	out(p, codexWorking(6))
 	if a := s.Info().Attention; !titleWorks(a) {
 		t.Fatalf("a frame after the answer: %+v", a)
 	}
@@ -506,7 +510,7 @@ func TestATitleNeverShowsOverAHeldTurn(t *testing.T) {
 	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	go s.holdTyped()
+	go holdNow(s)
 	heldShows(t, s)
 	before := len(entries(s))
 	stop := make(chan struct{})
@@ -707,7 +711,7 @@ func TestTheSettleTimerActsOnlyOnItsWait(t *testing.T) {
 	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which name?", SourceAPI, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Input(sub, []byte("x")); err != nil {
+	if err := s.AnswerInput(t.Context(), sub, s.Info().Attention.ID, []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 	nextWrite(t, p)

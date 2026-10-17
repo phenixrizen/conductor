@@ -217,22 +217,51 @@ type Local struct {
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
 	question string
-	// answered is the id (Attention.ID) of the last question a write was
-	// made to answer, set as the writer takes the write (claimQuestion,
-	// noteAnswering): until the write is made and answer clears the
-	// question, it still shows, and a reply to it that comes after is
-	// refused (ErrQuestionAnswered). dialogAnswered is the words of the
-	// dialog asked during the work that a write was last made to answer,
-	// published or not yet, until the screen's watcher sees it go (a quiet
-	// look with no dialog, missAsked) or another dialog in its place: a
-	// dialog with those words asked meanwhile is that question still,
-	// answered (sameDialog). dialogAnsweredAt is how many Feeds the
+	// claim is the structured answer being written to a question (CLAIMED:
+	// a reply naming it, claimLocked), its id and the claim's token, fresh
+	// for every claim (claimSeq); the empty claim while none stands. The
+	// question shows, or is held over by the hold of the turn (heldOver),
+	// until the claim's write is made and resolve clears it, or the claim
+	// is released (release) or the question withdrawn (forgetLocked); a
+	// reply to it meanwhile is refused (waitsLocked). consumed is the id
+	// of the question instance shown that keys typed in the terminal
+	// reached (consumeLocked: a startup question's or a dialog's answer
+	// picked, the hold's end entering its text): it takes no answer, and
+	// goes once the screen shows it gone (escGone, missAsked) or the next
+	// takes its place. dialogAnswered is the words of the dialog asked
+	// during the work that a write was last made to answer or that keys
+	// reached, published or not yet, until the screen's watcher sees it
+	// go (a quiet look with no dialog, missAsked) or another dialog in its
+	// place: a dialog with those words asked meanwhile is that question
+	// still, consumed (sameDialog). dialogAnsweredAt is how many Feeds the
 	// watcher had seen as it was noted (PatternWatcher.Fed): a look that
-	// took its text before that (LookedAt) does not see it go. Guarded by
-	// mu.
-	answered         string
+	// took its text before that (LookedAt) does not see it go. results
+	// keeps the last resultsKept questions' results by id, oldest first
+	// in resultIDs, for the word a late or duplicate reply gets. claims
+	// are the claims standing, by question: on the one shown, and on one
+	// held over by the hold of the turn (a dialog shown over the hold
+	// takes a reply of its own, and the held-over question keeps its
+	// claim, which resolves it hidden); a fresh token for every claim
+	// (claimSeq). Guarded by mu.
+	claims   map[string]questionClaim
+	claimSeq uint64
+	consumed string
+	// strandedClaim is the claim of a reply's line typed and not entered
+	// for good (holdTyped), let go in the step that shows the hold of the
+	// turn in the question's place (setAttentionLooked,
+	// releaseStrandedLocked): until then it stands, so that no reply
+	// claims the question and writes its keys after the text. The empty
+	// claim while none waits. holdPending says a hold of the turn is to
+	// follow a stranded line (strand) and its words are not shown yet
+	// (holdTyped): keys meanwhile deal with the question shown as the
+	// hold's end would with the question held over, before the hold is
+	// installed (rawKeys: then none is) or after (endHoldTyped).
+	strandedClaim    questionClaim
+	holdPending      bool
 	dialogAnswered   string
 	dialogAnsweredAt uint64
+	results          map[string]*Answer
+	resultIDs        []string
 	// keysIn splits what is written to the program into the keys it reads
 	// (keysWritten), every write made, in the writer's order. Guarded by mu.
 	keysIn keyReader
@@ -275,12 +304,19 @@ type Local struct {
 	// asked watches the screen for the questions the agent asks during its
 	// work (Options.Questions marked Anytime, askedQuestions) until the
 	// session ends; nil without one. askedKeys are their answers' keys.
-	// typedAtAsked is the person who last typed into the session while one
-	// showed, and that question's Since (missAsked); guarded by mu.
 	asked          *PatternWatcher
 	askedQuestions []StartupQuestion
 	askedKeys      map[string]bool
-	typedAtAsked   *typedAt
+	// shot is a model of the screen every session keeps (Screen, no
+	// pattern), looked at each time the output has been quiet for
+	// patternQuiet (screenQuiet): a bell or OSC wait, which has no rows of
+	// its own, is withdrawn once the screen has moved on from the rows it
+	// showed at the first quiet after the wait (shotRows, the baseline;
+	// shotWait the wait's id) by shotRowsChanged rows or more (movedOn).
+	// shotRows and shotWait are guarded by mu.
+	shot     *PatternWatcher
+	shotWait string
+	shotRows []string
 	// lastBell is when the bell or an OSC notification last changed the
 	// attention (bellPaced); zero once a new turn has begun (beginTurn).
 	// Guarded by mu.
@@ -318,10 +354,22 @@ type Local struct {
 	// beforeSettle, a test's hook, runs as the settle timer fires, before
 	// it looks at anything (settled); afterTitle between readTitle's look
 	// at a title that matches and its change.
-	beforeSettle   atomic.Pointer[func()]
-	afterTitle     atomic.Pointer[func()]
-	agentTokenHash [32]byte
-	hasAgentToken  bool
+	beforeSettle atomic.Pointer[func()]
+	afterTitle   atomic.Pointer[func()]
+	// beforeEnter, a test's hook, runs as a submission comes to its Enter
+	// (pressEnter), before it looks at anything; beforeWritten as keys
+	// written (input) come to what follows their write, with the keys.
+	beforeEnter   atomic.Pointer[func()]
+	beforeWritten atomic.Pointer[func(data []byte)]
+	// beforeShot, a test's hook, runs as the screen snapshot's quiet look
+	// begins (screenQuiet), before it takes the session's lock; beforeHold
+	// as holdTyped begins, before the hold of the turn is installed;
+	// beforeHoldShown once it is installed, before its words show.
+	beforeShot      atomic.Pointer[func()]
+	beforeHold      atomic.Pointer[func()]
+	beforeHoldShown atomic.Pointer[func()]
+	agentTokenHash  [32]byte
+	hasAgentToken   bool
 
 	ended chan struct{}
 
@@ -342,6 +390,18 @@ type Local struct {
 	// for it), shown again when a person's keys end the hold without
 	// answering it (endHoldTyped); empty when none. Under mu.
 	heldOver Attention
+	// own is the agent's own question (Ask: a needs_input report that says
+	// it is the agent's), kept until it is answered: shown (the attention
+	// showing is it, its id), set aside (ownAside: in the turn it was
+	// asked in, another state took its place, and the turn's done shows it
+	// again, the same Attention), or held over by the hold of the turn
+	// (heldOver is it). ownTurn is the turn it was asked in (turn): it is
+	// in its turn while turn is that and no done has ended it (turnEnded).
+	// A question a reply or a person's keys reached is removed, never set
+	// aside (keepOwnLocked). Empty while none is kept. Under mu.
+	own      Attention
+	ownAside bool
+	ownTurn  uint64
 	// writer makes every write to the process, in order (input.go).
 	writer procWriter
 	// nvimEndWait is nvimEndWait as the session was made: its editors'.
@@ -446,6 +506,7 @@ func NewLocal(info Info, proc Process, opts Options) *Local {
 			}
 		}
 	}
+	s.shot = NewScreenModelWatcher(matchNothing, patternQuiet, int(info.Cols), int(info.Rows), func(string) {}, s.screenQuiet)
 	if opts.WatchGit && info.Cwd != "" {
 		s.gitSeenStart()
 	}
@@ -491,6 +552,9 @@ func (s *Local) pump() {
 				s.asked.Feed(chunk)
 			}
 			s.feedMu.Unlock()
+			if !title {
+				s.shot.Feed(chunk)
+			}
 		}
 		if err != nil {
 			break
@@ -524,6 +588,7 @@ func (s *Local) markEnded(status Status) {
 	if s.asked != nil {
 		s.asked.Stop()
 	}
+	s.shot.Stop()
 	s.mu.Lock()
 	if s.info.Status.Ended() {
 		s.mu.Unlock()
@@ -539,6 +604,12 @@ func (s *Local) markEnded(status Status) {
 		s.info.Attention = Attention{}
 		s.signalAttention()
 	}
+	// Nor is anything kept to show again: the agent's own question goes
+	// with it, shown or set aside, and so do a claim on it, its
+	// consumption and the screen's baseline.
+	s.dropOwnLocked()
+	s.claims, s.consumed = nil, ""
+	s.shotWait, s.shotRows = "", nil
 	s.settleLocked(s.info.Attention)
 	now := time.Now().UTC()
 	s.info.EndedAt = &now
@@ -876,12 +947,7 @@ func (s *Local) fireAsked(text string) {
 			if settled && !sameWords(s.dialogAnswered, words) {
 				s.dialogGone(look)
 			}
-			cur, typed := s.info.Attention, s.typedAtAsked
-			gone := settled && cur.State == AttentionNeedsInput && cur.Source == SourceQuestion && typed != nil && cur.Since != nil && sameWords(typed.words, cur.words()) && !sameWords(words, cur.words())
 			s.mu.Unlock()
-			if gone {
-				s.answer(cur.Since, typed.by, typed.name, true, true)
-			}
 			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog)
 			return
 		}
@@ -889,14 +955,11 @@ func (s *Local) fireAsked(text string) {
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
-// the questions: the dialog last answered has gone (dialogAnswered). A
-// question asked during the work that is still held then gives way, as
-// answered, when a person typed into the session while a question with the
-// same words showed (asked again, as after a key the program was slow to
-// answer, it is the same dialog): the dialog went with a key Conductor does
-// not offer (d, a click) or one it did that the program took late. Without
-// such a key it stays: the dialog cannot have been answered, and a held
-// question keeps every Enter from the screen.
+// the questions: the dialog last answered has gone (dialogAnswered), and a
+// question asked during the work still shown is withdrawn: the screen
+// moved on from it (the program took a key, Conductor's or not, a click,
+// or went on by itself), and one drawn again is asked again. A reply being
+// written to it keeps its claim (withdraw): it resolves or lets go.
 func (s *Local) missAsked(string) {
 	s.escGone()
 	look, settled, _ := s.asked.Look()
@@ -907,12 +970,31 @@ func (s *Local) missAsked(string) {
 	}
 	s.mu.Lock()
 	s.dialogGone(look)
-	att, typed := s.info.Attention, s.typedAtAsked
-	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && typed != nil && att.Since != nil && sameWords(typed.words, att.words())
+	att := s.info.Attention
+	gone := att.State == AttentionNeedsInput && att.Source == SourceQuestion && att.ID != ""
 	s.mu.Unlock()
 	if gone {
-		s.answer(att.Since, typed.by, typed.name, true, true)
+		s.withdraw(att.ID)
 	}
+}
+
+// startupOnScreen reports whether the screen still shows a startup
+// question while the startup questions' watch lasts (before the first
+// submission's Enter): typed text is refused meanwhile (Submit), the
+// question asked, answered or not, since its Enter would pick what the
+// dialog highlights (Claude Code's "No, exit") and its letters reach the
+// dialog's keys. The screen is read as a frame the program has finished
+// drawing with nothing lost to a window made smaller (Screen.DrawnAt), the
+// window grown since counting, its wrapped rows joined. Nothing without
+// the screen the questions asked during the work are read from, kept for
+// this with startup questions alone.
+func (s *Local) startupOnScreen() bool {
+	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
+		return false
+	}
+	whole, _, _, _ := s.asked.Whole()
+	uncut, _, _ := s.asked.DrawnAt()
+	return uncut && s.lastStartup(whole) != ""
 }
 
 // heldSource reports whether a prompt of source src is a question the
@@ -1190,8 +1272,32 @@ func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind 
 	return s.setAttention(state, message, source, kind, options, spendToken)
 }
 
+// Ask is SetAttentionFull for the agent's own question: needs_input, from a
+// report that says the agent asks it (the MCP tool ask, conductor notify
+// --ask), which the session keeps until it is answered (own). In the turn it
+// was asked in, the agent's work (a working report, its working title) and
+// another wait (a hook's prompt, a dialog on the screen) take its place and
+// set it aside; that turn's done shows it again, the same Attention (its id
+// and Since), and a done leaves it showing. It goes with an answer (a
+// person's keys or reply, which also remove it while it is set aside), the
+// agent's clear or next question, another state after its turn's done (the
+// agent at work in a new turn), or the session's end. The bell, an OSC
+// notification and the screen pattern never take its place. It is for a
+// report that has paid already: the one the server sends on to a hosted
+// session's host.
+func (s *Local) Ask(message, source, kind string, options []Option) {
+	s.setAttention(AttentionNeedsInput, message, source, kind, options, agentAsks)
+}
+
+// TryAsk is Ask for a report from outside the session, as
+// TrySetAttentionFull: it spends a token of the event bucket first, and with
+// none left returns ErrRateLimited having changed nothing.
+func (s *Local) TryAsk(message, source, kind string, options []Option) error {
+	return s.setAttention(AttentionNeedsInput, message, source, kind, options, spendToken|agentAsks)
+}
+
 // attentionRules say how setAttention applies a change.
-type attentionRules uint16
+type attentionRules uint32
 
 const (
 	// unlessWaiting changes nothing when the session is needs_input already.
@@ -1200,16 +1306,17 @@ const (
 	// and refuses the change with ErrRateLimited when there is none.
 	spendToken
 	// unlessChoices changes nothing when the session is needs_input on a
-	// prompt that has choices, or on a question it holds (heldSource): a
-	// wait without anything to answer it with gives way, one with its
-	// answers stays.
+	// prompt that has choices, on a question it holds (heldSource) or on
+	// the agent's own question (own): a wait without anything to answer it
+	// with gives way, one with its answers stays.
 	unlessChoices
-	// unlessTurnEnded changes nothing when the session shows done and no
-	// Enter has been written since (turnEnded): Codex rings the bell it is
-	// asked for as its turn ends, after or before its notify reports done,
-	// and the turn that ended asks nothing more. The next Enter, a person's
-	// or a submission's, starts the next turn, whose bell is a question
-	// again; so does any change of state (a working report, a question).
+	// unlessTurnEnded changes nothing when the session shows done, or the
+	// agent's own question its turn's done kept (own), and no Enter has
+	// been written since (turnEnded): Codex rings the bell it is asked for
+	// as its turn ends, after or before its notify reports done, and the
+	// turn that ended asks nothing more. The next Enter, a person's or a
+	// submission's, starts the next turn, whose bell is a question again;
+	// so does any change of state (a working report, a question).
 	unlessTurnEnded
 	// unlessStartup changes nothing while the session holds a startup
 	// question (source trust): the program shows that one.
@@ -1264,6 +1371,10 @@ const (
 	// the session still shows (settleID), and the last title read still
 	// says the agent works (titleWorking).
 	onlySettling
+	// agentAsks (Ask) marks a needs_input change as the agent's own
+	// question, which the session keeps (own); with another state it
+	// changes nothing.
+	agentAsks
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -1333,17 +1444,24 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		return nil
 	}
 	cur := s.info.Attention
+	// The agent's own question (Ask), and the one the session keeps (own),
+	// shown or not.
+	ask := rules&agentAsks != 0 && state == AttentionNeedsInput
+	own := s.own
+	ownShown := own.ID != "" && cur.ID == own.ID
+	// Held over by the hold of the turn, which shows in its place.
+	ownHeld := own.ID != "" && s.heldOver.ID == own.ID && cur.State == AttentionNeedsInput && cur.Source == SourceSubmit
 	// The hold's words give way to a question drawn on the screen (a
 	// startup question's unlessWaiting): the program waits on that one now.
 	waiting := cur.State == AttentionNeedsInput && !(cur.Source == SourceSubmit && heldSource(source))
-	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source))
+	answerable := waiting && (len(cur.Options) > 0 || heldSource(cur.Source) || ownShown || ownHeld)
 	// A report from outside that the session waits, with choices or
 	// without, does not hide a question asked during the work: the dialog
 	// on the screen is what answers go to (a hook that reports the same
 	// dialog late, say, or another question whose choices would land on
 	// it).
 	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
-	turnsOwn := rules&unlessTurnEnded != 0 && cur.State == AttentionDone && s.turnEnded
+	turnsOwn := rules&unlessTurnEnded != 0 && (cur.State == AttentionDone || ownShown || ownHeld) && s.turnEnded
 	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace
 	lastTurns := turn != anyTurn && turn != s.turn.Load()
@@ -1359,7 +1477,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// A startup question answered and still shown (its write not made yet,
 	// or the session slow to clear it) waits on nothing: the next startup
 	// question takes its place.
-	answeredStartup := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && cur.ID != "" && cur.ID == s.answered
+	answeredStartup := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && cur.ID != "" && (s.claimedLocked(cur.ID) || cur.ID == s.consumed)
 	// A startup question still waiting that the screen has left for
 	// another (drawn after it, lastStartupQ: the program took an answer not
 	// read as one) waits on nothing either: the question the screen shows
@@ -1371,6 +1489,14 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.mu.Unlock()
 		return nil
 	}
+	// Whether the change comes in the turn the agent's own question was
+	// asked in (no done since), and whether a reply or a person's keys
+	// reached it (a claim on it, or consumed: the held text entered, its
+	// choice picked), weighed before the change moves the turn on: a
+	// question reached is never set aside to show again at the done,
+	// where a reply would be taken for an answer the program has.
+	inTurn := own.ID != "" && s.turn.Load() == s.ownTurn && !s.turnEnded
+	reached := own.ID != "" && (s.claimedLocked(own.ID) || s.consumed == own.ID)
 	if s.held != nil && source != SourceSubmit && !heldSource(source) {
 		// The session's turn is held for a typed text (holdTyped): the hold
 		// is what shows, until a person types into the terminal, but for a
@@ -1388,9 +1514,27 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		// The agent reports another state (at work, done, another
 		// question): the question the hold took the place of waits no
-		// longer, and does not show again as the hold ends.
-		if o := s.heldOver; o.ID != "" && !(state == o.State && message == o.Message && source == o.Source && kind == o.Kind && sameOptions(options, o.Options)) {
+		// longer, and does not show again as the hold ends. The agent's
+		// own question waits through its turn's done and its work in that
+		// turn, as it would shown.
+		if o := s.heldOver; o.ID != "" && !(state == o.State && message == o.Message && source == o.Source && kind == o.Kind && sameOptions(options, o.Options)) &&
+			!(o.ID == own.ID && (state == AttentionDone || state == AttentionWorking && inTurn)) {
+			// Withdrawn: a claim on it resolves nothing.
 			s.heldOver = Attention{}
+			s.forgetLocked(o.ID)
+		}
+		switch {
+		case own.ID == "" || s.heldOver.ID == own.ID:
+			// None kept, or held over still.
+		case s.ownAside && state == AttentionDone && s.heldOver.ID == "":
+			// Set aside, its turn's done would show it again: the hold
+			// shows, and it shows once a person's keys end the hold
+			// without answering it.
+			s.heldOver, s.ownAside = own, false
+		case s.ownAside && inTurn && !ask && state != AttentionNone:
+			// Set aside still: another state in its turn.
+		default:
+			s.dropOwnLocked()
 		}
 		s.mu.Unlock()
 		if state != AttentionNone {
@@ -1406,6 +1550,43 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// Also a done that changes nothing shown (the same words as the
 		// last turn's): the turn it reports has ended.
 		s.turnEnded = true
+	}
+	if state == AttentionDone && own.ID != "" && (ownShown || s.ownAside) {
+		// The agent's own question outlasts the done (own): a done, any
+		// (its turn's end, with turn or without; Claude Code's idle_prompt
+		// a minute later), leaves it showing, or shows it again from aside
+		// in place of what shows, the same Attention, its id and Since: a
+		// reply under way compares that stamp (pressEnter, answer), and
+		// its line in the chat is the one an answer refers to. The done
+		// has ended the turn, and is recorded as the report it is.
+		now := time.Now().UTC()
+		if !ownShown {
+			// What showed leaves, and a claim on it with it.
+			if cur.ID != "" && cur.ID != own.ID {
+				s.forgetLocked(cur.ID)
+			}
+			s.info.Attention, s.ownAside = own, false
+			s.settleLocked(own)
+			s.signalAttention()
+			s.hub.Broadcast(proto.MustControl(attentionMessage(own)))
+			s.question = own.ID
+		}
+		s.mu.Unlock()
+		label := message
+		if label == "" {
+			label = string(state)
+		}
+		s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionDone)
+		if !ownShown {
+			// Shown again, it has its entry, as any state that shows.
+			label = own.Message
+			if label == "" {
+				label = string(AttentionNeedsInput)
+			}
+			s.recordOwn(ActivityEntry{At: now, Type: ActivityAttention, Message: label}, AttentionNeedsInput)
+			s.notifyChange()
+		}
+		return nil
 	}
 	// The dialog last answered, asked before it has gone (sameDialog): its
 	// question is answered, whatever id it shows with.
@@ -1445,8 +1626,15 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			}
 		}
 		if stillAnswered && cur.ID != "" {
-			s.answered = cur.ID
+			// Asked again as the one answered: consumed, no answer taken.
+			s.consumeLocked(cur.ID)
 			s.holdAskedAgain(cur.ID, words, heldAsked, startupStill)
+		}
+		if ask && cur.ID != "" && !ownShown {
+			// The question showing, now said to be the agent's own: kept
+			// from here, as asked in this turn.
+			s.info.Attention.ask = true
+			s.own, s.ownAside, s.ownTurn = s.info.Attention, false, s.turn.Load()
 		}
 		s.mu.Unlock()
 		return nil
@@ -1470,15 +1658,48 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		if cur.State == AttentionNeedsInput && cur.ID != "" && cur.Source != SourceSubmit && !heldSource(cur.Source) {
 			s.heldOver = cur
 		}
+		// The stranded line's claim is let go here, in the step that
+		// hides the question (strandedClaim): let go before it, a reply
+		// could claim the question and write its keys after the text.
+		s.holdPending = false
+		s.releaseStrandedLocked()
 	}
 	if state != AttentionNone {
 		now := time.Now().UTC()
 		att.Since = &now
 		att.ID = NewID()
 		if stillAnswered {
-			s.answered = att.ID
+			// A new instance of the question answered, asked again before
+			// the program drew what follows: consumed, no answer taken.
+			s.consumeLocked(att.ID)
 			s.holdAskedAgain(att.ID, words, heldAsked, startupStill)
 		}
+	}
+	if cur.ID != "" && cur.ID != att.ID && source != SourceSubmit {
+		// The question showing leaves (withdrawn, or replaced by the next):
+		// a claim on it resolves nothing, and nothing of it is kept. The
+		// hold of the turn holds it over instead, its claim with it.
+		s.forgetLocked(cur.ID)
+	}
+	// The agent's own question (own) against the change.
+	switch {
+	case ask:
+		// Kept from now, asked in the turn now running; the one kept
+		// before, if any, goes (its next question).
+		att.ask = true
+		s.own, s.ownAside, s.ownTurn = att, false, s.turn.Load()
+	case own.ID == "" || source == SourceSubmit || s.heldOver.ID == own.ID:
+		// None kept; or the hold of the turn takes its place, holding it
+		// over (heldOver, above) or leaving it set aside; or held over
+		// already, a question on the screen showing over the hold.
+	case (ownShown || s.ownAside) && inTurn && !reached && state != AttentionNone:
+		// In its turn: set aside, to show again at the turn's done.
+		s.ownAside = true
+	default:
+		// A state after its turn's done (the agent at work in a new turn,
+		// another wait), a clear, or a question a reply or a person's
+		// keys reached: it goes for good.
+		s.dropOwnLocked()
 	}
 	s.info.Attention = att
 	s.settleLocked(att)
@@ -1918,20 +2139,32 @@ func (s *Local) Detach(sub *Subscription) {
 // turn for a submission's text typed without its Enter (holdTyped). data
 // may be reused once Input returns.
 func (s *Local) Input(sub *Subscription, data []byte) error {
-	return s.input(context.Background(), sub, "", data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
+	return s.input(context.Background(), sub, "", data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, nil)
 }
 
 // AnswerInput is Input for a reply to the question named question (its
 // Attention.ID, as the person was shown it: a choice's keys clicked or
 // pressed), waiting also until ctx ends. The keys are written only while
-// that question is the one waiting and no write before them was made to
-// answer it, which is looked at as they are queued and again, together
-// with noting them as its answer, as the writer takes them; otherwise
-// nothing is written and it returns ErrQuestionAnswered. Of two replies to
-// one question the first is written and the second refused, so that a late
-// click never lands on the question that came next.
+// that question is the one shown, nobody is answering it and nobody
+// answered it in the terminal, which is looked at as they are queued and
+// again, together with claiming it, as the writer takes them (the last of
+// their checks); otherwise nothing is written and it returns
+// ErrQuestionAnswered. Written, they resolve the question (resolve). Of
+// two replies to one question the first is written and the second
+// refused, so that a late click never lands on the question that came
+// next.
 func (s *Local) AnswerInput(ctx context.Context, sub *Subscription, question string, data []byte) error {
-	return s.input(ctx, sub, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait})
+	return s.input(ctx, sub, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, nil)
+}
+
+// AnswerInputFinished is AnswerInput whose word waits for its keys to
+// land: when their write has begun and not landed by the time the wait
+// allows, it returns ErrSubmitPending (accepted) and calls finished, on
+// another goroutine, once they have landed (nil: the question resolved,
+// or withdrawn meanwhile) or the session ended (ErrSessionEnded); any
+// other return is the word, and finished is not called.
+func (s *Local) AnswerInputFinished(ctx context.Context, sub *Subscription, question string, data []byte, finished func(error)) error {
+	return s.input(ctx, sub, question, data, writeWait{wait: s.opts.InputWait, stall: s.opts.InputWait}, finished)
 }
 
 // InputContext is Input waiting until ctx ends in place of
@@ -1940,19 +2173,20 @@ func (s *Local) AnswerInput(ctx context.Context, sub *Subscription, question str
 // keystrokes on from its frame loop and gives each its time from its
 // arrival.
 func (s *Local) InputContext(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, "", data, writeWait{stall: s.opts.InputWait})
+	return s.input(ctx, sub, "", data, writeWait{stall: s.opts.InputWait}, nil)
 }
 
 // InputWaiting is InputContext for a terminal of the person's own (a
 // host's): it waits for the program to read, however long it has not, as
 // a terminal does, until ctx ends.
 func (s *Local) InputWaiting(ctx context.Context, sub *Subscription, data []byte) error {
-	return s.input(ctx, sub, "", data, writeWait{})
+	return s.input(ctx, sub, "", data, writeWait{}, nil)
 }
 
 // input is Input waiting as o says, until ctx ends; with question, the
-// keys are a reply to that question (AnswerInput).
-func (s *Local) input(ctx context.Context, sub *Subscription, question string, data []byte, o writeWait) error {
+// keys are a reply to that question (AnswerInput), and finished, when
+// set, is told their word once they land late (AnswerInputFinished).
+func (s *Local) input(ctx context.Context, sub *Subscription, question string, data []byte, o writeWait, finished func(error)) error {
 	if sub.Role != RoleControl {
 		return ErrReadOnly
 	}
@@ -1984,15 +2218,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	}
 	s.mu.Lock()
 	ended := s.info.Status.Ended()
-	// The prompt this input answers is the one on the screen as it is typed.
-	// A process that reacts before Write returns (an echo that rings the bell)
-	// may raise the next one meanwhile, and typing must not clear that one.
-	// Each attention change gets a new Since, which tells the prompts apart.
-	promptSince := s.info.Attention.Since
-	// A question's own choice answers it, with an Enter or without: some
-	// dialogs pick on a digit (Codex's background-server question) or skip on
-	// Escape (its update question), and an Enter after those would land on
-	// the next screen.
+	// A question's own choice is its answer, with an Enter or without:
+	// some dialogs pick on a digit (Codex's background-server question) or
+	// skip on Escape (its update question), and an Enter after those would
+	// land on the next screen.
 	choice := false
 	for _, o := range s.info.Attention.Options {
 		if o.Input != "" && o.Input == string(data) {
@@ -2003,19 +2232,12 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// A question asked during the work is a dialog's numbered list: a digit
 	// picks a line at once and Ctrl+C cancels it (Codex 0.161's approval
 	// overlay), whether the choices offer those keys or not. A key that
-	// leaves the dialog where it was is answered all the same; the screen,
+	// leaves the dialog where it was reaches it all the same; the screen,
 	// looked at again, asks it again.
 	if s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && listKey(data) {
 		choice = true
 	}
 	enter := choice || bytes.IndexByte(data, '\r') >= 0
-	// The screen that showed a startup question is behind once it is
-	// answered: only a new question counts. It is cleared before the answer
-	// is written, never after: a program that draws its next question as the
-	// first is answered (Codex's update question after its background-server
-	// one) can have drawn it before the write returns, and a clear after it
-	// took that question with it, unseen (round 14, the trust spec's flake).
-	answersQuestion := enter && s.info.Attention.State == AttentionNeedsInput && heldSource(s.info.Attention.Source) && s.info.Attention.Since == promptSince
 	// More than one key with an Enter among them, while a question asked
 	// during the work shows, is no key of its dialog: a choice of the
 	// question it took the place of (a page's button clicked late), or a
@@ -2030,18 +2252,20 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	}
 	// What a key does to the session's questions is done as the writer
 	// takes it, just before it is written, never for keys not written (a
-	// time run out, a stall, a connection gone): noted is set then, and
-	// read once the write is made.
-	var noted bool
+	// time run out, a stall, a connection gone). A person's keys answer no
+	// question (rawKeys): they consume one read off the screen, withdraw a
+	// bell's wait with their Enter, and withdraw the agent's own question
+	// set aside; the question clears when the agent or its screen moves
+	// on. A reply's keys (question) claim their question as the writer
+	// takes them (token, claimQuestion) and resolve it once written.
+	var token uint64
 	// Set as the writer takes the keys, as keysWritten reads them (a paste
 	// or an escape sequence a write before left unfinished carried in):
-	// typedEnter says they answer the prompt they were typed at as answer
-	// takes it (enter, when the write is its own keys, else read from its
-	// keys: a paste's text is none); quiet that they are no key a person
-	// typed (the rest of a terminal's report, or of a sequence not ended
-	// yet), which answer nothing and stamp nobody typing; startupSince
-	// stamps the startup question showing then that the keys answer
-	// (whatever prompt they were typed at), cleared once they are written.
+	// typedEnter says they end the turn a done ended (enter, when the write
+	// is its own keys, else read from its keys: a paste's text is none);
+	// quiet that they are no key a person typed (the rest of a terminal's
+	// report, or of a sequence not ended yet), which reach nothing and
+	// stamp nobody typing.
 	//
 	// An Escape that ends a write is held (keysWritten): it may be the
 	// Escape key and may be the start of what the next write goes on with
@@ -2055,7 +2279,6 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// reaches a question that still shows.
 	typedEnter := enter
 	var quiet bool
-	var startupSince *time.Time
 	// Keys are withdrawn as the connection ends, and, as a submission is,
 	// once its credential no longer stands (a link's: revoked or expired,
 	// or on a host its server not heard from lately), asked as they are
@@ -2089,9 +2312,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	if question != "" {
 		// A reply to a question, looked at again as the writer takes it
 		// (other writes may have gone before it): still the question
-		// waiting, and noted as its answer in the same critical section,
-		// so that a reply to it queued behind is refused although the
-		// question shows until this one is written and answers it.
+		// waiting, and claimed in the same critical section, so that a
+		// reply to it queued behind is refused although the question shows
+		// until this one is written and resolves it.
 		dialog := o.guard
 		o.guard = func() error {
 			if err := s.questionWaits(question); err != nil {
@@ -2105,16 +2328,22 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			if err := s.stillOnScreen(question); err != nil {
 				return err
 			}
-			return s.claimQuestion(question)
+			t, err := s.claimQuestion(question)
+			if err != nil {
+				return err
+			}
+			token = t
+			return nil
 		}
 	}
 	o.before = func() {
 		// The keys the program reads from the write, a paste or an escape
 		// sequence a write before it left unfinished carried in.
 		keys, unkeyed, extra := s.keysWritten(data)
-		// The keys that may answer: keys, and those the write may hold
-		// besides (the Escape held, an Alt chord's key alone). A write
-		// with those is never matched whole: Alt and Enter is no Enter.
+		// The keys that may reach a question: keys, and those the write
+		// may hold besides (the Escape held, an Alt chord's key alone). A
+		// write with those is never matched whole: Alt and Enter is no
+		// Enter.
 		held := len(extra) > 0
 		maybe := keys
 		if held {
@@ -2128,9 +2357,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// A reply's choice (an answer to a question on the screen over
 			// the hold) is no person at the terminal: the text still waits
 			// there, and the hold shows again once the question is
-			// answered (answer). Keys that answer nothing (Ctrl+U, the
-			// text killed) leave the question the hold took the place of
-			// waiting still: it shows again (endHoldTyped).
+			// resolved. The question the hold took the place of shows
+			// again, consumed when these keys entered the held text or
+			// picked its choice (endHoldTyped).
 			s.endHoldTyped(data, maybe)
 		}
 		own := ownKeys(data, keys) && !held
@@ -2158,9 +2387,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				onScreen = readDialog(q, words, screen)
 			}
 		}
-		// A startup question a key surely answers is put behind, its screen
-		// too, and cleared once written (startupSince); one only the Escape
-		// held may answer is held answered (heldAnswer).
+		// A startup question a key surely answers is consumed, its screen
+		// put behind, and withdrawn once the screen shows it gone; one
+		// only the Escape held may answer is held answered (heldAnswer).
 		startupAnswer, heldAnswer := false, false
 		// The startup question the keys reach is the one drawn last: the
 		// one the session shows, unless another has been drawn since and
@@ -2172,25 +2401,28 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 				shownDrawn = false
 			}
 		}
-		ownAnswer := answersQuestion && own && shownDrawn
+		// A reply's keys to the startup question shown (claimed as the
+		// writer took them): its screen goes behind as a sure answer's does.
+		ownAnswer := question != "" && shownDrawn && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && shown.ID == question
 		if !shownDrawn {
-			// Nor is it cleared by them: it gives way to the one drawn
-			// once that is asked, the session held meanwhile.
+			// Nor is the turn begun by them: the question gives way to the
+			// one drawn once that is asked, the session held meanwhile.
 			typedEnter = false
 		}
-		if !isTerminalReport(data) && !quiet {
-			// Keys that answer the question showing, or the dialog on the
-			// screen, put it behind for the replies queued after them.
-			s.noteAnswering(promptSince, data, maybe, onScreen)
+		if !isTerminalReport(data) && !quiet && question == "" {
+			// A person's keys: never an answer. They consume the dialog
+			// they reach, withdraw a bell's wait with their Enter, and
+			// withdraw the agent's own question set aside.
+			s.rawKeys(data, maybe, onScreen, typedEnter || anyKey(maybe, isEnterKey), typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
-			// arrow then its digit; keys typed before it showed) is answered as
-			// its choice alone answers it: its screen behind now, the
-			// question cleared once written.
+			// arrow then its digit; keys typed before it showed), is
+			// consumed as its choice alone answers it: its screen behind
+			// now, the question withdrawn once the screen shows it gone.
 			if shownDrawn && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.startupPicks(shown, data, maybe) {
 				if s.startupPicks(shown, data, keys) {
-					startupAnswer, startupSince = true, shown.Since
+					startupAnswer = true
 				} else {
 					heldAnswer = true
 				}
@@ -2198,8 +2430,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		}
 		// The startup question the screen shows as the keys are written,
 		// asked or not yet (the watcher asks once the screen is quiet): keys
-		// that pick one of its answers (picksStartup) answer it, and its screen goes
-		// behind, so that the watcher asks only what is drawn after.
+		// that pick one of its answers (picksStartup) reach it, and its
+		// screen goes behind, so that the watcher asks only what is drawn
+		// after.
 		startupOnScreen, onScreenHeld := false, false
 		var startupWords string
 		if s.trust != nil && !quiet && !isTerminalReport(data) && s.trust.Watching() {
@@ -2241,8 +2474,8 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// answered, asked again before another takes its place, asked
 			// answered. The question the session shows now is read again
 			// in the same step: one asked since the keys were looked at
-			// (shown) is the one they answer, noted and cleared once
-			// written.
+			// (shown) is the one they reach, consumed (a person's keys) or
+			// claimed (a reply's, by its guard).
 			s.mu.Lock()
 			s.startupAnswered, s.startupAnsweredAt = true, s.trust.Fed()
 			if s.asked != nil {
@@ -2254,13 +2487,10 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			if startupWords != "" {
 				s.startupAnsweredWords = startupWords
 			}
-			if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (startupWords == "" || sameWords(att.words(), startupWords)) {
-				s.markAnswered(att)
-				if startupSince == nil {
-					startupSince = att.Since
-				}
-			}
 			s.mu.Unlock()
+			if question == "" {
+				s.holdStartupAnswered(startupWords, sub)
+			}
 			s.trust.Reset()
 		}
 		if typedEnter {
@@ -2276,50 +2506,59 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// A key that answers a dialog on the screen: the look before a
 			// submission does not ask the dialog again before the program
 			// draws what follows (the look at the end of a quiet period
-			// still does). The key is noted against the dialog, also one
-			// not yet asked: the dialog asked later, before the program
-			// took it away, gives way to it (missAsked).
-			s.mu.Lock()
-			s.typedAtAsked = &typedAt{words: words, by: sub.ID, name: sub.Name}
-			s.mu.Unlock()
+			// still does).
 			s.asked.Hold()
-			noted = true
 		}
 	}
-	// written is what follows the keys once written: the prompt they were
-	// typed at answered (as their keys answer it: a paste's text answers no
-	// held question, the rest of a report nothing), and the startup
-	// question they answered as the writer took them.
+	// written is what follows the keys once written: the viewer typing,
+	// the screen looked at again, and a reply's question resolved by the
+	// claim its keys made (resolve).
 	written := func() {
 		if !quiet {
-			s.typedKeys(sub, data, promptSince, typedEnter, noted, typed)
+			s.typedKeys(sub, data, typedEnter)
 		}
-		if startupSince != nil {
-			s.answer(startupSince, sub.ID, sub.Name, true, true)
+		if token != 0 {
+			s.resolve(question, token, sub.ID, sub.Name)
 		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
 	if err != nil {
 		if landed != nil && !errors.Is(err, ErrSessionEnded) {
 			// Begun: the keys land as the program reads, and what follows
-			// written keys is done then (the prompt they answer still the
-			// one they were typed at). At most one write is begun at a
-			// time, so at most one such wait is under way.
+			// written keys is done then. At most one write is begun at a
+			// time, so at most one such wait is under way. A reply's word
+			// (finished) waits for the landing: accepted meanwhile
+			// (ErrSubmitPending).
 			go func() {
 				select {
 				case werr := <-landed:
 					if werr == nil {
 						written()
 					}
+					if finished != nil {
+						finished(werr)
+					}
 				case <-s.ended:
+					if finished != nil {
+						finished(ErrSessionEnded)
+					}
 				}
 			}()
+			if finished != nil {
+				return ErrSubmitPending
+			}
 		}
 		return err
+	}
+	if hook := s.beforeWritten.Load(); hook != nil {
+		(*hook)(data)
 	}
 	written()
 	return nil
 }
+
+// isEnterKey reports whether k is the Enter key.
+func isEnterKey(k []byte) bool { return string(k) == "\r" }
 
 // isChoice reports whether data is the input of one of att's choices.
 func isChoice(att Attention, data []byte) bool {
@@ -2332,39 +2571,19 @@ func isChoice(att Attention, data []byte) bool {
 }
 
 // typedKeys is what follows keys written to the program (input): sub is
-// typing, the dialog or question they answer is noted and looked at again,
-// and the prompt that showed as they were typed (promptSince) is answered.
-// typed says a person typed something (typesSomething), not only the
-// terminal's reports.
-func (s *Local) typedKeys(sub *Subscription, data []byte, promptSince *time.Time, enter, noted, typed bool) {
+// typing, and the screen is looked at again for a dialog the keys may have
+// answered (enter: an Enter, or a dialog's key). They answer no question.
+func (s *Local) typedKeys(sub *Subscription, data []byte, enter bool) {
 	if isTerminalReport(data) {
 		return
 	}
 	s.stampTyping(sub)
-	if s.asked != nil {
-		if !noted {
-			// The dialog the screen showed as the key was written, when
-			// there was one, says what it answers; the question shown is
-			// only the fallback (it can be one the screen has replaced).
-			s.noteTyped(promptSince, sub)
-		}
-		if enter || s.askedKeys[string(data)] {
-			// Look at the screen again even if the program draws nothing:
-			// a dialog the key did not take away is asked again.
-			s.asked.Poke()
-		}
+	if s.asked != nil && (enter || s.askedKeys[string(data)]) {
+		// Look at the screen again even if the program draws nothing: a
+		// dialog the key did not take away is asked again, and one it took
+		// away is withdrawn (missAsked).
+		s.asked.Poke()
 	}
-	if !typed {
-		s.mu.Lock()
-		hold := s.info.Attention.Source == SourceSubmit && s.info.Attention.Since == promptSince
-		s.mu.Unlock()
-		if hold {
-			// Only the terminal reported (the pointer moved, say): the
-			// hold's words stay with it.
-			return
-		}
-	}
-	s.answer(promptSince, sub.ID, sub.Name, true, enter)
 }
 
 // askedIn returns the question asked during the work that text (the
@@ -2379,23 +2598,6 @@ func (s *Local) askedIn(text string, cols int) (*StartupQuestion, string) {
 	return nil, ""
 }
 
-// typedAt is who typed into the session while a question asked during the
-// work showed, and that question's words.
-type typedAt struct {
-	words    string
-	by, name string
-}
-
-// noteTyped notes sub as the person who typed into the session while the
-// question asked during the work stamped promptSince was showing.
-func (s *Local) noteTyped(promptSince *time.Time, sub *Subscription) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if att := s.info.Attention; promptSince != nil && att.Since == promptSince && att.Source == SourceQuestion {
-		s.typedAtAsked = &typedAt{words: att.words(), by: sub.ID, name: sub.Name}
-	}
-}
-
 // sized records the PTY's new size, which the screen the questions asked
 // during the work are read from follows. The caller holds s.mu.
 func (s *Local) sized(cols, rows uint16) {
@@ -2403,6 +2605,14 @@ func (s *Local) sized(cols, rows uint16) {
 	if s.asked != nil {
 		s.asked.Resize(int(cols), int(rows))
 	}
+	s.shot.Resize(int(cols), int(rows))
+	// The baseline is taken again at the next quiet (screenQuiet): a
+	// program that redraws everything after a resize brings that quiet
+	// with its output, one that draws nothing for it (a line reader) is
+	// looked at after the quiet period from now (Poke), so that the
+	// output it prints next is compared with the screen as it is now.
+	s.shotWait, s.shotRows = "", nil
+	s.shot.Poke()
 }
 
 // listKey reports whether data is a key a dialog's list takes as an answer
@@ -2442,6 +2652,345 @@ func (s *Local) beginTurn() {
 	s.disarmSettleLocked()
 }
 
+// dropOwnLocked forgets the agent's own question the session keeps (own):
+// it shows again nowhere. The attention showing is the caller's to change.
+// The caller holds s.mu.
+func (s *Local) dropOwnLocked() {
+	s.own, s.ownAside, s.ownTurn = Attention{}, false, 0
+}
+
+// questionClaim is the structured answer being written to a question
+// (CLAIMED, Local.claim): the question's id and the claim's token, fresh
+// for every claim (claimSeq), so that a claim on a question shown again
+// with the same id (after a hold, or by its turn's done) is never taken for
+// an earlier one. The empty claim while none stands.
+type questionClaim struct {
+	id    string
+	token uint64
+}
+
+// resultsKept is how many questions' results the session keeps by id
+// (results): the word a late or duplicate reply gets names who answered.
+const resultsKept = 64
+
+// claimLocked claims the question named id for a structured answer about
+// to be written (OPEN and shown, to CLAIMED): refused while it is not the
+// one shown (waitsLocked), is being answered or was answered in the
+// terminal, or while a write is being made (ErrInputBusy). Returns the
+// claim's token: the write resolves the question with it once made
+// (resolve), or releases it (release). A dialog or a startup question
+// claimed is noted by its words, so that one drawn again before the
+// program moves on is that question still (sameDialog, startupStill). The
+// caller holds s.mu.
+func (s *Local) claimLocked(id string) (uint64, error) {
+	if err := s.waitsLocked(id); err != nil {
+		return 0, err
+	}
+	if s.inputBusy() {
+		return 0, ErrInputBusy
+	}
+	s.claimSeq++
+	c := questionClaim{id: id, token: s.claimSeq}
+	if s.claims == nil {
+		s.claims = map[string]questionClaim{}
+	}
+	s.claims[id] = c
+	att := s.info.Attention
+	switch att.Source {
+	case SourceQuestion:
+		s.noteDialogAnswered(att.words())
+	case SourceTrust:
+		s.startupAnsweredWords = att.words()
+	}
+	return c.token, nil
+}
+
+// claimedLocked reports whether a claim stands on the question named id.
+// The caller holds s.mu.
+func (s *Local) claimedLocked(id string) bool { return id != "" && s.claims[id].id == id }
+
+// dropClaimLocked lets the claim c go, if it still stands. The caller
+// holds s.mu.
+func (s *Local) dropClaimLocked(c questionClaim) {
+	if c.id != "" && s.claims[c.id] == c {
+		delete(s.claims, c.id)
+	}
+}
+
+// claimQuestion is claimLocked, asked as the writer takes a reply's write,
+// the last of its checks (writeWait.guard), so that the write is made when
+// it returns nil, and a reply to the same question after it is refused.
+func (s *Local) claimQuestion(id string) (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claimLocked(id)
+}
+
+// release lets the claim (id, token) go (CLAIMED to OPEN): its write was
+// refused before it began, or its line was typed and its Enter not written
+// (the hold of the turn then holds the question over). Nothing unless that
+// claim still stands.
+func (s *Local) release(id string, token uint64) {
+	s.mu.Lock()
+	s.dropClaimLocked(questionClaim{id: id, token: token})
+	s.mu.Unlock()
+}
+
+// resolve is the one transition from CLAIMED to RESOLVED: the claim (id,
+// token) whose write was made (a choice's keys, a line's Enter) answers
+// the question, by by (a subscriber ID) and byName. Nothing unless that
+// claim still stands and the question is still there, shown or held over
+// by the hold of the turn (withdrawn meanwhile, the agent having moved
+// on, it answers nothing). The check, the result and the clear share one
+// critical section: the result is recorded (LastAnswer, results, the
+// chat's answered line) before anything is broadcast, and the question
+// then leaves as answered: the empty state with source input, or the hold
+// of the turn shown again when one stands; one held over goes without
+// showing again. The agent's own question kept (own) goes with it. An
+// input entry with the question records the answer.
+func (s *Local) resolve(id string, token uint64, by, byName string) {
+	s.mu.Lock()
+	if s.claims[id] != (questionClaim{id: id, token: token}) {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.claims, id)
+	att := s.info.Attention
+	shown := att.State == AttentionNeedsInput && att.ID == id
+	over := s.heldOver.ID == id
+	if !shown && !over {
+		s.mu.Unlock()
+		return
+	}
+	q := att
+	if !shown {
+		q = s.heldOver
+		s.heldOver = Attention{}
+	}
+	result := &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: q.Message}
+	s.info.LastAnswer = result
+	s.keepResultLocked(id, result)
+	if s.own.ID == id {
+		s.dropOwnLocked()
+	}
+	if s.consumed == id {
+		s.consumed = ""
+	}
+	if shown {
+		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
+		if s.held != nil && !s.info.Status.Ended() {
+			// A question answered while the turn is still held for a typed
+			// text (one gone with keys typed before the hold): the hold
+			// shows again.
+			now := time.Now().UTC()
+			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
+		}
+		s.settleLocked(s.info.Attention)
+		s.signalAttention()
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+	}
+	answered, answeredID, told := s.answeredInChat(id, by, byName)
+	s.mu.Unlock()
+	if told {
+		s.chatHook(answeredID, answered)
+		s.tellRun(answered)
+	}
+	s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: q.Message})
+	s.notifyChange()
+}
+
+// keepResultLocked keeps result as the question id's, the oldest of
+// resultsKept forgotten. The caller holds s.mu.
+func (s *Local) keepResultLocked(id string, result *Answer) {
+	if s.results == nil {
+		s.results = map[string]*Answer{}
+	}
+	if _, kept := s.results[id]; !kept {
+		s.resultIDs = append(s.resultIDs, id)
+		if len(s.resultIDs) > resultsKept {
+			delete(s.results, s.resultIDs[0])
+			s.resultIDs = s.resultIDs[1:]
+		}
+	}
+	s.results[id] = result
+}
+
+// consumeLocked marks the question instance named id, shown, as reached by
+// keys typed in the terminal (consumed): it takes no answer (waitsLocked),
+// and goes once the screen shows it gone or the next takes its place. Only
+// an OPEN instance: one being answered keeps its claim, which resolves it
+// or lets it go. The caller holds s.mu.
+func (s *Local) consumeLocked(id string) {
+	if id == "" || s.claimedLocked(id) {
+		return
+	}
+	s.consumed = id
+}
+
+// releaseStrandedLocked lets the stranded line's claim go (strandedClaim),
+// if it still stands: as the hold of the turn shows (setAttentionLooked),
+// or, its words refused, as holdTyped goes on without them. The caller
+// holds s.mu.
+func (s *Local) releaseStrandedLocked() {
+	c := s.strandedClaim
+	if c == (questionClaim{}) {
+		return
+	}
+	s.strandedClaim = questionClaim{}
+	s.dropClaimLocked(c)
+}
+
+// forgetLocked is the question instance named id leaving (withdrawn, or
+// replaced by the next): a claim on it resolves nothing, its consumption
+// and the screen's baseline for it go. The caller holds s.mu.
+func (s *Local) forgetLocked(id string) {
+	if id == "" {
+		return
+	}
+	delete(s.claims, id)
+	if s.consumed == id {
+		s.consumed = ""
+	}
+	if s.shotWait == id {
+		s.shotWait, s.shotRows = "", nil
+	}
+}
+
+// withdrawShownLocked withdraws the question showing without an answer:
+// the empty state with source (SourceScreen for the screen moved on,
+// SourceInput for an Enter typed at a bell's wait), nothing recorded, or
+// the hold of the turn shown again when one stands. The caller holds s.mu
+// and tells the change (notifyChange) once it has let it go.
+func (s *Local) withdrawShownLocked(source string) {
+	att := s.info.Attention
+	s.forgetLocked(att.ID)
+	if att.ID != "" && att.ID == s.own.ID {
+		s.dropOwnLocked()
+	}
+	s.info.Attention = Attention{State: AttentionNone, Source: source}
+	if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
+		now := time.Now().UTC()
+		s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
+	}
+	s.settleLocked(s.info.Attention)
+	s.signalAttention()
+	s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+}
+
+// withdraw withdraws the question named id when it is the one shown and
+// nobody is answering it (a claim stands while its write can land): the
+// screen moved on from it (escGone, missAsked, screenQuiet). It reports
+// whether it did.
+func (s *Local) withdraw(id string) bool {
+	s.mu.Lock()
+	att := s.info.Attention
+	if id == "" || att.State != AttentionNeedsInput || att.ID != id || s.claimedLocked(id) {
+		s.mu.Unlock()
+		return false
+	}
+	s.withdrawShownLocked(SourceScreen)
+	s.mu.Unlock()
+	s.notifyChange()
+	return true
+}
+
+// The screen snapshot's threshold (screenQuiet, movedOn): a bell or OSC
+// wait is withdrawn once at least shotRowsChanged rows of the screen
+// differ from the baseline, a row counting as changed when more than
+// shotCellsChanged of its cells differ. A spinner's frame changes one
+// cell, a countdown or a clock a few of one row, a status line whose
+// words change wholesale one row; the agent moving on prints output
+// (every row shifts), or redraws its prompt area (three rows or more).
+const (
+	shotRowsChanged  = 3
+	shotCellsChanged = 8
+)
+
+// screenQuiet is the screen model's look at the end of a quiet period
+// (shot): a bell or OSC wait shown, with nobody answering it, has its
+// baseline taken at the first quiet after it showed (shotRows: the
+// program draws what it rang for in the same read or the next), and is
+// withdrawn at a later quiet once the screen has moved on from it
+// (movedOn). A question read off the screen has rows of its own and its
+// watcher; the pattern's prompt its line.
+func (s *Local) screenQuiet(string) {
+	if hook := s.beforeShot.Load(); hook != nil {
+		(*hook)()
+	}
+	s.mu.Lock()
+	// The rows are read under the session's lock, which a resize holds
+	// as it changes them and drops the baseline (sized): rows read before
+	// one would be installed as the baseline, and the next quiet would
+	// find the screen moved on by the resize alone.
+	rows, drawn := s.shot.Rows()
+	if !drawn {
+		s.mu.Unlock()
+		return
+	}
+	att := s.info.Attention
+	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC || s.claimedLocked(att.ID) {
+		s.shotWait, s.shotRows = "", nil
+		s.mu.Unlock()
+		return
+	}
+	if s.shotWait != att.ID || s.shotRows == nil {
+		s.shotWait, s.shotRows = att.ID, rows
+		s.mu.Unlock()
+		return
+	}
+	if !movedOn(s.shotRows, rows) {
+		s.mu.Unlock()
+		return
+	}
+	s.withdrawShownLocked(SourceScreen)
+	s.mu.Unlock()
+	s.notifyChange()
+}
+
+// movedOn reports whether the screen's rows now differ from base, the
+// baseline, past the snapshot's threshold: at least shotRowsChanged rows
+// with more than shotCellsChanged cells each not the same (a cell missing
+// in one is a space).
+func movedOn(base, now []string) bool {
+	changed := 0
+	for i := range max(len(base), len(now)) {
+		var a, b []rune
+		if i < len(base) {
+			a = []rune(base[i])
+		}
+		if i < len(now) {
+			b = []rune(now[i])
+		}
+		diff := 0
+		for j := range max(len(a), len(b)) {
+			x, y := ' ', ' '
+			if j < len(a) {
+				x = a[j]
+			}
+			if j < len(b) {
+				y = b[j]
+			}
+			if x != y {
+				diff++
+			}
+		}
+		if diff > shotCellsChanged {
+			changed++
+		}
+	}
+	return changed >= shotRowsChanged
+}
+
+// asideOwn is the id of the agent's own question while it is set aside,
+// "" while none is: what a write notes as it begins (input,
+// submitState.aside). The caller holds s.mu.
+func (s *Local) asideOwn() string {
+	if s.own.ID != "" && s.ownAside {
+		return s.own.ID
+	}
+	return ""
+}
+
 // ErrTextTooLong refuses a submission whose text is longer than MaxSubmitText
 // bytes once cleaned: nothing was written.
 var ErrTextTooLong = fmt.Errorf("session: text to submit is longer than %d bytes", MaxSubmitText)
@@ -2457,18 +3006,35 @@ func (s *Local) stampTyping(sub *Subscription) {
 	}
 }
 
-// QuestionAnsweredWords say why a reply to a question was refused: the
-// question it was shown for is no longer the one waiting, answered by
-// another reply that came first or gone, and nothing of it was written.
-const QuestionAnsweredWords = "this question was already answered: nothing was sent"
+// The words a reply to a question is refused with (ErrQuestionAnswered,
+// questionAnsweredError): nothing of it was written.
+const (
+	// QuestionAnsweredWords: the question it was shown for is no longer the
+	// one shown: gone (the agent moved on), or set aside or held over for
+	// now.
+	QuestionAnsweredWords = "this question was already answered: nothing was sent"
+	// QuestionClaimedWords: another reply is being written to it (CLAIMED).
+	QuestionClaimedWords = "this question is being answered: nothing was sent"
+	// QuestionConsumedWords: keys typed in the terminal reached it (consumed).
+	QuestionConsumedWords = "this question was answered in the terminal: nothing was sent"
+)
 
 // ErrQuestionAnswered refuses a reply to a question that is no longer the
-// one waiting (AnswerInput, Submission.Question).
+// one waiting (AnswerInput, Submission.Question); a refusal that says more
+// (who answered, or that it is being answered) is a questionAnsweredError,
+// which is one (errors.Is).
 var ErrQuestionAnswered = errors.New(QuestionAnsweredWords)
 
-// questionWaits reports whether the question named id waits for a reply:
-// it is the session's needs_input prompt, and no write was made to answer
-// it (answered). ErrQuestionAnswered otherwise.
+// questionAnsweredError is ErrQuestionAnswered with words of its own.
+type questionAnsweredError struct{ words string }
+
+func (e *questionAnsweredError) Error() string        { return e.words }
+func (e *questionAnsweredError) Is(target error) bool { return target == ErrQuestionAnswered }
+
+// questionWaits reports whether the question named id takes a reply: it is
+// the session's needs_input shown, nobody is answering it and nobody
+// answered it in the terminal (OPEN). ErrQuestionAnswered otherwise, with
+// the result when one is recorded for it.
 func (s *Local) questionWaits(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2477,14 +3043,30 @@ func (s *Local) questionWaits(id string) error {
 
 // waitsLocked is questionWaits for a caller that holds s.mu.
 func (s *Local) waitsLocked(id string) error {
+	if id == "" {
+		return ErrQuestionAnswered
+	}
 	att := s.info.Attention
 	// The session's turn held for a typed text (source submit) is no
 	// question: a person at the terminal deals with it, and a reply naming
 	// it writes nothing.
-	if id == "" || att.State != AttentionNeedsInput || att.ID != id || s.answered == id || att.Source == SourceSubmit {
-		return ErrQuestionAnswered
+	if att.State == AttentionNeedsInput && att.ID == id && att.Source != SourceSubmit {
+		switch {
+		case s.claimedLocked(id):
+			return &questionAnsweredError{QuestionClaimedWords}
+		case s.consumed == id:
+			return &questionAnsweredError{QuestionConsumedWords}
+		}
+		return nil
 	}
-	return nil
+	if r := s.results[id]; r != nil {
+		name := r.ByName
+		if name == "" {
+			name = "Conductor"
+		}
+		return &questionAnsweredError{"this question was already answered by " + name + ": nothing was sent"}
+	}
+	return ErrQuestionAnswered
 }
 
 // stillOnScreen reports, for a reply to the question named id, whether the
@@ -2574,36 +3156,6 @@ func (s *Local) lastStartupQ(text string) (*StartupQuestion, string) {
 	return last, words
 }
 
-// claimQuestion is questionWaits, and notes the question as answered in the
-// same critical section: asked as the writer takes the reply's write, the
-// last of its checks (writeWait.guard), so that the write is made when it
-// returns nil, and a reply to the same question after it is refused.
-func (s *Local) claimQuestion(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := s.waitsLocked(id); err != nil {
-		return err
-	}
-	if s.inputBusy() {
-		return ErrInputBusy
-	}
-	s.markAnswered(s.info.Attention)
-	return nil
-}
-
-// markAnswered notes att's question as the one a write is being made to
-// answer (answered), and a dialog asked during the work by its words
-// (dialogAnswered). The caller holds s.mu.
-func (s *Local) markAnswered(att Attention) {
-	s.answered = att.ID
-	switch att.Source {
-	case SourceQuestion:
-		s.noteDialogAnswered(att.words())
-	case SourceTrust:
-		s.startupAnsweredWords = att.words()
-	}
-}
-
 // noteDialogAnswered notes the dialog of words as answered (dialogAnswered),
 // as the screen is now. The caller holds s.mu.
 func (s *Local) noteDialogAnswered(words string) {
@@ -2623,54 +3175,74 @@ func (s *Local) dialogGone(look uint64) {
 	}
 }
 
-// noteAnswering notes, as the writer takes a write of data, that the
-// question showing is answered when the write answers it: a reply to it
-// that comes after is refused (questionWaits), though it shows until the
-// write is made and answer clears it. A question the session holds (a
-// startup question, a dialog asked during the work) is answered by keys
-// that pick one of its answers: an Enter, one of its choices, or for a
-// dialog Ctrl+C or a digit of one of its numbered lines (dialogPicks).
-// That is so for whatever question shows as they are written: keys typed
-// before it showed and written once it shows (they waited behind another
-// write) reach it. A prompt the session does not hold is answered by any
-// key typed while it showed (promptSince), as answer takes it. Keys typed
-// into the terminal, a reply box's line and Conductor's own Enter put a
-// question behind as a reply to it does.
-//
-// onScreen is what the screen the dialogs asked during the work are read
-// from shows as the write is taken, when it shows one (nil otherwise, or
-// when the screen was not read), read by the caller before the session's
-// lock: keys that pick one of its answers answer it whether the session
-// has asked it yet or not (the watcher asks a dialog once the screen is
-// quiet), and a dialog with its words asked later, before it has gone, is
-// answered already (sameDialog). It is the dialog the keys reach: a
-// question the session still shows with other words (one answered and
-// asked again, before the watcher has seen the next) is not what they
-// answer.
-func (s *Local) noteAnswering(promptSince *time.Time, data []byte, keys [][]byte, onScreen *dialogView) {
+// rawKeys is what keys typed in the terminal, or a line naming no question
+// (its text, its Enter), do to the session's questions as the writer takes
+// them: never an answer. A question read off the screen whose answer they
+// pick (an Enter, one of its choices, and for a dialog Ctrl+C, a key its
+// rows name or a digit of its numbered lines: dialogView.picks) is
+// consumed: it takes no reply, for the program's dialog has the keys, and
+// it goes once the screen shows it gone. That is so for whatever dialog
+// shows as they are written (keys typed before it showed and written once
+// it shows, they having waited behind another write, reach it), and for
+// the dialog on the screen not asked yet (onScreen, read by the caller
+// before the session's lock: noted by its words, so that it is asked
+// consumed). A wait with no words of the agent's (the bell, an OSC
+// notification, the screen pattern) is withdrawn by their Enter (enter): a
+// person typed a line into the program. The agent's own question set
+// aside is withdrawn by a person's keys (person): the person has taken
+// part, and it does not show again at the done. A question being answered
+// (claimed) is left as it is: the claim resolves it or lets it go. Keys
+// that enter the text of a stranded line (typed, its Enter never written,
+// the hold of the turn to follow: holdPending), or pick the question's
+// choice, before the hold is installed give the program its answer: no
+// hold follows, the stranded line's claim (a reply's, strandedClaim) goes,
+// and the question is consumed, or withdrawn when it is a wait with no
+// words; a question on the screen (a dialog, a startup question) keeps its
+// hold, the keys having reached the dialog and not the text.
+func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if onScreen != nil && onScreen.picks(onScreen.answers, data, keys) {
+	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
 		s.noteDialogAnswered(onScreen.words)
+	}
+	if person && s.own.ID != "" && s.ownAside {
+		s.dropOwnLocked()
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
-	var picks bool
-	switch {
-	case att.Source == SourceQuestion && onScreen != nil && !sameWords(onScreen.words, att.words()):
+	// A dialog on the screen and not asked yet (onScreen) took the keys,
+	// as a question on the screen shown would: not the stranded text.
+	entered := s.holdPending && s.held == nil && onScreen == nil && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
+	if entered {
+		s.holdPending = false
+		s.releaseStrandedLocked()
+	}
+	if s.claimedLocked(att.ID) {
 		return
-	case att.Source == SourceQuestion:
-		picks = onScreen.picks(att.Options, data, keys)
+	}
+	switch att.Source {
+	case SourceQuestion:
+		if onScreen != nil && !sameWords(onScreen.words, att.words()) {
+			// The keys reach the dialog on the screen, not the one shown
+			// (answered and asked again, before the watcher has seen the
+			// next).
+			return
+		}
+		if onScreen.picks(att.Options, data, maybe) {
+			s.consumeLocked(att.ID)
+		}
+	case SourceBell, SourceOSC, SourcePattern:
+		if enter {
+			s.withdrawShownLocked(SourceInput)
+			go s.notifyChange()
+		}
 	default:
-		picks = picksChoice(att.Options, data, keys)
+		if entered {
+			s.consumeLocked(att.ID)
+		}
 	}
-	typedAt := att.Since == promptSince && !heldSource(att.Source)
-	if !picks && !typedAt {
-		return
-	}
-	s.markAnswered(att)
 }
 
 // dialogView is a dialog asked during the work as the screen shows it: its
@@ -2999,6 +3571,7 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 		held := heldStartup{id: id, fed: s.startupAnsweredFed}
 		if s.asked != nil {
 			held.cols, held.rows = s.asked.Size()
+			_, held.drawnCols, held.drawnRows = s.asked.DrawnAt()
 		}
 		if last := s.info.LastAnswer; last != nil && sameWords(last.Message, words) {
 			held.by, held.name = last.By, last.ByName
@@ -3014,18 +3587,21 @@ func (s *Local) holdAskedAgain(id, words string, heldAsked, startupStill bool) {
 type heldStartup struct {
 	id, words, by, name string
 	fed                 uint64
-	// cols and rows are that screen's size then: on a smaller one the
-	// question may not read as itself (cut, or drawn narrower), and what
-	// it shows proves nothing gone.
-	cols, rows int
+	// cols and rows are that screen's size then, drawnCols and drawnRows
+	// the size what it showed was laid out for (Screen.DrawnAt): on a
+	// smaller one, or laid out for a smaller one, the question may not
+	// read as itself (cut, or drawn narrower), and what it shows proves
+	// nothing gone.
+	cols, rows           int
+	drawnCols, drawnRows int
 }
 
 // holdStartupAnswered notes the startup question showing, or (words, not
-// asked yet) the one the screen shows, as one an Escape a write
-// ended with may have answered, typed by sub: held answered (a reply to it
-// refused), not cleared, its screen not put behind, until the screen shows
-// it gone (escGone), a key surely answers it, or the next startup question
-// takes its place.
+// asked yet) the one the screen shows, as one that keys typed by sub
+// reached: surely (its choice, an Enter) or maybe (an Escape a write ended
+// with). Consumed (a reply to it refused), not cleared, until the screen
+// shows it gone (escGone: withdrawn) or the next startup question takes
+// its place.
 func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3033,10 +3609,11 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 	if s.asked != nil {
 		held.fed = s.asked.Fed()
 		held.cols, held.rows = s.asked.Size()
+		_, held.drawnCols, held.drawnRows = s.asked.DrawnAt()
 	}
 	att := s.info.Attention
 	if att.State == AttentionNeedsInput && att.Source == SourceTrust && att.ID != "" && (words == "" || sameWords(att.words(), words)) {
-		s.markAnswered(att)
+		s.consumeLocked(att.ID)
 		held.id = att.ID
 		if prev := s.heldAnswer; prev.id == att.ID {
 			// Held already: by who held it first, the screen at least as
@@ -3044,6 +3621,7 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 			// asks no less), output after this key.
 			held.by, held.name = prev.by, prev.name
 			held.cols, held.rows = max(held.cols, prev.cols), max(held.rows, prev.rows)
+			held.drawnCols, held.drawnRows = max(held.drawnCols, prev.drawnCols), max(held.drawnRows, prev.drawnRows)
 		}
 		s.heldAnswer = held
 		return
@@ -3053,17 +3631,17 @@ func (s *Local) holdStartupAnswered(words string, sub *Subscription) {
 		if prev := s.heldAnswer; sameWords(prev.words, held.words) {
 			held.by, held.name = prev.by, prev.name
 			held.cols, held.rows = max(held.cols, prev.cols), max(held.rows, prev.rows)
+			held.drawnCols, held.drawnRows = max(held.drawnCols, prev.drawnCols), max(held.drawnRows, prev.drawnRows)
 		}
 		s.heldAnswer = held
 	}
 }
 
-// escGone clears the startup question held answered (heldAnswer) once the
+// escGone withdraws the startup question keys reached (heldAnswer) once the
 // screen the questions asked during the work are read from shows no
-// startup question, as it is now and after output fed since the Escape was
-// written: the program took the Escape and moved on. Its answer is sure
-// then, and the startup output is put behind as a sure answer's is
-// (startupGone). The look and that are made with no output fed meanwhile
+// startup question, as it is now and after output fed since the keys were
+// written: the program took them and moved on. The startup output is put
+// behind then (startupGone). The look and that are made with no output fed meanwhile
 // (feedMu): a look that took its text earlier (a watcher's, its callback
 // late) is never what decides, and no startup question drawn since is put
 // behind unseen. Asked at each look of that screen, and as a startup
@@ -3093,18 +3671,24 @@ func (s *Local) escGone() {
 	s.mu.Unlock()
 	s.trust.Reset()
 	s.feedMu.Unlock()
-	s.answer(att.Since, held.by, held.name, true, true)
+	s.withdraw(att.ID)
 }
 
 // screenShowsNoStartup reports whether the screen the questions asked
-// during the work are read from, whole, shows no startup question, and is
-// a whole frame (no synchronized update under way, which a terminal would
-// still show the frame before; nothing clipped), at least the size it was
-// when the question was held (held): smaller, the question may not read
-// as itself. The caller holds feedMu.
+// during the work are read from, whole, shows no startup question, and
+// shows everything the program drew as it drew it (no synchronized update
+// under way, which a terminal would still show the frame before; nothing
+// cut by a window made smaller since the program last erased the screen:
+// Screen.DrawnAt), at least the size it was when the question was held
+// (held), and laid out for at least the size it was laid out for then:
+// smaller, the question may not read as itself. The window grown since,
+// which a program that erases its dialog's lines rather than the whole
+// screen (Codex) draws nothing for, counts: the question is read as it
+// was drawn. The caller holds feedMu.
 func (s *Local) screenShowsNoStartup(held heldStartup) bool {
-	text, settled, cols, rows := s.asked.Whole()
-	return settled && cols >= held.cols && rows >= held.rows && s.lastStartup(text) == ""
+	text, _, cols, rows := s.asked.Whole()
+	uncut, drawnCols, drawnRows := s.asked.DrawnAt()
+	return uncut && cols >= held.cols && rows >= held.rows && drawnCols >= held.drawnCols && drawnRows >= held.drawnRows && s.lastStartup(text) == ""
 }
 
 // heldGone reports whether the startup question with words, about to be
@@ -3486,7 +4070,12 @@ func AnswerResult(reqID string, err error) []byte {
 	if !proto.ValidAnswerReqID(reqID) {
 		reqID = ""
 	}
-	if err == nil || errors.Is(err, ErrSubmitPending) {
+	if errors.Is(err, ErrSubmitPending) {
+		// Accepted, its outcome not known yet: the word comes once it is
+		// (Submission.Finished, AnswerInputFinished).
+		return nil
+	}
+	if err == nil {
 		if reqID == "" {
 			return nil
 		}
@@ -3495,7 +4084,9 @@ func AnswerResult(reqID string, err error) []byte {
 	code, msg := "input_failed", "input could not be delivered"
 	switch {
 	case errors.Is(err, ErrQuestionAnswered):
-		code, msg = proto.ErrCodeQuestionAnswered, QuestionAnsweredWords
+		code, msg = proto.ErrCodeQuestionAnswered, err.Error()
+	case errors.Is(err, ErrLineStranded):
+		msg = LineStrandedWords
 	case errors.Is(err, ErrTrustQuestion):
 		code, msg = proto.ErrCodeNotSent, TrustQuestionWords
 	case errors.Is(err, ErrQuestion):
@@ -3514,53 +4105,6 @@ func AnswerResult(reqID string, err error) []byte {
 		msg = ErrInputBusy.Error()
 	}
 	return proto.MustControl(proto.ErrorMsg{T: proto.CtlError, Code: code, Message: msg, RequestID: reqID})
-}
-
-// answer settles the needs_input prompt a write answered: the one stamped
-// promptSince, when it is still showing, is cleared and recorded as answered
-// by by (a subscriber ID, "" for Conductor) and byName. A question the
-// session holds (a trust or other startup question, or one asked during the
-// work) is answered only by a write with Enter in it or one of its choices
-// (enter): an arrow key that moves its selection leaves it showing, so that
-// no prompt is typed into it. First reply wins: the check, the answer and
-// the clear share one critical section, so two concurrent typists cannot
-// both claim the prompt. With record, an input entry with the question
-// records the answer.
-func (s *Local) answer(promptSince *time.Time, by, byName string, record, enter bool) {
-	s.mu.Lock()
-	att := s.info.Attention
-	waiting := att.State == AttentionNeedsInput && att.Since == promptSince && (enter || !heldSource(att.Source))
-	question := att.Message
-	var answered ChatMessage
-	var answeredID string
-	var told bool
-	if waiting {
-		s.info.LastAnswer = &Answer{By: by, ByName: byName, At: time.Now().UTC(), Message: question}
-		s.info.Attention = Attention{State: AttentionNone, Source: SourceInput}
-		if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
-			// A question answered while the turn is still held for a typed
-			// text (one gone with keys typed before the hold): the hold
-			// shows again.
-			now := time.Now().UTC()
-			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
-		}
-		s.settleLocked(s.info.Attention)
-		s.signalAttention()
-		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
-		answered, answeredID, told = s.answeredInChat(by, byName)
-	}
-	s.mu.Unlock()
-	if !waiting {
-		return
-	}
-	if told {
-		s.chatHook(answeredID, answered)
-		s.tellRun(answered)
-	}
-	if record {
-		s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: question})
-	}
-	s.notifyChange()
 }
 
 // Resize applies the latest-controller-wins policy and broadcasts the result.

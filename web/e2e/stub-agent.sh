@@ -97,7 +97,13 @@
 # resolves by itself after 30 s), writes "resolved <microseconds since the
 # epoch>" to $HOME/.stub-sessions/<id>.async as it resolves, says Working
 # again and spins; `stub async-ask <question>` also asks it as the agent's
-# own while it is pending.
+# own while it is pending. `stub ask-wait <question>` asks it marked as the
+# agent's own question (notify --ask, #193), spins as `stub ask` does, and
+# then ends its turn as its agent's hooks do (STUB_REPORT): the question
+# outlasts that done. `stub bell <seconds>` rings the bell and draws nothing
+# for that many seconds (a wait with no words), then prints four lines (the
+# agent moving on: the wait is withdrawn by the screen), pauses two seconds
+# and spins as `stub spin 30` does.
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
@@ -484,11 +490,22 @@ trust_dialog() {
 	if ((sel == 0)); then
 		mkdir -p "${HOME:-/tmp}/.codex"
 		printf '[projects.%s]\ntrust_level = "trusted"\n' "$(json_str "$PWD")" >>"${HOME:-/tmp}/.codex/config.toml"
-		printf 'Trusted.\n'
+		# The dialog's lines go as Codex takes them away (its TUI redraws
+		# without them), the screen not erased whole.
+		printf '\r\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2K\e[1A\e[2KTrusted.\n'
 	else
 		printf 'Quit.\n'
 		exit 0
 	fi
+}
+
+# erase_dialog erases a startup dialog's $1 lines above the cursor's, and
+# the cursor's, as Codex takes a dialog away once it is answered (its TUI
+# redraws without it), the screen not erased whole.
+erase_dialog() {
+	local n=$1 up=''
+	while ((n-- > 0)); do up+='\e[1A\e[2K'; done
+	printf '\r\e[2K%b' "$up"
 }
 
 # hooks_review draws Codex's "Hooks need review" and waits for Enter; a
@@ -504,6 +521,7 @@ hooks_review() {
 		1 | 2 | 3) sel=$key ;;
 		esac
 	done
+	erase_dialog 6
 	printf '%s\n' "$sel" >"${HOME:-/tmp}/.codex/stub-hooks-answer"
 	case $sel in
 	2) printf 'Hooks trusted.\n' ;;
@@ -521,6 +539,7 @@ background_question() {
 		1 | 2 | 3) break ;;
 		esac
 	done
+	erase_dialog 5
 	printf '%s\n' "$key" >"${HOME:-/tmp}/.codex/stub-background-answer"
 	if [[ $key == 3 ]]; then
 		exit 0
@@ -552,6 +571,7 @@ update_question() {
 		esac
 		break
 	done
+	erase_dialog 8
 	printf '%s\n' "$answer" >"${HOME:-/tmp}/.codex/stub-update-answer"
 	if [[ $answer == update ]]; then
 		printf 'Updating Codex...\n'
@@ -763,6 +783,21 @@ answer() {
 	fi
 	if [[ $line =~ ^stub\ ask\ (.{1,200})$ ]]; then
 		report --state needs_input --message "${BASH_REMATCH[1]}"
+		spin 30
+	fi
+	if [[ $line =~ ^stub\ ask-wait\ (.{1,200})$ ]]; then
+		report --ask --message "${BASH_REMATCH[1]}"
+		spin 30
+	fi
+	if [[ $line =~ ^stub\ bell\ ([1-9][0-9]?)$ ]]; then
+		# A bell with nothing drawn after it, as an agent with no hooks
+		# rings for a prompt it does not name; then, the pause over, the
+		# agent moves on: output, a pause for the screen to be looked at,
+		# and the spin a test ends.
+		printf '\a'
+		sleep "${BASH_REMATCH[1]}"
+		printf '\nmoving on: one\nmoving on: two\nmoving on: three\nmoving on: four\n'
+		sleep 2
 		spin 30
 	fi
 	if [[ $line =~ ^stub\ async\ (.{1,200})$ ]]; then

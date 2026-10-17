@@ -430,11 +430,11 @@ func TestLocalPatternFiresAgainForTheNextPrompt(t *testing.T) {
 	waitAttention(t, s, func(a Attention) bool {
 		return a.State == AttentionNeedsInput && a.Message == "prompt: First question?"
 	})
-	// The answer clears it; the next question raises it again.
-	if err := s.Input(sub, []byte("y\n")); err != nil {
+	// A line entered withdraws it; the next question raises it again.
+	if err := s.Input(sub, []byte("y\r")); err != nil {
 		t.Fatal(err)
 	}
-	if att := s.Info().Attention; att.State != AttentionNone {
+	if att := s.Info().Attention; att.State != AttentionNone || att.Source != SourceInput {
 		t.Fatalf("typing left %+v", att)
 	}
 	p.outW.Write([]byte("y\r\nSecond question? "))

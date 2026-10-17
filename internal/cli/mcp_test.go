@@ -134,7 +134,7 @@ func TestMcpReportsThroughNotify(t *testing.T) {
 	if text, isErr := toolText(t, replies[0]); isErr || text != "reported" {
 		t.Fatalf("ask %q %v", text, isErr)
 	}
-	if ns.body["state"] != "needs_input" || ns.body["kind"] != "prompt" || ns.body["message"] != "Which database?" {
+	if ns.body["state"] != "needs_input" || ns.body["kind"] != "prompt" || ns.body["message"] != "Which database?" || ns.body["ask"] != true {
 		t.Fatalf("ask body %v", ns.body)
 	}
 	opts, _ := ns.body["options"].([]any)
@@ -157,6 +157,17 @@ func TestMcpReportsThroughNotify(t *testing.T) {
 	}
 	if text, isErr := toolText(t, replies[2]); !isErr || !strings.Contains(text, "at most 6") {
 		t.Fatalf("too many choices %q %v", text, isErr)
+	}
+	// set_state is no question of the agent's: no mark, its clear included.
+	for _, state := range []string{"working", "done", "clear"} {
+		ns.body = nil
+		replies = mcpRun(t, os.Getenv, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"set_state","arguments":{"state":"`+state+`"}}}`)
+		if text, isErr := toolText(t, replies[0]); isErr || text != "reported" {
+			t.Fatalf("set_state %s: %q %v", state, text, isErr)
+		}
+		if ns.body["state"] != state || ns.body["ask"] != nil {
+			t.Fatalf("set_state %s body %v", state, ns.body)
+		}
 	}
 }
 

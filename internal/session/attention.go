@@ -45,6 +45,12 @@ const (
 	// SourceTitle: the agent's window title says it works (Options.WorkingTitle:
 	// Codex's "⠋ Working").
 	SourceTitle = "title"
+	// SourceScreen: the empty state after the screen moved on from a
+	// question without an answer (withdrawn): a bell or OSC wait whose
+	// screen changed past the snapshot's threshold (Local.screenQuiet), a
+	// startup question or a dialog gone after keys typed in the terminal
+	// reached it.
+	SourceScreen = "screen"
 )
 
 // Attention kinds describe the shape of a needs-input prompt so clients can
@@ -119,7 +125,16 @@ type Attention struct {
 	// (sameWords); Message is cut from them. Kept by the session, never
 	// sent.
 	rows string
+	// ask marks the agent's own question (a needs_input report that says
+	// so: Local.Ask), which the session keeps through its turn's done
+	// (Local.own). Kept by the session, never sent to a browser.
+	ask bool
 }
+
+// Asked reports whether a is the agent's own question (Local.Ask): what a
+// host tells its server with the attention it shows, so that the server's
+// copy keeps it through a done as the host's session does.
+func (a Attention) Asked() bool { return a.ask }
 
 // CleanName normalises a display name from a client: oneLine at
 // proto.MaxNameLen runes (control characters dropped, surrounding space

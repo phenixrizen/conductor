@@ -252,11 +252,11 @@ func TestAKeyTypedInTheTerminalPutsTheQuestionBehind(t *testing.T) {
 }
 
 // An Enter typed into the terminal before a question showed, and written
-// once it shows (it waited behind another write), is the question's answer
-// as the program takes it: it puts the question behind as it is written,
-// and a reply to the question queued after it is refused. (Codex's review
-// of this change, finding 2.)
-func TestAKeyQueuedBeforeAQuestionShowedPutsItBehind(t *testing.T) {
+// once it shows (it waited behind another write), answers nothing of it: a
+// person's keys never resolve a question (the agent moves on from it), and
+// a reply to the question queued after them is written. (Codex's review of
+// this change, finding 2; the question's claim rule, 2026-10-15.)
+func TestAKeyQueuedBeforeAQuestionShowedAnswersNothing(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{}))
 	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater"}, newChanSink(false))
 	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane"}, newChanSink(false))
@@ -276,7 +276,7 @@ func TestAKeyQueuedBeforeAQuestionShowedPutsItBehind(t *testing.T) {
 	go func() { replied <- s.AnswerInput(t.Context(), jane, q.ID, []byte("1")) }()
 	queued(t, s, 2)
 	release()
-	for _, want := range []string{"x", "\r"} {
+	for _, want := range []string{"x", "\r", "1"} {
 		if got := nextWrite(t, p); got != want {
 			t.Fatalf("written %q, want %q", got, want)
 		}
@@ -284,8 +284,11 @@ func TestAKeyQueuedBeforeAQuestionShowedPutsItBehind(t *testing.T) {
 	if err := <-typed; err != nil {
 		t.Fatal(err)
 	}
-	if err := <-replied; !errors.Is(err, ErrQuestionAnswered) {
+	if err := <-replied; err != nil {
 		t.Fatalf("the reply behind the Enter: %v", err)
+	}
+	if info := s.Info(); info.Attention.State != AttentionNone || info.LastAnswer == nil || info.LastAnswer.ByName != "jane" {
+		t.Fatalf("the reply did not answer: %+v %+v", info.Attention, info.LastAnswer)
 	}
 	noWrite(t, p, 200*time.Millisecond)
 }
@@ -435,10 +438,13 @@ func TestADigitAnswersADialogOnlyOnItsNumberedLines(t *testing.T) {
 			first := waitAttention(t, s, asked)
 			s.Input(nater, []byte(tc.digit))
 			nextWrite(t, p)
-			again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Since.After(*first.Since) })
-			err := s.AnswerInput(t.Context(), jane, again.ID, []byte("y"))
+			if a := s.Info().Attention; a.ID != first.ID {
+				t.Fatalf("the digit changed the dialog shown: %+v", a)
+			}
+			err := s.AnswerInput(t.Context(), jane, first.ID, []byte("y"))
 			if tc.answers {
-				if !errors.Is(err, ErrQuestionAnswered) {
+				// Consumed: the program's dialog has the digit.
+				if !errors.Is(err, ErrQuestionAnswered) || err.Error() != QuestionConsumedWords {
 					t.Fatalf("a click after the digit answered: %v", err)
 				}
 				noWrite(t, p, 200*time.Millisecond)
@@ -634,9 +640,10 @@ func TestTheKeysOfWritesCarryWhatOneLeavesUnfinished(t *testing.T) {
 
 // A startup question answered by one key of several written at once (the
 // host's terminal forwards what it reads: an arrow, then the digit of
-// Codex's "Skip until next version") is answered as its choice alone
-// answers it: cleared once written, and a click after it is refused.
-// (Codex's review, sixth pass, finding 1.)
+// Codex's "Skip until next version") reaches it as its choice alone does:
+// consumed once written, a click after it refused, and withdrawn once the
+// screen shows the program moved on. (Codex's review, sixth pass, finding
+// 1.)
 func TestAStartupQuestionAnsweredByOneKeyOfSeveral(t *testing.T) {
 	upd := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
 	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{{
@@ -652,20 +659,21 @@ func TestAStartupQuestionAnsweredByOneKeyOfSeveral(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextWrite(t, p)
-	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("\x1b")); !errors.Is(err, ErrQuestionAnswered) {
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("\x1b")); !errors.Is(err, ErrQuestionAnswered) || err.Error() != QuestionConsumedWords {
 		t.Fatalf("a click after the batch: %v", err)
 	}
-	if a := s.Info(); a.Attention.State != AttentionNone || a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
-		t.Fatalf("the batch did not answer the question: %+v %+v", a.Attention, a.LastAnswer)
-	}
 	noWrite(t, p, 200*time.Millisecond)
+	p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen || s.Info().LastAnswer != nil {
+		t.Fatalf("the batch's question withdrawn: %+v, answered %+v", a, s.Info().LastAnswer)
+	}
 }
 
 // A key typed before a startup question showed and written once it shows
-// (it waited behind another write) answers that question: refused to a
-// click after it, the question cleared once the key is written, and the
-// next startup question, of other words, asked and answered in its turn.
-// (Codex's review, seventh pass, finding 2.)
+// (it waited behind another write) reaches that question: consumed, a click
+// after it refused, and the next startup question, of other words, asked in
+// its place and answered in its turn. (Codex's review, seventh pass,
+// finding 2.)
 func TestAKeyQueuedBeforeAStartupQuestionAnswersAndClearsIt(t *testing.T) {
 	upd := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
 	s, p := newLocalWith(t, quiet(Options{Questions: []StartupQuestion{{
@@ -696,11 +704,8 @@ func TestAKeyQueuedBeforeAStartupQuestionAnswersAndClearsIt(t *testing.T) {
 	if err := <-typed; err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("\x1b")); !errors.Is(err, ErrQuestionAnswered) {
+	if err := s.AnswerInput(t.Context(), jane, q.ID, []byte("\x1b")); !errors.Is(err, ErrQuestionAnswered) || err.Error() != QuestionConsumedWords {
 		t.Fatalf("a click after the key: %v", err)
-	}
-	if a := waitAttention(t, s, func(a Attention) bool { return a.ID != q.ID }); a.State != AttentionNone {
-		t.Fatalf("the question the key answered: %+v", a)
 	}
 	p.outW.Write([]byte("\x1b[2J\x1b[HStart the background server?\r\n› 1. Yes\r\n  2. No"))
 	next := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != q.ID })
@@ -865,9 +870,9 @@ func TestAnAnsweredStartupQuestionNeverHoldsTheNextBack(t *testing.T) {
 	jane, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "jane", Cols: 80, Rows: 24}, newChanSink(false))
 	p.outW.Write([]byte(codexBackgroundScreen))
 	first := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
-	// Noted answered, still showing: what the race leaves.
+	// Consumed, still showing: what the race leaves.
 	s.mu.Lock()
-	s.markAnswered(s.info.Attention)
+	s.consumeLocked(s.info.Attention.ID)
 	s.mu.Unlock()
 	p.outW.Write([]byte("\x1b[2J\x1b[H" + codexUpdateScreen))
 	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust && a.ID != first.ID })
@@ -1115,19 +1120,30 @@ func TestALookOlderThanAnAnswerDoesNotForgetIt(t *testing.T) {
 	noWrite(t, p, 200*time.Millisecond)
 }
 
-// A reply that names no question is written as keystrokes always were
-// (an older page): it answers whatever shows.
-func TestAReplyWithNoIDStillAnswers(t *testing.T) {
+// A reply that names no question is written as keystrokes always were (an
+// older page): it answers nothing, the question stays until the agent
+// moves on, and a reply naming it is still taken.
+func TestAReplyWithNoIDAnswersNothing(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{}))
 	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater"}, newChanSink(false))
 	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "3"}})
+	q := s.Info().Attention
 	if err := s.Input(sub, []byte("1")); err != nil {
 		t.Fatal(err)
 	}
 	if got := nextWrite(t, p); got != "1" {
 		t.Fatalf("written %q", got)
 	}
-	if a := s.Info(); a.Attention.State != AttentionNone || a.LastAnswer == nil || a.LastAnswer.Message != "Allow Bash?" {
+	if a := s.Info(); a.Attention.ID != q.ID || a.LastAnswer != nil {
+		t.Fatalf("keys naming no question answered: %+v %+v", a.Attention, a.LastAnswer)
+	}
+	if err := s.AnswerInput(t.Context(), sub, q.ID, []byte("3")); err != nil {
+		t.Fatalf("a reply after the keys: %v", err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
+	}
+	if a := s.Info(); a.Attention.State != AttentionNone || a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
 		t.Fatalf("%+v %+v", a.Attention, a.LastAnswer)
 	}
 }
@@ -1198,8 +1214,14 @@ func TestAnswerResultFrames(t *testing.T) {
 	if m := decodeControl(t, AnswerResult("a1", nil)); m["t"] != proto.CtlAnswerOK || m["requestId"] != "a1" {
 		t.Fatalf("ok %v", m)
 	}
-	if m := decodeControl(t, AnswerResult("a2", ErrSubmitPending)); m["t"] != proto.CtlAnswerOK {
-		t.Fatalf("a line accepted %v", m)
+	if f := AnswerResult("a2", ErrSubmitPending); f != nil {
+		t.Fatalf("a line accepted has no word yet: %s", f)
+	}
+	if m := decodeControl(t, AnswerResult("a4", ErrLineStranded)); m["t"] != proto.CtlError || m["code"] != "input_failed" || m["message"] != LineStrandedWords {
+		t.Fatalf("a line stranded %v", m)
+	}
+	if m := decodeControl(t, AnswerResult("a5", &questionAnsweredError{QuestionClaimedWords})); m["code"] != proto.ErrCodeQuestionAnswered || m["message"] != QuestionClaimedWords {
+		t.Fatalf("a question being answered %v", m)
 	}
 	if m := decodeControl(t, AnswerResult("a3", ErrQuestionAnswered)); m["t"] != proto.CtlError || m["code"] != proto.ErrCodeQuestionAnswered || m["message"] != QuestionAnsweredWords || m["requestId"] != "a3" {
 		t.Fatalf("refused %v", m)
@@ -1534,9 +1556,9 @@ func TestAnEscapeBeforeAStartupQuestionIsAskedKeepsItAskable(t *testing.T) {
 // the Escape key that skips it: a reply to the question is refused, and
 // it still holds a submission back while the screen shows it; once the
 // program has moved on and the screen shows no startup question, it is
-// cleared, answered by the person who typed the Escape, and never asked
-// again. An Escape typed before the question was asked: once the screen
-// shows no startup question, it is never asked.
+// withdrawn (no answer recorded: keys typed in the terminal answer no
+// question) and never asked again. An Escape typed before the question
+// was asked: once the screen shows no startup question, it is never asked.
 func TestAnEscapeEndingATerminalsReadHoldsTheQuestionUntilItGoes(t *testing.T) {
 	for _, asked := range []bool{true, false} {
 		t.Run(fmt.Sprintf("asked %v", asked), func(t *testing.T) {
@@ -1568,9 +1590,8 @@ func TestAnEscapeEndingATerminalsReadHoldsTheQuestionUntilItGoes(t *testing.T) {
 			// Codex took the Escape: its screen cleared, its prompt drawn.
 			p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
 			if asked {
-				waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
-				if a := s.Info(); a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
-					t.Fatalf("answered by %+v", a.LastAnswer)
+				if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen || s.Info().LastAnswer != nil {
+					t.Fatalf("withdrawn %+v, answered %+v", a, s.Info().LastAnswer)
 				}
 			}
 			time.Sleep(3 * patternQuiet)
@@ -1673,14 +1694,15 @@ func TestAnAltChordNeverClearsAStartupQuestion(t *testing.T) {
 	}
 }
 
-// A page's Escape, a quick reply's "Skip this update" or a key pressed in
-// its terminal, is no surer than a terminal's: the page's next frame can
-// reach the program in the same read (ESC, then z: one Alt+z, which Codex
-// ignores). The update question is put behind (a second reply refused)
-// and still holds a submission back; a z after it leaves it there; once
-// the program has moved on and the screen shows no startup question, it is
-// cleared, answered by the person who sent the Escape. (Codex's review,
-// eighteenth pass, finding 1.)
+// A page's Escape, a quick reply's "Skip this update", resolves the update
+// question as it is written (the reply claimed it); a key pressed in its
+// terminal consumes it (a second reply refused) until the screen shows
+// the program moved on, when it is withdrawn with no answer recorded.
+// Either way, while the screen still shows the question (the page's next
+// frame can reach the program in the same read: ESC, then z, one Alt+z,
+// which Codex ignores), a submission is held back, and a z after the
+// Escape leaves it so. (Codex's review, eighteenth pass, finding 1; the
+// question's claim rule, 2026-10-15.)
 func TestAnEscapeFromAPageHoldsTheQuestionUntilItGoes(t *testing.T) {
 	for _, reply := range []bool{true, false} {
 		t.Run(fmt.Sprintf("reply %v", reply), func(t *testing.T) {
@@ -1705,17 +1727,32 @@ func TestAnEscapeFromAPageHoldsTheQuestionUntilItGoes(t *testing.T) {
 			if err := s.AnswerInput(t.Context(), jane, update.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
 				t.Fatalf("a second reply: %v", err)
 			}
-			if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
-				t.Fatalf("cleared while the screen shows it: %+v", a)
+			if a := s.Info(); reply && (a.Attention.State != AttentionNone || a.LastAnswer == nil || a.LastAnswer.ByName != "nater") {
+				t.Fatalf("the page's Escape did not resolve the question: %+v %+v", a.Attention, a.LastAnswer)
+			} else if !reply && (a.Attention.ID != update.ID || a.Attention.State != AttentionNeedsInput || a.LastAnswer != nil) {
+				t.Fatalf("the terminal's Escape: %+v %+v", a.Attention, a.LastAnswer)
 			}
 			if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); !errors.Is(err, ErrTrustQuestion) {
-				t.Fatalf("a submission at the question: %v", err)
+				t.Fatalf("a submission while the screen shows the question: %v", err)
 			}
 			noWrite(t, p, 100*time.Millisecond)
 			p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
 			waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
-			if a := s.Info(); a.LastAnswer == nil || a.LastAnswer.ByName != "nater" {
-				t.Fatalf("answered by %+v", a.LastAnswer)
+			if !reply && s.Info().LastAnswer != nil {
+				t.Fatalf("the terminal's Escape was recorded as an answer: %+v", s.Info().LastAnswer)
+			}
+			// The program moved on, on the screen as the session has read
+			// it (a submission looks at that: startupOnScreen; with the
+			// page's Escape the attention was clear already, and says
+			// nothing of the screen): a line is typed.
+			if !waitFor(5*time.Second, func() bool {
+				text, _, _, _ := s.asked.Whole()
+				return strings.Contains(text, "Ask Codex")
+			}) {
+				t.Fatal("the screen never showed the program moved on")
+			}
+			if res, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: jane}); err != nil || !res.Entered {
+				t.Fatalf("a submission once the screen moved on: %+v %v", res, err)
 			}
 		})
 	}
@@ -1915,6 +1952,11 @@ func TestAKeypadKeyAnswersAsItsDigit(t *testing.T) {
 		t.Fatal(err)
 	}
 	nextWrite(t, p)
+	// Consumed: withdrawn once the screen shows the program moved on.
+	if err := s.AnswerInput(t.Context(), jane, s.Info().Attention.ID, []byte("3")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply after the keypad 3: %v", err)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
 
@@ -2406,8 +2448,9 @@ func TestALineReplyingToAReportIsRefusedOnceTheScreenDrawsAStartupQuestion(t *te
 			}
 			time.Sleep(2 * time.Millisecond)
 		}
+		// The screen shows a startup question: nothing is typed into it.
 		res, err := s.Submit(t.Context(), Submission{Text: "1", By: jane, Question: q.ID})
-		if !errors.Is(err, ErrQuestionAnswered) || res.Typed {
+		if !errors.Is(err, ErrTrustQuestion) || res.Typed {
 			t.Fatalf("a line naming the report: %+v, %v", res, err)
 		}
 		noWrite(t, p, 200*time.Millisecond)
@@ -2427,11 +2470,15 @@ func TestALineReplyingToAReportIsRefusedOnceTheScreenDrawsAStartupQuestion(t *te
 			t.Fatalf("written %q", got)
 		}
 		p.outW.Write([]byte(codexBackgroundScreen))
+		// Stranded: its claim let go, the turn held for a person.
 		got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-done })
-		if got.err != nil || !got.res.Typed || got.res.Entered {
-			t.Fatalf("the line: %+v, %v; want typed, its Enter left out", got.res, got.err)
+		if !errors.Is(got.err, ErrLineStranded) || !got.res.Typed || got.res.Entered {
+			t.Fatalf("the line: %+v, %v; want typed, its Enter left out, stranded", got.res, got.err)
 		}
 		noWrite(t, p, 200*time.Millisecond)
+		if !s.Held() {
+			t.Fatal("the turn is not held for the stranded line")
+		}
 	})
 }
 

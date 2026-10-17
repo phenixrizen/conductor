@@ -45,7 +45,7 @@ Client → owner:
 | `chat` | `nonce?, scope?, text, on?, to?, quote?` | Every role, once the owner's `welcome` said `chat` (an older owner closes on an unknown message). `text` is kept cleaned (line breaks as `\n`, other control characters but tabs dropped, trimmed) and must be 1–2048 bytes after that (0 with a `quote`); `quote` `{path, from, to, lines[], cut?}` is lines of a file the message is about (design round 12, F7): the path (at most 512 bytes), the 1-based range, at most 12 lines of at most 200 bytes, control characters but tabs dropped, its last lines left out (`cut`) when the message would pass 8 KiB, dropped without a path or range; a message with a quote sent to the agent types `path:from-to`, the lines as `> ` lines, then the text (at most 4096 bytes); `scope` is `session` when absent, or `run` for the chat of the run the session is a member of (`welcome.runChat`; `bad_frame` otherwise); `nonce` (≤ 32 bytes) is the client's own id of the post, echoed in the message; `to`, a controller's, also types the text as `chat_send` does: `"agent"` into this session's agent, a member's name into that member in scope `run`; `on` (scope `run`) names the member the sender looks at, kept when it is one. 10 a second with a burst of 20 per connection, beyond which `error{too_many_requests, requestId: nonce}` and the connection stays. Refusals name the nonce: `bad_frame` (empty, too long, a scope or `to` not here), `read_only` (`to` from a view link), `session_ended`, `revoked` or `expired` (the viewer's link no longer opens the session: nothing kept or sent) |
 | `chat_send` | `ref, scope?, to?` | Controllers only (`read_only`, also on the relay). Types the text of the kept message `ref` into the agent as a `submit` would, then keeps and sends a `sent_to_agent` marker. In scope `run`, into the member `to` of the run as a broadcast does (nothing while that member waits on a prompt), with the marker in the run's chat, or `error{not_sent, message: needs_input|not_running|unknown|no_enter, requestId: ref}`. `bad_frame` with `requestId: ref` for a message not kept or not a message, or a run send naming no member; `revoked` or `expired` with `requestId: ref` once the viewer's link no longer opens the session (nothing typed), as it is taken and as its text is typed |
 | `submit` | `text` | Controllers only; `text` at most 4096 bytes (`bad_frame` beyond, `read_only` from a view link, also on the relay). The owner submits it as a line: line breaks and tabs become spaces and other control characters are dropped, the text is written as a bracketed paste while the program has that mode on (`ESC[?2004h`), then a carriage return is written on its own 250 ms later, so that a TUI takes it as Enter rather than as part of a paste. The Enter answers the prompt that was showing when the text was typed; a prompt raised during the pause is not answered and the Enter is left out. The submission goes on if the client disconnects meanwhile (or its time runs out once its text is typed: see below), but not once its link is revoked or expires (its run forgotten, its link gone) before its carriage return is written: before its text is typed, nothing of it is written; once its text is typed, its carriage return is not written either, the text stays in the program's input (it cannot be taken back out), and the session's turn stays held, so that no other submission (a reply, a crew's prompt, a handoff) is typed after it and entered with it, until a person types into the terminal (INPUT from a controller, a terminal's own reports and mouse reports aside, any number of them in a write, mixed, or one a write begins and the next finishes, at any byte: the pointer, moved or clicked, types nothing; a lone Escape counts with the key after it), who deals with the text, or the session ends. Meanwhile the session is `needs_input` with `source:"submit"` and the words `Text from a link that was let go was typed and not entered: type in the terminal to continue`, which that input clears. While the turn is held (or becomes held as it waits), a server connection's `submit`, `chat` to the agent or `chat_send` waits for it apart from the connection's other frames, so that its own INPUT can end the hold; one at a time, another meanwhile refused with `error{too_many_requests}` (its `requestId` as for a host's) and the connection stays; a connection that closes keeps its viewer until it is done, as one whose frames waited for it does. At most 64 submissions wait for a session's turn together, every connection's and Conductor's own: one more is refused at once (`too_many_requests`). A host is told when a viewer's link goes (`viewer_leave` with a reason, `link_gone`), also once the viewer has left, and does the same. On a host, one that still waits for the keys the viewer sent before it is dropped as the viewer goes. The reply boxes use it to an owner whose `welcome` lacks `answer`; keys typed into the terminal stay INPUT |
-| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one waiting, and nothing written to the session since was made to answer it, as the keys (a line's text, its Enter for a line with none) are written; otherwise `error{question_answered, requestId}`. Once taken, `answer_ok{requestId}` (the keys written, a line accepted); any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
+| `answer` | `reqId?, question, input?, text?` | A reply to the question the person was shown (see Attention, Answering a question), sent only to an owner whose `welcome` says `answer` (an older one closes on an unknown message). Controllers only (`read_only`, also on the relay). `question` is that question's `id` (1–32 bytes of printable ASCII, no space); exactly one of `input` (a choice's keys, at most 48 bytes, written as INPUT is) and `text` (a line, at most 4096 bytes, submitted as `submit` is); `reqId` at most 32 bytes of the same. Out of those bounds: `error{bad_frame, requestId}` (no `requestId` when it is itself out of bounds), the connection stays. The owner writes nothing unless the question is still the one shown, nobody is answering it and nobody answered it in the terminal, looked at as the reply arrives and again, together with claiming the question, as the keys (a line's text, its Enter for a line with none) are written: first to claim wins; otherwise `error{question_answered, requestId}`, whose `message` says what became of the question when the owner knows (`this question was already answered by <name>: nothing was sent` once a result is recorded, `this question is being answered: nothing was sent` while another reply's keys are on their way, `this question was answered in the terminal: nothing was sent` once keys typed in the terminal reached it, else `this question was already answered: nothing was sent`). `answer_ok{requestId}` is the final word: the keys landed, or the line was entered, and the question is resolved by this reply (or was withdrawn by the agent moving on while they were written); it is never sent while the outcome is open (a line the program takes slowly is told once it is entered). A line typed whose Enter was not written (a question came in its pause, its link went) is `error{input_failed}` with `the line was typed and not entered: type in the terminal to continue`: the session's turn is held. Any other refusal is an `error` naming it as INPUT's or `submit`'s would be (`not_sent`, `input_failed`, `too_many_requests`, `session_ended`). An `answer`, a choice's keys too, is withdrawn as a `submit` is once its link's credential no longer stands (revoked or expired; on a host, no ping of its own sent within 15 s answered by the server: see the host control connection), whether or not its connection has closed for it yet: nothing of it written, `input_failed`. A `text` waits for the session's turn as `submit` does, also while it is held for a person, on a server connection apart from its other frames as `submit` does; an `input` answers a `trust` or `question` prompt showing over a held turn without ending the hold, the hold's words shown again once it is answered; an `answer` naming the hold itself (`source:"submit"`) is refused (`question_answered`), nothing written. Every quick reply uses it: the sidebar's row and its 1–9, the Yard's card and queue, the session page's and a link's reply bar and its digits, a question's choices in the chat |
 
 Owner → client:
 
@@ -75,8 +75,10 @@ chat's `chat_send` whose member could not take the text, the message saying
 why; or a `submit`, a `chat` to the agent or a `chat_send` while the agent's
 trust question shows, the message saying so: its Enter would pick whatever
 the dialog highlights, and the question's own choices answer it),
-`question_answered` (an `answer` whose question no longer waits: another
-reply answered it first, or it went; nothing was written).
+`question_answered` (an `answer` whose question takes no reply: another
+reply answered it first or is answering it, keys typed in the terminal
+reached it, or it went; nothing was written; the message says which, see
+`answer`).
 
 WebSocket close codes: `1000` normal, `1001` server shutdown, `4400` protocol
 error, `4401` unauthorized, `4403` link revoked or expired, `4404` unknown
@@ -424,11 +426,14 @@ agent's id or else the program's name, never an argument; `cwd` the folder's las
 and no `branch`),
 `status{sessionId,status,exitCode?}`, `resize{sessionId,cols,rows}`,
 `answer{viewerId,sdp}`, `ice{viewerId,candidate}`, `viewer_error{viewerId,code,message}`,
-`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?}`
+`viewer_closed{viewerId}`, `attention{sessionId,state,message?,source,kind?,options?,id?,ask?}`
 (`id` the id the host's session gave the change, which the server keeps,
 only as 1–32 bytes of printable ASCII, so that an answer from its listings
 names the question the host holds; an older server ignores it; a question
-asked again with the same words is sent again, its `id` new),
+asked again with the same words is sent again, its `id` new; `ask: true`,
+with `needs_input` only, says the question the host's session shows is the
+agent's own (see Attention), which the server's copy then keeps through a
+`done` it forwards; never sent to a switchyard),
 `activity{sessionId,entry,state?}`,
 `chat{sessionId,message}` (a chat message the host's session kept, as `chat` carries it to a viewer; the server takes the connection's session, keeps `message`, `system` and `sent_to_agent` kinds, scope `session`, bounded ids, cleaned names, the text cleaned and cut to 2048 bytes, `to` only as `agent`, and mirrors it into the events stream; a switchyard drops it),
 `link{requestId, role, ttlSeconds?, label?}` (a share link to the session,
@@ -663,7 +668,12 @@ question, below), `question` (a question asked during the work, below),
 `submit` (a submission's text typed and its carriage return not written, its
 link revoked or expired: the session's turn is held until a person types into
 the terminal; see `submit`), `title` (`working`: the agent's window title says
-it works, below), `input` (cleared by a controller typing). While
+it works, below), `input` (the empty state after a reply resolved the
+question, or an Enter typed in the terminal withdrew a bell's, an OSC
+notification's or the pattern's wait), `screen` (the empty state after the
+screen moved on from a question without an answer: a bell's wait whose
+screen changed past the snapshot's threshold, a startup question or a
+dialog gone from the screen; see Who may answer a question). While
 that turn is held, the hold is what shows, but for a `trust` or `question`
 prompt on the screen, which shows over it whether it came first or after
 (and, answered while the hold still stands, gives it its words back);
@@ -705,6 +715,11 @@ question), or, to an owner that predates `answer`, an INPUT frame. Clearing the 
 6 choices of 40 bytes) reports `kind:"prompt"` with one option per choice whose
 `input` is the choice and a CR, so a click types it as a line; the agent is
 told to name the choices in the terminal first, so a typed answer matches.
+`conductor notify --ask --message "…" [--choices "a|b|c"]` reports the same
+with `ask: true`, the agent's own question (below); `--ask` with another
+`--state`, an `--event`, a hook flag or `--codex` is a usage error. A server
+that refuses `ask` as an unknown field (an older one) is sent the report
+again without it, and the MCP tool `ask` does the same.
 `conductor notify --claude-hook` maps Claude Code `PermissionRequest` hooks
 (and `permission_prompt` notifications) to `kind:"permission"` with the
 options `Yes`/`1`, `Always for this session`/`2`, `No, explain…`/`3`; other
@@ -737,12 +752,16 @@ after the `done` or the first other state shown (a `working` report: the
 agent went on by itself); an Enter within a turn (an answer) keeps the 500
 ms. Output read before the next turn began and looked at after is the ended
 turn's own: its bells ask nothing, nor does an OSC notification begun in it
-and ended in output read after (one split between two reads). Successful input from a
-`control` client clears the `needs_input` state that was showing when the input
-began. One raised while the input was being written (a process that answers at
-once, an echo that rings the bell) is left for the next input. An input that is
+and ended in output read after (one split between two reads). Keys typed
+into the terminal by a `control` client answer no question (see Who may
+answer a question): an Enter among them withdraws a wait of the bell's, an
+OSC notification's or the pattern's (`source:"input"`, no answer recorded),
+and a bell's wait is also withdrawn once its screen has moved on (the
+snapshot, below); the agent's own report waits for the agent to move on
+(its hook, its title, its next report, its done rules) or for a reply naming
+it. An input that is
 only a terminal's own automatic reports, at most 256 bytes of them, is written
-and clears nothing, nor stamps its viewer as typing: a cursor position report
+and changes nothing, nor stamps its viewer as typing: a cursor position report
 (`ESC[<row>;<col>R`, with or without `?`, and the extended one with its page,
 `ESC[?<row>;<col>;<page>R`), a status report (`ESC[0n`…`ESC[3n`),
 device attributes (`ESC[?…c`, `ESC[>…c`), a mode report (`ESC[?<mode>;<n>$y`),
@@ -753,14 +772,66 @@ keyboard protocol's flags (`ESC[?<flags>u`, the reply to the `ESC[?u` Codex
 asks before it turns the protocol on): a browser's xterm
 answers Codex's cursor position query after every turn, and that answer is not
 a person answering Codex. A trust question (`source:"trust"`), and a question
-asked during the work (`source:"question"`), is cleared only by an input with
-a carriage return in it or one of its choices, so an arrow key that moves its
-selection leaves it showing. When a session's process exits or is stopped, its
+asked during the work (`source:"question"`), is consumed by an input with a
+carriage return in it or one of its choices (a reply to it refused from then,
+`answered in the terminal`), and withdrawn once the screen shows it gone
+(`source:"screen"`); an arrow key that moves its selection leaves it as it
+is. When a session's process exits or is stopped, its
 attention state is cleared in the step that makes it `exited` or `stopped`, and
 viewers get an `attention` message with the empty state: an ended session never
 shows `needs_input`, and its activity log keeps the entries. A hosted session's
 state is cleared when its host reports it ended; a host that disconnects leaves
 it as it was, since the host may come back.
+
+The agent's own question (#193): a `needs_input` report that says the agent
+asks it, `ask: true` on the attention route or the events route's attention
+word (the MCP tool `ask`, `conductor notify --ask`), shows until it is
+answered, also once the turn it was asked in has ended, which is when the
+agent waits for the answer. It is said on purpose, never inferred: a plain
+`needs_input` (a hook's permission prompt, OpenCode's, DeepSeek Harness's and
+aider's waits, `--state needs_input`) gives way to `done` as before, and
+`ask` with another state changes nothing. The session keeps one such
+question, shown or set aside:
+- In its turn (no `done` since it was asked), the agent's work (a `working`
+  report, Codex's working title) and another wait (a hook's report without
+  the mark, a dialog on the screen) take its place and set it aside; a
+  `done`, any (its turn's, with `turn` or without; Claude Code's
+  `idle_prompt` a minute later), leaves it showing, or shows it again from
+  aside in place of what shows, the same question: its `id` and `since`, so
+  that a reply under way to it keeps its carriage return, and its line in the
+  chat, where it is not put a second time. The `done` still ends the turn and
+  is recorded as the report it is: its `attention` entry, with the state
+  `done`, reaches the Events page, the webhooks and a crew's start-after rule;
+  the question shown again records its own `needs_input` entry.
+- After its turn's `done`, it shows until a person's keys or reply answer it
+  (as any question), the agent clears it (`clear`) or asks another, another
+  state takes its place (the agent at work in a new turn: a `working` report
+  after the `done`, or after the first Enter written since), or the session
+  ends; a `done` changes nothing shown and is recorded, and Codex's working
+  title read after the `done` changes nothing until the next Enter, as for a
+  `done`.
+- The bell, an OSC notification and the screen pattern never take its place,
+  shown or set aside. A question a reply has claimed, or that a person's keys
+  reached, is removed, never set aside; one set aside is removed by a
+  person's keys or reply typed meanwhile (the person has taken part), not by
+  Conductor's own submissions (a crew's prompt, a handoff, a broadcast). A
+  line typed while it is set aside whose carriage return follows the `done`
+  that shows it again is entered all the same: a handoff's answers nothing,
+  and begins the next turn, in which the agent's work removes the question;
+  a person's reply or keys begun while it was set aside and written once the
+  `done` has shown it again answer it. The hold of the turn (`submit`) holds
+  it over, through its turn's `done` and its work in that turn, as it holds
+  over any question the agent reported, and an OSC notification leaves it
+  held over. Handoffs and broadcasts wait while it shows, as for any
+  `needs_input`, and a reply naming it while it is set aside is refused, as
+  one to a question no longer shown.
+
+A hosted session's host is sent the mark with the report (`attention` with
+`ask`) and applies the same rules; it tells its attention back with the mark,
+and the server's copy keeps a marked question it shows through a forwarded
+`done` (the host told the `done`), while a question the host has set aside
+shows the forwarded `done` there until the host tells its attention again. An
+older host ignores the field, and the question shows there as before.
 
 An agent with no hook and no bell can be given a screen pattern instead: a
 catalog signal `{"kind": "pattern", "pattern": "<RE2>"}` for server sessions,
@@ -778,6 +849,25 @@ own message, kind and options, and the same prompt does not report itself twice.
 Output that never pauses (a spinner, a TUI that redraws continuously) never
 gives the 500 ms of silence, so such an agent is not served by a pattern. A
 host reports the change to the server like any other attention change.
+
+A bell's wait, or an OSC notification's, has no rows of its own, so the
+session reads the agent moving on from its screen (the snapshot): every
+session, server or host, keeps a model of its screen; the first time the
+output has been quiet for 500 ms after such a wait showed, the screen's rows
+are the baseline (the program draws what it rang for in the same read or
+the next); at each later quiet, while the wait still shows and nobody is
+answering it, the rows are compared with the baseline, and the wait is
+withdrawn (`source:"screen"`, nothing recorded) once at least 3 rows differ
+by more than 8 cells each: a spinner's frame, a countdown, a clock or a
+status line's words change a row or two by a few cells and never count;
+output printed (every row shifts) or the prompt area redrawn does. A resize
+drops the baseline, taken again at the next quiet (500 ms from the resize
+for a program that draws nothing for it); a screen the program has not
+erased since a resize is compared all the same. A question read off the
+screen (`trust`, `question`) is withdrawn by its own watcher, the pattern's
+prompt by an Enter; a bell rung with a dialog (Codex's approval) is replaced
+by the dialog's question at the first quiet, where the snapshot only takes
+its baseline. Reading the prompt's words per agent is #195.
 
 An agent's catalog signal can carry a `workingTitle` (RE2, at most 200 bytes,
 not matching an empty title; with any `kind`): the window title it writes while
@@ -825,14 +915,18 @@ that only sets the window title (OSC 0 or 2) not counting, the text is matched
 against the pattern; a match marks the session `needs_input` with
 `source:"trust"`, `kind:"prompt"` and the matched words as `message`, unless
 it is `needs_input` already. Watching ends with the session's first
-submission (below). Once a controller answers the question with Enter, only the
-question drawn again raises it again. The built-ins carry the questions of
+submission (below). Once keys typed in the terminal reach the question (an
+Enter, its choice), or a reply resolves it, only the
+question drawn again raises it again (consumed when it is the one just
+answered, before the program moved on). The built-ins carry the questions of
 Claude Code 2.1.287 (`Is this a project you created or one you trust?`) and
 Codex 0.159.0 (`Trust this folder?`). It exists for crew runs: a member's
 prompt is never typed while it shows (see Crew runs).
 
 Explicit updates: `POST /api/sessions/{id}/attention` with
-`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?}` and
+`{state: "needs_input"|"working"|"done"|"clear", message?, kind?, options?, agentSession?, turn?, ask?}` (`ask`
+a boolean: with `needs_input`, the agent's own question, see above; a value
+that is no boolean is `400 invalid_request`) and
 `Authorization: Bearer <agent token>` (or the workbench token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`, which `conductor notify` and `conductor crew` read,
@@ -901,13 +995,23 @@ and as it is otherwise; then, 250 ms later, a carriage return is written on its
 own. A TUI that reads a text and its carriage return in one read takes the
 carriage return as part of a paste (Codex's paste-burst detector makes it a
 newline; Claude Code collapses a read of over 800 bytes into a pasted block),
-so written apart it is Enter. The carriage return answers the `needs_input`
-that showed when the submission began, as typing does; when a new one comes up
-during the 250 ms, it is left out, and the text, already written, waits in the
-program's input and is never written again; in a session with a `trustPrompt`
-the pause lasts until the screen watcher has had its 500 ms look at what was
-drawn since the text (at most 2 s more), so a trust question drawn then holds
-the carriage return back too. No lock of the session is held
+so written apart it is Enter. The carriage return answers no question: a
+line naming none (`submit`, a `chat` to the agent, a crew's prompt, a handoff,
+a broadcast) begins the next turn, and a question the agent reported goes
+when the agent moves on; an `answer` with `text` resolves the question it
+names once its carriage return is written (see Answering a question); an
+Enter alone withdraws a bell's, an OSC notification's or the pattern's wait.
+When a new `needs_input` comes up during the 250 ms, the carriage return is
+left out, and the text, already written, waits in the program's input and is
+never written again (for an `answer`'s line the session's turn is then held
+for a person, as for a revoked link's: `submit` under Attention); in a
+session with a `trustPrompt` the pause lasts until the screen watcher has had
+its 500 ms look at what was drawn since the text (at most 2 s more), so a
+trust question drawn then holds the carriage return back too. While the
+screen, a whole frame, still shows a startup question, answered or not (the
+program slow to move on), no line is typed into it: a person's is refused
+(`not_sent` with the trust question's words), Conductor's own waits. No lock
+of the session is held
 across the pause, and a person's keystrokes (INPUT) are written as they come,
 not held back. What Conductor submits always records one `input` entry as the
 text is written, `byName` `crew` (for a broadcast, the admin's display name)
@@ -1062,167 +1166,136 @@ same footer (network access: "Do you want to approve network access to
 
 ### Answering a question
 
-A reply to a `needs_input` question names it: every quick reply (a choice
-clicked or keyed with 1–9, a line typed in a reply box, a choice in the
-chat) is sent as `answer` with the `id` of the question the page showed as
-the person acted, to an owner whose `welcome` says `answer`. The owner (the
-server for its sessions, the host for its own; the same code) looks at the
-question as the reply is asked for and again as the session's writer takes
-its keys, after every write queued before it: it is taken only while that
-question is the session's `needs_input` and nothing written since was made
-to answer it, and then noted as answered in the same step; a reply to a
-question read off the screen (a dialog asked during the work, a startup
-question) is taken only while the screen still shows that question, too (a
-next question drawn after it and not asked yet, or none, refuses it), for
-its keys reach whatever the screen shows: a 1 meant for Codex's
-background-server question never reaches its update question, where 1 runs
-`npm install -g @openai/codex`. A look of the startup questions' watcher
-that took the screen's text before an answer and fires after it asks
-nothing (weighed under the lock that sets the question); the startup
-question asked is the one drawn last in the output the watcher keeps; keys
-that pick an answer of the startup question the session shows put its
-screen behind and answer it, the one it shows read again as they are
+A question is single-assignment, and the first valid answer wins
+(`docs/plans/codex-needs-you.md`, "Who may answer a question: first
+response wins", 2026-10-15). Every quick reply (a choice clicked or keyed
+with 1–9, a line typed in a reply box, a choice in the chat) is sent as
+`answer` with the `id` of the question the page showed as the person acted,
+to an owner whose `welcome` says `answer`. The owner (the server for its
+sessions, the host for its own; the same code, whatever the transport: the
+server's WebSocket, WebRTC, or the relay through the switchyard) keeps each
+question as one of:
+
+- **open:** shown, nobody answering it. A reply naming it is taken: looked
+  at as it arrives and again, as the last check before the session's writer
+  takes its keys (a line's text, its Enter for a line with none), after every
+  write queued before it. Then, in the same step, the reply *claims* the
+  question: a fresh token per claim, so a claim on a question shown again
+  with the same id (after a held turn, or by its turn's `done`) is never
+  taken for an earlier one. A question set aside in its turn (an agent's
+  own, see Attention) or held over by a held turn is not shown and takes no
+  reply (`question_answered`) until it shows again.
+- **claimed:** one reply's keys are being written. Every other reply is
+  refused (`this question is being answered`). A claim is kept per
+  question, the one shown and one held over by the held turn: a dialog
+  shown over the hold takes a reply of its own, and the held-over
+  question's claim stands and resolves it hidden. The claim stands while the
+  write can still land: a program not reading (the keys, a line's text or
+  its Enter land when it reads; a line's Enter had no turn in time) keeps
+  it, and no
+  timer on the way (the session's 10 s wait for the program, a connection's
+  10 s for a submission, a host's deadline, a page's 15 s for the word) ends
+  a question or a claim whose write began. Only a write refused before it
+  began, or a line typed whose Enter is not written for good (its link
+  revoked or expired, a prompt or a startup question come in its pause),
+  *releases* the claim: the question is open again, and for a stranded line
+  the session's turn is held (`source:"submit"`) with the question held
+  over, the claim let go in the step that shows the hold (no reply claims
+  the question between the two and writes its keys after the text), so no
+  other line joins the text; keys that end the hold without
+  entering it (Ctrl+U) show the question again open, keys that enter it or
+  pick its choice show it consumed.
+- **resolved:** the claimer's last byte was written while its claim was still
+  the one standing, checked under the lock that clears the question. One
+  function makes that transition and no other path clears a question as
+  answered: the result is recorded (`lastAnswer`, an `input` entry, the
+  chat's `answered` line naming the question, and the result kept by id for
+  the last 64 questions) before the empty state is broadcast, and
+  `answer_ok` follows. A late or duplicate reply gets the recorded result
+  (`already answered by <name>`), nothing written.
+- **consumed:** keys typed in the terminal reached a question read off the
+  screen (a startup question's or a dialog's answer picked: an Enter, one of
+  its choices, a dialog's digit or Ctrl+C, a key its rows name), or the hold
+  of the turn ended with the held text entered, or the screen drew again the
+  words of the question just answered before the program moved on. It takes
+  no reply (`answered in the terminal`), holds no claim, resolves nothing,
+  and goes once the screen shows it gone or the next question takes its
+  place. Only an open question is consumed: one claimed keeps its claim.
+- **withdrawn:** the agent moved on (its report, its clear, its next
+  question, its work in a new turn, the done rules), the screen moved on (a
+  startup question or a dialog no longer on a whole frame of the screen, a
+  bell's wait past the snapshot's threshold), or the session ended. Nothing
+  is recorded; a claim on it resolves nothing, and its reply's word is
+  `answer_ok` when its keys were written (the attention says the question
+  went) or the refusal otherwise.
+
+Keys typed in the terminal, a line that names no question (`submit` without
+`question`, a chat sent to the agent, Conductor's own lines: a crew's prompt,
+a handoff, a broadcast) and a terminal's own reports resolve nothing: they
+consume a question on the screen as above, an Enter among them withdraws a
+bell's, an OSC notification's or the pattern's wait, a person's keys withdraw
+the agent's own question set aside, and a question the agent reported waits
+for the agent to move on or for a reply naming it. Nobody is recorded as
+having answered in the terminal.
+
+A reply to a question read off the screen is taken only while the screen
+still shows that question, too (a next question drawn after it and not asked
+yet, or none, refuses it), for its keys reach whatever the screen shows: a 1
+meant for Codex's background-server question never reaches its update
+question, where 1 runs `npm install -g @openai/codex`. A look of the startup
+questions' watcher that took the screen's text before an answer and fires
+after it asks nothing (weighed under the lock that sets the question); the
+startup question asked is the one drawn last in the output the watcher keeps;
+keys that pick an answer of the startup question the session shows put its
+screen behind and consume it, the one it shows read again as they are
 written; keys that pick an answer of one drawn and not asked yet (the
-watcher asks once the screen is quiet) hold it answered by its words, asked
+watcher asks once the screen is quiet) hold it consumed by its words, asked
 so, nothing put behind, until the screen shows it gone or the next takes
 its place, for the program may not have read them (Codex discards what was
 typed before its question's screen took input, right after drawing it; a
-question asked has had its screen quiet since). They pick one of its
-answers by one of its choices, an Enter, and, where a digit
-picks at once (one of its choices is a digit alone), the digit of one of
-its numbered items as the output the watcher keeps shows them (with them
-not read, its heading gone from that output, only its choices), offered as
-a choice or not (Codex's background-server
-question takes `2`, to restart; its hooks review, whose digit only moves the
-highlight, is answered by its Enter). A startup question answered and drawn again
-before another takes its place (the program slow to move on) is asked
-answered, a reply to it refused, and goes once the screen the questions
-asked during the work are read from shows no startup question (the
-program moved on to its prompt; looked at as a held Escape's is, below);
-one answered never keeps the next from being asked, and nor does one still waiting that the screen has left for
+question asked has had its screen quiet since). They pick one of its answers
+by one of its choices, an Enter, and, where a digit picks at once (one of its
+choices is a digit alone), the digit of one of its numbered items as the
+output the watcher keeps shows them (with them not read, its heading gone
+from that output, only its choices), offered as a choice or not (Codex's
+background-server question takes `2`, to restart; its hooks review, whose
+digit only moves the highlight, is answered by its Enter). A startup
+question answered and drawn again before another takes its place (the
+program slow to move on) is asked consumed, a reply to it refused, and
+withdrawn once the screen the questions asked during the work are read
+from shows no startup question (the program moved on to its prompt; looked
+at as a held Escape's is, below: a frame the program has finished drawing,
+nothing of it lost to a window made smaller since the program last erased
+the screen (one that cuts only blank cells loses nothing), as it is and as
+it was laid out at least the size the screen had when the keys were
+written; the window grown since counts, its rows autowrap went on from
+read joined to the width they had then, since a program that erases its dialog's lines rather than
+the whole screen draws nothing for a resize); one answered never keeps the next from
+being asked, and nor does one still waiting that the screen has left for
 another drawn after it (the program took an answer not read as one): the
-question drawn last is asked with an `id` of its own, and a reply naming the
-one left is refused. Every write that
-answers a question notes it so as the writer takes it: an `answer`'s keys or
-line, a key typed into a terminal (as a controller's input clears a question,
-above), a `submit`'s text or its Enter, Conductor's own Enter; and keys typed
-before a question showed and written once it shows (they waited behind
-another write) when they pick one of its answers (an Enter, one of its
-choices, and in a dialog Ctrl+C, a key its rows name, "(p)", "(d)", "esc to
-cancel", whether offered as a choice or not, or a digit of one of its
-numbered lines; a digit past them does nothing, and the dialog, asked again,
-still waits for a reply). A dialog's rows are read from the screen as the
-key is written: the run of rows that holds its last numbered line and the
-footer below, so that a numbered list in the output above is not counted.
-Keys that pick an answer of a dialog on the screen that the session has not
-asked yet (it asks once the screen is quiet) answer that dialog, also while
-the session still shows the one answered before it. Keys written at once (a
+question drawn last is asked with an `id` of its own, and a reply naming
+the one left is refused. A dialog's rows are read from the screen as the key
+is written: the run of rows that holds its last numbered line and the footer
+below, so that a numbered list in the output above is not counted. Keys that
+pick an answer of a dialog on the screen that the session has not asked yet
+(it asks once the screen is quiet) consume that dialog, also while the
+session still shows the one answered before it. Keys written at once (a
 terminal's read, the host's own terminal forwards what it reads) are each a
-key the program reads: an escape sequence is one key, as is a control
-string through its BEL or ST (OSC, DCS, SOS, PM, APC: a terminal's colour or
-version report), a key the terminal encodes once the program asks it to tell
-keys apart (the kitty keyboard protocol's `CSI … u`, which Codex asks for;
-not xterm's modifyOtherKeys `CSI 27 ; … ~`, which Codex's crossterm does not
-read as the key it encodes) is the key it stands for (Escape is
-`ESC[27u`, Ctrl+C `ESC[99;5u`; a keypad key its digit or its Enter (KP_1
-`ESC[57400u`), as Codex reads it; Enter, a character, Shift or Ctrl and a
-letter, but Ctrl+H, I, J and M, which stay keys of their own, Codex reading
-Ctrl+M as Ctrl and m, never Enter; Caps and Num Lock change nothing), its
-release no key, and its repeat (a key held down) a key of its own, the key
-counting only as one it may be read as (Codex's trust question ignores
-repeats); one
-with modifiers it reads as no other key (Shift+Enter, Ctrl+3) stays a key
-of its own, its key alone counting only as one it may be read as (a
-program's handler may look at the key, not its modifiers); an ESC
-and a key at once are one key, that key with Alt (a page's xterm sends
-Alt+z as `ESC z`, which Codex reads as one key and its questions ignore),
-never the Escape key, the key alone counting only as one it may be read as
-(it may put a question behind, never clears one), an ESC another follows
-is the Escape key (the second read as it goes on), and a
-bracketed paste is text, no key, so an arrow then y
-answers a dialog and a pasted y, or a report's Escapes, do not; a paste, a control string or an escape sequence one write leaves
-unfinished goes on in the next (a terminal's reads cut them anywhere; a
-sequence cut longer than 32 bytes is skipped through its final byte), and a write that is all a
-paste's text, a choice's key among it, or the rest of a terminal's own
-report (a sequence's, a control string's), answers nothing, a question the
-session does not hold included, and stamps nobody typing. An Escape that
-ends a write outside a paste (a terminal's read, a page's frame, a reply's
-"Skip this update") may be the Escape key and may be the start of what the
-next write goes on with: the rest of a report a terminal's read cut, or a
-key the program reads with it as one (a page's ESC frame, then its z: two
-writes can reach the program as one read, Alt+z). Nothing tells which: it
-is read with the next write as one write is (the start of the sequence
-that write goes on with, an Alt chord with its first key, the Escape key
-with an ESC after it), and until then it puts behind the question it may
-answer (a reply to it is refused, the safer mistake) but clears none, puts
-no screen behind, and keeps no question from being asked. A startup question it may answer,
-asked or not yet, is held answered until the screen the questions asked
-during the work are read from shows no startup question, looked at whole
-(every row, not only the last rows a watcher matches) as it is then, a
-whole frame (no synchronized update, `ESC[?2026h`, begun and not ended:
-a terminal still shows the frame before it; nothing kept through a resize
-that the program has not erased whole since (`ESC[2J`, or `ESC[J` from
-the first cell, as Codex clears), in a synchronized update once it ends: a question cut short, or laid out at another size,
-is not gone, and a frame that erases nothing settles nothing), at least
-the size it was when the question was held, the largest a renewed hold
-asked for (smaller, it may be drawn so that it does not read as itself),
-after output drawn
-since the
-Escape, with no output let in
-meanwhile (the program took the Escape and moved on: then it is cleared,
-answered by whoever sent the Escape, or never asked; a look taken earlier
-decides nothing), a key surely answers it, or the next startup question
-takes its place, so that no submission's Enter reaches a startup question
-that still shows. That screen is kept for a session with startup
-questions too, until its first prompt is entered, whether it has questions
-asked during the work or not. A dialog it may answer is cleared once the screen shows it gone, or
-another in its place. For 50 ms after it an `answer` is refused as
-`input_failed` (the program could read the two as one key). A terminal's report or a mouse report
-(SGR, urxvt, or X10: `ESC [ M` and three bytes of 32 or more, the button
-and the cell) is one key, read by the grammar that tells a person's typing
-from the terminal's for a held turn (above), cut or not: its bytes are no
-keys of their own; `ESC [ M` with a byte under 32 after it is no mouse
-report.
-While what was written before is unfinished (another
-connection's paste, a sequence), an `answer` is refused as `input_failed`,
-nothing written and its question not noted: its key would be read as part
-of it. It can be sent again. A startup question
-is answered the same way by one of several keys (an arrow, then its digit),
-or by keys typed before it showed: cleared once they are written as its
-choice alone clears it, so that the next startup question is asked. A dialog asked during the work with the words of the one last
-answered, asked again before the screen's watcher has seen that one go (a
-quiet screen with no dialog) or another dialog take its place, is that
-question still, for the program may not have taken the key yet: it is asked
-answered, with an `id` no reply is taken for. Only a look that took the
-screen's text after the answer was noted counts: one under way from before
-saw an older screen. Nothing else on the screen
-counts: output that changes nothing, a status line above the dialog, the
-dialog drawn again under the decision's line. A next dialog of the same
-words that never leaves the screen therefore cannot be told from the one
-answered, and is answered in the terminal; once the dialog has gone, one of
-those words is a question of its own. So of two
-replies to one question, from two people clicking together or one whose click
-arrives after the program has moved on, the first is written and the second
-refused with `error{question_answered}` naming its `reqId`, nothing of it
-written: a late click never lands on the question that came next (Codex's
-next queued approval, Claude Code's next permission dialog), which stays
-waiting for its own reply. The page says so: "Already answered: the question
-was answered before your reply arrived. Nothing was sent. If the agent still
-asks, answer it in its terminal." A reply with no
-`id` (a question from an older owner, a page that predates `answer`) goes as
-before, as INPUT or `submit`, and answers whatever shows; to an owner that
-takes `answer`, a page sends no reply that names no question (a hosted
-session's question the server lists before its host has told its `id`, a
-server older than its host): it says it was not sent, since keys that name
-nothing could land on another question. A session page whose listing lacks
-the `id` leaves the owner's own word standing while its connection to the
-owner is open; no page matches one question to another by its words. A page
-sends one reply per question: a double click is one answer. A quick reply's
-connection stays until the owner's word (`answer_ok`, or a refusal naming
-it), at most 15 s, past the owner's own waits (a host's keystroke or line
-has 10 s from its arrival): an answer queued behind another write is not
-withdrawn by the page going early, and one the owner did not confirm in time
-is said so ("Not confirmed: look at the session before you answer again").
+key of the write: a batch of an arrow and a digit picks by its digit. A key
+that is not surely a key, an Escape that ends a write (it may be the Escape
+key and may be the start of what the next write goes on with: a report's
+rest, an Alt chord), counts for what refuses a reply, never for what clears
+a question or puts its screen behind: a startup question it may answer is
+held consumed until the screen shows it gone (a whole frame, after output fed
+since the Escape, at least as large as the screen was), a key surely
+answers it, or the next startup question takes its place; a page's Escape
+sent as a reply is a structured answer, and resolves the question as it is
+written. Keys that answered a dialog hold the next look at the screen until
+output comes or the end of a quiet period, so the look before a submission
+does not ask the answered dialog again before the program has drawn what
+follows; a dialog with other words drawn meanwhile is asked, and a reply to
+it taken, while the one the session still shows, consumed, waits for the
+screen's look to withdraw it.
 
 ## Events
 
@@ -1269,10 +1342,10 @@ set, so no one sees the state before the time its entry gives.
 
 Reporting: `POST /api/sessions/{id}/events` with `Authorization: Bearer
 <agent token>` (or the workbench token) and the body `{type, message?, url?, to?,
-tool?, kind?, options?}`. `type` is one of the six event types or an
+tool?, kind?, options?, ask?}`. `type` is one of the six event types or an
 attention word: `needs_input`, `working`, `done` or `clear`. An attention word
 is applied exactly as `POST /api/sessions/{id}/attention` applies it, with the
-same checks, `kind`, `options` and effect, and the same `source` (`api` for the
+same checks, `kind`, `options`, `ask` and effect, and the same `source` (`api` for the
 agent token, `admin` for the admin); only the reply differs. The entries a
 session records itself (`attention`, `input`, `join`, `leave`, `link`,
 `status`) cannot be reported: they skip the limit above, and only the session
@@ -1721,7 +1794,9 @@ status, startedAt?, endedAt?, error?, needsInput?, agentSession?, diff?}` with
 derived as it is read: `stopped` once stopped; `finished` when every member
 has ended and none is pending; `needs_input` while the session of a starting
 or running member is `needs_input` (`needsInput` counts them, and each such
-member has `needsInput: true`); `running` otherwise (a member's `done` keeps it
+member has `needsInput: true`; a member whose own question outlasts its
+turn's `done`, see Attention, is one, while the members that start after it
+start at that `done`); `running` otherwise (a member's `done` keeps it
 running: a done agent is idle, not gone). `yolo` is the run's yolo choice,
 fixed at launch. A member's `agentSession` is the one its latest session last
 showed (see Attention), kept after that session leaves the server, for
@@ -1753,7 +1828,8 @@ finds the prompt an input would answer, so a handoff never answers a prompt:
 one the session shows when a handoff is about to be typed sends the handoff
 back to the head of the queue, and one raised in the 250 ms before its
 carriage return leaves the handoff typed without it, noted in the run log and
-never typed again.
+never typed again. A handoff's Enter answers no question: a line naming no
+question resolves nothing (see Answering a question).
 A handoff to a name no member of the run has, to the member that reports it,
 or to a member with no session yet or whose session has ended, is only noted
 in the run log, and so is each waiting handoff dropped when its member's

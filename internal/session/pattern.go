@@ -443,6 +443,32 @@ func (w *PatternWatcher) Whole() (text string, settled bool, cols, rows int) {
 	return w.tracker.Last(), true, 0, 0
 }
 
+// DrawnAt reports whether a screen watcher's screen shows everything the
+// program drew as it drew it, and the size it was laid out for
+// (Screen.DrawnAt); true and 0 by 0 for the others.
+func (w *PatternWatcher) DrawnAt() (uncut bool, cols, rows int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		return sc.DrawnAt()
+	}
+	return true, 0, 0
+}
+
+// Rows returns a screen watcher's screen as its rows (Screen.Rows) and
+// whether the program has finished drawing them (Screen.Drawn: no
+// synchronized update under way; a resize the program has not redrawn
+// for does not count, the rows being compared with themselves); nil and
+// false for the others.
+func (w *PatternWatcher) Rows() (rows []string, drawn bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		return sc.Rows(), sc.Drawn()
+	}
+	return nil, false
+}
+
 // Size returns a screen watcher's screen size, 0 by 0 for the others.
 func (w *PatternWatcher) Size() (cols, rows int) {
 	w.mu.Lock()
