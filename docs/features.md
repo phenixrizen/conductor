@@ -1202,7 +1202,11 @@ request each from main.
   posting its question; the specs with a hosted session (`chat`,
   `hostedend`, `linkcheck`, `sidebar`) find it by the id its host
   registered and end it through the host before the host is killed; the
-  wall test keeps its tile alone.
+  wall test keeps its tile alone. Two more made deterministic after #207's
+  merge (#245, #246, issues #242, #243): the queue test counts the
+  goroutines its queue started rather than the process's, and
+  `mouse.spec` measures a cell from the terminal's settled box and the
+  grid the page draws (`data-cols`/`data-rows` on the terminal host).
 - **A narrowed wall tile draws its rows on their rows** (#223, issue
   #221). xterm.js 6.0's reflow of a tile with no scrollback moved the
   screen one row past its buffer when the wall narrowed the tile with its
