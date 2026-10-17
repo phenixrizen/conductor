@@ -1,49 +1,9 @@
-# Conductor repository instructions
+# Conductor repository contract
 
-Conductor launches coding agents in PTYs, shows them in a browser terminal and
-shares sessions through links. One Go module, one Nuxt app, one binary.
+Conductor runs coding agents in PTYs and shares browser terminals. One Go module, one Nuxt app, one binary. Read `docs/repository-map.md` for architecture and extension points; `docs/dependencies.md` before changing dependencies. These are on-demand references, not startup imports.
 
-## Map
 
-| Path | Responsibility |
-|---|---|
-| `cmd/conductor` | entry point (`serve`, `switchyard`, `host`, `notify`, `crew`, `mcp`, `hooks`, `skill`, `up`, `crews`, `completion`, `version`) |
-| `internal/cli` | flags, help and completion text; no business logic |
-| `internal/config`, `internal/catalog` | JSON config with `CONDUCTOR_*` overrides; argv-based agent catalog with each agent's yolo, trust and session recipes |
-| `internal/store` | atomic JSON documents in the data directory (`dataDir`) |
-| `internal/agents` | per-agent hook adapters: assets under `dataDir/hooks`, launch injection, on-demand install into the agent's own config, the Conductor skill and where each agent reads it (`SkillPath`, installed at launch), hook payload mappers |
-| `internal/crew` | crews (saved teams of agents) and their runs: model, persistence in `crews/<id>.json`, run engine |
-| `internal/gitcli`, `internal/gitrepo` | git for the Files tab: the working tree's status and a file at a revision through the git binary (argv, the C locale); the commit log and a commit's files through go-git (no binary needed; a crew's linked worktree opens through its common directory) |
-| `internal/nvim` | the editor's Neovim: one `nvim --embed` per open file on the machine that runs the session, driven over msgpack-rpc (the official Go client); the buffer's changes, the cursor, the mode, the command line and the messages to a handler, keys in; `internal/session/nvim.go` puts it on the terminal's connection under the `fileEdit` policy |
-| `internal/proto` | binary framing and JSON messages |
-| `internal/pty`, `internal/session` | process lifecycle; ring buffer, fan-out, roles, resize policy, bounded file reads, viewer roster, activity log, attention, submissions (a paste, then Enter: the one way Conductor types into a session), the agent's own session |
-| `internal/reach` | how the server is reached from outside: the public address by STUN, the TLS port mapped on the gateway (UPnP IGD, PCP, NAT-PMP), the self-check; mapped is never reported as reachable |
-| `internal/certs` | the TLS listener's certificate: from Let's Encrypt through lego (the public address or domains; tls-alpn-01, http-01, dns-01), kept under `dataDir/tls`, renewed on its own; or from files; nothing served before the first issuance |
-| `internal/share`, `internal/signal`, `internal/api` | share tokens; hosted-session brokering; HTTP + WebSocket surface |
-| `internal/hostagent` | `conductor host`: pion WebRTC peers, relay sink, local terminal; the ICE UDP mux and address rewrite; the session's side of a paste invite (`AnswerPaste`) |
-| `internal/paste` | the paste-invite blob (`cpi1.`: an SDP with every candidate, deflated, base64url), shared by the server and `web/app/utils/paste.ts` |
-| `internal/notify` | `conductor notify`: attention and event reports from inside a session; hook payload mappers (Claude Code, Codex, agy, Copilot, Cursor, Goose), the agent's own session id among what they read |
-| `internal/web` | embedded SPA (`internal/web/dist`, generated, never hand-edited) |
-| `web/` | Nuxt 4 + @nuxt/ui 4 + xterm 6 workbench |
-| `desktop/` | the Electron shell: starts `conductor serve` with a minted token and the settings it keeps, the handshake, health and restarts, the bridge the workbench reads the token from, WSL 2 on Windows |
-| `THIRD_PARTY_NOTICES`, `notices.go`, `scripts/notices.py` | the licences of what ships, generated (never hand-edited) from the binary's Go modules, the web bundle's npm packages (`web/build/bundledPackages.ts` lists them during the build) and the desktop app's; the root package embeds it and the server serves it at `/third-party-notices.txt` |
-| `docs/` | `protocol.md`, `architecture.md`, `features.md` (what each round decided and verified), `plans/` (a change's plan, reviewed before its code; see Reviews), `design/brand.md`; the bugs known and the features set aside are GitHub issues (see Issues and the project board) |
-
-`internal/session.Local` is shared by the server and the host. Anything that
-changes what a viewer sees belongs there, not in a transport. Attention
-(bell/OSC detection, agent reports, clearing on input) lives in
-`internal/session/attention.go` and `Local`; the browser keeps one live
-session store in `web/app/composables/useAttention.ts` (streaming fetch of
-`/api/events`), which every page reads instead of polling on its own.
-
-## Rules
-
-- **Every feature ships with tests at both ends.** The server or CLI side
-  gets a Go test (`go test -race`), and the UI side a vitest unit test for
-  its logic and a Playwright spec for what a person sees and does; a change
-  with one and not the other is not done. Only what no harness can reach (a
-  phone, a router, a real GPU, a Windows box) goes on the by-hand list, and
-  it is recorded in `docs/features.md` when a person has done it.
+- Test every affected surface. Server/CLI changes get Go race tests; UI behavior gets vitest and Playwright. Changes spanning both require both. Python tooling runs the scripts suite. See `docs/checks.md`; report unavailable checks accurately.
 - Protocol changes touch three places together: `internal/proto`,
   `web/app/utils/protocol.ts` and `docs/protocol.md`. Every new frame or message
   gets a size limit and a test.
@@ -76,247 +36,59 @@ session store in `web/app/composables/useAttention.ts` (streaming fetch of
   such a step on WSL is done from a machine that is not WSL, or waits for the
   app. The owner has said this twice; do not raise it again.
 
-## Issues and the project board
+## Task contract
 
-The backlog is the repository's GitHub issues, worked on the project board
-**Conductor** (https://github.com/users/phenixrizen/projects/3), a kanban whose
-Status runs Backlog → Ready → In progress → In review → Done.
-`docs/tasks-todo.md` is retired: it keeps only where each of its entries
-went.
+GitHub Issues are the authoritative backlog; the Project is its work view:
+Backlog → Ready → In progress → In review → Done.
+Use `.claude/skills/work-issue/SKILL.md` for ordinary development (Claude:
+`/work-issue phenixrizen/conductor#N`); other agents use the same Python helper.
+A direct request for an issue selects it even when it is not Ready. Otherwise
+work only the queue the owner authorized. Capture directly requested new work
+as a scoped issue before implementation; do not ask again for selection.
 
-- **Every bug known and every feature set aside is an issue.** A bug says
-  how to see it (the page, the steps, the platform), what was expected and
-  what is known of its cause; a feature says what it is, who asked for it
-  and why it waits. Labels: `bug` or `enhancement`, and one area (`area:
-  sidebar`, `desktop`, `switchyard`, `crews`, `sessions`, `attention`,
-  `files`, `host`, `mobile`, `tests`). It goes on the board in Backlog;
-  Ready once the owner picks it for a round. Write the body as GitHub
-  shows it: no hard line breaks inside a paragraph (an issue shows each
-  one).
-- **A bug in the current stream of work is fixed now; any other is the
-  owner's call.** A bug is in the current stream of work when the change
-  introduces it, exposes it (it was harmless until the change), needs it
-  fixed to reach its goal, or makes a test fail; this holds at every round
-  of review, whatever file the bug is in and whatever the plan left out of
-  scope. Such a bug is fixed in that round, with its tests, and gets no
-  issue of its own: the pull request's body is its record (the finding,
-  the test that showed it, the fix), and the board shows the change, not
-  each bug inside it. If the change is abandoned, each such bug that main
-  still has becomes an issue then, from the body's record. Any other bug,
-  one that is independent of the change (it behaves the same with or
-  without it: a review's finding in neighbouring code, a defect seen in
-  passing), is not fixed on the spot: it becomes an issue in Backlog, and
-  the owner is asked whether it is fixed now (Ready, its own pull request)
-  or waits. An agent that cannot ask reports it to whoever leads, who
-  asks. A security finding follows the same ask, but goes to the owner's
-  private document instead of an issue (see Reviews).
-- **One change per pull request.** The change's branch holds the change
-  and the bugs of its current stream that lie in code it touches. Every
-  other fix gets its own branch and pull request from main, not more
-  commits on the change's branch, so each review stays on one thing: an
-  independent bug the owner says to fix now, even one in code the change
-  touches, and a bug the change exposes or needs fixed in code it does not
-  otherwise touch. When the change depends on such a fix, that pull
-  request merges first, and the change, rebased on it, is tested and
-  reviewed again before it merges.
-- **The board follows the work.** A card is In progress when its branch
-  starts, In review when the pull request that finishes it opens, and Done
-  when that fix reaches `main`. The finishing pull request's body says
-  `Fixes #N`; GitHub closes the issue only when it merges into `main` (a
-  merge into another branch closes nothing, and the issue stays open, In
-  review, until the change reaches `main`), and the card then goes to Done
-  (`scripts/board.py N Done` if the board has not moved it). A pull request
-  that does only part of the work says `Part of #N`, which closes nothing:
-  the issue stays open, In progress, until the finishing pull request
-  opens. An issue whose fix reached `main` without closing it (its pull
-  request said neither) is closed by hand, naming that pull request; never
-  closed as fixed before the fix is on `main`. An issue closes otherwise
-  only as a duplicate (naming the issue it repeats) or as not planned when
-  the owner drops it, its comment saying why.
-- **Parallel work only on separate files.** Two changes that touch the
-  same files (the same package's state, the same component) are not worked
-  at once in parallel worktrees: the second starts from main once the first
-  has merged. Each merge moves main under the other, and every move means a
-  rebase, the checks again and another review. Changes to separate areas
-  (a Go package and a page, a doc) run side by side. When a change must
-  build on one not merged yet, it is stacked on that branch and reviewed
-  against it (`--base`), then rebased and reviewed again on main once the
-  first merges.
-- **Security findings are the exception.** A security finding never
-  becomes an issue, a card, a pull request text or a commit message until
-  its fix has shipped (see Reviews): it stays in the owner's private
-  security-findings document, which keeps its status (Open, Fixing,
-  Fixed). Its fix's pull request names no issue.
-- An agent that does not write to GitHub (it commits locally; another
-  pushes) reports the issues it would open, with their titles, bodies and
-  labels; whoever pushes opens them and moves the cards.
+- Every independently deliverable task has an issue. Fix defects introduced
+  by the current task on its branch and record them in its PR, without extra
+  issues. Independent fixes and follow-ups get separate issues/PRs. Ask the
+  owner before doing unrelated work or expanding scope. A pre-existing defect
+  required by the task in otherwise untouched code gets its own prerequisite
+  PR; merge that first, then rebase, retest and review the dependent change.
+- One change per PR. Parallel work touches separate files/areas; overlapping
+  changes wait. Stacks name their parent base, then rebase and review on main.
+- `Part of #N` is partial work; `Fixes #N` is finishing work. In review needs a
+  finishing PR; Done needs that fix on main. An open PR or intermediate merge
+  is not Done. Duplicates name their original; not-planned closures record the
+  owner's decision and reason. Neither claims a delivered implementation.
+- Use the helper's persistent session claim and checkpoint; never silently
+  take over active work. Locks coordinate linked worktrees in one clone only.
+- Every PR gets an adversarial Codex review. State/protocol/concurrency/security
+  changes have a reviewed plan before code. Read `docs/review-policy.md` at
+  that point. Docs/process: one round; plan: two; code: sort findings after
+  round three, stop at five. Owner exceptions are explicit and durable.
+  Failed/unavailable reviews are limitations. Commit/base changes invalidate
+  approval without resetting budgets; preserve base freshness checks.
+- Security findings stay in the affected repository's GitHub Draft Security Advisories until the owner explicitly authorizes disclosure,
+  never public issues, cards or checkpoints. A neutral, owner-authorized
+  exception supports issue-free private fixes; see `docs/issue-workflow.md`.
 
-```bash
-gh issue create --title "<what is wrong>" --body-file body.md --label bug --label "area: files"
-python3 scripts/board.py <issue number> Backlog   # puts it on the board; then Ready, "In progress", "In review", Done
-```
+Procedures and handoff: `.claude/skills/work-issue/SKILL.md` and
+`docs/issue-workflow.md`. Task requirements stay in the issue and linked plan;
+execution metadata stays outside the source tree. Do not auto-import these
+references or recreate a todo file.
 
-The board needs a `gh` token with the `project` scope (`gh auth refresh -s
-project`, once per machine).
+## Undisclosed security findings
 
-## Checks
+GitHub Draft Repository Security Advisories in this affected repository are
+mandatory and authoritative. Use `/security-finding` to search existing drafts
+before recording a credible finding, update matches, and preserve claims,
+confidence and verification. Adversarial-review findings follow the same path.
+Use `/work-security phenixrizen/conductor GHSA-xxxx-yyyy-zzzz` for owner-authorized
+remediation. No security fix starts without the owner's required authorization.
 
-```bash
-make lint                      # gofmt -l, go vet
-go test -race -count=1 ./...   # includes PTY, WebSocket and pion loopback tests
-npm --prefix web run typecheck
-npm --prefix web test          # vitest (link detection)
-make web-build                 # nuxt generate + copy into internal/web/dist
-make build-go                  # embeds whatever is in internal/web/dist
-make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
-make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
-make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI
-make desktop-test              # the Electron shell: tsc --noEmit and vitest (desktop/)
-make lint-static               # staticcheck, pinned
-make vuln                      # govulncheck (network); the standard library's findings need the latest Go patch
-make test-network              # the built-in agents' sites on the network (nightly)
-make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
-python3 scripts/brand_assets.py --check
-python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (codex_review.py)
-```
-
-The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an
-impostor by `STUB_IDENTITY`, reports as its agent's hooks do by
-`STUB_REPORT`, keeps a transcript per agent session, draws the trust
-question with `STUB_TRUST_DIALOG=1` and Codex's "Hooks need review" when
-`$HOME/.codex/stub-hooks-review` exists, and on the line `stub tools codex`
-(or `copilot`, `agy`) replays that agent's captured hook payloads through
-`conductor notify`; `web/e2e/conductor.e2e.json` wires it
-with the real recipes. Run the narrowest package tests while iterating, then
-the full set before finishing. Every harness that launches sessions sets
-`CONDUCTOR_RENDEZVOUS=0` (the cli tests' `clearConductorEnv`, `web/e2e/server.ts`):
-a server publishes its sessions to the public switchyard by default, and a
-test's must stay on the machine. A check that cannot run (no Docker, no network, no browser) is a
-reported limitation, not a pass.
-
-## Reviews
-
-Every pull request gets a Codex adversarial review before it is opened: a
-second model questioning the design, not only the lines. It comes from the
-Codex plugin for Claude Code (`openai/codex-plugin-cc`; `/plugin marketplace
-add openai/codex-plugin-cc`, `/plugin install codex@openai-codex`,
-`/codex:setup`, a Codex login). A person types
-`/codex:adversarial-review --base origin/main <focus>`; an agent cannot
-invoke that command and runs the same review through the plugin's script,
-which `scripts/codex_review.py` finds (the installation Claude Code's
-registry names for this repository, else the user's; never the newest
-cached copy, and an ambiguous registry is refused):
-
-```bash
-python3 scripts/codex_review.py "<focus: the risks this change touches>"
-```
-
-- **The plan is reviewed before the code** when a change touches a state
-  machine (a session's, a link's, a turn's), a protocol, concurrency or a
-  security behaviour. The branch's first commit is
-  `docs/plans/<branch>.md`: the events that can interact and every order
-  they can come in, the invariants that must hold in all of them (say,
-  "nothing is written to a viewer once its link goes"), what is out of
-  scope, and the tests that will pin each ordering. Codex reviews the plan
-  alone (`codex_review.py "review this plan: <focus>"`, the branch holding
-  only the plan's commits) before any code is written; its findings change
-  the plan, and the revision is reviewed once more. A plan still blocked
-  after its second review is not revised again on the agent's own: the
-  agent reports it, and the owner decides. Only then are the tests for the
-  orderings written,
-  from the plan, and then the code that passes them. A design that has to
-  change once code exists goes back to the plan: the plan is revised and
-  reviewed before the code follows it. The pull request's body names the
-  plan's last reviewed commit apart from the code's. The plan stays as the
-  change's design record, written as the pull request is (neutral for a
-  security fix). A small fix (one cause, one place, no new state) needs no
-  plan.
-- `--base` reviews the commits `origin/main...HEAD`, not the working tree:
-  commit everything first. The pull request's body names the commit
-  reviewed; commits after it (the review's own fixes included) get another
-  review before the merge, within the rounds below.
-- **The review is of what will merge.** The script fetches its base and
-  refuses a branch that is behind it: rebase onto the current
-  `origin/main` before each review, so the review sees the change on top
-  of everything merged since it began, not on the main it started from. A
-  branch stacked on another (see Parallel work) names its parent with
-  `--base`; once the parent merges it is rebased onto main and reviewed
-  again before it merges.
-- **Review rounds are bounded.** Every round costs; the limits (the owner,
-  2026-10-14) are a budget, not a target. A docs or process change gets
-  one round. Code gets **three**: when the third review still finds
-  something, stop and sort its findings before going on. A finding in the
-  current stream of work (the change introduces it, exposes it or needs
-  it fixed; see Issues and the project board) is fixed before the change
-  merges, where One change per pull request puts it: on the branch when it
-  is in code the change touches, in a pull request of its own that merges
-  first when it is in code the change does not otherwise touch. One that
-  is independent of the change is split off (an issue, and the owner's
-  call), not fixed on the branch. The pull request's body records the
-  checkpoint and how each finding was sorted. **Five** rounds is the stop:
-  a change still finding its own defects then goes back to its plan, the
-  agent reports where it stands, and the owner says whether more is spent
-  on it. When the last round a change may have still finds something, the
-  agent fixes that round's findings, commits them, and reports them as
-  unreviewed in the pull request's body; the owner says whether one more
-  round is spent on them or the pull request merges as it is. An agent
-  never passes a limit on its own.
-- The focus names the risks the change touches: races and ownership,
-  link scopes and revocation, credentials in logs, what the switchyard can
-  see, recovery after a restart, per-connection bounds.
-- Its findings are claims, not facts. Each is reproduced (a test, or a run
-  with `CONDUCTOR_RENDEZVOUS=0` and an isolated home) or traced in the code
-  before it is fixed; one the code refutes is answered with the lines that
-  refute it.
-- The pull request's body lists the findings and what became of each. One
-  outside the change's scope becomes an issue (see Issues and the project
-  board), never dropped silently, and the owner says whether it is fixed
-  now, in a pull request of its own, or waits.
-- A security finding (a way to gain access, read what one should not, or
-  deny service) never goes into this public repository, a pull request, a
-  commit message, an issue or the project board until its fix has
-  shipped: it goes to the owner's private security-findings document. The
-  fix's pull request describes the change, not the attack.
-- When the review cannot run (no login, no network), the pull request says
-  so: a limitation, not a pass.
-
-## Pinned versions
-
-| Dependency | Version |
-|---|---|
-| Go | `go 1.26` (module) with `toolchain go1.26.9` pinned in `go.mod`, so every machine and CI run the patch the standard library's vulnerability fixes need (the go command fetches it on its own; CI's `~1.26.0` with check-latest lags a new patch by days) |
-| honnef.co/go/tools (staticcheck, `make lint-static`) | v0.8.1 (2026.2.1) |
-| golang.org/x/vuln (govulncheck, `make vuln`) | v1.8.0 |
-| github.com/pion/webrtc/v4 | v4.2.21 |
-| github.com/creack/pty | v1.1.24 |
-| github.com/coder/websocket | v1.8.15 |
-| github.com/pion/stun/v4 (direct for the reach lookup) | v4.0.1 |
-| github.com/pion/ice/v4 (direct for the UDP mux type) | v4.4.4 |
-| github.com/go-acme/lego/v5 (core, tls-alpn-01, http-01, dns-01 with cloudflare, exec, httpreq) | v5.5.2 |
-| github.com/neovim/go-client (the editor's Neovim bridge: `nvim --embed` over msgpack-rpc) | v1.2.1 |
-| github.com/go-git/go-git/v5 (the Files tab's Commits: the log and a commit's files; status and show stay with the git binary, which is faster for them) | v5.19.3 |
-| Neovim (`nvim`, found on PATH at runtime; CI installs it for the bridge's tests) | v0.10.4 in CI; 0.10 or later on a machine |
-| github.com/letsencrypt/pebble/v2 (test CA, `make test-pebble`; not a module dependency) | v2.10.1 |
-| nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
-| @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |
-| shiki | 4.4.3 |
-| @vue-flow/core (+ background, controls) | 1.48.2 (1.3.2, 1.1.3) |
-| @iconify-json/lucide (icon client bundle) | 1.2.137 |
-| monaco-editor (the Files editor, loaded with the first file) | 0.57.0 |
-| @playwright/test (e2e; Chromium revision 1117, 125.0.6422.26) | 1.44.1 |
-| electron / electron-builder (desktop) | 44.5.1 / 26.15.3 |
-| @types/node (e2e type check) | 22.20.5 |
-
-Upgrade deliberately and update this table.
-
-## Adding things
-
-- **An agent**: add a catalog entry in config (or `internal/catalog/defaults.go`
-  for built-ins) with `id`, `name`, `command` and `allowArgs`.
-- **An API route**: handler in `internal/api`, auth via `requireAdmin` or
-  `authenticate`, a test in `internal/api` (`api_test.go` or the route family's
-  `*_test.go`), and the client call in `web/app/composables/useSessions.ts`.
-- **A control message**: struct in `internal/proto/control.go`, dispatch in
-  `ws_viewer.go` and `hostagent/peer.go`, TypeScript type in `protocol.ts`,
-  handling in `transport/base.ts`, and a row in `docs/protocol.md`.
+Never put undisclosed details in public issues, cards, branches, commits, PRs,
+docs, release notes or accessible logs, even after tests pass. Use a temporary
+private security fork for revealing patches. Publication, CVE requests and
+moving changes into public history need the owner's explicit disclosure decision.
+If advisory access fails, stop that operation and report only the access problem;
+never fall back to public metadata. Do not retire an original private artifact
+until migration is verified and the owner approves retirement. See
+`.claude/skills/security-finding/SKILL.md` and `docs/security-workflow.md` on demand.
