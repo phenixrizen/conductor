@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +24,27 @@ export function serverBinary(): string {
   const bin = process.env.CONDUCTOR_E2E_BIN || join(repoRoot, 'bin', 'conductor')
   if (!existsSync(bin)) throw new Error(`${bin} is missing: build it first (make build-go), or run make test-e2e`)
   return bin
+}
+
+/**
+ * The directory to put first on the server's PATH so that the stub agent's `#!/usr/bin/env bash` finds a bash of version 4 or later,
+ * which its fractional read timeouts and GNU date fallback need; '' when PATH's own bash will do (CI's). macOS ships bash 3.2, so a
+ * newer one at a usual place (Homebrew's, /usr/local/bin, ~/.local/bin) is used there; none found is an error naming the requirement,
+ * rather than specs that fail one by one on arrow keys and timestamps.
+ */
+export function stubBashDir(): string {
+  const major = (bash: string): number => {
+    try {
+      return Number(execFileSync(bash, ['-c', 'echo "${BASH_VERSINFO[0]}"'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim())
+    } catch {
+      return 0
+    }
+  }
+  if (major('bash') >= 4) return ''
+  for (const dir of ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local', 'bin')]) {
+    if (major(join(dir, 'bash')) >= 4) return dir
+  }
+  throw new Error('the stub agent (web/e2e/stub-agent.sh) needs bash 4 or later, and none is on PATH or at /opt/homebrew/bin, /usr/local/bin or ~/.local/bin (macOS ships bash 3.2): install one and run the suite again')
 }
 
 function portFree(port: number): Promise<boolean> {
@@ -99,9 +121,11 @@ export async function startServer(o: {
   const baseURL = `http://127.0.0.1:${port}`
   const token = randomBytes(24).toString('hex')
   const out = openSync(o.log, 'a')
+  const bashDir = stubBashDir()
+  const path = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'
   const child = spawn(bin, ['serve', '--config', o.config, '--listen', `127.0.0.1:${port}`], {
     env: {
-      PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      PATH: bashDir ? `${bashDir}:${path}` : path,
       LANG: 'C.UTF-8',
       HOME: o.home,
       CONDUCTOR_DATA_DIR: o.data,

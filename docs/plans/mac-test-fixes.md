@@ -46,6 +46,22 @@ trait each change answers, so that CI on Linux can be read against it.
    session package caches `nvim.Available()` for a minute, so a fake
    `nvim` put on PATH for a test is not consulted when an earlier check
    found none.
+7. **bash is 3.2** (`/bin/bash`, the only one on the machine; CI has 5).
+   The stub agent (`web/e2e/stub-agent.sh`, `#!/usr/bin/env bash`) needs
+   bash 4 or later, as it says: `read -t 0.2` is "invalid timeout
+   specification" in 3.2, so an arrow key's escape sequence is read as
+   three keys, and its GNU-date fallback `date +%s%6N` prints a literal
+   `N`. The specs that drive the stub's dialogs or read its timestamps
+   fail one by one (trust's arrows, the three held specs, codexworking's
+   async question), and two terminal-height specs fail after them on the
+   sessions those left running.
+8. **The terminal's keys are the Mac's.** By design (`terminalClipboard.ts`)
+   Ctrl+Shift+C, Ctrl+C-with-a-selection and Shift+right-click are
+   Windows and Linux keys; on a Mac ⌘C and ⌘V stay the browser's and a
+   Shift+right-click over a program that holds the mouse is the
+   program's. The clipboard spec and three mouse specs press the Windows
+   and Linux keys and so test, on a Mac, a design the product does not
+   have there.
 
 ## The changes, each a test's or a harness's
 
@@ -123,6 +139,27 @@ Trait 6, Neovim absent:
   fake is found as a real Neovim would be and the next test checks
   afresh. The three tests then run on a machine without Neovim; on CI
   nothing changes.
+
+Trait 7, bash 3.2:
+
+- `web/e2e/server.ts` `stubBashDir` finds a bash of version 4 or later:
+  PATH's own (CI's, nothing changes there), else one at
+  `/opt/homebrew/bin`, `/usr/local/bin` or `~/.local/bin`, put first on
+  the server's PATH; none is an error that names the requirement, so the
+  suite says what it needs instead of failing spec by spec. This machine
+  has none: installing one (built under `~/.local`, or Homebrew's) is the
+  owner's step; with it the seven specs above are expected to pass, which
+  is not verified here.
+
+Trait 8, the Mac's keys:
+
+- Not changed. The four specs would need expectations of their own for a
+  Mac (⌘C copies through the browser; a Shift+right-click over a held
+  mouse is the program's), or the suite would run the browser as a
+  non-Mac platform (`navigator.platform` overridden in an init script) so
+  that it tests the Windows and Linux design everywhere and leaves the
+  Mac's keys to the by-hand list. Either is a decision about what the
+  suite checks on a Mac, left to the owner.
 
 ## Pending: the owner's call
 
