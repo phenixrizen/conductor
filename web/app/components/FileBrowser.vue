@@ -513,7 +513,14 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col" :data-files-mode="mode">
+  <!--
+    The pane is a column: the header rows, the content, a foot. The content
+    keeps a few rows' height (min-h-24) and the column scrolls as a whole
+    when the window is shorter than that (#203): squashed to nothing, the
+    tree's rows were laid out under the foot, which took their clicks. On a
+    very short window the advisory foot of the Explorer gives way too.
+  -->
+  <div class="flex h-full min-h-0 flex-col overflow-y-auto" :data-files-mode="mode">
     <div v-if="mode === 'tree' && cwd" class="flex items-center gap-1 border-b border-default px-2 pt-1.5 text-xs" data-files-sections>
       <button type="button" class="rounded-t px-2.5 py-1.5 font-medium" :class="section === 'explorer' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="explorer" @click="section = 'explorer'">Explorer</button>
       <button type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'changes' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="changes" @click="section = 'changes'">
@@ -569,7 +576,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="loading || treeLoading" @click="refresh" />
     </div>
 
-    <div ref="content" class="file-view flex-1 min-h-0 overflow-auto">
+    <div ref="content" class="file-view flex-1 min-h-24 overflow-auto">
       <div v-if="loading" class="p-6 text-sm text-muted flex items-center gap-2">
         <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…
       </div>
@@ -719,7 +726,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         </ul>
       </template>
     </div>
-    <p v-if="mode === 'tree' && cwd && section === 'explorer'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-hint>
+    <p v-if="mode === 'tree' && cwd && section === 'explorer'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted [@media(max-height:360px)]:hidden" data-files-hint>
       <UIcon name="i-lucide-mouse-pointer-click" class="size-3.5 flex-none" /> Paths the agent prints in the terminal are clickable.
     </p>
     <p v-if="mode === 'tree' && cwd && section === 'commits' && log?.kind === 'log'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-commits-foot><UIcon name="i-lucide-info" class="size-3 flex-none" />Commits made here. Nothing is pushed from Conductor.</p>
