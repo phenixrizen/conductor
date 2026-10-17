@@ -98,15 +98,18 @@ went.
   introduces it, exposes it (it was harmless until the change), needs it
   fixed to reach its goal, or makes a test fail; this holds at every round
   of review, whatever file the bug is in and whatever the plan left out of
-  scope. Such a bug is fixed in that round, with its tests, and gets an
-  issue all the same, In progress, so the board shows it until its fix
-  merges. Any other bug, one that is independent of the change (it behaves
-  the same with or without it: a review's finding in neighbouring code, a
-  defect seen in passing), is not fixed on the spot: it becomes an issue in
-  Backlog, and the owner is asked whether it is fixed now (Ready, its own
-  pull request) or waits. An agent that cannot ask reports it to whoever
-  leads, who asks. A security finding follows the same ask, but goes to
-  the owner's private document instead of an issue (see Reviews).
+  scope. Such a bug is fixed in that round, with its tests, and gets no
+  issue of its own: the pull request's body is its record (the finding,
+  the test that showed it, the fix), and the board shows the change, not
+  each bug inside it. If the change is abandoned, each such bug that main
+  still has becomes an issue then, from the body's record. Any other bug,
+  one that is independent of the change (it behaves the same with or
+  without it: a review's finding in neighbouring code, a defect seen in
+  passing), is not fixed on the spot: it becomes an issue in Backlog, and
+  the owner is asked whether it is fixed now (Ready, its own pull request)
+  or waits. An agent that cannot ask reports it to whoever leads, who
+  asks. A security finding follows the same ask, but goes to the owner's
+  private document instead of an issue (see Reviews).
 - **One change per pull request.** The change's branch holds the change
   and the bugs of its current stream that lie in code it touches. Every
   other fix gets its own branch and pull request from main, not more
