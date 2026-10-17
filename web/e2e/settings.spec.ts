@@ -279,3 +279,62 @@ test('a plain switchyard on another machine is refused at save with the words wh
   await expect.poll(async () => (await sets()).map((s) => s.switchyardServer)).toEqual(['http://localhost:9090', 'https://yard.example'])
   await expect(page.locator('[data-switchyard-server]')).not.toContainText(words)
 })
+
+// The save toast says whether the server restarted: it does for a change to
+// where or how agents run (yolo here), not for one to the window (closing to
+// the tray). The flag is taken before the save: once the saved settings are
+// copied into the form nothing differs any more, and read then it said
+// "Saved" for every save (#214).
+test('the save toast says the server restarted for a server setting, and Saved alone otherwise', async ({ page, state }) => {
+  const form = {
+    dataDir: state.data,
+    allowedRoots: [state.root],
+    defaultCwd: state.root,
+    yolo: false,
+    reach: 'off',
+    closeToTray: true,
+    wslDistro: '',
+    wslWindowsHome: false,
+    switchyardEnabled: false,
+    switchyardServer: '',
+    switchyardToken: '',
+    switchyardName: '',
+    noticed: ['publishing'],
+  }
+  await page.addInitScript(
+    ({ token, form, url }) => {
+      const settings = { ...form }
+      ;(window as unknown as { conductorDesktop: unknown }).conductorDesktop = {
+        version: 'e2e',
+        platform: 'linux',
+        token: async () => token,
+        openExternal: async () => {},
+        settings: { get: async () => ({ ...settings }), set: async (p: object) => Object.assign(settings, p) },
+        restartServer: async () => {},
+        openInBrowser: async () => {},
+        showLog: async () => {},
+        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        notice: async () => '',
+        ice: async () => ({ forwarding: false, port: 0, publicIp: '', wslAddress: '', firewall: 'unknown' }),
+        allowIceFirewall: async () => 'unknown',
+        versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+        onServerState: () => () => {},
+      }
+    },
+    { token: state.token, form, url: state.baseURL },
+  )
+  await page.goto('/settings')
+  const save = page.locator('[data-save-settings]')
+  await expect(save).toBeDisabled()
+  // Yolo is how agents run: the save restarts the server, and the toast says so.
+  await page.getByRole('switch', { name: 'Skip permission prompts' }).click()
+  await expect(save).toHaveText('Save and restart the server')
+  await save.click()
+  await expect(page.getByText('Saved; the server restarted')).toBeVisible()
+  await expect(save).toBeDisabled()
+  // Closing to the tray is the window's: saved, no restart.
+  await page.getByRole('switch', { name: /Closing the window keeps Conductor in the tray/ }).click()
+  await expect(save).toHaveText('Save')
+  await save.click()
+  await expect(page.getByText('Saved', { exact: true })).toBeVisible()
+})

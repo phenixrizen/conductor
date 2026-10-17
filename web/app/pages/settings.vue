@@ -86,11 +86,14 @@ async function save() {
     return
   }
   saving.value = true
+  // Taken before the save: once the saved settings are copied into the form,
+  // nothing differs any more, and restarts reads false (#214).
+  const restarted = restarts.value
   try {
     const next = await b.settings.set({ ...form })
     settings.value = next
     Object.assign(form, next)
-    toast.add({ title: restarts.value ? 'Saved; the server restarted' : 'Saved', icon: 'i-lucide-check', color: 'success' })
+    toast.add({ title: restarted ? 'Saved; the server restarted' : 'Saved', icon: 'i-lucide-check', color: 'success' })
     await load()
   } catch (e) {
     error.value = (e as Error).message
