@@ -423,6 +423,16 @@ func fakeNvim(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The fake is what nvim.Available finds now: the session's one-minute
+	// cache of an earlier check (none, on a machine without Neovim) is
+	// dropped, and again when the test ends, so the next check looks afresh.
+	resetNvimCheck := func() {
+		nvimCheckMu.Lock()
+		nvimCheckAt = time.Time{}
+		nvimCheckMu.Unlock()
+	}
+	resetNvimCheck()
+	t.Cleanup(resetNvimCheck)
 	t.Cleanup(func() {
 		if pid := nvimPid(pidFile); pid > 0 {
 			_ = syscall.Kill(pid, syscall.SIGKILL)

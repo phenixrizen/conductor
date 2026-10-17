@@ -15,7 +15,7 @@ import (
 // every op seen, a count (a coalesced repeat is not a new touch), the first
 // and last times; relative paths made absolute under the working directory.
 func TestTouchedIndexOneEntryPerFile(t *testing.T) {
-	cwd := t.TempDir()
+	cwd := realDir(t, t.TempDir())
 	s, _ := newLocal(t, cwd)
 	at := time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)
 	rec := func(op, path, tool string, sec int) {
@@ -47,7 +47,7 @@ func TestTouchedIndexOneEntryPerFile(t *testing.T) {
 // Past MaxTouched files the least recently touched goes first; the deny
 // list hides a file; the header's size cuts the list, Truncated then.
 func TestTouchedIndexBoundsAndDeny(t *testing.T) {
-	cwd := t.TempDir()
+	cwd := realDir(t, t.TempDir())
 	s, _ := newLocal(t, cwd)
 	at := time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)
 	s.mu.Lock()
@@ -87,7 +87,7 @@ func TestTouchedIndexBoundsAndDeny(t *testing.T) {
 
 // The file request answers it under the file policy, like any read.
 func TestTouchedOverAFileRequest(t *testing.T) {
-	cwd := t.TempDir()
+	cwd := realDir(t, t.TempDir())
 	s, _ := newLocal(t, cwd)
 	s.Record(ActivityEntry{Type: ActivityFile, Op: "edit", Path: "x.go", Tool: "Edit", At: time.Now()})
 	sink := newChanSink(false)

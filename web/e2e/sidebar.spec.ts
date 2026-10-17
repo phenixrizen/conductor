@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
-import { serverBinary, stubPath } from './server'
+import { serverBinary, stubBash, stubPath } from './server'
 
 // The sidebar's list (design 3a, 3b, 3c, 3f): sessions and runs ordered by
 // what needs you, a run kept whole where its most urgent member is, a machine
@@ -162,8 +162,9 @@ test('a session hosted on another machine carries its machine on the row, under 
   const logFile = join(state.root, `sidebar-host-${randomUUID()}.log`)
   const log = openSync(logFile, 'a')
   hostName = hostedName('hosted-e2e')
-  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
-    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
+  const bash = stubBash()
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', bash.command, stubPath, '--session-id', randomUUID()], {
+    env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
   const hostedId = (await hostedSession(api, logFile, hostName)).id

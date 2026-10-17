@@ -49,8 +49,7 @@ test('the catalog reports the identity, and the check runs the probe for an adap
   expect(byId.goose?.identity).toMatchObject({ ran: true, identified: false, impostor: true, name: 'Goose', output: 'goose version: v3.22.1' })
   expect(byId.goose?.available).toBe(false)
   expect(byId.claude?.available).toBe(true)
-  const stub = byId.claude!.command[1]!
-  const check = await api.ok<{ found: boolean; identity?: { identified: boolean; output?: string } }>('POST', '/api/catalog/check', { command: ['/bin/bash', stub], adapter: 'claude', env: { STUB_IDENTITY: 'codex' } })
+  const check = await api.ok<{ found: boolean; identity?: { identified: boolean; output?: string } }>('POST', '/api/catalog/check', { command: byId.claude!.command, adapter: 'claude', env: { STUB_IDENTITY: 'codex' } })
   expect(check.found).toBe(true)
   expect(check.identity).toMatchObject({ identified: false, output: 'codex-cli 0.159.0' })
   void state

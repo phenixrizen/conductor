@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +24,42 @@ export function serverBinary(): string {
   const bin = process.env.CONDUCTOR_E2E_BIN || join(repoRoot, 'bin', 'conductor')
   if (!existsSync(bin)) throw new Error(`${bin} is missing: build it first (make build-go), or run make test-e2e`)
   return bin
+}
+
+/**
+ * Find a bash with fractional read timeouts and the stub's numeric microsecond clock: bash 5's EPOCHREALTIME,
+ * or bash 4 plus GNU date. Probe with the PATH the server will use, including any candidate directory first.
+ * macOS's bash 3.2 and bash 4 with BSD date cannot run the stub reliably; fail once with the requirement.
+ */
+export function stubBash(path = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin'): { command: string; path: string } {
+  // This is the same clock selection as stub-agent.sh's now_us. Static program; no caller data enters shell text.
+  const probe = `printf '%s\n' "$BASH" "\${BASH_VERSINFO[0]}"
+if [[ -n \${EPOCHREALTIME:-} ]]; then
+  printf '%s\n' "\${EPOCHREALTIME/[.,]/}"
+else
+  date +%s%6N
+fi`
+  const usable = (bash: string, childPath: string): string | undefined => {
+    try {
+      const output = execFileSync(bash, ['-c', probe], {
+        env: { PATH: childPath, LANG: 'C.UTF-8' },
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      const result = /^(\/[^\n]+)\n([0-9]+)\n([0-9]{16,})\n?$/.exec(output)
+      return result !== null && Number(result[2]) >= 4 ? result[1] : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const command = usable('bash', path)
+  if (command) return { command, path }
+  for (const dir of ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local', 'bin')]) {
+    const candidatePath = `${dir}:${path}`
+    const command = usable(join(dir, 'bash'), candidatePath)
+    if (command) return { command, path: candidatePath }
+  }
+  throw new Error('the stub agent (web/e2e/stub-agent.sh) needs bash 5 or bash 4 with GNU date (a numeric microsecond clock); none works on PATH or at /opt/homebrew/bin, /usr/local/bin or ~/.local/bin (macOS ships bash 3.2): install one and run the suite again')
 }
 
 function portFree(port: number): Promise<boolean> {
@@ -61,10 +98,12 @@ export function scratchRepo(dir: string): void {
   git(dir, 'commit', '-q', '-m', 'init')
 }
 
-/** Writes the config template with every command element "@STUB@" made the stub's absolute path. */
+/** Resolve stub command placeholders; live-agent configs need no stub shell. */
 export function renderConfig(template: string, out: string): void {
   const cfg = JSON.parse(readFileSync(template, 'utf8')) as { catalog?: { agents?: Array<{ command: string[] }> } }
-  for (const a of cfg.catalog?.agents ?? []) a.command = a.command.map((arg) => (arg === '@STUB@' ? stubPath : arg))
+  const agents = cfg.catalog?.agents ?? []
+  const bash = agents.some((agent) => agent.command.includes('@BASH@')) ? stubBash().command : undefined
+  for (const a of agents) a.command = a.command.map((arg) => (arg === '@STUB@' ? stubPath : arg === '@BASH@' ? bash! : arg))
   writeFileSync(out, JSON.stringify(cfg, null, 2) + '\n')
 }
 
@@ -99,9 +138,10 @@ export async function startServer(o: {
   const baseURL = `http://127.0.0.1:${port}`
   const token = randomBytes(24).toString('hex')
   const out = openSync(o.log, 'a')
+  const bash = stubBash()
   const child = spawn(bin, ['serve', '--config', o.config, '--listen', `127.0.0.1:${port}`], {
     env: {
-      PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      PATH: bash.path,
       LANG: 'C.UTF-8',
       HOME: o.home,
       CONDUCTOR_DATA_DIR: o.data,

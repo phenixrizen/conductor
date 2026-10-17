@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -147,11 +148,27 @@ func TestLinkGoneReachesHostAheadOfQueuedFrames(t *testing.T) {
 		if m.t == "relay" && m.viewer == ownerID {
 			relayed++
 		}
-		if relayed > 4 {
+		if relayed > maxRelayedBeforeLinkGone() {
 			t.Fatalf("the host read %d of the owner's frames after the revoke and no link_gone", relayed)
 		}
 	}
 	t.Logf("link_gone read after %d of the owner's frames", relayed)
+}
+
+// maxRelayedBeforeLinkGone is how many of the owner's frames the host may
+// read after the revoke before link_gone: what the sockets on the way held.
+// On Linux the small buffers (smallBufListener, smallReceiver) hold a few.
+// On macOS a receive buffer set before connect is replaced by TCP's
+// autotuned size at connect, and loopback keeps a few hundred KiB in flight
+// whatever the sockets ask for (340-545 KiB measured, up to about 13
+// relayed messages of 32 KiB input each): 5 to 10 are read there, run to
+// run. Both bounds are well under the viewers' lane's 7 MiB, some 160 such
+// messages, which is what the test pins.
+func maxRelayedBeforeLinkGone() int {
+	if runtime.GOOS == "darwin" {
+		return 32
+	}
+	return 4
 }
 
 // A revoke that lands while a viewer's join, its relay_start and a frame of

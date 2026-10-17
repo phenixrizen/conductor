@@ -56,7 +56,9 @@ func newTestEnvLogging(t *testing.T, mutate func(*config.Config), log *slog.Logg
 // newTestEnvAgents is newTestEnvLogging with extra agents in the catalog.
 func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logger, extra []catalog.Agent) *testEnv {
 	t.Helper()
-	root := t.TempDir()
+	// Resolved, as the server reports a session's cwd (resolveCwd): on
+	// macOS a temporary directory is under /var, a link to /private/var.
+	root := realRoot(t, t.TempDir())
 	cfg := config.Defaults()
 	cfg.WorkbenchToken = adminToken
 	cfg.HostTokens = []string{"test-host-token"}

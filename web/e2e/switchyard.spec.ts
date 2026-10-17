@@ -6,7 +6,7 @@ import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from './fixtures'
-import { renderConfig, scratchRepo, serverBinary, startServer, stopServer, stubPath, type Started } from './server'
+import { renderConfig, scratchRepo, serverBinary, stubBash, startServer, stopServer, stubPath, type Started } from './server'
 
 // A switchyard: a second Conductor in switchyard mode, a conductor host
 // publishing a stub session to it with a link minted there over its own
@@ -67,8 +67,9 @@ test.beforeAll(async ({ state }) => {
     return r.ok && h.switchyard === true
   })
   // A hosted stub published to the switchyard, relay-only, headless.
-  host = spawn(serverBinary(), ['host', '--server', syURL, '--token', hostToken, '--relay-only', '--no-local', '--name', 'hosted-stub', '--cwd', home, '--link', 'control', '--', '/bin/bash', stubPath, '--session-id', agentSession], {
-    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
+  const bash = stubBash()
+  host = spawn(serverBinary(), ['host', '--server', syURL, '--token', hostToken, '--relay-only', '--no-local', '--name', 'hosted-stub', '--cwd', home, '--link', 'control', '--', bash.command, stubPath, '--session-id', agentSession], {
+    env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
   await until('the hosted session is listed', async () => {

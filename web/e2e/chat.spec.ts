@@ -4,7 +4,7 @@ import { existsSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BrowserContext, Page } from '@playwright/test'
 import { endHosted, expect, hostedName, hostedSession, test, type Session } from './fixtures'
-import { serverBinary, stubPath } from './server'
+import { serverBinary, stubBash, stubPath } from './server'
 
 // Chat beside the terminal (design 2a, 2b, 2c, 2d, 2e, 2f, 2h): the people
 // on a session talk over the terminal's own connection; a controller can have
@@ -412,8 +412,9 @@ test("a session another machine hosts: what is said in its chat counts on anothe
   const logFile = join(state.root, `chat-host-${randomUUID()}.log`)
   const log = openSync(logFile, 'a')
   hostName = hostedName('hosted-chat')
-  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', '/bin/bash', stubPath, '--session-id', randomUUID()], {
-    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
+  const bash = stubBash()
+  host = spawn(serverBinary(), ['host', '--server', state.baseURL, '--token', state.hostToken, '--host-name', 'e2e-laptop', '--name', hostName, '--agent', 'claude', '--cwd', state.home, '--relay-only', '--no-local', '--', bash.command, stubPath, '--session-id', randomUUID()], {
+    env: { PATH: bash.path, LANG: 'C.UTF-8', HOME: state.home, STUB_IDENTITY: 'claude', STUB_REPORT: 'plain' },
     stdio: ['ignore', log, log],
   })
   const hostedId = (await hostedSession(api, logFile, hostName)).id

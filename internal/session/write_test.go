@@ -312,6 +312,16 @@ func TestFileWriteRefusesARepositorysGitDir(t *testing.T) {
 		"wt/.git", ".git/worktrees/wt/HEAD", "sub/.git", ".GIT/config", ".git./config", ".Git",
 		"linked/.git/config", "store/config", "store/hooks/post-checkout", filepath.Join(root, ".git", "config"), "pointed/gitfile", "pointed/.git",
 	}
+	// What must not be made: a path a look finds before any save is not
+	// what a save made (on a case-insensitive filesystem, APFS by default,
+	// .Git names .git already).
+	notMade := []string{".git/hooks/post-checkout", "store/hooks/post-checkout", "sub/.git", ".Git"}
+	there := map[string]bool{}
+	for _, p := range notMade {
+		if _, err := os.Lstat(filepath.Join(root, p)); err == nil {
+			there[p] = true
+		}
+	}
 	for i, p := range refused {
 		id := fmt.Sprintf("g%d", i)
 		save(s, sub, id, p, body, 512, "", true)
@@ -324,8 +334,8 @@ func TestFileWriteRefusesARepositorysGitDir(t *testing.T) {
 			t.Errorf("%s changed: %q %v", p, now, err)
 		}
 	}
-	for _, p := range []string{".git/hooks/post-checkout", "store/hooks/post-checkout", "sub/.git", ".Git"} {
-		if _, err := os.Lstat(filepath.Join(root, p)); err == nil {
+	for _, p := range notMade {
+		if _, err := os.Lstat(filepath.Join(root, p)); err == nil && !there[p] {
 			t.Errorf("%s was made", p)
 		}
 	}

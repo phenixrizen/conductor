@@ -257,7 +257,7 @@ func TestNamesAreComparedWithoutTheCharactersHFSIgnores(t *testing.T) {
 // path its target would be: the copies there are a controller's, the files
 // beside them with other names are not held.
 func TestCopiesBesideADanglingGitFileTargetAreHeld(t *testing.T) {
-	root := t.TempDir()
+	root := realDir(t, t.TempDir())
 	t.Setenv("HOME", root)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	if err := os.MkdirAll(filepath.Join(root, "repo"), 0o755); err != nil {
