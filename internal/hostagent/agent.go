@@ -341,9 +341,11 @@ type agent struct {
 	attentionRetry  bool
 	attentionOf     string
 	// changeNext is the session's latest change not yet handed to
-	// onLocalChange, nil for none; forwarding says forwardChanges runs.
-	// Guarded by mu.
+	// onLocalChange, nil for none; forwarding says forwardChanges runs;
+	// retell says a connection started since (retellAttention): the next
+	// change forwarded is the session as it is then. Guarded by mu.
 	changeNext *session.Info
+	retell     bool
 	forwarding bool
 	// instance and localID fix the session's id on the server across its
 	// restarts (proto.HostInfo.Instance); instance is a secret, never logged.
@@ -700,14 +702,22 @@ func (a *agent) noteChange(info session.Info) {
 func (a *agent) forwardChanges() {
 	for {
 		a.mu.Lock()
-		info := a.changeNext
-		a.changeNext = nil
-		if info == nil {
+		info, retell := a.changeNext, a.retell
+		a.changeNext, a.retell = nil, false
+		if info == nil && !retell {
 			a.forwarding = false
 			a.mu.Unlock()
 			return
 		}
 		a.mu.Unlock()
+		if retell {
+			// The session as it is now, which is at least as new as the
+			// change noted; a change made after this read is noted after
+			// it. A snapshot taken as the connection started could be
+			// older than a change noted since, and overtake it.
+			cur := a.local.Info()
+			info = &cur
+		}
 		a.onLocalChange(*info)
 	}
 }
@@ -751,22 +761,30 @@ func (a *agent) onLocalChange(info session.Info) {
 // meanwhile), so one that changed while the host was away, to the empty
 // state too (a question answered at the host's own terminal), would stay in
 // its listings until the session's next change. The attention goes in its
-// turn among the session's changes (noteChange), the latest of them, so that
-// a change made meanwhile is never overtaken by an older attention.
+// turn among the session's changes, read as the forwarder gets to it
+// (forwardChanges), so that a change made meanwhile is never overtaken by
+// an older attention.
 func (a *agent) retellAttention() {
 	a.mu.Lock()
 	a.attentionUntold = true
+	a.retell = true
+	running := a.forwarding
+	a.forwarding = true
 	a.mu.Unlock()
-	a.noteChange(a.local.Info())
+	if !running {
+		go a.forwardChanges()
+	}
 }
 
 // retryAttention sends the latest attention as soon as the connection takes
 // it, however long that waits while the connection lasts, and again while
 // it changed meanwhile: one retry at a time, and while it runs the changes
 // are only noted (onLocalChange), so the server is told them in order. A
-// retry the connection's end catches carries on to the connection that has
-// taken its place by then, if one has (the retell of that connection's
-// start was left to the retry).
+// retry whose connection is replaced under it, whether its send went
+// through there or not (a paced write proves no delivery), carries on to
+// the connection that has taken its place, or leaves the attention untold
+// for the next connection's start when none has yet: that start's retell
+// is left to a retry under way (onLocalChange).
 func (a *agent) retryAttention() {
 	a.mu.Lock()
 	if a.attentionRetry {
@@ -782,11 +800,18 @@ func (a *agent) retryAttention() {
 			a.mu.Unlock()
 			err := a.tell(hostAttentionMsg(id, att), nil)
 			a.mu.Lock()
-			if err != nil && a.out != nil && a.out != on {
-				// The connection ended under the retry, and another
-				// writes for the host already: the latest is told on it.
+			if a.out != on {
+				// The connection the attention went on is not the host's
+				// any more: told on its replacement, or left for the
+				// next connection's start.
+				if a.out != nil {
+					a.mu.Unlock()
+					continue
+				}
+				a.attentionRetry = false
+				a.attentionUntold = true
 				a.mu.Unlock()
-				continue
+				return
 			}
 			if err != nil || sameAttention(att, a.lastAttention) {
 				a.attentionRetry = false
