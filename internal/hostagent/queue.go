@@ -119,6 +119,9 @@ type requestQueue struct {
 	// last is the finished channel of the request added last; nil before
 	// the first.
 	last chan struct{}
+	// started counts the goroutines started to run requests, for the test
+	// that holds the queue to one at a time.
+	started int
 }
 
 // add runs r after the requests added before it, or reports false, running
@@ -138,6 +141,7 @@ func (q *requestQueue) add(r request) bool {
 		q.last = w.finished
 		q.running = true
 		q.done = make(chan struct{})
+		q.started++
 		go q.run(w, q.done)
 		return true
 	}
