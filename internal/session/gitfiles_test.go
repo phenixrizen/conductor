@@ -18,7 +18,7 @@ func gitRepo(t *testing.T) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
-	dir := t.TempDir()
+	dir := realDir(t, t.TempDir())
 	run := func(args ...string) {
 		t.Helper()
 		if _, err := gitcli.Run(context.Background(), dir, args...); err != nil {

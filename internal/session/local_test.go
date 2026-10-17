@@ -100,8 +100,21 @@ func waitControl(sink *chanSink, match func(m map[string]any) bool) map[string]a
 	}
 }
 
+// realDir is dir with its symbolic links resolved, as the session resolves
+// the paths it is given: on macOS a temporary directory is under /var, a
+// link to /private/var, and a path the session reports is the resolved one.
+func realDir(t *testing.T, dir string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return real
+}
+
 func newLocal(t *testing.T, cwd string) (*Local, *fakeProc) {
 	t.Helper()
+	cwd = realDir(t, cwd)
 	p := newFakeProc()
 	s := NewLocal(Info{ID: "sess", Cwd: cwd, Cols: 80, Rows: 24}, p, Options{ScrollbackBytes: 4096})
 	t.Cleanup(func() { p.exit() })
@@ -113,7 +126,7 @@ func newLocal(t *testing.T, cwd string) (*Local, *fakeProc) {
 func newLocalWith(t *testing.T, opts Options) (*Local, *fakeProc) {
 	t.Helper()
 	p := newFakeProc()
-	s := NewLocal(Info{ID: "sess", Cwd: t.TempDir(), Cols: 80, Rows: 24}, p, opts)
+	s := NewLocal(Info{ID: "sess", Cwd: realDir(t, t.TempDir()), Cols: 80, Rows: 24}, p, opts)
 	t.Cleanup(func() { p.exit() })
 	return s, p
 }

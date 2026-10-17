@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,9 @@ const here = dirname(fileURLToPath(import.meta.url))
  * to a file the specs and the teardown read (CONDUCTOR_E2E_STATE). On any failure what was started is stopped and the root removed.
  */
 export default async function globalSetup(): Promise<void> {
-  const root = mkdtempSync(join(tmpdir(), 'conductor-e2e-'))
+  // Resolved: the server reports paths with their links resolved (a session's cwd, the Explorer's nodes), and on macOS the
+  // temporary directory is under /var, a link to /private/var.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'conductor-e2e-')))
   let pid: number | undefined
   try {
     const home = join(root, 'home')

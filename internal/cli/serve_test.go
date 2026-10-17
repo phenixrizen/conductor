@@ -59,7 +59,7 @@ func clearConductorEnv(t *testing.T) {
 	}
 	// A home of the test's own: nothing a test starts reads or writes the
 	// user's ~/.conductor.
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HOME", realTempDir(t))
 	// No STUN or gateway traffic from a test unless it asks for it, and no
 	// publishing to the public switchyard: a test's sessions stay here.
 	t.Setenv("CONDUCTOR_REACH", "off")
@@ -70,6 +70,19 @@ func clearConductorEnv(t *testing.T) {
 	// writing into the test's HOME after the test ended, so its cleanup
 	// failed (round 14).
 	t.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+}
+
+// realTempDir is a temporary directory of the test's with its symbolic
+// links resolved: on macOS it is under /var, a link to /private/var, and a
+// deny list built from the unresolved path would hold the resolved one
+// beside it (session.Leads), where Linux holds one entry per path.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // writeServeConfig writes body as conductor.json in dir and returns its path.

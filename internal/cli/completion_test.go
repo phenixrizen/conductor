@@ -344,6 +344,11 @@ func rootFile(t *testing.T) string {
 func rootDir(t *testing.T) string {
 	t.Helper()
 	for _, d := range []string{os.TempDir(), "/tmp"} {
+		// Resolved first: on macOS /tmp is a link to /private/tmp, and the
+		// install names the directory as the system reaches it.
+		if real, err := filepath.EvalSymlinks(d); err == nil {
+			d = real
+		}
 		fi, err := os.Stat(d)
 		if err != nil || !fi.IsDir() {
 			continue

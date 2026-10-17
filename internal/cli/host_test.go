@@ -230,10 +230,17 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	clearConductorEnv(t)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	home := os.Getenv("HOME")
-	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(home, ".config", "conductor-desktop"), filepath.Join(home, ".config", "Conductor")}
+	// The desktop app's directories are in the user's configuration
+	// directory as the product finds it: ~/.config on Linux,
+	// ~/Library/Application Support on macOS.
+	config, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := []string{filepath.Join(home, ".conductor"), filepath.Join(home, ".local", "share", "conductor", "data"), filepath.Join(config, "conductor-desktop"), filepath.Join(config, "Conductor")}
 	var desktopSettings []string
 	for _, name := range []string{"conductor-desktop", "Conductor"} {
-		desktopSettings = append(desktopSettings, filepath.Join(home, ".config", name, "settings.json"), filepath.Join(home, ".config", name, "*settings.json*"))
+		desktopSettings = append(desktopSettings, filepath.Join(config, name, "settings.json"), filepath.Join(config, name, "*settings.json*"))
 	}
 	var got []hostagent.Options
 	runHostAgent = func(_ context.Context, opts hostagent.Options) (hostagent.Result, error) {
@@ -249,7 +256,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 		t.Fatalf("without --server-config: %+v, want the deny list %q", got, want)
 	}
 
-	dir := t.TempDir()
+	dir := realTempDir(t)
 	data, catalogFile := filepath.Join(dir, "state"), filepath.Join(dir, "agents.json")
 	cfg := writeServeConfig(t, dir, `{"workbenchToken":"w","dataDir":"`+data+`","catalogPath":"`+catalogFile+`"}`)
 	got = nil
@@ -282,7 +289,7 @@ func TestHostRefusesTheServersFilesToItsSession(t *testing.T) {
 	}
 	t.Setenv("CONDUCTOR_DATA_DIR", "")
 	// The desktop app's settings there but not readable for their data directory.
-	settings := filepath.Join(home, ".config", "conductor-desktop", "settings.json")
+	settings := filepath.Join(config, "conductor-desktop", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
 		t.Fatal(err)
 	}

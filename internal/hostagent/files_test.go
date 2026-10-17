@@ -43,14 +43,32 @@ func (v *viewer) expectFile(reqID string) (proto.FileHeader, []byte) {
 // homeWithConductor is a home directory holding what a conductor serve keeps
 // on this machine, every file carrying secret, all committed to a git
 // repository there, and an ordinary notes.txt and package.json beside them.
-// It returns the home and the config file's path.
-func homeWithConductor(t *testing.T, secret string) (string, string) {
+// It returns the home, which it makes the process's (HOME), the config
+// file's path, and the user's configuration directory relative to the
+// home, where the desktop app's directories are: ".config" on Linux,
+// "Library/Application Support" on macOS (os.UserConfigDir, as the product
+// looks).
+func homeWithConductor(t *testing.T, secret string) (home, cfg, configDir string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not installed")
 	}
-	home := t.TempDir()
-	cfg := filepath.Join(home, "conductor.json")
+	// Resolved: on macOS a temporary directory is under /var, a link to
+	// /private/var, and the folder's paths are reported resolved.
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	base, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configDir, err = filepath.Rel(home, base); err != nil || strings.HasPrefix(configDir, "..") {
+		t.Fatalf("the configuration directory %s is not in the home %s", base, home)
+	}
+	configDir = filepath.ToSlash(configDir)
+	cfg = filepath.Join(home, "conductor.json")
 	files := map[string]string{
 		".conductor/catalog.json":    `{"agents":[{"id":"x","env":{"TOKEN":"` + secret + `"}}]}`,
 		".conductor/workbench-token": secret + "\n",
@@ -63,11 +81,11 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 		"agents.json~":               secret,
 		// The desktop app's: its own directory under either name, the data
 		// directory its settings name and, inside WSL, its server's data.
-		".config/conductor-desktop/settings.json":          `{"switchyardToken":"` + secret + `","dataDir":"` + filepath.Join(home, "code", "conductor-state") + `"}`,
-		".config/conductor-desktop/conductor/catalog.json": secret,
-		"code/conductor-state/catalog.json":                secret,
-		"code/app/main.go":                                 "package main\n",
-		".config/Conductor/conductor/catalog.json":         secret,
+		configDir + "/conductor-desktop/settings.json":          `{"switchyardToken":"` + secret + `","dataDir":"` + filepath.Join(home, "code", "conductor-state") + `"}`,
+		configDir + "/conductor-desktop/conductor/catalog.json": secret,
+		"code/conductor-state/catalog.json":                     secret,
+		"code/app/main.go":                                      "package main\n",
+		configDir + "/Conductor/conductor/catalog.json":         secret,
 		// Its settings under the other name are a link to dotfiles.
 		"dotfiles/desktop.json":                     `{"switchyardToken":"` + secret + `"}`,
 		"dotfiles/desktop.json.bak":                 secret,
@@ -89,7 +107,7 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Symlink(filepath.Join(home, "dotfiles", "desktop.json"), filepath.Join(home, ".config", "Conductor", "settings.json")); err != nil {
+	if err := os.Symlink(filepath.Join(home, "dotfiles", "desktop.json"), filepath.Join(home, configDir, "Conductor", "settings.json")); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "t"}, {"config", "user.email", "t@t"}, {"config", "commit.gpgsign", "false"}, {"add", "-A"}, {"commit", "-q", "-m", "home"}} {
@@ -97,7 +115,7 @@ func homeWithConductor(t *testing.T, secret string) (string, string) {
 			t.Fatalf("git %v: %v", args, err)
 		}
 	}
-	return home, cfg
+	return home, cfg, configDir
 }
 
 // A hosted session whose folder holds what a conductor serve on the same
@@ -111,8 +129,7 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 	t.Setenv("CONDUCTOR_DATA_DIR", "")
 	t.Setenv("CONDUCTOR_CATALOG_PATH", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
-	home, cfgPath := homeWithConductor(t, secret)
-	t.Setenv("HOME", home)
+	home, cfgPath, configDir := homeWithConductor(t, secret)
 	deny, err := config.LocalFileDenyFunc(cfgPath)
 	if err != nil {
 		t.Fatal(err)
@@ -186,9 +203,9 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 		"~/.conductor/catalog.json", filepath.Join(home, ".conductor", "workbench-token"), "project/../.conductor/catalog.json",
 		"conductor.json", "~/conductor.json", "CONDUCTOR.JSON.bak", "conductor.json.bak", ".conductor.json.swp", "#conductor.json#",
 		"agents.json", "agents.json~",
-		".config/conductor-desktop", ".config/conductor-desktop/settings.json", ".config/conductor-desktop/conductor/catalog.json",
+		configDir + "/conductor-desktop", configDir + "/conductor-desktop/settings.json", configDir + "/conductor-desktop/conductor/catalog.json",
 		"code/conductor-state", "code/conductor-state/catalog.json",
-		".config/Conductor", ".config/Conductor/settings.json", ".config/Conductor/conductor/catalog.json",
+		configDir + "/Conductor", configDir + "/Conductor/settings.json", configDir + "/Conductor/conductor/catalog.json",
 		"dotfiles/desktop.json", "dotfiles/desktop.json.bak", "dotfiles/.desktop.json.swp",
 		".local/share/conductor/data/catalog.json", ".local/share/conductor/data/crews/c2.json",
 	}
@@ -207,7 +224,7 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 		}
 		for _, m := range h.Matches {
 			if strings.Contains(m, ".conductor") || strings.Contains(strings.ToLower(filepath.Base(m)), "conductor.json") || strings.HasPrefix(filepath.Base(m), "agents.json") ||
-				strings.HasPrefix(m, ".config/Conductor") || strings.HasPrefix(m, ".config/conductor-desktop") || strings.HasPrefix(m, ".local/share/conductor") || strings.HasPrefix(m, "code/conductor-state") || strings.HasPrefix(m, "dotfiles/desktop.json") {
+				strings.HasPrefix(m, configDir+"/Conductor") || strings.HasPrefix(m, configDir+"/conductor-desktop") || strings.HasPrefix(m, ".local/share/conductor") || strings.HasPrefix(m, "code/conductor-state") || strings.HasPrefix(m, "dotfiles/desktop.json") {
 				t.Errorf("find %q found %s", q, m)
 			}
 		}
@@ -252,7 +269,7 @@ func TestHostRefusesTheServersFilesOnItsMachine(t *testing.T) {
 	if h, body := ask(proto.FileGet{Path: "code/app/main.go"}); h.Kind != "file" || string(body) != "package main\n" {
 		t.Fatalf("code/app before the move: %+v %q", h, body)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".config", "conductor-desktop", "settings.json"), []byte(`{"dataDir":"`+filepath.Join(home, "code", "app")+`"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, configDir, "conductor-desktop", "settings.json"), []byte(`{"dataDir":"`+filepath.Join(home, "code", "app")+`"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"code/app/main.go", "code/app", "code/conductor-state/catalog.json"} {
