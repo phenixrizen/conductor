@@ -2,7 +2,6 @@
 
 Conductor runs coding agents in PTYs and shares browser terminals. One Go module, one Nuxt app, one binary. Read `docs/repository-map.md` for architecture and extension points; `docs/dependencies.md` before changing dependencies. These are on-demand references, not startup imports.
 
-
 - Test every affected surface. Server/CLI changes get Go race tests; UI behavior gets vitest and Playwright. Changes spanning both require both. Python tooling runs the scripts suite. See `docs/checks.md`; report unavailable checks accurately.
 - Protocol changes touch three places together: `internal/proto`,
   `web/app/utils/protocol.ts` and `docs/protocol.md`. Every new frame or message
@@ -46,10 +45,12 @@ A direct request for an issue selects it even when it is not Ready. Otherwise
 work only the queue the owner authorized. Capture directly requested new work
 as a scoped issue before implementation; do not ask again for selection.
 
-- Every independently deliverable task has an issue. Fix defects introduced
-  by the current task on its branch and record them in its PR, without extra
-  issues. Independent fixes and follow-ups get separate issues/PRs. Ask the
-  owner before doing unrelated work or expanding scope.
+- Every independently deliverable task has an issue; reuse its existing issue.
+  Keep necessary fixes and regression tests in the current task and PR. Create
+  or reuse another issue for a demonstrated independent actionable defect or
+  owner-selected follow-up. Optional suggestions remain review dispositions;
+  unverified claims do not automatically become backlog items. Ask before
+  doing unrelated work or expanding scope.
 - Keep one coherent outcome and its verification together. Split independently
   useful, risky or revertible work. Parallel work considers shared contracts
   and state as well as files. Retargeted stacks need integration evidence.
@@ -59,18 +60,20 @@ as a scoped issue before implementation; do not ask again for selection.
   owner's decision and reason. Neither claims a delivered implementation.
 - Use the helper's persistent session claim and checkpoint; never silently
   take over active work. Locks coordinate linked worktrees in one clone only.
-- Merge readiness requires independent adversarial review, resolved blockers,
-  actual affected-surface verification and current integration evidence. Drafts
-  may precede review. Design review is required for materially changed behavior
-  or guarantees. Read `docs/review-policy.md` on demand: phase and scope differ;
-  docs one, plans two, code three autonomous; later code rounds need scoped
-  owner authorization. Historical budgets and outcomes survive migration.
-  Behind-base review is permitted against immutable inputs; changed revisions
-  require explicit continuity/integration evidence. Optional suggestions alone
-  do not require another round. Failed/unavailable reviews approve nothing.
+- Follow `docs/review-policy.md` for planning, review and spending. Readiness
+  requires acceptance criteria, applicable independent review, resolved blockers,
+  affected-surface verification and current integration evidence. Stop when ready;
+  submit and merge when already authorized. Drafts can precede readiness.
+  Explicitly owner-scoped deliverables have bounded allowances; session/branch
+  changes never reset history or spending. Optional suggestions need no extra round.
 - Security findings stay in the affected repository's GitHub Draft Security Advisories until the owner explicitly authorizes disclosure,
   never public issues, cards or checkpoints. A neutral, owner-authorized
   exception supports issue-free private fixes; see `docs/issue-workflow.md`.
+
+Before implementation, establish the selected task worktree and load its current
+contract. In Claude use `/memory` to verify that worktree's instructions; preserve
+unrelated checkouts. Historical plans/logs retain technical decisions, while this
+contract and `docs/review-policy.md` govern current process.
 
 Procedures and handoff: `.claude/skills/work-issue/SKILL.md` and
 `docs/issue-workflow.md`. Task requirements stay in the issue and linked plan;
