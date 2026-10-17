@@ -19,9 +19,12 @@ export function shellQuote(s: string): string {
  * agent's hooks into the command as a launch from the server would. `pattern`
  * is the agent's screen pattern (a regular expression); it is always
  * single-quoted, so the person who pastes the command passes it on as written.
+ * `insecure` adds --insecure, which a plain http server on another machine
+ * needs (plainOffMachine): the host refuses such a server without it.
  */
-export function hostCommand(o: { server: string; token: string; name: string; argv: string[]; cwd?: string; pattern?: string; adapter?: string }): string {
+export function hostCommand(o: { server: string; token: string; name: string; argv: string[]; cwd?: string; pattern?: string; adapter?: string; insecure?: boolean }): string {
   const parts = ['conductor', 'host', '--server', shellQuote(o.server), '--token', shellQuote(o.token)]
+  if (o.insecure) parts.push('--insecure')
   if (o.name) parts.push('--name', shellQuote(o.name))
   if (o.cwd) parts.push('--cwd', shellQuote(o.cwd))
   if (o.adapter) parts.push('--agent', shellQuote(o.adapter))

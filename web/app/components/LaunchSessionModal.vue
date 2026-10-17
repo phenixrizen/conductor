@@ -4,7 +4,7 @@ import { ApiError } from '~/composables/useApi'
 import { launchListNote, serverAgents } from '~/utils/agents'
 import { splitArgs } from '~/utils/argv'
 import { hostAdapter, hostCommand } from '~/utils/hostCommand'
-import { showsRunsOn } from '~/utils/launch'
+import { plainOffMachine, showsRunsOn } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
 const open = defineModel<boolean>('open', { default: false })
@@ -84,6 +84,10 @@ const extraArgs = computed(() => (selected.value?.allowArgs && state.args.trim()
 const yoloView = computed(() => yoloSummary(selected.value, yolo.value, extraArgs.value))
 
 const server = computed(() => httpBase.value || (import.meta.client ? location.origin : ''))
+// A workbench opened over plain http from another machine: the host refuses
+// that server without --insecure (#213), so the command carries the flag and
+// the dialog says what it means.
+const plainServer = computed(() => plainOffMachine(server.value))
 const command = computed(() => {
   if (!selected.value) return ''
   const argv = [...selected.value.command, ...(selected.value.allowArgs && state.args.trim() ? splitArgs(state.args) : [])]
@@ -98,6 +102,7 @@ const command = computed(() => {
     pattern: signal?.kind === 'pattern' ? signal.pattern : undefined,
     // Its hooks too, for the signal a launch from the server wires them for.
     adapter: hostAdapter(selected.value),
+    insecure: plainServer.value,
   })
 })
 
@@ -212,6 +217,13 @@ async function submit() {
             <CodeBlock :commands="[command]" wrap :disabled="!localReady" copy-title="Command copied" copy-description="It carries your workbench token; keep it private." />
             <template #hint><span>carries your workbench token; keep it private</span></template>
           </UFormField>
+          <p v-if="plainServer" class="flex items-start gap-1.5 text-xs leading-relaxed text-warning" data-insecure-notice>
+            <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-3.5 flex-none" />
+            <span>
+              This workbench is plain <code class="font-mono">http://</code> on another machine, so the command carries <code class="font-mono">--insecure</code>: the host refuses such a server without it, and what passes between them, the session's output and its viewers'
+              keys among it, travels in the clear and unverified. Serve the workbench over https to do without the flag.
+            </span>
+          </p>
           <p class="text-xs leading-relaxed text-muted">The session appears here as <b class="text-default">hosted</b> as soon as it connects, and this dialog closes; your terminal stays attached to it.</p>
         </template>
       </form>
