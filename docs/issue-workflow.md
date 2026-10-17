@@ -1,10 +1,5 @@
 # Issue workflow
 
-Draft status: the helper is implemented and tested in the companion Boxcar
-worktree. Porting it here awaits the outstanding Conductor plan decision.
-The command examples below describe the intended interface and are not yet
-usable in this branch. Do not claim implementation or CI enforcement is complete.
-
 ## Claude entry point
 
 From this repository in Claude:
@@ -46,6 +41,10 @@ python3 scripts/work_issue.py complete phenixrizen/conductor#251
 ```
 
 A checkpoint file contains these four strings (actual results, not planned tests).
+The complete public checkpoint, including review history and triage, is limited
+to 60,000 UTF-8 bytes before anything is saved. Summarize lengthy test output;
+do not trim review history to fit. A rejected oversized edit leaves the previous
+checkpoint intact, so a shorter correction can be submitted normally.
 For submission, record results after the implementation is committed; verification
 is bound to that clean commit and base and does not become fresh merely on resume:
 
@@ -89,54 +88,100 @@ python3 scripts/work_issue.py release phenixrizen/conductor#251 --session my-ses
 ```
 
 Release refuses pending reviews and publishes/verifies all history before
-publishing the released claim. The next session uses its own ID with `start`;
-a fresh clone fetches the branch and recovers the ledger from the issue comment.
+publishing the released claim. The next session uses its own ID with `start`.
+Returning to an earlier clone also imports a newer released checkpoint when
+that clone has no unpublished metadata. Review history is retained. An active
+claim, unpublished local changes, or missing review history remains a conflict.
+A fresh clone fetches the branch and recovers the ledger from the issue comment.
 Unsaved files and private raw reports do not travel: transfer those privately
 if needed. If the former process died with an active claim, confirm it has
 stopped, synchronize its local metadata, and explicitly release using its old
 session ID in that clone. Loss of that clone while ownership/history is
 unpublished requires owner reconciliation; do not delete the comment to reset.
 Rebases keep the ledger but make old revision approvals stale. After a stacked
-parent merges, rebase onto main, then run
+parent merges, integrate onto main as appropriate, then run
 `python3 scripts/work_issue.py base phenixrizen/conductor#N --session SESSION --base origin/main`
-in the task worktree. It preserves counts and invalidates old evidence;
+in the task worktree. It preserves receipts/counts and requires current verification and integration;
 submit retargets the existing PR rather than opening another.
 
-## Review evidence and budgets
+## Review evidence, dispositions and integration
 
-The wrapper uses the existing `scripts/codex_review.py`, including its plugin
-registry resolution and base-freshness checks. It requests structured output,
-keeps the raw report locally and publishes only phase, attempt ID, commit,
-base ref/SHA, completed count, outcome and unresolved finding count. Do not
-copy raw findings into public checkpoints without checking them for private
-content. Review all findings and record their disposition in the PR.
+Read [review-policy.md](review-policy.md) when reviewing. Phase and scope are
+separate; the helper records policy/schema 2 without resetting historical rounds.
+Initial, follow-up and integration scopes use the installed plugin's supported
+focus text, not invented plugin arguments. Branch review uses an immutable detached
+snapshot and records actual head, comparison base and merge base. Behind-base
+review is useful; readiness separately requires current target integration.
 
-Receipts cover the exact committed revision and exact base, not the mutable
-working tree, not future commits. No receipt is committed into its own review
-target. The helper refuses dirty review/submit operations. It also fetches the
-current base again before submit. A changed head OR base needs fresh evidence.
-Plan and code reviews are distinct. The PR evidence records plan receipts too.
+```bash
+python3 scripts/work_issue.py review phenixrizen/conductor#251 --session my-session --phase code --scope initial --focus 'requirements and workflow invariants'
+python3 scripts/work_issue.py review phenixrizen/conductor#251 --session my-session --phase code --scope follow-up --prior ATTEMPT_ID --verifies F-0123456789ab --rationale 'Bounded fixes against unchanged target' --focus 'fixes, tests and affected callers'
+python3 scripts/work_issue.py review phenixrizen/conductor#251 --session my-session --phase code --scope integration --prior ATTEMPT_ID --rationale 'Target advanced; inspect changed callers and conflict resolution' --focus 'integration behavior'
+# After actual checks, checkpoint their results at the committed revision:
+python3 scripts/work_issue.py checkpoint phenixrizen/conductor#251 --session my-session --file /tmp/checkpoint.json
+python3 scripts/work_issue.py integrate phenixrizen/conductor#251 --session my-session --receipt CURRENT_ATTEMPT_ID --rationale 'Current target incorporated; affected behavior and checks assessed'
+```
 
-Budgets: docs/process one; plan two; code three before a findings-triage
-checkpoint, five as the hard stop. At code round three with findings, use
-`triage --file` (a text file describing dispositions) before another round.
-At the final permitted round fix findings, mark the new revision unreviewed,
-and seek the owner's decision. The `--pending` submit option opens a draft
-and explicitly fails the contract check; it is never a review pass.
+Use `--material-change` with initial review/integration validation when prior
+architectural or trust assumptions changed. `--prior` and `--verifies` repeat.
+For plan-only diffs use `--phase plan --comparison COMMIT_BEFORE_PLAN`.
+`integrate` validates evidence; it does not merge/rebase or run tests on your behalf.
+It fetches the target, checks ancestry, verification and applicable review.
+A follow-up can establish readiness for bounded fixes against the unchanged target.
+A changed target needs integration or initial review. No patch-equivalence shortcut.
 
-For an extra round, the owner posts this exact line in the issue (replace
-PHASE and ROUND with the next phase/round):
+Findings start unclassified and hold readiness. Read the restricted report and
+append a sanitized disposition with `dispose --finding F-ID --file FILE`:
+
+```json
+{
+  "category": "blocking",
+  "status": "verified",
+  "evidence": "Regression test and affected caller trace verify the corrected invariant",
+  "consequence": "The required behavior is satisfied at this head and target"
+}
+```
+
+Categories/statuses and downgrade restrictions are in review-policy.md.
+Independent work adds `tracking: "owner/repo#N"`. Never put private technical
+claims in this file: its fields are published. A specific exception uses status
+`excepted`, its comment ID, and an owner-authored/latest-edited exact issue line:
+`work-issue finding-exception REPO#N F-ID HEAD_SHA BASE_SHA`.
+Original reviewer verdicts remain unchanged; optional findings need no new round.
+
+Docs/process allow one review; plans two; code three autonomously. Round four,
+five and each later round need scoped permission. A triage note is not permission.
+The owner posts an exact line, then the agent records it through `authorize`:
 
 ```text
 work-issue authorize phenixrizen/conductor#251 PHASE ROUND
 ```
 
-Then `authorize ... --phase PHASE --round ROUND --comment COMMENT_ID` checks
-GitHub author and exact scope and persists it. No generic unlimited waiver.
-Interrupted attempts block new reviews: `recover` reads the saved structured
-result once; `recover --failed` is only for a confirmed stopped invocation
-without a completed result. Failed/unavailable invocations consume no completed
-round and approve nothing. Never use recovery to hide a completed review.
+`authorize REFERENCE --session SESSION --phase PHASE --round ROUND --comment ID`
+checks current author/editor and exact scope. A narrower allowance uses an exact
+`work-issue ceiling REFERENCE PHASE LAST_ROUND` line and the `ceiling` command
+with the same arguments. Changing that ceiling requires another explicit owner
+instruction; an existing generic budget never expands a narrower allowance.
+
+Interrupted attempts block spending. `recover` reads a completed result once;
+`recover --failed` is only for a confirmed stopped invocation lacking a result.
+Failures approve nothing and consume no completed rounds. After two consecutive
+failures, repair the cause and obtain `work-issue retry REFERENCE PHASE ROUND`;
+record with `retry` (same arguments as authorize). It covers only failures already
+recorded, not unlimited retries.
+
+`start` migrates released/reconciled v1 checkpoints to schema 2, preserving all
+attempt IDs, original outcomes, counts and authorizations. It records legacy
+receipt digests and unclassified findings, with a local `N.v1-backup.json`.
+Pending legacy attempts must recover first; `migrate` can then run explicitly.
+Historic policy-1 rounds stay under their original rules; new reviews use policy 2.
+Neither handoff nor rebase resets counts. Old clients detect schema 2 and stop.
+Restricted raw reports do not travel via public checkpoints; transfer them
+privately when focused review needs them, or use an authorized initial review.
+
+`submit --pending` permits an ordinary draft before review/verification completion.
+Its contract check fails explicitly. A ready submission requires current checks,
+resolved blocking findings, applicable review, and exact integration evidence.
 
 ## PR contract and private exceptions
 
@@ -196,26 +241,32 @@ At https://github.com/users/phenixrizen/projects/3/workflows inspect:
    the issue remains In review. No second board-writing Actions workflow is added.
 
 Both repositories had no rulesets and main protection returned 'Branch not
-protected'. A workflow file alone is NOT a required merge check. After the
-helper and workflow are implemented and merged, verify that `issue-contract`
-appears on an actual PR's Checks tab and that correcting evidence and rerunning
-that same run clears its failure. Required-check association has not been
-validated live. Only then, Settings → Rules → Rulesets: create
+protected'. The file alone is NOT a required merge check. After merging this
+bootstrap, verify that `issue-contract` appears on an actual PR's Checks tab
+and that a failed check becomes successful after correcting its evidence and
+rerunning that same run. Required-check association has not been validated
+live before this bootstrap reaches main. Only after that check, Settings → Rules → Rulesets: create
 (or narrowly extend) a branch ruleset targeting `main`; require PRs, require
-branches up to date, and require the check `issue-contract` alongside the
+the check `issue-contract` alongside the
 existing checks the owner chooses. Protect workflow/helper changes with owner
 review. Do not replace unrelated settings or imply these were configured.
 
-The planned contract workflow uses `pull_request_target` with read-only
-permissions and checks out only main; it never executes PR files. Conductor
-does not yet contain this helper or workflow. Once implemented, validate the
-bootstrap locally with `python3 scripts/work_issue.py ci --pr PR_NUMBER`.
+The contract workflow uses `pull_request_target` with read-only permissions and
+checks out only main; it never executes PR files. The new bootstrap workflow
+cannot run from main before this PR merges. Validate these initial PRs with
+`python3 scripts/work_issue.py ci --pr PR_NUMBER` locally. Separate ordinary PR
+CI runs helper tests. Once installed, comment edits alone do not trigger it.
+Find the existing run through the PR's Checks tab or `gh pr checks PR_NUMBER
+--repo phenixrizen/conductor --json name,link`. Rerun that run with `gh run rerun
+RUN_ID --repo phenixrizen/conductor --failed`, wait with `gh run watch RUN_ID
+--repo phenixrizen/conductor --exit-status`, then confirm the result on the PR
+with `gh pr checks`. A separate manually dispatched run is not a replacement
+for the PR's failed check. If no PR-associated check appears, leave this check
+out of branch requirements and resolve that association before enabling it.
 
-Once installed on main, comment edits alone do not trigger it. Find the existing
-run through the PR's Checks tab or `gh pr checks PR_NUMBER --repo
-phenixrizen/conductor --json name,link`. Rerun that run with `gh run rerun RUN_ID
---repo phenixrizen/conductor --failed`, wait with `gh run watch RUN_ID --repo
-phenixrizen/conductor --exit-status`, and confirm the result with `gh pr checks`.
-A separate manually dispatched run does not replace the PR's failed check.
-If no PR-associated check appears, resolve that association before making it
-a branch requirement.
+Schema rollout: the candidate validator accepts v1 and v2 evidence, but a v1
+validator installed on main rejects schema 2. This is intentional fail-closed
+compatibility. Local candidate validation is not an enforced GitHub check. Deploy
+the trusted validator through the owner's normal merge process before requiring
+schema-2 checks; no branch protection or checks are waived by this amendment.
+Both partial task PRs remain drafts while broader advisory work is incomplete.
