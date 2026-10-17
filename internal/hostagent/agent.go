@@ -332,7 +332,8 @@ type agent struct {
 	agentToken    string
 	lastAttention session.Attention
 	// attentionUntold says the last attention change was not sent for want
-	// of a connection: the next change sends it, whatever it is.
+	// of a connection, or a connection has started since the last was told
+	// (retellAttention): the next change sends it, whatever it is.
 	// attentionRetry says a retry of one that had no turn in time is under
 	// way (retryAttention); attentionOf is the session the last change was
 	// of. Guarded by mu.
@@ -744,10 +745,28 @@ func (a *agent) onLocalChange(info session.Info) {
 	}
 }
 
+// retellAttention has the server told the session's attention as a control
+// connection starts, whatever the last connection was told: the server
+// keeps the attention it had when the host went (its listings show it
+// meanwhile), so one that changed while the host was away, to the empty
+// state too (a question answered at the host's own terminal), would stay in
+// its listings until the session's next change. The attention goes in its
+// turn among the session's changes (noteChange), the latest of them, so that
+// a change made meanwhile is never overtaken by an older attention.
+func (a *agent) retellAttention() {
+	a.mu.Lock()
+	a.attentionUntold = true
+	a.mu.Unlock()
+	a.noteChange(a.local.Info())
+}
+
 // retryAttention sends the latest attention as soon as the connection takes
 // it, however long that waits while the connection lasts, and again while
 // it changed meanwhile: one retry at a time, and while it runs the changes
-// are only noted (onLocalChange), so the server is told them in order.
+// are only noted (onLocalChange), so the server is told them in order. A
+// retry the connection's end catches carries on to the connection that has
+// taken its place by then, if one has (the retell of that connection's
+// start was left to the retry).
 func (a *agent) retryAttention() {
 	a.mu.Lock()
 	if a.attentionRetry {
@@ -759,10 +778,16 @@ func (a *agent) retryAttention() {
 	go func() {
 		for {
 			a.mu.Lock()
-			att, id := a.lastAttention, a.attentionOf
+			att, id, on := a.lastAttention, a.attentionOf, a.out
 			a.mu.Unlock()
 			err := a.tell(hostAttentionMsg(id, att), nil)
 			a.mu.Lock()
+			if err != nil && a.out != nil && a.out != on {
+				// The connection ended under the retry, and another
+				// writes for the host already: the latest is told on it.
+				a.mu.Unlock()
+				continue
+			}
 			if err != nil || sameAttention(att, a.lastAttention) {
 				a.attentionRetry = false
 				a.attentionUntold = err != nil
@@ -1008,10 +1033,9 @@ func (a *agent) dropConn(c *websocket.Conn) {
 func (a *agent) serveConn(ctx context.Context, c *websocket.Conn) error {
 	defer c.CloseNow()
 	w := a.writerFor(c)
-	// Re-send the current attention after a reconnect.
-	if att := a.toServer(a.local.Info().Attention); att.State != session.AttentionNone {
-		a.send(hostAttentionMsg(a.sessionID(), att))
-	}
+	// The server is told the session's attention as the connection starts,
+	// the empty state included (retellAttention).
+	a.retellAttention()
 	defer a.connLost(c)
 
 	// Report the current status in case the process ended while disconnected.

@@ -20,6 +20,8 @@ import (
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/session/sessiontest"
 )
 
 const (
@@ -588,4 +590,78 @@ func TestHostChatTravelsToTheServerStream(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("host did not stop")
 	}
+}
+
+// A host back from away tells the server its session's attention as the
+// connection starts, the empty state included: the server keeps the
+// attention it had when the host went, so a question answered at the host's
+// own terminal meanwhile would stay in its listings (the sidebar, the Yard,
+// a switchyard's view) until the session's next change.
+func TestAHostBackFromAwayTellsTheServerItsAttentionTheEmptyStateToo(t *testing.T) {
+	srv, hs := startServer(t)
+	a := &agent{opts: Options{ServerURL: hs.URL, Token: hostToken, Name: "away", Argv: []string{"stub"}, AgentID: "stub", HostName: "h", Log: discardLog}, peers: map[string]*peer{}, log: discardLog}
+	a.dir = t.TempDir()
+	wsURL, err := controlURL(hs.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wsURL = wsURL
+	ctx := t.Context()
+	conn, registered, err := a.dialAndRegister(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The session, named as Run names it, its changes forwarded as there.
+	proc := sessiontest.NewFakeProc()
+	t.Cleanup(func() { proc.End(0) })
+	local := session.NewLocal(session.Info{ID: registered.SessionID, Cwd: a.dir, Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, Log: discardLog})
+	a.mu.Lock()
+	a.local = local
+	a.mu.Unlock()
+	serve := func(c *websocket.Conn) <-chan error {
+		served := make(chan error, 1)
+		go func() { served <- a.serveConn(ctx, c) }()
+		return served
+	}
+	served := serve(conn)
+	d, ok := srv.Registry().Get(registered.SessionID)
+	if !ok {
+		t.Fatal("the hosted session is not listed")
+	}
+	listed := func(what string, want func(session.Info) bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for !want(d.Info()) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: the server lists %+v", what, d.Info())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	local.SetAttentionFull(session.AttentionNeedsInput, "Allow?", session.SourceAPI, session.KindPermission, nil)
+	listed("the question told", func(i session.Info) bool { return i.Attention.State == session.AttentionNeedsInput })
+
+	// The host goes away, and the question is answered at its terminal
+	// meanwhile: the server, told nothing, lists the question still.
+	conn.CloseNow()
+	<-served
+	listed("the host gone", func(i session.Info) bool { return i.Status == session.StatusHostDisconnected })
+	local.SetAttention(session.AttentionNone, "", session.SourceInput)
+	if att := local.Info().Attention; att.State != session.AttentionNone {
+		t.Fatalf("the session's attention %+v", att)
+	}
+	if att := d.Info().Attention; att.State != session.AttentionNeedsInput {
+		t.Fatalf("the server lists %+v with the host away", att)
+	}
+
+	// Back: the server's listing matches the session again.
+	conn2, again, err := a.dialAndRegister(ctx)
+	if err != nil || !again.Resumed {
+		t.Fatalf("resume: %v %+v", err, again)
+	}
+	t.Cleanup(func() { conn2.CloseNow() })
+	serve(conn2)
+	listed("the host back", func(i session.Info) bool {
+		return i.Status == session.StatusRunning && i.Attention.State == session.AttentionNone
+	})
 }

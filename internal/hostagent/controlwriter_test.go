@@ -20,6 +20,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/phenixrizen/conductor/internal/session/sessiontest"
 )
 
 // heldServer is a WebSocket server that reads what a host sends only once
@@ -960,4 +961,88 @@ func TestStoppingTheWriterAnswersWhatWaits(t *testing.T) {
 			t.Fatal("a message went on waiting after the writer stopped")
 		}
 	}
+}
+
+// A retry of an attention change that had no turn, caught by its
+// connection's end, carries on to the connection that has taken its place:
+// a host back from away tells its attention as the connection starts and
+// leaves that to a retry under way (retellAttention), which must not give
+// the attention up with the old connection then. One that gave up before
+// the new connection came leaves the attention untold, for the retell.
+func TestAnAttentionRetryCaughtByTheConnectionsEndTellsTheNextConnection(t *testing.T) {
+	// retrying brings a host to a retry under way on a connection the server
+	// does not read: its session's question had no turn in time.
+	retrying := func(t *testing.T) (*agent, *websocket.Conn) {
+		t.Helper()
+		_, c1, pc1 := dialHeld(t, 0)
+		a := &agent{opts: Options{}, peers: map[string]*peer{}, log: discardLog, sessID: "sess-1", controlWait: 100 * time.Millisecond}
+		proc := sessiontest.NewFakeProc()
+		t.Cleanup(func() { proc.End(0) })
+		a.local = session.NewLocal(session.Info{ID: "sess-1", Cwd: t.TempDir(), Cols: 80, Rows: 24}, proc, session.Options{OnChange: a.noteChange, Log: discardLog})
+		w1 := a.useConn(c1, pc1)
+		t.Cleanup(w1.stop)
+		if err := w1.sendRelay(bytes.Repeat([]byte("b"), 1<<20), time.Second, nil); err != nil {
+			t.Fatal(err)
+		}
+		backedUp(t, pc1)
+		a.local.SetAttentionFull(session.AttentionNeedsInput, "Allow?", "hook", "", nil)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			a.mu.Lock()
+			under := a.attentionRetry
+			a.mu.Unlock()
+			if under {
+				return a, c1
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("no retry is under way")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	told := func(t *testing.T, s *heldServer) {
+		t.Helper()
+		select {
+		case got := <-s.got:
+			if !bytes.Contains(got, []byte(`"needs_input"`)) {
+				t.Fatalf("the new connection got %.80q", got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the attention was never told on the new connection")
+		}
+	}
+	t.Run("the retry wakes to the new connection", func(t *testing.T) {
+		a, _ := retrying(t)
+		s2, c2, pc2 := dialHeld(t, 0)
+		close(s2.read)
+		// The new writer takes the old one's place and stops it: the
+		// retry's send on the old fails with the new in place.
+		t.Cleanup(a.useConn(c2, pc2).stop)
+		told(t, s2)
+	})
+	t.Run("the retry gave up before the new connection", func(t *testing.T) {
+		a, c1 := retrying(t)
+		a.dropConn(c1)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			a.mu.Lock()
+			under, untold := a.attentionRetry, a.attentionUntold
+			a.mu.Unlock()
+			if !under {
+				if !untold {
+					t.Fatal("the attention counts as told")
+				}
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the retry did not end with the connection")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		s2, c2, pc2 := dialHeld(t, 0)
+		close(s2.read)
+		t.Cleanup(a.useConn(c2, pc2).stop)
+		a.retellAttention()
+		told(t, s2)
+	})
 }
