@@ -86,14 +86,19 @@ async function save() {
     return
   }
   saving.value = true
-  // Taken before the save: once the saved settings are copied into the form,
-  // nothing differs any more, and restarts reads false (#214).
-  const restarted = restarts.value
+  // What this page can tell on its own, for an app that cannot say what became
+  // of the save (older apps): taken before the save, since once the saved
+  // settings are copied into the form nothing differs any more (#214).
+  const restarting = restarts.value
   try {
     const next = await b.settings.set({ ...form })
     settings.value = next
     Object.assign(form, next)
-    toast.add({ title: restarted ? 'Saved; the server restarted' : 'Saved', icon: 'i-lucide-check', color: 'success' })
+    // The app says what became of it: the server restarted, or the settings
+    // were saved alone (a retry after a restart that failed changes nothing the
+    // server reads, since the settings were kept).
+    const told = await b.settings.outcome?.().catch(() => undefined)
+    savedToast(told === undefined ? (restarting ? 'restarted' : 'saved') : told)
     await load()
   } catch (e) {
     error.value = (e as Error).message
@@ -116,7 +121,19 @@ function onPick(dir: string) {
   else if (field) form[field] = dir
 }
 
-onMounted(load)
+/** The save's toast: the server restarted for it, or it was saved alone. */
+function savedToast(outcome: string) {
+  toast.add({ title: outcome === 'restarted' ? 'Saved; the server restarted' : 'Saved', icon: 'i-lucide-check', color: 'success' })
+}
+
+onMounted(async () => {
+  await load()
+  // A restarted server listens on a fresh port and the app loads this page
+  // there: the page that saved is gone before its save resolved, and the
+  // save's outcome is owed to this one (desktop/src/save.ts).
+  const owed = await desktop.bridge.value?.settings.outcome?.().catch(() => '')
+  if (owed === 'restarted') savedToast(owed)
+})
 </script>
 
 <template>

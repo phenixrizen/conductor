@@ -1369,7 +1369,7 @@ workbench in a window signed in with it, keeps the server in the tray when
 the window closes, and stops it when the app quits. Its **Settings** page
 holds what the server starts with (the data directory, the allowed roots,
 the default directory, yolo, reach) and restarts the server when those
-change; **Open in browser** opens the same server in your browser, signed
+change, which the save's toast then says; **Open in browser** opens the same server in your browser, signed
 in. On Windows the server runs inside your WSL 2 distribution (the app sets
 it up on first run; the agents are the ones installed there). While the
 server starts, a small splash shows the version and what the app is doing.
