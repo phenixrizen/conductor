@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isLoopbackHost, showsRunsOn } from './launch'
+import { isLoopbackHost, plainOffMachine, showsRunsOn } from './launch'
 
 describe('showsRunsOn', () => {
   it('never asks in the desktop app', () => {
@@ -19,5 +19,24 @@ describe('showsRunsOn', () => {
   it('isLoopbackHost', () => {
     expect(isLoopbackHost('127.0.0.1')).toBe(true)
     expect(isLoopbackHost('10.0.0.1')).toBe(false)
+  })
+})
+
+// The host's rule for a server it refuses without --insecure (config.PlainOffMachine).
+describe('plainOffMachine', () => {
+  it('is a plain http or ws server that is not localhost or a loopback address', () => {
+    for (const s of ['http://192.168.1.57:8099', 'http://conductor.test:8099', 'HTTP://box.local', 'ws://10.0.0.2:8099', 'http://[fe80::1]:8099', 'http://app.localhost:8099']) {
+      expect(plainOffMachine(s), s).toBe(true)
+    }
+  })
+  it('is not localhost or a loopback address, whatever the scheme', () => {
+    for (const s of ['http://localhost:8099', 'http://LOCALHOST', 'http://127.0.0.1:8099', 'http://127.1.2.3', 'http://[::1]:8099', 'ws://[::1]:8099', 'http://[::ffff:127.0.0.1]:8099']) {
+      expect(plainOffMachine(s), s).toBe(false)
+    }
+  })
+  it('is never https, wss, or no URL at all', () => {
+    for (const s of ['https://conductor.acme.dev', 'wss://192.168.1.57:8099', 'https://192.168.1.57', '', 'not a url', 'conductor.test:8099']) {
+      expect(plainOffMachine(s), s).toBe(false)
+    }
   })
 })

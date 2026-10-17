@@ -88,7 +88,10 @@ When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your
 workbench token; keep it private) and closes the dialog by itself when that
-session connects. In the desktop app, or on a workbench opened at this
+session connects. On a workbench opened over plain `http://` from another
+machine that command carries `--insecure`, which the host needs for such a
+server, and the dialog says that the session's output and its viewers' keys
+then travel in the clear. In the desktop app, or on a workbench opened at this
 computer's own address, there is one answer and the question is not asked. The workbench opens dark; the theme button at the foot of the
 sidebar switches to light and remembers it. The session page shows the
 terminal, a reply bar whenever the agent

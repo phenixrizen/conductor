@@ -29,6 +29,13 @@ describe('hostCommand', () => {
     expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'] })).not.toContain('--signal-pattern')
     expect(hostCommand({ server: 'http://x', token: 't', name: '', argv: ['sh'], pattern: '' })).not.toContain('--signal-pattern')
   })
+  it('carries --insecure after the token for a plain server on another machine, and never otherwise', () => {
+    expect(hostCommand({ server: 'http://192.168.1.57:8099', token: 't', name: 'fix', argv: ['claude'], insecure: true })).toBe(
+      'conductor host --server http://192.168.1.57:8099 --token t --insecure --name fix -- claude',
+    )
+    expect(hostCommand({ server: 'http://192.168.1.57:8099', token: 't', name: '', argv: ['sh'] })).not.toContain('--insecure')
+    expect(hostCommand({ server: 'https://conductor.acme.dev', token: 't', name: '', argv: ['sh'], insecure: false })).not.toContain('--insecure')
+  })
   it('names the agent\'s hook adapter with --agent so the host wires its hooks, and omits it without one', () => {
     expect(hostCommand({ server: 'http://x', token: 't', name: 'fix', argv: ['claude', '--model', 'opus'], cwd: '/srv/app', adapter: 'claude' })).toBe(
       'conductor host --server http://x --token t --name fix --cwd /srv/app --agent claude -- claude --model opus',
