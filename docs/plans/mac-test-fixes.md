@@ -1,12 +1,13 @@
 # Plan: the test suites on macOS
 
 Branch `mac-test-fixes`. On an Apple Silicon Mac (macOS 27.0.1) `make test`
-fails 18 Go tests and `make test-e2e` 39 Playwright tests that pass in CI
-on Linux. Every failure examined comes from a trait of the machine (its
-filesystem, its sockets, what is installed), not from the feature under
-test. This change makes both suites pass there without loosening what they
-check: Linux runs the same checks as before, and each change is in a test
-or a harness, never in the product.
+fails 21 Go tests (in session, api, cli, config and hostagent) and
+`make test-e2e` 39 Playwright tests that pass in CI on Linux. All but one
+come from a trait of the machine (its filesystem, its sockets, what is
+installed), not from the feature under test; the one that does not is
+left to the owner (see Pending). This change makes the rest pass there
+without loosening what they check: Linux runs the same checks as before,
+and each change is in a test or a harness, never in the product.
 
 A plan is written although no state machine, protocol, concurrency or
 security behaviour changes (AGENTS.md, Reviews): it is the record of which
@@ -53,7 +54,9 @@ Trait 1, symbolic links:
 - `internal/session`: `newLocal` resolves the working directory it is
   given and `newLocalWith` its own, as `gitDirTree` and the deny tests
   already do; `gitRepo` returns its repository resolved;
-  `TestCopiesBesideADanglingGitFileTargetAreHeld` resolves its root.
+  `TestCopiesBesideADanglingGitFileTargetAreHeld` resolves its root, and
+  the touched-index tests the working directory they compare with (they
+  passed before only because both sides were unresolved).
   Fixes `TestFileWriteSavesAndRefuses` (the Activity path is relative to
   `Info.Cwd`), `TestGitSeenRecordsWhatNoHookNamed` (the same for what git
   saw), the three fake-Neovim tests (the open resolves its target under
@@ -65,11 +68,13 @@ Trait 1, symbolic links:
   `TestSessionLifecycle`, `TestCrewRunLifecycle`,
   `TestAgentTokenFormsACrewAndIsItsFirstMember`,
   `TestAgentCrewInheritsCwdAndYoloAndNeverEscalates`.
-- `internal/config`: the deny tests resolve the temporary directories
-  their homes, config files and data directories live in, so the list
-  holds one entry per path on every system.
+- `internal/config`: the deny tests resolve every temporary directory
+  their homes, config files and data directories live in (`realTempDir`),
+  so the list holds one entry per path on every system.
 - `internal/cli`: `clearConductorEnv` resolves the home it gives a test,
-  so a deny list built from it has one entry per path (the host test).
+  and the host test the directory of its config file, so a deny list
+  built from them has one entry per path.
+- `internal/hostagent`: `homeWithConductor` resolves the home it makes.
 - `web/e2e/global-setup.ts`: the scratch root is `fs.realpathSync` of
   the directory made, so `state.root`, `home`, `data` and `repo` are the
   paths the server reports in `data-file-node`, `data-touched` and the
@@ -86,22 +91,24 @@ Trait 2, case-insensitive filesystem:
 
 Trait 3, the configuration directory:
 
-- `internal/config` and `internal/cli` host tests build the desktop app's
-  entries from `os.UserConfigDir()` after setting the home, as the
-  product does, instead of `~/.config` or `XDG_CONFIG_HOME` by name. On
-  Linux both give the same paths.
+- The `internal/config` deny tests, the `internal/cli` host test and
+  `internal/hostagent` `TestHostRefusesTheServersFilesOnItsMachine` build
+  the desktop app's entries, and the home's layout, from
+  `os.UserConfigDir()` after setting the home, as the product does,
+  instead of `~/.config` or `XDG_CONFIG_HOME` by name. On Linux both give
+  the same paths.
 
 Trait 4, loopback buffering:
 
 - `TestLinkGoneReachesHostAheadOfQueuedFrames` keeps its bound of 4
-  relayed frames on Linux and allows 16 on Darwin: what the sockets hold
+  relayed frames on Linux and allows 32 on Darwin: what the sockets hold
   there is a few hundred KiB (up to about 13 relayed messages of 32 KiB
-  input each), still an order of magnitude under the viewers' lane's
-  7 MiB, which is what the test pins (link_gone is read within what the
-  sockets held, not behind the queue). Measured on this Mac: 5 frames in
-  four runs of four. It is a threshold, not slower delivery: the count is
-  stable, and the revoke's link_gone still arrives inside the 10-second
-  read deadline each time.
+  input each), still well under the viewers' lane's 7 MiB, some 160 such
+  messages, which is what the test pins (link_gone is read within what
+  the sockets held, not behind the queue). Measured on this Mac: 5 and
+  10 frames, run to run. It is a threshold, not slower delivery: the
+  count stays within what the sockets hold, and link_gone arrives well
+  inside the 10-second read deadline each time.
 
 Trait 5, `/tmp` a link:
 
@@ -116,6 +123,26 @@ Trait 6, Neovim absent:
   fake is found as a real Neovim would be and the next test checks
   afresh. The three tests then run on a machine without Neovim; on CI
   nothing changes.
+
+## Pending: the owner's call
+
+- `internal/hostagent` `TestICEOnOneUDPPortAdvertisesTheGivenAddress`
+  fails on this Mac because it has IPv6 ULA addresses: with `ICE.PublicIP`
+  set, pion's address rewrite replaces the IPv4 host candidates only, so
+  the IPv6 host candidates are advertised unrewritten beside the public
+  address, against the flag's description. Linux CI runners have no
+  routable IPv6 and never see it. This is the feature under test, not a
+  trait of the test: either the product gathers UDP4 alone when the public
+  address is IPv4 (`hostagent/peer.go`, a change of its own under
+  AGENTS.md) or the test accepts the IPv6 candidates, which weakens its
+  claim. Decided (2026-10-17): the test is not weakened; it stays as it is
+  and fails on a dual-stack Mac until the owner says whether the product
+  gathers UDP4 alone with an IPv4 public address, which would be a
+  hostagent pull request of its own. This pull request says so.
+- `TestFirstReadWaitsForTheFirstPong/start` (`internal/hostagent`) failed
+  once in the full run with the race detector (the first read refused
+  after the 3-second bound) and passed three of three alone. Watched, not
+  changed: a timing margin under load, if it recurs.
 
 ## Out of scope
 
