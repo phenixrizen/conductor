@@ -327,13 +327,14 @@ test('the save toast says the server restarted for a server setting, and Saved a
   const save = page.locator('[data-save-settings]')
   await expect(save).toBeDisabled()
   // Yolo is how agents run: the save restarts the server, and the toast says so.
-  await page.getByRole('switch', { name: 'Skip permission prompts' }).click()
+  await page.locator('[data-yolo-switch]').click()
   await expect(save).toHaveText('Save and restart the server')
   await save.click()
-  await expect(page.getByText('Saved; the server restarted')).toBeVisible()
+  // Exact: the toaster also announces the toast in a hidden live region whose text begins with its own word.
+  await expect(page.getByText('Saved; the server restarted', { exact: true })).toBeVisible()
   await expect(save).toBeDisabled()
   // Closing to the tray is the window's: saved, no restart.
-  await page.getByRole('switch', { name: /Closing the window keeps Conductor in the tray/ }).click()
+  await page.locator('[data-tray-switch]').click()
   await expect(save).toHaveText('Save')
   await save.click()
   await expect(page.getByText('Saved', { exact: true })).toBeVisible()

@@ -210,7 +210,7 @@ onMounted(load)
           <template #header><h2 class="font-semibold">How agents run</h2></template>
           <div class="flex flex-col gap-4">
             <UFormField label="Yolo" description="Launch every agent with its yolo recipe, skipping its permission prompts (Codex's drops its sandbox). Only for roots you would let an agent change unasked.">
-              <USwitch v-model="form.yolo" label="Skip permission prompts" />
+              <USwitch v-model="form.yolo" label="Skip permission prompts" data-yolo-switch />
             </UFormField>
             <UFormField label="Reach" description="How the server finds out it can be reached from outside your network. Links become public only once a TLS listener has a certificate.">
               <USelect v-model="form.reach" :items="reachItems" class="w-full" />
@@ -240,7 +240,7 @@ onMounted(load)
         </UCard>
 
         <AboutCard :versions="versions">
-          <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" />
+          <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
         </AboutCard>
         </div>
 
