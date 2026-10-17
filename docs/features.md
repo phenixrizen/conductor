@@ -1123,8 +1123,10 @@ request each from main.
   #124 passed: a guest in Chrome on a view link through the switchyard,
   connected over WebRTC directly, saw a hosted session's last output line,
   then "session ended" with its exit code, not "link revoked".
-- **The review process** (#184, 2026-10-14, the owner's rules after review
-  loops of 20 to 30 rounds). A change to a state machine, a protocol,
+- **The historical review process** (#184, 2026-10-14; superseded for current
+  work by `AGENTS.md` and `docs/review-policy.md`, including planning triggers,
+  budgets, behind-base review and parallel work). These were the owner's rules
+  after review loops of 20 to 30 rounds. A change to a state machine, a protocol,
   concurrency or a security behaviour starts with `docs/plans/<branch>.md`
   (the events, their orders, the invariants, the scope, the tests),
   reviewed before code. A bug the change introduces, exposes or needs is
