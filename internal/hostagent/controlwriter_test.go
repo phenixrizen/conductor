@@ -1106,8 +1106,11 @@ func TestARetryWhoseConnectionWasReplacedAsItSentTellsTheReplacement(t *testing.
 		if !ok {
 			return
 		}
+		// Counted before it is published: the test starts the retry once
+		// it has the first, which is then counted for sure.
+		n := sent.Add(1)
 		out <- m
-		if sent.Add(1) == 2 {
+		if n == 2 {
 			<-release // the retry's: its result waits
 		}
 	}
