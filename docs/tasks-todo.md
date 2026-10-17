@@ -4,10 +4,11 @@ The backlog moved to GitHub on 2026-10-13. Every bug known and every
 feature set aside is now an
 [issue](https://github.com/phenixrizen/conductor/issues), and the work is
 on the project board **Conductor**
-(https://github.com/users/phenixrizen/projects/3). AGENTS.md ("Issues and the
-project board") says how issues are written, labelled and moved. Security
-findings are not among them: they stay in the owner's private document
-until their fix has shipped.
+(https://github.com/users/phenixrizen/projects/3). `AGENTS.md` and
+`docs/issue-workflow.md` define the current task workflow. Undisclosed security
+findings belong in this repository's GitHub Draft Security Advisories and remain
+private until the owner explicitly authorizes disclosure; see
+`docs/security-workflow.md`. This historical mapping is not a second backlog.
 
 This file keeps only where each of its entries went, for the rounds in
 `features.md` and the plans that name "the todo".
