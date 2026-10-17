@@ -5,9 +5,10 @@ fails 21 Go tests (in session, api, cli, config and hostagent) and
 `make test-e2e` 39 Playwright tests that pass in CI on Linux. All but one
 come from a trait of the machine (its filesystem, its sockets, what is
 installed), not from the feature under test; the one that does not is
-left to the owner (see Pending). This change makes the rest pass there
-without loosening what they check: Linux runs the same checks as before,
-and each change is in a test or a harness, never in the product.
+left to the owner (see Pending). This change addresses the harness
+assumptions below; remaining native-Mac checks are recorded explicitly.
+Linux runs the same checks as before, and each change is in a test or a
+harness, never in the product.
 
 A plan is written although no state machine, protocol, concurrency or
 security behaviour changes (AGENTS.md, Reviews): it is the record of which
@@ -142,14 +143,18 @@ Trait 6, Neovim absent:
 
 Trait 7, bash 3.2:
 
-- `web/e2e/server.ts` `stubBashDir` finds a bash of version 4 or later:
-  PATH's own (CI's, nothing changes there), else one at
-  `/opt/homebrew/bin`, `/usr/local/bin` or `~/.local/bin`, put first on
-  the server's PATH; none is an error that names the requirement, so the
-  suite says what it needs instead of failing spec by spec. This machine
-  has none: installing one (built under `~/.local`, or Homebrew's) is the
-  owner's step; with it the seven specs above are expected to pass, which
-  is not verified here.
+- `web/e2e/server.ts` `stubBash` probes bash 4 or later and the stub's
+  numeric microsecond clock: bash 5's `EPOCHREALTIME`, or bash 4 with GNU
+  date. Bash 4 with BSD date is rejected because `%6N` remains literal.
+  Its selected executable replaces `@BASH@` in stub catalogs and launches
+  hosted stubs directly; changing PATH alone would leave `/bin/bash`
+  commands pinned to the incompatible system shell.
+  It tries PATH's bash, then `/opt/homebrew/bin`, `/usr/local/bin` and
+  `~/.local/bin`, using the proposed server PATH for each probe. None is
+  an error naming the requirement, rather than failing spec by spec.
+  The original Mac had no suitable bash; installation remains an owner
+  setup step. A successful capability probe does not establish that the
+  seven affected specs pass on that Mac; they still need a real run.
 
 Trait 8, the Mac's keys:
 
@@ -195,6 +200,7 @@ Trait 8, the Mac's keys:
 
 ## Review
 
-The Codex adversarial review cannot run on this machine: the plugin is not
-installed (`codex_review.py` refuses with the install steps). A limitation,
-not a pass; the pull request says so.
+The original Mac could not run the Codex adversarial review because its
+plugin was not installed. That was a limitation, not a pass. Subsequent
+independent review results and reviewed revisions are recorded on PR #255
+and its linked task checkpoint; this plan does not replace those receipts.
