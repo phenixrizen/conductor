@@ -1,7 +1,6 @@
 package hostagent
 
 import (
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,14 +31,17 @@ func TestRequestQueueRunsInOrderAndRefusesPastItsBound(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	before := runtime.NumGoroutine()
 	var refused []int
 	for i := range maxQueued + 10 {
 		if !q.add(request{run: job(i)}) {
 			refused = append(refused, i)
 		}
 	}
-	if n := runtime.NumGoroutine() - before; n > 1 {
+	// The queue's own count of the goroutines it started: the process's
+	// count (runtime.NumGoroutine) took any goroutine another test left
+	// starting or ending in the window for the queue's, and a stack scan
+	// cannot tell this queue's worker from another's (#242).
+	if n := q.goroutinesStarted(); n != 1 {
 		t.Errorf("%d goroutines for one queue", n)
 	}
 	if len(refused) != 9 || refused[0] != maxQueued+1 {
@@ -57,6 +59,17 @@ func TestRequestQueueRunsInOrderAndRefusesPastItsBound(t *testing.T) {
 			t.Fatalf("ran %v", ran)
 		}
 	}
+	if n := q.goroutinesStarted(); n != 1 {
+		t.Errorf("%d goroutines ran the queue", n)
+	}
+}
+
+// goroutinesStarted is how many goroutines the queue has started for its
+// requests so far.
+func (q *requestQueue) goroutinesStarted() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.started
 }
 
 // An idle queue holds no goroutine; the next request starts one again.
