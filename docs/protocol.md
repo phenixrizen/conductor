@@ -637,7 +637,10 @@ A host that loses its connection reconnects with `resume` and the secret from
 `registered`. The session shows `host_disconnected` in the meantime and is
 removed after 60 s without the host. A server that no longer knows the session (a restarted switchyard keeps
 hosted sessions in memory) closes the resume with `4404`; the host then
-registers afresh.
+registers afresh. On every connection it starts, the host sends its
+session's `attention`, the empty state included: the server keeps the
+attention it had when the host went, so a question answered at the host's
+own terminal while it was away leaves the listing when the host is back.
 
 `register` may carry `host.instance` (a secret of the host process, at most
 64 bytes, never logged) and `session.localId` (the session's id on the host,
