@@ -1197,14 +1197,34 @@ request each from main.
   terminal's 12rem minimum is gone wherever it is shown (the editor
   column, wall tiles, the Roundhouse, run tiles, the paste page), so its
   last row and cursor stay inside a short pane.
-- **Two test races** (#199, #210, issues #190, #202): `chat.spec` waits for
-  a member's first turn to end before posting its question, and finds its
-  hosted session by the id its host registered.
-- **Set aside for later, by the owner:** [#193](https://github.com/phenixrizen/conductor/issues/193)'s
-  change (an asked question outlasting its turn's done) is a draft (#207):
-  review rounds 4 to 6 each found one more way a write could count as the
-  answer to a question, so its answer-claim rules are being redesigned as
-  one model in `docs/plans/codex-needs-you.md` before more code.
+- **Test races** (#199, #210, #222, #216, issues #190, #202, #211,
+  #217–#219): `chat.spec` waits for a member's first turn to end before
+  posting its question; the specs with a hosted session (`chat`,
+  `hostedend`, `linkcheck`, `sidebar`) find it by the id its host
+  registered and end it through the host before the host is killed; the
+  wall test keeps its tile alone.
+- **A narrowed wall tile draws its rows on their rows** (#223, issue
+  #221). xterm.js 6.0's reflow of a tile with no scrollback moved the
+  screen one row past its buffer when the wall narrowed the tile with its
+  cursor above the last row and longer lines above it, so the tile drew
+  its rows rotated by one and its cursor off its row. Tiles keep a
+  1000-row scrollback (a terminal is never made with none), fit without
+  the scrollbar's gutter their pane hides, and the wheel over a tile
+  scrolls its history, passing to the page at either end.
+- **An agent's own question stays in Needs you after its turn ends**
+  (#207, issue #193; the model in `docs/plans/codex-needs-you.md`). A
+  question an agent asked (a hook's, `conductor notify --ask`'s, the MCP
+  ask, Codex's bell) outlasts the done of the turn that asked it, until
+  someone answers. First response wins: a question is open, claimed by the
+  first answer on its way, resolved when that answer lands, consumed when
+  keys typed at its dialog take it, withdrawn when the screen moves past
+  it; only a resolve records an answer, raw keys naming no question answer
+  none, and a claim whose write is refused or stranded goes back to open.
+  Twelve Codex rounds; every finding reproduced with a test and fixed, but
+  for round 12's three, which the owner set aside as issues #224–#226 (a
+  startup dialog drawn before a stranded line's hold; a wrapped row
+  rewritten after the screen grew; a synchronized frame ending on the
+  alternate screen).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
