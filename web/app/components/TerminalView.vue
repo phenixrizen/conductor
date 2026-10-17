@@ -79,6 +79,9 @@ const sizedBy = ref('')
 const subscriberId = ref('')
 const roster = ref<ViewerInfo[]>([])
 const sessionSize = ref({ cols: 0, rows: 0 })
+// grid is the terminal as drawn (xterm's own columns and rows), on the host as data-cols and data-rows: the tests read a cell's
+// place from it beside the host's box, since the session's size (the API's) can lag a fit the page just made.
+const grid = ref({ cols: 0, rows: 0 })
 const welcomed = ref(false)
 function sizerView(): SizerView {
   return { fit: props.fit, mayFit: mayFit(), welcomed: welcomed.value, sizer: sizerKnown.value, sizedBy: sizedBy.value, me: subscriberId.value, compact: props.compact, ended: ended.value, roster: roster.value, cols: sessionSize.value.cols, rows: sessionSize.value.rows }
@@ -689,6 +692,7 @@ onMounted(() => {
   })
   rightClickPastes.value = readRightClickPastes(typeof localStorage === 'undefined' ? null : localStorage)
   term.onSelectionChange(() => (hasSelection.value = !!term?.hasSelection()))
+  term.onResize(({ cols, rows }) => (grid.value = { cols, rows }))
   stopTheme = watch(theme, (t) => {
     if (term) term.options.theme = t
   })
@@ -726,6 +730,7 @@ onMounted(() => {
     return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && ALT_PASSTHROUGH_CODES.has(e.code))
   })
   term.open(host.value!)
+  grid.value = { cols: term.cols, rows: term.rows }
   // Capture, so a right-click that copies or pastes never reaches the menu's trigger.
   window.addEventListener('mousedown', onAnyMouseDown, true)
   window.addEventListener('keydown', onAnyKeyDown, true)
@@ -801,7 +806,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="relative h-full w-full overflow-hidden" :class="compact ? '' : 'rounded-lg border border-default'">
     <UContextMenu :items="terminalMenu" :disabled="compact">
-      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
+      <div ref="host" class="terminal-host" :class="{ 'terminal-compact': compact, 'terminal-scale': scaledView, 'terminal-tile': props.fit === 'tile' }" :data-ended="ended ? 'true' : undefined" :data-renderer="renderer" :data-cols="grid.cols || undefined" :data-rows="grid.rows || undefined" :aria-label="readOnly ? 'terminal (read-only)' : 'terminal'" role="region" />
     </UContextMenu>
 
     <div v-if="sizerChip" class="absolute right-2 bottom-2 z-10 flex items-center gap-2 rounded-md border border-default bg-default/90 py-1 pr-1 pl-2.5 text-xs shadow-sm backdrop-blur-sm" data-terminal-sizer :data-sizer-by="sizedBy">
