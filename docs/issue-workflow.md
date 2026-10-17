@@ -196,17 +196,26 @@ At https://github.com/users/phenixrizen/projects/3/workflows inspect:
    the issue remains In review. No second board-writing Actions workflow is added.
 
 Both repositories had no rulesets and main protection returned 'Branch not
-protected'. The file alone is NOT a required merge check. After merging this
-bootstrap and observing a successful run, Settings → Rules → Rulesets: create
+protected'. A workflow file alone is NOT a required merge check. After the
+helper and workflow are implemented and merged, verify that `issue-contract`
+appears on an actual PR's Checks tab and that correcting evidence and rerunning
+that same run clears its failure. Required-check association has not been
+validated live. Only then, Settings → Rules → Rulesets: create
 (or narrowly extend) a branch ruleset targeting `main`; require PRs, require
 branches up to date, and require the check `issue-contract` alongside the
 existing checks the owner chooses. Protect workflow/helper changes with owner
 review. Do not replace unrelated settings or imply these were configured.
 
-The contract workflow uses `pull_request_target` with read-only permissions and
-checks out only main; it never executes PR files. The new bootstrap workflow
-cannot run from main before this PR merges. Validate these initial PRs with
-`python3 scripts/work_issue.py ci --pr PR_251` locally. Separate ordinary PR
-CI runs helper tests. Once installed, recheck changed checkpoint/exception
-comments with `gh workflow run issue-contract.yml -f pr=PR_251`, or rerun
-its check; comment edits alone do not automatically trigger it.
+The planned contract workflow uses `pull_request_target` with read-only
+permissions and checks out only main; it never executes PR files. Conductor
+does not yet contain this helper or workflow. Once implemented, validate the
+bootstrap locally with `python3 scripts/work_issue.py ci --pr PR_NUMBER`.
+
+Once installed on main, comment edits alone do not trigger it. Find the existing
+run through the PR's Checks tab or `gh pr checks PR_NUMBER --repo
+phenixrizen/conductor --json name,link`. Rerun that run with `gh run rerun RUN_ID
+--repo phenixrizen/conductor --failed`, wait with `gh run watch RUN_ID --repo
+phenixrizen/conductor --exit-status`, and confirm the result with `gh pr checks`.
+A separate manually dispatched run does not replace the PR's failed check.
+If no PR-associated check appears, resolve that association before making it
+a branch requirement.
