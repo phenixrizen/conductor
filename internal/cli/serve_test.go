@@ -492,28 +492,71 @@ func writeTestCert(t *testing.T, dir string) (certPath, keyPath string) {
 	return certPath, keyPath
 }
 
+// serving is a `conductor serve` a test runs in a goroutine. stop cancels
+// it and waits for it once, whoever calls first, and is registered as a
+// cleanup at the start: a t.Fatalf on the way (a startup that never logged
+// its line) leaves no server running into the cleanups registered before
+// it, the restore of terminalOf among them, nor into the next test.
+type serving struct {
+	cancel context.CancelFunc
+	done   chan error
+	once   sync.Once
+	err    error
+}
+
+// startServing runs `conductor serve` with args in a goroutine; a nonzero
+// exit code with no error is an error.
+func startServing(t *testing.T, args []string, stdin io.Reader, stdout, stderr io.Writer) *serving {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	sv := &serving{cancel: cancel, done: make(chan error, 1)}
+	go func() {
+		code, err := runServe(ctx, args, stdin, stdout, stderr)
+		if err == nil && code != 0 {
+			err = fmt.Errorf("exit code %d", code)
+		}
+		sv.done <- err
+	}()
+	t.Cleanup(func() { sv.stop() })
+	return sv
+}
+
+// stop cancels the server and returns what it returned; once stopped, or
+// seen returned, it returns the same again.
+func (sv *serving) stop() error {
+	sv.once.Do(func() {
+		sv.cancel()
+		sv.err = <-sv.done
+	})
+	return sv.err
+}
+
+// returned reports whether the server has returned on its own, and what it
+// returned.
+func (sv *serving) returned() (error, bool) {
+	select {
+	case err := <-sv.done:
+		sv.once.Do(func() { sv.err = err })
+		return err, true
+	default:
+		return nil, false
+	}
+}
+
 // serveWhile runs `conductor serve` until marker is logged, calls during
 // with the logs so far while the server runs, then stops it and returns
 // everything logged.
 func serveWhile(t *testing.T, marker string, during func(logs string), args ...string) string {
 	t.Helper()
 	t.Cleanup(agents.ForgetBinary())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	var logs syncBuffer
-	done := make(chan error, 1)
-	go func() {
-		code, err := runServe(ctx, append([]string{"--listen", "127.0.0.1:0"}, args...), strings.NewReader(""), io.Discard, &logs)
-		if err == nil && code != 0 {
-			err = fmt.Errorf("exit code %d", code)
-		}
-		done <- err
-	}()
+	sv := startServing(t, append([]string{"--listen", "127.0.0.1:0"}, args...), strings.NewReader(""), io.Discard, &logs)
 	deadline := time.After(10 * time.Second)
 	for !strings.Contains(logs.String(), marker) {
-		select {
-		case err := <-done:
+		if err, ok := sv.returned(); ok {
 			t.Fatalf("serve returned before %q: %v\n%s", marker, err, logs.String())
+		}
+		select {
 		case <-deadline:
 			t.Fatalf("serve never logged %q:\n%s", marker, logs.String())
 		case <-time.After(10 * time.Millisecond):
@@ -522,8 +565,7 @@ func serveWhile(t *testing.T, marker string, during func(logs string), args ...s
 	if during != nil {
 		during(logs.String())
 	}
-	cancel()
-	if err := <-done; err != nil {
+	if err := sv.stop(); err != nil {
 		t.Fatalf("serve: %v\n%s", err, logs.String())
 	}
 	return logs.String()
@@ -680,26 +722,20 @@ func TestServeNamesTheGeneratedTokensFileOnTheTerminal(t *testing.T) {
 	old := terminalOf
 	t.Cleanup(func() { terminalOf = old })
 	terminalOf = func(io.Writer) io.Writer { return &tty }
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	var logs, out syncBuffer
-	done := make(chan error, 1)
-	go func() {
-		_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
-		done <- err
-	}()
+	sv := startServing(t, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
 	deadline := time.After(10 * time.Second)
 	for !strings.Contains(out.String(), "\n") {
-		select {
-		case err := <-done:
+		if err, ok := sv.returned(); ok {
 			t.Fatalf("serve returned: %v\n%s", err, logs.String())
+		}
+		select {
 		case <-deadline:
 			t.Fatalf("no handshake:\n%s", logs.String())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	cancel()
-	if err := <-done; err != nil {
+	if err := sv.stop(); err != nil {
 		t.Fatalf("serve: %v\n%s", err, logs.String())
 	}
 	var h handshake
@@ -889,19 +925,14 @@ func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
 
 		// With --print-listen it starts: its token is the handshake's alone,
 		// the terminal and the log say so, and the file stays the first's.
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 		var out, logs syncBuffer
-		done := make(chan error, 1)
-		go func() {
-			_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &terminalStderr{&logs})
-			done <- err
-		}()
+		sv := startServing(t, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &terminalStderr{&logs})
 		deadline := time.After(10 * time.Second)
 		for !strings.Contains(out.String(), "\n") {
-			select {
-			case err := <-done:
+			if err, ok := sv.returned(); ok {
 				t.Fatalf("serve returned: %v\n%s", err, logs.String())
+			}
+			select {
 			case <-deadline:
 				t.Fatalf("no handshake:\n%s", logs.String())
 			case <-time.After(10 * time.Millisecond):
@@ -910,8 +941,7 @@ func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
 		if got := readTokenFile(t, path); got != first {
 			t.Fatalf("a second server replaced the token file: %q, was %q", got, first)
 		}
-		cancel()
-		if err := <-done; err != nil {
+		if err := sv.stop(); err != nil {
 			t.Fatalf("serve: %v\n%s", err, logs.String())
 		}
 		var h handshake
