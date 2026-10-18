@@ -12,7 +12,7 @@ const gooseDir = ".agents/plugins/conductor/"
 
 var gooseAssets = map[string]string{
 	"goose/hooks/hooks.json": jsonAsset(`{"hooks":{` + hookLists(`{"hooks":[{"type":"command","command":"{{BIN}} notify --goose-hook"}]}`,
-		"Stop", "PostToolUse") + `}}`),
+		"Stop", "UserPromptSubmit", "PreToolUse", "PostToolUse") + `}}`),
 }
 
 func gooseSteps(hooksDir string) []step {

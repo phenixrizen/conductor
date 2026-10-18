@@ -356,9 +356,11 @@ func MapCodexHook(raw []byte) (req Request, ok bool) {
 // MapCopilotHook turns a GitHub Copilot CLI hook payload into an update.
 // Copilot names few of its events: a hook_event_name it knows decides, and
 // otherwise the fields that are there do. notification_type is a
-// notification, error an error, toolResult a tool that ran, stopReason the end
-// of a turn and prompt a prompt the user sent. A permission prompt has no
-// quick-reply options: the keys Copilot's dialog takes are not verified yet.
+// notification, error an error, toolResult a tool that ran, toolArgs without
+// one a tool about to run (preToolUse: the agent is working, as Claude
+// Code's PreToolUse says), stopReason the end of a turn and prompt a prompt
+// the user sent. A permission prompt has no quick-reply options: the keys
+// Copilot's dialog takes are not verified yet.
 func MapCopilotHook(raw []byte) (req Request, ok bool) {
 	var h struct {
 		HookEventName    string          `json:"hook_event_name"`
@@ -378,7 +380,7 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 		return Request{}, false
 	}
 	event := strings.ToLower(h.HookEventName)
-	if !slices.Contains([]string{"notification", "erroroccurred", "posttooluse", "agentstop", "userpromptsubmitted"}, event) {
+	if !slices.Contains([]string{"notification", "erroroccurred", "pretooluse", "posttooluse", "agentstop", "userpromptsubmitted"}, event) {
 		// No name, or one this mapper does not know: the fields decide.
 		event = ""
 		switch {
@@ -388,6 +390,8 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 			event = "erroroccurred"
 		case present(h.ToolResult):
 			event = "posttooluse"
+		case h.ToolName != "" && present(h.ToolArgs):
+			event = "pretooluse"
 		case h.StopReason != nil:
 			event = "agentstop"
 		case h.Prompt != nil:
@@ -403,6 +407,8 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 		return Request{State: "needs_input", Message: msg, Kind: "prompt"}, true
 	case "erroroccurred":
 		return Request{Event: "error", Message: truncate(errorText(h.Error), 200), Tool: h.ToolName}, true
+	case "pretooluse":
+		return Request{State: "working"}, true
 	case "posttooluse":
 		return Request{Event: "tool_use", Tool: h.ToolName, Files: copilotFiles(h.ToolName, h.ToolArgs, h.ToolResult, h.Cwd)}, true
 	case "agentstop":
@@ -414,8 +420,10 @@ func MapCopilotHook(raw []byte) (req Request, ok bool) {
 }
 
 // MapCursorHook turns a Cursor CLI hook payload into an update: the end of a
-// turn, or a tool that ran (a file edit is one, named after the file: its
-// name, not its path, which could fill the 100 bytes the server keeps).
+// turn, a prompt submitted or a tool about to run (the agent is working, as
+// Claude Code's PreToolUse says), or a tool that ran (a file edit is one,
+// named after the file: its name, not its path, which could fill the 100
+// bytes the server keeps).
 func MapCursorHook(raw []byte) (req Request, ok bool) {
 	var h struct {
 		HookEventName  string `json:"hook_event_name"`
@@ -429,6 +437,10 @@ func MapCursorHook(raw []byte) (req Request, ok bool) {
 	switch h.HookEventName {
 	case "stop":
 		return Request{State: "done", Kind: "done", AgentSession: truncate(h.ConversationID, 128), Turn: true}, true
+	case "beforeSubmitPrompt":
+		return Request{State: "working", AgentSession: truncate(h.ConversationID, 128), Turn: true}, true
+	case "preToolUse":
+		return Request{State: "working"}, true
 	case "postToolUse":
 		return Request{Event: "tool_use", Tool: h.ToolName}, true
 	case "afterFileEdit":
@@ -442,15 +454,18 @@ func MapCursorHook(raw []byte) (req Request, ok bool) {
 
 // MapAgyHook turns an Antigravity hook payload into an update. The payload
 // names no event, and the flag that ran the mapper says only that it is
-// Antigravity's: a toolCall is a tool that ran (PostToolUse), a
-// terminationReason the end of a turn (Stop).
+// Antigravity's: a toolCall with the error field is a tool that ran
+// (PostToolUse, which carries the field, empty for a tool that succeeded),
+// one without it a tool about to run (PreToolUse: the agent is working, as
+// Claude Code's PreToolUse says), a terminationReason the end of a turn
+// (Stop). Verified against Antigravity 1.2.14 (testdata/agy-hooks.json).
 func MapAgyHook(raw []byte) (req Request, ok bool) {
 	var h struct {
 		ToolCall *struct {
 			Name string          `json:"name"`
 			Args json.RawMessage `json:"args"`
 		} `json:"toolCall"`
-		Error             string  `json:"error"`
+		Error             *string `json:"error"`
 		TerminationReason *string `json:"terminationReason"`
 		ConversationID    string  `json:"conversationId"`
 	}
@@ -458,9 +473,11 @@ func MapAgyHook(raw []byte) (req Request, ok bool) {
 		return Request{}, false
 	}
 	switch {
+	case h.ToolCall != nil && h.Error == nil:
+		return Request{State: "working"}, true
 	case h.ToolCall != nil:
 		var files []FileRef
-		if h.Error == "" {
+		if *h.Error == "" {
 			files = agyFiles(h.ToolCall.Name, h.ToolCall.Args)
 		}
 		return Request{Event: "tool_use", Tool: h.ToolCall.Name, Files: files}, true
@@ -471,11 +488,12 @@ func MapAgyHook(raw []byte) (req Request, ok bool) {
 }
 
 // MapGooseHook turns a Goose hook payload, which names its event in "event",
-// into an update: the end of a turn (with its last message), or a tool that
-// ran with the files it touched: write writes and edit edits tool_input's
-// path (relative to working_dir), shell names what its command plainly
-// reads or writes (shellFiles). Verified against Goose 1.54.0
-// (testdata/goose-hooks.json).
+// into an update: the end of a turn (with its last message), a prompt
+// submitted or a tool about to run (the agent is working, as Claude Code's
+// PreToolUse says), or a tool that ran with the files it touched: write
+// writes and edit edits tool_input's path (relative to working_dir), shell
+// names what its command plainly reads or writes (shellFiles). Verified
+// against Goose 1.54.0 (testdata/goose-hooks.json).
 func MapGooseHook(raw []byte) (req Request, ok bool) {
 	var h struct {
 		Event                string          `json:"event"`
@@ -490,6 +508,8 @@ func MapGooseHook(raw []byte) (req Request, ok bool) {
 	switch h.Event {
 	case "Stop":
 		return Request{State: "done", Kind: "done", Message: truncate(strings.TrimSpace(h.LastAssistantMessage), 200)}, true
+	case "UserPromptSubmit", "PreToolUse":
+		return Request{State: "working"}, true
 	case "PostToolUse":
 		return Request{Event: "tool_use", Tool: h.ToolName, Files: gooseFiles(h.ToolName, h.ToolInput, h.WorkingDir)}, true
 	}

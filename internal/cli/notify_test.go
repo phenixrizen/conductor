@@ -195,6 +195,11 @@ func TestNotifyHookFlagsMapTheirPayloads(t *testing.T) {
 		{"--cursor-hook", `{"hook_event_name":"afterFileEdit","file_path":"/x/a.go"}`, "/api/sessions/s1/events", map[string]any{"type": "file", "op": "edit", "path": "/x/a.go", "tool": "edit a.go"}},
 		{"--agy-hook", `{"terminationReason":"completed"}`, "/api/sessions/s1/attention", map[string]any{"state": "done", "message": "completed", "kind": "done", "turn": true}},
 		{"--goose-hook", `{"event":"PostToolUse","tool_name":"shell"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_use", "tool": "shell"}},
+		// A tool about to run is the agent working (#195), for every agent whose hooks say so.
+		{"--copilot-hook", `{"sessionId":"s","toolName":"bash","toolArgs":{"command":"ls"}}`, "/api/sessions/s1/attention", map[string]any{"state": "working"}},
+		{"--cursor-hook", `{"conversation_id":"c","hook_event_name":"preToolUse","tool_name":"Shell"}`, "/api/sessions/s1/attention", map[string]any{"state": "working"}},
+		{"--agy-hook", `{"toolCall":{"name":"run_command","args":{}}}`, "/api/sessions/s1/attention", map[string]any{"state": "working"}},
+		{"--goose-hook", `{"event":"PreToolUse","tool_name":"shell"}`, "/api/sessions/s1/attention", map[string]any{"state": "working"}},
 		{"--codex-hook", `{"hook_event_name":"PermissionRequest","tool_name":"shell"}`, "/api/sessions/s1/attention", map[string]any{"state": "needs_input", "message": "Allow shell?", "kind": "permission"}},
 		{"--claude-hook", `{"hook_event_name":"PermissionDenied","tool_name":"Bash"}`, "/api/sessions/s1/events", map[string]any{"type": "tool_denied", "tool": "Bash"}},
 	}
@@ -205,7 +210,7 @@ func TestNotifyHookFlagsMapTheirPayloads(t *testing.T) {
 				t.Fatalf("exit %d %v %q", code, err, stderr)
 			}
 			want := 1
-			if c.flag == "--cursor-hook" {
+			if c.flag == "--cursor-hook" && strings.Contains(c.stdin, "afterFileEdit") {
 				want = 2
 			}
 			if ns.calls != want || ns.path != c.path || !reflect.DeepEqual(ns.body, c.body) {

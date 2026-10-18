@@ -915,6 +915,31 @@ func TestAttentionKindAndOptions(t *testing.T) {
 	}
 }
 
+// A question the agent asked and carried on from gives way while the agent
+// works: its hooks' report of a tool about to run (every agent's pre-tool
+// event maps to working, #195) shows the session working, not Needs you,
+// until the turn ends or the agent asks again.
+func TestAWorkingReportSetsAnAskedQuestionAside(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	attention := func() map[string]any {
+		_, got := e.do("GET", "/api/sessions/"+id, adminToken, nil)
+		return got["session"].(map[string]any)["attention"].(map[string]any)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "message": "Which branch?", "kind": "prompt", "ask": true}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("ask: %d %v", resp.StatusCode, out)
+	}
+	if att := attention(); att["state"] != "needs_input" {
+		t.Fatalf("asked: %v", att)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "working"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("working: %d %v", resp.StatusCode, out)
+	}
+	if att := attention(); att["state"] != "working" {
+		t.Fatalf("after the agent's tool report: %v, want working", att)
+	}
+}
+
 // An agent whose signal is a pattern gets the detector when it is launched: a
 // prompt left on the last line marks its session needs_input. The same prompt
 // from an agent with no pattern does nothing.
