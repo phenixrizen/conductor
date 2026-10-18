@@ -861,3 +861,54 @@ func TestSameWordsIsTheQuestionWhateverTheWidth(t *testing.T) {
 		t.Fatalf("two commands that end alike: %q and %q", a, b)
 	}
 }
+
+// The approval's dialog erased by a frame that ends on the alternate screen:
+// the window made smaller with the dialog on it (the screen clipped until
+// erased whole), then the program erasing the main screen and drawing it
+// again without the dialog in a synchronized update, switching to the
+// alternate screen, ending the update there and returning. The main screen
+// reads settled, the question whose dialog the frame erased is withdrawn,
+// and typed text is taken again (#226).
+func TestAnApprovalErasedByAFrameEndedOnTheAlternateScreenIsWithdrawn(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{
+		TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`),
+		TrustAnswers: []Option{{Label: "Yes, trust this folder", Input: "\r"}},
+		Questions:    approvalQuestions(),
+	}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h› Ask Codex to do anything"))
+	waitPaste(t, s, true)
+	if res, err := s.Submit(t.Context(), Submission{Text: "check example.com", ByName: "crew"}); err != nil || !res.Entered {
+		t.Fatalf("the first prompt: %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	nextWrite(t, p)
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	att := waitAttention(t, s, asked)
+	if err := s.ResizeWith(sub, 78, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, settled, _, _ := s.asked.Whole(); settled {
+		t.Fatal("the screen made smaller with the dialog on it reads settled")
+	}
+	// One frame: the main screen erased and drawn again, the alternate
+	// screen entered, the update ended there, the main screen back.
+	p.outW.Write([]byte("\x1b[?2026h\x1b[2J\x1b[H✔ You approved codex to run curl -sI https://example.com this time\r\n› \x1b[?47h\x1b[?2026l\x1b[?47l"))
+	if a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone }); a.Source != SourceScreen {
+		t.Fatalf("the dialog withdrawn: %+v", a)
+	}
+	if a := s.Info().Attention; a.ID == att.ID {
+		t.Fatalf("the question still stands: %+v", a)
+	}
+	if _, settled, _, _ := s.asked.Whole(); !settled {
+		t.Fatal("the main screen, erased and drawn again by the frame, is not settled")
+	}
+	if res, err := s.Submit(t.Context(), Submission{Text: "thanks", By: sub}); err != nil || !res.Entered {
+		t.Fatalf("typed text after the dialog went: %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	nextWrite(t, p)
+}
