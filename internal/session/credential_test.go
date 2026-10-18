@@ -177,10 +177,19 @@ func TestBegunWriteLandsAndNothingQueuedBehindItDoes(t *testing.T) {
 			c.goneFor(ErrRevoked)
 			if closed {
 				s.DisconnectLink("l1")
-				// The connection's end wakes the Enter's waiter: refused
-				// before the program reads.
+				// The connection's end wakes both waiters: the Enter is
+				// refused before the program reads, and the begun key's
+				// sender is told the connection is gone while its key
+				// still lands when the program reads again. Both are
+				// waited for before the program reads: a key seen landed
+				// before its waiter saw the connection's end would be
+				// reported written, which is the order under load this
+				// test does not assert (#220).
 				if err := returnsWithin(t, 5*time.Second, "the Enter", func() error { return <-enter }); !errors.Is(err, ErrRevoked) {
 					t.Fatalf("the Enter: %v", err)
+				}
+				if err := returnsWithin(t, 5*time.Second, "the begun key", func() error { return <-key }); !errors.Is(err, ErrRevoked) {
+					t.Fatalf("the begun key: %v", err)
 				}
 			}
 			close(release)
@@ -192,10 +201,10 @@ func TestBegunWriteLandsAndNothingQueuedBehindItDoes(t *testing.T) {
 				if err := returnsWithin(t, 5*time.Second, "the Enter", func() error { return <-enter }); !errors.Is(err, ErrRevoked) {
 					t.Fatalf("the Enter: %v", err)
 				}
-			}
-			err := returnsWithin(t, 5*time.Second, "the key", func() error { return <-key })
-			if closed && !errors.Is(err, ErrRevoked) || !closed && err != nil {
-				t.Fatalf("the begun key: %v", err)
+				// The credential gone alone leaves the begun key be: written.
+				if err := returnsWithin(t, 5*time.Second, "the key", func() error { return <-key }); err != nil {
+					t.Fatalf("the begun key: %v", err)
+				}
 			}
 			if n := writes.Load(); n != 1 {
 				t.Fatalf("%d writes reached the program", n)
