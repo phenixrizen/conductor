@@ -221,6 +221,8 @@ test("a question the agent asks while one of Codex's async questions is pending 
   const worked = entries.find((e) => e.state === 'working' && e.at >= asked.at)!
   expect(worked.at - asked.at, 'the question stood its second').toBeGreaterThanOrEqual(950)
   expect(worked.at, `Working (${worked.at}) before the async question resolved (${resolved})`).toBeLessThan(resolved)
+  // The stub spins on after the resolution; a stop written before it began spinning is lost, and it spins its full thirty seconds.
+  await expect.poll(() => stubFile(state.home, stub, 'spin'), { timeout: 15_000, message: 'the stub spins after the resolution' }).toBe('spinning\n')
   stopSpin(state.home, stub)
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
   await yard.close()
@@ -247,6 +249,7 @@ test("with Codex 0.163's status the question stands until the async question res
     const asked = entries.find((e) => e.state === 'needs_input' && e.message === words)!
     const worked = entries.find((e) => e.state === 'working' && e.at >= asked.at)!
     expect(worked.at, `${mode}: Working only once the async question resolved`).toBeGreaterThanOrEqual(resolved - 5)
+    await expect.poll(() => stubFile(state.home, stub, 'spin'), { timeout: 15_000, message: `${mode}: the stub spins after the resolution` }).toBe('spinning\n')
     stopSpin(state.home, stub)
     const stopped = Date.now()
     // On a miss the received string carries the state, its source and the turn's entries.
