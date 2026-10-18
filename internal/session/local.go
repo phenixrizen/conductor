@@ -1003,9 +1003,9 @@ func (s *Local) startupOnScreen() bool {
 // one reading, Frame) shows one; or is half a frame (a synchronized update
 // under way) or cut by a window made smaller (DrawnAt), so that what it
 // shows is not known and the keys are taken to have reached a dialog rather
-// than the text (rawKeys keeps the hold); or shows a numbered choice of one
-// of the startup questions (startupChoiceShown), its heading scrolled off
-// a short screen while its choices stay. A window grown, nothing lost,
+// than the text (rawKeys keeps the hold); or shows a dialog's numbered
+// choices with no heading (startupChoiceShown), the heading scrolled off a
+// short screen while its choices stay. A window grown, nothing lost,
 // leaves the frame readable though not laid out for its size until erased
 // whole (Settled): what it shows is read. A dialog the program erased, row
 // by row or whole, leaves none of these, and the keys enter the text. The
@@ -1023,34 +1023,40 @@ func (s *Local) startupMayShow() bool {
 	if s.lastStartup(whole) != "" {
 		return true
 	}
-	return startupChoiceShown(whole, s.questions)
+	return startupChoiceShown(whole)
 }
 
-// choiceRow is a dialog's numbered choice as a row of the screen shows it:
-// an optional marker for the one highlighted, the number, the choice's
-// words ("› 1. Trust and continue", "  2. Quit").
-var choiceRow = regexp.MustCompile(`^\s*(?:[›>❯]\s*)?\d+\.\s+(.*\S)\s*$`)
+// A dialog's numbered choice as a row of the screen shows it: the number
+// and the choice's words ("  2. Quit", choiceRow), with the marker of the
+// one highlighted before it ("› 1. Trust and continue", Codex; "❯ 1. Yes, I
+// trust this folder", Claude Code: highlightedRow).
+var (
+	choiceRow      = regexp.MustCompile(`^\s*(?:[›>❯]\s*)?\d+\.\s+\S`)
+	highlightedRow = regexp.MustCompile(`^\s*[›>❯]\s*\d+\.\s+\S`)
+)
 
-// startupChoiceShown reports whether a row of whole, a screen's text, is a
-// numbered choice beginning with an answer's label of one of the startup
-// questions qs: a dialog whose heading scrolled off a short screen, or was
-// evicted from the output's tail by a footer redrawn in place, still shows
-// its choices, and a key typed then reaches it.
-func startupChoiceShown(whole string, qs []StartupQuestion) bool {
+// startupChoiceShown reports whether whole, a screen's text with no startup
+// question's heading on it, shows a dialog's choices: a numbered row with
+// the highlight marker, or two numbered rows or more. A dialog whose heading
+// scrolled off a short screen, or was evicted from the output's tail by a
+// footer redrawn in place, still shows its choices, and a key typed then
+// reaches it. The choices are read by their shape, not their words: the
+// catalog's answer labels name what an answer does ("Yes, trust this
+// folder"), not what the dialog draws ("Trust and continue"). A numbered
+// list in the program's own output during its startup reads as a dialog
+// too, and keeps a hold the keys may have entered; that errs on the side
+// of keeping the hold.
+func startupChoiceShown(whole string) bool {
+	numbered := 0
 	for _, row := range strings.Split(whole, "\n") {
-		m := choiceRow.FindStringSubmatch(row)
-		if m == nil {
-			continue
+		if highlightedRow.MatchString(row) {
+			return true
 		}
-		for i := range qs {
-			for _, a := range qs[i].Answers {
-				if a.Label != "" && strings.HasPrefix(m[1], a.Label) {
-					return true
-				}
-			}
+		if choiceRow.MatchString(row) {
+			numbered++
 		}
 	}
-	return false
+	return numbered >= 2
 }
 
 // heldSource reports whether a prompt of source src is a question the

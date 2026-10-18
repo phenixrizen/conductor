@@ -2094,7 +2094,9 @@ func TestAnEnterAfterAnErasedStartupQuestionEntersTheStrandedText(t *testing.T) 
 // reaches the dialog (the tail knows which was drawn, the screen shows its
 // choices), and the hold is kept.
 func TestAnEnterAtAStartupQuestionWhoseHeadingScrolledOffKeepsTheHold(t *testing.T) {
-	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Trust and continue", Input: "\r"}, {Label: "Quit", Input: "\x1b"}}}
+	// The catalog's labels for Codex, which name what an answer does, not
+	// what the dialog draws: the choices are read by their shape.
+	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}}}
 	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: []StartupQuestion{trust}})
 	var gone atomic.Bool
 	guest := linkedController(t, s, newChanSink(false), &gone)
@@ -2210,7 +2212,8 @@ func TestAnEnterDuringASynchronizedRedrawOfAStartupQuestionKeepsTheHold(t *testi
 // stay on the screen, numbered. The Enter still reaches the dialog, and the
 // hold is kept.
 func TestAnEnterAtAStartupQuestionScrolledOffAndEvictedFromTheTailKeepsTheHold(t *testing.T) {
-	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Trust and continue", Input: "\r"}, {Label: "Quit", Input: "\x1b"}}}
+	// The catalog's labels for Codex, as in the scrolled-off test above.
+	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}}}
 	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: []StartupQuestion{trust}})
 	var gone atomic.Bool
 	guest := linkedController(t, s, newChanSink(false), &gone)
@@ -2327,5 +2330,30 @@ func TestAnEnterAfterAStartupQuestionErasedRowByRowOnAGrownScreenEntersTheStrand
 	time.Sleep(400 * time.Millisecond)
 	if s.Held() {
 		t.Fatal("a hold followed the text the Enter entered")
+	}
+}
+
+// #224: a dialog's choices are read by their shape, not the catalog's
+// labels: a numbered row with the highlight marker (Codex's "›", Claude
+// Code's "❯"), or two numbered rows or more; one plain numbered row, or
+// prose, is no dialog.
+func TestStartupChoicesAreReadByTheirShape(t *testing.T) {
+	cases := []struct {
+		name  string
+		whole string
+		want  bool
+	}{
+		{"Codex's choices, the heading scrolled off", "› 1. Trust and continue\n  2. Quit\nenter continue · esc quit", true},
+		{"Claude Code's choices", "❯ 1. Yes, I trust this folder\n  2. No, exit\n", true},
+		{"one highlighted row alone", "  › 1. Update now\n", true},
+		{"two plain numbered rows", "1. Review hooks\n2. Trust all and continue\n", true},
+		{"one plain numbered row", "Steps:\n1. Install it\nthen run\n", false},
+		{"prose", "Trusted.\n> \n", false},
+		{"a number with no words", "1.\n2.\n", false},
+	}
+	for _, c := range cases {
+		if got := startupChoiceShown(c.whole); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
 	}
 }
