@@ -997,6 +997,26 @@ func (s *Local) startupOnScreen() bool {
 	return uncut && s.lastStartup(whole) != ""
 }
 
+// startupMayShow reports whether keys typed in the terminal may reach a
+// startup question: while the startup questions' watch lasts, the screen
+// (the frame the questions asked during the work are read from) shows one,
+// or is cut by a window made smaller (DrawnAt) so that what it shows is not
+// known whole, and the keys are taken to have reached a dialog rather than
+// the text (rawKeys keeps the hold). The output's tail (ScreenTail) is no
+// witness for this: a footer redrawn in place evicts a heading still on the
+// screen, and an erased dialog stays in it.
+func (s *Local) startupMayShow() bool {
+	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
+		return false
+	}
+	uncut, _, _ := s.asked.DrawnAt()
+	if !uncut {
+		return true
+	}
+	whole, _, _, _ := s.asked.Whole()
+	return s.lastStartup(whole) != ""
+}
+
 // heldSource reports whether a prompt of source src is a question the
 // session holds: the agent's trust or other startup question, or a
 // question it asks during its work. Typed text is refused while one shows
@@ -2391,21 +2411,21 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// put behind, and withdrawn once the screen shows it gone; one
 		// only the Escape held may answer is held answered (heldAnswer).
 		startupAnswer, heldAnswer := false, false
-		// The startup question drawn last, while the startup questions'
-		// watch lasts, asked or not yet: the keys reach it (rawKeys), as
-		// they reach a dialog drawn during the work (#224).
-		startupDrawn := ""
-		if s.trust != nil && s.trust.Watching() {
-			_, startupDrawn = s.startupShown(s.trust.Text())
-		}
-		// The startup question the keys reach is the one drawn last: the
-		// one the session shows, unless another has been drawn since and
-		// not asked yet, which they reach instead (shownDrawn false): a
-		// choice of the older one is no answer to it.
+		// The startup question the keys reach is the one drawn last (the
+		// output's tail tells which): the one the session shows, unless
+		// another has been drawn since and not asked yet, which they reach
+		// instead (shownDrawn false): a choice of the older one is no
+		// answer to it.
 		shownDrawn := true
-		if shown.State == AttentionNeedsInput && shown.Source == SourceTrust && startupDrawn != "" && !sameWords(startupDrawn, shown.words()) {
-			shownDrawn = false
+		if s.trust != nil && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.trust.Watching() {
+			if _, drawn := s.startupShown(s.trust.Text()); drawn != "" && !sameWords(drawn, shown.words()) {
+				shownDrawn = false
+			}
 		}
+		// Whether the keys may reach a startup question at all, asked or
+		// not yet, read off the screen (startupMayShow): then they did not
+		// enter a stranded line's text, and its hold is kept (rawKeys, #224).
+		startup := s.startupMayShow()
 		// A reply's keys to the startup question shown (claimed as the
 		// writer took them): its screen goes behind as a sure answer's does.
 		ownAnswer := question != "" && shownDrawn && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && shown.ID == question
@@ -2418,7 +2438,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// A person's keys: never an answer. They consume the dialog
 			// they reach, withdraw a bell's wait with their Enter, and
 			// withdraw the agent's own question set aside.
-			s.rawKeys(data, maybe, onScreen, startupDrawn != "", typedEnter || anyKey(maybe, isEnterKey), typed)
+			s.rawKeys(data, maybe, onScreen, startup, typedEnter || anyKey(maybe, isEnterKey), typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -3226,8 +3246,9 @@ func (s *Local) dialogGone(look uint64) {
 // hold follows, the stranded line's claim (a reply's, strandedClaim) goes,
 // and the question is consumed, or withdrawn when it is a wait with no
 // words; a question on the screen (a dialog drawn during the work and not
-// asked yet, onScreen; a startup question drawn, asked or not, startup)
-// keeps its hold, the keys having reached the dialog and not the text.
+// asked yet, onScreen; a startup question the screen shows or may show,
+// startup, see startupMayShow) keeps its hold, the keys having reached
+// the dialog and not the text.
 func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, startup, enter, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
