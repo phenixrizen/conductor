@@ -20,6 +20,15 @@ import (
 // version drawn word by word with cursor moves between.
 const codexUpdateScreen = "\x1b[?2026h\x1b[?25l\x1b[2;3H\x1b[1mUpdate available\x1b[22m\x1b[2m\x1b[2m \xc2\xb7 0.161.0 \xe2\x86\x92 0.162.1\x1b[3;3HRelease notes: \x1b[4m\x1b]8;;https://github.com/openai/codex/releases/latest\ahttps://github.com/openai/codex/releases/latest\x1b]8;;\a\x1b[5;1H\x1b[24m\x1b[22m\x1b[7m\x1b[1m\xe2\x80\xba 1. Update now (runs `npm install -g @openai/codex`)                                               \x1b[6;3H\x1b[27m\x1b[22m2.\x1b[6;6HSkip\x1b[7;3H3.\x1b[7;6HSkip\x1b[7;11Huntil\x1b[7;17Hnext\x1b[7;22Hversion\x1b[9;3H\x1b[1menter\x1b[22m\x1b[2m\x1b[2m continue \xc2\xb7 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m\x1b[2m skip\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l"
 
+// codexUpdateOverSplash is Codex 0.163.0's update question drawn over its
+// splash, as it drew it in a PTY on 2026-10-18 (an isolated HOME and
+// CODEX_HOME whose version.json named 0.164.0; no key was sent to that
+// screen): the TUI writes only the cells that differ from the frame before,
+// so the "e" of "Update", on the screen already from "OpenAI", is skipped
+// and the output reads "Updat available" where the screen reads the
+// heading whole (#165).
+const codexUpdateOverSplash = "\x1b[?2004h\x1b[>4;0m\x1b[>7u\x1b[?1004h\x1b[6n\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[?u\x1b[c\x1b[?2026h\x1b[?25l\x1b[?1049h\x1b[>4;0m\x1b[>7u\x1b[?1007l\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l\x1b[1;1H\x1b[J\x1b[?2026h\x1b[?25l\x1b[2;3H\x1b[38;2;99;168;248;49m>_ \x1b[1m\x1b[39;49mOpenAI Codex\x1b[22m\x1b[2m\x1b[2m (v0.163.0)\x1b[3;6Hloading\x1b[21;1H\x1b[22m\x1b[1m\xe2\x80\xba\x1b[21;3H\x1b[22m\x1b[2m\x1b[2mAsk Codex to do anything\x1b[24;3H\x1b[22m\x1b[1m?\x1b[24;5H\x1b[22mfor\x1b[24;9Hshortcuts\x1b[39m\x1b[49m\x1b[0m\x1b[1;1H\x1b[0 q\x1b[1;1H \x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[?25l\x1b[3;6H\x1b[2m/tmp/conductor-live/c2\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[39m\x1b[49m\x1b[0m\x1b[21;3H\x1b[?25h\x1b[?2026l\x1b[?2026h\x1b[?25l\x1b[21;2H\x1b[0m\x1b[49m\x1b[K\x1b[24;2H\x1b[0m\x1b[49m\x1b[K\x1b[2;3H\x1b[1mUpdat\x1b[2;9H available\x1b[22m\x1b[2m\x1b[2m \xc2\xb7 0.163.0 \xe2\x86\x92 0.164.0\x1b[3;3HRelease n\x1b[3;13Htes: \x1b[4m\x1b]8;;https://github.com/openai/codex/releases/latest\ahttps://github.com/openai/codex/releases/latest\x1b]8;;\a\x1b[5;1H\x1b[24m\x1b[22m\x1b[7m\x1b[1m\xe2\x80\xba 1. Update now (runs `npm install -g @openai/codex`)                           \x1b[6;3H\x1b[27m\x1b[22m2.\x1b[6;6HSkip\x1b[7;3H3.\x1b[7;6HSkip\x1b[7;11Huntil\x1b[7;17Hnext\x1b[7;22Hversion\x1b[9;3H\x1b[1menter\x1b[22m\x1b[2m\x1b[2m continue \xc2\xb7 \x1b[22m\x1b[1mesc\x1b[22m\x1b[2m\x1b[2m skip\x1b[21;1H\x1b[22m \x1b[39m\x1b[49m\x1b[0m\x1b[?2026l"
+
 // A question's words can be other words of its screen than the ones that
 // find it (the catalog's words): Codex's update question, found by its
 // highlighted "Update now (runs", shows its heading, so that "answered:"
@@ -908,6 +917,48 @@ func TestAnApprovalErasedByAFrameEndedOnTheAlternateScreenIsWithdrawn(t *testing
 	}
 	if res, err := s.Submit(t.Context(), Submission{Text: "thanks", By: sub}); err != nil || !res.Entered {
 		t.Fatalf("typed text after the dialog went: %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	nextWrite(t, p)
+}
+
+// A startup question's words are read off the screen, where a heading drawn
+// over the previous frame's cells reads whole; the output's tail holds it
+// in pieces (#165). Codex's update question drawn over its splash is raised
+// with its heading and its choices (the catalog offers the two skips, never
+// Update now); a key typed at it is taken as its answer, and the question
+// goes with the next screen.
+func TestAStartupQuestionsWordsAreReadOffTheScreen(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(codexUpdateOverSplash))
+	att := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if tail := s.trust.Text(); !strings.Contains(tail, "Updat available") || strings.Contains(tail, "Update available") {
+		t.Fatalf("the output's tail reads %q", tail)
+	}
+	if !strings.HasPrefix(att.Message, "Update available") || !strings.Contains(att.Message, "0.163.0 → 0.164.0") {
+		t.Fatalf("the question's words: %q", att.Message)
+	}
+	if len(att.Options) != 2 || att.Options[1].Label != "Skip until next version" {
+		t.Fatalf("the question's choices: %+v", att.Options)
+	}
+	// A person's key typed at the dialog: the program's dialog has it, the
+	// question is consumed by the screen's words too (holdStartupAnswered,
+	// or it would stay and block typed text), and it is withdrawn once the
+	// program draws the next screen; typed text is taken again then.
+	if err := s.Input(sub, []byte("3")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "3" {
+		t.Fatalf("written %q", got)
+	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H› Ask Codex to do anything"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	if res, err := s.Submit(t.Context(), Submission{Text: "hello", By: sub}); err != nil || !res.Entered {
+		t.Fatalf("typed text after the question went: %+v %v", res, err)
 	}
 	nextWrite(t, p)
 	nextWrite(t, p)
