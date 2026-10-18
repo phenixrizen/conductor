@@ -997,6 +997,63 @@ func (s *Local) startupOnScreen() bool {
 	return uncut && s.lastStartup(whole) != ""
 }
 
+// startupMayShow reports whether keys typed in the terminal may reach a
+// startup question, while the startup questions' watch lasts: the screen
+// (the frame the questions asked during the work are read from, taken as
+// one reading, Frame) shows one; or is half a frame (a synchronized update
+// under way) or cut by a window made smaller (DrawnAt), so that what it
+// shows is not known and the keys are taken to have reached a dialog rather
+// than the text (rawKeys keeps the hold); or shows a dialog's numbered
+// choices with no heading (startupChoiceShown), the heading scrolled off a
+// short screen while its choices stay. A window grown, nothing lost,
+// leaves the frame readable though not laid out for its size until erased
+// whole (Settled): what it shows is read. A dialog the program erased, row
+// by row or whole, leaves none of these, and the keys enter the text. The
+// tail alone is no witness for this: a footer redrawn in place evicts a
+// heading still on the screen (and may leave the tail unable to say which
+// question was drawn), and an erased dialog stays in it.
+func (s *Local) startupMayShow() bool {
+	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
+		return false
+	}
+	whole, _, uncut, _, _ := s.asked.Frame()
+	if !uncut {
+		return true
+	}
+	if s.lastStartup(whole) != "" {
+		return true
+	}
+	return startupChoiceShown(whole)
+}
+
+// choiceRow is a dialog's numbered choice as a row of the screen shows it:
+// the number and the choice's words ("  2. Quit"), with the marker of the
+// one highlighted before it or not ("› 1. Trust and continue", Codex; "❯ 1.
+// Yes, I trust this folder", Claude Code).
+var choiceRow = regexp.MustCompile(`^\s*(?:[›>❯]\s*)?\d+\.\s+\S`)
+
+// startupChoiceShown reports whether whole, a screen's text with no startup
+// question's heading on it, shows a choice of a dialog: one numbered row
+// with words is enough, since on a short screen, or after the dialog's
+// trailing line scrolled it up once more, the heading and the highlighted
+// first choice are gone and the last choice alone stays with the footer. A
+// dialog whose heading scrolled off, or was evicted from the output's tail
+// by a footer redrawn in place, still shows what stays of its choices, and
+// a key typed then reaches it. The choices are read by their shape, not
+// their words: the catalog's answer labels name what an answer does ("Yes,
+// trust this folder"), not what the dialog draws ("Trust and continue"). A
+// numbered line in the program's own output during its startup reads as a
+// choice too, and keeps a hold the keys may have entered: that errs on the
+// side of keeping the hold, never of dropping it.
+func startupChoiceShown(whole string) bool {
+	for _, row := range strings.Split(whole, "\n") {
+		if choiceRow.MatchString(row) {
+			return true
+		}
+	}
+	return false
+}
+
 // heldSource reports whether a prompt of source src is a question the
 // session holds: the agent's trust or other startup question, or a
 // question it asks during its work. Typed text is refused while one shows
@@ -2391,16 +2448,21 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// put behind, and withdrawn once the screen shows it gone; one
 		// only the Escape held may answer is held answered (heldAnswer).
 		startupAnswer, heldAnswer := false, false
-		// The startup question the keys reach is the one drawn last: the
-		// one the session shows, unless another has been drawn since and
-		// not asked yet, which they reach instead (shownDrawn false): a
-		// choice of the older one is no answer to it.
+		// The startup question the keys reach is the one drawn last (the
+		// output's tail tells which): the one the session shows, unless
+		// another has been drawn since and not asked yet, which they reach
+		// instead (shownDrawn false): a choice of the older one is no
+		// answer to it.
 		shownDrawn := true
 		if s.trust != nil && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.trust.Watching() {
 			if _, drawn := s.startupShown(s.trust.Text()); drawn != "" && !sameWords(drawn, shown.words()) {
 				shownDrawn = false
 			}
 		}
+		// Whether the keys may reach a startup question at all, asked or
+		// not yet, read off the screen (startupMayShow): then they did not
+		// enter a stranded line's text, and its hold is kept (rawKeys, #224).
+		startup := s.startupMayShow()
 		// A reply's keys to the startup question shown (claimed as the
 		// writer took them): its screen goes behind as a sure answer's does.
 		ownAnswer := question != "" && shownDrawn && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && shown.ID == question
@@ -2413,7 +2475,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// A person's keys: never an answer. They consume the dialog
 			// they reach, withdraw a bell's wait with their Enter, and
 			// withdraw the agent's own question set aside.
-			s.rawKeys(data, maybe, onScreen, typedEnter || anyKey(maybe, isEnterKey), typed)
+			s.rawKeys(data, maybe, onScreen, startup, typedEnter || anyKey(maybe, isEnterKey), typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -3220,9 +3282,11 @@ func (s *Local) dialogGone(look uint64) {
 // choice, before the hold is installed give the program its answer: no
 // hold follows, the stranded line's claim (a reply's, strandedClaim) goes,
 // and the question is consumed, or withdrawn when it is a wait with no
-// words; a question on the screen (a dialog, a startup question) keeps its
-// hold, the keys having reached the dialog and not the text.
-func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter, person bool) {
+// words; a question on the screen (a dialog drawn during the work and not
+// asked yet, onScreen; a startup question the screen shows or may show,
+// startup, see startupMayShow) keeps its hold, the keys having reached
+// the dialog and not the text.
+func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, startup, enter, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
@@ -3235,9 +3299,10 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter
 	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
-	// A dialog on the screen and not asked yet (onScreen) took the keys,
-	// as a question on the screen shown would: not the stranded text.
-	entered := s.holdPending && s.held == nil && onScreen == nil && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
+	// A dialog on the screen and not asked yet (onScreen), or a startup
+	// question drawn (startup), took the keys, as a question on the screen
+	// shown would: not the stranded text.
+	entered := s.holdPending && s.held == nil && onScreen == nil && !startup && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
 	if entered {
 		s.holdPending = false
 		s.releaseStrandedLocked()
