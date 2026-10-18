@@ -42,6 +42,11 @@ func (s *syncBuffer) Write(p []byte) (int, error) {
 	return s.b.Write(p)
 }
 
+// terminalStderr is the stderr of a server a test started from a terminal:
+// the test's terminalOf answers it with the terminal, and a plain syncBuffer
+// (a server started from none) with nil.
+type terminalStderr struct{ *syncBuffer }
+
 func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -842,20 +847,35 @@ func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
 	}
 	configured := writeServeConfig(t, cdir, fmt.Sprintf(`{"workbenchToken": "configured-token", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
 
+	// The second servers' terminal. serve.go reads terminalOf once, at a
+	// startup that goes on after the "conductor serving" line serveWhile
+	// waits for, so the first server may still be about to read it while
+	// the closure runs: swapping it there raced that read. The swap happens
+	// once, before any server starts, and tells the servers apart by their
+	// stderr: a *terminalStderr was started from a terminal, this tty; any
+	// other writer (the first server's logs) from none.
+	var tty syncBuffer
+	old := terminalOf
+	t.Cleanup(func() { terminalOf = old })
+	terminalOf = func(w io.Writer) io.Writer {
+		if _, ok := w.(*terminalStderr); ok {
+			return &tty
+		}
+		return nil
+	}
+
 	serveWhile(t, "conductor serving", func(firstLogs string) {
 		first := readTokenFile(t, path)
 
 		// One that generates its token, with nowhere to keep it, does not
 		// start, with a terminal or without.
-		var tty syncBuffer
 		for _, withTTY := range []bool{false, true} {
-			old := terminalOf
-			if withTTY {
-				terminalOf = func(io.Writer) io.Writer { return &tty }
-			}
 			var errOut syncBuffer
-			code, err := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg}, strings.NewReader(""), io.Discard, &errOut)
-			terminalOf = old
+			var stderr io.Writer = &errOut
+			if withTTY {
+				stderr = &terminalStderr{&errOut}
+			}
+			code, err := runServe(context.Background(), []string{"--listen", "127.0.0.1:0", "--config", cfg}, strings.NewReader(""), io.Discard, stderr)
 			if code != 1 || err == nil || !strings.Contains(err.Error(), "keeps the workbench token file") {
 				t.Fatalf("a second server with its token nowhere (terminal %v): %d %v\n%s", withTTY, code, err, errOut.String())
 			}
@@ -872,12 +892,9 @@ func TestServeLeavesTheTokenFileOfAnotherRunningServer(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		var out, logs syncBuffer
-		old := terminalOf
-		defer func() { terminalOf = old }()
-		terminalOf = func(io.Writer) io.Writer { return &tty }
 		done := make(chan error, 1)
 		go func() {
-			_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &logs)
+			_, err := runServe(ctx, []string{"--listen", "127.0.0.1:0", "--config", cfg, "--print-listen"}, strings.NewReader(""), &out, &terminalStderr{&logs})
 			done <- err
 		}()
 		deadline := time.After(10 * time.Second)
