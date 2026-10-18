@@ -334,6 +334,21 @@ type Local struct {
 	settleAt     time.Time
 	settleTimer  *time.Timer
 	settleGen    uint64
+	// statusSeen says the agent has declared its program status in this
+	// session (readStatus: an OSC 7501 sequence, Codex 0.163 and later),
+	// after which the window title is not weighed. lastStatus is the state
+	// it declared last and statusKind what blocks it then (StatusBlocked
+	// with a kind): the agent writes its status only when it changes, so
+	// neither is forgotten at a turn boundary (beginTurn), unlike the
+	// title's reading; the rules of a turn apply as a status is read and as
+	// a wait is settled (saysWorkingLocked). Guarded by mu.
+	statusSeen bool
+	lastStatus string
+	statusKind string
+	// statusReconciled says withdrawShownLocked put the status's wait in a
+	// held question's place; the caller records its entry once unlocked
+	// (recordStatusReconciled). Guarded by mu.
+	statusReconciled bool
 	// turnEnded says a done was reported and neither an Enter has been
 	// written since (Input, Submit) nor another state shown: the turn it
 	// ended is still the last one, and a bell or OSC notification now is
@@ -761,6 +776,10 @@ func (s *Local) scanOutput(chunk []byte, turn uint64) {
 		if i == 0 && s.scanner.Carried() {
 			read = begun
 		}
+		if ev.Source == SourceStatus {
+			s.readStatus(ev.Message, ev.Kind, read)
+			continue
+		}
 		if ev.Source == SourceTitle {
 			if s.opts.WorkingTitle != nil {
 				s.readTitle(ev.Message, read)
@@ -801,6 +820,13 @@ const titleRules = unlessTurnEnded | unlessHeld | unlessOnScreen | unlessFresh |
 func (s *Local) readTitle(title string, turn uint64) {
 	working := s.opts.WorkingTitle.MatchString(title)
 	s.mu.Lock()
+	if s.statusSeen {
+		// The agent declares its state in its program status (readStatus):
+		// the title says the same, or less (Codex's "Action Required" over
+		// an async question it works on).
+		s.mu.Unlock()
+		return
+	}
 	if working && turn != anyTurn && turn != s.turn.Load() {
 		s.mu.Unlock()
 		return
@@ -821,14 +847,98 @@ func (s *Local) readTitle(title string, turn uint64) {
 	s.setAttentionRead(AttentionWorking, "", SourceTitle, "", nil, titleRules, turn)
 }
 
+// saysWorkingLocked reports whether the agent's last word on its state
+// says it works: its program status once it has declared one (lastStatus),
+// its window title before that (titleWorking). The caller holds s.mu.
+func (s *Local) saysWorkingLocked() bool {
+	if s.statusSeen {
+		return s.lastStatus == StatusWorking
+	}
+	return s.titleWorking
+}
+
+// statusWords are the words of the wait a blocked status raises, by what
+// blocks the program (Event.Kind); statusKindOf the attention kind of it.
+func statusWords(kind string) string {
+	switch kind {
+	case "permission":
+		return "The agent asks for a permission"
+	case "question":
+		return "The agent asks a question"
+	case "auth":
+		return "The agent needs you to sign in"
+	}
+	return "The agent waits"
+}
+
+func statusKindOf(kind string) string {
+	switch kind {
+	case "permission":
+		return KindPermission
+	case "question":
+		return KindPrompt
+	}
+	return ""
+}
+
+// readStatus weighs a program status read in turn (SourceStatus: Codex
+// 0.163 and later declare theirs, see Scanner). It is the agent's own word
+// on its state, kept as read (lastStatus, statusKind): the agent writes it
+// only when it changes, so it is never forgotten at a turn boundary, and
+// after the first the window title is not weighed (readTitle).
+//
+// Working is weighed as a title that matches (titleRules): a wait younger
+// than its TitleSettle is left to the settle timer, armed for what is left
+// of it; one read during the ended turn changes nothing shown (turn), but
+// remains the state the next turn's wait settles against. Blocked, idle,
+// done, error, clear and a state not understood (StatusUnknown) are weighed
+// as a title that does not match: the wait showing stands, the settle timer
+// is disarmed. Blocked with a kind (0.164: what blocks the program) raises
+// a wait of its own, with words naming the kind, over nothing with words of
+// its own (unlessWorded: a bare bell's wait gives way to it) and not over
+// the done of the turn just ended; blocked without one (0.163, where an
+// async question the agent works on blocks too) raises nothing. A wait the
+// status raised is the status's to withdraw: a later state that is neither
+// blocked nor working (the form cancelled, the turn interrupted, the agent
+// gone) withdraws it at once; working lets it settle as any wait.
+func (s *Local) readStatus(state, kind string, turn uint64) {
+	s.mu.Lock()
+	s.statusSeen = true
+	s.lastStatus, s.statusKind = state, kind
+	if state == StatusWorking {
+		if cur := s.info.Attention; cur.State == AttentionNeedsInput && cur.ID != "" && cur.ID == s.settleID && time.Now().Before(s.settleAt) {
+			s.armSettleLocked()
+		}
+		s.mu.Unlock()
+		s.setAttentionRead(AttentionWorking, "", SourceStatus, "", nil, titleRules, turn)
+		return
+	}
+	s.disarmSettleLocked()
+	if state != StatusBlocked {
+		if att := s.info.Attention; att.State == AttentionNeedsInput && att.Source == SourceStatus && att.ID != "" && !s.claimedLocked(att.ID) {
+			s.withdrawShownLocked(SourceScreen)
+			s.mu.Unlock()
+			s.notifyChange()
+			return
+		}
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	if kind != "" {
+		s.setAttentionRead(AttentionNeedsInput, statusWords(kind), SourceStatus, statusKindOf(kind), nil, unlessWorded|unlessTurnEnded, turn)
+	}
+}
+
 // settleLocked follows the attention now showing, att, for the settle
 // timer: a wait a title may settle (needs_input, but no question the
 // session holds and no held turn) begins its TitleSettle, and the timer is
-// armed for it while the last title says the agent works; anything else
-// ends the last one's. Only with Options.WorkingTitle. The caller holds
-// s.mu, and calls it wherever the attention shown changes.
+// armed for it while the agent's last word says it works (saysWorkingLocked);
+// anything else ends the last one's. Only with Options.WorkingTitle, or
+// once the agent has declared its program status. The caller holds s.mu,
+// and calls it wherever the attention shown changes.
 func (s *Local) settleLocked(att Attention) {
-	if s.opts.WorkingTitle == nil {
+	if s.opts.WorkingTitle == nil && !s.statusSeen {
 		return
 	}
 	if att.State == AttentionNeedsInput && att.ID != "" && att.ID == s.settleID {
@@ -840,7 +950,7 @@ func (s *Local) settleLocked(att Attention) {
 		return
 	}
 	s.settleID, s.settleAt = att.ID, time.Now().Add(s.opts.TitleSettle)
-	if s.titleWorking {
+	if s.saysWorkingLocked() {
 		s.armSettleLocked()
 	}
 }
@@ -878,7 +988,15 @@ func (s *Local) settled(gen uint64) {
 	if hook := s.beforeSettle.Load(); hook != nil {
 		(*hook)()
 	}
-	s.setAttentionLooked(AttentionWorking, "", SourceTitle, "", nil, titleRules|onlySettling, anyTurn, gen)
+	// The working shown is the witness's: the status's once the agent has
+	// declared one, the title's before.
+	source := SourceTitle
+	s.mu.Lock()
+	if s.statusSeen {
+		source = SourceStatus
+	}
+	s.mu.Unlock()
+	s.setAttentionLooked(AttentionWorking, "", source, "", nil, titleRules|onlySettling, anyTurn, gen)
 }
 
 // firePattern is the pattern watcher's fire: the last line matched after the
@@ -1433,9 +1551,13 @@ const (
 	unlessEnded
 	// onlySettling (the settle timer, settled) changes nothing unless the
 	// timer of generation look (settleGen) is still armed, for the wait
-	// the session still shows (settleID), and the last title read still
-	// says the agent works (titleWorking).
+	// the session still shows (settleID), and the agent's last word still
+	// says it works (saysWorkingLocked: the title, or the program status).
 	onlySettling
+	// unlessWorded changes nothing when the session is needs_input already
+	// with words of its own: anything but a bare bell's wait ("terminal
+	// bell"), whose words a program status with a kind replaces.
+	unlessWorded
 	// agentAsks (Ask) marks a needs_input change as the agent's own
 	// question, which the session keeps (own); with another state it
 	// changes nothing.
@@ -1537,7 +1659,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	fresh := rules&unlessFresh != 0 && cur.State == AttentionNeedsInput && cur.ID != "" && cur.ID == s.settleID && time.Now().Before(s.settleAt)
 	working := rules&unlessWorking != 0 && cur.State == AttentionWorking
 	ended := rules&unlessEnded != 0 && s.info.Status.Ended()
-	notSettling := rules&onlySettling != 0 && (s.settleTimer == nil || s.settleGen != look || !s.titleWorking ||
+	worded := rules&unlessWorded != 0 && waiting && cur.Source != SourceBell
+	notSettling := rules&onlySettling != 0 && (s.settleTimer == nil || s.settleGen != look || !s.saysWorkingLocked() ||
 		cur.State != AttentionNeedsInput || cur.ID == "" || cur.ID != s.settleID)
 	// A startup question answered and still shown (its write not made yet,
 	// or the session slow to clear it) waits on nothing: the next startup
@@ -1550,7 +1673,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// left is refused.
 	movedOn := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && state == AttentionNeedsInput && source == SourceTrust && !sameWords(words, cur.words())
 	if (rules&unlessWaiting != 0 && waiting && !answeredStartup && !movedOn) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook ||
-		held || onScreen || fresh || working || ended || notSettling {
+		held || onScreen || fresh || working || ended || notSettling || worded {
 		s.mu.Unlock()
 		return nil
 	}
@@ -2941,6 +3064,15 @@ func (s *Local) withdrawShownLocked(source string) {
 	if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
 		now := time.Now().UTC()
 		s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
+	} else if source == SourceScreen && heldSource(att.Source) && s.statusSeen && s.lastStatus == StatusBlocked && s.statusKind != "" && !s.info.Status.Ended() {
+		// The screen moved on from a question the session held while the
+		// program's status says it is blocked still: that status was read
+		// as the question showed and kept out by its better words, and the
+		// program will not write it again (readStatus). Its wait shows now,
+		// recorded by the caller (statusReconciled).
+		now := time.Now().UTC()
+		s.info.Attention = Attention{State: AttentionNeedsInput, Message: statusWords(s.statusKind), Source: SourceStatus, Kind: statusKindOf(s.statusKind), Since: &now, ID: NewID()}
+		s.statusReconciled = true
 	}
 	s.settleLocked(s.info.Attention)
 	s.signalAttention()
@@ -2960,8 +3092,22 @@ func (s *Local) withdraw(id string) bool {
 	}
 	s.withdrawShownLocked(SourceScreen)
 	s.mu.Unlock()
+	s.recordStatusReconciled()
 	s.notifyChange()
 	return true
+}
+
+// recordStatusReconciled records the attention entry of the status's wait
+// withdrawShownLocked put in a held question's place (statusReconciled), as
+// any state that shows has one.
+func (s *Local) recordStatusReconciled() {
+	s.mu.Lock()
+	att, done := s.info.Attention, s.statusReconciled
+	s.statusReconciled = false
+	s.mu.Unlock()
+	if done && att.State == AttentionNeedsInput && att.Source == SourceStatus {
+		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
+	}
 }
 
 // The screen snapshot's threshold (screenQuiet, movedOn): a bell or OSC
@@ -2998,7 +3144,7 @@ func (s *Local) screenQuiet(string) {
 		return
 	}
 	att := s.info.Attention
-	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC || s.claimedLocked(att.ID) {
+	if att.State != AttentionNeedsInput || att.ID == "" || att.Source != SourceBell && att.Source != SourceOSC && att.Source != SourceStatus || s.claimedLocked(att.ID) {
 		s.shotWait, s.shotRows = "", nil
 		s.mu.Unlock()
 		return
@@ -3014,6 +3160,7 @@ func (s *Local) screenQuiet(string) {
 	}
 	s.withdrawShownLocked(SourceScreen)
 	s.mu.Unlock()
+	s.recordStatusReconciled()
 	s.notifyChange()
 }
 
@@ -3329,7 +3476,7 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, start
 		if onScreen.picks(att.Options, data, maybe) {
 			s.consumeLocked(att.ID)
 		}
-	case SourceBell, SourceOSC, SourcePattern:
+	case SourceBell, SourceOSC, SourcePattern, SourceStatus:
 		if enter {
 			s.withdrawShownLocked(SourceInput)
 			go s.notifyChange()
