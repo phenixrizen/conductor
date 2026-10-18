@@ -1876,8 +1876,13 @@ func TestAWrappedStartupQuestionStaysWhenItsRowIsRepaintedAfterTheWindowGrew(t *
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	// Blanks repainted into the padding past the choice row's old extent.
-	p.outW.Write([]byte("\x1b[3;19H      \x1b[24;1Hstatus: still ready"))
+	// Blanks repainted into the padding past the choice row's old extent:
+	// the heading takes rows 1 and 2 at 18 columns, row 3 is blank, and the
+	// choice that wrapped ("(r" / "uns") begins on row 4.
+	if rows := s.asked.Text(); !strings.Contains(rows, "\n\n› 1. Update now (r\nuns") {
+		t.Fatalf("the rows before the repaint: %q", rows)
+	}
+	p.outW.Write([]byte("\x1b[4;19H      \x1b[24;1Hstatus: still ready"))
 	time.Sleep(3 * patternQuiet)
 	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
 		t.Fatalf("blanks in the padding took the wrapped question for gone: %+v", a)
@@ -1889,10 +1894,12 @@ func TestAWrappedStartupQuestionStaysWhenItsRowIsRepaintedAfterTheWindowGrew(t *
 		t.Fatalf("a submission at the question: %v", err)
 	}
 	noWrite(t, p, 100*time.Millisecond)
-	// The choice redrawn on one row at the new width: the join ends, the row reads what was drawn, the question still matches.
-	p.outW.Write([]byte("\x1b[3;1H› 1. Update now (runs `npm install -g @openai/codex`)\x1b[K\x1b[24;1Hstatus: ready again"))
+	// The choice redrawn on one row at the new width, nothing erased: the
+	// write past the old extent ends the join, the row reads what was
+	// drawn, and the question still matches.
+	p.outW.Write([]byte("\x1b[4;1H› 1. Update now (runs `npm install -g @openai/codex`)\x1b[24;1Hstatus: ready again"))
 	time.Sleep(3 * patternQuiet)
-	if rows, _, _, _ := s.asked.Whole(); !strings.Contains(rows, "Update now (runs `npm install -g @openai/codex`)") {
+	if rows, _, _, _ := s.asked.Whole(); !strings.Contains(rows, "Update now (runs `npm install -g @openai/codex`)\nuns") {
 		t.Fatalf("the choice redrawn whole reads %q", rows)
 	}
 	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
