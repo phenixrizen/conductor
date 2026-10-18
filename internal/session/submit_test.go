@@ -423,6 +423,39 @@ func TestSubmitLeavesTheEnterOutForATrustQuestionDrawnDuringThePause(t *testing.
 	}
 }
 
+// The same with a question the agent reported still showing (#263): the
+// trust question drawn in the pause is not raised over it (fireTrust keeps
+// a wait showing, unlessWaiting), so the attention does not tell of the
+// dialog; the Enter's guard asks the screen and leaves the Enter out all
+// the same: the text waits, the reported question still shows, the startup
+// watch lasts, and nothing is typed into the dialog.
+func TestSubmitLeavesTheEnterOutForATrustQuestionDrawnDuringThePauseWhileAQuestionShows(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`)}))
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h› Ask anything "))
+	waitPaste(t, s, true)
+	var once sync.Once
+	p.onWrite = func() {
+		once.Do(func() {
+			go p.outW.Write([]byte("\x1b[2;3HFolder access\r\nTrust this folder?\r\n› 1. Trust and continue"))
+		})
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "Reply READY", ByName: "crew"})
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	noWrite(t, p, 100*time.Millisecond)
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceAPI || att.Message != "Which database?" {
+		t.Fatalf("attention %+v", att)
+	}
+	if !s.startupOnScreen() {
+		t.Fatal("the startup question's watch ended, or the screen shows it no more")
+	}
+}
+
 // A trust question carries its answers as the prompt's choices; a person's
 // typed text is refused while it shows, with nothing written (its Enter
 // would pick whatever the dialog highlights); the choice's keys answer it.

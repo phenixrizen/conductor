@@ -1106,10 +1106,16 @@ var errPromptCame = errors.New("session: a prompt came before the Enter")
 // the Enter must not answer, or when a dialog asked during the work is on
 // the screen as it is now (looked at whether quiet or not, and fired
 // then), or a key that answered one has not been followed by a look yet
-// (Held): the Enter would pick what the dialog highlights.
+// (Held), or a startup question is on the screen (startupOnScreen, as the
+// text's guard asks: a wait showing keeps the question from being raised,
+// unlessWaiting, so the attention alone does not tell of it, #263): the
+// Enter would pick what the dialog highlights.
 func (s *Local) enterGuard(waits func(Attention) bool) func() error {
 	return func() error {
 		if s.asked != nil && (s.asked.Held() || s.asked.CheckNow()) {
+			return errPromptCame
+		}
+		if s.startupOnScreen() {
 			return errPromptCame
 		}
 		s.mu.Lock()
