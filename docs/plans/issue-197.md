@@ -519,3 +519,47 @@ The owner chooses (question 1).
    terminal before it resolves by itself. Leave it so (the issue's
    intent), or show something quieter than Needs you? Recommended: leave
    it so; a quieter signal would be its own issue.
+
+## OSC 9 as Codex's notification method (the owner's question, 2026-10-18)
+
+Facts, Codex 0.163.0 (`tui/src/chatwidget/notifications.rs`,
+`tui/src/notifications/osc9.rs`, `tui/src/tui.rs`): with
+`tui.notification_method="osc9"` Codex writes `ESC ] 9 ; <text> BEL` where
+the bell rings today, one per notification, coalesced per redraw (a pending
+notification of lower priority gives way to a higher one; the turn's end is
+the lowest), posted at a draw, under the same focus condition as the bell.
+The texts: `Approval requested: <command, 30 graphemes>` (an exec approval),
+`Codex wants to edit <path or N files>` (an edit approval), `Approval
+requested by <server>` (an MCP elicitation), `Plan mode prompt: <title>`
+(a blocking `request_user_input` form, the first question's header),
+`Question: <title>` (an async question), and for `agent-turn-complete` the
+response's first 200 graphemes, or `Agent turn complete`. Conductor's
+scanner reads OSC 9 today (`finishOSC`, source `osc`) and `scanOutput`
+weighs it as a wait with words of its own, which replace a wordless bell's.
+
+What it gives: words, and the kind at arrival. A Codex wait would read
+"Approval requested: ls -la" instead of "terminal bell"; with
+`async-question` back in `tui.notifications`, an async question's arrival
+would be known as one ("Question: ..."), the thing a quieter signal
+(question 5) would be built from, told apart from a blocking form by its
+text. What it does not give: a state. A notification says a thing arrived,
+not that it was answered or expired; this issue's stale Needs you is a wait
+kept by the title after the person answered, and no notification ends it.
+The turn's end over OSC 9 would read as a wait too, unless dropped from the
+list (the notify hook reports it already) or told by its text, which has no
+fixed prefix.
+
+So OSC 9 complements the program status; it does not replace it: the status
+tells working from blocked, OSC 9 would tell what blocks, in words, and
+when an async question arrived. Taking it would change the launch
+(`tui.notification_method="osc9"`, `tui.notifications` with `async-question`
+and without `agent-turn-complete`), `scanOutput`'s weighing of OSC 9 for
+Codex (a blocking text raises a wait with words; `Question:` records the
+arrival without one), the e2e stub, every Codex wait's words in the
+workbench, and `docs/protocol.md`; the live tier would see the real texts
+first.
+
+6. **OSC 9.** Switch Codex from the bell to OSC 9 notifications in this PR,
+   as its own issue after this one, or not at all? Recommended: its own
+   issue after this one, since it changes what every Codex wait says and
+   is not needed for the fix; the status alone closes this issue.
