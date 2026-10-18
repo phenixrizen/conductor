@@ -926,7 +926,8 @@ func TestAnApprovalErasedByAFrameEndedOnTheAlternateScreenIsWithdrawn(t *testing
 // over the previous frame's cells reads whole; the output's tail holds it
 // in pieces (#165). Codex's update question drawn over its splash is raised
 // with its heading and its choices (the catalog offers the two skips, never
-// Update now), and a reply by its key is taken.
+// Update now); a key typed at it is taken as its answer, and the question
+// goes with the next screen.
 func TestAStartupQuestionsWordsAreReadOffTheScreen(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
 	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
@@ -944,10 +945,21 @@ func TestAStartupQuestionsWordsAreReadOffTheScreen(t *testing.T) {
 	if len(att.Options) != 2 || att.Options[1].Label != "Skip until next version" {
 		t.Fatalf("the question's choices: %+v", att.Options)
 	}
-	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("3")); err != nil {
-		t.Fatalf("a reply by the question's key: %v", err)
+	// A person's key typed at the dialog: the program's dialog has it, the
+	// question is consumed by the screen's words too (holdStartupAnswered,
+	// or it would stay and block typed text), and it is withdrawn once the
+	// program draws the next screen; typed text is taken again then.
+	if err := s.Input(sub, []byte("3")); err != nil {
+		t.Fatal(err)
 	}
 	if got := nextWrite(t, p); got != "3" {
 		t.Fatalf("written %q", got)
 	}
+	p.outW.Write([]byte("\x1b[2J\x1b[H› Ask Codex to do anything"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	if res, err := s.Submit(t.Context(), Submission{Text: "hello", By: sub}); err != nil || !res.Entered {
+		t.Fatalf("typed text after the question went: %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	nextWrite(t, p)
 }

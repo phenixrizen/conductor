@@ -2437,7 +2437,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		var startupWords string
 		if s.trust != nil && !quiet && !isTerminalReport(data) && s.trust.Watching() {
 			text := s.trust.Text()
-			if q, words := s.lastStartupQ(text); q != nil && picksStartup(CleanOptions(q.Answers), startupItems(q, text), data, maybe) {
+			if q, words := s.startupShown(text); q != nil && picksStartup(CleanOptions(q.Answers), startupItems(q, text), data, maybe) {
 				startupWords = words
 				if picksStartup(CleanOptions(q.Answers), startupItems(q, text), data, keys) {
 					startupOnScreen = true
