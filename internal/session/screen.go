@@ -565,11 +565,18 @@ func (s *Screen) csi(final byte) {
 				case 1049, 1047, 47:
 					s.altScreen(final == 'h', m == 1049)
 				case 2026:
-					if final == 'l' && s.syncing && s.lay.unclipAtEnd {
-						// The end of a frame that erased the screen whole.
-						s.lay.laidOut(s.cols, s.rows)
+					// The update ends for both buffers, whichever is
+					// selected then: each one the frame erased whole is
+					// laid out for the size now (a frame that erases and
+					// draws the main screen again and ends on the
+					// alternate one, #226).
+					for _, l := range [...]*layout{&s.layMain, &s.layAlt} {
+						if final == 'l' && s.syncing && l.unclipAtEnd {
+							l.laidOut(s.cols, s.rows)
+						}
+						l.unclipAtEnd = false
 					}
-					s.syncing, s.lay.unclipAtEnd = final == 'h', false
+					s.syncing = final == 'h'
 				}
 			}
 		}

@@ -171,6 +171,47 @@ func TestScreenResize(t *testing.T) {
 	}
 }
 
+// A synchronized update ends for both buffers, whichever is selected then:
+// the main screen, resized with something on it, erased whole and drawn
+// again in a frame that ends on the alternate screen, reads settled and
+// laid out for its size once the program returns to it (#226). The
+// alternate screen is blank and laid out anew each time the program
+// switches to it, so it is the main screen this matters for.
+func TestScreenAFrameEndedOnTheAlternateScreenLaysOutTheMainScreenItErased(t *testing.T) {
+	s := screenOf(10, 4, "hello")
+	s.Resize(8, 4)
+	if s.Settled() {
+		t.Fatal("resized with something on it, the screen reads settled")
+	}
+	if uncut, cols, _ := s.DrawnAt(); !uncut || cols != 10 {
+		t.Fatalf("drawn at %v %d columns before the redraw", uncut, cols)
+	}
+	s.Write([]byte("\x1b[?2026h\x1b[2J\x1b[Hhi\x1b[?47h\x1b[?2026l"))
+	if !s.Settled() {
+		t.Fatal("the alternate screen, blank, is not settled")
+	}
+	s.Write([]byte("\x1b[?47l"))
+	if !s.Settled() {
+		t.Fatal("the main screen erased whole in a frame that ended on the alternate screen is not settled")
+	}
+	if uncut, cols, rows := s.DrawnAt(); !uncut || cols != 8 || rows != 4 {
+		t.Fatalf("drawn at %v %dx%d after the redraw", uncut, cols, rows)
+	}
+	if got := s.Text(); got != "hi" {
+		t.Fatalf("text %q", got)
+	}
+	// A frame that ends on the alternate screen without having erased the
+	// main one leaves it as it was.
+	s.Resize(6, 4)
+	s.Write([]byte("\x1b[?2026h\x1b[?47h\x1b[2J\x1b[Hok\x1b[?2026l\x1b[?47l"))
+	if s.Settled() {
+		t.Fatal("the main screen, not erased by the frame, reads settled")
+	}
+	if uncut, cols, _ := s.DrawnAt(); !uncut || cols != 8 {
+		t.Fatalf("drawn at %v %d columns, the frame having erased the alternate screen alone", uncut, cols)
+	}
+}
+
 // A watcher looks at the last rows the screen shows, where a TUI's dialog is.
 func TestScreenLastIsItsBottomRows(t *testing.T) {
 	s := NewScreen(20, 120)
