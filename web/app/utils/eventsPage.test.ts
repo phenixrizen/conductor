@@ -7,6 +7,12 @@ describe('the Events page helpers', () => {
     expect([...all].sort()).toEqual([...EVENT_TYPES].sort())
     expect(new Set(all).size).toBe(all.length)
     for (const t of EVENT_TYPES) expect(EVENT_INFO[t].title).toMatch(/^[A-Z]/)
+    // What reports working, under its title on the Routing tab: not a prompt alone (#206). Claude Code's PreToolUse and the
+    // other agents' pre-tool events report it (#195), and a Codex member's window title does (#186).
+    expect(EVENT_INFO.working.source).toContain('a prompt submitted')
+    expect(EVENT_INFO.working.source).toContain('a tool about to run')
+    expect(EVENT_INFO.working.source).toContain("Codex's title")
+    expect(EVENT_INFO.working.title).not.toMatch(/prompt/i)
   })
 
   it('reads the routing as where each kind goes', () => {
