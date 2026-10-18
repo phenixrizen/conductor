@@ -1026,37 +1026,32 @@ func (s *Local) startupMayShow() bool {
 	return startupChoiceShown(whole)
 }
 
-// A dialog's numbered choice as a row of the screen shows it: the number
-// and the choice's words ("  2. Quit", choiceRow), with the marker of the
-// one highlighted before it ("› 1. Trust and continue", Codex; "❯ 1. Yes, I
-// trust this folder", Claude Code: highlightedRow).
-var (
-	choiceRow      = regexp.MustCompile(`^\s*(?:[›>❯]\s*)?\d+\.\s+\S`)
-	highlightedRow = regexp.MustCompile(`^\s*[›>❯]\s*\d+\.\s+\S`)
-)
+// choiceRow is a dialog's numbered choice as a row of the screen shows it:
+// the number and the choice's words ("  2. Quit"), with the marker of the
+// one highlighted before it or not ("› 1. Trust and continue", Codex; "❯ 1.
+// Yes, I trust this folder", Claude Code).
+var choiceRow = regexp.MustCompile(`^\s*(?:[›>❯]\s*)?\d+\.\s+\S`)
 
 // startupChoiceShown reports whether whole, a screen's text with no startup
-// question's heading on it, shows a dialog's choices: a numbered row with
-// the highlight marker, or two numbered rows or more. A dialog whose heading
-// scrolled off a short screen, or was evicted from the output's tail by a
-// footer redrawn in place, still shows its choices, and a key typed then
-// reaches it. The choices are read by their shape, not their words: the
-// catalog's answer labels name what an answer does ("Yes, trust this
-// folder"), not what the dialog draws ("Trust and continue"). A numbered
-// list in the program's own output during its startup reads as a dialog
-// too, and keeps a hold the keys may have entered; that errs on the side
-// of keeping the hold.
+// question's heading on it, shows a choice of a dialog: one numbered row
+// with words is enough, since on a short screen, or after the dialog's
+// trailing line scrolled it up once more, the heading and the highlighted
+// first choice are gone and the last choice alone stays with the footer. A
+// dialog whose heading scrolled off, or was evicted from the output's tail
+// by a footer redrawn in place, still shows what stays of its choices, and
+// a key typed then reaches it. The choices are read by their shape, not
+// their words: the catalog's answer labels name what an answer does ("Yes,
+// trust this folder"), not what the dialog draws ("Trust and continue"). A
+// numbered line in the program's own output during its startup reads as a
+// choice too, and keeps a hold the keys may have entered: that errs on the
+// side of keeping the hold, never of dropping it.
 func startupChoiceShown(whole string) bool {
-	numbered := 0
 	for _, row := range strings.Split(whole, "\n") {
-		if highlightedRow.MatchString(row) {
+		if choiceRow.MatchString(row) {
 			return true
 		}
-		if choiceRow.MatchString(row) {
-			numbered++
-		}
 	}
-	return numbered >= 2
+	return false
 }
 
 // heldSource reports whether a prompt of source src is a question the

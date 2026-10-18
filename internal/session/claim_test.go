@@ -2150,6 +2150,122 @@ func TestAnEnterAtAStartupQuestionWhoseHeadingScrolledOffKeepsTheHold(t *testing
 	}
 }
 
+func TestAnEnterAtAStartupQuestionScrolledToItsLastChoiceKeepsTheHold(t *testing.T) {
+	// #224, round 5: the dialog's trailing line scrolls it up once more on
+	// three rows, so the heading and the highlighted first choice are gone
+	// and the last choice alone stays with the footer (the stub draws it
+	// so): one numbered row is enough.
+	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}}}
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: []StartupQuestion{trust}})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	// Three rows, before anything is drawn: nothing to cut.
+	if err := s.Resize(nate, 80, 3); err != nil {
+		t.Fatal(err)
+	}
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit\r\n"))
+	if !waitFor(2*time.Second, func() bool {
+		whole, settled, uncut, _, _ := s.asked.Frame()
+		return settled && uncut && !strings.Contains(whole, "Trust and continue") && strings.Contains(whole, "2. Quit")
+	}) {
+		whole, settled, uncut, _, _ := s.asked.Frame()
+		t.Fatalf("screen %q settled %v uncut %v", whole, settled, uncut)
+	}
+	if a := s.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the dialog was asked before the Enter: %+v", a)
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.consumed == q.ID {
+		t.Fatalf("the Enter at the dialog consumed the reported question: %+v", st)
+	}
+	let.Do(func() { close(gate) })
+	if !waitFor(5*time.Second, s.Held) {
+		t.Fatal("no hold followed the stranded text")
+	}
+}
+
+func TestAnEnterAtAStartupQuestionOnATwoRowScreenKeepsTheHold(t *testing.T) {
+	// #224, round 5: two rows, the smallest screen the dialog's last choice
+	// and footer fit; the heading and the highlighted choice never show.
+	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Yes, trust this folder", Input: "\r"}, {Label: "No, quit", Input: "\x1b[B\r"}}}
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: []StartupQuestion{trust}})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	// Two rows, before anything is drawn: nothing to cut.
+	if err := s.Resize(nate, 80, 2); err != nil {
+		t.Fatal(err)
+	}
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit"))
+	if !waitFor(2*time.Second, func() bool {
+		whole, settled, uncut, _, _ := s.asked.Frame()
+		return settled && uncut && !strings.Contains(whole, "Trust and continue") && strings.Contains(whole, "2. Quit")
+	}) {
+		whole, settled, uncut, _, _ := s.asked.Frame()
+		t.Fatalf("screen %q settled %v uncut %v", whole, settled, uncut)
+	}
+	if a := s.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the dialog was asked before the Enter: %+v", a)
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.consumed == q.ID {
+		t.Fatalf("the Enter at the dialog consumed the reported question: %+v", st)
+	}
+	let.Do(func() { close(gate) })
+	if !waitFor(5*time.Second, s.Held) {
+		t.Fatal("no hold followed the stranded text")
+	}
+}
+
 // #224, half a frame: a synchronized update begun and not ended (the
 // program erasing to redraw) leaves the screen unsettled; what it shows is
 // not known, so the Enter is taken to have reached the dialog and the hold
@@ -2334,9 +2450,10 @@ func TestAnEnterAfterAStartupQuestionErasedRowByRowOnAGrownScreenEntersTheStrand
 }
 
 // #224: a dialog's choices are read by their shape, not the catalog's
-// labels: a numbered row with the highlight marker (Codex's "›", Claude
-// Code's "❯"), or two numbered rows or more; one plain numbered row, or
-// prose, is no dialog.
+// labels: a numbered row with words, the highlight marker (Codex's "›",
+// Claude Code's "❯") before it or not, one row being enough (the last
+// choice alone stays once the dialog scrolled up by its trailing line);
+// prose, or a number with no words, is no choice.
 func TestStartupChoicesAreReadByTheirShape(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -2347,7 +2464,8 @@ func TestStartupChoicesAreReadByTheirShape(t *testing.T) {
 		{"Claude Code's choices", "❯ 1. Yes, I trust this folder\n  2. No, exit\n", true},
 		{"one highlighted row alone", "  › 1. Update now\n", true},
 		{"two plain numbered rows", "1. Review hooks\n2. Trust all and continue\n", true},
-		{"one plain numbered row", "Steps:\n1. Install it\nthen run\n", false},
+		{"the last choice alone, with the footer", "  2. Quit\nenter continue · esc quit\n", true},
+		{"one plain numbered row", "Steps:\n1. Install it\nthen run\n", true},
 		{"prose", "Trusted.\n> \n", false},
 		{"a number with no words", "1.\n2.\n", false},
 	}
