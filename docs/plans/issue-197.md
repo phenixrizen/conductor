@@ -80,8 +80,11 @@ not arise.
 `:`; `state` is required and must be one of `idle`, `working`, `blocked`,
 `done`, `error`, `clear`, `kind` is optional and must be one of
 `permission`, `question`, `auth` when present, `app` is kept with the event
-and any other field is ignored. A malformed payload, an unknown state or
-kind, or one cut at `maxOSCCapture` (`dropped`) yields no event. BEL and ST
+and any other field is ignored. A payload the scanner does not understand (a
+malformed one, an unknown state or kind, one cut at `maxOSCCapture`,
+`dropped`) yields `Event{Source: SourceStatus, Message: "unknown"}`: the
+session learns that Codex declared a state it cannot read, which is not the
+same as no status, and treats it conservatively below. BEL and ST
 terminators and a sequence split across reads are the scanner's today. The
 event is `Event{Source: SourceStatus, Message: state, Kind: kind, App: app}`
 (two fields added to `Event`, empty for the other sources). A new source
@@ -90,23 +93,48 @@ name, `SourceStatus = "status"`, beside `bell`, `osc` and `title`.
 **The session.** `scanOutput` hands a status event to `readStatus(state,
 kind, turn)`, beside `readTitle`. The session keeps two more facts under
 `s.mu`: `statusSeen`, set by the first status read in the session and never
-cleared, and `statusWorking`, the last status read in the current turn says
-`working`, kept exactly as `readTitle` keeps `titleWorking` (the next turn
-begins with none; a status of the ended turn read after that settles
-nothing).
+cleared, and `lastStatus`, the latest status read (state and kind, `unknown`
+for one not understood). `lastStatus` is Codex's current state and persists
+across Conductor's turns: Codex writes a status only when its state changes
+(0.164 keeps `working` across completed turns with background work or an
+active goal, and its process-wide cache sends no second copy), unlike the
+animated title, which is written again and again. So the state is never
+forgotten at a turn boundary; the rules that gate what a status does
+(`unlessTurnEnded` among them) apply when it is read and when a wait is
+settled, not by resetting it.
 
 - `working` is weighed exactly as a matching title is today: `titleRules`,
   one `setAttentionRead(AttentionWorking, "", SourceStatus, ...)` per read,
   the settle timer for a wait younger than its `TitleSettle`, no token, no
   bell pace. The settle's own check (`settled` → `setAttentionLooked` under
   `onlySettling`) and `settleLocked`'s arming read one predicate,
-  `agentSaysWorking()`: `statusWorking` once `statusSeen`, `titleWorking`
-  before. The attention entry records source `status`.
-- `blocked`, `idle`, `done`, `error` and `clear` are weighed as a title that
-  does not match: `statusWorking` false, the settle timer disarmed, a wait
-  standing stands. `done` is not Conductor's done: the turn's end stays the
-  notify hook's (`agent-turn-complete`), as today, and a `done` status
-  changes no state by itself.
+  `agentSaysWorking()`: `lastStatus` is `working` once `statusSeen`,
+  `titleWorking` before. A `working` read just after the turn's done is not
+  applied (`unlessTurnEnded`, as a Working title's), but it stays the state:
+  the wait raised in the next turn (the Enter, a new report) settles against
+  it after its `TitleSettle` with no further emission from Codex. The
+  attention entry records source `status`.
+- `blocked`, `idle`, `done`, `error`, `clear` and `unknown` are weighed as a
+  title that does not match: `agentSaysWorking()` false, the settle timer
+  disarmed, a wait standing stands. `unknown` (a state or kind this build of
+  Conductor does not know, or a cut sequence) is the conservative reading:
+  a `working` read earlier no longer counts, the title stays retired, and
+  waits stand until a status Conductor understands says `working`; the
+  member reads as it does today under an Action Required title, never worse.
+  `done` is not Conductor's done: the turn's end stays the notify hook's
+  (`agent-turn-complete`), as today, and a `done` status changes no state by
+  itself.
+- **A wait the status raised is the status's to withdraw.** A later status
+  that is not `blocked` and not `working` (`idle`, `done`, `error`, `clear`,
+  `unknown`: a form cancelled, a turn interrupted, Codex gone) withdraws a
+  wait whose source is `status` at once, the attention returning to what it
+  would be without it (none, or the turn's done); waits of other sources
+  (the API's, a hook's, a question the session holds, a bell's) are not
+  touched by it. `working` after `blocked` takes the ordinary path: the wait
+  gives way after its `TitleSettle`. And a status's wait is withdrawn as an
+  OSC notification's is today: by the person typing into the session
+  (`rawKeys`) and by the screen going quiet with nobody answering
+  (`screenQuiet`), `SourceStatus` added beside `SourceOSC` in both.
 - **`blocked` with a kind raises a wait** (the owner's decision 2):
   `setAttentionRead(AttentionNeedsInput, words, SourceStatus, kind, nil,
   rules, turn)` with the words "Codex waits for a permission", "Codex asks a
@@ -121,6 +149,19 @@ nothing).
   may be an async question, and raising there would make a new false Needs
   you for the version installed today; it only keeps waits, as the title
   does.
+- **Reconciliation when a held question goes.** Whatever the rules did with
+  a status as it was read, `lastStatus` keeps it, because Codex will not say
+  it again. When a question the session holds on the screen is withdrawn
+  (`missAsked`, the dialog gone) or answered (its pick taken), or an API
+  question is resolved, the session looks at `lastStatus` once, under
+  `s.mu`, before it settles on the next state: `blocked` with a kind and no
+  wait left showing raises the status's wait then, with its words (an
+  approval A replaced by an unrecognized form B whose `blocked` arrived while
+  A still showed and was kept out by A's better words: B's wait appears as A
+  goes); `working` with an eligible wait left standing arms the settle timer
+  as a `working` read would have (a `working` kept out by `unlessOnScreen`
+  while A showed is not lost). One reconciliation per withdrawal, no new
+  event, no token.
 - **The title after a status.** Once `statusSeen`, `readTitle` returns at
   once: Codex 0.163 and later says in the status what the title said, and
   0.164 says it right. Sessions of agents that emit no status (Codex 0.162
@@ -199,6 +240,20 @@ change.
 - Codex exits: `clear`, then the PTY closes; the session's end is as today.
 - A resize, a half frame, a clipped frame: no effect; the status is not a
   frame.
+- An approval A held on the screen, then an unrecognized form B in its place
+  (0.164): B's `blocked:kind=auth` is read while A shows and kept out by A's
+  words; Codex does not repeat it; `missAsked` withdraws A as its dialog is
+  gone; the reconciliation raises B's wait from `lastStatus`. Answered,
+  `working` settles it.
+- A form the status raised, cancelled by the person in the terminal (Esc)
+  with the turn interrupted: `idle` without `working`; the wait is
+  withdrawn at once. Ended by an error: `error`, the same.
+- A turn's done (the hook), the person's Enter, a new report raising a wait,
+  Codex's status still `working` from before and not written again: the
+  wait settles after its second against `lastStatus`.
+- `working`, then a `blocked` with a kind added in a later Codex: read as
+  `unknown`; a bell's wait for the form stands; the title stays retired; the
+  next `working` Conductor understands settles it.
 - Events and tokens: a status asks the event bucket for nothing (as the
   title); `working` records an entry only when it changes the state; a
   `blocked` with a kind records one needs_input entry per transition, as a
@@ -223,8 +278,11 @@ change.
   version's limit, asserted so a change shows); (5) `blocked:kind=auth`
   with no bell and no pattern raises needs_input with its words; a second
   `blocked` records nothing more; `working` settles it after its second;
-  (6) a held turn, the trust question and an `Ask`ed question under
-  `working`: untouched, as under a Working title; (7) the event bucket
+  (6) a held turn, the trust question and a question the session holds on
+  the screen (`SourceTrust`, `SourceQuestion`, kept by `unlessOnScreen`)
+  under `working`: untouched, as under a Working title; an `Ask`
+  (`Local.Ask`, `Attention.Asked`) under `working` is set aside and comes
+  back at done exactly as `ask_test.go` has it today; (7) the event bucket
   untouched by `working` (as the title's test) and spent once by a raising
   `blocked`; (8) hosted: nothing read; (9) the status and a bell in one
   read, both orders: one wait with the status's words; (10) a status of
@@ -232,19 +290,36 @@ change.
   begins with none; (11) the settle timer fired between scan and feed with
   a `blocked` in the chunk: stands (a barrier-controlled test with the
   session's hooks, `beforeScan`/`beforeSettle`); (12) sessions with no
-  status: every existing title test unchanged.
+  status: every existing title test unchanged; (13) a held screen approval A
+  replaced by an unrecognized form B, B's `blocked:kind=auth` read once while
+  A shows and never again: A withdrawn by `missAsked`, B's wait raised from
+  `lastStatus` with its words; the same with `working` read once while A
+  shows and an API wait standing: A answered, the wait settles after its
+  second; (14) a status's wait (`kind=auth`) followed by `idle`, by `error`
+  and by `clear` with no `working`: withdrawn at once, an API wait standing
+  beside it untouched; typing withdraws it as a bell's; (15) `done`, then
+  the Enter and a new API wait with no new status: the wait settles after
+  its `TitleSettle` against the persisting `working`; a `blocked` persisting
+  into the new turn keeps the wait; (16) `working`, then a status with a kind
+  Conductor does not know: `lastStatus` unknown, a bell's wait stands, the
+  Action Required title still not weighed, and `working` again settles it;
+  the same for a sequence cut at `maxOSCCapture`.
 - e2e: `web/e2e/stub-agent.sh` writes the status as Codex 0.164 does, beside
   its title: `working` through a turn, `blocked:kind=permission` while
-  `stub approve` waits, `blocked:kind=question` while `stub ask` waits,
-  `working` while `stub async` has its question pending, `idle` at rest,
-  `clear` at exit; `STUB_STATUS=0.163` writes the kindless shape,
-  `STUB_STATUS=none` writes none. `web/e2e/codexworking.spec.ts`: `stub
-  async-ask` shows Needs you for its second and then Working while the
-  async question is still pending (the assertion that changes); `stub
-  approve` as today; a new `stub auth` (a sign-in form no pattern knows)
-  shows Needs you from the status alone, with its words, and Working after
-  the answer; the 0.163 and no-status shapes keep today's behaviour for
-  `stub async-ask`.
+  `stub approve` waits, `working` while `stub ask` and `stub ask-wait` spin
+  (they do not block: the question is reported and the work goes on, and
+  `codexworking.spec.ts` requires it to settle meanwhile), `working` while
+  `stub async` has its question pending, `idle` at rest, `clear` at exit;
+  two new blocking modes, `stub form <question>` (`blocked:kind=question`,
+  a `request_user_input` form drawn and waited on until answered) and `stub
+  auth` (`blocked:kind=auth`, a sign-in prompt no pattern knows);
+  `STUB_STATUS=0.163` writes the kindless shape, `STUB_STATUS=none` writes
+  none. `web/e2e/codexworking.spec.ts`: `stub async-ask` shows Needs you for
+  its second and then Working while the async question is still pending
+  (the assertion that changes); `stub approve` as today; `stub auth` shows
+  Needs you from the status alone, with its words, and Working after the
+  answer; `stub form` the same with its question's words; the 0.163 and
+  no-status shapes keep today's behaviour for `stub async-ask`.
 - `docs/protocol.md` and `docs/features.md` as under Surfaces.
 - A live check with Codex 0.164 on the live tier (`make test-live`) when it
   ships, the alpha before if available: the status bytes of a turn, an
@@ -276,6 +351,27 @@ Asked as multiple choice after the plan gained the status design:
    requested: <command>", "Codex wants to edit <path>", "Approval requested
    by <server>", "Plan mode prompt: <title>", "Question: <title>" and the
    turn's response preview; an arrival signal with words, never a state.)
+
+## Revision after review round 4 (2026-10-18)
+
+The owner's granted review of the status design found five things, folded
+in above: a `blocked` or `working` kept out by a held screen question's
+better words was lost for good once that question went, since Codex does not
+repeat a status (`lastStatus` kept, and reconciled when a held question is
+withdrawn or answered); a wait the status raised had no way out when Codex
+went idle or failed without `working` (withdrawn by a later non-blocked
+status, by typing and by the quiet screen, as an OSC notification's); the
+state was reset at Conductor's turn boundary although Codex keeps `working`
+across turns and writes it once (it persists; the turn rules apply at read
+and settle time); the stub's `stub ask` does not block and must keep
+`working`, and test 6 confused `Local.Ask` with the screen-held questions
+(a `stub form` mode for the blocking form; test 6 corrected); a status not
+understood was dropped as if absent, leaving a stale `working` under a
+retired title (read as `unknown`, conservative). The review confirmed the
+two findings carried from the screen-row design moot in their original
+forms. The plan's four reviews are spent; the owner decides whether this
+revision goes to code with the initial code review covering it, or is
+reviewed once more.
 
 ## Appendix: the screen-reading design (not taken)
 
