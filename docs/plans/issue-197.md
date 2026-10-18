@@ -99,38 +99,65 @@ into `session.Options.AsyncQuestion`, the Agents form keeps it as it keeps
 `workingTitle` (`web/app/utils/agentForm.ts` `signalOut`), the catalog's JSON
 and `docs/protocol.md` name it. No frame or message changes.
 
-**When the screen is looked at.** After every feed of the screen model in
-`pump` (`s.asked.Feed`, which `scanOutput` precedes, so a title and a row
-read in one chunk meet the screen only here), the session looks once the
-frame is whole (`Settled` and `DrawnAt` uncut): a look is a regular
-expression over at most six rows, spends nothing from the event bucket and
-records nothing by itself. The look sets `asyncShowing` and acts on its
-transitions only:
+**One commit path, serialized with the pump.** Everything the screen says
+about the async question is committed in one place: the look that follows a
+feed of the screen model in `pump`, which is where a title and a row read
+in one chunk meet the screen (`scanOutput` precedes `s.asked.Feed`). A
+title that does not match never clears a wait on the screen's say-so by
+itself: `readTitle` records the raw title as today and, when the title does
+not match, disarms the settle timer as today; the look that follows in the
+same pump pass, or the next, decides with the frame it has.
+
+The pump holds one lock, `chunkMu`, from before `scanOutput` to after the
+feeds of a chunk, and every async-derived commit takes it too: the look
+(already inside it, in the pump), and the settle timer's fire. A settle
+that fires while a chunk is half processed waits until the chunk's bell has
+been scanned and its frame fed, then decides on that frame, never on the
+one before it. `chunkMu` is held for a scan and a feed only, no I/O, so the
+timer waits a few microseconds at most; it is taken before `s.mu`, never
+inside it, and the look takes `s.mu` under it for the transitions, as
+`setAttentionRead` does.
+
+**The look.** After the feeds, under `chunkMu`, the session takes the frame
+(`Look`: text, settled, width; `DrawnAt`: uncut). `asyncShowing` is set
+true only when the frame is whole (settled and uncut) and shows the
+summary in the pane's shape with no blocking question; it is set false for
+every other frame, a half frame and a frame clipped by a window made
+smaller among them, not left as it was: the evidence is the latest frame
+or nothing. After a resize, until Codex erases and redraws the whole
+screen, there is no evidence and the wait stands, as today. The look acts
+on transitions only:
 
 - false to true, with the last title not matching: the pair now says the
-  agent works, and the title is weighed again as a matching one would be,
-  with `titleRules`, in the turn the frame was read: a wait younger than its
+  agent works, and the title is weighed as a matching one would be, with
+  `titleRules`, in the turn the frame was read: a wait younger than its
   `TitleSettle` is left to the settle timer, armed for what is left of it; an
-  older one gives way. One attention event at most, as a Working title's.
+  older one gives way, here and now, on this frame. One attention event at
+  most, as a Working title's.
 - true to false (the summary replaced by a view, the questions expired, the
-  editor opened), with the last title not matching: as a title that does
-  not match is treated today, the settle timer is disarmed and the wait
-  showing stands. A wait raised by the view then (the bell of an approval,
-  a hook's report) is not settled by anything the screen said before.
+  editor opened, a half frame), with the last title not matching: the settle
+  timer is disarmed and the wait showing stands. A wait raised by the view
+  then (the bell of an approval, a hook's report) is not settled by anything
+  the screen said before.
 
-`readTitle` reads the same pair: a title that does not match arriving while
-`asyncShowing` is true (the row drawn before the title) takes the working
-path at once, rather than disarming the timer.
+**Revalidation at the settle.** `settled` takes `chunkMu`, then runs the
+settle under `onlySettling`, which today requires the last title to still
+say working. With the pair it requires the title to match, or
+`asyncShowing` as the look just set it from the latest whole frame, which
+under `chunkMu` is the frame every chunk read so far has been fed into:
+nothing read and unfed can be behind it. A form that replaced the summary
+between the arming and the fire has flipped `asyncShowing` by then, and the
+wait stands, title unchanged or not. Codex writes its title only when the
+text changes, so an unchanged `[ ! ] Action Required` over a new blocking
+form is the ordinary case, and this is what keeps the form's wait.
 
-**Revalidation at the settle.** `settled` runs the settle under
-`onlySettling`, which today requires the last title to still say working.
-With the pair it requires the title to match, or `asyncShowing` as recomputed
-from the screen as it is at that moment (the same look, on the current
-frame), never the value stored earlier: a form that replaced the summary
-between the arming and the fire leaves the wait standing, title unchanged
-or not. Codex writes its title only when the text changes, so an unchanged
-`[ ! ] Action Required` over a new blocking form is the ordinary case, and
-this is what keeps it from settling the form's wait.
+The bell scanned ahead of its frame: with a wait showing, `scanOutput`'s
+bell changes nothing (`unlessWaiting`), as today. Under `chunkMu` the settle
+cannot clear that wait between the bell and the frame, so the frame's
+negative transition disarms the timer and the wait the form found showing
+stands over it: Needs you, with the earlier words, which the form's own
+question replaces when a pattern knows it. Nothing of the form is lost to
+a clear.
 
 **What is left as it is.** Hosted sessions read no titles and no screen
 for this (today's rule). The 30 s expiry needs no timer of Conductor's: when
@@ -150,10 +177,19 @@ wait showing) and the title says Working again, read as today.
   the frame with the summary and hint flips `asyncShowing` and weighs the
   title again; the wait settles. The quiet-time watcher (`expire`,
   `missAsked`) plays no part.
-- Title and row in one chunk: `scanOutput` reads the title against the
-  previous frame (`asyncShowing` false): non-working, as today; the feed
-  that follows in the same pump pass completes the frame and flips it: the
-  same outcome, in the same pass.
+- Title and row in one chunk: `scanOutput` reads the title as non-working
+  (it never looks at the screen); the feed that follows in the same pump
+  pass, under the same `chunkMu`, completes the frame and flips
+  `asyncShowing`: the look weighs the title as working, in the same pass.
+- The settle timer fires between a chunk's scan and its feed, the chunk
+  carrying a blocking form and its bell: the fire waits on `chunkMu`; the
+  bell changes nothing (a wait shows); the feed flips `asyncShowing` to
+  false and disarms the timer; the fire, in its turn, finds the timer
+  disarmed and no evidence: nothing settles, the wait stands over the form.
+- A half frame, or the screen clipped by a window made smaller, after the
+  summary showed: the look sets `asyncShowing` false (no evidence) and
+  disarms the timer; a blinking Action Required title read later changes
+  nothing (as today); the first whole frame looks again.
 - Summary showing, then a blocking view (an approval, or a form no pattern
   knows) replaces it under an unchanged title: the frame flips
   `asyncShowing` to false and disarms the timer; the view's wait, raised by
@@ -171,13 +207,14 @@ wait showing) and the title says Working again, read as today.
   title stays; a wait standing stands; the person is at the keyboard.
 - The questions expire: the row goes (negative transition), then the title
   says Working, read as today.
-- A half frame (`Settled` false, or `DrawnAt` cut): no look; the next whole
-  frame looks. The screen clipped by a window made smaller: the same.
 - Looks per frame and events: a look is bounded by the six rows it reads;
   `asyncShowing` changes at most once per frame, and only a change with a
   non-matching title weighs the title (one `setAttentionRead`, recorded only
   if it changes the state, no token). No loop: the look reads, it writes
-  nothing the next feed reads back but the boolean.
+  nothing the next feed reads back but the boolean. `chunkMu` orders the
+  pump's chunk processing and the timer's fire; both take it before `s.mu`,
+  and the hub's broadcast of the chunk happens before it is taken, so no
+  viewer waits on it.
 
 ## Tests
 
@@ -198,7 +235,14 @@ wait showing) and the title says Working again, read as today.
   title today; (7) the attention entries recorded: one working per
   transition, none for a look that changes nothing, the event bucket
   untouched (as `TestATitleSpendsNoTokenWhenTheBucketIsEmpty` checks the
-  title); (8) hosted session: no look.
+  title); (8) hosted session: no look; (9) barrier-controlled, with the
+  session's test hooks (`beforeScan`, `beforeSettle`, `afterTitle`): the
+  settle timer fires while a chunk with a form and its bell is scanned and
+  not yet fed (the fire held in `beforeSettle` until the scan has run, the
+  feed released after): the wait stands and the timer is disarmed; (10) a
+  clipped frame (a resize to fewer rows) after the summary showed, then an
+  Action Required title after `TitleSettle`: the wait stands until a whole
+  frame shows the summary again.
 - `internal/catalog`: the field validated and compiled; Codex's default
   pattern matches the snapshot's row, its singular, the row without a
   countdown and the 0.161 form, and not the editor's lines, the approval's
@@ -241,3 +285,16 @@ transitions and the settle revalidated against the current frame; both
 pattern sets against the frame; a look after every feed of the screen model;
 `titleRules`' eligible waits; the summary required in the pane's two-row
 shape with no view below it.
+
+## Revision after review round 2 (2026-10-17)
+
+Round 2 found the revalidation still able to clear a blocking wait on stale
+evidence: a settle firing between a chunk's scan and its feed decided on the
+frame before the chunk, and a half or clipped frame left the earlier
+positive standing for `readTitle` to act on. Replaced above: one commit path
+(the look after the feed) serialized with the pump by `chunkMu`, which the
+settle's fire takes too; `asyncShowing` set false for every frame that is
+not whole; `readTitle` never clearing on the screen's say-so by itself; and
+the two barrier-controlled tests. The plan's two reviews are spent: the
+owner decides whether this revision is reviewed again before code, or the
+code's initial review covers it.
