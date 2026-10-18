@@ -1,6 +1,6 @@
 # Checks by affected surface
 
-Run the narrow tests while iterating, then the complete checks for every affected surface. A Python workflow change runs the full scripts suite; it does not require unrelated Go, UI, desktop, network or hardware tests. A change spanning server and UI requires tests at both ends: Go race tests, vitest and Playwright. Runtime changes run the relevant runtime suites below. A skipped or unavailable check is a limitation, never a pass.
+Run the narrow tests while iterating, then the complete checks for every affected surface. A change to the Python scripts runs their tests; it does not require unrelated Go, UI, desktop, network or hardware tests. A change spanning server and UI requires tests at both ends: Go race tests, vitest and Playwright. Runtime changes run the relevant runtime suites below. A skipped or unavailable check is a limitation, never a pass.
 
 
 ```bash
@@ -20,7 +20,7 @@ make test-network              # the built-in agents' sites on the network (nigh
 make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (codex_review.py)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (notices.py)
 ```
 
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an

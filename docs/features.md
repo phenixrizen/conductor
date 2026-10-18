@@ -1005,7 +1005,7 @@ request each from main.
   issue closed, once its fix is on main (`Fixes #N` in the pull request that
   finishes it, `Part of #N` closing nothing); security findings never
   become issues until their fix has shipped. `docs/tasks-todo.md` keeps
-  only where each entry went; `scripts/board.py` moves a card.
+  only where each entry went; the board helper that moved a card went with #272.
 - **A session's end gives its link viewers their last output** (#124). A
   hosted session's guests used to lose what the session printed last and
   were told their link was revoked (4403): the server ended the session's
@@ -1136,8 +1136,8 @@ request each from main.
   `latest.yml` 404. The self-update from a running rc.11 app to the next
   prerelease is the check left for the next cut.
 - **The historical review process** (#184, 2026-10-14; superseded for current
-  work by `AGENTS.md` and `docs/review-policy.md`, including planning triggers,
-  budgets, behind-base review and parallel work). These were the owner's rules
+  work by the task flow in `AGENTS.md`, which #272 reduced to GitHub's own
+  primitives). These were the owner's rules
   after review loops of 20 to 30 rounds. A change to a state machine, a protocol,
   concurrency or a security behaviour starts with `docs/plans/<branch>.md`
   (the events, their orders, the invariants, the scope, the tests),
