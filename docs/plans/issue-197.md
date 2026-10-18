@@ -235,7 +235,7 @@ change.
   status: every existing title test unchanged.
 - e2e: `web/e2e/stub-agent.sh` writes the status as Codex 0.164 does, beside
   its title: `working` through a turn, `blocked:kind=permission` while
-  `stub approve` waits, `blocking:kind=question` while `stub ask` waits,
+  `stub approve` waits, `blocked:kind=question` while `stub ask` waits,
   `working` while `stub async` has its question pending, `idle` at rest,
   `clear` at exit; `STUB_STATUS=0.163` writes the kindless shape,
   `STUB_STATUS=none` writes none. `web/e2e/codexworking.spec.ts`: `stub
