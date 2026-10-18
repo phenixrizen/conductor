@@ -52,7 +52,8 @@ const off = 'text-muted ring-accented hover:text-default'
       <div v-for="t in g.types" :key="t" class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-default px-4 py-2.5 last:border-b-0" :data-route="t">
         <div class="flex w-full min-w-0 flex-col gap-px sm:w-72 sm:flex-none">
           <span class="text-[13.5px] font-medium text-highlighted">{{ EVENT_INFO[t].title }}</span>
-          <span class="truncate text-xs text-muted" :title="EVENT_INFO[t].source">{{ EVENT_INFO[t].source }} · <span class="font-mono text-[11px]">{{ t }}</span></span>
+          <!-- Wrapped, not cut: what reports an event is read in full on every width, a touch screen's too (#206). -->
+          <span class="text-xs leading-snug text-muted">{{ EVENT_INFO[t].source }} · <span class="font-mono text-[11px]">{{ t }}</span></span>
         </div>
         <div class="flex flex-wrap gap-1.5">
           <template v-for="c in ROUTE_KEYS" :key="c.key">
