@@ -423,6 +423,167 @@ func TestSubmitLeavesTheEnterOutForATrustQuestionDrawnDuringThePause(t *testing.
 	}
 }
 
+// The same with a question the agent reported still showing (#263): the
+// trust question drawn in the pause is not raised over it (fireTrust keeps
+// a wait showing, unlessWaiting), so the attention does not tell of the
+// dialog; the Enter's guard asks the screen and leaves the Enter out all
+// the same: the text waits, the reported question still shows, the startup
+// watch lasts, and nothing is typed into the dialog.
+func TestSubmitLeavesTheEnterOutForATrustQuestionDrawnDuringThePauseWhileAQuestionShows(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`)}))
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h› Ask anything "))
+	waitPaste(t, s, true)
+	var once sync.Once
+	p.onWrite = func() {
+		once.Do(func() {
+			go p.outW.Write([]byte("\x1b[2;3HFolder access\r\nTrust this folder?\r\n› 1. Trust and continue"))
+		})
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "Reply READY", ByName: "crew"})
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	noWrite(t, p, 100*time.Millisecond)
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceAPI || att.Message != "Which database?" {
+		t.Fatalf("attention %+v", att)
+	}
+	if !s.startupOnScreen() {
+		t.Fatal("the startup question's watch ended, or the screen shows it no more")
+	}
+}
+
+// The trust question drawn during the pause and then the window made
+// smaller, a cell of something else (a version far right) lost to the cut
+// while the question stays intact: the screen is cut until erased whole,
+// what it shows is not known, and the Enter stays out; the watch for
+// startup questions goes on, and the question is found once the program
+// draws the screen again for the new size.
+func TestSubmitLeavesTheEnterOutForATrustQuestionOnAScreenCutByAResize(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`)}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h› Ask anything "))
+	waitPaste(t, s, true)
+	dialog := "\x1b[2;3HFolder access\r\nTrust this folder?\r\n› 1. Trust and continue"
+	var once sync.Once
+	p.onWrite = func() {
+		once.Do(func() {
+			go func() {
+				p.outW.Write([]byte(dialog + "\x1b[24;70Hv0.162.1"))
+				waitFor(2*time.Second, func() bool {
+					whole, _, _, _, _ := s.asked.Frame()
+					return strings.Contains(whole, "v0.162.1")
+				})
+				s.ResizeWith(nater, 60, 24, true)
+			}()
+		})
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "Reply READY", ByName: "crew"})
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	noWrite(t, p, 100*time.Millisecond)
+	if _, _, uncut, cols, _ := s.asked.Frame(); uncut || cols != 60 {
+		t.Fatalf("the screen after the resize: uncut %v, %d columns", uncut, cols)
+	}
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceAPI || att.Message != "Which database?" {
+		t.Fatalf("attention %+v", att)
+	}
+	if !s.trust.Watching() || !s.startupMayShow() {
+		t.Fatal("the startup question's watch ended, or the cut screen is taken to show no question")
+	}
+	// The program draws the screen again for its new size: the question shows whole.
+	p.outW.Write([]byte("\x1b[2J\x1b[H" + dialog))
+	if !waitFor(3*time.Second, s.startupOnScreen) {
+		t.Fatal("the question drawn again at the new size is not found on the screen")
+	}
+}
+
+// A screen cut by a window made smaller with no startup question ever drawn
+// (the first page attaching resizes a session whose program prints lines and
+// never erases the screen whole: a crew's members at their launch) is no
+// dialog: the submission's Enter is written, the watch for startup questions
+// ending with it as it does. Before the fix the cut alone kept the Enter out
+// for good, and a crew's first prompts never landed (#263).
+func TestSubmitEntersTheTextOnAScreenCutByAResizeWithNoStartupQuestionDrawn(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`)}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte("\x1b[?2004h\x1b[24;70Hv0.162.1\x1b[1;1H› Ask anything "))
+	waitPaste(t, s, true)
+	if !waitFor(2*time.Second, func() bool {
+		whole, _, _, _, _ := s.asked.Frame()
+		return strings.Contains(whole, "v0.162.1")
+	}) {
+		t.Fatal("the version never reached the screen")
+	}
+	if err := s.ResizeWith(nater, 60, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, uncut, cols, _ := s.asked.Frame(); uncut || cols != 60 {
+		t.Fatalf("the screen after the resize: uncut %v, %d columns", uncut, cols)
+	}
+	if !s.trust.Watching() || s.startupMayShow() {
+		t.Fatal("the startup question's watch ended, or the cut screen with nothing drawn is taken to show a question")
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "Build the todo app", ByName: "crew"})
+	if err != nil || !res.Typed || !res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	if got := nextWrite(t, p) + nextWrite(t, p); !strings.HasSuffix(got, "\r") {
+		t.Fatalf("written %q", got)
+	}
+	if s.trust.Watching() {
+		t.Fatal("the startup questions' watch outlived the first prompt's Enter")
+	}
+}
+
+// The trust question drawn during the pause, then a synchronized update
+// begun with the screen erased and the question not drawn again yet: half
+// a frame tells nothing, the Enter stays out, and the watch goes on; the
+// update ending with the question back, it is found on the screen.
+func TestSubmitLeavesTheEnterOutDuringASynchronizedRedrawOfATrustQuestion(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{TrustPattern: regexp.MustCompile(`Trust\s*this\s*folder\?`)}))
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h› Ask anything "))
+	waitPaste(t, s, true)
+	dialog := "\x1b[2;3HFolder access\r\nTrust this folder?\r\n› 1. Trust and continue"
+	var once sync.Once
+	p.onWrite = func() {
+		once.Do(func() {
+			go p.outW.Write([]byte(dialog + "\x1b[?2026h\x1b[2J\x1b[H"))
+		})
+	}
+	res, err := s.Submit(t.Context(), Submission{Text: "Reply READY", ByName: "crew"})
+	if err != nil || !res.Typed || res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	noWrite(t, p, 100*time.Millisecond)
+	if whole, settled, _, _, _ := s.asked.Frame(); settled || strings.Contains(whole, "Trust this folder?") {
+		t.Fatalf("the screen during the update: settled %v, %q", settled, whole)
+	}
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Source != SourceAPI || att.Message != "Which database?" {
+		t.Fatalf("attention %+v", att)
+	}
+	if !s.trust.Watching() || !s.startupMayShow() {
+		t.Fatal("the startup question's watch ended, or half a frame is taken to show no question")
+	}
+	// The update ends with the question drawn again.
+	p.outW.Write([]byte(dialog + "\x1b[?2026l"))
+	if !waitFor(3*time.Second, s.startupOnScreen) {
+		t.Fatal("the question drawn again by the update's end is not found on the screen")
+	}
+}
+
 // A trust question carries its answers as the prompt's choices; a person's
 // typed text is refused while it shows, with nothing written (its Enter
 // would pick whatever the dialog highlights); the choice's keys answer it.
