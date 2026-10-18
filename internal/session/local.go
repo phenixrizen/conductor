@@ -905,7 +905,7 @@ func (s *Local) firePattern(line string) {
 // where 1 runs npm install). That is weighed under the lock that sets the
 // question (startupLook).
 func (s *Local) fireTrust(text string) {
-	if q, words := s.lastStartupQ(text); q != nil {
+	if q, words := s.startupShown(text); q != nil {
 		if s.heldGone(words) {
 			// An Escape typed at it before it was asked took it away.
 			return
@@ -2397,7 +2397,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// choice of the older one is no answer to it.
 		shownDrawn := true
 		if s.trust != nil && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.trust.Watching() {
-			if _, drawn := s.lastStartupQ(s.trust.Text()); drawn != "" && !sameWords(drawn, shown.words()) {
+			if _, drawn := s.startupShown(s.trust.Text()); drawn != "" && !sameWords(drawn, shown.words()) {
 				shownDrawn = false
 			}
 		}
@@ -3094,7 +3094,7 @@ func (s *Local) stillOnScreen(id string) error {
 	}
 	switch {
 	case att.Source == SourceTrust && s.trust != nil:
-		if !sameWords(s.lastStartup(s.trust.Text()), att.words()) {
+		if _, words := s.startupShown(s.trust.Text()); !sameWords(words, att.words()) {
 			return ErrQuestionAnswered
 		}
 		// The output the watcher keeps holds what came before a screen
@@ -3154,6 +3154,29 @@ func (s *Local) lastStartupQ(text string) (*StartupQuestion, string) {
 		}
 	}
 	return last, words
+}
+
+// startupShown is the startup question the output shows and its words: the
+// question the output's tail finds (lastStartupQ over text, the startup
+// watcher's ScreenTail), its words read off the screen when that shows
+// them. A TUI draws a frame over the last one cell by cell and writes only
+// the cells that differ, so a heading drawn over the previous frame's words
+// reaches the tail in pieces (Codex's update heading over its splash reads
+// "Updat available" there, the "e" left by "OpenAI" skipped, #165), where
+// the screen reads it whole. The words are what tells the question from
+// another (sameWords): fireTrust raises it with them, and what compares the
+// tail's words with the question's reads them the same way. Without the
+// screen, or when it does not show them, the tail's words.
+func (s *Local) startupShown(text string) (*StartupQuestion, string) {
+	q, words := s.lastStartupQ(text)
+	if q != nil && s.asked != nil {
+		if whole, _, _, _ := s.asked.Whole(); whole != "" {
+			if w := q.words(whole); w != "" {
+				return q, w
+			}
+		}
+	}
+	return q, words
 }
 
 // noteDialogAnswered notes the dialog of words as answered (dialogAnswered),
@@ -3368,7 +3391,7 @@ func (s *Local) startupPicks(att Attention, data []byte, keys [][]byte) bool {
 	items := 0
 	if s.trust != nil {
 		text := s.trust.Text()
-		if q, words := s.lastStartupQ(text); q != nil && sameWords(words, att.words()) {
+		if q, words := s.startupShown(text); q != nil && sameWords(words, att.words()) {
 			items = startupItems(q, text)
 		}
 	}
