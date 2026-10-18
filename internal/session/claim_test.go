@@ -1845,3 +1845,63 @@ func TestAnAlternateScreenErasedLeavesTheMainScreensWrappedQuestion(t *testing.T
 	}
 	noWrite(t, p, 100*time.Millisecond)
 }
+
+// #225: the wrapped question's row rewritten after the window grew. Blanks
+// the program repaints into the growth's padding change nothing shown: the
+// question still reads whole, stays held, and a submission is still refused.
+// The choice redrawn on one row at the new width (its words past the old
+// extent) ends the row's join and reads what was drawn: the question still
+// matches, still held.
+func TestAWrappedStartupQuestionStaysWhenItsRowIsRepaintedAfterTheWindowGrew(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{Questions: startupQuestions()}))
+	nater, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 18, Rows: 24}, newChanSink(false))
+	p.outW.Write([]byte("\x1b[2J\x1b[HUpdate available · 0.161.0 → 0.162.1\r\n\r\n› 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\nenter continue · esc skip"))
+	update := waitAttention(t, s, func(a Attention) bool { return a.Source == SourceTrust })
+	if rows := s.asked.Text(); !strings.Contains(rows, "(r\nuns") {
+		t.Fatalf("the screen's rows at 18 columns: %q", rows)
+	}
+	for _, part := range []string{"\x1b", "z"} {
+		if err := s.Input(nater, []byte(part)); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	p.outW.Write([]byte("\x1b[24;1Hstatus: ready"))
+	fed := s.asked.Fed()
+	deadline := time.Now().Add(3 * time.Second)
+	for s.asked.Fed() == fed && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := s.ResizeWith(nater, 80, 24, true); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	// Blanks repainted into the padding past the choice row's old extent.
+	p.outW.Write([]byte("\x1b[3;19H      \x1b[24;1Hstatus: still ready"))
+	time.Sleep(3 * patternQuiet)
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("blanks in the padding took the wrapped question for gone: %+v", a)
+	}
+	if !s.startupOnScreen() {
+		t.Fatal("the screen is not read as still showing the question after the blanks")
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "fix the bug", By: nater}); !errors.Is(err, ErrTrustQuestion) {
+		t.Fatalf("a submission at the question: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	// The choice redrawn on one row at the new width: the join ends, the row reads what was drawn, the question still matches.
+	p.outW.Write([]byte("\x1b[3;1H› 1. Update now (runs `npm install -g @openai/codex`)\x1b[K\x1b[24;1Hstatus: ready again"))
+	time.Sleep(3 * patternQuiet)
+	if rows, _, _, _ := s.asked.Whole(); !strings.Contains(rows, "Update now (runs `npm install -g @openai/codex`)") {
+		t.Fatalf("the choice redrawn whole reads %q", rows)
+	}
+	if a := s.Info().Attention; a.ID != update.ID || a.State != AttentionNeedsInput {
+		t.Fatalf("the choice redrawn whole took the question for gone: %+v", a)
+	}
+	if !s.startupOnScreen() {
+		t.Fatal("the screen is not read as still showing the question after the redraw")
+	}
+	// The program moving on, the screen erased whole: gone.
+	p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+}
