@@ -1001,9 +1001,10 @@ func (s *Local) startupOnScreen() bool {
 // startup question, while the startup questions' watch lasts: the screen
 // (the frame the questions asked during the work are read from, taken as
 // one reading, Frame) shows one; or is half a frame (a synchronized update
-// under way) or cut by a window made smaller (DrawnAt), so that what it
-// shows is not known and the keys are taken to have reached a dialog rather
-// than the text (rawKeys keeps the hold); or shows a dialog's numbered
+// under way) or cut by a window made smaller (DrawnAt) while the output's
+// tail saw a startup question drawn, so that what it shows is not known and
+// the keys are taken to have reached that dialog rather than the text
+// (rawKeys keeps the hold); or shows a dialog's numbered
 // choices with no heading (startupChoiceShown), the heading scrolled off a
 // short screen while its choices stay. A window grown, nothing lost,
 // leaves the frame readable though not laid out for its size until erased
@@ -1018,7 +1019,14 @@ func (s *Local) startupMayShow() bool {
 	}
 	whole, _, uncut, _, _ := s.asked.Frame()
 	if !uncut {
-		return true
+		// Half a frame, or one cut by a window made smaller: what it shows
+		// is not known. A startup question the output's tail saw drawn may
+		// be on it, and the keys are taken to have reached it. With none
+		// drawn there is no dialog to reach: a screen cut at the start (the
+		// first page attaching resizes it) by a program that prints lines
+		// and never erases whole stays cut, and a submission's Enter would
+		// otherwise never be written (the crews' first prompts, #263).
+		return s.lastStartup(s.trust.Text()) != ""
 	}
 	if s.lastStartup(whole) != "" {
 		return true
