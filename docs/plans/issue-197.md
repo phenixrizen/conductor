@@ -361,3 +361,161 @@ the last resize, a bell-only or title-only chunk renewing none; `sized`
 invalidating the evidence; the settle rejecting pre-resize snapshots; the
 timer reconciled after every title read and every look, apart from event
 deduplication; tests 11 to 14. The plan's three reviews are spent.
+
+## A second witness Codex now offers: its program status (2026-10-18)
+
+Looked for while the owner asked for the plan to be worked on again: a
+signal of Codex's that tells its two kinds of question apart without a
+screen read. There is one, new in Codex since this plan was written.
+
+**What Codex emits.** Since 0.163.0 (released 2026-10-15; the version
+installed here; `tui/src/terminal_program_status.rs`, PR openai/codex#52725
+of 2026-10-09) Codex writes a terminal program status whenever its
+lifecycle state changes, to any terminal (the only condition is that stdout
+is one, which Conductor's PTY is; Codex's terminal detection plays no part):
+
+```
+ESC ] 7501 ; state=<state>:app=codex[:kind=<kind>] ESC \
+```
+
+ST-terminated, once per change (a cache keeps repeats off), re-emitted after
+a terminal handoff, and `state=clear` when Codex leaves the terminal.
+
+- 0.163.0 knows `idle`, `working` and `blocked`, and no kind. Its `blocked`
+  is `terminal_title_requires_action()` (`chatwidget/status_surfaces.rs`
+  `desired_program_status` at `rust-v0.163.0`): a view that requires action
+  **or an unanswered async question**. It mirrors the title, flaw included.
+- 0.164 (alpha.3 of 2026-10-17, no stable release yet; PR openai/codex#54114
+  merged 2026-10-14, "Report terminal completion states and blocking
+  reasons") knows `idle`, `working`, `blocked`, `done` and `error`, and
+  `blocked` carries `kind=permission`, `kind=question` or `kind=auth`.
+  `blocked` is now `program_status_blocked_kind()` (`bottom_pane/mod.rs`):
+  a view that requires action, an approval delayed while the person types,
+  or async questions **only once the agent is no longer running** (the
+  comment says so in those words). A turn that goes on with an async
+  question pending reports `working`. That is this issue's distinction,
+  made by Codex itself, independently of its title settings (the PR's own
+  words).
+
+**What it would replace.** Everything in "The change" above that reads
+the screen: `asyncShowing`, the pane rule, the catalog pattern, `chunkMu`,
+the evidence freshness against bells and resizes, the timer reconciliation
+against blinking titles, and tests 1 to 14 in their screen-reading form.
+The status is a state Codex declares, not a frame to be judged whole, so
+the questions the three reviews raised (a half frame, a clipped frame, a
+bell before the overlay, a resize, a title-only chunk) do not arise: a
+chunk carrying the status carries the state; a chunk without one changes
+nothing.
+
+**The change, with the status as the witness.**
+
+- `attention.go`'s scanner (`finishOSC`) learns `case "7501"`: the payload's
+  `state=` and `kind=` fields (split on `:`; `app=` kept for the record,
+  unknown fields ignored, the whole bounded by `maxOSCCapture` as today)
+  become an `Event{Source: SourceStatus, Message: state, Kind: kind}`;
+  anything but `idle`, `working`, `blocked`, `done`, `error` and `clear`
+  is dropped. BEL and ST terminators and a sequence split across chunks
+  are the scanner's today.
+- `scanOutput` hands a status event to `readStatus(state, kind, turn)`,
+  beside `readTitle`. The session keeps `statusSeen`: once a status has
+  been read in the session, the window title is no longer weighed
+  (`readTitle` returns at once): Codex 0.163 and later says in the status
+  what the title said, and for 0.164 says it right. Sessions of agents that
+  emit no status (Codex 0.162 and older, Claude Code, the rest) keep the
+  title as their witness, unchanged.
+- `working` is weighed exactly as a matching title is today: `titleRules`,
+  the settle timer for a wait younger than `TitleSettle`, the settle's
+  `onlySettling` check reading the last status instead of the last title.
+  `blocked`, `idle`, `done`, `error` and `clear` are weighed as a title that
+  does not match: a wait standing stands, the settle timer is disarmed.
+  `done` is not Conductor's done: the turn's end stays the notify hook's
+  (`agent-turn-complete`), as today.
+- Open to the owner (question 2 below): whether `blocked` with a kind also
+  **raises** a wait when none shows (`needs_input`, source `status`, the
+  message naming the kind: "Codex waits for a permission"), which would
+  catch a form no catalog pattern knows (an MCP elicitation, an auth
+  prompt) the moment Codex draws it. Without it, `blocked` only keeps the
+  waits the bell, the hooks and the patterns raise, as the title does.
+- No catalog field: the status names its own program (`app=codex`) and
+  its meaning is Codex's protocol, not a per-agent pattern. `docs/protocol.md`
+  describes the new source; `docs/features.md`'s Codex row names it.
+  `web/app/utils/protocol.ts` gains the source name if the attention
+  source is typed there (checked at implementation; no new frame or
+  message).
+- Hosted sessions read no status, as they read no title.
+
+**Versions.** With Codex 0.164 the stale Needs you of this issue is gone.
+With 0.163.0 the status mirrors the title and nothing changes for the
+person: the stale Needs you lasts, as today, at most the 30 s of the
+question's life. With 0.162 and older there is no status and the title
+rules as today. Codex's npm package publishes its alphas (`@openai/codex@alpha`
+at 0.164.0-alpha.3 on 2026-10-17); the stable 0.164 is expected on
+Codex's roughly weekly cadence (0.163.0 came 2026-10-15).
+
+**Tests.**
+
+- `internal/session` scanner tests: the 0.163 shape (`state=blocked:app=codex`)
+  and the 0.164 shape with a kind, BEL- and ST-terminated, split between two
+  reads at every byte, an unknown state dropped, a payload cut at
+  `maxOSCCapture` dropped, `state=clear`.
+- `internal/session` under `-race`, the helpers of
+  `TestActionRequiredHoldsAWaitUntilTheTitleSaysWorking` extended with a
+  `codexStatus(state, kind)` writer: (1) an API wait under an Action Required
+  title with `state=working`: working after its `TitleSettle`, not before,
+  and the attention entry's source is `status`; (2) the same wait under
+  `state=blocked:kind=question`: stands until `working`; (3) the title read
+  after a status is not weighed: a Working title under `blocked` settles
+  nothing, an Action Required title under `working` disarms nothing;
+  (4) 0.163's kindless `blocked` with the summary row on screen: the wait
+  stands (the version's limit, asserted so a change shows); (5) `blocked`
+  raising a wait, if the owner takes question 2; (6) a held turn, the trust
+  question and an `Ask`ed question under `working`: untouched, as under a
+  Working title; (7) the event bucket untouched (as the title's test);
+  (8) hosted: nothing read; (9) a status in the same read as a bell for an
+  approval: the bell's wait stands under `blocked`, and under `working`
+  (an approval Codex rang for and then answered by the person before the
+  status changed) gives way after its second, as a title would have it.
+- e2e: `web/e2e/stub-agent.sh` writes the status as Codex 0.164 does, beside
+  its title: `working` through a turn, `blocked:kind=permission` while
+  `stub approve` waits, `blocked:kind=question` while `stub ask` waits,
+  `working` while `stub async` has its question pending, `idle` at rest;
+  `STUB_STATUS=0.163` writes the kindless 0.163 shape, `STUB_STATUS=` none.
+  `web/e2e/codexworking.spec.ts`: `stub async-ask` shows Needs you for its
+  second and then Working while the async question is still pending (the
+  assertion that changes), `stub approve` as today, and the two older
+  shapes keep today's behaviour.
+- A live check with Codex 0.164 (alpha until the release) on the live tier:
+  the status bytes captured in a Conductor session for a turn, an approval
+  and an async question, kept as the fixtures' source; the plan's frames are
+  otherwise reconstructed from Codex's source, as before.
+
+**What this plan does not change.** The screen-read plan above stays
+written down. It works for every Codex version, at the cost the three
+reviews measured; the status works for 0.164 and later at a fraction of it.
+The owner chooses (question 1).
+
+## Questions for the owner (2026-10-18)
+
+1. **Which witness?** The program status (0.164 and later; 0.163 and older
+   as today), or the screen row (every version, the plan above, two
+   findings still fixed-unverified after three reviews)? Recommended: the
+   status.
+2. **Should `blocked` raise a wait of its own** when nothing else has, with
+   the kind as its words, or only keep the waits raised by the bell, the
+   hooks and the patterns, as the title does? Raising is a small addition
+   here and catches dialogs no pattern knows; it is also beyond the issue
+   as written. Recommended: raise it, in this PR, as one more case of the
+   same reader.
+3. **When?** Code now against the 0.164 alpha's documented sequence and
+   check live when 0.164 ships, or wait for the stable release first?
+   Recommended: now.
+4. **Review spending.** The three plan reviews are spent and this revision
+   is a different design: one bounded plan review of it before code, or
+   straight to code with the initial code review covering the design?
+   Recommended: one plan review (the state machine is the part reviews
+   have caught things in).
+5. **The async question itself.** Conductor rings no bell for it and the
+   member will read as working; the person has 30 s to notice it in the
+   terminal before it resolves by itself. Leave it so (the issue's
+   intent), or show something quieter than Needs you? Recommended: leave
+   it so; a quieter signal would be its own issue.
