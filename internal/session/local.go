@@ -2391,15 +2391,20 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		// put behind, and withdrawn once the screen shows it gone; one
 		// only the Escape held may answer is held answered (heldAnswer).
 		startupAnswer, heldAnswer := false, false
+		// The startup question drawn last, while the startup questions'
+		// watch lasts, asked or not yet: the keys reach it (rawKeys), as
+		// they reach a dialog drawn during the work (#224).
+		startupDrawn := ""
+		if s.trust != nil && s.trust.Watching() {
+			_, startupDrawn = s.startupShown(s.trust.Text())
+		}
 		// The startup question the keys reach is the one drawn last: the
 		// one the session shows, unless another has been drawn since and
 		// not asked yet, which they reach instead (shownDrawn false): a
 		// choice of the older one is no answer to it.
 		shownDrawn := true
-		if s.trust != nil && shown.State == AttentionNeedsInput && shown.Source == SourceTrust && s.trust.Watching() {
-			if _, drawn := s.startupShown(s.trust.Text()); drawn != "" && !sameWords(drawn, shown.words()) {
-				shownDrawn = false
-			}
+		if shown.State == AttentionNeedsInput && shown.Source == SourceTrust && startupDrawn != "" && !sameWords(startupDrawn, shown.words()) {
+			shownDrawn = false
 		}
 		// A reply's keys to the startup question shown (claimed as the
 		// writer took them): its screen goes behind as a sure answer's does.
@@ -2413,7 +2418,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			// A person's keys: never an answer. They consume the dialog
 			// they reach, withdraw a bell's wait with their Enter, and
 			// withdraw the agent's own question set aside.
-			s.rawKeys(data, maybe, onScreen, typedEnter || anyKey(maybe, isEnterKey), typed)
+			s.rawKeys(data, maybe, onScreen, startupDrawn != "", typedEnter || anyKey(maybe, isEnterKey), typed)
 			// The startup question showing as the keys are written, when
 			// they pick one of its answers (picksStartup: a digit of its
 			// items it offers no reply for too; one key of several, an
@@ -3220,9 +3225,10 @@ func (s *Local) dialogGone(look uint64) {
 // choice, before the hold is installed give the program its answer: no
 // hold follows, the stranded line's claim (a reply's, strandedClaim) goes,
 // and the question is consumed, or withdrawn when it is a wait with no
-// words; a question on the screen (a dialog, a startup question) keeps its
-// hold, the keys having reached the dialog and not the text.
-func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter, person bool) {
+// words; a question on the screen (a dialog drawn during the work and not
+// asked yet, onScreen; a startup question drawn, asked or not, startup)
+// keeps its hold, the keys having reached the dialog and not the text.
+func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, startup, enter, person bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
@@ -3235,9 +3241,10 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, enter
 	if att.State != AttentionNeedsInput || att.ID == "" {
 		return
 	}
-	// A dialog on the screen and not asked yet (onScreen) took the keys,
-	// as a question on the screen shown would: not the stranded text.
-	entered := s.holdPending && s.held == nil && onScreen == nil && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
+	// A dialog on the screen and not asked yet (onScreen), or a startup
+	// question drawn (startup), took the keys, as a question on the screen
+	// shown would: not the stranded text.
+	entered := s.holdPending && s.held == nil && onScreen == nil && !startup && !heldSource(att.Source) && picksChoice(att.Options, data, maybe)
 	if entered {
 		s.holdPending = false
 		s.releaseStrandedLocked()

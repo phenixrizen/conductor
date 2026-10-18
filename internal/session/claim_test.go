@@ -1912,3 +1912,68 @@ func TestAWrappedStartupQuestionStaysWhenItsRowIsRepaintedAfterTheWindowGrew(t *
 	p.outW.Write([]byte("\x1b[2J\x1b[H\x1b[2;3H› Ask Codex to do anything"))
 	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
 }
+
+// #224: the same with a startup question drawn before the hold and not
+// asked yet, the trust dialog here: the Enter typed in the terminal reaches
+// that dialog, not the stranded text, so the question the agent reported is
+// not consumed, the stranded claim stays and the hold follows; once the
+// program takes the dialog away the hold shows, its text still waiting for
+// a person. The startup question's watch lasts, the stranded line's Enter
+// never having been written.
+func TestAnEnterAtAStartupQuestionDrawnBeforeTheHoldKeepsTheHold(t *testing.T) {
+	trust := StartupQuestion{Pattern: regexp.MustCompile(`Trust\s*this\s*folder\?`), Answers: []Option{{Label: "Trust and continue", Input: "\r"}, {Label: "Quit", Input: "\x1b"}}}
+	s, p, _ := asking(t, Options{SubmitPause: 300 * time.Millisecond, Questions: append(approvalQuestions(), trust)})
+	var gone atomic.Bool
+	guest := linkedController(t, s, newChanSink(false), &gone)
+	nate := controller(t, s, "Nate")
+	q := reported(t, s, "Which database?")
+	reached, gate := make(chan struct{}), make(chan struct{})
+	var once, let sync.Once
+	hook := func() { once.Do(func() { close(reached); <-gate }) }
+	s.beforeHold.Store(&hook)
+	t.Cleanup(func() { let.Do(func() { close(gate) }) })
+	line := submitAsync(s, Submission{Text: "note", By: guest})
+	written(t, p)
+	untilIdle(t, s)
+	gone.Store(true)
+	s.DisconnectLink(guest.LinkID)
+	if got := returnsWithin(t, 5*time.Second, "the line", func() submitted { return <-line }); !errors.Is(got.err, ErrRevoked) {
+		t.Fatalf("the line: %+v %v", got.res, got.err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold never began")
+	}
+	// The trust dialog drawn, on the screen and not asked yet; the Enter
+	// typed at it.
+	p.outW.Write([]byte("Trust this folder?\r\n› 1. Trust and continue\r\n  2. Quit\r\nenter continue · esc quit\r\n"))
+	if !waitFor(2*time.Second, func() bool { return s.trust != nil && s.trust.Watching() && s.lastStartup(s.trust.Text()) != "" }) {
+		t.Fatal("the dialog never reached the screen")
+	}
+	if a := s.Info().Attention; a.ID != q.ID {
+		t.Fatalf("the dialog was asked before the Enter: %+v", a)
+	}
+	if err := s.Input(nate, []byte{'\r'}); err != nil {
+		t.Fatal(err)
+	}
+	if got := written(t, p); got != "\r" {
+		t.Fatalf("written %q", got)
+	}
+	if st := stateOf(s); st.consumed == q.ID {
+		t.Fatalf("the Enter at the startup question consumed the reported question: %+v", st)
+	}
+	let.Do(func() { close(gate) })
+	if !waitFor(5*time.Second, s.Held) {
+		t.Fatal("no hold followed the stranded text")
+	}
+	// The program takes the dialog away: the hold shows, and Ctrl+U shows
+	// the question again OPEN.
+	p.outW.Write([]byte("\r\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2K\x1b[1A\x1b[2KTrusted.\r\n> "))
+	heldShows(t, s)
+	if err := s.Input(nate, []byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	written(t, p)
+	open(t, s, q, "once the hold ended")
+}

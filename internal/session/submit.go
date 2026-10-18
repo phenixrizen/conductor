@@ -403,7 +403,9 @@ func (s *Local) Submit(ctx context.Context, sub Submission) (SubmitResult, error
 			if sub.Question == "" {
 				// A line naming no question answers nothing: a person's
 				// withdraws the agent's own question set aside (rawKeys).
-				s.rawKeys([]byte(data), keys, nil, false, sub.By != nil)
+				// No dialog takes its text: the guard holds the text back
+				// while one is on the screen (textGuard).
+				s.rawKeys([]byte(data), keys, nil, false, false, sub.By != nil)
 			}
 		}
 		landed, err := s.writeProc(ctx, []byte(data), textWait)
@@ -898,7 +900,7 @@ func (s *Local) pressEnter(ctx context.Context, sub Submission, res SubmitResult
 		}
 		keys, _, _ := s.keysWritten([]byte{'\r'})
 		if sub.Question == "" {
-			s.rawKeys([]byte{'\r'}, keys, nil, true, sub.By != nil)
+			s.rawKeys([]byte{'\r'}, keys, nil, false, true, sub.By != nil)
 		}
 		s.nextTurn()
 	}
