@@ -34,18 +34,32 @@ describe('SettingsSaver', () => {
     expect(s.take()).toBe('')
   })
 
-  it('restarts the server for a server setting and says restarted while the restart is under way, once', async () => {
+  it('restarts the server for a server setting and says restarted once the restart completed, once', async () => {
     let release!: () => void
     const s = new SettingsSaver()
     const a = app(() => new Promise<void>((r) => (release = r)))
     const saving = s.save(a.d, { yolo: true })
-    // The window follows the restarted server as soon as it runs, before the restart resolves: the page that follows asks then.
     expect(a.restarts).toHaveLength(1)
-    expect(s.take()).toBe('restarted')
+    // While the restart is pending nothing is owed: an ask from the page that saved (its delayed mount, say) takes nothing
+    // from the page that follows the restarted server.
     expect(s.take()).toBe('')
     release()
     expect((await saving).yolo).toBe(true)
+    expect(s.take()).toBe('restarted')
     expect(s.take()).toBe('')
+  })
+
+  it('leaves an earlier outcome untaken behind when a new save begins', async () => {
+    let release!: () => void
+    const s = new SettingsSaver()
+    const a = app(() => new Promise<void>((r) => (release = r)))
+    await s.save(a.d, { closeToTray: false })
+    // Not taken; a server setting is saved next: the pending restart owes nothing until it completes.
+    const saving = s.save(a.d, { yolo: true })
+    expect(s.take()).toBe('')
+    release()
+    await saving
+    expect(s.take()).toBe('restarted')
   })
 
   it('takes the outcome back when the restart fails, keeps the settings, and the retry says saved without restarting', async () => {
@@ -54,9 +68,11 @@ describe('SettingsSaver', () => {
     const a = app(async () => {
       if (fails) throw new Error('the server did not start')
     })
-    await expect(s.save(a.d, { yolo: true })).rejects.toThrow('did not start')
+    const failing = s.save(a.d, { yolo: true })
+    expect(s.take()).toBe('') // nothing to take while it is pending
+    await expect(failing).rejects.toThrow('did not start')
     expect(a.stored().yolo).toBe(true)
-    expect(s.take()).toBe('')
+    expect(s.take()).toBe('') // and nothing after the failure
     fails = false
     // The same form again: nothing the server reads differs from what was kept, so nothing restarts, and the toast must not say so.
     await s.save(a.d, { yolo: true })

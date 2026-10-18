@@ -17,14 +17,19 @@ export interface SaveDeps {
  * it for the page to ask once. A restarted server listens on a fresh port and
  * the window follows it, on the same page, as soon as the server runs: the
  * page that saved is gone before its save resolves, and the page that followed
- * asks (#214). So the outcome is written before the restart is awaited; a
- * restart that fails takes it back, and the failure reaches the page that
- * saved, which is still there. A save that changes nothing the server reads,
- * the retry after a failed restart among them (the settings were kept), says
- * saved, never restarted.
+ * asks (#214). The outcome is handed out only once the restart has completed
+ * (the supervisor resolves the restart in the turn it reports the server
+ * running, long before the page that follows has loaded), so an ask that comes
+ * while a restart is pending, the outgoing page's own, gets nothing and takes
+ * nothing from the page that follows; a restart that fails leaves nothing to
+ * take, and the failure reaches the page that saved, which is still there. A
+ * save that changes nothing the server reads, the retry after a failed restart
+ * among them (the settings were kept), says saved, never restarted. The IPC
+ * hands the outcome to the workbench at the server's current origin only
+ * (trusted), which after a port change is the page that followed.
  */
 export class SettingsSaver {
-  private pending: SaveOutcome = ''
+  private outcome: SaveOutcome = ''
 
   async save(d: SaveDeps, patch: Partial<DesktopSettings>): Promise<DesktopSettings> {
     const cur = d.get()
@@ -33,24 +38,21 @@ export class SettingsSaver {
     const problems = validate(next, d.posix)
     if (problems.length) throw new Error(problems.join('; '))
     d.set(next)
+    // A save under way owes nothing yet: what an earlier save left untaken goes with it.
+    this.outcome = ''
     if (!serverAffecting(cur, next)) {
-      this.pending = 'saved'
+      this.outcome = 'saved'
       return next
     }
-    this.pending = 'restarted'
-    try {
-      await d.restart()
-    } catch (e) {
-      this.pending = ''
-      throw e
-    }
+    await d.restart()
+    this.outcome = 'restarted'
     return next
   }
 
-  /** The last save's outcome, once: '' after, and when none is owed. */
+  /** The last completed save's outcome, once: '' after, while a restart is pending, and when none is owed. */
   take(): SaveOutcome {
-    const o = this.pending
-    this.pending = ''
+    const o = this.outcome
+    this.outcome = ''
     return o
   }
 }

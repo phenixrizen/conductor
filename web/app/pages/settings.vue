@@ -127,12 +127,15 @@ function savedToast(outcome: string) {
 }
 
 onMounted(async () => {
-  await load()
   // A restarted server listens on a fresh port and the app loads this page
   // there: the page that saved is gone before its save resolved, and the
-  // save's outcome is owed to this one (desktop/src/save.ts).
-  const owed = await desktop.bridge.value?.settings.outcome?.().catch(() => '')
-  if (owed === 'restarted') savedToast(owed)
+  // save's outcome is owed to this one (desktop/src/save.ts). Asked first,
+  // before the form can be saved from this page: the app answers an ask made
+  // while a restart is pending with nothing, so this ask never takes what a
+  // later save of this page owes to the page that follows it.
+  const owed = desktop.bridge.value?.settings.outcome?.().catch(() => '')
+  await load()
+  if ((await owed) === 'restarted') savedToast('restarted')
 })
 </script>
 
