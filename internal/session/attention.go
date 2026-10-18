@@ -45,6 +45,10 @@ const (
 	// SourceTitle: the agent's window title says it works (Options.WorkingTitle:
 	// Codex's "⠋ Working").
 	SourceTitle = "title"
+	// SourceStatus: the agent's program status, a state it declares in an
+	// OSC 7501 sequence (Codex 0.163 and later: working, blocked and what
+	// blocks it), weighed as the window title is (Local.readStatus).
+	SourceStatus = "status"
 	// SourceScreen: the empty state after the screen moved on from a
 	// question without an answer (withdrawn): a bell or OSC wait whose
 	// screen changed past the snapshot's threshold (Local.screenQuiet), a
@@ -151,8 +155,65 @@ const MaxAttentionMessage = 500
 
 // Event is an attention signal found in terminal output.
 type Event struct {
-	Source  string // SourceBell, SourceOSC or SourceTitle
-	Message string // a title's text: "" when it was cut (Scanner)
+	Source  string // SourceBell, SourceOSC, SourceTitle or SourceStatus
+	Message string // a title's text: "" when it was cut (Scanner); a status's state
+	// Kind and App are a status's: what blocks the program ("permission",
+	// "question", "auth", or none) and the program's name ("codex").
+	Kind string
+	App  string
+}
+
+// Program states a status declares (Event.Message with SourceStatus): Codex
+// 0.163's idle, working and blocked, 0.164's done and error, clear as the
+// program leaves the terminal, and StatusUnknown for a sequence Conductor
+// does not understand (a state or kind it does not know, one cut at the
+// capture): the program declared a state, and which is not known.
+const (
+	StatusIdle    = "idle"
+	StatusWorking = "working"
+	StatusBlocked = "blocked"
+	StatusDone    = "done"
+	StatusError   = "error"
+	StatusClear   = "clear"
+	StatusUnknown = "unknown"
+)
+
+// statusKinds are what a blocked status may name as blocking the program
+// (Codex 0.164: an approval, a question form, a sign-in).
+var statusKinds = map[string]bool{"permission": true, "question": true, "auth": true}
+
+// parseStatus reads an OSC 7501 payload after its number and the ";":
+// "key=value" fields joined by ":" ("state=blocked:app=codex:kind=question"),
+// in any order, unknown fields ignored. It reports the state, the kind and
+// the app, with StatusUnknown and no kind for a payload it does not
+// understand: no state, a state or a kind it does not know.
+func parseStatus(payload string) (state, kind, app string) {
+	for _, field := range strings.Split(payload, ":") {
+		k, v, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "state":
+			state = v
+		case "kind":
+			kind = v
+		case "app":
+			app = v
+		}
+	}
+	switch state {
+	case StatusIdle, StatusWorking, StatusBlocked, StatusDone, StatusError, StatusClear:
+	default:
+		return StatusUnknown, "", app
+	}
+	if kind != "" && !statusKinds[kind] {
+		return StatusUnknown, "", app
+	}
+	if state != StatusBlocked {
+		kind = ""
+	}
+	return state, kind, app
 }
 
 // Scanner finds terminal bells, OSC notification sequences and window titles
@@ -167,6 +228,9 @@ type Event struct {
 //     text with control characters dropped; a title longer than the
 //     sequence's capture (maxOSCCapture bytes with its number) is reported
 //     with no text, as no title a pattern can match (Options.WorkingTitle)
+//   - ESC ] 7501 ; state=S:app=A[:kind=K] (BEL | ESC \)      -> status, the
+//     program's state (parseStatus); one not understood or cut at the
+//     capture is StatusUnknown
 //
 // Other OSC sequences (hyperlinks, colours) are skipped; a BEL that
 // terminates one of them, or a title, is not a bell.
@@ -285,6 +349,14 @@ func (s *Scanner) finishOSC(events []Event) []Event {
 			title = cleanTitle(rest)
 		}
 		events = append(events, Event{Source: SourceTitle, Message: title})
+	case "7501":
+		// The program's status (Codex 0.163 and later). One cut at the
+		// capture is a state declared and not known.
+		state, kind, app := StatusUnknown, "", ""
+		if !s.dropped {
+			state, kind, app = parseStatus(rest)
+		}
+		events = append(events, Event{Source: SourceStatus, Message: state, Kind: kind, App: app})
 	case "777":
 		parts := strings.SplitN(rest, ";", 3)
 		if len(parts) >= 1 && parts[0] == "notify" {
