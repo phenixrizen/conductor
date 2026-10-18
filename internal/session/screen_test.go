@@ -14,6 +14,33 @@ func screenOf(cols, rows int, chunks ...string) *Screen {
 	return s
 }
 
+// A row autowrap went on from, rewritten in place after the screen grew,
+// reads what was drawn (#225): the write that lands at or past the width
+// the row wrapped at ends the row's continuation, so the growth's cells it
+// filled are not cut and the next row is not joined to it; a write that
+// stays within the extent leaves the join as it was.
+func TestScreenLinesReadsAWrappedRowRewrittenAfterTheScreenGrew(t *testing.T) {
+	s := screenOf(10, 4, "abcdefghijKL")
+	if got := s.Lines(); got != "abcdefghijKL" {
+		t.Fatalf("before %q", got)
+	}
+	s.Resize(80, 4)
+	s.Write([]byte("\x1b[1;1HUpdate now (runs tool)"))
+	if got := s.Lines(); got != "Update now (runs tool)\nKL" {
+		t.Fatalf("rewritten past its extent %q", got)
+	}
+	if uncut, _, _ := s.DrawnAt(); !uncut {
+		t.Fatal("cut")
+	}
+	// Within the extent: the row still goes on with the next.
+	s = screenOf(10, 4, "abcdefghijKL")
+	s.Resize(80, 4)
+	s.Write([]byte("\x1b[1;1HABC"))
+	if got := s.Lines(); got != "ABCdefghijKL" {
+		t.Fatalf("rewritten within its extent %q", got)
+	}
+}
+
 // What a TUI draws with: absolute moves, a run of changed cells over an
 // older row, erasing to the end of a row and of the screen. The text is the
 // rows without their trailing spaces, without the blank rows at the bottom.

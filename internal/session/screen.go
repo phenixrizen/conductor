@@ -416,6 +416,12 @@ func (s *Screen) put(r rune) {
 		s.x = 0
 		s.index()
 	}
+	if s.soft[s.y] && s.x >= s.wrapAt[s.y] {
+		// A character landing at or past the width the row wrapped at,
+		// without wrapping (the screen grew since): the row is being
+		// rewritten in place, and goes on with the next no more (#225).
+		s.soft[s.y], s.wrapAt[s.y] = false, 0
+	}
 	row := s.cells[s.y]
 	if row[s.x] == wideTail && s.x > 0 {
 		row[s.x-1] = ' '
