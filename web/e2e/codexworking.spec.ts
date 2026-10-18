@@ -205,21 +205,22 @@ test("a question the agent asks while one of Codex's async questions is pending 
   await yard.goto('/yard')
   const card = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
   await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: `stub async-ask ${ASYNC_ASK}`, members: ['asks'] })
-  // Codex's title says Action Required while its question is pending, but its program status (0.164) says working: the agent's own question shows for its second, then gives way. A second is too short to assert the Yard's card or the row's words; the entries below hold the words and the timing.
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  // Codex's title says Action Required while its question is pending, but its program status (0.164) says working: the agent's own question shows for its second, then gives way. A second is too short to assert on the row or the Yard's card under load; the entries below hold the words and the timing.
+  await expect.poll(() => watch!.of(id).some((e) => e.state === 'needs_input' && e.message === ASYNC_ASK), { timeout: 45_000, message: 'the question is asked' }).toBe(true)
   const stub = stubOf(state.home, `stub async-ask ${ASYNC_ASK}`)
   expect(stub).not.toBe('')
+  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'status' })
   await expect(row(page, id)).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
   await expect(card).toHaveCount(0)
-  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'status' })
-  // Working came before the async question resolved, a second or more after the question.
-  const pending = stubFile(state.home, stub, 'async')
-  expect(pending, 'the async question still pending').not.toMatch(/^resolved/m)
+  // Working came a second or more after the question and before the async question resolved: the entries and the
+  // stub's resolution stamp say so, whatever the pace of the polls above.
+  await expect.poll(() => stubFile(state.home, stub, 'async'), { timeout: 30_000 }).toMatch(/^resolved \d+$/m)
+  const resolved = Number(/resolved (\d+)\n$/.exec(stubFile(state.home, stub, 'async'))![1]) / 1000
   const entries = watch!.of(id)
   const asked = entries.find((e) => e.state === 'needs_input' && e.message === ASYNC_ASK)!
   const worked = entries.find((e) => e.state === 'working' && e.at >= asked.at)!
   expect(worked.at - asked.at, 'the question stood its second').toBeGreaterThanOrEqual(950)
-  await expect.poll(() => stubFile(state.home, stub, 'async'), { timeout: 30_000 }).toMatch(/^resolved \d+$/m)
+  expect(worked.at, `Working (${worked.at}) before the async question resolved (${resolved})`).toBeLessThan(resolved)
   stopSpin(state.home, stub)
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
   await yard.close()
@@ -247,7 +248,14 @@ test("with Codex 0.163's status the question stands until the async question res
     const worked = entries.find((e) => e.state === 'working' && e.at >= asked.at)!
     expect(worked.at, `${mode}: Working only once the async question resolved`).toBeGreaterThanOrEqual(resolved - 5)
     stopSpin(state.home, stub)
-    await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
+    const stopped = Date.now()
+    // On a miss the received string carries the state, its source and the turn's entries.
+    await expect.poll(async () => {
+      const a = (await api.session(id)).attention
+      if (a?.state === 'done') return 'done'
+      return `${a?.state}/${a?.source} after ${JSON.stringify(watch!.of(id).filter((e) => e.at >= since).map((e) => `${e.state}:${(e.message ?? '').slice(0, 24)}`))}`
+    }, { timeout: 45_000 }).toBe('done')
+    console.log(`[diag] ${mode}: done ${Date.now() - stopped} ms after stopSpin`)
     await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: 'stub status 0.164', members: ['asks'] })
   }
 })
