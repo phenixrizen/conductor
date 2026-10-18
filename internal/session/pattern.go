@@ -455,6 +455,25 @@ func (w *PatternWatcher) DrawnAt() (uncut bool, cols, rows int) {
 	return true, 0, 0
 }
 
+// Frame is the screen as one reading, under one lock: its text (Lines, a row
+// autowrap went on from read with the next as one line), whether that is a
+// whole frame (Settled: no synchronized update under way, nothing clipped),
+// whether it shows everything the program drew as it drew it (DrawnAt), and
+// its size. Two readings (Whole, then DrawnAt) can pair one frame's text with
+// another's state when a redraw or a resize comes between them: what decides
+// on a dialog's visibility reads this. The others' Last, whole and uncut,
+// 0 by 0.
+func (w *PatternWatcher) Frame() (text string, settled, uncut bool, cols, rows int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if sc, ok := w.tracker.(*Screen); ok {
+		cols, rows = sc.Size()
+		uncut, _, _ = sc.DrawnAt()
+		return sc.Lines(), sc.Settled(), uncut, cols, rows
+	}
+	return w.tracker.Last(), true, true, 0, 0
+}
+
 // Rows returns a screen watcher's screen as its rows (Screen.Rows) and
 // whether the program has finished drawing them (Screen.Drawn: no
 // synchronized update under way; a resize the program has not redrawn

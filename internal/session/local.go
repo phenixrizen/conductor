@@ -998,23 +998,36 @@ func (s *Local) startupOnScreen() bool {
 }
 
 // startupMayShow reports whether keys typed in the terminal may reach a
-// startup question: while the startup questions' watch lasts, the screen
-// (the frame the questions asked during the work are read from) shows one,
-// or is cut by a window made smaller (DrawnAt) so that what it shows is not
-// known whole, and the keys are taken to have reached a dialog rather than
-// the text (rawKeys keeps the hold). The output's tail (ScreenTail) is no
-// witness for this: a footer redrawn in place evicts a heading still on the
-// screen, and an erased dialog stays in it.
+// startup question, while the startup questions' watch lasts: the screen
+// (the frame the questions asked during the work are read from, taken as
+// one reading, Frame) shows one; or is half a frame (a synchronized update
+// under way) or cut by a window made smaller, so that what it shows is not
+// known and the keys are taken to have reached a dialog rather than the text
+// (rawKeys keeps the hold); or shows one of the choices of the startup
+// question the output's tail saw drawn last, its heading scrolled off a
+// short screen while its choices stay. A dialog the program erased leaves
+// none of these, and the keys enter the text. The tail alone is no witness
+// for this: a footer redrawn in place evicts a heading still on the screen,
+// and an erased dialog stays in it.
 func (s *Local) startupMayShow() bool {
 	if s.trust == nil || !s.trust.Watching() || s.asked == nil {
 		return false
 	}
-	uncut, _, _ := s.asked.DrawnAt()
-	if !uncut {
+	whole, settled, uncut, _, _ := s.asked.Frame()
+	if !settled || !uncut {
 		return true
 	}
-	whole, _, _, _ := s.asked.Whole()
-	return s.lastStartup(whole) != ""
+	if s.lastStartup(whole) != "" {
+		return true
+	}
+	if q, _ := s.lastStartupQ(s.trust.Text()); q != nil {
+		for _, a := range q.Answers {
+			if a.Label != "" && strings.Contains(whole, a.Label) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // heldSource reports whether a prompt of source src is a question the
