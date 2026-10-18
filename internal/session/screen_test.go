@@ -39,6 +39,19 @@ func TestScreenLinesReadsAWrappedRowRewrittenAfterTheScreenGrew(t *testing.T) {
 	if got := s.Lines(); got != "ABCdefghijKL" {
 		t.Fatalf("rewritten within its extent %q", got)
 	}
+	// A blank written into the growth's padding past the extent changes
+	// nothing shown: the row still goes on with the next, and the question
+	// that wrapped there still reads whole.
+	s = screenOf(13, 4, "Update now (runs tool)")
+	s.Resize(80, 4)
+	s.Write([]byte("\x1b[1;14H "))
+	if got := s.Lines(); got != "Update now (runs tool)" {
+		t.Fatalf("a blank in the padding %q", got)
+	}
+	s.Write([]byte("\x1b[1;14H  \x1b[1;20H "))
+	if got := s.Lines(); got != "Update now (runs tool)" {
+		t.Fatalf("blanks in the padding %q", got)
+	}
 }
 
 // What a TUI draws with: absolute moves, a run of changed cells over an
