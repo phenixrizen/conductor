@@ -140,24 +140,52 @@ on transitions only:
   then (the bell of an approval, a hook's report) is not settled by anything
   the screen said before.
 
+**Fresh evidence, and what makes it stale.** The look records the frame it
+judged by the feed that completed it (the watcher's feed count). Three
+things make that evidence stale for an async-derived clear, whatever the
+frame still shows: a blocking signal scanned since (a bell, the one
+`unlessWaiting` discards because a wait shows included, a hook's or the
+API's `needs_input` report, a question asked or fired), a resize since
+(`sized` changes the screen model under `s.mu` with no feed), and a feed
+that completed a frame since. The session keeps the feed count at the last
+blocking signal and at the last resize, and the clear requires the judged
+frame to be newer than both: a frame completed after the bell and after the
+resize, drawn by the program, that shows the summary again. A chunk that
+only rings, or only writes a title, feeds the screen nothing new and renews
+no evidence; the next frame the program draws does, or does not. Codex rings
+before it draws an approval's overlay (the plan of #186, `title_test.go`
+covers the separate reads): the bell makes the evidence stale, the overlay's
+frame shows no summary, and nothing clears the wait in between. A resize
+sets `asyncShowing` false where it changes the model (`sized`), and the
+settle rejects a snapshot taken before it.
+
 **Revalidation at the settle.** `settled` takes `chunkMu`, then runs the
 settle under `onlySettling`, which today requires the last title to still
-say working. With the pair it requires the title to match, or
-`asyncShowing` as the look just set it from the latest whole frame, which
-under `chunkMu` is the frame every chunk read so far has been fed into:
-nothing read and unfed can be behind it. A form that replaced the summary
-between the arming and the fire has flipped `asyncShowing` by then, and the
-wait stands, title unchanged or not. Codex writes its title only when the
-text changes, so an unchanged `[ ! ] Action Required` over a new blocking
-form is the ordinary case, and this is what keeps the form's wait.
+say working. With the pair it requires the title to match, or the summary
+showing on fresh evidence as defined above, read as it is at that moment,
+never a value stored earlier: a form that replaced the summary between the
+arming and the fire has flipped `asyncShowing` by then; a bell that came
+between made the evidence stale until a newer frame shows the summary
+again; a resize did the same. Codex writes its title only when the text
+changes, so an unchanged `[ ! ] Action Required` over a new blocking form
+is the ordinary case, and this is what keeps the form's wait.
 
-The bell scanned ahead of its frame: with a wait showing, `scanOutput`'s
-bell changes nothing (`unlessWaiting`), as today. Under `chunkMu` the settle
-cannot clear that wait between the bell and the frame, so the frame's
-negative transition disarms the timer and the wait the form found showing
-stands over it: Needs you, with the earlier words, which the form's own
-question replaces when a pattern knows it. Nothing of the form is lost to
-a clear.
+**Reconciling the timer, not only transitions.** Attention entries are
+recorded on state changes alone (`setAttentionRead`, one event per
+transition, no token). The settle timer is reconciled apart from that:
+after every title read and after every look, whether or not `asyncShowing`
+changed, the session asks whether an eligible wait shows (`titleRules`' and
+`settleLocked`'s: `needs_input` with an id, not held, not a question the
+session holds) and whether the pair says working on fresh evidence; if so
+and the timer is not armed, it arms it for what is left of the wait's
+`TitleSettle` (a wait older than that settles then and there); if not and
+the timer is armed, it disarms it. Codex blinks the title (`[ ! ]`, `[ . ]`,
+once a second): each title read that does not match disarms the timer as
+today, and the reconciliation that follows the read re-arms it while the
+summary shows on fresh evidence, so the wait settles after its second as
+under a Working title; frames that keep the summary (true to true) re-arm
+it as well. A title-only chunk feeds the screen nothing, and reconciles on
+the last completed frame's evidence, fresh or stale as above.
 
 **What is left as it is.** Hosted sessions read no titles and no screen
 for this (today's rule). The 30 s expiry needs no timer of Conductor's: when
@@ -186,6 +214,20 @@ wait showing) and the title says Working again, read as today.
   bell changes nothing (a wait shows); the feed flips `asyncShowing` to
   false and disarms the timer; the fire, in its turn, finds the timer
   disarmed and no evidence: nothing settles, the wait stands over the form.
+- The bell in one chunk, the form's overlay in a later one (Codex rings
+  first), the timer firing between: the bell's chunk feeds nothing new and
+  makes the evidence stale; the fire finds the summary's evidence older than
+  the bell and settles nothing; the overlay's frame then shows no summary.
+  A bell for something else, the summary persisting: the next frame the
+  program draws shows it again, the evidence is fresh, and the wait settles
+  after its second.
+- A resize before the next feed, the timer firing: `sized` set
+  `asyncShowing` false and moved the resize mark; the fire finds no fresh
+  evidence; the first whole frame drawn after the resize looks again.
+- Blinking `[ ! ]`/`[ . ] Action Required` over the summary, an eligible
+  wait younger than `TitleSettle`: each title disarms, the reconciliation
+  after it re-arms on the summary's fresh evidence; the wait settles after
+  its second, as under a Working title.
 - A half frame, or the screen clipped by a window made smaller, after the
   summary showed: the look sets `asyncShowing` false (no evidence) and
   disarms the timer; a blinking Action Required title read later changes
@@ -242,7 +284,15 @@ wait showing) and the title says Working again, read as today.
   feed released after): the wait stands and the timer is disarmed; (10) a
   clipped frame (a resize to fewer rows) after the summary showed, then an
   Action Required title after `TitleSettle`: the wait stands until a whole
-  frame shows the summary again.
+  frame shows the summary again; (11) the bell in one chunk and the overlay
+  in a later one, the settle timer fired between (held in `beforeSettle`
+  until the bell's chunk is fed, released before the overlay's): the wait
+  stands; the same bell with the summary persisting and a frame drawn after
+  it: the wait settles after its second; (12) a resize (`Resize`) after the
+  summary showed, the timer fired before the next feed: the wait stands;
+  (13) blinking titles over the summary on unchanged frames, no partial
+  frame: the wait settles after its second; (14) a title-only chunk renews
+  no evidence: the summary erased, then a title alone: nothing settles.
 - `internal/catalog`: the field validated and compiled; Codex's default
   pattern matches the snapshot's row, its singular, the row without a
   countdown and the 0.161 form, and not the editor's lines, the approval's
@@ -298,3 +348,16 @@ not whole; `readTitle` never clearing on the screen's say-so by itself; and
 the two barrier-controlled tests. The plan's two reviews are spent: the
 owner decides whether this revision is reviewed again before code, or the
 code's initial review covers it.
+
+## Revision after review round 3 (2026-10-17)
+
+Round 3 (the owner's one extra review) found the evidence still able to go
+stale between a bell and the frame that follows it (Codex rings before it
+draws an overlay; a bell-only chunk feeds the screen nothing), a resize
+bypassing the protection, and the blinking title disarming a timer that
+nothing re-armed on frames that kept the summary. Replaced above: fresh
+evidence defined by the feed count against the last blocking signal and
+the last resize, a bell-only or title-only chunk renewing none; `sized`
+invalidating the evidence; the settle rejecting pre-resize snapshots; the
+timer reconciled after every title read and every look, apart from event
+deduplication; tests 11 to 14. The plan's three reviews are spent.
