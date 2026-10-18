@@ -279,3 +279,116 @@ test('a plain switchyard on another machine is refused at save with the words wh
   await expect.poll(async () => (await sets()).map((s) => s.switchyardServer)).toEqual(['http://localhost:9090', 'https://yard.example'])
   await expect(page.locator('[data-switchyard-server]')).not.toContainText(words)
 })
+
+// The save toast says what became of the save: the server restarted for a
+// change to where or how agents run, or it was saved alone. The app says which
+// (the bridge's settings.outcome, once): a restarted server listens on a fresh
+// port and the app loads this page there, so the page that saved is gone before
+// its save resolves and the page that followed shows the toast; a restart that
+// fails is an error, and the retry after it (the settings were kept) says
+// saved, never restarted (#214). The stand-in here is the app: it keeps the
+// settings and the outcome across the reload it makes for a restart that
+// moves the server, and fails a restart when told to.
+test('the save toast says what became of the save, on the page that saved or the one that followed the restarted server', async ({ page, state }) => {
+  const form = {
+    dataDir: state.data,
+    allowedRoots: [state.root],
+    defaultCwd: state.root,
+    yolo: false,
+    reach: 'off',
+    closeToTray: true,
+    wslDistro: '',
+    wslWindowsHome: false,
+    switchyardEnabled: false,
+    switchyardServer: '',
+    switchyardToken: '',
+    switchyardName: '',
+    noticed: ['publishing'],
+  }
+  await page.addInitScript(
+    ({ token, form, url }) => {
+      const SERVER = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
+      const kept = sessionStorage.getItem('e2e.settings')
+      const settings: Record<string, unknown> = kept ? JSON.parse(kept) : { ...form }
+      ;(window as unknown as { conductorDesktop: unknown }).conductorDesktop = {
+        version: 'e2e',
+        platform: 'linux',
+        token: async () => token,
+        openExternal: async () => {},
+        settings: {
+          get: async () => ({ ...settings }),
+          set: async (p: Record<string, unknown>) => {
+            const restart = SERVER.some((k) => JSON.stringify(settings[k]) !== JSON.stringify(p[k]))
+            Object.assign(settings, p)
+            sessionStorage.setItem('e2e.settings', JSON.stringify(settings))
+            if (!restart) {
+              sessionStorage.setItem('e2e.outcome', 'saved')
+              return { ...settings }
+            }
+            const how = sessionStorage.getItem('e2e.restart')
+            sessionStorage.removeItem('e2e.restart')
+            if (how === 'fail') throw new Error('the server did not start') // the settings were kept; nothing is owed
+            sessionStorage.setItem('e2e.outcome', 'restarted')
+            if (how === 'follow') {
+              // The server came back on a fresh port and the app loads the page there: this page's save never resolves.
+              location.reload()
+              return new Promise(() => {})
+            }
+            return { ...settings }
+          },
+          outcome: async () => {
+            const o = sessionStorage.getItem('e2e.outcome') ?? ''
+            sessionStorage.removeItem('e2e.outcome')
+            return o
+          },
+        },
+        restartServer: async () => {},
+        openInBrowser: async () => {},
+        showLog: async () => {},
+        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        notice: async () => '',
+        ice: async () => ({ forwarding: false, port: 0, publicIp: '', wslAddress: '', firewall: 'unknown' }),
+        allowIceFirewall: async () => 'unknown',
+        versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+        onServerState: () => () => {},
+      }
+    },
+    { token: state.token, form, url: state.baseURL },
+  )
+  await page.goto('/settings')
+  const save = page.locator('[data-save-settings]')
+  // Exact words: the toaster also announces a toast in a hidden live region whose text begins with its own word.
+  const toast = (words: string) => page.getByText(words, { exact: true })
+  await expect(save).toBeDisabled()
+
+  // On the page that saved: yolo is how agents run, the server restarts (here without moving), and the toast says so.
+  await page.locator('[data-yolo-switch]').click()
+  await expect(save).toHaveText('Save and restart the server')
+  await save.click()
+  await expect(toast('Saved; the server restarted')).toBeVisible()
+  await expect(save).toBeDisabled()
+  // Closing to the tray is the window's: saved, no restart.
+  await page.locator('[data-tray-switch]').click()
+  await expect(save).toHaveText('Save')
+  await save.click()
+  await expect(toast('Saved')).toBeVisible()
+
+  // On the page that followed: the server came back on a fresh port and the app loaded this page there, where the toast is owed.
+  await page.evaluate(() => sessionStorage.setItem('e2e.restart', 'follow'))
+  await page.locator('[data-yolo-switch]').click()
+  await save.click()
+  await expect(toast('Saved; the server restarted')).toBeVisible()
+  await expect(save).toBeDisabled()
+  await expect(toast('Saved; the server restarted')).toBeHidden({ timeout: 15_000 })
+
+  // A restart that fails: the error and no toast; the retry, the settings kept, says saved alone.
+  await page.evaluate(() => sessionStorage.setItem('e2e.restart', 'fail'))
+  await page.locator('[data-yolo-switch]').click()
+  await expect(save).toHaveText('Save and restart the server')
+  await save.click()
+  await expect(page.locator('[data-settings-error]')).toContainText('did not start')
+  await expect(toast('Saved; the server restarted')).toHaveCount(0)
+  await save.click()
+  await expect(toast('Saved')).toBeVisible()
+  await expect(toast('Saved; the server restarted')).toHaveCount(0)
+})

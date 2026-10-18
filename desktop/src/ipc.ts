@@ -1,6 +1,7 @@
 import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { external } from './window'
-import { serverAffecting, validate, type DesktopSettings } from './settings'
+import type { DesktopSettings } from './settings'
+import { SettingsSaver } from './save'
 import type { ServerSupervisor, ServerStatus } from './server'
 import type { IceStatus } from './firewall'
 
@@ -40,6 +41,7 @@ export function trusted(senderUrl: string, origin: string): boolean {
 
 /** registerIpc wires the handlers the preload bridge calls; each checks its sender first. */
 export function registerIpc(d: IpcDeps): void {
+  const saver = new SettingsSaver()
   const guard = <T>(f: (e: IpcMainInvokeEvent, ...args: unknown[]) => T) => (e: IpcMainInvokeEvent, ...args: unknown[]): T => {
     if (!trusted(e.senderFrame?.url ?? '', d.origin())) throw new Error('refused: not the workbench')
     return f(e, ...args)
@@ -55,17 +57,10 @@ export function registerIpc(d: IpcDeps): void {
   ipcMain.handle('conductor:notice', guard(() => d.notice()))
   ipcMain.handle(
     'conductor:settings:set',
-    guard(async (_e, patch) => {
-      const cur = d.settings.get()
-      // The zoom is the app's own (Ctrl+= and Ctrl+-): a form saved with an older level leaves the current one.
-      const next = { ...cur, ...(patch as Partial<DesktopSettings>), zoomLevel: cur.zoomLevel } as DesktopSettings
-      const problems = validate(next, !!d.wsl?.())
-      if (problems.length) throw new Error(problems.join('; '))
-      d.settings.set(next)
-      if (serverAffecting(cur, next)) await d.supervisor.restart()
-      return next
-    }),
+    guard((_e, patch) => saver.save({ get: d.settings.get, set: d.settings.set, restart: () => d.supervisor.restart(), posix: !!d.wsl?.() }, patch as Partial<DesktopSettings>)),
   )
+  // What became of the last save, once: the page that followed a restarted server to its fresh port asks (SettingsSaver).
+  ipcMain.handle('conductor:settings:outcome', guard(() => saver.take()))
   ipcMain.handle(
     'conductor:restartServer',
     guard(async () => {

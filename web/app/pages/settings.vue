@@ -86,11 +86,19 @@ async function save() {
     return
   }
   saving.value = true
+  // What this page can tell on its own, for an app that cannot say what became
+  // of the save (older apps): taken before the save, since once the saved
+  // settings are copied into the form nothing differs any more (#214).
+  const restarting = restarts.value
   try {
     const next = await b.settings.set({ ...form })
     settings.value = next
     Object.assign(form, next)
-    toast.add({ title: restarts.value ? 'Saved; the server restarted' : 'Saved', icon: 'i-lucide-check', color: 'success' })
+    // The app says what became of it: the server restarted, or the settings
+    // were saved alone (a retry after a restart that failed changes nothing the
+    // server reads, since the settings were kept).
+    const told = await b.settings.outcome?.().catch(() => undefined)
+    savedToast(told === undefined ? (restarting ? 'restarted' : 'saved') : told)
     await load()
   } catch (e) {
     error.value = (e as Error).message
@@ -113,7 +121,22 @@ function onPick(dir: string) {
   else if (field) form[field] = dir
 }
 
-onMounted(load)
+/** The save's toast: the server restarted for it, or it was saved alone. */
+function savedToast(outcome: string) {
+  toast.add({ title: outcome === 'restarted' ? 'Saved; the server restarted' : 'Saved', icon: 'i-lucide-check', color: 'success' })
+}
+
+onMounted(async () => {
+  // A restarted server listens on a fresh port and the app loads this page
+  // there: the page that saved is gone before its save resolved, and the
+  // save's outcome is owed to this one (desktop/src/save.ts). Asked first,
+  // before the form can be saved from this page: the app answers an ask made
+  // while a restart is pending with nothing, so this ask never takes what a
+  // later save of this page owes to the page that follows it.
+  const owed = desktop.bridge.value?.settings.outcome?.().catch(() => '')
+  await load()
+  if ((await owed) === 'restarted') savedToast('restarted')
+})
 </script>
 
 <template>
@@ -207,7 +230,7 @@ onMounted(load)
           <template #header><h2 class="font-semibold">How agents run</h2></template>
           <div class="flex flex-col gap-4">
             <UFormField label="Yolo" description="Launch every agent with its yolo recipe, skipping its permission prompts (Codex's drops its sandbox). Only for roots you would let an agent change unasked.">
-              <USwitch v-model="form.yolo" label="Skip permission prompts" />
+              <USwitch v-model="form.yolo" label="Skip permission prompts" data-yolo-switch />
             </UFormField>
             <UFormField label="Reach" description="How the server finds out it can be reached from outside your network. Links become public only once a TLS listener has a certificate.">
               <USelect v-model="form.reach" :items="reachItems" class="w-full" />
@@ -237,7 +260,7 @@ onMounted(load)
         </UCard>
 
         <AboutCard :versions="versions">
-          <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" />
+          <USwitch v-model="form.closeToTray" label="Closing the window keeps Conductor in the tray; the server goes on" data-tray-switch />
         </AboutCard>
         </div>
 

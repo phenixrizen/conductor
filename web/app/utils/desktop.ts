@@ -87,7 +87,16 @@ export interface DesktopBridge {
   platform: string
   token(): Promise<string>
   openExternal(url: string): Promise<void>
-  settings: { get(): Promise<DesktopSettings>; set(patch: Partial<DesktopSettings>): Promise<DesktopSettings> }
+  settings: {
+    get(): Promise<DesktopSettings>
+    set(patch: Partial<DesktopSettings>): Promise<DesktopSettings>
+    /**
+     * What became of the last save ('saved', or 'restarted' when the app restarted the server for it), handed out once; '' when
+     * none is owed. A restarted server listens on a fresh port and the app loads the page there: the page that follows asks. Older
+     * apps lack it.
+     */
+    outcome?(): Promise<string>
+  }
   restartServer(): Promise<void>
   openInBrowser(): Promise<void>
   showLog(): Promise<void>
