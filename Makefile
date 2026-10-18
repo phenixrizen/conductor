@@ -7,7 +7,7 @@ GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e lint lint-static vuln fmt generate docker clean
+.PHONY: help deps check-tools build build-go notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -62,6 +62,9 @@ dev: ## instructions for two-process development
 
 test: ## race-enabled Go tests
 	go test -race -count=1 ./...
+
+preflight: ## every check CI runs, here, from the committed head, with a receipt and a log per step (scripts/preflight.py; --machines mac,windows for the other machines)
+	python3 scripts/preflight.py
 
 test-web: web-typecheck ## frontend checks
 
