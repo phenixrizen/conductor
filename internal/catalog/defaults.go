@@ -224,7 +224,7 @@ func defaults() []Agent {
 			Command:     []string{"pi"},
 			AllowArgs:   true,
 			Icon:        "i-lucide-pi",
-			Site:        "https://github.com/badlogic/pi-mono",
+			Site:        "https://github.com/earendil-works/pi",
 			Adapter:     "pi",
 			Signal:      &Signal{Kind: SignalHook},
 			// From source and docs.
@@ -279,7 +279,9 @@ func defaults() []Agent {
 			Site:        "https://ampcode.com",
 			Adapter:     "amp",
 			Signal:      &Signal{Kind: SignalHook},
-			Yolo:        &Yolo{Args: []string{"--dangerously-allow-all"}},
+			// Amp leaves the flag out of its --help but takes it; its own
+			// refusals say "Rerun with --dangerously-allow-all".
+			Yolo: &Yolo{Args: []string{"--dangerously-allow-all"}},
 		},
 		{
 			ID:          "dsh",

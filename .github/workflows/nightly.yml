@@ -43,8 +43,8 @@ jobs:
           - { id: opencode, install: "npm install -g opencode-ai" }
           - { id: aider, install: "pipx install aider-chat" }
           - { id: goose, install: "curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash && echo \"$HOME/.local/bin\" >> $GITHUB_PATH" }
-          - { id: amp, install: "npm install -g @sourcegraph/amp" }
-          - { id: pi, install: "npm install -g @mariozechner/pi-coding-agent" }
+          - { id: amp, install: "npm install -g @ampcode/cli" }
+          - { id: pi, install: "npm install -g @earendil-works/pi-coding-agent" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
