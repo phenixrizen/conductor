@@ -290,6 +290,11 @@ type Local struct {
 	// screen had been fed then. Held answered, it is cleared once the
 	// screen shows no startup question (escGone). Guarded by mu.
 	heldAnswer heldStartup
+	// syncCut is how much of a synchronized update's end (syncEnd) the
+	// output fed to the screen the questions asked during the work are read
+	// from last ended with: a read that cut it off (feedAsked). Guarded by
+	// feedMu.
+	syncCut int
 	// feedMu is held while output is fed to the startup questions' watcher
 	// and the screen's (pump), and while escGone and heldGone look at the
 	// screen and put the startup output behind: what they look at is all
@@ -2518,7 +2523,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// overlay), whether the choices offer those keys or not. A key that
 	// leaves the dialog where it was reaches it all the same; the screen,
 	// looked at again, asks it again.
-	if s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && listKey(data) {
+	if s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && s.info.Attention.Options != nil && listKey(data) {
 		choice = true
 	}
 	enter := choice || bytes.IndexByte(data, '\r') >= 0
@@ -2670,6 +2675,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			var answers []Option
 			if q, words, answers, _ = s.askedIn(screen, cols); q != nil {
 				onScreen = readDialog(words, answers, screen)
+				// Read off the screen and offering none: the highlight is in
+				// a field, where a digit is typed.
+				onScreen.field = q.FromScreen && answers == nil
 			}
 		}
 		// A startup question a key surely answers is consumed, its screen
@@ -3557,16 +3565,35 @@ func (s *Local) feedAsked(chunk []byte) string {
 		s.mu.Lock()
 		remembered := s.dialogAnswered != ""
 		s.mu.Unlock()
-		if i := bytes.Index(chunk, syncEnd); remembered && i >= 0 {
+		if rest := syncEnd[s.syncCut:]; s.syncCut > 0 && bytes.HasPrefix(chunk, rest) {
+			// The end the read before cut off.
+			piece = chunk[:len(rest)]
+		} else if i := bytes.Index(chunk, syncEnd); remembered && i >= 0 {
 			piece = chunk[:i+len(syncEnd)]
 		}
 		s.asked.Feed(piece)
+		s.syncCut = cutEnd(piece, s.syncCut)
 		chunk = chunk[len(piece):]
 		if id := s.answeredLeft(); left == "" {
 			left = id
 		}
 	}
 	return left
+}
+
+// cutEnd is how much of syncEnd the stream ends with after piece, the
+// stream before it having ended with cut bytes of it: the start of an end
+// that the next read finishes, which feedAsked looks for there.
+func cutEnd(piece []byte, cut int) int {
+	if cut > 0 && cut+len(piece) < len(syncEnd) && bytes.Equal(piece, syncEnd[cut:cut+len(piece)]) {
+		return cut + len(piece)
+	}
+	for n := min(len(piece), len(syncEnd)-1); n > 0; n-- {
+		if bytes.HasSuffix(piece, syncEnd[:n]) {
+			return n
+		}
+	}
+	return 0
 }
 
 // answeredLeft forgets the dialog answered (dialogAnswered) once a whole
@@ -3690,6 +3717,10 @@ type dialogView struct {
 	answers []Option
 	keys    map[string]bool
 	lines   int
+	// field says the dialog's highlight stands in a field (a choice that
+	// takes typed words, StartupQuestion.Typed): a digit is typed into it,
+	// no choice.
+	field bool
 }
 
 // picks reports whether data, whose keys are keys (keyReader), picks an
@@ -3826,6 +3857,9 @@ func (v *dialogView) picksKey(answers []Option, key []byte) bool {
 	case d == '\r', d == 0x03:
 		return true
 	case d >= '1' && d <= '9':
+		if v != nil && v.field {
+			return false
+		}
 		return v == nil || v.lines == 0 || int(d-'0') <= v.lines
 	}
 	return false

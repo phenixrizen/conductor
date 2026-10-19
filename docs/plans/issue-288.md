@@ -189,6 +189,17 @@ wide.
   drawn again: while a dialog answered is remembered, the screen is fed one
   synchronized update at a time and looked at after each.
 
+## Code review, fourth round (Codex, 2026-10-19)
+
+- A frame's end cut between two reads (`ESC[?2026` in one, `l` and the
+  dialog drawn again in the next) is still a frame: the part of the end
+  a read leaves off is carried to the next. The regression cuts it after
+  each of its bytes.
+- A digit typed into a field is a word, no answer: the dialog view knows
+  the highlight is in a field (a question read off the screen offering no
+  choices), so the digit neither consumes the question nor counts as a
+  list's key, and with the highlight back on a choice its reply goes.
+
 ## Not changed
 
 - Hosted sessions (`conductor host`) watch no startup or screen questions
