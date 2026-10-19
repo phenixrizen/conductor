@@ -26,10 +26,15 @@ type ActivityEntry struct {
 	To      string    `json:"to,omitempty"`      // handoff target, ≤ MaxEventTo runes
 	Tool    string    `json:"tool,omitempty"`    // tool involved, ≤ MaxEventTool bytes
 	// A `file` event (design 4e): what the agent did to a file (FileOp*)
-	// and its path, ≤ MaxEventPath bytes, as the agent named it.
+	// and its path, ≤ MaxEventPath bytes, as the agent named it. An
+	// `input` entry: OpTyped for a line Conductor typed into the session
+	// (a crew's prompt, a broadcast); empty for a reply to a question.
 	Op   string `json:"op,omitempty"`
 	Path string `json:"path,omitempty"`
 }
+
+// OpTyped marks an input entry as a line Conductor typed, not an answer.
+const OpTyped = "typed"
 
 // Activity entry types the session records itself.
 const (
@@ -184,7 +189,8 @@ func FileOpKnown(op string) bool {
 func CleanEntry(e ActivityEntry) ActivityEntry {
 	e.ByName = oneLine(e.ByName, proto.MaxNameLen)
 	e.Path = cutBytes(strings.TrimSpace(strings.Map(dropControl, e.Path)), MaxEventPath)
-	if !FileOpKnown(e.Op) {
+	// A file event's op, or an input entry's typed mark; nothing else.
+	if !FileOpKnown(e.Op) && !(e.Type == ActivityInput && e.Op == OpTyped) {
 		e.Op = ""
 	}
 	e.Message = CleanMessage(e.Message)

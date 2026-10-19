@@ -752,7 +752,10 @@ func (s *Local) pressEnterHeld(sub Submission, res SubmitResult, st submitState)
 // is written.
 func (s *Local) typedEntry(sub Submission, text string, st submitState) {
 	if sub.By == nil {
-		s.Record(ActivityEntry{Type: ActivityInput, ByName: st.byName, Message: text})
+		// A line Conductor typed (a crew's prompt, a broadcast), not an
+		// answer to a question: Op says so (OpTyped), and the inspector
+		// reads it as sent, not answered.
+		s.Record(ActivityEntry{Type: ActivityInput, ByName: st.byName, Message: text, Op: OpTyped})
 	}
 }
 

@@ -189,8 +189,8 @@ export interface ActivityEntry {
   to?: string
   /** `tool_use`, `tool_denied`, `error`, `file`: the tool involved (≤ 100 bytes). */
   tool?: string
-  /** `file`: what the agent did to the file, and its path as the agent named it (≤ 1024 bytes). */
-  op?: 'read' | 'edit' | 'write' | 'delete'
+  /** `file`: what the agent did to the file, and its path as the agent named it (≤ 1024 bytes). `input`: `typed` for a line Conductor typed into the session (a crew's prompt, a broadcast), absent for a reply to a question. */
+  op?: 'read' | 'edit' | 'write' | 'delete' | 'typed'
   path?: string
   /** GET /api/events only: for an attention entry, the state it records. Absent from a session's own replay and from an older host's entries. */
   state?: 'needs_input' | 'working' | 'done'

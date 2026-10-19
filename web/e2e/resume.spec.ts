@@ -185,6 +185,8 @@ test('a member of a stopped run resumed reopens the run, and Resume as new run c
     // As a new run: the header's Resume as new run continues lead's conversation in its kept worktree.
     const worktrees = git(state.repo, 'worktree', 'list', '--porcelain')
     await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+    // A stopped run's header offers Resume and no Stop (#137).
+    await expect(page.locator('[data-crew-run-header] [data-run-stop]')).toHaveCount(0)
     await page.locator('[data-crew-run-header] [data-run-resume]').click()
     await page.waitForURL((u) => u.pathname.startsWith('/runs/') && !u.pathname.endsWith(run.id), { timeout: 30_000 })
     const nextId = decodeURIComponent(new URL(page.url()).pathname.split('/').pop() ?? '')

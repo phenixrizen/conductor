@@ -57,7 +57,7 @@ Owner → client:
 | `status` | `status, exitCode?` |
 | `attention` | `state, message?, source?, kind?, options?[{label, input}], id?` (see Attention; `id` names the question, absent with the empty state and from an older owner) |
 | `answer_ok` | `requestId` — the owner took the `answer` of that `reqId`: its keys are written, or its line accepted |
-| `activity` | `at, type, by?, byName?, message?, url?, to?, tool?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the six event types (see Events). The last 50 entries replay right after `ready`; new ones follow live. |
+| `activity` | `at, type, by?, byName?, message?, url?, to?, tool?, op?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the six event types (see Events). An `input` entry carries `op` `typed` when the line was typed by Conductor (a crew's prompt, a broadcast) rather than a reply to a question. The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type, a quiet connection (`hello.chatOnly`, a run chat's) left out. `link` is the share link's label. |
 | `error` | `code, message, requestId?` — `requestId` names the chat post (its nonce), send (its ref) or answer (its `reqId`) the error answers |
 | `pong` | `ts` |

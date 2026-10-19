@@ -123,6 +123,19 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
   await expect(row).toHaveAttribute('data-row-state', 'exited')
   await expect(row).toContainText(/(exit \d+|stopped) · \d+[smh] ago/)
   await expect(row.locator('[data-resume][data-resume-kind="icon"]')).toBeVisible()
+  // Hovering Resume shows Resume, not the row's More button fading in over it (#257): the pointer's target at its centre is the
+  // Resume button, and a click resumes the session.
+  const resume = row.locator('[data-resume]')
+  await resume.hover()
+  await expect(row.locator('[data-row-actions]')).toBeVisible()
+  const target = await resume.evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+    return hit ? (hit.closest('[data-resume]') ? 'resume' : hit.closest('[data-row-more]') ? 'more' : hit.tagName) : 'none'
+  })
+  expect(target).toBe('resume')
+  await resume.click()
+  await expect.poll(async () => (await api.session(done.id)).status, { timeout: 30_000 }).not.toBe('exited')
 
   // Running folds from its header, keeps its count and shows what is inside as squares; the fold survives a reload.
   const running = page.locator('[data-sidebar-section="running"]').first()

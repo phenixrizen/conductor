@@ -779,3 +779,33 @@ func TestTheNextStartupQuestionDrawnAsTheFirstIsAnsweredIsHeld(t *testing.T) {
 		t.Fatalf("its choices %+v", opts)
 	}
 }
+
+// A line Conductor types into the session (a crew's prompt, a broadcast) is
+// recorded as an input entry marked typed (OpTyped): the inspector reads it
+// as sent, not answered (#137). A reply to a question carries no such mark.
+func TestATypedLinesEntryIsMarkedTypedAndAnAnswersIsNot(t *testing.T) {
+	s, p := newLocalWith(t, quiet(Options{}))
+	p.outW.Write([]byte("\x1b[?2004h› Ask anything "))
+	waitPaste(t, s, true)
+	if res, err := s.Submit(t.Context(), Submission{Text: "build the todo app", ByName: "crew"}); err != nil || !res.Entered {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	nextWrite(t, p)
+	typed := inputEntries(s)
+	if len(typed) != 1 || typed[0].Op != OpTyped || typed[0].ByName != "crew" || typed[0].Message != "build the todo app" {
+		t.Fatalf("the typed line's entry: %+v", typed)
+	}
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 80, Rows: 24}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetAttention(AttentionNeedsInput, "Apply edit?", SourceAPI)
+	if err := s.AnswerInput(t.Context(), sub, s.Info().Attention.ID, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	entries := inputEntries(s)
+	if len(entries) != 2 || entries[1].Op != "" || entries[1].ByName != "nater" {
+		t.Fatalf("the answer's entry: %+v", entries)
+	}
+}

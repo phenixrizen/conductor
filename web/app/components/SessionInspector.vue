@@ -82,7 +82,8 @@ function describe(e: ActivityEntry) {
   const msg = e.message ? `: ${e.message}` : ''
   switch (e.type) {
     case 'input':
-      return `${by}answered${msg}`
+      // A line Conductor typed (a crew's prompt, a broadcast) is sent; a reply to a question answered.
+      return e.op === 'typed' ? `${by}sent${msg}` : `${by}answered${msg}`
     case 'join':
       return `${by}joined`
     case 'leave':

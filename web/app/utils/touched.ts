@@ -65,7 +65,7 @@ export function touchedRows(entries: readonly ActivityEntry[], cwd: string, serv
     rows.set(abs, { abs, ...where(abs, cwd), op: f.op, ops: [...(f.ops?.length ? f.ops : [f.op])], count: Math.max(1, f.count), tool: f.tool ?? '', by: f.by ?? '', first: f.first, at: f.last })
   }
   for (const e of entries) {
-    if (e.type !== 'file' || !e.path || !e.op) continue
+    if (e.type !== 'file' || !e.path || !e.op || e.op === 'typed') continue
     const abs = touchedAbs(e.path, cwd)
     const r = rows.get(abs)
     if (!r) {

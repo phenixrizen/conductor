@@ -67,6 +67,12 @@ test("a Codex member's command approval is in Needs you with its words and three
   await expect(row.locator('[data-row-prompt]')).toHaveText(words)
   await expect(row.locator('[data-row-choice]')).toHaveCount(3)
   await expect(row.locator('[data-row-choice="2"]')).toContainText("Yes, and don't ask again")
+  // Every choice, the long third one included, stays within the row's edge (#137).
+  const edges = await row.evaluate((el) => {
+    const right = el.getBoundingClientRect().right
+    return Array.from(el.querySelectorAll('[data-row-choice]')).map((b) => Math.round(b.getBoundingClientRect().right - right))
+  })
+  for (const over of edges) expect(over, `a choice past the row's edge by ${over}px`).toBeLessThanOrEqual(0)
   await row.locator('[data-row-choice="1"]').click()
   await expect.poll(transcript, { timeout: 15_000, message: 'the stub read y' }).toContain('approval: approved\n')
   // The turn ends as Codex's did in the rc.7 app: done, then the bell. The bell is the turn's own: the member stays done.

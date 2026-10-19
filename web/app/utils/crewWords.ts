@@ -178,12 +178,12 @@ export function runTitle(run: Pick<RunInfo, 'name' | 'label'>): string {
   return run.label || run.name
 }
 
-/** When a run started, for a row: "today 08:31", "Oct 2 16:04", or without the time "Oct 2". */
+/** When a run started, for a row: "today 08:31", "Oct 2 16:04", or without the time "Oct 2". The clock is the sidebar's (24-hour): one run reads the same everywhere. */
 export function runWhen(iso: string, now = Date.now(), time = true): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
   const n = new Date(now)
-  const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
   if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) return `today ${hm}`
   const md = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   return time ? `${md} ${hm}` : md

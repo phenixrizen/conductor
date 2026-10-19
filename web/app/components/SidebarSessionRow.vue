@@ -41,6 +41,12 @@ const question = computed(() => stopQuestion({ kind: 'session', name: s.value.na
 const prompt = computed(() => rowPrompt(props.row))
 
 const target = computed(() => ({ kind: 'session' as const, name: s.value.name, live: live.value, inRun: !!s.value.crew }))
+// An exited server session's row ends with Resume, outside the link; the hover actions stop short of it (#257).
+const resumable = computed(() => props.row.state === 'exited' && s.value.kind === 'server')
+// The Share tooltip, shown on hover or focus, would stay up once the share dialog closed and gave the focus back to the button:
+// a click mutes it until the pointer leaves the button (#137).
+const shareTip = ref(false)
+const shareTipMuted = ref(false)
 const menu = computed(() =>
   rowMenuItems(target.value, {
     open: () => router.push(`/sessions/${s.value.id}`),
@@ -116,20 +122,21 @@ function confirmStop() {
           </template>
         </span>
       </NuxtLink>
-      <ResumeButton v-if="row.state === 'exited' && s.kind === 'server'" :session="s" icon-only size="xs" />
+      <ResumeButton v-if="resumable" :session="s" icon-only size="xs" class="relative z-10 mr-1.5" />
       </div>
-      <!-- The confirm's buttons and the hover actions sit beside the link: a link holds no button. -->
-      <span v-if="confirming" class="absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-md bg-default/95 p-0.5 shadow-xs ring ring-default">
+      <!-- The confirm's buttons sit below the link, after its words, never over them; the hover actions beside the link: a link holds no button. -->
+      <span v-if="confirming" class="flex items-center justify-end gap-1 px-1.5 pb-1.5" data-row-stop-buttons>
         <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
         <UButton label="Stop" icon="i-lucide-square" size="xs" color="error" :loading="busy" data-confirm-stop @click="confirmStop" />
       </span>
       <span
         v-else
-        class="absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-default/95 p-0.5 opacity-0 shadow-xs ring ring-default transition-opacity focus-within:opacity-100 group-hover:opacity-100"
+        class="absolute top-1.5 flex items-center gap-0.5 rounded-md bg-default/95 p-0.5 opacity-0 shadow-xs ring ring-default transition-opacity focus-within:opacity-100 group-hover:opacity-100"
+        :class="resumable ? 'right-9' : 'right-1.5'"
         data-row-actions
       >
-        <UTooltip v-if="live" text="Share">
-          <UButton icon="i-lucide-share-2" size="xs" color="neutral" variant="ghost" :aria-label="`Share ${s.name}`" data-row-share @click="emit('share', row)" />
+        <UTooltip v-if="live" text="Share" :open="shareTip && !shareTipMuted" @update:open="(o: boolean) => (shareTip = o)">
+          <UButton icon="i-lucide-share-2" size="xs" color="neutral" variant="ghost" :aria-label="`Share ${s.name}`" data-row-share @click="shareTipMuted = true; emit('share', row)" @pointerleave="shareTipMuted = false" />
         </UTooltip>
         <UTooltip v-if="live" text="Stop">
           <UButton icon="i-lucide-square" size="xs" color="neutral" variant="ghost" :aria-label="`Stop ${s.name}`" data-row-stop @click="confirming = true" />

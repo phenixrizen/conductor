@@ -152,7 +152,8 @@ describe('names and times', () => {
   it('names a run by its crew and start, with its short id', () => {
     expect(shortRunId('users-api-cca6cdf3')).toBe('cca6cdf3')
     expect(shortRunId('cca6cdf3')).toBe('cca6cdf3')
-    expect(runWhen(iso(0), T0 + 3_600_000)).toMatch(/^today \d/)
+    expect(runWhen(iso(0), T0 + 3_600_000)).toMatch(/^today \d{2}:\d{2}$/)
+    expect(runWhen(iso(0), T0 + 3_600_000)).not.toMatch(/[AP]M/)
     expect(runWhen(iso(0), T0 + 2 * 86_400_000)).toMatch(/^Oct 4 \d/)
     expect(runWhen(iso(0), T0 + 2 * 86_400_000, false)).toBe('Oct 4')
     expect(runWhen('nope')).toBe('')
