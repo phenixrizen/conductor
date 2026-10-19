@@ -510,6 +510,11 @@ type Attention struct {
 	Kind    string            `json:"kind,omitempty"`
 	Options []AttentionOption `json:"options,omitempty"`
 	ID      string            `json:"id,omitempty"`
+	// Answered is "terminal" for a question that keys typed in the
+	// session's terminal have answered, shown still while the program's
+	// dialog stays on the screen: no client offers it (docs/protocol.md,
+	// Attention).
+	Answered string `json:"answered,omitempty"`
 }
 
 // Activity is one entry of the session activity log (owner -> client). The

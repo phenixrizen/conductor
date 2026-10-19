@@ -116,6 +116,11 @@ func CleanOptions(in []Option) []Option {
 // as Since stamps it, new with each one that shows a state: the question a
 // reply was shown for (Local.AnswerInput, Submission.Question), and the id of
 // the question's line in the chat. Empty with the empty state.
+// AnsweredTerminal is Attention.Answered for a question answered by keys
+// typed in the session's terminal, shown still while the program's dialog
+// stays on the screen.
+const AnsweredTerminal = "terminal"
+
 type Attention struct {
 	State   AttentionState `json:"state"`
 	Message string         `json:"message,omitempty"`
@@ -124,6 +129,11 @@ type Attention struct {
 	Kind    string         `json:"kind,omitempty"`
 	Options []Option       `json:"options,omitempty"`
 	ID      string         `json:"id,omitempty"`
+	// Answered marks the question shown that keys typed in its terminal
+	// have answered (AnsweredTerminal): it stays until the screen shows it
+	// gone, and no page offers it (#258). Set as the session reports its
+	// attention (Local.attentionLocked), never stored.
+	Answered string `json:"answered,omitempty"`
 	// rows are the words of a question asked from the screen as its rows
 	// (StartupQuestion.words), whole, which tell it from the next
 	// (sameWords); Message is cut from them. Kept by the session, never

@@ -812,15 +812,15 @@ func TestAHostedQuestionKeepsItsHostsID(t *testing.T) {
 	hub := NewHub(session.NewRegistry(4), nil)
 	hs, conn := register(t, hub)
 	opts := []session.Option{{Label: "Yes", Input: "y"}}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false)
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "")
 	if a := hs.Info().Attention; a.ID != "0123456789abcdef" || a.State != session.AttentionNeedsInput {
 		t.Fatalf("the host's question: %+v", a)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "has space", false)
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "has space", false, "")
 	if a := hs.Info().Attention; a.ID != "" {
 		t.Fatalf("an id that is no question's: %q", a.ID)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, "fedcba9876543210", false)
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, "fedcba9876543210", false, "")
 	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, true); err != nil {
 		t.Fatal(err)
 	}
@@ -928,5 +928,37 @@ func TestHostChatReachesTheHubHookCleaned(t *testing.T) {
 	}
 	if m := got[3]; len(m.Text) != proto.MaxChatText {
 		t.Fatalf("the long text was cut to %d bytes", len(m.Text))
+	}
+}
+
+// The host's mark on a question keys typed in its terminal have answered
+// (Attention.Answered, #258) is kept on the server's copy, so the listings
+// and the stream say so; the mark on anything but a question is dropped; and
+// a forwarded change of the same words is not the same once the mark differs.
+func TestAHostedQuestionKeepsItsHostsAnsweredMark(t *testing.T) {
+	hub := NewHub(session.NewRegistry(4), nil)
+	hs, _ := register(t, hub)
+	opts := []session.Option{{Label: "Yes", Input: "y"}}
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "")
+	if a := hs.Info().Attention; a.Answered != "" {
+		t.Fatalf("asked, not answered: %+v", a)
+	}
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, session.AnsweredTerminal)
+	if a := hs.Info().Attention; a.Answered != session.AnsweredTerminal || a.ID != "0123456789abcdef" || a.State != session.AttentionNeedsInput {
+		t.Fatalf("answered in the host's terminal: %+v", a)
+	}
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "later")
+	if a := hs.Info().Attention; a.Answered != "" {
+		t.Fatalf("a mark that is not the terminal's: %+v", a)
+	}
+	hs.HostAttention(session.AttentionDone, "", session.SourceAPI, "", nil, "", false, session.AnsweredTerminal)
+	if a := hs.Info().Attention; a.Answered != "" || a.State != session.AttentionDone {
+		t.Fatalf("a mark on no question: %+v", a)
+	}
+	a := session.Attention{State: session.AttentionNeedsInput, Message: "Allow?", Source: session.SourceQuestion, Options: opts}
+	b := a
+	b.Answered = session.AnsweredTerminal
+	if !sameAttention(a, a) || sameAttention(a, b) {
+		t.Fatal("the mark tells two attentions apart")
 	}
 }

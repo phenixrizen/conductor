@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { ATTENTION_DOT_COLOR, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { liveAttention, liveSession, ATTENTION_DOT_COLOR, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
   return {
@@ -65,5 +65,21 @@ describe('a turn held for the terminal', () => {
     expect(waitingHeading({ state: 'needs_input', source: 'submit' }, 'claude')).toBe('Type in the terminal to go on')
     expect(waitingHeading({ state: 'needs_input', source: 'api' }, 'claude')).toBe('claude is waiting on you')
     expect(waitingHeading(undefined, 'codex')).toBe('codex is waiting on you')
+  })
+})
+
+describe('a question answered in the terminal (#258)', () => {
+  it('reads as no question to offer, the mark kept, and every other attention as itself', () => {
+    const answered = { state: 'needs_input' as const, message: 'Allow?', source: 'question', id: 'q1', options: [{ label: 'Yes', input: 'y' }], answered: 'terminal' as const }
+    expect(liveAttention(answered)).toEqual({ state: '', source: 'input', answered: 'terminal' })
+    const open = { state: 'needs_input' as const, message: 'Allow?', source: 'question', id: 'q1' }
+    expect(liveAttention(open)).toBe(open)
+    const working = { state: 'working' as const, source: 'title' }
+    expect(liveAttention(working)).toBe(working)
+    expect(liveAttention(undefined)).toBeUndefined()
+    const s = { id: 'a', name: 'a', agentId: 'codex', status: 'running', createdAt: '', kind: 'server', attention: answered } as unknown as SessionInfo
+    expect(liveSession(s).attention).toEqual({ state: '', source: 'input', answered: 'terminal' })
+    const t = { ...s, attention: open } as unknown as SessionInfo
+    expect(liveSession(t)).toBe(t)
   })
 })

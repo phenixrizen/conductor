@@ -963,3 +963,60 @@ func TestAStartupQuestionsWordsAreReadOffTheScreen(t *testing.T) {
 	nextWrite(t, p)
 	nextWrite(t, p)
 }
+
+// A question answered by keys typed in its terminal reads answered in the
+// terminal from that moment (#258): the session's info, the terminal's
+// control channel and the change hook all say so at once, so that no page
+// offers choices nobody can take while the dialog waits for the program to
+// move on; a reply that still names it is refused as answered in the
+// terminal; the screen moving on withdraws it as before, the mark gone.
+func TestAQuestionAnsweredByKeysInTheTerminalReadsAnsweredAtOnce(t *testing.T) {
+	changes := make(chan Info, 64)
+	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions(), OnChange: func(i Info) {
+		select {
+		case changes <- i:
+		default:
+		}
+	}}))
+	sink := newChanSink(false)
+	sub, err := s.Attach("", RoleControl, "", 80, 24, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+	att := waitAttention(t, s, asked)
+	if att.Answered != "" {
+		t.Fatalf("asked, not answered: %+v", att)
+	}
+	if err := s.Input(sub, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+	if a := s.Info().Attention; !asked(a) || a.ID != att.ID || a.Answered != AnsweredTerminal {
+		t.Fatalf("after the key: %+v", a)
+	}
+	if m := waitControl(sink, func(m map[string]any) bool {
+		return m["t"] == "attention" && m["id"] == att.ID && m["answered"] == AnsweredTerminal
+	}); m == nil {
+		t.Fatal("the control channel never said the question was answered in the terminal")
+	}
+	deadline := time.After(3 * time.Second)
+	for told := false; !told; {
+		select {
+		case i := <-changes:
+			told = i.Attention.ID == att.ID && i.Attention.Answered == AnsweredTerminal
+		case <-deadline:
+			t.Fatal("the change hook never said the question was answered in the terminal")
+		}
+	}
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("y")); !errors.Is(err, ErrQuestionAnswered) || err.Error() != QuestionConsumedWords {
+		t.Fatalf("a reply after the key: %v", err)
+	}
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl -sI https://example.com this time\r\n› ")))
+	a := waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	if a.Source != SourceScreen || a.Answered != "" || s.Info().LastAnswer != nil {
+		t.Fatalf("the dialog withdrawn: %+v, answered %+v", a, s.Info().LastAnswer)
+	}
+}

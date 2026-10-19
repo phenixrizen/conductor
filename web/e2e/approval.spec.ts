@@ -60,6 +60,28 @@ test("a Codex member's command approval is in Needs you with its words and three
     return agent && existsSync(file) ? readFileSync(file, 'utf8') : ''
   }
 
+  // A key typed in the member's terminal answers the dialog: the row stops offering the question at once, in this tab and in
+  // another watching the Yard (#258), and a reply that still names it is refused as answered in the terminal.
+  const yard = await page.context().newPage()
+  await yard.goto('/yard')
+  const yardCard = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
+  await expect(yardCard).toBeVisible({ timeout: 30_000 })
+  await page.goto(`/sessions/${id}`)
+  const screen = page.locator('.terminal-host .xterm-screen').first()
+  await expect(screen).toBeVisible()
+  await screen.click()
+  await page.keyboard.press('y')
+  await expect.poll(transcript, { timeout: 15_000, message: 'the stub read y' }).toContain('approval: approved\n')
+  await expect(page.locator('[data-quick-reply]')).toHaveCount(0)
+  await expect(yardCard).toHaveCount(0, { timeout: 15_000 })
+  // The session's own report: the question answered in the terminal, or gone already with the screen.
+  await expect.poll(async () => { const a = (await api.session(id)).attention; return a?.state !== 'needs_input' || a.answered === 'terminal' }, { timeout: 15_000 }).toBe(true)
+  expect(member(await api.run(run.id), 'fetch').needsInput, 'the run view no longer counts the member waiting').toBe(false)
+  await yard.close()
+  await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
+  await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/broadcast`, { text: 'stub approve curl -sI https://example.com' })
+  await expect.poll(source, { timeout: 30_000, message: 'the approval is asked again' }).toBe('question')
+
   // The sidebar's row, in Needs you: the words and the three choices; the first types y alone.
   await page.goto('/crews')
   const row = page.locator(`[data-session-list="sidebar"] [data-sidebar-row="s:${id}"]`).first()
@@ -74,9 +96,9 @@ test("a Codex member's command approval is in Needs you with its words and three
   })
   for (const over of edges) expect(over, `a choice past the row's edge by ${over}px`).toBeLessThanOrEqual(0)
   await row.locator('[data-row-choice="1"]').click()
-  await expect.poll(transcript, { timeout: 15_000, message: 'the stub read y' }).toContain('approval: approved\n')
+  await expect.poll(async () => ((await transcript()).match(/^approval: approved$/gm) ?? []).length, { timeout: 15_000, message: 'the stub read y' }).toBe(2)
   // The turn ends as Codex's did in the rc.7 app: done, then the bell. The bell is the turn's own: the member stays done.
-  await expect.poll(transcript, { timeout: 15_000, message: 'the stub rang after its done' }).toContain('bell: after done\n')
+  await expect.poll(async () => ((await transcript()).match(/^bell: after done$/gm) ?? []).length, { timeout: 15_000, message: 'the stub rang after its done' }).toBe(2)
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
   await page.waitForTimeout(1_000)
   expect((await api.session(id)).attention?.state, 'the turn-end bell left the member waiting on nothing').toBe('done')
@@ -93,8 +115,8 @@ test("a Codex member's command approval is in Needs you with its words and three
   await expect(card.getByRole('button', { name: /^(Yes, proceed|Yes, and don't ask again|No, tell Codex what to do differently)$/ })).toHaveCount(3)
   await card.getByRole('button', { name: /No, tell Codex what to do differently/ }).click()
   await expect.poll(transcript, { timeout: 15_000, message: 'the stub read Escape' }).toContain('approval: declined\n')
-  expect((await transcript()).match(/^approval: /gm)).toHaveLength(2)
-  await expect.poll(async () => ((await transcript()).match(/^bell: after done$/gm) ?? []).length, { timeout: 15_000 }).toBe(2)
+  expect((await transcript()).match(/^approval: /gm)).toHaveLength(3)
+  await expect.poll(async () => ((await transcript()).match(/^bell: after done$/gm) ?? []).length, { timeout: 15_000 }).toBe(3)
   await page.waitForTimeout(1_000)
   expect((await api.session(id)).attention?.state).toBe('done')
 })

@@ -20,6 +20,24 @@ export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefine
  */
 export const TERMINAL_FIRST = 'Type in the terminal first'
 
+/**
+ * The attention as the pages read it (#258): a question keys typed in the terminal have answered (`answered`) is no question to
+ * offer, so it reads as the empty state with source `input`, as the stream will say once the screen moves on; the mark stays on
+ * it for a page that would say so. Every other attention is itself.
+ */
+export function liveAttention(a: Attention): Attention
+export function liveAttention(a: Attention | undefined): Attention | undefined
+export function liveAttention(a: Attention | undefined): Attention | undefined {
+  if (!a?.answered || a.state !== 'needs_input') return a
+  return { state: '', source: 'input', answered: a.answered }
+}
+
+/** A session as the pages read it: its attention the live form (liveAttention); the same object when nothing changes. */
+export function liveSession(s: SessionInfo): SessionInfo {
+  const a = liveAttention(s.attention)
+  return a === s.attention ? s : { ...s, attention: a }
+}
+
 /** Sessions that need input, newest signal first. */
 export function needingInput(sessions: Iterable<SessionInfo>): SessionInfo[] {
   const out: SessionInfo[] = []

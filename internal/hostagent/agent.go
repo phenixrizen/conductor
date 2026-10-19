@@ -849,7 +849,7 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 // with its mark as the agent's own question, which the server's copy keeps
 // through a done it forwards (signal.HostedSession.Ask).
 func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked()}
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}

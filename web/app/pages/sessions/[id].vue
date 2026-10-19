@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo, ShareLink } from '~/composables/useSessions'
+import { liveAttention } from '~/utils/attention'
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
@@ -217,7 +218,7 @@ async function load() {
   try {
     const res = await api.get(id.value)
     session.value = res.session
-    attention.value = res.session.attention ?? { state: '' }
+    attention.value = liveAttention(res.session.attention ?? { state: '' })
     links.value = res.links ?? []
     error.value = ''
     ready.value = true

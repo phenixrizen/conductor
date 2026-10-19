@@ -681,7 +681,7 @@ func (s *Local) endHoldTyped(data []byte, maybe [][]byte) {
 			s.consumeLocked(over.ID)
 		}
 		s.signalAttention()
-		s.hub.Broadcast(proto.MustControl(attentionMessage(over)))
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
 	s.mu.Unlock()
 	if restore {

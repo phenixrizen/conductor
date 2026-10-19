@@ -55,7 +55,7 @@ Owner → client:
 | `ready` | end of scrollback; live output follows |
 | `resize` | `cols, rows, by` (the viewer that sizes the session now; absent when nobody holds the size, as when it left with none of the owner's windows to take it). Sent on every change of size or of sizer, the same size included. An owner without `sizer` (an older host) names the subscriber that resized |
 | `status` | `status, exitCode?` |
-| `attention` | `state, message?, source?, kind?, options?[{label, input}], id?` (see Attention; `id` names the question, absent with the empty state and from an older owner) |
+| `attention` | `state, message?, source?, kind?, options?[{label, input}], id?, answered?` (see Attention; `id` names the question, absent with the empty state and from an older owner; `answered:"terminal"` marks a question keys typed in the terminal have answered) |
 | `answer_ok` | `requestId` — the owner took the `answer` of that `reqId`: its keys are written, or its line accepted |
 | `activity` | `at, type, by?, byName?, message?, url?, to?, tool?, op?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the six event types (see Events). An `input` entry carries `op` `typed` when the line was typed by Conductor (a crew's prompt, a broadcast) rather than a reply to a question. The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type, a quiet connection (`hello.chatOnly`, a run chat's) left out. `link` is the share link's label. |
@@ -663,7 +663,7 @@ gone five minutes, and is ended (`registered.links` leaves it out).
 
 ## Attention
 
-Each session carries `attention{state, message, source, since, kind?, options?, id?}`
+Each session carries `attention{state, message, source, since, kind?, options?, id?, answered?}`
 in its `Info`. States: `""` (nothing), `working`, `needs_input`, `done`.
 Sources: `api` (the agent's own token), `admin`, `bell`, `osc`, `pattern` (the
 screen-pattern detector, below), `trust` (the agent's workspace-trust
@@ -679,7 +679,16 @@ notification's, the pattern's or the status's wait), `screen` (the empty
 state after the screen moved on from a question without an answer: a bell's
 or a status's wait whose screen changed past the snapshot's threshold, a
 startup question or a dialog gone from the screen, or a status's wait that a
-later status ended; see Who may answer a question). While
+later status ended; see Who may answer a question). A question that keys
+typed in its terminal have answered (a dialog's key, a startup question's
+Enter, the held text entered: *consumed*, below) stays `needs_input` while
+the program's dialog is on the screen, marked `answered:"terminal"` from the
+moment of the key, in the stream's `Info` and the terminal's `attention`
+message alike; a client offers such a question nowhere (no row prompt, reply
+bar, chat choice or Needs you place), a reply that still names it is refused
+`question_answered` with the terminal's words, and a client that hears that
+refusal drops the question it named at once, whatever the stream has said so
+far. The mark goes with the question, when the screen shows it gone. While
 that turn is held, the hold is what shows, but for a `trust` or `question`
 prompt on the screen, which shows over it whether it came first or after
 (and, answered while the hold still stands, gives it its words back);
@@ -1249,8 +1258,9 @@ question as one of:
   of the turn ended with the held text entered, or the screen drew again the
   words of the question just answered before the program moved on. It takes
   no reply (`answered in the terminal`), holds no claim, resolves nothing,
-  and goes once the screen shows it gone or the next question takes its
-  place. Only an open question is consumed: one claimed keeps its claim.
+  shows as `answered:"terminal"` the while (Attention), and goes once the
+  screen shows it gone or the next question takes its place. Only an open
+  question is consumed: one claimed keeps its claim.
 - **withdrawn:** the agent moved on (its report, its clear, its next
   question, its work in a new turn, the done rules), the screen moved on (a
   startup question or a dialog no longer on a whole frame of the screen, a

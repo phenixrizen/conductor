@@ -263,6 +263,9 @@ type HostAttentionMsg struct {
 	Options   []AttentionOption `json:"options,omitempty"`
 	ID        string            `json:"id,omitempty"`
 	Ask       bool              `json:"ask,omitempty"`
+	// Answered is the host's Attention.Answered: "terminal" for a question
+	// answered by keys typed in its terminal (Attention).
+	Answered string `json:"answered,omitempty"`
 }
 
 // HostActivityMsg carries one activity-log entry between host and server.
