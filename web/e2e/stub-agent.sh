@@ -301,6 +301,7 @@ approval() {
 	title_stop
 	printf '\a\e[2J\e[H  Would you like to run the following command?\n\n  Environment: local\n\n  Reason: May I run this with network access? The sandboxed attempt failed.\n\n  $ %s\n\n› 1. Yes, proceed (y)\n  2. Yes, and don'"'"'t ask again for commands that start with `%s` (p)\n  3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel\n' "$cmd" "$cmd"
 	title_action
+	status_set blocked permission
 	while IFS= read -rsn1 key; do
 		case $key in
 		y | 1 | '' | $'\r') answer=approved ;;
@@ -383,8 +384,10 @@ title_stop() {
 	fi
 }
 
-# title_working says the stub works: frames, or "Working" once (still).
+# title_working says the stub works: frames, or "Working" once (still), and
+# the status working.
 title_working() {
+	status_set working
 	[[ -n $titles ]] || return 0
 	title_stop
 	if [[ -n $still ]]; then
@@ -406,11 +409,79 @@ title_action() {
 	title_start action
 }
 
-# title_ready says the stub is at rest.
+# title_ready says the stub is at rest: idle, or done ($1) at a turn's end.
 title_ready() {
+	status_set "${1:-idle}"
 	[[ -n $titles ]] || return 0
 	title_stop
 	printf '\e]0;Ready\a'
+}
+
+# The program status, as Codex writes it (OSC 7501, ST-terminated, #197):
+# "state=S:app=codex" and, from 0.164, ":kind=K" with blocked. Written with
+# the launch's titles (a Codex launch), once per change, as Codex's cache
+# has it. status_mode is 0.164 (the default: working through an async
+# question, blocked with its kind for a form), 0.163 (no kind, and an async
+# question pending reads blocked, as that version has it) or none; `stub
+# status MODE` sets it for the session (<id>.status), STUB_STATUS the
+# default.
+status_mode=${STUB_STATUS:-0.164} status_last=
+status_set() {
+	[[ -n $titles ]] || return 0
+	local mode=$status_mode seq
+	if [[ -s $transcripts/$id.status ]]; then
+		IFS= read -r mode <"$transcripts/$id.status" || true
+	fi
+	[[ $mode == none ]] && return 0
+	seq="state=$1:app=codex"
+	if [[ $1 == blocked && -n ${2:-} && $mode != 0.163 ]]; then
+		seq+=":kind=$2"
+	fi
+	[[ $seq == "$status_last" ]] && return 0
+	status_last=$seq
+	printf '\e]7501;%s\e\\' "$seq"
+}
+
+# status_async_pending is the status while an async question is pending:
+# 0.163 reads blocked (no kind), 0.164 goes on working.
+status_async_pending() {
+	local mode=$status_mode
+	if [[ -s $transcripts/$id.status ]]; then
+		IFS= read -r mode <"$transcripts/$id.status" || true
+	fi
+	[[ $mode == 0.163 ]] && status_set blocked
+	return 0
+}
+
+# blocking_form draws a request_user_input form for the question $1, as
+# Codex 0.164 shows one, which no catalog pattern knows: its status alone
+# says blocked:question until Enter answers it (other keys are ignored).
+blocking_form() {
+	title_stop
+	printf '\e[2J\e[H  %s\n\n  Type your answer and press enter to continue\n' "$1"
+	title_action
+	status_set blocked question
+	local key
+	while IFS= read -rsn1 key; do
+		[[ -z $key || $key == $'\r' ]] && break
+	done
+	printf 'form: answered\n' >>"$transcript"
+	title_working
+	printf '\e[2J\e[H'
+}
+
+# sign_in draws a sign-in prompt no catalog pattern knows: blocked:auth
+# until any key.
+sign_in() {
+	title_stop
+	printf '\e[2J\e[H  Sign in to continue\n\n  Press any key to open the browser\n'
+	title_action
+	status_set blocked auth
+	local key
+	IFS= read -rsn1 key || true
+	printf 'auth: signed in\n' >>"$transcript"
+	title_working
+	printf '\e[2J\e[H'
 }
 
 # async_question draws the question $1 Codex asks while it works
@@ -429,6 +500,7 @@ async_question() {
 	fi
 	printf '\n  ? 1 question \xc2\xb7 0:%02d  %s\n' "$n" "$q"
 	title_action
+	status_async_pending
 	if [[ ${2:-} == ask ]]; then
 		report --state needs_input --message "$q"
 	fi
@@ -785,6 +857,12 @@ answer() {
 		report --state needs_input --message "${BASH_REMATCH[1]}"
 		spin 30
 	fi
+	if [[ $line =~ ^stub\ form\ (.{1,200})$ ]]; then
+		blocking_form "${BASH_REMATCH[1]}"
+	fi
+	if [[ $line == 'stub auth' ]]; then
+		sign_in
+	fi
 	if [[ $line =~ ^stub\ ask-wait\ (.{1,200})$ ]]; then
 		report --ask --message "${BASH_REMATCH[1]}"
 		spin 30
@@ -849,7 +927,7 @@ answer() {
 	fi
 	printf 'stub: merged [%s] failed [%s]\n' "${merged[*]-}" "${failed[*]-}"
 	msg="got: ${line:0:100}; merged: ${merged[*]-none}; failed: ${failed[*]-none}"
-	title_ready
+	title_ready done
 	report_done "$msg" "$line"
 	if [[ -n $ring_at_end ]]; then
 		# Codex rings the bell it is asked for (tui.notification_method="bel")
@@ -897,6 +975,10 @@ handle_line() {
 		title_working
 		spin "${BASH_REMATCH[1]}"
 		title_ready
+	elif [[ $line =~ ^stub\ status\ (0\.164|0\.163|none)$ ]]; then
+		# The program status's shape for this session (status_set).
+		put "$transcripts/$id.status" "${BASH_REMATCH[1]}"$'\n'
+		status_last=
 	elif [[ $line == 'stub tui on' ]]; then
 		# Any-event mouse tracking in SGR, and keys read one by one with the
 		# terminal's line editing and echo off, as Claude Code and Codex do.
@@ -928,3 +1010,4 @@ while :; do
 		printf '> '
 	fi
 done
+status_set clear

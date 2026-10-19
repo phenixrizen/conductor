@@ -671,12 +671,15 @@ question, below), `question` (a question asked during the work, below),
 `submit` (a submission's text typed and its carriage return not written, its
 link revoked or expired: the session's turn is held until a person types into
 the terminal; see `submit`), `title` (`working`: the agent's window title says
-it works, below), `input` (the empty state after a reply resolved the
+it works, below), `status` (the agent's program status, an OSC 7501 sequence
+Codex 0.163 and later write: `working`, or `needs_input` with words naming
+what blocks it, below), `input` (the empty state after a reply resolved the
 question, or an Enter typed in the terminal withdrew a bell's, an OSC
-notification's or the pattern's wait), `screen` (the empty state after the
-screen moved on from a question without an answer: a bell's wait whose
-screen changed past the snapshot's threshold, a startup question or a
-dialog gone from the screen; see Who may answer a question). While
+notification's, the pattern's or the status's wait), `screen` (the empty
+state after the screen moved on from a question without an answer: a bell's
+or a status's wait whose screen changed past the snapshot's threshold, a
+startup question or a dialog gone from the screen, or a status's wait that a
+later status ended; see Who may answer a question). While
 that turn is held, the hold is what shows, but for a `trust` or `question`
 prompt on the screen, which shows over it whether it came first or after
 (and, answered while the hold still stands, gives it its words back);
@@ -903,10 +906,34 @@ turn's: the next turn (the first Enter after a `done`, or another state shown
 after it) begins with none, and a title saying Working of the ended turn read
 after that settles nothing. A title asks the event bucket
 for nothing, does not start the bell's 500 ms, and records an attention entry
-only when it changes the state. While one of Codex's async questions is
-pending its title says Action Required although Codex works on: a wait raised
-then stands until the title says Working again, when the question is answered
-or resolves by itself. Hosted sessions (`conductor host`) do not read titles.
+only when it changes the state. Hosted sessions (`conductor host`) do not
+read titles.
+
+Codex 0.163 and later also declare their state in a program status, OSC 7501
+(`ESC ] 7501 ; state=S:app=codex[:kind=K] ST`, written once per change):
+`idle`, `working`, `blocked`, and from 0.164 `done`, `error` and the kind of
+what blocks it, `permission`, `question` or `auth`. Once a session has read
+one, the window title is not weighed any more: the status says what the
+title said, and from 0.164 says it right where the title cannot, since a
+turn that goes on with one of Codex's async questions pending reports
+`working` while the title says Action Required. `working` is weighed as a
+matching title (the same rules and settle, source `status`); `blocked`,
+`idle`, `done`, `error`, `clear` and a state Conductor does not understand as
+a title that does not match, keeping the wait that shows. A `blocked` with
+a kind raises a wait of its own where nothing with words of its own shows
+(`needs_input`, source `status`, kind `permission` or `prompt`, message "The
+agent asks for a permission", "The agent asks a question" or "The agent
+needs you to sign in"); a `blocked` without one (0.163, where a pending
+async question blocks too) raises nothing. A wait the status raised is
+withdrawn by a later status that is neither `blocked` nor `working`, by an
+Enter typed in the terminal and by the screen moving on, as an OSC
+notification's is; one read while a question held on the screen showed is
+remembered and shows once the screen moves on from that question. The state
+outlives Conductor's turns, since Codex writes it only when it changes. With
+Codex 0.163 a wait raised while an async question is pending stands until
+the status says `working` again, when the question is answered or resolves
+by itself, as under the title alone; with 0.164 it gives way after its
+`TitleSettle`.
 
 An agent's catalog entry can carry a `trustPrompt`, the words of its
 workspace-trust question (RE2, at most 200 bytes, not matching an empty text).

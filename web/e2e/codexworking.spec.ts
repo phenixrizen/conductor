@@ -141,10 +141,19 @@ test.afterAll(async ({ api }) => {
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
 
+/** A key pressed in the session's terminal on its page, as a person at the keyboard. */
+async function pressInTerminal(page: import('@playwright/test').Page, sessionId: string, key: string) {
+  await page.goto(`/sessions/${encodeURIComponent(sessionId)}`)
+  const screen = page.locator('.terminal-host .xterm-screen').first()
+  await expect(screen).toBeVisible()
+  await screen.click()
+  await page.keyboard.press(key)
+}
+
 /** The member asked, and gave way to working a settle (a second) later, while its stub still spins. */
 async function askedThenWorked(api: Api, home: string, id: string, words: string): Promise<string> {
   await expect.poll(() => watch!.of(id).some((e) => e.state === 'needs_input' && e.message === words), { timeout: 45_000, message: 'the question is asked' }).toBe(true)
-  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000, message: 'working, from the title' }).toMatchObject({ state: 'working', source: 'title' })
+  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000, message: 'working, from the status' }).toMatchObject({ state: 'working', source: 'status' })
   const entries = watch!.of(id)
   const asked = entries.find((e) => e.state === 'needs_input' && e.message === words)!
   const worked = entries.find((e) => e.state === 'working' && e.at >= asked.at)
@@ -189,31 +198,87 @@ test('with its title written once (animations off) the question gives way all th
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
 })
 
-test("a question the agent asks while one of Codex's async questions is pending shows Needs you until that one resolves, then Working", async ({ page, api, state }) => {
+test("a question the agent asks while one of Codex's async questions is pending shows Needs you for its second, then Working while that question is still pending (#197)", async ({ page, api, state }) => {
   const id = await sessionOf(api, 'asks')
   await page.goto('/crews')
   const yard = await page.context().newPage()
   await yard.goto('/yard')
   const card = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
   await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: `stub async-ask ${ASYNC_ASK}`, members: ['asks'] })
-  // Codex's title says Action Required while its question is pending: the agent's own question stands, on the row and the Yard.
-  await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
-  await expect(row(page, id).locator('[data-row-prompt]')).toHaveText(ASYNC_ASK)
-  await expect(card).toContainText(ASYNC_ASK)
+  // Codex's title says Action Required while its question is pending, but its program status (0.164) says working: the agent's own question shows for its second, then gives way. A second is too short to assert on the row or the Yard's card under load; the entries below hold the words and the timing.
+  await expect.poll(() => watch!.of(id).some((e) => e.state === 'needs_input' && e.message === ASYNC_ASK), { timeout: 45_000, message: 'the question is asked' }).toBe(true)
   const stub = stubOf(state.home, `stub async-ask ${ASYNC_ASK}`)
   expect(stub).not.toBe('')
-  // The async question resolves by itself: Working, from then.
-  await expect.poll(() => stubFile(state.home, stub, 'async'), { timeout: 30_000 }).toMatch(/^resolved \d+$/m)
+  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'status' })
   await expect(row(page, id)).toHaveAttribute('data-row-state', 'running', { timeout: 15_000 })
   await expect(card).toHaveCount(0)
+  // Working came a second or more after the question and before the async question resolved: the entries and the
+  // stub's resolution stamp say so, whatever the pace of the polls above.
+  await expect.poll(() => stubFile(state.home, stub, 'async'), { timeout: 30_000 }).toMatch(/^resolved \d+$/m)
   const resolved = Number(/resolved (\d+)\n$/.exec(stubFile(state.home, stub, 'async'))![1]) / 1000
   const entries = watch!.of(id)
   const asked = entries.find((e) => e.state === 'needs_input' && e.message === ASYNC_ASK)!
   const worked = entries.find((e) => e.state === 'working' && e.at >= asked.at)!
-  expect(worked.at, 'Working only once the async question resolved').toBeGreaterThanOrEqual(resolved - 5)
+  expect(worked.at - asked.at, 'the question stood its second').toBeGreaterThanOrEqual(950)
+  expect(worked.at, `Working (${worked.at}) before the async question resolved (${resolved})`).toBeLessThan(resolved)
+  // The stub spins on after the resolution; a stop written before it began spinning is lost, and it spins its full thirty seconds.
+  await expect.poll(() => stubFile(state.home, stub, 'spin'), { timeout: 15_000, message: 'the stub spins after the resolution' }).toBe('spinning\n')
   stopSpin(state.home, stub)
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
   await yard.close()
+})
+
+test("with Codex 0.163's status the question stands until the async question resolves, as before", async ({ api, state }) => {
+  // The no-status shape (Codex 0.162 and older, the title alone) is not staged here: this session has read
+  // statuses in the tests above and, as a program never stops writing its status mid-session, stops weighing
+  // the title for good; the title path keeps its Go tests (title_test.go) and status_test.go's no-status case.
+  for (const mode of ['0.163']) {
+    const id = await sessionOf(api, 'asks')
+    const since = Date.now()
+    const words = `${ASYNC_ASK} ${mode}`
+    await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: `stub status ${mode}`, members: ['asks'] })
+    await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: `stub async-ask ${words}`, members: ['asks'] })
+    await expect.poll(() => watch!.of(id).some((e) => e.at >= since && e.state === 'needs_input' && e.message === words), { timeout: 45_000, message: `${mode}: the question is asked` }).toBe(true)
+    const stub = stubOf(state.home, `stub async-ask ${words}`)
+    expect(stub).not.toBe('')
+    // 0.163's status says blocked while the async question is pending: the question stands.
+    await expect.poll(() => stubFile(state.home, stub, 'async'), { timeout: 30_000 }).toMatch(/^resolved \d+$/m)
+    const resolved = Number(/resolved (\d+)\n$/.exec(stubFile(state.home, stub, 'async'))![1]) / 1000
+    await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000, message: `${mode}: working once resolved` }).toBe('working')
+    const entries = watch!.of(id).filter((e) => e.at >= since)
+    const asked = entries.find((e) => e.state === 'needs_input' && e.message === words)!
+    const worked = entries.find((e) => e.state === 'working' && e.at >= asked.at)!
+    expect(worked.at, `${mode}: Working only once the async question resolved`).toBeGreaterThanOrEqual(resolved - 5)
+    await expect.poll(() => stubFile(state.home, stub, 'spin'), { timeout: 15_000, message: `${mode}: the stub spins after the resolution` }).toBe('spinning\n')
+    stopSpin(state.home, stub)
+    const stopped = Date.now()
+    // On a miss the received string carries the state, its source and the turn's entries.
+    await expect.poll(async () => {
+      const a = (await api.session(id)).attention
+      if (a?.state === 'done') return 'done'
+      return `${a?.state}/${a?.source} after ${JSON.stringify(watch!.of(id).filter((e) => e.at >= since).map((e) => `${e.state}:${(e.message ?? '').slice(0, 24)}`))}`
+    }, { timeout: 45_000 }).toBe('done')
+    console.log(`[diag] ${mode}: done ${Date.now() - stopped} ms after stopSpin`)
+    await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: 'stub status 0.164', members: ['asks'] })
+  }
+})
+
+test("a form no pattern knows shows Needs you from Codex's status alone, with its words, and Working after the answer (#197)", async ({ page, api, state }) => {
+  const id = await sessionOf(api, 'asks')
+  const since = Date.now()
+  await page.goto('/crews')
+  await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: 'stub auth', members: ['asks'] })
+  await expect.poll(async () => (await api.session(id)).attention, { timeout: 30_000, message: 'the sign-in is asked' }).toMatchObject({ state: 'needs_input', source: 'status', message: 'The agent needs you to sign in' })
+  await expect(row(page, id)).toHaveAttribute('data-row-state', 'needs', { timeout: 30_000 })
+  // A key in the terminal answers it: the stub signs in and works on.
+  await pressInTerminal(page, id, 'x')
+  await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
+  const states = watch!.of(id).filter((e) => e.at >= since).map((e) => e.state)
+  expect(states).toEqual(['working', 'needs_input', 'working', 'done'])
+  await api.ok('POST', `/api/runs/${encodeURIComponent(runId)}/broadcast`, { text: `stub form ${ASYNC_ASK}`, members: ['asks'] })
+  await expect.poll(async () => (await api.session(id)).attention, { timeout: 30_000, message: 'the form is asked' }).toMatchObject({ state: 'needs_input', source: 'status', message: 'The agent asks a question', kind: 'prompt' })
+  await pressInTerminal(page, id, 'Enter')
+  await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
 })
 
 test("a question Codex asks without waiting never shows Needs you", async ({ api, state }) => {
@@ -225,7 +290,7 @@ test("a question Codex asks without waiting never shows Needs you", async ({ api
   // Pending, then resolved, and the stub spins on.
   await expect.poll(() => stubFile(state.home, stub, 'async').trim().split('\n').length, { timeout: 30_000 }).toBe(2)
   await expect.poll(() => stubFile(state.home, stub, 'spin'), { timeout: 15_000 }).toBe('spinning\n')
-  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'title' })
+  await expect.poll(async () => (await api.session(id)).attention, { timeout: 15_000 }).toMatchObject({ state: 'working', source: 'status' })
   stopSpin(state.home, stub)
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
   const states = () => watch!.of(id).filter((e) => e.at >= since).map((e) => e.state)
