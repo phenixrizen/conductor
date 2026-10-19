@@ -14,6 +14,8 @@ export function updateChannel(platform: string, appImage: boolean, packaged: boo
 
 export const RELEASES_URL = 'https://github.com/phenixrizen/conductor/releases/latest'
 const EVERY = 6 * 60 * 60 * 1000
+/** How long an install may take to quit the app before it is taken for one that did not start. */
+const INSTALL_WAIT = 60 * 1000
 
 /**
  * startUpdater checks for a release on start and every six hours where the
@@ -23,10 +25,10 @@ const EVERY = 6 * 60 * 60 * 1000
  * every check that finds the update downloaded, the same version again
  * included (electron-updater emits update-downloaded for a cached download
  * too): UpdateNotice decides what is said. It returns what installs the
- * downloaded update now (quitting the app, which stops the server), null
- * where the app does not update itself.
+ * downloaded update now (quitting the app, which stops the server: installVia),
+ * null where the app does not update itself.
  */
-export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, onAvailable: (version: string) => void): Promise<(() => void) | null> {
+export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, onAvailable: (version: string) => void): Promise<(() => Promise<void>) | null> {
   if (channel !== 'auto') return null
   try {
     const { autoUpdater } = await import('electron-updater')
@@ -37,11 +39,40 @@ export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs
     const check = () => autoUpdater.checkForUpdates().catch((e: Error) => logs.line('main', `updater: ${e.message}`))
     await check()
     setInterval(check, EVERY).unref()
-    return () => autoUpdater.quitAndInstall()
+    return () => installVia(autoUpdater)
   } catch (e) {
     logs.line('main', `updater unavailable: ${(e as Error).message}`)
     return null
   }
+}
+
+/** What installVia needs of electron-updater's autoUpdater. */
+export interface InstallingUpdater {
+  quitAndInstall(): void
+  once(event: 'error', listener: (e: Error) => void): unknown
+  removeListener(event: 'error', listener: (e: Error) => void): unknown
+}
+
+/**
+ * installVia asks the updater to quit the app and install. One that starts quits the app, and the promise never settles. One
+ * that fails rejects: electron-updater does not throw then but emits error (an installer that cannot be written, say, or
+ * macOS's updater refusing an unsigned app), and one that neither quits nor fails within wait is taken for failed too.
+ */
+export function installVia(updater: InstallingUpdater, wait = INSTALL_WAIT): Promise<void> {
+  return new Promise<void>((_resolve, reject) => {
+    const failed = (e: Error) => {
+      clearTimeout(timer)
+      updater.removeListener('error', failed)
+      reject(e)
+    }
+    const timer = setTimeout(() => failed(new Error(`the app did not quit to install within ${Math.round(wait / 1000)} s`)), wait)
+    updater.once('error', failed)
+    try {
+      updater.quitAndInstall()
+    } catch (e) {
+      failed(e as Error)
+    }
+  })
 }
 
 /** What the workbench is told of the update downloaded as it asks: its version ('' for none), and whether to say so. */
@@ -90,23 +121,24 @@ export interface RestartDeps {
   letGo: (on: boolean) => void
   stopServer: () => Promise<void>
   startServer: () => Promise<void>
-  /** autoUpdater.quitAndInstall: the updater quits the app to install. */
-  install: () => void
+  /** The updater quits the app to install (installVia): never settles when it does, rejects when it does not. */
+  install: () => Promise<void>
   log: (line: string) => void
 }
 
 /**
  * restartToInstall is Restart to update (#290). The server stops first, as a quit stops it; then the windows may close and the
  * quit go through (closing to the tray would hide them, and macOS's updater closes them before it quits) and the updater quits
- * the app to install. An install that throws gives the app back its server, so it goes on as it was.
+ * the app to install. An install that does not go through gives the app back its server and the restart, so it goes on as it
+ * was and can be asked again.
  */
 export async function restartToInstall(d: RestartDeps): Promise<void> {
   d.letGo(true)
   await d.stopServer().catch(() => {})
   try {
-    d.install()
+    await d.install()
   } catch (e) {
-    d.log(`updates: the install did not start: ${(e as Error).message}`)
+    d.log(`updates: the install did not go through: ${(e as Error).message}`)
     d.letGo(false)
     await d.startServer().catch(() => {})
   }

@@ -92,7 +92,7 @@ async function run() {
   const notInstalled = installFailed(settings.updateAnnounced, app.getVersion())
   if (notInstalled) log('main', `updates: ${settings.updateAnnounced} was downloaded and announced, and this start is ${app.getVersion()}: it did not install`)
   let failedUpdate = notInstalled && settings.updateFailedNoticed !== settings.updateAnnounced ? settings.updateAnnounced : ''
-  let installUpdate: (() => void) | null = null
+  let installUpdate: (() => Promise<void>) | null = null
   let trayUpdate: ((version: string) => void) | null = null
   const token = randomBytes(32).toString('hex')
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()

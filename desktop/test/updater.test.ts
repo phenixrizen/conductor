@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { UpdateNotice, compareVersions, installFailed, restartToInstall, updateChannel } from '../src/updater'
+import { EventEmitter } from 'node:events'
+import { UpdateNotice, compareVersions, installFailed, installVia, restartToInstall, updateChannel } from '../src/updater'
 
 describe('update channel', () => {
   it('updates itself on macOS, Windows and AppImage, points at the releases for deb and rpm, and never in development', () => {
@@ -77,8 +78,47 @@ describe('the update notice (#290)', () => {
   })
 })
 
+/**
+ * An updater as electron-updater's BaseUpdater behaves: quitAndInstall either quits the app (here: says so) or, when the
+ * install fails, emits error and returns, throwing nothing.
+ */
+class FakeUpdater extends EventEmitter {
+  constructor(private readonly outcome: 'quits' | 'fails' | 'fails later' | 'hangs') {
+    super()
+  }
+  quits = 0
+  quitAndInstall(): void {
+    if (this.outcome === 'quits') this.quits++
+    else if (this.outcome === 'fails') this.emit('error', new Error('EACCES: permission denied, open the installer'))
+    else if (this.outcome === 'fails later') setTimeout(() => this.emit('error', new Error('Could not get code signature for running application')), 10)
+  }
+}
+
+describe('installing through the updater (#290)', () => {
+  it('rejects with the error the updater emits, at once or later, and never with a listener left behind', async () => {
+    for (const outcome of ['fails', 'fails later'] as const) {
+      const u = new FakeUpdater(outcome)
+      await expect(installVia(u, 1000)).rejects.toThrow(/EACCES|code signature/)
+      expect(u.listenerCount('error')).toBe(0)
+    }
+  })
+
+  it('rejects an install that neither quits nor fails in time', async () => {
+    const u = new FakeUpdater('hangs')
+    await expect(installVia(u, 30)).rejects.toThrow('the app did not quit to install within 0 s')
+    expect(u.listenerCount('error')).toBe(0)
+  })
+
+  it('settles nothing for an install that quits the app', async () => {
+    const u = new FakeUpdater('quits')
+    const settled = await Promise.race([installVia(u, 1000).then(() => 'settled', () => 'settled'), new Promise((r) => setTimeout(() => r('pending'), 50))])
+    expect(settled).toBe('pending')
+    expect(u.quits).toBe(1)
+  })
+})
+
 describe('restart to install (#290)', () => {
-  function app(install: () => void) {
+  function app(install: () => Promise<void>) {
     const steps: string[] = []
     return {
       steps,
@@ -88,7 +128,7 @@ describe('restart to install (#290)', () => {
         startServer: async () => void steps.push('start server'),
         install: () => {
           steps.push('install')
-          install()
+          return install()
         },
         log: (l: string) => steps.push(l),
       },
@@ -96,16 +136,15 @@ describe('restart to install (#290)', () => {
   }
 
   it('stops the server, lets the windows close and the quit through, then installs', async () => {
-    const a = app(() => {})
-    await restartToInstall(a.d)
+    const a = app(() => new Promise(() => {}))
+    void restartToInstall(a.d)
+    await new Promise((r) => setTimeout(r, 20))
     expect(a.steps).toEqual(['let go', 'stop server', 'install'])
   })
 
-  it('gives the app back its server when the install does not start', async () => {
-    const a = app(() => {
-      throw new Error('No update filepath provided')
-    })
+  it('gives the app back its server and the restart when the updater emits an error', async () => {
+    const a = app(() => installVia(new FakeUpdater('fails'), 1000))
     await restartToInstall(a.d)
-    expect(a.steps).toEqual(['let go', 'stop server', 'install', 'updates: the install did not start: No update filepath provided', 'hold', 'start server'])
+    expect(a.steps).toEqual(['let go', 'stop server', 'install', 'updates: the install did not go through: EACCES: permission denied, open the installer', 'hold', 'start server'])
   })
 })
