@@ -54,8 +54,17 @@ func TestAnswerOwnerShapes(t *testing.T) {
 		t.Fatalf("attention %s", b)
 	}
 	b, _ = json.Marshal(Attention{T: CtlAttention, State: ""})
-	if strings.Contains(string(b), `"id"`) {
+	if strings.Contains(string(b), `"id"`) || strings.Contains(string(b), `"answered"`) {
 		t.Fatalf("a cleared attention %s", b)
+	}
+	// A question answered by keys in the terminal, shown still: its mark rides along (#258).
+	b, _ = json.Marshal(Attention{T: CtlAttention, State: "needs_input", Message: "Allow?", ID: "0123456789abcdef", Answered: "terminal"})
+	if !strings.Contains(string(b), `"answered":"terminal"`) {
+		t.Fatalf("an answered attention %s", b)
+	}
+	b, _ = json.Marshal(HostAttentionMsg{T: HostAttention, SessionID: "s", State: "needs_input", ID: "0123456789abcdef", Answered: "terminal"})
+	if !strings.Contains(string(b), `"answered":"terminal"`) {
+		t.Fatalf("a host's answered attention %s", b)
 	}
 	b, _ = json.Marshal(Welcome{T: CtlWelcome, Answer: true})
 	if !strings.Contains(string(b), `"answer":true`) {

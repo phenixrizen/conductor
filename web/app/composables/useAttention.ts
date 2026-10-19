@@ -1,6 +1,6 @@
 import type { RunInfo, SessionInfo } from './useSessions'
 import { ApiError } from './useApi'
-import { attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
+import { liveSession, attentionFavicon, needingInput, newlyNeedingInput, playChime } from '~/utils/attention'
 import { eventAlert, type RoutedEvent } from '~/utils/events'
 import { formedCrew } from '~/utils/activity'
 import type { ActivityEntry, ChatMessage, SessionActivity } from '~/utils/protocol'
@@ -138,7 +138,7 @@ export function useAttention() {
   // session change that carries their state; a snapshot also drops the holds
   // and badges of sessions it no longer lists.
   function replaceAll(list: SessionInfo[]) {
-    const next = new Map(list.map((s) => [s.id, s]))
+    const next = new Map(list.map((s) => [s.id, liveSession(s)]))
     react(store.value.sessions, next)
     store.value.sessions = next
     bump()
@@ -146,7 +146,8 @@ export function useAttention() {
     events.settle()
   }
 
-  function upsert(s: SessionInfo) {
+  function upsert(raw: SessionInfo) {
+    const s = liveSession(raw)
     const prev = new Map(store.value.sessions)
     // A member that starts, ends or goes changes its run as the run reports it.
     if (s.crew && prev.get(s.id)?.status !== s.status) runs.schedule(s.crew.runId)

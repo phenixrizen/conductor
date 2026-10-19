@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { crumbsOf, findNode, holdsMatch, looksLikePath, matches, resolveTyped, rootNode, setChildren, visibleRows } from './fileTree'
+import { crumbsOf, findNode, foldCrumbs, holdsMatch, looksLikePath, matches, onPath, pathQuery, resolveTyped, rootNode, setChildren, visibleRows } from './fileTree'
 
 const entries = (names: string[]) => names.map((n) => (n.endsWith('/') ? { name: n.slice(0, -1), dir: true, size: 0 } : { name: n, dir: false, size: n.length }))
 
@@ -73,5 +73,47 @@ describe('the filter beyond the loaded tree', () => {
       { abs: '/r/repo/internal/api/users.go', dir: 'internal/api/', name: 'users.go' },
       { abs: '/r/repo/docs/users.md', dir: 'docs/', name: 'users.md' },
     ])
+  })
+})
+
+describe('the Explorer filter as a path (#138)', () => {
+  it('reads a filter with a slash as a path from the working directory', () => {
+    expect(pathQuery('go/src')).toBe('go/src')
+    expect(pathQuery(' ./Go/Src/ ')).toBe('go/src')
+    expect(pathQuery('/internal/api')).toBe('internal/api')
+    expect(pathQuery('users')).toBeNull()
+    expect(onPath('go', 'go/src')).toBe(true)
+    expect(onPath('go/src', 'go/src')).toBe(true)
+    expect(onPath('go/src/github.com', 'go/src')).toBe(true)
+    expect(onPath('docs', 'go/src')).toBe(false)
+    expect(onPath('gopher', 'go/src')).toBe(false)
+  })
+
+  it('narrows the tree to the folder and what is below it, the folders on the way kept, nothing beside them', () => {
+    const root = rootNode('/home/nater')
+    setChildren(root, entries(['docs/', 'go/', 'README.md']))
+    const go = root.children[1]!
+    setChildren(go, entries(['bin/', 'src/']))
+    const src = go.children[1]!
+    setChildren(src, entries(['github.com/', 'notes.txt']))
+    expect(visibleRows(root, 'go/src').map((n) => `${n.depth}:${n.name}`)).toEqual(['0:go', '1:src', '2:github.com', '2:notes.txt'])
+    expect(visibleRows(root, 'go/').map((n) => n.name)).toEqual(['go', 'bin', 'src'])
+    // A folder not loaded yet on the way shows as far as it is known.
+    expect(visibleRows(root, 'docs/plans').map((n) => n.name)).toEqual(['docs'])
+  })
+})
+
+describe('the breadcrumb folded from the left (#169)', () => {
+  const crumbs = crumbsOf('/home/nater/go/src/github.com/phenixrizen/conductor')
+  it('keeps the last crumbs whole and folds the rest into one', () => {
+    const f = foldCrumbs(crumbs, 1)
+    expect(f.shown.map((c) => c.label)).toEqual(['conductor'])
+    expect(f.hidden.map((c) => c.label)).toEqual(['home', 'nater', 'go', 'src', 'github.com', 'phenixrizen'])
+    expect(foldCrumbs(crumbs, 3).shown.map((c) => c.label)).toEqual(['github.com', 'phenixrizen', 'conductor'])
+  })
+  it('shows a short path whole, with one folder above the kept ones', () => {
+    expect(foldCrumbs(crumbsOf('/srv/work'), 1)).toEqual({ hidden: [], shown: crumbsOf('/srv/work') })
+    expect(foldCrumbs(crumbsOf('/a/b/c'), 2).hidden).toEqual([])
+    expect(foldCrumbs(crumbsOf('/a/b/c/d'), 2).hidden.map((c) => c.label)).toEqual(['a', 'b'])
   })
 })

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Terminal, type ILink, type ILinkProvider } from '@xterm/xterm'
+import { liveAttention } from '~/utils/attention'
 import { FitAddon } from '@xterm/addon-fit'
 import { showsScaled, sizerChip as chipFor, sizesSession, type SizerView } from '~/utils/terminalSizer'
 import { clipboardKey, forcesSelection, menuPress, pressClearsSelection, readRightClickPastes, rightClick, RightPress, withholdsMove, writeRightClickPastes } from '~/utils/terminalClipboard'
@@ -515,7 +516,8 @@ function handleControl(msg: ControlMessage) {
       }
       break
     case 'attention':
-      emit('attention', { state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id })
+      // A question answered by keys in the terminal reads as none to offer (liveAttention, #258).
+      emit('attention', liveAttention({ state: msg.state, message: msg.message, source: msg.source, kind: msg.kind, options: msg.options, id: msg.id, answered: msg.answered }))
       break
     case 'viewers':
       roster.value = msg.list ?? []

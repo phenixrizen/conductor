@@ -3,6 +3,38 @@ import type { GitCheck, PathGit } from '~/composables/useSessions'
 /** How long the picker waits after a keystroke before asking the server. */
 export const DIR_DEBOUNCE_MS = 150
 
+/**
+ * A folder chosen (from the field's list, or the folder picker) leaves the field holding the focus with the caret at the end of
+ * the path and the field scrolled to its end, so that the folder just chosen, at the end of a long path, shows, and typing goes on
+ * from there (#167). A field without the focus shows its value from the start; a bare focus() leaves the caret where it was.
+ */
+export function caretToEnd(input: Pick<HTMLInputElement, 'focus' | 'setSelectionRange' | 'value'> & { scrollLeft: number; scrollWidth: number }, frames = 12): void {
+  const place = () => {
+    const end = input.value.length
+    input.setSelectionRange(end, end)
+    input.scrollLeft = input.scrollWidth
+  }
+  input.focus()
+  place()
+  // The field's text and width can still change over the next frames (the pick landing in the field a tick or two later, the
+  // loading mark giving way to the list's chevron): for a short while the view is placed again each frame, the caret moved only
+  // when the text changed, and no longer once the focus has gone elsewhere.
+  if (typeof requestAnimationFrame !== 'function' || typeof document === 'undefined') return
+  let last = input.value
+  let n = 0
+  const again = () => {
+    if ((document.activeElement as unknown) !== input) return
+    if (input.value !== last) {
+      last = input.value
+      place()
+    } else {
+      input.scrollLeft = input.scrollWidth
+    }
+    if (++n < frames) requestAnimationFrame(again)
+  }
+  requestAnimationFrame(again)
+}
+
 /** The prefix sent for what is typed: the text trimmed; empty means the server's default directory. */
 export function dirQuery(text: string): string {
   return text.trim()

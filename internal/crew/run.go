@@ -1452,7 +1452,8 @@ func (e *Engine) refresh(out *Run) {
 			}
 			continue
 		}
-		m.NeedsInput = info.Attention.State == session.AttentionNeedsInput
+		// A question keys typed in the terminal have answered (Answered) is no longer the member's wait (#258).
+		m.NeedsInput = info.Attention.State == session.AttentionNeedsInput && info.Attention.Answered == ""
 	}
 	out.State, out.NeedsInput = runState(*out)
 }

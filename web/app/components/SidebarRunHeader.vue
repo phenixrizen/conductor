@@ -45,7 +45,7 @@ function confirmStop() {
 <template>
   <UContextMenu :items="menu" :disabled="coarse">
     <div
-      class="group relative flex items-center rounded-md [-webkit-touch-callout:none]"
+      class="group relative flex flex-col rounded-md [-webkit-touch-callout:none]"
       :class="focused && 'ring-2 ring-primary/40'"
       :data-row-focused="focused ? '' : undefined"
       @pointerdown="pressStart"
@@ -77,7 +77,7 @@ function confirmStop() {
           <span v-else class="truncate font-mono text-[11px] text-muted">{{ blockSubtitle(block) }}</span>
         </span>
       </NuxtLink>
-      <span v-if="confirming" class="absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-md bg-default/95 p-0.5 shadow-xs ring ring-default">
+      <span v-if="confirming" class="flex items-center justify-end gap-1 px-1.5 pb-1.5" data-run-stop-buttons>
         <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
         <UButton label="Stop" icon="i-lucide-square" size="xs" color="error" :loading="busy" data-confirm-stop @click="confirmStop" />
       </span>

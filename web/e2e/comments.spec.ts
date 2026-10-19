@@ -78,3 +78,67 @@ test('a comment on lines lands in the chat as a quote card; asked of the agent i
     await api.stopSession(s.id)
   }
 })
+
+// The Ask the agent / Comment box takes the editor's width (#168): at a desktop width it is at least 600 px wide and within the
+// editor's pane, its heading and location are not cut, and a 90-character line of the quote shows without a sideways scroll; at a
+// phone's width it still fits the pane, with no sideways scroll of the page.
+test('the editor\'s comment box is as wide as the editor, its heading whole and a long quoted line unscrolled', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'files-composer')
+  mkdirSync(cwd, { recursive: true })
+  const file = join(cwd, 'store.go')
+  // Ninety characters, spaces for the indent: a tab would widen to eight columns in the quote.
+  const long = '    if err := store.Save(ctx, item, saveOptions{Overwrite: true, Fsync: true}); err != nil'
+  expect(long.length).toBe(90)
+  writeFileSync(file, ['package todo', '', 'func (s *Store) Put(ctx context.Context, item Item) error {', long, '\t\treturn err', '\t}', '\treturn nil', '}', ''].join('\n'))
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'composer', cwd })
+  const area = page.locator('[data-editor-area]')
+  const editorLine = (text: string) => area.locator('.monaco-editor .view-line', { hasText: text })
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator(`[data-files-mode] [data-file-node="${file}"]`).click()
+    await expect(editorLine('func (s *Store) Put')).toBeVisible({ timeout: 30_000 })
+    // Select lines 3 to 5 and ask the agent.
+    await editorLine('func (s *Store) Put').click()
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+ArrowDown')
+    await page.keyboard.press('Shift+ArrowDown')
+    await page.keyboard.press('Shift+End')
+    const bar = area.locator('[data-editor-selection-bar]')
+    await expect(bar).toBeVisible()
+    await bar.locator('[data-editor-ask]').click()
+    const composer = area.locator('[data-editor-composer]')
+    await expect(composer).toHaveAttribute('data-editor-composer-mode', 'ask')
+    const m = await composer.evaluate((el) => {
+      const pane = el.closest('[data-editor-area]')!.getBoundingClientRect()
+      const box = el.getBoundingClientRect()
+      const heading = el.querySelector('[data-editor-composer-heading]')!
+      const quote = el.querySelector('[data-editor-composer-quote]')!
+      return { width: box.width, inPane: box.left >= pane.left && box.right <= pane.right + 1, heading: heading.scrollWidth <= heading.clientWidth + 1, quoteScroll: quote.scrollWidth <= quote.clientWidth + 1 }
+    })
+    expect(m.width, `the composer's width: ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(600)
+    expect(m.inPane, `within the editor's pane: ${JSON.stringify(m)}`).toBe(true)
+    expect(m.heading, `the heading whole: ${JSON.stringify(m)}`).toBe(true)
+    expect(m.quoteScroll, `the 90-character line unscrolled: ${JSON.stringify(m)}`).toBe(true)
+    await expect(composer).toContainText('Ask the agent about lines 3–5')
+    await page.keyboard.press('Escape')
+    // A phone's width: the box fits the pane and the page does not scroll sideways.
+    await page.setViewportSize({ width: 390, height: 844 })
+    await editorLine('func (s *Store) Put').click()
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Shift+End')
+    await expect(bar).toBeVisible()
+    await bar.locator('[data-editor-comment]').click()
+    await expect(composer).toHaveAttribute('data-editor-composer-mode', 'comment')
+    const phone = await composer.evaluate((el) => {
+      const pane = el.closest('[data-editor-area]')!.getBoundingClientRect()
+      const box = el.getBoundingClientRect()
+      return { inPane: box.left >= pane.left - 1 && box.right <= pane.right + 1, pageScroll: document.documentElement.scrollWidth <= document.documentElement.clientWidth }
+    })
+    expect(phone.inPane, `within the pane on a phone: ${JSON.stringify(phone)}`).toBe(true)
+    expect(phone.pageScroll, `no sideways page scroll: ${JSON.stringify(phone)}`).toBe(true)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

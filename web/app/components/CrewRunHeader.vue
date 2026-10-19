@@ -113,9 +113,10 @@ async function stopAll() {
     </template>
     <template #title>
       <span class="flex min-w-0 items-baseline gap-2">
-        <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="truncate hover:underline" :title="`The saved crew ${run.name}`">{{ run.name }}</NuxtLink>
+        <!-- The name gives way last: the subtitle shrinks first (it may be cut), the name keeps a readable minimum. -->
+        <NuxtLink v-if="run" :to="`/crews/${encodeURIComponent(run.crewId)}`" class="min-w-[12ch] shrink truncate hover:underline" :title="`The saved crew ${run.name}`" data-run-name>{{ run.name }}</NuxtLink>
         <span v-else class="truncate">Run</span>
-        <span v-if="run" class="flex-none truncate text-[13px] font-normal text-muted" :class="!run.label && 'hidden sm:inline'" data-run-subtitle>{{ runSubtitle(run) }}</span>
+        <span v-if="run" class="min-w-0 shrink-[4] truncate text-[13px] font-normal text-muted" :class="!run.label && 'hidden sm:inline'" :title="runSubtitle(run)" data-run-subtitle>{{ runSubtitle(run) }}</span>
         <span class="hidden flex-none font-mono text-[11px] font-normal text-dimmed md:inline" :title="runId">{{ shortRunId(runId) }}</span>
       </span>
     </template>
@@ -136,7 +137,7 @@ async function stopAll() {
         <ChatUnreadPill :count="chatUnread" />
       </UButton>
       <UButton v-if="stopped" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
-      <UButton icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run || stopped" @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
+      <UButton v-if="!stopped" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton class="hidden sm:inline-flex" />
     </template>
   </UDashboardNavbar>

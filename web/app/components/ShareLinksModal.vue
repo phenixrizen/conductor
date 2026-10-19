@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ReachInfo, ShareLink } from '~/composables/useSessions'
 import type { Role } from '~/utils/protocol'
+import { qrSvg } from '~/utils/qr'
 import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
 
 /**
@@ -60,6 +61,8 @@ const createdFor = ref('')
 /** The server's reach report, read when the modal opens; null when it could not be read. */
 const reach = ref<ReachInfo | null>(null)
 const createdReach = computed<ShareReach | null>(() => (created.value ? shareReach(created.value, reach.value, isRun.value) : null))
+/** The link as a QR code for a phone in the room to scan (#144): the link alone is in it, and nothing else ever will be. */
+const qr = computed(() => (created.value ? qrSvg(created.value.url) : null))
 const reachColor: Record<string, 'success' | 'warning' | 'neutral' | 'info'> = { remote: 'success', public: 'success', pending: 'warning', local: 'neutral', unknown: 'info' }
 const reachIcon = computed(() => {
   const r = createdReach.value
@@ -260,6 +263,12 @@ const live = computed(() => links.value.filter((l) => !l.revoked))
           <div class="flex items-center gap-2.5">
             <span class="flex-1 truncate font-mono text-xs" :title="created.url" data-created-url>{{ shortUrl(created.url) }}</span>
             <UButton label="Copy link" size="sm" @click="copy(created!.url)" />
+          </div>
+          <div v-if="qr" class="flex items-center gap-3" data-share-qr-row>
+            <svg :viewBox="qr.viewBox" class="size-28 flex-none rounded bg-white text-black" shape-rendering="crispEdges" role="img" :aria-label="created.url" data-share-qr>
+              <path :d="qr.path" fill="currentColor" />
+            </svg>
+            <span class="text-xs text-muted">Scan it with a phone to open the link there. The code holds the link alone.</span>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <div class="flex gap-0.5 rounded-md bg-default p-0.5 ring ring-default" role="radiogroup" aria-label="What the link allows" data-share-role>

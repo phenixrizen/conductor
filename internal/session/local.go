@@ -638,7 +638,7 @@ func (s *Local) markEnded(status Status) {
 	default:
 	}
 	if cleared {
-		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
 	frame := proto.MustControl(proto.Status{T: proto.CtlStatus, Status: string(status), ExitCode: exitCode})
 	s.hub.Broadcast(frame)
@@ -1776,6 +1776,17 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		return nil
 	}
+	// The program moved on (its status or title says it works, its hook or
+	// a report says the turn is done, a person marked it so): the dialog
+	// last answered is history, whatever the screen's looks can settle on.
+	// A terminal resized with the dialog or its aftermath on the screen (the
+	// reply bar's rows coming and going around every question) settles only
+	// once the program erases its screen whole, which may be never; until
+	// then the quiet looks forget nothing, and the next dialog with the same
+	// words would be taken for the one answered (#258).
+	if state == AttentionWorking || state == AttentionDone {
+		s.dialogAnswered = ""
+	}
 	// The dialog last answered, asked before it has gone (sameDialog): its
 	// question is answered, whatever id it shows with.
 	stillAnswered := rules&sameDialog != 0 && state == AttentionNeedsInput && s.dialogAnswered != "" && sameWords(s.dialogAnswered, words)
@@ -1930,7 +1941,7 @@ func sameOptions(a, b []Option) bool {
 
 // attentionMessage encodes an Attention as the wire control message.
 func attentionMessage(att Attention) proto.Attention {
-	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID}
+	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
 	}
@@ -1975,6 +1986,7 @@ func (s *Local) Info() Info {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	info := s.info
+	info.Attention = s.attentionLocked()
 	info.Viewers = s.hub.LoudCount()
 	if info.AgentSession != nil {
 		as := *info.AgentSession
@@ -2220,7 +2232,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	}
 	s.hub.Broadcast(s.viewersFrame())
 	if s.info.Attention.State != AttentionNone {
-		sub.send(proto.MustControl(attentionMessage(s.info.Attention)))
+		sub.send(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
 	var joined ChatMessage
 	var told bool
@@ -2980,7 +2992,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string) {
 		}
 		s.settleLocked(s.info.Attention)
 		s.signalAttention()
-		s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
 	answered, answeredID, told := s.answeredInChat(id, by, byName)
 	s.mu.Unlock()
@@ -3018,6 +3030,27 @@ func (s *Local) consumeLocked(id string) {
 		return
 	}
 	s.consumed = id
+	if att := s.info.Attention; att.State == AttentionNeedsInput && att.ID == id {
+		// The question shown reads answered in the terminal from here
+		// (attentionLocked, #258): every client hears so at once, through
+		// the stream and the terminal's control channel, and offers it no
+		// longer; it stays until the screen shows it gone.
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
+		go s.notifyChange()
+	}
+}
+
+// attentionLocked is the attention as the session reports it: the question
+// shown that keys typed in the terminal have answered (consumed) carries the
+// mark AnsweredTerminal, so that no page offers choices nobody can take
+// while the dialog waits for the program to move on (#258). The caller
+// holds s.mu.
+func (s *Local) attentionLocked() Attention {
+	att := s.info.Attention
+	if att.State == AttentionNeedsInput && att.ID != "" && att.ID == s.consumed {
+		att.Answered = AnsweredTerminal
+	}
+	return att
 }
 
 // releaseStrandedLocked lets the stranded line's claim go (strandedClaim),
@@ -3076,7 +3109,7 @@ func (s *Local) withdrawShownLocked(source string) {
 	}
 	s.settleLocked(s.info.Attention)
 	s.signalAttention()
-	s.hub.Broadcast(proto.MustControl(attentionMessage(s.info.Attention)))
+	s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 }
 
 // withdraw withdraws the question named id when it is the one shown and

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_QUESTION_ID } from './protocol'
-import { answerMessage, bindDraft, draftQuestion, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
+import { clearAnswered, answerMessage, bindDraft, draftQuestion, listedAttention, questionOf, repliedQuestions, ReplyError, replyFailure } from './reply'
 import { sessionRow } from './sidebar'
 import { rowPrompt } from './sidebarActions'
 import type { SessionInfo } from '~/composables/useSessions'
@@ -179,5 +179,22 @@ describe('the sidebar row names its question', () => {
     const row = sessionRow(session({ state: 'needs_input', message: 'Allow?' }))
     expect(row.prompt?.question).toBeUndefined()
     expect(rowPrompt(row)?.question).toBeUndefined()
+  })
+})
+
+describe('a refused reply clears the question it named (#258)', () => {
+  const session = (id: string, attention: SessionInfo['attention']): SessionInfo => ({ id, name: id, agentId: 'codex', status: 'running', createdAt: '', kind: 'server', attention }) as unknown as SessionInfo
+  it('removes the question from the live store when it is the one shown, and leaves another or none alone', () => {
+    const sessions = new Map<string, SessionInfo>()
+    sessions.set('a', session('a', { state: 'needs_input', message: 'Which?', source: 'question', id: 'q1', options: [{ label: 'Yes', input: 'y' }] }))
+    sessions.set('b', session('b', { state: 'needs_input', message: 'Other?', source: 'api', id: 'q2' }))
+    sessions.set('c', session('c', { state: 'working', source: 'title' }))
+    expect(clearAnswered(sessions, 'a', 'q1')).toBe(true)
+    expect(sessions.get('a')!.attention).toEqual({ state: '', source: 'input' })
+    expect(clearAnswered(sessions, 'b', 'q1')).toBe(false)
+    expect(sessions.get('b')!.attention?.id).toBe('q2')
+    expect(clearAnswered(sessions, 'c', 'q9')).toBe(false)
+    expect(clearAnswered(sessions, 'nope', 'q1')).toBe(false)
+    expect(clearAnswered(sessions, 'b', undefined)).toBe(false)
   })
 })

@@ -1,3 +1,4 @@
+import type { SessionInfo } from '~/composables/useSessions'
 import { MAX_ANSWER_REQ_ID, MAX_QUESTION_ID, QUESTION_ANSWERED, type AnswerMsg, type Attention } from './protocol'
 
 /**
@@ -115,6 +116,19 @@ export class ReplyError extends Error {
     this.name = 'ReplyError'
     this.code = code
   }
+}
+
+/**
+ * A reply the owner refused as answered (`question_answered`) named question `question` of session `id`: no page goes on offering
+ * that question (#258). The live store's session loses it at once, its attention the empty state with source `input`, as the
+ * stream will say; a session whose attention is another question, or none, is left alone. Whether anything changed.
+ */
+export function clearAnswered(sessions: Map<string, SessionInfo>, id: string, question: string | undefined): boolean {
+  if (!question) return false
+  const s = sessions.get(id)
+  if (!s || s.attention?.state !== 'needs_input' || s.attention.id !== question) return false
+  sessions.set(id, { ...s, attention: { state: '', source: 'input' } })
+  return true
 }
 
 /** The words a page shows for a reply that did not go (a toast's): `name` the session it was for, where the page lists several. */

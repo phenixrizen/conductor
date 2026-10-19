@@ -162,7 +162,14 @@ func (w *finder) walk(rel string, dir *os.Root, id os.FileInfo) error {
 			}
 			continue
 		}
-		if !strings.Contains(strings.ToLower(name), w.q) {
+		// A query with a slash is a path from the root (the Explorer's filter
+		// typed as one, #138): it matches the file's path, so that `go/src`
+		// finds what is under go/src; a plain query matches the name.
+		if strings.ContainsRune(w.q, '/') {
+			if !strings.Contains(strings.ToLower(p), strings.Trim(w.q, "/")) {
+				continue
+			}
+		} else if !strings.Contains(strings.ToLower(name), w.q) {
 			continue
 		}
 		if !open() {

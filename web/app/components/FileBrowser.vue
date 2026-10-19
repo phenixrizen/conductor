@@ -3,7 +3,7 @@ import type { ActivityEntry, FileEntry, FileHeader, FileRequester, TouchedFile }
 import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
 import { commitAgo, commitChangeRows, commitRows, commitsHead, type CommitChangeRow, type CommitRow } from '~/utils/commits'
 import { opIcon, touchedPaths, touchedRows, touchedWords } from '~/utils/touched'
-import { crumbsOf, findNode, foundRows, looksLikePath, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
+import { crumbsOf, findNode, foldCrumbs, foundRows, looksLikePath, pathQuery, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
 import { parseLocation } from '~/utils/links'
 
 export interface FileTarget {
@@ -217,12 +217,17 @@ let findSeq = 0
 watch(query, (q) => {
   window.clearTimeout(findTimer)
   const words = q.trim()
-  if (!words || looksLikePath(words) || !props.cwd) {
+  // A `:line` at the end is a place to open, not a filter.
+  if (!words || /:\d+(?::\d+)?$/.test(words) || !props.cwd) {
     found.value = null
     return
   }
   const seq = ++findSeq
   findTimer = window.setTimeout(async () => {
+    // A path (a slash in it, #138) narrows the tree to that folder and below: the folders on the way are fetched and opened, so
+    // that the folder shows with what it holds, and the find matches the path from the working directory rather than a name.
+    const path = pathQuery(words)
+    if (path !== null && root.value) void reveal(resolveTyped(root.value.path, path))
     try {
       const res = await props.request(words, false, { op: 'find' }) // the words ride as the path; the session's working directory is the root
       if (seq === findSeq) found.value = res.header.kind === 'find' ? res.header : null
@@ -232,6 +237,27 @@ watch(query, (q) => {
   }, 300)
 })
 const foundBelow = computed(() => (found.value && query.value.trim() ? foundRows(found.value.path, found.value.matches ?? [], new Set(rows.value.map((n) => n.path))) : []))
+
+/** The breadcrumb's row: scrolled to its end when the path changes, so the last crumb is in view. */
+const crumbsNav = useTemplateRef<HTMLElement>('crumbsNav')
+/**
+ * The breadcrumb folded (#169): the working directory's own folder and, in file mode, the folders down to the file keep their
+ * full names; the folders above fold into one `…` crumb that lists them, top to bottom. The full path is the row's tooltip.
+ */
+const folded = computed(() => {
+  const all = crumbs.value
+  const inside = all.filter((c) => c.inside).length
+  // The working directory's own folder, plus the folders inside it in file mode; one folder above it when the path is short.
+  return foldCrumbs(all, 1 + inside)
+})
+const fullPath = computed(() => crumbs.value.map((c) => c.label).join('/'))
+const hiddenItems = computed(() =>
+  folded.value.hidden.map((c) => ({ label: c.label, icon: 'i-lucide-folder', onSelect: () => copy(c.path, 'Path copied') })),
+)
+watch(
+  () => crumbs.value.map((c) => c.path).join('\n'),
+  () => nextTick(() => crumbsNav.value?.scrollTo({ left: crumbsNav.value.scrollWidth })),
+)
 
 /** The breadcrumb: the working directory from the top; in file mode, on down to the file. */
 const crumbs = computed(() => {
@@ -351,6 +377,9 @@ async function toggle(node: TreeNode) {
     openFile({ path: node.path })
     return
   }
+  // A folder clicked while the box holds a filter: the filter goes and the whole tree shows, this folder open or closed as
+  // clicked (#138); with the filter kept, the folder would read as holding only the matches.
+  query.value = ''
   if (node.expanded) {
     node.expanded = false
     return
@@ -559,10 +588,17 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       </template>
       <template v-else>
         <UButton v-if="mode !== 'tree'" icon="i-lucide-arrow-left" size="xs" color="neutral" variant="ghost" aria-label="Back to the files" data-files-back @click="backToTree" />
-        <nav class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto" aria-label="path" data-files-crumbs>
-          <template v-for="(c, i) in crumbs" :key="c.path">
+        <!-- The end of the path reads whole (#169): the folders above fold into "…", which lists them; nothing is cut to a letter. -->
+        <nav ref="crumbsNav" class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap [scrollbar-width:none]" aria-label="path" :title="fullPath" data-files-crumbs>
+          <template v-if="folded.hidden.length">
+            <UDropdownMenu :items="hiddenItems" :content="{ align: 'start' }">
+              <button type="button" class="flex-none font-mono text-muted hover:underline" :aria-label="`${folded.hidden.length} folders above: ${folded.hidden.map((c) => c.label).join('/')}`" data-files-crumbs-more>…</button>
+            </UDropdownMenu>
+            <UIcon name="i-lucide-chevron-right" class="size-3 text-muted flex-none" />
+          </template>
+          <template v-for="(c, i) in folded.shown" :key="c.path">
             <UIcon v-if="i > 0" name="i-lucide-chevron-right" class="size-3 text-muted flex-none" />
-            <button type="button" class="font-mono truncate" :class="[i === crumbs.length - 1 ? 'text-highlighted' : 'text-muted', c.inside || i === crumbsOf(cwd || '/').length - 1 ? 'hover:underline' : 'cursor-default']" :data-files-crumb="c.path" @click="(c.inside || i === crumbsOf(cwd || '/').length - 1) && openCrumb(c.path)">
+            <button type="button" class="flex-none font-mono" :class="[i === folded.shown.length - 1 ? 'text-highlighted' : 'text-muted', c.inside || c.path === crumbsOf(cwd || '/').at(-1)?.path ? 'hover:underline' : 'cursor-default']" :data-files-crumb="c.path" @click="(c.inside || c.path === crumbsOf(cwd || '/').at(-1)?.path) && openCrumb(c.path)">
               {{ c.label }}
             </button>
           </template>

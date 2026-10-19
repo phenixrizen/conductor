@@ -41,6 +41,13 @@ test('the Files tab opens on the working directory as a tree; the box filters it
     await expect(tree.locator('[data-file-node]')).toHaveText([/internal/, /api/, /users\.go/])
     await box.press('Escape')
     await expect(tree.locator('[data-file-node]')).toHaveCount(7)
+    // A path in the box narrows the tree to that folder and what is below it (#138), the folders on the way kept.
+    await box.fill('internal/api')
+    await expect(tree.locator('[data-file-node]')).toHaveText([/internal/, /api/, /router\.go/, /users\.go/])
+    // Clicking a folder clears the filter: the whole tree shows again, that folder closed by the click.
+    await tree.locator(`[data-file-node="${cwd}/internal/api"]`).click()
+    await expect(box).toHaveValue('')
+    await expect(tree.locator('[data-file-node]')).toHaveText([/docs/, /empty/, /internal/, /api/, /README\.md/])
     // A typed path:line opens the file in the editor area at that line; the pane stays the tree.
     await box.fill('internal/api/users.go:4')
     await box.press('Enter')
@@ -55,6 +62,38 @@ test('the Files tab opens on the working directory as a tree; the box filters it
     await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
     await expect(area.locator('[data-editor-tab-active]')).toContainText('users.md')
     await expect(pane).toHaveAttribute('data-files-mode', 'tree')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// A deep working directory's breadcrumb reads whole at its end (#169): the session's own folder keeps its full name, the folders
+// above fold into one "…" crumb that opens a menu listing them, and no crumb is cut to a letter.
+test('the Files tab\'s breadcrumb folds the folders above into one and keeps the last whole', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'crumbs-one', 'crumbs-two-longer', 'crumbs-three-longer-still', 'crumbs-four', 'crumbs-five-longer', 'the-session-folder-itself')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'README.md'), '# deep\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'crumbs', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]')).toHaveCount(1, { timeout: 30_000 })
+    const crumbs = pane.locator('[data-files-crumbs] [data-files-crumb]')
+    const last = crumbs.last()
+    await expect(last).toHaveText('the-session-folder-itself')
+    const whole = await last.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)
+    expect(whole, 'the last crumb reads whole').toBe(true)
+    for (const text of await crumbs.allTextContents()) expect(text.length, `a crumb cut short: ${text}`).toBeGreaterThan(3)
+    await expect(pane.locator('[data-files-crumbs]')).toHaveAttribute('title', new RegExp('crumbs-one/crumbs-two-longer/.*/the-session-folder-itself$'))
+    // The folded folders, top to bottom, in the "…" crumb's menu.
+    await pane.locator('[data-files-crumbs-more]').click()
+    const items = page.getByRole('menuitem')
+    await expect(items.first()).toBeVisible()
+    const names = await items.allTextContents()
+    expect(names.map((n) => n.trim())).toEqual(expect.arrayContaining(['crumbs-one', 'crumbs-two-longer', 'crumbs-three-longer-still', 'crumbs-four', 'crumbs-five-longer']))
+    expect(names.indexOf(names.find((n) => n.includes('crumbs-one'))!)).toBeLessThan(names.indexOf(names.find((n) => n.includes('crumbs-five-longer'))!))
+    await page.keyboard.press('Escape')
   } finally {
     await api.stopSession(s.id)
   }
