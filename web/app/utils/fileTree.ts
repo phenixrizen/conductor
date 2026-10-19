@@ -70,6 +70,30 @@ export function matches(name: string, query: string): boolean {
 }
 
 /**
+ * The filter as a path, when it holds a slash (#138): `go/src` narrows the tree to that folder and what is below it. Trimmed, a
+ * leading `./` or `/` dropped, a trailing slash dropped, lower-cased; null for a filter that is a name.
+ */
+export function pathQuery(query: string): string | null {
+  const q = query.trim().toLowerCase()
+  if (!q.includes('/')) return null
+  return q.replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+/** A node's path from the root (`internal/api`), lower-cased for matching. */
+function relPath(root: TreeNode, node: TreeNode): string {
+  const base = root.path === '/' ? '' : root.path
+  return (node.path.startsWith(base + '/') ? node.path.slice(base.length + 1) : node.path).toLowerCase()
+}
+
+/**
+ * Whether a node is on the way to a path query, is that path, or lies below it: `go/src` shows `go`, `go/src` and everything
+ * loaded under `go/src`, nothing beside them.
+ */
+export function onPath(rel: string, q: string): boolean {
+  return rel === q || q.startsWith(rel + '/') || rel.startsWith(q + '/')
+}
+
+/**
  * The rows to draw, top to bottom: the root's children, an expanded folder's
  * children after it. With a filter, only the loaded nodes whose name matches
  * or that hold a match somewhere below, their folders opened so the match
@@ -78,12 +102,21 @@ export function matches(name: string, query: string): boolean {
  */
 export function visibleRows(root: TreeNode, query = ''): TreeNode[] {
   const q = query.trim()
+  const path = pathQuery(q)
   const out: TreeNode[] = []
   const walk = (node: TreeNode) => {
     for (const c of node.children) {
       if (!q) {
         out.push(c)
         if (c.dir && c.expanded) walk(c)
+        continue
+      }
+      if (path !== null) {
+        // A path: the folders on the way to it, itself, and what is loaded below it (#138).
+        const rel = relPath(root, c)
+        if (!onPath(rel, path)) continue
+        out.push(c)
+        if (c.dir && c.loaded && (rel === path || path.startsWith(rel + '/') || c.expanded)) walk(c)
         continue
       }
       if (holdsMatch(c, q)) {
@@ -102,7 +135,10 @@ export function holdsMatch(node: TreeNode, query: string): boolean {
   return node.dir && node.loaded && node.children.some((c) => holdsMatch(c, query))
 }
 
-/** What the box takes as a path to open rather than a filter: a slash in it, a leading dot or tilde, or a `:line` at its end. */
+/**
+ * What the box's Enter takes as a path to open rather than a name to find: a slash in it, a leading dot or tilde, or a `:line` at
+ * its end. As a filter, a path narrows the tree to it (pathQuery) rather than matching names.
+ */
 export function looksLikePath(input: string): boolean {
   const s = input.trim()
   return s.includes('/') || /^[.~]/.test(s) || /:\d+(?::\d+)?$/.test(s)
@@ -114,6 +150,17 @@ export function resolveTyped(cwd: string, input: string): string {
   if (s.startsWith('/')) return s
   const base = cwd.replace(/\/+$/, '')
   return `${base}/${s.replace(/^\.\//, '')}`
+}
+
+/**
+ * The breadcrumb folded from the left (#169): the last `keep` crumbs show whole (the working directory's own folder, and in file
+ * mode the folders down to the file and the file), the folders above them fold into one `…` crumb that lists them; a path short
+ * enough shows whole. Nothing is cut to a letter: what shows, shows whole, and the row scrolls when even that does not fit.
+ */
+export function foldCrumbs<T>(crumbs: readonly T[], keep: number): { hidden: T[]; shown: T[] } {
+  const k = Math.max(1, keep)
+  if (crumbs.length <= k + 1) return { hidden: [], shown: [...crumbs] }
+  return { hidden: crumbs.slice(0, crumbs.length - k), shown: crumbs.slice(crumbs.length - k) }
 }
 
 /** The breadcrumb of the root: the working directory's folders from the top. */

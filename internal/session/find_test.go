@@ -41,3 +41,36 @@ func TestFindPathFindsNamesBelowAndSkipsWhatItShould(t *testing.T) {
 		t.Fatalf("bounded: %d matches, truncated %v", len(h.Matches), h.Truncated)
 	}
 }
+
+// A query with a slash is a path from the root (#138): `internal/api` finds
+// the files under internal/api, and `api/users` the one whose path holds it,
+// a name alone matching nothing of the kind.
+func TestFindPathTakesAPathQueryAgainstThePathFromTheRoot(t *testing.T) {
+	root := t.TempDir()
+	for _, p := range []string{"internal/api/users.go", "internal/store/users.go", "web/api.ts", "docs/api/users.md"} {
+		os.MkdirAll(filepath.Join(root, filepath.Dir(p)), 0o755)
+		os.WriteFile(filepath.Join(root, p), []byte("x"), 0o644)
+	}
+	got := func(q string) []string {
+		h := FindPath(root, q, nil)
+		if h.Kind != "find" {
+			t.Fatalf("%q: %+v", q, h)
+		}
+		m := append([]string(nil), h.Matches...)
+		sort.Strings(m)
+		return m
+	}
+	if m := got("internal/api"); fmt.Sprint(m) != fmt.Sprint([]string{"internal/api/users.go"}) {
+		t.Fatalf("internal/api: %v", m)
+	}
+	if m := got("api/users"); fmt.Sprint(m) != fmt.Sprint([]string{"docs/api/users.md", "internal/api/users.go"}) {
+		t.Fatalf("api/users: %v", m)
+	}
+	if m := got("/internal/"); fmt.Sprint(m) != fmt.Sprint([]string{"internal/api/users.go", "internal/store/users.go"}) {
+		t.Fatalf("slashes around: %v", m)
+	}
+	// A name alone still matches names: the folders' names do not count.
+	if m := got("api"); fmt.Sprint(m) != fmt.Sprint([]string{"web/api.ts"}) {
+		t.Fatalf("a name: %v", m)
+	}
+}
