@@ -9,18 +9,36 @@ import (
 )
 
 // newClaudeSession is a session of Claude Code's, 120 by 40 as its dialogs
-// were captured, with its question asked during the work (the catalog's)
+// were captured, with its questions asked during the work (the catalog's)
 // and a controller attached.
 func newClaudeSession(t *testing.T) (*Local, *fakeProc, *Subscription) {
 	t.Helper()
+	return newClaudeSessionAt(t, 120)
+}
+
+// newClaudeSessionAt is newClaudeSession cols wide.
+func newClaudeSessionAt(t *testing.T, cols uint16) (*Local, *fakeProc, *Subscription) {
+	t.Helper()
 	p := newFakeProc()
-	s := NewLocal(Info{ID: "sess", Cwd: realDir(t, t.TempDir()), Cols: 120, Rows: 40}, p, quiet(Options{Questions: []StartupQuestion{claudeQuestion(t)}}))
+	s := NewLocal(Info{ID: "sess", Cwd: realDir(t, t.TempDir()), Cols: cols, Rows: 40}, p, quiet(Options{Questions: claudeQuestions(t)}))
 	t.Cleanup(func() { p.exit() })
-	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 120, Rows: 40}, newChanSink(false))
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: cols, Rows: 40}, newChanSink(false))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s, p, sub
+}
+
+// working draws Claude Code at work for d as it does: a frame every 100 ms,
+// each a synchronized update, its spinner turning, so that the screen is
+// never quiet (Claude Code 2.1.304 drew 19 frames in the 1.7 s after an
+// answer in a PTY, none 400 ms after the last).
+func working(p *fakeProc, d time.Duration) {
+	spin := []string{"✻", "✽", "✶", "✳"}
+	for i := 0; time.Duration(i)*100*time.Millisecond < d; i++ {
+		p.outW.Write([]byte("\x1b[?2026h\x1b[H\x1b[2J\x1b[1;1H" + spin[i%len(spin)] + " Working… (esc to interrupt)\x1b[?2026l"))
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // drawn is what a TUI writes to show text, a screen's rows: the screen
@@ -86,25 +104,87 @@ func TestClaudeCodesDialogIsAskedWithItsOwnChoices(t *testing.T) {
 	waitAttention(t, s, func(a Attention) bool { return a.State != AttentionNeedsInput })
 }
 
-// Two dialogs one after the other are two questions, the hook's word that
-// Claude Code works again (its PreToolUse) between them: the second is
-// answered as the first was, the same command again included.
+// Two dialogs one after the other are two questions, Claude Code at work
+// between them with no quiet screen and no hook (Conductor installs no
+// PreToolUse): the dialog answered is forgotten at the first whole frame
+// that no longer shows it, so the next, the same command again included,
+// is answered as the first was.
 func TestClaudeCodesDialogsOneAfterTheOtherAreEachAsked(t *testing.T) {
 	s, p, sub := newClaudeSession(t)
-	for i, cmd := range []string{"probe.txt", "notes.txt", "notes.txt"} {
+	last := ""
+	for i, cmd := range []string{"probe.txt", "probe.txt", "notes.txt"} {
 		p.outW.Write(drawn(claudeBashFor(cmd)))
-		att := waitAttention(t, s, func(a Attention) bool { return asked(a) && strings.Contains(a.Message, "touch "+cmd) })
+		att := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != last && strings.Contains(a.Message, "touch "+cmd) })
+		last = att.ID
 		if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("1")); err != nil {
 			t.Fatalf("dialog %d: %v", i+1, err)
 		}
 		if got := nextWrite(t, p); got != "1" {
 			t.Fatalf("dialog %d: written %q", i+1, got)
 		}
-		p.outW.Write(drawn(claudeAtRest("$ touch " + cmd)))
-		if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(50 * time.Millisecond)
+		working(p, 1200*time.Millisecond)
+	}
+}
+
+// A dialog 44 columns wide, its footer wrapped onto the next row, is asked
+// with its choices and holds typed text, as a phone's terminal shows it.
+func TestAClaudeDialogOnANarrowScreenIsAsked(t *testing.T) {
+	s, p, sub := newClaudeSessionAt(t, 44)
+	p.outW.Write(drawn(claudePlanNarrow))
+	att := waitAttention(t, s, asked)
+	if len(att.Options) != 3 || !att.Options[0].Mode || att.Message != planQuestion {
+		t.Fatalf("the plan at 44 columns %+v", att)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "go ahead", By: sub}); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("typed text at the narrow dialog: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}
+
+// A reply is weighed against the dialog's choices whole: one whose second
+// choice changed past what its label shows (a folder's long path, cut at
+// 60 characters) is another dialog, and the reply writes nothing.
+func TestAReplyToAClaudeDialogChangedPastItsLabelsIsRefused(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	long := "/home/dev/a-project-with-a-name-long-enough-to-pass-the-cut"
+	first := strings.ReplaceAll(claudeBash, "/home/dev/project", long+"/one")
+	p.outW.Write(drawn(first))
+	att := waitAttention(t, s, asked)
+	if !strings.HasSuffix(att.Options[1].Label, "…") {
+		t.Fatalf("the label is not cut: %+v", att.Options[1])
+	}
+	p.outW.Write(drawn(strings.ReplaceAll(claudeBash, "/home/dev/project", long+"/two")))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("2")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the dialog changed past its labels: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+}
+
+// The plan's "Tell Claude what to change" takes the highlight into its
+// field, where every key is typed: the dialog then offers no choices (a
+// digit clicked would be typed into the feedback) and still holds typed
+// text, until the feedback is entered in the terminal.
+func TestTheClaudePlansFeedbackFieldOffersNoChoices(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	p.outW.Write(drawn(claudePlan(planAuto, 1)))
+	att := waitAttention(t, s, asked)
+	if len(att.Options) != 3 {
+		t.Fatalf("the plan %+v", att)
+	}
+	if err := s.Input(sub, []byte("3")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write(drawn(claudePlanTyped))
+	typed := waitAttention(t, s, func(a Attention) bool {
+		return a.State == AttentionNeedsInput && a.Source == SourceQuestion && a.Options == nil
+	})
+	if typed.Message != planQuestion || typed.Kind != KindPermission {
+		t.Fatalf("the plan with its field in use %+v", typed)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "use a map instead", By: sub}); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("typed text at the feedback field: %v", err)
 	}
 }
 

@@ -426,6 +426,19 @@ func (w *PatternWatcher) TextAt() (text string, cols int) {
 	return w.tracker.Last(), cols
 }
 
+// TextSettled is TextAt with whether the screen is a whole frame
+// (Screen.Settled; always for a watcher with no screen), taken together.
+func (w *PatternWatcher) TextSettled() (text string, settled bool, cols int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	settled = true
+	if sc, ok := w.tracker.(*Screen); ok {
+		cols, _ = sc.Size()
+		settled = sc.Settled()
+	}
+	return w.tracker.Last(), settled, cols
+}
+
 // Whole returns all the text the watcher keeps: a screen watcher's whole
 // screen (Screen.Lines, every row, a row autowrap went on from read with
 // the next as one line, where Text is its last rows), the others'

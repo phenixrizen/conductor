@@ -1119,7 +1119,7 @@ keys that pick it, the trusting answer first (Claude Code highlights "No,
 exit", so its trusting answer is Down then Enter; Codex highlights the trusting
 answer, so Enter). While it shows, the owner refuses a person's `submit`, a
 `chat` to the agent and a `chat_send` with `not_sent`. The agent's other
-startup questions, the catalog's `questions` (`[{prompt, words?, anytime?, answers, answersFromScreen?, modeAnswers?}]`,
+startup questions, the catalog's `questions` (`[{prompt, words?, anytime?, answers, answersFromScreen?, modeAnswers?, typedAnswers?}]`,
 at most 8, each prompt and its answers bounded as `trustPrompt` and
 `trustAnswers` are; a saved agent that leaves them out keeps the replaced
 agent's), are held the same way, with `source` `trust`, the words of the one
@@ -1216,28 +1216,41 @@ same footer (network access: "Do you want to approve network access to
 A question with `answersFromScreen: true` (only with `anytime`, and no
 `answers` of its own) has its answers read off the screen each time it is
 asked: the numbered list its dialog draws at the bottom, from the last row
-numbered N up through the rows numbered N−1 to 1 at that column, at most 4
+numbered N up through the rows numbered N−1 to 1 at that column, at most 8
 rows apart (a choice's description, a rule, the rest of a long label), each
 choice its first row's label and its number as the key (no Enter). Its
 words, without a `words` pattern, are the rows above the list up to the
 dialog's top rule (a row of `─` alone), rules within it left out. A screen
 its prompt finds with no such list (fewer than two choices, a number out of
 turn) asks nothing. `modeAnswers`, a pattern bounded as a prompt, marks
-`mode` the answers whose label, with the rows that follow it up to the next
-choice, it matches (a narrow screen wraps "switch to" and "BYPASS
-PERMISSIONS" onto two rows). A reply to such a question is refused, nothing
-written, when the dialog on the screen shows other choices than the
-question's. Claude Code's built-in entry has one (Claude Code 2.1.304): a
+`mode` the answers it matches, each read whole: its label with the rows
+that follow it up to the next choice (a narrow screen wraps "switch to" and
+"BYPASS PERMISSIONS" onto two rows). `typedAnswers`, a pattern bounded the
+same way, matches the answers that take typed words, each read whole: while
+the dialog's highlight stands before one, its keys type into that field,
+so the question offers no choices and is answered in the terminal. A reply
+to such a question is refused, nothing written, when the dialog on the
+screen shows other choices than it was asked with, read whole, beyond what
+a label shows (a long folder's path, cut at the label's bound) and however
+the screen wrapped them. The dialog a key or a reply answered is forgotten
+at the first whole frame drawn after the answer that no longer shows it,
+quiet or not, so that the next dialog with its words (the same command
+asked again, a program animating as it works between them) is a question
+of its own. Claude Code's built-in entry has two (Claude Code 2.1.304): a
 row numbered with the highlight `❯` before it, then one of its footers as
-the last row the screen shows ("Esc to cancel · Tab to amend" under a
+the last thing the screen shows ("Esc to cancel · Tab to amend" under a
 tool's permission, "Enter to select · … · Esc to cancel" under
 AskUserQuestion's choices, "ctrl+g to edit in <editor> · <plan>" under the
-plan's approval), or AskUserQuestion's last page, "Ready to submit your
-answers?" with its list at the bottom; its prompt box and status line,
-gone while a dialog shows, keep a dialog quoted in the transcript or typed
-into the prompt box from counting. A digit picks at once in its dialogs;
-the plan's "Tell Claude what to change" only takes the highlight into its
-feedback field, which is typed in the terminal. Its mode answers are
+plan's approval), a narrow screen wrapping the footer over at most three
+rows that are neither a rule nor the prompt's; and AskUserQuestion's last
+page, "Ready to submit your answers?" with its two choices the last rows
+the screen shows. Its prompt box and status line, gone while a dialog
+shows, keep a dialog quoted in the transcript or typed into the prompt box
+from counting, and that last page left above the prompt too. A digit picks
+at once in its dialogs; the plan's "Tell Claude what to change" takes the
+highlight into its feedback field (its hint reads "shift+tab to approve
+with this feedback", its `typedAnswers`), where the feedback is typed in
+the terminal. Its mode answers are
 `(?i)auto mode|accept edits|auto-accept|bypass permissions`.
 
 ### Answering a question

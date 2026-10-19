@@ -1205,6 +1205,8 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, Answers: []Answer{{Label: "Yes", Input: "1"}}}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "("}},
 		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: ".*"}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, TypedAnswers: "("}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, TypedAnswers: ".*"}},
 	} {
 		a := ok
 		a.Questions = bad
@@ -1213,24 +1215,33 @@ func TestStartupQuestions(t *testing.T) {
 		}
 	}
 	good := ok
-	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode"}}
+	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"}}
 	if err := validate(good); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// Claude Code's dialogs during the work are one question whose answers are
+// Claude Code's dialogs during the work are a question whose answers are
 // read off the screen (#288), its choices that change the permission mode
-// marked by their words; it round-trips through a saved override as the
-// other question fields do.
+// marked by their words and its feedback field told by its hint; and
+// AskUserQuestion's last page, which has no footer, is one of its own.
+// They round-trip through a saved override as the other question fields
+// do.
 func TestClaudeCodesDialogQuestion(t *testing.T) {
 	claude, _ := Default().Get("claude")
-	if len(claude.Questions) != 1 {
+	if len(claude.Questions) != 2 {
 		t.Fatalf("claude: %+v", claude.Questions)
 	}
-	q := claude.Questions[0]
-	if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 || q.Words != "" {
+	q, last := claude.Questions[0], claude.Questions[1]
+	if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 || q.Words != "" || q.TypedAnswers == "" {
 		t.Fatalf("claude's question %+v", q)
+	}
+	if !last.Anytime || !last.AnswersFromScreen || len(last.Answers) != 0 || last.ModeAnswers != "" || last.TypedAnswers != "" {
+		t.Fatalf("claude's last page %+v", last)
+	}
+	typed, err := CompilePattern(q.TypedAnswers)
+	if err != nil || !typed.MatchString("3. abc shift+tab to approve with this feedback") || typed.MatchString("2. Yes, manually approve edits") {
+		t.Fatalf("the typed answers %q: %v", q.TypedAnswers, err)
 	}
 	mode, err := CompilePattern(q.ModeAnswers)
 	if err != nil {

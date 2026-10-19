@@ -25,14 +25,18 @@ const CodexWorkingTitle = `^(?:\S+\s+)?(?:Working|Thinking|Waiting)$`
 
 // claudeDialog finds a Claude Code dialog asked during the work: a row
 // whose number the highlight ❯ stands before, then, within its dialog, one
-// of the footers Claude Code ends its dialogs with as the last row the
+// of the footers Claude Code ends its dialogs with as the last thing the
 // screen shows (a dialog is the bottom of what Claude Code draws, its
 // prompt box and status line gone while it shows), so that a numbered list
 // or a whole dialog quoted in the transcript, or typed into the prompt
-// box, is not taken for one; or AskUserQuestion's last page, "Ready to
-// submit your answers?" with its list at the bottom and no footer (seen
-// with 2.1.304: "1. Submit answers", "2. Cancel").
-const claudeDialog = `(?m)(?:^[ \t]*❯[ \t]*[1-9]\.[ \t].*(?:\n.*){0,40}\n[ \t]*(?:Esc to cancel|Enter to select|ctrl\+g to edit)[^\n]*|^Ready to submit your answers\?(?:\n.*){1,8})\s*\z`
+// box, is not taken for one. A narrow screen wraps a footer over the rows
+// below it ("ctrl+g to edit in Vim · ~/.claude/pla", "ns/plan….md" at 44
+// columns), never a rule's or the prompt's.
+const claudeDialog = `(?m)^[ \t]*❯[ \t]*[1-9]\.[ \t].*(?:\n.*){0,40}\n[ \t]*(?:Esc to cancel|Enter to select|ctrl\+g to edit)[^\n]*(?:\n[ \t]*[^\s─❯][^\n]*){0,3}\s*\z`
+
+// claudeAnswersReview finds AskUserQuestion's last page, "Ready to submit
+// your answers?" with its two choices the last rows the screen shows.
+const claudeAnswersReview = `(?m)^[ \t]*Ready to submit your answers\?\n(?:[ \t]*\n){0,2}[ \t]*❯?[ \t]*1\.[ \t][^\n]*\n[ \t]*❯?[ \t]*2\.[ \t][^\n]*\s*\z`
 
 // codexApprovalFooter ends a pattern of Codex's approval dialog: its footer,
 // on one of the last rows the screen shows (the dialog is the bottom of
@@ -81,11 +85,23 @@ func defaults() []Agent {
 			// dialog. A digit picks at once (4 denied the Bash command, 2
 			// answered AskUserQuestion's Blue); the plan's "Tell Claude what
 			// to change" only takes the highlight into its feedback field.
+			// Its last page of AskUserQuestion's ("Ready to submit your
+			// answers?", 1. Submit answers, 2. Cancel) has no footer: a
+			// question of its own, its list the bottom of the screen. The
+			// plan's "Tell Claude what to change" is a field: its digit
+			// only takes the highlight there, and every key after it is
+			// typed into it ("❯ 3. abc", its hint "shift+tab to approve
+			// with this feedback" below, seen with 2.1.304).
 			Questions: []Question{{
 				Prompt:            claudeDialog,
 				Anytime:           true,
 				AnswersFromScreen: true,
 				ModeAnswers:       `(?i)auto mode|accept edits|auto-accept|bypass permissions`,
+				TypedAnswers:      `shift\+tab to approve with this`,
+			}, {
+				Prompt:            claudeAnswersReview,
+				Anytime:           true,
+				AnswersFromScreen: true,
 			}},
 		},
 		{

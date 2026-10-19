@@ -99,11 +99,74 @@ asked, instead of written in the catalog.
    catalog fields), README (the reply bar, the held dialogs), features.md
    (the open verification is done), `internal/proto` and `protocol.ts`.
 
+## Plan review (Codex, 2026-10-19) and what changed
+
+- Replies bound to the dialog instance: a reply is refused when the
+  dialog on the screen shows other choices than the question's
+  (`stillOnScreen` compares the choices read now as well as the words).
+  Two dialogs with the same words (two plan approvals, the same command
+  twice) are told apart by the hook Claude Code sends before each, its
+  `PreToolUse`, a working report, which ends the memory of the dialog last
+  answered (#283's rule).
+- Wrapped labels: a choice is marked `mode` when the pattern matches its
+  label with the rows that follow it up to the next choice, so "Yes, and
+  switch to" over "BYPASS PERMISSIONS …" on a narrow screen is marked.
+- AskUserQuestion's last page ("Review your answers", "Ready to submit your
+  answers?", "1. Submit answers", "2. Cancel") has no footer (captured with
+  2.1.304): the prompt matches it too, so it holds submissions as the
+  pages before it do. Multi-select choices are read as any list; a digit
+  there toggles, and the dialog asked again after it is held answered
+  until Claude Code moves on, as any dialog a key left in place.
+- False matches: the footer must be the last row the screen shows. Claude
+  Code's prompt box and status line, gone while a dialog shows, stand below
+  a dialog quoted in the transcript or typed into the prompt box.
+- The plan's "Tell Claude what to change" is offered as the dialog lists
+  it; its key takes the highlight into the feedback field, and the dialog,
+  still on the screen, is held answered until Claude Code moves on: the
+  feedback is typed in the terminal.
+- A hook report answered in the terminal before the first look stays until
+  the next hook, as it did before (now without choices); hosted sessions
+  are #293.
+
+## Code review (Codex, 2026-10-19) and what changed
+
+Captured again with 2.1.304 for these: the plan's feedback field with
+"abc" typed, and the plan, a Bash permission and AskUserQuestion 44 columns
+wide.
+
+- Choices compared whole: a question asked from a list keeps the list
+  whole (each choice's label with its following rows, uncut), and a reply
+  is refused when the screen's list differs, past the label's 60
+  characters too. It is kept apart from the words, which still tell one
+  question from the next.
+- Wrapped footers: at 44 columns the plan's footer breaks inside its path
+  onto the next row, and AskUserQuestion's puts "cancel" on a row of its
+  own. The prompt allows up to three rows after the footer row that are
+  neither a rule nor the prompt's `❯`, which still keeps a quoted or
+  pasted dialog out. The bounds of the list grew (8 rows between choices,
+  8 after the last) for a long folder's path wrapped on a phone.
+- No PreToolUse: Conductor installs no PreToolUse hook for Claude Code, so
+  nothing reported between two dialogs, and Claude Code's spinner (a frame
+  every 100 ms, each a synchronized update) never lets the screen go
+  quiet. The dialog answered is now forgotten at the first whole frame
+  after the answer that no longer shows it (`answeredLeft`, on output), so
+  the same command asked twice in a turn is asked twice. The session test
+  draws the spinner between the dialogs and fails without the change.
+- The last page of AskUserQuestion is a question of its own, its two
+  choices the last rows of the screen, so it is not found above Claude
+  Code's prompt box.
+- The feedback field (found while checking the above): once the highlight
+  is in it, every key is typed there ("❯ 3. abc"). A choice the catalog's
+  `typedAnswers` matches (the plan's, by its hint "shift+tab to approve
+  with this feedback") with the highlight before it makes the dialog offer
+  no choices, so no click types a digit into the feedback and no new
+  question is asked at each pause while it is typed.
+
 ## Not changed
 
 - Hosted sessions (`conductor host`) watch no startup or screen questions
   (Codex's included); their Claude Code questions will show without choices
-  and are answered in the terminal. A separate issue.
+  and are answered in the terminal: #293.
 - The server refuses no typed submission to a hook's permission report
   without choices; only the pages stop offering one, as the issue asks.
 

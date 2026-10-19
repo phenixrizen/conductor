@@ -415,6 +415,11 @@ func validate(a Agent) error {
 				return fmt.Errorf("agent %s: questions[%d].modeAnswers: %w", a.ID, i, err)
 			}
 		}
+		if q.TypedAnswers != "" {
+			if _, err := CompilePattern(q.TypedAnswers); err != nil {
+				return fmt.Errorf("agent %s: questions[%d].typedAnswers: %w", a.ID, i, err)
+			}
+		}
 	}
 	if a.Session != nil {
 		if err := validateSession(*a.Session); err != nil {
@@ -850,6 +855,13 @@ type Question struct {
 	// a choice no number key and never offers it first. A pattern as
 	// Prompt is.
 	ModeAnswers string `json:"modeAnswers,omitempty"`
+	// TypedAnswers, when set, matches the answers read off the screen
+	// that take typed words, each with the rows that follow it (Claude
+	// Code's "Tell Claude what to change", whose hint reads "shift+tab to
+	// approve with this feedback"): while the dialog's highlight stands
+	// before one, its keys type into that field, so the question offers
+	// no choices and is answered in the terminal. A pattern as Prompt is.
+	TypedAnswers string `json:"typedAnswers,omitempty"`
 }
 
 // MaxQuestions bounds Agent.Questions.

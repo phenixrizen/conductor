@@ -224,6 +224,82 @@ var (
 	)
 )
 
+// claudePlanNarrow, claudeBashNarrow and claudeAskNarrow are the plan's
+// approval, a Bash command's permission and AskUserQuestion as Claude Code
+// 2.1.304 drew them 44 columns wide (a phone's terminal): labels, the
+// plan's hint and the footers wrapped onto the rows below them, the plan's
+// path cut inside a word.
+var (
+	claudePlanNarrow = screenRows(
+		"  "+strings.Repeat("─", 40),
+		"   Ready to code?",
+		"",
+		"   Here is Claude's plan:",
+		"  "+strings.Repeat("╌", 40),
+		"   Create",
+		"   /home/dev/project/hello.txt",
+		"   containing the text hi.",
+		"  "+strings.Repeat("╌", 40),
+		"",
+		"  "+strings.Repeat("─", 40),
+		"   Claude has written up a plan and is",
+		"   ready to execute. Would you like to",
+		"   proceed?",
+		"",
+		"   ❯ 1. Yes, and use auto mode",
+		"     2. Yes, manually approve edits",
+		"     3. Tell Claude what to change",
+		"        shift+tab to approve with this",
+		"        feedback",
+		"",
+		"   ctrl+g to edit in Vim · ~/.claude/pla",
+		"   ns/plan-creating-a-file-eager-wind.md",
+	)
+	claudeBashNarrow = screenRows(
+		strings.Repeat("─", 44),
+		" Bash command",
+		" Tip: auto mode handles these prompts for",
+		` you — choose "switch to auto mode" below`,
+		" Create empty file probe.txt",
+		strings.Repeat("╌", 44),
+		" touch probe.txt",
+		strings.Repeat("╌", 44),
+		" Do you want to proceed?",
+		" ❯ 1. Yes",
+		"   2. Yes, and always allow access to",
+		"      /home/dev/project from this",
+		"      project",
+		"   3. Yes, and switch to auto mode · auto",
+		"      mode handles these prompts for you",
+		"   4. No",
+		"",
+		" Esc to cancel · Tab to amend",
+	)
+	claudeAskNarrow = screenRows(
+		strings.Repeat("─", 44),
+		" ☐ Color",
+		"",
+		"Do you prefer red or blue?",
+		"",
+		"❯ 1. Red",
+		"     You prefer red.",
+		"  2. Blue",
+		"     You prefer blue.",
+		"  3. Type something.",
+		strings.Repeat("─", 44),
+		"  4. Chat about this",
+		"",
+		"Enter to select · ↑/↓ to navigate · Esc to",
+		"cancel",
+	)
+	// claudePlanTyped is the plan's approval with "abc" typed into its
+	// feedback field: the digit 3 took the highlight there.
+	claudePlanTyped = strings.Replace(claudePlan(planAuto, 3), "❯ 3. Tell Claude what to change", "❯ 3. abc", 1)
+	// claudeReviewAbove is AskUserQuestion's last page with Claude Code's
+	// prompt box and status line below it: no dialog of the moment.
+	claudeReviewAbove = screenRows(claudeAskReview, "", solidRule, "❯ ", solidRule, "  ? for shortcuts")
+)
+
 func labels(choices []Option) []string {
 	out := make([]string, len(choices))
 	for i, c := range choices {
@@ -232,44 +308,65 @@ func labels(choices []Option) []string {
 	return out
 }
 
+const planQuestion = "Claude has written up a plan and is ready to execute. Would you like to proceed?"
+
 func TestReadListReadsClaudeCodesDialogs(t *testing.T) {
 	for _, c := range []struct {
 		name, screen string
 		choices      []string
 		words        string
+		at           int
 	}{
 		{"bash", claudeBash,
 			[]string{"1 Yes", "2 Yes, and always allow access to /home/dev/project from this project", "3 Yes, and switch to auto mode · auto mode handles these prompts for you", "4 No"},
-			"Bash command\nTip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\nCreate empty file probe.txt\ntouch probe.txt\nDo you want to proceed?"},
+			"Bash command\nTip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\nCreate empty file probe.txt\ntouch probe.txt\nDo you want to proceed?", 0},
 		{"write", claudeWrite,
 			[]string{"1 Yes", "2 Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)", "3 No"},
-			"Create file\nnotes.txt\n1 hi\nDo you want to create notes.txt?"},
+			"Create file\nnotes.txt\n1 hi\nDo you want to create notes.txt?", 0},
 		{"plan", claudePlan(planAuto, 1),
-			[]string{"1 " + planAuto, "2 Yes, manually approve edits", "3 Tell Claude what to change"},
-			"Claude has written up a plan and is ready to execute. Would you like to proceed?"},
+			[]string{"1 " + planAuto, "2 Yes, manually approve edits", "3 Tell Claude what to change"}, planQuestion, 0},
 		{"plan, bypass allowed", claudePlan(planBypass, 1),
-			[]string{"1 " + planBypass, "2 Yes, manually approve edits", "3 Tell Claude what to change"},
-			"Claude has written up a plan and is ready to execute. Would you like to proceed?"},
+			[]string{"1 " + planBypass, "2 Yes, manually approve edits", "3 Tell Claude what to change"}, planQuestion, 0},
 		{"plan, its feedback field highlighted", claudePlan(planAuto, 3),
-			[]string{"1 " + planAuto, "2 Yes, manually approve edits", "3 Tell Claude what to change"},
-			"Claude has written up a plan and is ready to execute. Would you like to proceed?"},
+			[]string{"1 " + planAuto, "2 Yes, manually approve edits", "3 Tell Claude what to change"}, planQuestion, 2},
+		{"plan, words typed into its feedback field", claudePlanTyped,
+			[]string{"1 " + planAuto, "2 Yes, manually approve edits", "3 abc"}, planQuestion, 2},
 		{"ask", claudeAsk,
-			[]string{"1 Red", "2 Blue", "3 Type something.", "4 Chat about this"},
-			"☐ Color\nDo you prefer red or blue?"},
+			[]string{"1 Red", "2 Blue", "3 Type something.", "4 Chat about this"}, "☐ Color\nDo you prefer red or blue?", 0},
 		{"ask, its last page", claudeAskReview,
 			[]string{"1 Submit answers", "2 Cancel"},
-			"←  ☒ Color  ☒ Size  ✔ Submit  →\nReview your answers\n● Do you prefer red or blue?\n→ Red\n● Do you prefer small or large?\n→ Small\nReady to submit your answers?"},
+			"←  ☒ Color  ☒ Size  ✔ Submit  →\nReview your answers\n● Do you prefer red or blue?\n→ Red\n● Do you prefer small or large?\n→ Small\nReady to submit your answers?", 0},
 		{"plan, narrow", claudeNarrow,
 			[]string{"1 Yes, and switch to", "2 Yes, manually approve edits", "3 Tell Claude what to change"},
-			"Claude has written up a plan and is\nready to execute. Would you like to\nproceed?"},
+			"Claude has written up a plan and is\nready to execute. Would you like to\nproceed?", 0},
+		{"plan at 44 columns", claudePlanNarrow,
+			[]string{"1 " + planAuto, "2 Yes, manually approve edits", "3 Tell Claude what to change"},
+			"Claude has written up a plan and is\nready to execute. Would you like to\nproceed?", 0},
+		{"bash at 44 columns", claudeBashNarrow,
+			[]string{"1 Yes", "2 Yes, and always allow access to", "3 Yes, and switch to auto mode · auto", "4 No"},
+			"Bash command\nTip: auto mode handles these prompts for\nyou — choose \"switch to auto mode\" below\nCreate empty file probe.txt\ntouch probe.txt\nDo you want to proceed?", 0},
+		{"ask at 44 columns", claudeAskNarrow,
+			[]string{"1 Red", "2 Blue", "3 Type something.", "4 Chat about this"}, "☐ Color\nDo you prefer red or blue?", 0},
 	} {
-		choices, words := readList(c.screen, nil)
-		if got := labels(choices); strings.Join(got, "|") != strings.Join(c.choices, "|") {
-			t.Errorf("%s: choices %q", c.name, got)
+		l, ok := readList(c.screen, nil)
+		if got := labels(l.choices); !ok || strings.Join(got, "|") != strings.Join(c.choices, "|") {
+			t.Errorf("%s: choices %q %v", c.name, got, ok)
 		}
-		if words != c.words {
-			t.Errorf("%s: words %q", c.name, words)
+		if l.words != c.words {
+			t.Errorf("%s: words %q", c.name, l.words)
 		}
+		if l.at != c.at || len(l.whole) != len(l.choices) {
+			t.Errorf("%s: highlight at %d, %d whole", c.name, l.at, len(l.whole))
+		}
+	}
+	// Each choice whole: its label with the rows that follow it, however
+	// the screen wrapped them.
+	l, _ := readList(claudeBashNarrow, nil)
+	if want := []string{"1. Yes", "2. Yes, and always allow access to /home/dev/project from this project", "3. Yes, and switch to auto mode · auto mode handles these prompts for you", "4. No"}; strings.Join(l.whole, "|") != strings.Join(want, "|") {
+		t.Fatalf("whole %q", l.whole)
+	}
+	if l, _ := readList(claudeBash, nil); strings.Join(l.whole, "|") != "1. Yes|2. Yes, and always allow access to /home/dev/project from this project|3. Yes, and switch to auto mode · auto mode handles these prompts for you|4. No" {
+		t.Fatalf("whole at 120 columns %q", l.whole)
 	}
 }
 
@@ -286,8 +383,8 @@ func TestReadListTakesOnlyTheDialogsOwnList(t *testing.T) {
 		"",
 		claudeBash,
 	)
-	if choices, words := readList(above, nil); len(choices) != 4 || choices[0].Label != "Yes" || !strings.HasPrefix(words, "Bash command\n") {
-		t.Fatalf("a list above the dialog: %q %q", labels(choices), words)
+	if l, ok := readList(above, nil); !ok || len(l.choices) != 4 || l.choices[0].Label != "Yes" || !strings.HasPrefix(l.words, "Bash command\n") {
+		t.Fatalf("a list above the dialog: %q %q", labels(l.choices), l.words)
 	}
 	narrow := screenRows(
 		strings.Repeat("─", 60),
@@ -299,48 +396,77 @@ func TestReadListTakesOnlyTheDialogsOwnList(t *testing.T) {
 		"",
 		" Esc to cancel · Tab to amend",
 	)
-	if choices, _ := readList(narrow, nil); strings.Join(labels(choices), "|") != "1 Yes|2 Yes, and always allow access to /home/dev/project from|3 No" {
-		t.Fatalf("a wrapped label: %q", labels(choices))
+	if l, _ := readList(narrow, nil); strings.Join(labels(l.choices), "|") != "1 Yes|2 Yes, and always allow access to /home/dev/project from|3 No" {
+		t.Fatalf("a wrapped label: %q", labels(l.choices))
+	}
+	far := []string{" ❯ 1. Yes"}
+	for range listGap + 1 {
+		far = append(far, "a")
 	}
 	for name, screen := range map[string]string{
 		"no row 1":           screenRows(" ❯ 2. Yes", "   3. No", "", " Esc to cancel"),
 		"out of turn":        screenRows(" ❯ 1. Yes", "   3. No", "", " Esc to cancel"),
 		"another column":     screenRows(" ❯ 1. Yes", "     2. No", "", " Esc to cancel"),
 		"one choice":         screenRows(" ❯ 1. Yes", "", " Esc to cancel"),
-		"too far apart":      screenRows(" ❯ 1. Yes", "a", "b", "c", "d", "e", "   2. No", "", " Esc to cancel"),
-		"too far up":         screenRows(" ❯ 1. Yes", "   2. No", "a", "b", "c", "d", "e", "f", "g"),
+		"too far apart":      screenRows(append(far, "   2. No", "", " Esc to cancel")...),
+		"too far up":         screenRows(" ❯ 1. Yes", "   2. No", "a", "b", "c", "d", "e", "f", "g", "h", "i"),
 		"no list":            screenRows(solidRule, "❯ ", solidRule, "  ? for shortcuts"),
 		"nothing":            "",
 		"a ten for a choice": screenRows(" ❯ 1. Yes", "  10. No", "", " Esc to cancel"),
 	} {
-		if choices, words := readList(screen, nil); choices != nil || words != "" {
-			t.Errorf("%s: %q %q", name, labels(choices), words)
+		if l, ok := readList(screen, nil); ok || l.choices != nil || l.words != "" {
+			t.Errorf("%s: %q %q", name, labels(l.choices), l.words)
 		}
 	}
 }
 
-// claudeQuestion is Claude Code's built-in question asked during the work,
-// as a session gets it from the catalog.
-func claudeQuestion(t *testing.T) StartupQuestion {
+// claudeQuestions are Claude Code's built-in questions asked during the
+// work, as a session gets them from the catalog: its dialogs, and
+// AskUserQuestion's last page.
+func claudeQuestions(t *testing.T) []StartupQuestion {
 	t.Helper()
 	claude, ok := catalog.Default().Get("claude")
-	if !ok || len(claude.Questions) != 1 {
+	if !ok || len(claude.Questions) != 2 {
 		t.Fatalf("Claude Code's questions: %+v", claude.Questions)
 	}
-	q := claude.Questions[0]
-	if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 || q.ModeAnswers == "" {
-		t.Fatalf("Claude Code's question %+v", q)
+	var out []StartupQuestion
+	for _, q := range claude.Questions {
+		if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 {
+			t.Fatalf("Claude Code's question %+v", q)
+		}
+		sq := StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Anytime: true, FromScreen: true}
+		if q.ModeAnswers != "" {
+			sq.Mode = regexp.MustCompile(q.ModeAnswers)
+		}
+		if q.TypedAnswers != "" {
+			sq.Typed = regexp.MustCompile(q.TypedAnswers)
+		}
+		out = append(out, sq)
 	}
-	return StartupQuestion{Pattern: regexp.MustCompile(q.Prompt), Anytime: true, FromScreen: true, Mode: regexp.MustCompile(q.ModeAnswers)}
+	return out
 }
 
-// Claude Code's question finds each of its dialogs, with the dialog's own
+// readAsked is what the first of qs that text shows reads, as the session
+// asks it (Local.askedIn): "" and none for none.
+func readAsked(qs []StartupQuestion, text string) (string, []Option, string) {
+	for _, q := range qs {
+		if words, answers, whole := q.read(text); words != "" {
+			return words, answers, whole
+		}
+	}
+	return "", nil, ""
+}
+
+// Claude Code's questions find each of its dialogs, with the dialog's own
 // choices, the ones that change the permission mode marked (when a narrow
-// screen wraps the words that say so too), and never a numbered list in
-// the transcript, a numbered prompt typed at rest or while it works, or a
-// whole dialog quoted in the transcript or pasted into the prompt box.
-func TestClaudeCodesQuestionIsItsDialogAlone(t *testing.T) {
-	q := claudeQuestion(t)
+// screen wraps the words that say so too), footers wrapped on a narrow
+// screen included; while its highlight is in the plan's feedback field the
+// dialog offers no choices. Never a numbered list in the transcript, a
+// numbered prompt typed at rest or while it works, a whole dialog quoted
+// in the transcript or pasted into the prompt box, or AskUserQuestion's
+// last page with the prompt box below it.
+func TestClaudeCodesQuestionsAreItsDialogsAlone(t *testing.T) {
+	qs := claudeQuestions(t)
 	for _, c := range []struct {
 		name, screen string
 		mode         []bool
@@ -349,14 +475,16 @@ func TestClaudeCodesQuestionIsItsDialogAlone(t *testing.T) {
 		{"write", claudeWrite, []bool{false, true, false}},
 		{"plan", claudePlan(planAuto, 1), []bool{true, false, false}},
 		{"plan, bypass allowed", claudePlan(planBypass, 1), []bool{true, false, false}},
-		{"plan, its feedback field highlighted", claudePlan(planAuto, 3), []bool{true, false, false}},
 		{"ask", claudeAsk, []bool{false, false, false, false}},
 		{"ask, its last page", claudeAskReview, []bool{false, false}},
 		{"plan, narrow: the change of mode on the label's second row", claudeNarrow, []bool{true, false, false}},
+		{"plan at 44 columns, its footer wrapped", claudePlanNarrow, []bool{true, false, false}},
+		{"bash at 44 columns", claudeBashNarrow, []bool{false, false, true, false}},
+		{"ask at 44 columns, its footer wrapped", claudeAskNarrow, []bool{false, false, false, false}},
 	} {
-		words, answers := q.read(c.screen)
-		if words == "" || len(answers) != len(c.mode) {
-			t.Errorf("%s: %q %+v", c.name, words, answers)
+		words, answers, whole := readAsked(qs, c.screen)
+		if words == "" || len(answers) != len(c.mode) || len(strings.Split(whole, "\n")) != len(c.mode) {
+			t.Errorf("%s: %q %+v %q", c.name, words, answers, whole)
 			continue
 		}
 		for i, a := range answers {
@@ -365,8 +493,13 @@ func TestClaudeCodesQuestionIsItsDialogAlone(t *testing.T) {
 			}
 		}
 	}
-	for name, screen := range map[string]string{"idle": claudeIdle, "typed": claudeTyped, "working": claudeWorking, "quoted": claudeQuoted, "pasted": claudePasted} {
-		if words, answers := q.read(screen); words != "" || answers != nil {
+	for name, screen := range map[string]string{"its feedback field highlighted": claudePlan(planAuto, 3), "words typed into it": claudePlanTyped} {
+		if words, answers, whole := readAsked(qs, screen); words != planQuestion || answers != nil || whole != "" {
+			t.Errorf("the plan, %s: %q %+v %q", name, words, answers, whole)
+		}
+	}
+	for name, screen := range map[string]string{"idle": claudeIdle, "typed": claudeTyped, "working": claudeWorking, "quoted": claudeQuoted, "pasted": claudePasted, "last page above the prompt": claudeReviewAbove} {
+		if words, answers, _ := readAsked(qs, screen); words != "" || answers != nil {
 			t.Errorf("%s: %q %+v", name, words, answers)
 		}
 	}

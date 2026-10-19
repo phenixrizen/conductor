@@ -154,6 +154,11 @@ type Attention struct {
 	// (sameWords); Message is cut from them. Kept by the session, never
 	// sent.
 	rows string
+	// list is the whole list of a dialog whose answers are read off the
+	// screen, as it was asked (StartupQuestion.read): a reply is written
+	// only while the screen shows that list (stillOnScreen). Kept by the
+	// session, never sent.
+	list string
 	// ask marks the agent's own question (a needs_input report that says
 	// so: Local.Ask), which the session keeps through its turn's done
 	// (Local.own). Kept by the session, never sent to a browser.
