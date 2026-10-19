@@ -3,6 +3,18 @@ import type { GitCheck, PathGit } from '~/composables/useSessions'
 /** How long the picker waits after a keystroke before asking the server. */
 export const DIR_DEBOUNCE_MS = 150
 
+/**
+ * A folder chosen (from the field's list, or the folder picker) leaves the field holding the focus with the caret at the end of
+ * the path and the field scrolled to its end, so that the folder just chosen, at the end of a long path, shows, and typing goes on
+ * from there (#167). A field without the focus shows its value from the start; a bare focus() leaves the caret where it was.
+ */
+export function caretToEnd(input: Pick<HTMLInputElement, 'focus' | 'setSelectionRange' | 'value'> & { scrollLeft: number; scrollWidth: number }): void {
+  input.focus()
+  const end = input.value.length
+  input.setSelectionRange(end, end)
+  input.scrollLeft = input.scrollWidth
+}
+
 /** The prefix sent for what is typed: the text trimmed; empty means the server's default directory. */
 export function dirQuery(text: string): string {
   return text.trim()

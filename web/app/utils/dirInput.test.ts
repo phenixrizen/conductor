@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, matchingEntries, moreNote, movesHighlight } from './dirInput'
+import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, GIT_CAN_WORKTREE, gitCheckLine, gitMark, matchingEntries, moreNote, movesHighlight } from './dirInput'
 
 describe('dirInput', () => {
+  it('a chosen folder leaves the field focused, the caret at the end and the field scrolled to its end (#167)', () => {
+    const calls: string[] = []
+    const input = {
+      value: '/home/nater/go/src/github.com/phenixrizen/conductor',
+      scrollLeft: 0,
+      scrollWidth: 640,
+      focus: () => calls.push('focus'),
+      setSelectionRange: (a: number, b: number) => calls.push(`select ${a}-${b}`),
+    }
+    caretToEnd(input)
+    expect(calls).toEqual(['focus', `select ${input.value.length}-${input.value.length}`])
+    expect(input.scrollLeft).toBe(640)
+  })
+
   it('sends the text trimmed, and empty for the server default', () => {
     expect(dirQuery('  /srv/work/a ')).toBe('/srv/work/a')
     expect(dirQuery('   ')).toBe('')

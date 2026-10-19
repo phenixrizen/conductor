@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PathEntry } from '~/composables/useSessions'
-import { DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchingEntries, moreNote, movesHighlight } from '~/utils/dirInput'
+import { caretToEnd, DIR_DEBOUNCE_MS, dirQuery, enterKeepsText, gitMark, matchingEntries, moreNote, movesHighlight } from '~/utils/dirInput'
 
 /**
  * A working-directory field completed from the server: as the text changes,
@@ -30,8 +30,15 @@ function openPicker() {
   pickerStart.value = model.value.trim()
   pickerOpen.value = true
 }
+// The folder the picker chose becomes the text, as a pick from the list would: the field gets the focus back with the caret at
+// the end (the modal's close would return it to the folder button), and the list opens on the folder's children once listed.
 function onPicked(path: string) {
+  picked = true
   model.value = path
+  nextTick(() => {
+    const input = menu.value?.inputRef
+    if (input) caretToEnd(input)
+  })
 }
 
 const api = useSessions()
@@ -92,7 +99,7 @@ async function fetchNow() {
       const input = menu.value?.inputRef
       if (input && picked) {
         picked = false
-        input.focus()
+        caretToEnd(input)
         open.value = true
       }
       loading.value = false

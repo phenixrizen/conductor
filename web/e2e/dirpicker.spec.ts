@@ -31,3 +31,42 @@ test('a big folder says how many more it holds, and typing narrows it to the who
   await pickerField.fill(big + '/')
   await expect(picker.locator('[data-dir-more]')).toHaveText('30 more folders here: type the start of a name to narrow the list.', { timeout: 15_000 })
 })
+
+// A folder chosen in the launch dialog's working-directory field, from its list (a click, or Enter on the highlighted entry) or
+// through the folder picker's "Use this folder", leaves the field focused with the caret at the end of the path and the field
+// scrolled to its end, so that the folder just chosen, at the end of a long path, shows and typing goes on from there (#167).
+test('a chosen folder leaves the working-directory field focused, its caret and view at the end of the path', async ({ page, state }) => {
+  const long = join(state.root, 'a-very-long-folder-name-that-overflows-the-field', 'and-another-long-folder-name-below-it', 'projects')
+  for (const name of ['alpha-service', 'beta-service']) mkdirSync(join(long, name), { recursive: true })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Launch agent' }).first().click()
+  const dialog = page.getByRole('dialog')
+  const field = dialog.getByRole('combobox').first()
+  const atEnd = async (path: string) => {
+    await expect(field).toHaveValue(path)
+    await expect(field).toBeFocused()
+    const m = await field.evaluate((el: HTMLInputElement) => ({ start: el.selectionStart, len: el.value.length, left: el.scrollLeft, client: el.clientWidth, scroll: el.scrollWidth }))
+    expect(m.start, `the caret at the end: ${JSON.stringify(m)}`).toBe(m.len)
+    expect(m.left + m.client, `scrolled to the end: ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(m.scroll - 1)
+  }
+  // From the list, by a click.
+  await field.click()
+  await field.fill(long + '/')
+  await page.getByRole('option', { name: 'alpha-service' }).click()
+  await atEnd(join(long, 'alpha-service'))
+  // From the list, by Enter on the highlighted entry.
+  await field.fill(long + '/')
+  await expect(page.getByRole('option', { name: 'beta-service' })).toBeVisible({ timeout: 15_000 })
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await atEnd(join(long, 'beta-service'))
+  // Through the folder picker.
+  await page.keyboard.press('Escape')
+  await dialog.locator('[data-dir-input-pick]').first().click()
+  const picker = page.getByRole('dialog', { name: 'Where the session runs' })
+  await picker.getByRole('textbox').first().fill(join(long, 'alpha-service'))
+  await picker.locator('[data-dir-picker-use]').click()
+  await expect(picker).toHaveCount(0)
+  await atEnd(join(long, 'alpha-service'))
+})
