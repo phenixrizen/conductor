@@ -1776,6 +1776,17 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		}
 		return nil
 	}
+	// The program moved on (its status or title says it works, its hook or
+	// a report says the turn is done, a person marked it so): the dialog
+	// last answered is history, whatever the screen's looks can settle on.
+	// A terminal resized with the dialog or its aftermath on the screen (the
+	// reply bar's rows coming and going around every question) settles only
+	// once the program erases its screen whole, which may be never; until
+	// then the quiet looks forget nothing, and the next dialog with the same
+	// words would be taken for the one answered (#258).
+	if state == AttentionWorking || state == AttentionDone {
+		s.dialogAnswered = ""
+	}
 	// The dialog last answered, asked before it has gone (sameDialog): its
 	// question is answered, whatever id it shows with.
 	stillAnswered := rules&sameDialog != 0 && state == AttentionNeedsInput && s.dialogAnswered != "" && sameWords(s.dialogAnswered, words)

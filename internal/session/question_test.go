@@ -1020,3 +1020,89 @@ func TestAQuestionAnsweredByKeysInTheTerminalReadsAnsweredAtOnce(t *testing.T) {
 		t.Fatalf("the dialog withdrawn: %+v, answered %+v", a, s.Info().LastAnswer)
 	}
 }
+
+// stubApproval is the e2e stub's command approval as it draws it (web/e2e/stub-agent.sh,
+// approval): Codex's bell first on a cleared screen, the title Action Required and the
+// program status blocked with its kind after.
+func stubApproval(cmd string) string {
+	return "\a\x1b[2J\x1b[H  Would you like to run the following command?\r\n\r\n  Environment: local\r\n\r\n  Reason: May I run this with network access? The sandboxed attempt failed.\r\n\r\n  $ " + cmd +
+		"\r\n\r\n› 1. Yes, proceed (y)\r\n  2. Yes, and don't ask again for commands that start with `" + cmd + "` (p)\r\n  3. No, and tell Codex what to do differently (esc)\r\n\r\n  Press enter to confirm or esc to cancel\r\n" +
+		"\x1b]0;[ ! ] Action Required\a\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\"
+}
+
+// The same, as the e2e stub plays it with Codex's titles and program status: the
+// approval of a line typed (the title's frames while the stub works, stopped for the
+// dialog), answered by a key, the turn ended (working with its frames, the dialog
+// erased, the hook's done, the status done, Ready, the bell), and the same approval
+// for the next line typed is a fresh question (the rc.7 approval flow, #258).
+func TestTheSameApprovalInALaterTurnAsTheStubPlaysItIsAskedFresh(t *testing.T) {
+	const cmd = "curl -sI https://example.com"
+	s, p := newLocalWith(t, titled(100*time.Millisecond, Options{}))
+	sub, err := s.Attach("", RoleControl, "", 80, 24, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write([]byte("\x1b[?2004h› Ask anything "))
+	waitPaste(t, s, true)
+	working := func(d time.Duration) {
+		out(p, "\x1b]7501;state=working:app=codex\x1b\\")
+		stop := make(chan struct{})
+		done := frames(p, stop)
+		time.Sleep(d)
+		close(stop)
+		<-done
+	}
+	turn := func() Attention {
+		if res, err := s.Submit(t.Context(), Submission{Text: "stub approve " + cmd, ByName: "crew"}); err != nil || !res.Entered {
+			t.Fatalf("the line: %+v %v", res, err)
+		}
+		nextWrite(t, p)
+		nextWrite(t, p)
+		working(300 * time.Millisecond)
+		out(p, stubApproval(cmd))
+		return waitAttention(t, s, asked)
+	}
+	first := turn()
+	if err := s.Input(sub, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; !asked(a) || a.ID != first.ID || a.Answered != AnsweredTerminal {
+		t.Fatalf("after the key: %+v", a)
+	}
+	out(p, "\x1b[2J\x1b[H✔ You approved codex to run "+cmd+"\r\n")
+	working(300 * time.Millisecond)
+	// The page's reply bar goes with the question: its terminal grows by its rows, with the stub's words on the screen.
+	if err := s.Resize(sub, 80, 30); err != nil {
+		t.Fatal(err)
+	}
+	working(400 * time.Millisecond)
+	// The turn's end: its hook reports done, then the stub's status, title and bell.
+	s.SetAttention(AttentionDone, "", SourceAPI)
+	out(p, "\x1b]7501;state=done:app=codex\x1b\\", "\x1b]0;Ready\a", "\a", "\r\n› ")
+	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionDone })
+	time.Sleep(800 * time.Millisecond)
+	// The next line: the stub's status blocked brings the reply bar back before the dialog is read, and the terminal shrinks
+	// with the dialog on it.
+	if res, err := s.Submit(t.Context(), Submission{Text: "stub approve " + cmd, ByName: "crew"}); err != nil || !res.Entered {
+		t.Fatalf("the line: %+v %v", res, err)
+	}
+	nextWrite(t, p)
+	nextWrite(t, p)
+	working(300 * time.Millisecond)
+	out(p, stubApproval(cmd))
+	time.Sleep(50 * time.Millisecond)
+	if err := s.Resize(sub, 80, 24); err != nil {
+		t.Fatal(err)
+	}
+	again := waitAttention(t, s, asked)
+	if again.ID == first.ID || again.Answered != "" {
+		t.Fatalf("asked again as the one answered: %+v", again)
+	}
+	if err := s.AnswerInput(t.Context(), sub, again.ID, []byte("y")); err != nil {
+		t.Fatalf("a reply to the fresh question: %v", err)
+	}
+	if got := nextWrite(t, p); got != "y" {
+		t.Fatalf("written %q", got)
+	}
+}

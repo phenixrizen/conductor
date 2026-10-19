@@ -1256,7 +1256,9 @@ question as one of:
   screen (a startup question's or a dialog's answer picked: an Enter, one of
   its choices, a dialog's digit or Ctrl+C, a key its rows name), or the hold
   of the turn ended with the held text entered, or the screen drew again the
-  words of the question just answered before the program moved on. It takes
+  words of the question just answered before the program moved on (its
+  status, title, hook or a report saying it works or is done ends that: a
+  dialog with the same words after it is a fresh question). It takes
   no reply (`answered in the terminal`), holds no claim, resolves nothing,
   shows as `answered:"terminal"` the while (Attention), and goes once the
   screen shows it gone or the next question takes its place. Only an open
