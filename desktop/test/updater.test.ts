@@ -123,13 +123,13 @@ describe('restart to install (#290)', () => {
     return {
       steps,
       d: {
-        letGo: (on: boolean) => steps.push(on ? 'let go' : 'hold'),
+        letGo: () => void steps.push('let go'),
         stopServer: async () => void steps.push('stop server'),
-        startServer: async () => void steps.push('start server'),
         install: () => {
           steps.push('install')
           return install()
         },
+        quit: () => void steps.push('quit'),
         log: (l: string) => steps.push(l),
       },
     }
@@ -142,9 +142,14 @@ describe('restart to install (#290)', () => {
     expect(a.steps).toEqual(['let go', 'stop server', 'install'])
   })
 
-  it('gives the app back its server and the restart when the updater emits an error', async () => {
-    const a = app(() => installVia(new FakeUpdater('fails'), 1000))
-    await restartToInstall(a.d)
-    expect(a.steps).toEqual(['let go', 'stop server', 'install', 'updates: the install did not go through: EACCES: permission denied, open the installer', 'hold', 'start server'])
+  // Never a server started again, which what the updater still has queued (a quit, a late install) would stop unasked: the
+  // app quits, and the next start says the update did not install.
+  it('quits all the same when the updater emits an error, or the install neither quits nor fails in time', async () => {
+    const failed = app(() => installVia(new FakeUpdater('fails'), 1000))
+    await restartToInstall(failed.d)
+    expect(failed.steps).toEqual(['let go', 'stop server', 'install', 'updates: the install did not go through: EACCES: permission denied, open the installer; quitting', 'quit'])
+    const stuck = app(() => installVia(new FakeUpdater('hangs'), 30))
+    await restartToInstall(stuck.d)
+    expect(stuck.steps).toEqual(['let go', 'stop server', 'install', 'updates: the install did not go through: the app did not quit to install within 0 s; quitting', 'quit'])
   })
 })

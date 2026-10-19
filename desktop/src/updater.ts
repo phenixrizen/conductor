@@ -117,30 +117,32 @@ export class UpdateNotice {
 
 /** What restartToInstall needs of the app. */
 export interface RestartDeps {
-  /** Lets the windows close and a quit go through without stopping the server again (main.ts's quitting), or no longer. */
-  letGo: (on: boolean) => void
+  /** Lets the windows close and a quit go through without stopping the server again (main.ts's quitting). */
+  letGo: () => void
   stopServer: () => Promise<void>
-  startServer: () => Promise<void>
   /** The updater quits the app to install (installVia): never settles when it does, rejects when it does not. */
   install: () => Promise<void>
+  /** Quits the app, the server stopped already. */
+  quit: () => void
   log: (line: string) => void
 }
 
 /**
  * restartToInstall is Restart to update (#290). The server stops first, as a quit stops it; then the windows may close and the
  * quit go through (closing to the tray would hide them, and macOS's updater closes them before it quits) and the updater quits
- * the app to install. An install that does not go through gives the app back its server and the restart, so it goes on as it
- * was and can be asked again.
+ * the app to install. An install that does not go through quits the app all the same: the person asked for the restart, the
+ * server and its sessions are stopped already, and what the updater still has queued (Windows' quit after an installer that did
+ * not launch, macOS's install once its native updater is ready) ends in a quit too, never in a server started again that a late
+ * install would stop unasked. The next start says the update did not install (installFailed).
  */
 export async function restartToInstall(d: RestartDeps): Promise<void> {
-  d.letGo(true)
+  d.letGo()
   await d.stopServer().catch(() => {})
   try {
     await d.install()
   } catch (e) {
-    d.log(`updates: the install did not go through: ${(e as Error).message}`)
-    d.letGo(false)
-    await d.startServer().catch(() => {})
+    d.log(`updates: the install did not go through: ${(e as Error).message}; quitting`)
+    d.quit()
   }
 }
 

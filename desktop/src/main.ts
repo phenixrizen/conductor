@@ -390,12 +390,10 @@ async function run() {
     if (!install || quitting) return
     log('main', 'updates: restarting to install')
     void restartToInstall({
-      letGo: (on) => (quitting = on),
+      letGo: () => (quitting = true),
       stopServer: () => supervisor.stop(),
-      startServer: async () => {
-        await supervisor.start()
-      },
       install,
+      quit: () => app.quit(),
       log: (l) => log('main', l),
     })
   }
