@@ -264,7 +264,8 @@ func TestAClaudeDialogGoneAndBackInOneReadIsAskedAgain(t *testing.T) {
 
 // A digit typed into AskUserQuestion's field is a word typed there, no
 // answer: the question is not consumed, and with the highlight back on a
-// choice its reply goes as any.
+// choice its reply goes as any. So is a letter the field's row now names
+// as a key, its words reading "(y)".
 func TestADigitTypedIntoAClaudeFieldAnswersNothing(t *testing.T) {
 	s, p, sub := newClaudeSession(t)
 	p.outW.Write(drawn(claudeAsk))
@@ -284,13 +285,22 @@ func TestADigitTypedIntoAClaudeFieldAnswersNothing(t *testing.T) {
 	if a := s.Info().Attention; a.Answered != "" {
 		t.Fatalf("a digit typed into the field answered the question: %+v", a)
 	}
-	p.outW.Write(drawn(strings.Replace(claudeAskField, "❯ 3. Type something.", "❯ 3. 1", 1)))
+	p.outW.Write(drawn(strings.Replace(claudeAskField, "❯ 3. Type something.", "❯ 3. 1 (y)", 1)))
+	time.Sleep(100 * time.Millisecond)
+	if err := s.Input(sub, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; a.Answered != "" {
+		t.Fatalf("a letter the field's row names, typed into it, answered the question: %+v", a)
+	}
+	p.outW.Write(drawn(strings.Replace(claudeAskField, "❯ 3. Type something.", "❯ 3. 1 (y)y", 1)))
 	time.Sleep(100 * time.Millisecond)
 	if err := s.Input(sub, []byte("\x1b[A")); err != nil {
 		t.Fatal(err)
 	}
 	nextWrite(t, p)
-	p.outW.Write(drawn(strings.NewReplacer("  2. Blue", "❯ 2. Blue", "❯ 3. Type something.", "  3. 1").Replace(claudeAskField)))
+	p.outW.Write(drawn(strings.NewReplacer("  2. Blue", "❯ 2. Blue", "❯ 3. Type something.", "  3. 1 (y)y").Replace(claudeAskField)))
 	back := waitAttention(t, s, func(a Attention) bool { return asked(a) && len(a.Options) == 4 })
 	if back.Answered != "" {
 		t.Fatalf("the question with the highlight back on Blue %+v", back)

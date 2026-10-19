@@ -200,6 +200,15 @@ wide.
   choices), so the digit neither consumes the question nor counts as a
   list's key, and with the highlight back on a choice its reply goes.
 
+## Code review, fifth round (Codex, 2026-10-19): the checkpoint
+
+- A letter typed into a field whose row reads like a key ("(y)" typed
+  there, then y) was taken for the dialog's key and consumed the question:
+  with the highlight in a field no printable key answers (an Enter, Escape
+  or Ctrl+C still does). Fifth round, so the review stops here: every
+  finding of the five rounds was this change's own and is fixed with a
+  regression that fails without it.
+
 ## Not changed
 
 - Hosted sessions (`conductor host`) watch no startup or screen questions

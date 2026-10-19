@@ -3718,8 +3718,8 @@ type dialogView struct {
 	keys    map[string]bool
 	lines   int
 	// field says the dialog's highlight stands in a field (a choice that
-	// takes typed words, StartupQuestion.Typed): a digit is typed into it,
-	// no choice.
+	// takes typed words, StartupQuestion.Typed): a printable key is typed
+	// into it, no choice or key of the dialog's.
 	field bool
 }
 
@@ -3844,6 +3844,12 @@ func (s *Local) startupPicks(att Attention, data []byte, keys [][]byte) bool {
 
 // picksKey is picks for one key.
 func (v *dialogView) picksKey(answers []Option, key []byte) bool {
+	if v != nil && v.field && len(key) == 1 && key[0] >= 0x20 && key[0] != 0x7f {
+		// The highlight is in a field: a printable key is a word typed
+		// there, whatever the field's row now reads ("(y)" typed is no
+		// key of the dialog's). An Enter, Escape or Ctrl+C still answers.
+		return false
+	}
 	if isAnswer(answers, key) {
 		return true
 	}
@@ -3857,9 +3863,6 @@ func (v *dialogView) picksKey(answers []Option, key []byte) bool {
 	case d == '\r', d == 0x03:
 		return true
 	case d >= '1' && d <= '9':
-		if v != nil && v.field {
-			return false
-		}
 		return v == nil || v.lines == 0 || int(d-'0') <= v.lines
 	}
 	return false
