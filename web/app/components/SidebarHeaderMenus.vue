@@ -14,6 +14,8 @@ const props = withDefaults(defineProps<{ collapsed?: boolean }>(), { collapsed: 
 const emit = defineEmits<{ token: [] }>()
 
 const alerts = useAttentionSettings()
+// The update the desktop app downloaded (#290): a button here until it installs, which asks for the restart.
+const { ready: updateReady, restartOpen } = useDesktopUpdate()
 const identity = useIdentity()
 const { hasToken, clear } = useWorkbenchToken()
 const shortcuts = useShortcutsModal()
@@ -33,6 +35,17 @@ const who = computed(() => (identity.name.value ? `Your menu, ${identity.name.va
 
 <template>
   <div class="flex items-center gap-0.5" :class="collapsed && 'flex-col'" data-sidebar-menus>
+    <UTooltip v-if="updateReady" :text="`Conductor ${updateReady} is ready: restart to update`" :content="side">
+      <UButton
+        icon="i-lucide-circle-arrow-up"
+        color="primary"
+        variant="ghost"
+        :size="collapsed ? 'sm' : 'xs'"
+        :aria-label="`Conductor ${updateReady} is ready to install`"
+        data-header-update
+        @click="restartOpen = true"
+      />
+    </UTooltip>
     <UPopover :content="side">
       <UTooltip text="Alerts" :content="side">
         <UButton :icon="alerts.settings.value.notifications ? 'i-lucide-bell-ring' : 'i-lucide-bell'" color="neutral" variant="ghost" :size="collapsed ? 'sm' : 'xs'" aria-label="Alerts" data-header-alerts />

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 import { SIDEBAR_SIZE } from '~/utils/sidebar'
-import { noticeWords } from '~/utils/desktop'
+import { noticeWords, updateFailedWords, updateReadyWords } from '~/utils/desktop'
 
 const showToken = ref(false)
 /** Where the desktop sidebar shows (lg and up, DESKTOP_SIDEBAR): below it the list is a page and the bar is at the foot, so the sidebar's list is not rendered. */
@@ -83,6 +83,36 @@ onMounted(async () => {
   const words = noticeWords((await desktop.bridge.value?.notice?.().catch(() => '')) ?? '')
   if (words) toast.add({ ...words, icon: 'i-lucide-globe', color: 'info', duration: 20000, actions: [{ label: 'Settings', onClick: () => router.push('/settings') }] })
 })
+
+// An update the desktop app downloaded (#290): said once per version, in a toast that offers the restart, never in a dialog of
+// the app's own; kept in the sidebar's header until it installs; and one the app announced that did not install, said once. The
+// app says when a check found one, and the page asks what to say, so one found while no window was open is said as one loads.
+const update = useDesktopUpdate()
+async function askUpdate() {
+  const b = desktop.bridge.value
+  const u = await b?.update?.().catch(() => null)
+  if (!u) return
+  update.ready.value = u.ready
+  if (u.announce && u.ready) {
+    toast.add({
+      ...updateReadyWords(u.ready),
+      icon: 'i-lucide-circle-arrow-up',
+      color: 'info',
+      duration: 30000,
+      actions: [{ label: 'Restart to update', onClick: () => (update.restartOpen.value = true) }, { label: 'Later', color: 'neutral', variant: 'outline' }],
+    })
+  }
+  if (u.failed) {
+    toast.add({ ...updateFailedWords(u.failed), icon: 'i-lucide-triangle-alert', color: 'warning', duration: 30000, actions: [{ label: 'Show the log', onClick: () => void b?.showLog() }] })
+  }
+}
+let offUpdate: (() => void) | undefined
+onMounted(() => {
+  if (!desktop.bridge.value?.update) return
+  void askUpdate()
+  offUpdate = desktop.bridge.value.onUpdate?.(() => void askUpdate())
+})
+onBeforeUnmount(() => offUpdate?.())
 
 /** Saves the full sidebar's width (Nuxt UI's `--width` on its root, in percent) once a drag or a double-click on the handle has set it. */
 async function keepWidth() {
@@ -218,6 +248,7 @@ defineShortcuts({
 
     <BottomBar @token="showToken = true" />
     <WorkbenchTokenGate v-model:open="showToken" />
+    <UpdateRestartModal />
     <ShortcutsModal />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
   </UDashboardGroup>

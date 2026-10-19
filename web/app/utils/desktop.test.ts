@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, switchyardProblem, tokenFromFragment, withoutTokenFragment } from './desktop'
+import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateFailedWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -43,5 +43,23 @@ describe('noticeWords', () => {
     expect(words?.description).toContain('Settings → Switchyard')
     expect(noticeWords('')).toBeNull()
     expect(noticeWords('later')).toBeNull()
+  })
+})
+
+describe('the update the desktop app downloaded (#290)', () => {
+  it('says it is ready, and that it installs on quit or by a restart', () => {
+    expect(updateReadyWords('0.7.0-rc.12')).toEqual({ title: 'Conductor 0.7.0-rc.12 is ready', description: 'It installs when you quit Conductor. Restart to update now, or later.' })
+  })
+
+  it('says an update that did not install, and where to look', () => {
+    const w = updateFailedWords('0.7.0-rc.12')
+    expect(w.title).toBe('Conductor 0.7.0-rc.12 did not install')
+    expect(w.description).toContain("The app's log says why")
+  })
+
+  it('says what a restart to update ends: the server, and the sessions running on this computer', () => {
+    expect(restartWords('0.7.0-rc.12', 0)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. No session runs on this computer, so none ends.')
+    expect(restartWords('0.7.0-rc.12', 1)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. The session running on this computer ends.')
+    expect(restartWords('0.7.0-rc.12', 3)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. The 3 sessions running on this computer end.')
   })
 })

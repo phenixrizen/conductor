@@ -25,6 +25,13 @@ export interface IpcDeps {
   inviteReady?: (sender: WebContents) => void
   /** The page in sender routed the invite it was sent with id. */
   inviteTaken?: (sender: WebContents, id: number) => void
+  /**
+   * The update downloaded and waiting for the app to quit ('' for none), whether to say so (once per version), and one whose
+   * install did not take (said once, '' after).
+   */
+  update?: () => { ready: string; announce: boolean; failed: string }
+  /** Installs the update downloaded now: the app quits, the server with it. */
+  installUpdate?: () => void
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -54,6 +61,13 @@ export function registerIpc(d: IpcDeps): void {
     }),
   )
   ipcMain.handle('conductor:settings:get', guard(() => d.settings.get()))
+  ipcMain.handle('conductor:update', guard(() => d.update?.() ?? { ready: '', announce: false, failed: '' }))
+  ipcMain.handle(
+    'conductor:installUpdate',
+    guard(() => {
+      d.installUpdate?.()
+    }),
+  )
   ipcMain.handle('conductor:notice', guard(() => d.notice()))
   ipcMain.handle(
     'conductor:settings:set',

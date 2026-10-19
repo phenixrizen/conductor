@@ -19,6 +19,16 @@ const bridge = {
   ice: () => ipcRenderer.invoke('conductor:ice'),
   allowIceFirewall: (): Promise<string> => ipcRenderer.invoke('conductor:allowIceFirewall'),
   versions: () => ipcRenderer.invoke('conductor:versions'),
+  /** The update downloaded ('' for none), whether to say so (the first page to ask, once per version), and one whose install did not take, said once (#290). */
+  update: (): Promise<{ ready: string; announce: boolean; failed: string }> => ipcRenderer.invoke('conductor:update'),
+  /** Installs the update downloaded now: the app quits, its server and the sessions on it with it. */
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('conductor:installUpdate'),
+  /** A check found an update downloaded: ask update() what to say. */
+  onUpdate: (cb: () => void): (() => void) => {
+    const handler = () => cb()
+    ipcRenderer.on('conductor:update', handler)
+    return () => ipcRenderer.removeListener('conductor:update', handler)
+  },
   onServerState: (cb: (state: unknown) => void): (() => void) => {
     const handler = (_e: unknown, state: unknown) => cb(state)
     ipcRenderer.on('conductor:serverState', handler)

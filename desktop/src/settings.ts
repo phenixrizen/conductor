@@ -32,6 +32,10 @@ export interface DesktopSettings {
   noticed: string[]
   /** The workbench's zoom level (0 is 100%), kept by the app as Ctrl+= and Ctrl+- move it; never set from the Settings page. */
   zoomLevel: number
+  /** The update the workbench was told is ready (#290), '' for none: told once per version, whatever checks find it again. The app's own. */
+  updateAnnounced: string
+  /** The update whose install was said not to have taken, '' for none: said once per version. The app's own. */
+  updateFailedNoticed: string
 }
 
 /** The notices the app owes once: publishing, that sessions are published to a switchyard (on by default), to a fresh install and an upgrade alike. */
@@ -41,7 +45,7 @@ export type Notice = (typeof NOTICES)[number]
 export const SERVER_SETTINGS: ReadonlyArray<keyof DesktopSettings> = ['dataDir', 'allowedRoots', 'defaultCwd', 'yolo', 'reach', 'wslDistro', 'wslWindowsHome', 'switchyardEnabled', 'switchyardServer', 'switchyardToken', 'switchyardName']
 
 export function defaultSettings(home: string, userData: string): DesktopSettings {
-  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [], zoomLevel: 0 }
+  return { dataDir: join(userData, 'conductor'), allowedRoots: [home], defaultCwd: home, yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '', noticed: [], zoomLevel: 0, updateAnnounced: '', updateFailedNoticed: '' }
 }
 
 /** The words for a switchyard that is plain http on another machine; web/app/utils/desktop.ts's check, which the Settings page runs first, says the same. */
@@ -167,6 +171,8 @@ function pick(raw: Partial<DesktopSettings>): Partial<DesktopSettings> {
   // A file from before the notices existed has no noticed list: every notice is owed to it.
   out.noticed = Array.isArray(raw.noticed) ? raw.noticed.filter((n): n is string => typeof n === 'string') : []
   out.zoomLevel = clampZoom(raw.zoomLevel)
+  if (typeof raw.updateAnnounced === 'string') out.updateAnnounced = raw.updateAnnounced
+  if (typeof raw.updateFailedNoticed === 'string') out.updateFailedNoticed = raw.updateFailedNoticed
   return out
 }
 

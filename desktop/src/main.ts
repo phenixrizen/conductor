@@ -19,7 +19,7 @@ import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
 import { InviteDelivery, inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
-import { RELEASES_URL, startUpdater, updateChannel } from './updater'
+import { RELEASES_URL, UpdateNotice, installFailed, startUpdater, updateChannel } from './updater'
 import { buildLine, showSplash, SPLASH_STEPS, splashQuery, type Splash } from './splash'
 
 const dev = !app.isPackaged
@@ -80,6 +80,20 @@ async function run() {
       saveSettings(settingsFile, s)
     },
   )
+  // The updates downloaded (#290): told to the workbench once per version, never in a dialog of the app's own, which every
+  // check that found the same download opened again. One announced that this start runs older than did not install: said once.
+  const updates = new UpdateNotice(
+    () => settings.updateAnnounced,
+    (version) => {
+      settings = { ...settings, updateAnnounced: version }
+      saveSettings(settingsFile, settings)
+    },
+  )
+  const notInstalled = installFailed(settings.updateAnnounced, app.getVersion())
+  if (notInstalled) log('main', `updates: ${settings.updateAnnounced} was downloaded and announced, and this start is ${app.getVersion()}: it did not install`)
+  let failedUpdate = notInstalled && settings.updateFailedNoticed !== settings.updateAnnounced ? settings.updateAnnounced : ''
+  let installUpdate: (() => void) | null = null
+  let trayUpdate: ((version: string) => void) | null = null
   const token = randomBytes(32).toString('hex')
   process.env.CONDUCTOR_DESKTOP_VERSION = app.getVersion()
 
@@ -252,6 +266,16 @@ async function run() {
     },
     showLog,
     notice: takeNotice,
+    update: () => {
+      const failed = failedUpdate
+      if (failed) {
+        failedUpdate = ''
+        settings = { ...settings, updateFailedNoticed: failed }
+        saveSettings(settingsFile, settings)
+      }
+      return { ...updates.take(), failed }
+    },
+    installUpdate: () => installUpdate?.(),
     mainWindow: () => main,
     inviteReady: (sender) => {
       if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageReady()
@@ -333,12 +357,25 @@ async function run() {
   const opened = main as BrowserWindow | null
   if (opened && !opened.isDestroyed()) opened.once('show', endSplash)
   setTimeout(endSplash, 20_000)
-  tray = createTray({ icon: iconPath(), show: () => show(), openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)), restart: () => void supervisor.restart().catch(() => {}), showLog, quit: () => app.quit() })
+  const inTray = createTray({
+    icon: iconPath(),
+    show: () => show(),
+    openInBrowser: () => void import('electron').then(({ shell }) => shell.openExternal(`${origin()}/#token=${encodeURIComponent(token)}`)),
+    restart: () => void supervisor.restart().catch(() => {}),
+    showLog,
+    quit: () => app.quit(),
+    installUpdate: () => installUpdate?.(),
+  })
+  tray = inTray.tray
+  trayUpdate = inTray.update
   const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
   log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)
   void startUpdater(channel, logs, (version) => {
-    void dialog.showMessageBox({ type: 'info', title: 'Conductor', message: `Conductor ${version} is downloaded`, detail: 'It installs when you quit the app.' })
-  })
+    updates.downloaded(version)
+    trayUpdate?.(version)
+    // The page asks what to say (UpdateNotice): one not open, or not ready yet, asks as it loads.
+    if (main && !main.isDestroyed()) main.webContents.send('conductor:update')
+  }).then((install) => (installUpdate = install))
 
   app.on('second-instance', (_e, argv) => {
     const inv = inviteInArgv(argv)
