@@ -21,9 +21,10 @@ import (
 // agent on this machine's PATH is asked its version (the identity probe
 // must know it) and its help, and every flag of its yolo recipe, its
 // session recipe and its adapter's launch injection must be a word of that
-// help (or of the subcommand's help the recipe names). A CLI that is not
-// on the PATH is skipped, unless CONDUCTOR_RECIPES_REQUIRE names it, when
-// its absence fails. CONDUCTOR_RECIPES_OUT, a directory, receives each
+// help (or of the subcommand's help the recipe names), or a flag the CLI
+// hides from its help and takes all the same (hiddenFlags). A CLI that is
+// not on the PATH is skipped, unless CONDUCTOR_RECIPES_REQUIRE names it,
+// when its absence fails. CONDUCTOR_RECIPES_OUT, a directory, receives each
 // CLI's version and help output for the nightly artifacts. Runs with
 // -tags recipes (make test-recipes).
 func cliOf(t *testing.T, a catalog.Agent) (string, bool) {
@@ -45,13 +46,21 @@ func cliOf(t *testing.T, a catalog.Agent) (string, bool) {
 
 func run(t *testing.T, name string, args ...string) string {
 	t.Helper()
+	out, _ := runStatus(t, name, args...)
+	return out
+}
+
+// runStatus is run with the command's error too: a non-zero exit, a
+// timeout.
+func runStatus(t *testing.T, name string, args ...string) (string, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), "TERM=dumb", "NO_COLOR=1", "CI=1")
 	cmd.Dir = t.TempDir()
-	out, _ := cmd.CombinedOutput()
-	return string(out)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 func keep(t *testing.T, id, kind, text string) {
@@ -121,6 +130,17 @@ func recipeWords(a catalog.Agent) (flags, subcommands []string) {
 	return flags, subcommands
 }
 
+// hiddenFlags are the flags a CLI takes though its help leaves them out,
+// each with the arguments that check it instead: the flag goes before a
+// command that only prints, which a parser that did not know the flag
+// refuses ("unknown option").
+var hiddenFlags = map[string]map[string][]string{
+	// Amp's own refusals say "Rerun with --dangerously-allow-all to
+	// bypass". `version`, not --version: Amp prints its version for
+	// --version before it looks at the other flags.
+	"amp": {"--dangerously-allow-all": {"version"}},
+}
+
 func TestRecipeFlagsAreInHelp(t *testing.T) {
 	for _, a := range catalog.Default().List() {
 		t.Run(a.ID, func(t *testing.T) {
@@ -145,9 +165,22 @@ func TestRecipeFlagsAreInHelp(t *testing.T) {
 				help += "\n" + subHelp
 			}
 			for _, f := range flags {
-				if !regexp.MustCompile(`(^|[\s,\[|])` + regexp.QuoteMeta(f) + `([\s,=\]|]|$)`).MatchString(help) {
-					t.Errorf("%s: flag %q is not in the help of %s (verify the recipe)", a.ID, f, a.Command[0])
+				if regexp.MustCompile(`(^|[\s,\[|])` + regexp.QuoteMeta(f) + `([\s,=\]|]|$)`).MatchString(help) {
+					continue
 				}
+				check, hidden := hiddenFlags[a.ID][f]
+				if !hidden {
+					t.Errorf("%s: flag %q is not in the help of %s (verify the recipe)", a.ID, f, a.Command[0])
+					continue
+				}
+				args := append(append(append([]string{}, a.Command[1:]...), f), check...)
+				out, err := runStatus(t, path, args...)
+				keep(t, a.ID, "takes-"+strings.TrimLeft(f, "-"), out)
+				if err != nil || strings.Contains(out, "unknown option") {
+					t.Errorf("%s: flag %q is not in the help of %s, and `%s %s` refuses it: %v, %q (verify the recipe)", a.ID, f, a.Command[0], a.Command[0], strings.Join(args, " "), err, out)
+					continue
+				}
+				t.Logf("%s: flag %q is hidden from the help; `%s %s` takes it", a.ID, f, a.Command[0], strings.Join(args, " "))
 			}
 			t.Logf("%s: %d flags and %d subcommands checked", a.ID, len(flags), len(subs))
 		})

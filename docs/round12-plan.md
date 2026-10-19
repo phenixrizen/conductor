@@ -1,7 +1,7 @@
 # Round 12 plan: the Files tab as four sections, and a Monaco editor beside the terminal
 
 > Historical plan: current planning, review and affected-surface check selection
-> follow `AGENTS.md` and `docs/review-policy.md`. The technical design, test cases
+> follow `AGENTS.md` and `docs/checks.md`. The technical design, test cases
 > and recorded requirements here remain context for changes to those surfaces.
 
 Asked on 2026-10-08, from the design screens 4a–4g and 5a–5c in

@@ -1,10 +1,9 @@
 # Deliverable workflow amendment
 
-Status: implementation design for the owner's approved instruction simplification.
-This replaces the chronological process proposals previously in this file; their
-history remains in Git. Current policy belongs in `docs/review-policy.md`, command
-and recovery procedures in `docs/issue-workflow.md`, and confidential differences
-in `docs/security-workflow.md`. Technical requirements in other plans remain valid;
+Status: historical. The workflow this amended (its helper, review policy and
+security workflow) was removed on 2026-10-18 in #273; the current process is
+`AGENTS.md`, "Working an issue". This file and the proposals before it remain
+in Git as history. Technical requirements in other plans remain valid;
 obsolete process rules do not override this repository contract.
 
 ## Outcome and acceptance

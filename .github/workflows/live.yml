@@ -18,7 +18,8 @@ env:
 
 jobs:
   live:
-    runs-on: ubuntu-latest
+    # 22.04, as ci.yml's e2e: Playwright 1.44.1's dependency list names libasound2, which 24.04 no longer has.
+    runs-on: ubuntu-22.04
     environment: live
     steps:
       - uses: actions/checkout@v4
