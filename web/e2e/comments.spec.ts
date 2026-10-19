@@ -86,8 +86,9 @@ test('the editor\'s comment box is as wide as the editor, its heading whole and 
   const cwd = join(state.root, 'files-composer')
   mkdirSync(cwd, { recursive: true })
   const file = join(cwd, 'store.go')
-  const long = '\tif err := store.Save(ctx, item, saveOptions{Overwrite: true, Fsync: true, Owner: owner}); err != nil {'
-  expect(long.length).toBeGreaterThanOrEqual(90)
+  // Ninety characters, spaces for the indent: a tab would widen to eight columns in the quote.
+  const long = '    if err := store.Save(ctx, item, saveOptions{Overwrite: true, Fsync: true}); err != nil'
+  expect(long.length).toBe(90)
   writeFileSync(file, ['package todo', '', 'func (s *Store) Put(ctx context.Context, item Item) error {', long, '\t\treturn err', '\t}', '\treturn nil', '}', ''].join('\n'))
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'composer', cwd })
   const area = page.locator('[data-editor-area]')

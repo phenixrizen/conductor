@@ -135,7 +135,18 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
   })
   expect(target).toBe('resume')
   await resume.click()
-  await expect.poll(async () => (await api.session(done.id)).status, { timeout: 30_000 }).not.toBe('exited')
+  // Resume makes a new session from the exited one; it is stopped with the rest at the end.
+  let fresh: Session | undefined
+  await expect
+    .poll(
+      async () => {
+        fresh = (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.find((s) => s.resumedFrom === done.id)
+        return fresh?.status ?? ''
+      },
+      { timeout: 30_000, message: 'the click resumed the session' },
+    )
+    .toMatch(/^(starting|running)$/)
+  sessions.push(fresh!.id)
 
   // Running folds from its header, keeps its count and shows what is inside as squares; the fold survives a reload.
   const running = page.locator('[data-sidebar-section="running"]').first()

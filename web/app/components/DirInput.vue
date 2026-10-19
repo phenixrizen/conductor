@@ -119,7 +119,14 @@ function schedule() {
 // A pick of the text as it stands changes nothing: its children are listed all the same.
 function onText(text: string) {
   moved = false
-  if (entries.value.some((e) => e.path === text)) picked = true
+  if (entries.value.some((e) => e.path === text)) {
+    // Picked: the field's view goes to the end of the path as the pick lands in it (#167), and again once its listing is back.
+    picked = true
+    nextTick(() => {
+      const input = menu.value?.inputRef
+      if (input) caretToEnd(input)
+    })
+  }
   if (text === model.value) schedule()
   model.value = text
 }

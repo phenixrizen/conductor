@@ -63,6 +63,14 @@ test("a Codex member's command approval is in Needs you with its words and three
   // A key typed in the member's terminal answers the dialog: the row stops offering the question at once, in this tab and in
   // another watching the Yard (#258), and a reply that still names it is refused as answered in the terminal.
   const yard = await page.context().newPage()
+  // The fixture's token reaches only its own page: this tab gets it the same way.
+  await yard.addInitScript((token) => {
+    try {
+      localStorage.setItem('conductor.workbenchToken', token)
+    } catch {
+      /* storage refused: the page asks for the token, and the test fails on what it cannot find */
+    }
+  }, state.token)
   await yard.goto('/yard')
   const yardCard = yard.locator(`[data-wall-queue] [data-queue-session="${id}"]`)
   await expect(yardCard).toBeVisible({ timeout: 30_000 })
@@ -76,7 +84,7 @@ test("a Codex member's command approval is in Needs you with its words and three
   await expect(yardCard).toHaveCount(0, { timeout: 15_000 })
   // The session's own report: the question answered in the terminal, or gone already with the screen.
   await expect.poll(async () => { const a = (await api.session(id)).attention; return a?.state !== 'needs_input' || a.answered === 'terminal' }, { timeout: 15_000 }).toBe(true)
-  expect(member(await api.run(run.id), 'fetch').needsInput, 'the run view no longer counts the member waiting').toBe(false)
+  expect(member(await api.run(run.id), 'fetch').needsInput, 'the run view no longer counts the member waiting').not.toBe(true) // left out when false
   await yard.close()
   await expect.poll(async () => (await api.session(id)).attention?.state, { timeout: 15_000 }).toBe('done')
   await api.ok('POST', `/api/runs/${encodeURIComponent(run.id)}/broadcast`, { text: 'stub approve curl -sI https://example.com' })
