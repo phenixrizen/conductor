@@ -777,11 +777,13 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           <UButton v-if="canAsk" label="Ask the agent" icon="i-lucide-bot" size="xs" color="neutral" variant="ghost" data-editor-ask @mousedown.prevent @click="openComposer(true)" />
           <UButton label="Copy" icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" data-editor-copy-lines @mousedown.prevent @click="copyLines" />
         </div>
-        <div v-if="composer" class="absolute z-10 flex w-96 max-w-[calc(100%-16px)] flex-col gap-2 rounded-lg border border-default bg-default p-3 shadow-lg" :style="{ top: `${composer.top + 4}px`, left: `${Math.min(composer.left, 8)}px` }" data-editor-composer :data-editor-composer-mode="composer.ask ? 'ask' : 'comment'">
-          <div class="flex items-center gap-2 text-xs">
-            <UIcon :name="composer.ask ? 'i-lucide-bot' : 'i-lucide-message-square-plus'" class="size-3.5 flex-none text-muted" />
-            <span class="min-w-0 flex-1 truncate font-medium text-highlighted">{{ composer.ask ? 'Ask the agent about' : 'Comment on' }} {{ rangeWords(composer.quote.from, composer.quote.to) }}</span>
-            <span class="flex-none truncate font-mono text-[11px] text-muted">{{ quoteLocation(composer.quote) }}</span>
+        <!-- The box takes the editor's width less a margin, capped where it still reads as a box over the code (#168); its heading and
+             the file's location show whole, wrapping when the editor is narrow. -->
+        <div v-if="composer" class="absolute left-2 right-2 z-10 flex max-w-4xl flex-col gap-2 rounded-lg border border-default bg-default p-3 shadow-lg" :style="{ top: `${composer.top + 4}px` }" data-editor-composer :data-editor-composer-mode="composer.ask ? 'ask' : 'comment'">
+          <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+            <UIcon :name="composer.ask ? 'i-lucide-bot' : 'i-lucide-message-square-plus'" class="size-3.5 flex-none self-center text-muted" />
+            <span class="min-w-0 font-medium text-highlighted" data-editor-composer-heading>{{ composer.ask ? 'Ask the agent about' : 'Comment on' }} {{ rangeWords(composer.quote.from, composer.quote.to) }}</span>
+            <span class="min-w-0 break-all font-mono text-[11px] text-muted" data-editor-composer-location>{{ quoteLocation(composer.quote) }}</span>
           </div>
           <pre class="max-h-24 overflow-auto rounded border border-default bg-elevated/40 px-2 py-1 font-mono text-[11px] leading-snug" data-editor-composer-quote><template v-for="(l, i) in composer.quote.lines" :key="i"><span class="select-none text-muted">{{ String(composer.quote.from + i).padStart(3, ' ') }}  </span>{{ l }}
 </template></pre>
