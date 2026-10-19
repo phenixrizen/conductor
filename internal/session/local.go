@@ -566,8 +566,7 @@ func (s *Local) pump() {
 				s.trust.Feed(chunk)
 			}
 			if s.asked != nil && !title {
-				s.asked.Feed(chunk)
-				left = s.answeredLeft()
+				left = s.feedAsked(chunk)
 			}
 			s.feedMu.Unlock()
 			if left != "" {
@@ -3538,6 +3537,36 @@ func (s *Local) dialogGone(look uint64) {
 	if look > s.dialogAnsweredAt {
 		s.dialogAnswered = ""
 	}
+}
+
+// syncEnd ends a synchronized update (DEC mode 2026): a frame the program
+// finished drawing.
+var syncEnd = []byte("\x1b[?2026l")
+
+// feedAsked feeds output to the screen the questions asked during the work
+// are read from (asked), and while a dialog answered is remembered looks
+// at it after each synchronized update the output ends (answeredLeft): one
+// read may bring a frame without the dialog and the dialog drawn again
+// (the same command asked again), and a look after the read would see
+// only the second. It returns the question answeredLeft names. The caller
+// holds feedMu.
+func (s *Local) feedAsked(chunk []byte) string {
+	left := ""
+	for len(chunk) > 0 {
+		piece := chunk
+		s.mu.Lock()
+		remembered := s.dialogAnswered != ""
+		s.mu.Unlock()
+		if i := bytes.Index(chunk, syncEnd); remembered && i >= 0 {
+			piece = chunk[:i+len(syncEnd)]
+		}
+		s.asked.Feed(piece)
+		chunk = chunk[len(piece):]
+		if id := s.answeredLeft(); left == "" {
+			left = id
+		}
+	}
+	return left
 }
 
 // answeredLeft forgets the dialog answered (dialogAnswered) once a whole

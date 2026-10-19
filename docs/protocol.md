@@ -1232,11 +1232,12 @@ so the question offers no choices and is answered in the terminal. A reply
 to such a question is refused, nothing written, when the dialog on the
 screen shows other choices than it was asked with, read whole, beyond what
 a label shows (a long folder's path, cut at the label's bound) and however
-the screen wrapped them. The dialog a key or a reply answered is forgotten
-at the first whole frame drawn after the answer that no longer shows it,
-quiet or not, so that the next dialog with its words (the same command
-asked again, a program animating as it works between them) is a question
-of its own. Claude Code's built-in entry has two (Claude Code 2.1.304): a
+the screen wrapped them. The dialog a key or a reply answered is forgotten,
+and its question withdrawn when keys typed in the terminal answered it, at
+the first whole frame drawn after the answer that no longer shows it,
+quiet or not, each synchronized update of a read looked at, so that the
+next dialog with its words (the same command asked again, a program
+animating as it works between them) is a question of its own. Claude Code's built-in entry has two (Claude Code 2.1.304): a
 row numbered with the highlight `❯` before it, then one of its footers as
 the last thing the screen shows ("Esc to cancel · Tab to amend" under a
 tool's permission, "Enter to select · … · Esc to cancel" under
@@ -1249,8 +1250,9 @@ shows, keep a dialog quoted in the transcript or typed into the prompt box
 from counting, and that last page left above the prompt too. A digit picks
 at once in its dialogs; the plan's "Tell Claude what to change" takes the
 highlight into its feedback field (its hint reads "shift+tab to approve
-with this feedback", its `typedAnswers`), where the feedback is typed in
-the terminal. Its mode answers are
+with this feedback") and arrows can take it to AskUserQuestion's "Type
+something." (a rule between it and "Chat about this"), fields its
+`typedAnswers` finds, whose words are typed in the terminal. Its mode answers are
 `(?i)auto mode|accept edits|auto-accept|bypass permissions`.
 
 ### Answering a question

@@ -204,6 +204,64 @@ func TestAClaudeDialogAnsweredInTheTerminalGivesWayToTheSameAgain(t *testing.T) 
 	}
 }
 
+// AskUserQuestion's "Type something." is a field: arrows typed in the
+// terminal take the highlight there, and every key after that is typed
+// into it. The dialog then offers no choices, and a reply to the question
+// asked before (its Red is 1, which would be typed into the field) writes
+// nothing.
+func TestTheClaudeQuestionsFieldOffersNoChoices(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	p.outW.Write(drawn(claudeAsk))
+	att := waitAttention(t, s, asked)
+	if len(att.Options) != 4 {
+		t.Fatalf("the question %+v", att)
+	}
+	for range 2 {
+		if err := s.Input(sub, []byte("\x1b[B")); err != nil {
+			t.Fatal(err)
+		}
+		nextWrite(t, p)
+	}
+	// The highlight in the field, nothing typed yet: its choices read as
+	// before, the highlight no part of them.
+	p.outW.Write(drawn(claudeAskField))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("1")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply as the field has the highlight: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	field := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.Options == nil })
+	if field.Message != "☐ Color Do you prefer red or blue?" {
+		t.Fatalf("the question with its field in use %+v", field)
+	}
+	p.outW.Write(drawn(claudeAskFieldTyped))
+	if a := waitAttention(t, s, func(a Attention) bool { return asked(a) }); a.Options != nil {
+		t.Fatalf("words typed into the field: %+v", a)
+	}
+}
+
+// One read may bring a whole frame without the dialog answered and the
+// same dialog drawn again: each frame is looked at, so the question
+// answered in the terminal goes with the first and the second is a fresh
+// question that takes a reply.
+func TestAClaudeDialogGoneAndBackInOneReadIsAskedAgain(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	p.outW.Write([]byte("\x1b[?2026h" + string(drawn(claudeBash)) + "\x1b[?2026l"))
+	first := waitAttention(t, s, asked)
+	if err := s.Input(sub, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	p.outW.Write([]byte("\x1b[?2026h\x1b[H\x1b[2J\x1b[1;1H✻ Working… (esc to interrupt)\x1b[?2026l" + "\x1b[?2026h" + string(drawn(claudeBash)) + "\x1b[?2026l"))
+	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID })
+	if err := s.AnswerInput(t.Context(), sub, again.ID, []byte("1")); err != nil {
+		t.Fatalf("a reply to the dialog drawn again: %v", err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
+}
+
 // The plan's "Tell Claude what to change" takes the highlight into its
 // field, where every key is typed: the dialog then offers no choices (a
 // digit clicked would be typed into the feedback) and still holds typed

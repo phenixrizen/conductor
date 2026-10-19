@@ -292,6 +292,16 @@ var (
 		"Enter to select · ↑/↓ to navigate · Esc to",
 		"cancel",
 	)
+	// claudeAskField is AskUserQuestion with the highlight taken to its
+	// "Type something." by arrows (its field, where every key is typed),
+	// and claudeAskFieldTyped with "xy" typed there, as 2.1.304 drew them:
+	// the footer offers ctrl+g then.
+	claudeAskField = strings.NewReplacer(
+		"❯ 1. Red", "  1. Red",
+		"  3. Type something.", "❯ 3. Type something.",
+		"Enter to select · ↑/↓ to navigate · Esc to cancel", "Enter to select · ↑/↓ to navigate · ctrl+g to edit in Vim · Esc to cancel",
+	).Replace(claudeAsk)
+	claudeAskFieldTyped = strings.Replace(claudeAskField, "❯ 3. Type something.", "❯ 3. xy", 1)
 	// claudePlanTyped is the plan's approval with "abc" typed into its
 	// feedback field: the digit 3 took the highlight there.
 	claudePlanTyped = strings.Replace(claudePlan(planAuto, 3), "❯ 3. Tell Claude what to change", "❯ 3. abc", 1)
@@ -497,6 +507,18 @@ func TestClaudeCodesQuestionsAreItsDialogsAlone(t *testing.T) {
 		if words, answers, whole := readAsked(qs, screen); words != planQuestion || answers != nil || whole != "" {
 			t.Errorf("the plan, %s: %q %+v %q", name, words, answers, whole)
 		}
+	}
+	for name, screen := range map[string]string{"its field highlighted": claudeAskField, "words typed into it": claudeAskFieldTyped} {
+		if words, answers, whole := readAsked(qs, screen); words != "☐ Color\nDo you prefer red or blue?" || answers != nil || whole != "" {
+			t.Errorf("AskUserQuestion, %s: %q %+v %q", name, words, answers, whole)
+		}
+	}
+	// A rule within a choice's rows is one ─ in its whole, whatever the
+	// screen's width.
+	wide, _ := readList(claudeAsk, nil)
+	narrow, _ := readList(claudeAskNarrow, nil)
+	if wide.whole[2] != "3. Type something. ─" || narrow.whole[2] != wide.whole[2] {
+		t.Errorf("the choice a rule follows: %q, %q", wide.whole[2], narrow.whole[2])
 	}
 	for name, screen := range map[string]string{"idle": claudeIdle, "typed": claudeTyped, "working": claudeWorking, "quoted": claudeQuoted, "pasted": claudePasted, "last page above the prompt": claudeReviewAbove} {
 		if words, answers, _ := readAsked(qs, screen); words != "" || answers != nil {

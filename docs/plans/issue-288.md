@@ -176,6 +176,19 @@ wide.
   look's `missAsked` would). Both have regression tests that fail without
   the change.
 
+## Code review, third round (Codex, 2026-10-19)
+
+- AskUserQuestion's "Type something." is a field too: captured with arrows
+  taking the highlight there and "xy" typed, every key goes into it, the
+  rule between it and "Chat about this" stays and the footer gains
+  "ctrl+g to edit". Claude Code's `typedAnswers` also matches the choice a
+  rule follows (a rule counts as one ─ in a choice's whole, whatever the
+  width), so with the highlight there the dialog offers no choices and a
+  reply to the question before (Red's 1) writes nothing.
+- One read may hold a frame without the dialog answered and the dialog
+  drawn again: while a dialog answered is remembered, the screen is fed one
+  synchronized update at a time and looked at after each.
+
 ## Not changed
 
 - Hosted sessions (`conductor host`) watch no startup or screen questions

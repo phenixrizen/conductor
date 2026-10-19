@@ -87,17 +87,21 @@ func defaults() []Agent {
 			// to change" only takes the highlight into its feedback field.
 			// Its last page of AskUserQuestion's ("Ready to submit your
 			// answers?", 1. Submit answers, 2. Cancel) has no footer: a
-			// question of its own, its list the bottom of the screen. The
-			// plan's "Tell Claude what to change" is a field: its digit
-			// only takes the highlight there, and every key after it is
-			// typed into it ("❯ 3. abc", its hint "shift+tab to approve
-			// with this feedback" below, seen with 2.1.304).
+			// question of its own, its list the bottom of the screen. Two
+			// choices are fields, whose keys type into them while the
+			// highlight is there (seen with 2.1.304): the plan's "Tell
+			// Claude what to change" ("❯ 3. abc", its hint "shift+tab to
+			// approve with this feedback" below; its digit only takes the
+			// highlight there) and AskUserQuestion's "Type something."
+			// ("❯ 3. xy", a rule between it and "4. Chat about this",
+			// arrows taking the highlight there and "ctrl+g to edit" in
+			// the footer then).
 			Questions: []Question{{
 				Prompt:            claudeDialog,
 				Anytime:           true,
 				AnswersFromScreen: true,
 				ModeAnswers:       `(?i)auto mode|accept edits|auto-accept|bypass permissions`,
-				TypedAnswers:      `shift\+tab to approve with this`,
+				TypedAnswers:      `shift\+tab to approve with this| ─$`,
 			}, {
 				Prompt:            claudeAnswersReview,
 				Anytime:           true,

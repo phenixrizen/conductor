@@ -34,9 +34,9 @@ type dialogList struct {
 	// words are the rows above the list up to the dialog's top rule.
 	words string
 	// whole is each choice whole: its number, its label and the rows that
-	// follow it, each trimmed, one space apart, beyond what a label can
-	// show (its bound cuts a long one) and however a narrow screen
-	// wrapped it.
+	// follow it, each trimmed, one space apart, a rule as a single ─ (its
+	// length is the screen's width), beyond what a label can show (its
+	// bound cuts a long one) and however a narrow screen wrapped it.
 	whole []string
 	// at is the index of the choice the highlight stands before, -1 for
 	// none.
@@ -86,6 +86,9 @@ func readList(text string, mode *regexp.Regexp) (dialogList, bool) {
 		whole := label
 		for _, row := range after {
 			if row = strings.TrimSpace(row); row != "" {
+				if rule, _ := ruleRow(row); rule {
+					row = "─"
+				}
 				whole += " " + row
 			}
 		}

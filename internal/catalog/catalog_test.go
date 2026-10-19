@@ -1240,8 +1240,25 @@ func TestClaudeCodesDialogQuestion(t *testing.T) {
 		t.Fatalf("claude's last page %+v", last)
 	}
 	typed, err := CompilePattern(q.TypedAnswers)
-	if err != nil || !typed.MatchString("3. abc shift+tab to approve with this feedback") || typed.MatchString("2. Yes, manually approve edits") {
-		t.Fatalf("the typed answers %q: %v", q.TypedAnswers, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The plan's feedback field, by its hint, and AskUserQuestion's
+	// "Type something.", the choice a rule follows (one ─ in its whole),
+	// typed into or not.
+	for whole, want := range map[string]bool{
+		"3. Tell Claude what to change shift+tab to approve with this feedback": true,
+		"3. abc shift+tab to approve with this feedback":                        true,
+		"3. Type something. ─":                                                  true,
+		"3. xy ─":                                                               true,
+		"2. Yes, manually approve edits":                                        false,
+		"1. Red Prefer red.":                                                    false,
+		"4. Chat about this":                                                    false,
+		"3. Yes, and switch to auto mode":                                       false,
+	} {
+		if typed.MatchString(whole) != want {
+			t.Errorf("typed answers %q on %q: %v", q.TypedAnswers, whole, !want)
+		}
 	}
 	mode, err := CompilePattern(q.ModeAnswers)
 	if err != nil {
