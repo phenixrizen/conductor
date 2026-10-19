@@ -57,7 +57,11 @@ issue, one branch, one pull request, and CI is the only gate.
 - Blocked or handing off: push, leave one PR comment saying what is left,
   and unassign yourself.
 - Work the owner asks for directly gets an issue first (search for an
-  existing one). A defect found on the way gets its own issue, unless this
-  change caused it or cannot ship without the fix.
+  existing one). A product defect found on the way gets its own issue,
+  unless this change caused it or cannot ship without the fix.
+- A test that fails in the PR's own checks is fixed in that PR and named in
+  its body under its own heading; no issue. A flake seen once that blocks
+  nothing goes as one line into the single standing flaky-tests issue
+  (#281), fixed when someone is in that file anyway; no issue per flake.
 - Vulnerabilities go in a GitHub Draft Security Advisory, never in an
   issue, PR, commit message or doc, until the owner decides on disclosure.
