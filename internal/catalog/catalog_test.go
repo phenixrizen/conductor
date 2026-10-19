@@ -1199,6 +1199,14 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "Ready\\?", Words: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "Ready\\?", Words: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}, {Prompt: "f"}, {Prompt: "g"}, {Prompt: "h"}, {Prompt: "i"}},
+		// Answers read off the screen are a question asked at any time's,
+		// with no answers of its own; the mode pattern is a pattern.
+		{{Prompt: "Ready\\?", AnswersFromScreen: true}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, Answers: []Answer{{Label: "Yes", Input: "1"}}}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "("}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: ".*"}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, TypedAnswers: "("}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, TypedAnswers: ".*"}},
 	} {
 		a := ok
 		a.Questions = bad
@@ -1207,9 +1215,78 @@ func TestStartupQuestions(t *testing.T) {
 		}
 	}
 	good := ok
-	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}}
+	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode", TypedAnswers: "with this feedback"}}
 	if err := validate(good); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Claude Code's dialogs during the work are a question whose answers are
+// read off the screen (#288), its choices that change the permission mode
+// marked by their words and its feedback field told by its hint; and
+// AskUserQuestion's last page, which has no footer, is one of its own.
+// They round-trip through a saved override as the other question fields
+// do.
+func TestClaudeCodesDialogQuestion(t *testing.T) {
+	claude, _ := Default().Get("claude")
+	if len(claude.Questions) != 2 {
+		t.Fatalf("claude: %+v", claude.Questions)
+	}
+	q, last := claude.Questions[0], claude.Questions[1]
+	if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 || q.Words != "" || q.TypedAnswers == "" {
+		t.Fatalf("claude's question %+v", q)
+	}
+	if !last.Anytime || !last.AnswersFromScreen || len(last.Answers) != 0 || last.ModeAnswers != "" || last.TypedAnswers != "" {
+		t.Fatalf("claude's last page %+v", last)
+	}
+	typed, err := CompilePattern(q.TypedAnswers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The plan's feedback field, by its hint, and AskUserQuestion's
+	// "Type something.", the choice a rule follows (one ─ in its whole),
+	// typed into or not.
+	for whole, want := range map[string]bool{
+		"3. Tell Claude what to change shift+tab to approve with this feedback": true,
+		"3. abc shift+tab to approve with this feedback":                        true,
+		"3. Type something. ─":                                                  true,
+		"3. xy ─":                                                               true,
+		"2. Yes, manually approve edits":                                        false,
+		"1. Red Prefer red.":                                                    false,
+		"4. Chat about this":                                                    false,
+		"3. Yes, and switch to auto mode":                                       false,
+	} {
+		if typed.MatchString(whole) != want {
+			t.Errorf("typed answers %q on %q: %v", q.TypedAnswers, whole, !want)
+		}
+	}
+	mode, err := CompilePattern(q.ModeAnswers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for label, want := range map[string]bool{
+		"Yes, and switch to auto mode · auto mode handles these prompts for you":                                          true,
+		"Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)": true,
+		"Yes, and use auto mode": true,
+		"Yes, and switch to BYPASS PERMISSIONS (no further prompts) for this session": true,
+		"Yes, and auto-accept edits":  true,
+		"Yes":                         false,
+		"Yes, manually approve edits": false,
+		"Yes, and always allow access to /home/dev/project from this project": false,
+		"Tell Claude what to change":                                          false,
+		"No":                                                                  false,
+	} {
+		if mode.MatchString(label) != want {
+			t.Errorf("%q: mode %v", label, !want)
+		}
+	}
+	b, err := json.Marshal(claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Agent
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back.Questions, claude.Questions) {
+		t.Fatalf("round trip %+v %v", back.Questions, err)
 	}
 }
 
@@ -1366,4 +1443,34 @@ func TestTheE2ECodexCarriesTheBuiltInQuestions(t *testing.T) {
 		return
 	}
 	t.Fatal("no codex in the e2e catalog")
+}
+
+// The e2e suite's Claude Code (web/e2e/conductor.e2e.json, the stub with
+// Claude Code's recipes) carries the built-in entry's question asked
+// during the work, its dialogs read off the screen (#288), so that what the
+// specs check is what ships, and every spec that runs the stub runs with it.
+func TestTheE2EClaudeCodeCarriesTheBuiltInQuestion(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "e2e", "conductor.e2e.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Catalog struct {
+			Agents []Agent `json:"agents"`
+		} `json:"catalog"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	builtIn, _ := Default().Get("claude")
+	for _, a := range cfg.Catalog.Agents {
+		if a.ID != "claude" {
+			continue
+		}
+		if !reflect.DeepEqual(a.Questions, builtIn.Questions) {
+			t.Fatalf("the e2e Claude Code's questions differ from the built-in's:\n%+v\n%+v", a.Questions, builtIn.Questions)
+		}
+		return
+	}
+	t.Fatal("no claude in the e2e catalog")
 }

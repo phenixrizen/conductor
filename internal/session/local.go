@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -289,6 +290,11 @@ type Local struct {
 	// screen had been fed then. Held answered, it is cleared once the
 	// screen shows no startup question (escGone). Guarded by mu.
 	heldAnswer heldStartup
+	// syncCut is how much of a synchronized update's end (syncEnd) the
+	// output fed to the screen the questions asked during the work are read
+	// from last ended with: a read that cut it off (feedAsked). Guarded by
+	// feedMu.
+	syncCut int
 	// feedMu is held while output is fed to the startup questions' watcher
 	// and the screen's (pump), and while escGone and heldGone look at the
 	// screen and put the startup output behind: what they look at is all
@@ -559,14 +565,18 @@ func (s *Local) pump() {
 			if s.pattern != nil {
 				s.pattern.Feed(chunk)
 			}
+			var left string
 			s.feedMu.Lock()
 			if s.trust != nil && !title {
 				s.trust.Feed(chunk)
 			}
 			if s.asked != nil && !title {
-				s.asked.Feed(chunk)
+				left = s.feedAsked(chunk)
 			}
 			s.feedMu.Unlock()
+			if left != "" {
+				s.withdraw(left)
+			}
 			if !title {
 				s.shot.Feed(chunk)
 			}
@@ -1059,17 +1069,22 @@ func (s *Local) fireAsked(text string) {
 	// answered. Output since the look (the frame's end, a resize) does not
 	// change that: the look decides on the screen it saw.
 	look, settled, cols := s.asked.Look()
-	for _, q := range s.askedQuestions {
-		if words := atWidth(q.words(text), cols); words != "" {
-			s.mu.Lock()
-			if settled && !sameWords(s.dialogAnswered, words) {
-				s.dialogGone(look)
-			}
-			s.mu.Unlock()
-			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog)
-			return
-		}
+	_, words, answers, whole := s.askedIn(text, cols)
+	if words == "" {
+		// Found, and no list to read on it (a question whose answers are
+		// read off the screen): the screen shows none of the questions.
+		s.missAsked(text)
+		return
 	}
+	s.mu.Lock()
+	if settled && !sameWords(s.dialogAnswered, words) {
+		s.dialogGone(look)
+	}
+	s.mu.Unlock()
+	if whole != "" {
+		words += "\n" + listMark + "\n" + whole
+	}
+	s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), unlessStartup|sameDialog)
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
@@ -1216,7 +1231,73 @@ type StartupQuestion struct {
 	// question drawn last there.
 	Words   *regexp.Regexp
 	Answers []Option
+	// FromScreen has the answers read off the screen each time the
+	// question is asked (the catalog's answersFromScreen, with Anytime):
+	// the numbered list its dialog draws (readList), in place of Answers,
+	// and without Words its words are the rows above that list.
+	FromScreen bool
+	// Mode, when set, matches the labels of the answers that change the
+	// session's permission mode (the catalog's modeAnswers): they are
+	// marked so (Option.Mode).
+	Mode *regexp.Regexp
+	// Typed, when set, matches the answers read off the screen that take
+	// typed words, each whole (dialogList.whole: Claude Code's "Tell Claude
+	// what to change" with its hint, the catalog's typedAnswers): while the
+	// highlight stands before one, the dialog's keys type into its field,
+	// and the question offers no choices.
+	Typed *regexp.Regexp
 }
+
+// read returns what text, the screen the questions asked during the work
+// are read from, shows of q: its words (words) and its answers, those its
+// dialog lists when q reads them off the screen (FromScreen: readList,
+// the labels the words when no row stands above the list), q's own
+// otherwise, the ones that change the permission mode marked (Mode); and
+// for answers read off the screen the whole list (readList's), what a
+// reply is weighed against (stillOnScreen). While the highlight stands
+// before a choice that takes typed words (Typed), the dialog's keys type
+// into its field: no answers, and no list (it changes with each letter).
+// "" and none when text does not show it, or shows no list to read.
+func (q StartupQuestion) read(text string) (words string, answers []Option, whole string) {
+	if words = q.words(text); words == "" {
+		return "", nil, ""
+	}
+	if !q.FromScreen {
+		answers = q.Answers
+		if q.Mode != nil {
+			answers = slices.Clone(answers)
+			for i := range answers {
+				answers[i].Mode = q.Mode.MatchString(answers[i].Label)
+			}
+		}
+		return words, answers, ""
+	}
+	l, ok := readList(text, q.Mode)
+	if !ok {
+		return "", nil, ""
+	}
+	answers, whole = l.choices, strings.Join(l.whole, "\n")
+	if q.Typed != nil && l.at >= 0 && q.Typed.MatchString(l.whole[l.at]) {
+		answers, whole = nil, ""
+	}
+	if q.Words == nil {
+		if words = l.words; words == "" {
+			labels := make([]string, len(l.choices))
+			for i, o := range l.choices {
+				labels[i] = o.Label
+			}
+			words = strings.Join(labels, "\n")
+		}
+	}
+	return words, answers, whole
+}
+
+// listMark begins, in the words fireAsked asks a dialog with, its whole
+// list (StartupQuestion.read), which setAttentionLooked keeps apart
+// (Attention.list): neither what tells the question from the next nor
+// what it shows. A character of Unicode's private use area, which a
+// screen's words do not hold.
+const listMark = "\ue001"
 
 // words returns the question's words when text shows it, "" when it does
 // not: as rows (row breaks kept, each row trimmed, blank rows left out),
@@ -1597,9 +1678,14 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// A question asked from the screen comes with its rows (a startup
 	// question, a dialog: StartupQuestion.words), which tell it from the
 	// next, and shows as a message cut from them.
-	var rows string
+	var rows, list string
 	if heldSource(source) && state == AttentionNeedsInput {
 		rows = asRows(cleanRows(message), true)
+		// A dialog's whole list, read off the screen, is kept apart
+		// (listMark): what a reply is weighed against.
+		if before, after, ok := strings.Cut(rows, "\n"+listMark+"\n"); ok {
+			rows, list = before, after
+		}
 		message = shownWords(rows)
 	}
 	message = CleanMessage(message)
@@ -1812,7 +1898,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			}
 		}
 	}
-	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
+	// The same question again: its words, its choices and, read off the
+	// screen, its whole list (a choice changed past what its label shows is
+	// another question, whose reply is weighed against the list now).
+	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list {
 		if rows != "" && rows != cur.rows {
 			// The same question read at another width (the window
 			// resized, its rows broken elsewhere): it is told by its rows
@@ -1847,7 +1936,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if rules&bellPaced != 0 {
 		s.lastBell = time.Now()
 	}
-	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows}
+	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list}
 	if source == SourceSubmit {
 		// The hold of the turn shows (holdTyped): the question it takes the
 		// place of, one the agent asked and not a question on the screen
@@ -1943,7 +2032,7 @@ func sameOptions(a, b []Option) bool {
 func attentionMessage(att Attention) proto.Attention {
 	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered}
 	for _, o := range att.Options {
-		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
 	return m
 }
@@ -2434,7 +2523,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 	// overlay), whether the choices offer those keys or not. A key that
 	// leaves the dialog where it was reaches it all the same; the screen,
 	// looked at again, asks it again.
-	if s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && listKey(data) {
+	if s.info.Attention.State == AttentionNeedsInput && s.info.Attention.Source == SourceQuestion && s.info.Attention.Options != nil && listKey(data) {
 		choice = true
 	}
 	enter := choice || bytes.IndexByte(data, '\r') >= 0
@@ -2583,8 +2672,12 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if s.asked != nil && mayAnswerDialog(maybe) && !isTerminalReport(data) {
 			screen, cols := s.asked.TextAt()
 			var q *StartupQuestion
-			if q, words = s.askedIn(screen, cols); q != nil {
-				onScreen = readDialog(q, words, screen)
+			var answers []Option
+			if q, words, answers, _ = s.askedIn(screen, cols); q != nil {
+				onScreen = readDialog(words, answers, screen)
+				// Read off the screen and offering none: the highlight is in
+				// a field, where a digit is typed.
+				onScreen.field = q.FromScreen && answers == nil
 			}
 		}
 		// A startup question a key surely answers is consumed, its screen
@@ -2794,13 +2887,13 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, enter bool) {
 // askedIn returns the question asked during the work that text (the
 // screen's, read cols wide: TextAt) shows, and its words; nil and ""
 // when it shows none.
-func (s *Local) askedIn(text string, cols int) (*StartupQuestion, string) {
+func (s *Local) askedIn(text string, cols int) (q *StartupQuestion, words string, answers []Option, whole string) {
 	for i := range s.askedQuestions {
-		if words := s.askedQuestions[i].words(text); words != "" {
-			return &s.askedQuestions[i], atWidth(words, cols)
+		if words, answers, whole := s.askedQuestions[i].read(text); words != "" {
+			return &s.askedQuestions[i], atWidth(words, cols), answers, whole
 		}
 	}
-	return nil, ""
+	return nil, "", nil, ""
 }
 
 // sized records the PTY's new size, which the screen the questions asked
@@ -3337,8 +3430,14 @@ func (s *Local) stillOnScreen(id string) error {
 	}
 	if s.asked != nil {
 		text, cols := s.asked.TextAt()
-		_, words := s.askedIn(text, cols)
-		if att.Source == SourceQuestion && !sameWords(words, att.words()) || att.Source != SourceQuestion && words != "" {
+		_, words, _, whole := s.askedIn(text, cols)
+		// The dialog on the screen is the question's when its words are,
+		// and its whole list for one read off the screen: a list whose
+		// choices changed is another dialog, labels alike but past what a
+		// label shows, or the words typed into a choice's field (Claude
+		// Code's "Tell Claude what to change", where a digit would be
+		// typed into them).
+		if att.Source == SourceQuestion && (!sameWords(words, att.words()) || whole != att.list) || att.Source != SourceQuestion && words != "" {
 			return ErrQuestionAnswered
 		}
 	}
@@ -3448,6 +3547,94 @@ func (s *Local) dialogGone(look uint64) {
 	}
 }
 
+// syncEnd ends a synchronized update (DEC mode 2026): a frame the program
+// finished drawing.
+var syncEnd = []byte("\x1b[?2026l")
+
+// feedAsked feeds output to the screen the questions asked during the work
+// are read from (asked), and while a dialog answered is remembered looks
+// at it after each synchronized update the output ends (answeredLeft): one
+// read may bring a frame without the dialog and the dialog drawn again
+// (the same command asked again), and a look after the read would see
+// only the second. It returns the question answeredLeft names. The caller
+// holds feedMu.
+func (s *Local) feedAsked(chunk []byte) string {
+	left := ""
+	for len(chunk) > 0 {
+		piece := chunk
+		s.mu.Lock()
+		remembered := s.dialogAnswered != ""
+		s.mu.Unlock()
+		if rest := syncEnd[s.syncCut:]; s.syncCut > 0 && bytes.HasPrefix(chunk, rest) {
+			// The end the read before cut off.
+			piece = chunk[:len(rest)]
+		} else if i := bytes.Index(chunk, syncEnd); remembered && i >= 0 {
+			piece = chunk[:i+len(syncEnd)]
+		}
+		s.asked.Feed(piece)
+		s.syncCut = cutEnd(piece, s.syncCut)
+		chunk = chunk[len(piece):]
+		if id := s.answeredLeft(); left == "" {
+			left = id
+		}
+	}
+	return left
+}
+
+// cutEnd is how much of syncEnd the stream ends with after piece, the
+// stream before it having ended with cut bytes of it: the start of an end
+// that the next read finishes, which feedAsked looks for there.
+func cutEnd(piece []byte, cut int) int {
+	if cut > 0 && cut+len(piece) < len(syncEnd) && bytes.Equal(piece, syncEnd[cut:cut+len(piece)]) {
+		return cut + len(piece)
+	}
+	for n := min(len(piece), len(syncEnd)-1); n > 0; n-- {
+		if bytes.HasSuffix(piece, syncEnd[:n]) {
+			return n
+		}
+	}
+	return 0
+}
+
+// answeredLeft forgets the dialog answered (dialogAnswered) once a whole
+// frame drawn after the answer no longer shows it, without waiting for
+// the screen to go quiet: a program that animates as it works (Claude
+// Code's spinner draws every 100 ms, each frame a synchronized update)
+// gives no quiet look before its next dialog, which may have the answered
+// one's words (the same command asked again) and is a question of its own.
+// A frame under way decides nothing, nor does one drawn before the answer.
+// It returns the id of the question still shown for that dialog (a key
+// typed in the terminal answered it, consumed), which the caller withdraws
+// as missAsked would at a quiet look, after feedMu: the next dialog with
+// its words is asked anew rather than taken for it. The caller holds
+// feedMu, which keeps the screen as fed while it looks.
+func (s *Local) answeredLeft() string {
+	s.mu.Lock()
+	words, at := s.dialogAnswered, s.dialogAnsweredAt
+	s.mu.Unlock()
+	if words == "" {
+		return ""
+	}
+	fed := s.asked.Fed()
+	text, settled, cols := s.asked.TextSettled()
+	if fed <= at || !settled {
+		return ""
+	}
+	if _, shown, _, _ := s.askedIn(text, cols); shown != "" && sameWords(shown, words) {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dialogAnswered != words {
+		return ""
+	}
+	s.dialogGone(fed)
+	if att := s.info.Attention; s.dialogAnswered == "" && att.State == AttentionNeedsInput && att.Source == SourceQuestion && att.ID != "" && sameWords(att.words(), words) {
+		return att.ID
+	}
+	return ""
+}
+
 // rawKeys is what keys typed in the terminal, or a line naming no question
 // (its text, its Enter), do to the session's questions as the writer takes
 // them: never an answer. A question read off the screen whose answer they
@@ -3530,6 +3717,10 @@ type dialogView struct {
 	answers []Option
 	keys    map[string]bool
 	lines   int
+	// field says the dialog's highlight stands in a field (a choice that
+	// takes typed words, StartupQuestion.Typed): a printable key is typed
+	// into it, no choice or key of the dialog's.
+	field bool
 }
 
 // picks reports whether data, whose keys are keys (keyReader), picks an
@@ -3653,6 +3844,12 @@ func (s *Local) startupPicks(att Attention, data []byte, keys [][]byte) bool {
 
 // picksKey is picks for one key.
 func (v *dialogView) picksKey(answers []Option, key []byte) bool {
+	if v != nil && v.field && len(key) == 1 && key[0] >= 0x20 && key[0] != 0x7f {
+		// The highlight is in a field: a printable key is a word typed
+		// there, whatever the field's row now reads ("(y)" typed is no
+		// key of the dialog's). An Enter, Escape or Ctrl+C still answers.
+		return false
+	}
 	if isAnswer(answers, key) {
 		return true
 	}
@@ -4290,14 +4487,14 @@ var namedKey = regexp.MustCompile(`\(\s*([A-Za-z]{1,3})\s*\)\s*$`)
 // escToCancel matches a dialog's footer that names Escape.
 var escToCancel = regexp.MustCompile(`(?i)\besc\b`)
 
-// readDialog is the dialog view of words, the question q's, as screen (its
-// text, rows joined by line breaks) shows it: its numbered lines and the
+// readDialog is the dialog view of words, a question's with its answers,
+// as screen (its text, rows joined by line breaks) shows it: its numbered lines and the
 // keys its rows name are read from its own rows, the run of rows without a
 // blank one that holds the last numbered line, and the rows below it (the
 // footer); numbered lines elsewhere (a list in the output above) are not
 // its own.
-func readDialog(q *StartupQuestion, words, screen string) *dialogView {
-	v := &dialogView{words: words, answers: CleanOptions(q.Answers), keys: map[string]bool{}}
+func readDialog(words string, answers []Option, screen string) *dialogView {
+	v := &dialogView{words: words, answers: CleanOptions(answers), keys: map[string]bool{}}
 	rows := strings.Split(screen, "\n")
 	last := -1
 	for i := len(rows) - 1; i >= 0 && last < 0; i-- {

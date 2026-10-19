@@ -2,6 +2,7 @@
 import type { PendingChat } from '~/composables/useChat'
 import type { ScopeItem } from '~/utils/chat'
 import type { ChatMessage } from '~/utils/protocol'
+import { MODE_CHOICE, choiceKey } from '~/utils/attention'
 import { avatarTone } from '~/utils/avatar'
 import { answeredQuestions, chatTime, linkify, markerLine, systemLine } from '~/utils/chat'
 import { agentInitials, initials } from '~/utils/sessions'
@@ -90,8 +91,19 @@ onMounted(() => {
           </div>
           <p class="whitespace-pre-wrap break-words text-sm">{{ m.text }}</p>
           <div v-if="m.options?.length && canAnswer && !answered.has(m.id)" class="flex flex-wrap gap-1.5">
-            <UButton v-for="(o, i) in m.options" :key="i" :label="o.label" size="xs" color="neutral" variant="outline" :data-chat-option="i + 1" @click="emit('answer', m, i)">
-              <template #leading><UKbd :value="String(i + 1)" size="sm" class="opacity-70" /></template>
+            <UButton
+              v-for="(o, i) in m.options"
+              :key="i"
+              :label="o.label"
+              size="xs"
+              :color="o.mode ? 'warning' : 'neutral'"
+              variant="outline"
+              :title="o.mode ? MODE_CHOICE : undefined"
+              :data-chat-option="i + 1"
+              :data-choice-mode="o.mode || undefined"
+              @click="emit('answer', m, i)"
+            >
+              <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" class="opacity-70" /></template>
             </UButton>
           </div>
         </div>

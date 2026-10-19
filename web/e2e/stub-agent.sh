@@ -54,6 +54,13 @@
 # `stub approvals <command>|<command>…` asks for each command in turn, the
 # next drawn as soon as the one before is answered, as Codex asks the
 # approvals it has queued.
+# A line `stub plan` makes the stub send the hooks Claude Code sends for its
+# plan's approval and draw that dialog as Claude Code 2.1.304 draws it
+# (#288): its three choices, "1. Yes, and use auto mode" highlighted; 1 or
+# 2 picks at once and goes into the transcript as "plan: 1" or "plan: 2".
+# A line `stub permission` sends the PermissionRequest hook of a Bash
+# command and draws no dialog, a permission whose choices the screen does
+# not show; the next key goes into the transcript as "permission: <key>".
 # A line `stub spin N` (N seconds, 1 to 99) makes the stub draw a dot every
 # 100 ms for about N seconds and answer nothing, as an agent draws while it
 # works: what is typed meanwhile waits (the terminal echoes it, or the stub
@@ -334,6 +341,60 @@ approval() {
 	else
 		printf '✔ You approved codex to run %s\n' "$cmd"
 	fi
+}
+
+# claude_plan sends the hooks Claude Code 2.1.304 sends for its plan's
+# approval (PreToolUse, then PermissionRequest, of ExitPlanMode) and draws
+# the dialog as it drew it in a PTY on 2026-10-19 (#288), its rules cut to
+# fit and its question on two rows: "❯ 1. Yes, and use auto mode", "2. Yes,
+# manually approve edits", "3. Tell Claude what to change", its hint, then
+# "ctrl+g to edit in Vim · <plan>" as the last row. It waits for one key:
+# 1 or 2 picks at once, Escape declines; any other key, a paste included,
+# is ignored (3 only takes Claude Code's highlight into its feedback
+# field). The key goes into the transcript as "plan: 1", "plan: 2" or
+# "plan: esc".
+claude_plan() {
+	local key seq rule dash pasted
+	claude_hook "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"ExitPlanMode\",\"session_id\":\"$id\"}"
+	claude_hook "{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"ExitPlanMode\",\"session_id\":\"$id\",\"tool_input\":{\"plan\":\"Create hello.txt containing hi.\"}}"
+	rule=$(printf '─%.0s' {1..40})
+	dash=$(printf '╌%.0s' {1..40})
+	printf '\e[2J\e[H  %s\n   Ready to code?\n\n   Here is Claude'"'"'s plan:\n  %s\n   Create hello.txt containing hi.\n  %s\n\n  %s\n   Claude has written up a plan and is ready to execute.\n   Would you like to proceed?\n\n   ❯ 1. Yes, and use auto mode\n     2. Yes, manually approve edits\n     3. Tell Claude what to change\n        shift+tab to approve with this feedback\n\n   ctrl+g to edit in Vim · ~/.claude/plans/plan.md' "$rule" "$dash" "$dash" "$rule"
+	while IFS= read -rsn1 key; do
+		case $key in
+		1 | 2) break ;;
+		$'\e')
+			seq=''
+			IFS= read -rsn2 -t 0.2 seq || true
+			if [[ $seq == '[2' ]]; then
+				pasted=''
+				while IFS= read -rsn1 key; do
+					pasted+=$key
+					[[ $pasted == *$'\e[201~' ]] && break
+				done
+				continue
+			fi
+			[[ -n $seq ]] && continue
+			key=esc
+			break
+			;;
+		*) continue ;;
+		esac
+	done
+	printf 'plan: %s\n' "$key" >>"$transcript"
+	printf '\e[2J\e[H● User answered Claude'"'"'s plan: %s\n' "$key"
+}
+
+# claude_permission sends the PermissionRequest hook Claude Code sends for
+# a Bash command and draws no dialog: a permission whose choices the screen
+# does not show (#288). The next key goes into the transcript as
+# "permission: <key>".
+claude_permission() {
+	local key
+	claude_hook "{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\",\"session_id\":\"$id\",\"tool_input\":{\"command\":\"touch probe.txt\"}}"
+	printf 'Bash wants to run touch probe.txt\n'
+	IFS= read -rsn1 key
+	printf 'permission: %s\n' "$key" >>"$transcript"
 }
 
 # The window title, as Codex 0.161 writes it with the launch's
@@ -862,6 +923,12 @@ answer() {
 	fi
 	if [[ $line == 'stub auth' ]]; then
 		sign_in
+	fi
+	if [[ $line == 'stub plan' ]]; then
+		claude_plan
+	fi
+	if [[ $line == 'stub permission' ]]; then
+		claude_permission
 	fi
 	if [[ $line =~ ^stub\ ask-wait\ (.{1,200})$ ]]; then
 		report --ask --message "${BASH_REMATCH[1]}"

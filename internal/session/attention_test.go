@@ -157,3 +157,20 @@ func TestTheScannerReportsProgramStatuses(t *testing.T) {
 		})
 	}
 }
+
+// A label longer than a choice's bound is cut with an ellipsis, where a
+// word ends when one ends near the bound: Claude Code's choices read off
+// its dialogs are often longer (#288).
+func TestALongChoiceIsCutWhereAWordEnds(t *testing.T) {
+	for in, want := range map[string]string{
+		"Yes, and switch to BYPASS PERMISSIONS (no further prompts) for this session":                                     "Yes, and switch to BYPASS PERMISSIONS (no further prompts)…",
+		"Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)": "Yes, and switch to accept edits (auto-approve file edits…",
+		strings.Repeat("l", 70):  strings.Repeat("l", MaxOptionLabel-1) + "…",
+		"Yes, and use auto mode": "Yes, and use auto mode",
+	} {
+		got := CleanOptions([]Option{{Label: in, Input: "1"}})
+		if len(got) != 1 || got[0].Label != want || len([]rune(got[0].Label)) > MaxOptionLabel {
+			t.Errorf("%q: %+v", in, got)
+		}
+	}
+}

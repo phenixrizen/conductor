@@ -407,6 +407,19 @@ func validate(a Agent) error {
 		if err := validateTrustAnswers(q.Answers); err != nil {
 			return fmt.Errorf("agent %s: questions[%d].answers: %w", a.ID, i, err)
 		}
+		if q.AnswersFromScreen && (!q.Anytime || len(q.Answers) > 0) {
+			return fmt.Errorf("agent %s: questions[%d].answersFromScreen: only for a question asked at any time (anytime), with no answers of its own", a.ID, i)
+		}
+		if q.ModeAnswers != "" {
+			if _, err := CompilePattern(q.ModeAnswers); err != nil {
+				return fmt.Errorf("agent %s: questions[%d].modeAnswers: %w", a.ID, i, err)
+			}
+		}
+		if q.TypedAnswers != "" {
+			if _, err := CompilePattern(q.TypedAnswers); err != nil {
+				return fmt.Errorf("agent %s: questions[%d].typedAnswers: %w", a.ID, i, err)
+			}
+		}
 	}
 	if a.Session != nil {
 		if err := validateSession(*a.Session); err != nil {
@@ -827,6 +840,28 @@ type Question struct {
 	// Codex's command approval is one.
 	Anytime bool     `json:"anytime,omitempty"`
 	Answers []Answer `json:"answers,omitempty"`
+	// AnswersFromScreen has the question's answers read off the screen
+	// each time it is asked, in place of Answers: the numbered list its
+	// dialog draws at the bottom, each choice its label and its number (a
+	// digit picks it at once), and, without Words, its words the rows
+	// above the list up to the dialog's top rule (session.readList). A
+	// dialog whose list cannot be read is not asked. Only with Anytime and
+	// no Answers. Claude Code's dialogs are read so: their choices change
+	// with the tool, the permission mode and the release.
+	AnswersFromScreen bool `json:"answersFromScreen,omitempty"`
+	// ModeAnswers, when set, matches the labels of the question's answers
+	// that change the session's permission mode (Claude Code's "switch to
+	// auto mode", "accept edits", "bypass permissions"): a page gives such
+	// a choice no number key and never offers it first. A pattern as
+	// Prompt is.
+	ModeAnswers string `json:"modeAnswers,omitempty"`
+	// TypedAnswers, when set, matches the answers read off the screen
+	// that take typed words, each with the rows that follow it (Claude
+	// Code's "Tell Claude what to change", whose hint reads "shift+tab to
+	// approve with this feedback"): while the dialog's highlight stands
+	// before one, its keys type into that field, so the question offers
+	// no choices and is answered in the terminal. A pattern as Prompt is.
+	TypedAnswers string `json:"typedAnswers,omitempty"`
 }
 
 // MaxQuestions bounds Agent.Questions.

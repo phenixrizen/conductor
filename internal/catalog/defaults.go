@@ -23,6 +23,21 @@ const codexApprovalWords = `(?ism)((?:would\s+you\s+like|do\s+you\s+want)\s+to\s
 // bottom_pane/action_required_title.rs, Codex 0.161).
 const CodexWorkingTitle = `^(?:\S+\s+)?(?:Working|Thinking|Waiting)$`
 
+// claudeDialog finds a Claude Code dialog asked during the work: a row
+// whose number the highlight ❯ stands before, then, within its dialog, one
+// of the footers Claude Code ends its dialogs with as the last thing the
+// screen shows (a dialog is the bottom of what Claude Code draws, its
+// prompt box and status line gone while it shows), so that a numbered list
+// or a whole dialog quoted in the transcript, or typed into the prompt
+// box, is not taken for one. A narrow screen wraps a footer over the rows
+// below it ("ctrl+g to edit in Vim · ~/.claude/pla", "ns/plan….md" at 44
+// columns), never a rule's or the prompt's.
+const claudeDialog = `(?m)^[ \t]*❯[ \t]*[1-9]\.[ \t].*(?:\n.*){0,40}\n[ \t]*(?:Esc to cancel|Enter to select|ctrl\+g to edit)[^\n]*(?:\n[ \t]*[^\s─❯][^\n]*){0,3}\s*\z`
+
+// claudeAnswersReview finds AskUserQuestion's last page, "Ready to submit
+// your answers?" with its two choices the last rows the screen shows.
+const claudeAnswersReview = `(?m)^[ \t]*Ready to submit your answers\?\n(?:[ \t]*\n){0,2}[ \t]*❯?[ \t]*1\.[ \t][^\n]*\n[ \t]*❯?[ \t]*2\.[ \t][^\n]*\s*\z`
+
 // codexApprovalFooter ends a pattern of Codex's approval dialog: its footer,
 // on one of the last rows the screen shows (the dialog is the bottom of
 // what Codex draws), so that a dialog's words in a file or a log on the
@@ -56,6 +71,42 @@ func defaults() []Agent {
 			TrustAnswers: []Answer{{Label: "Yes, I trust this folder", Input: "\x1b[B\r"}, {Label: "No, exit", Input: "\r"}},
 			// Verified live (2.1.287).
 			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern},
+			// Claude Code's dialogs during the work, as 2.1.304 drew them in
+			// a PTY on 2026-10-19 (#288): a tool's permission ("Do you want
+			// to proceed?", "Do you want to create c288.txt?"), the plan's
+			// approval ("Claude has written up a plan and is ready to
+			// execute. Would you like to proceed?") and AskUserQuestion's
+			// choices, each a numbered list with ❯ on the highlighted row,
+			// ending in "Esc to cancel · Tab to amend", "Enter to select · …
+			// · Esc to cancel" or "ctrl+g to edit in <editor> · <plan>". Their
+			// choices change with the tool, the permission mode and the
+			// release (Bash's 3 was "Yes, and switch to auto mode", Write's 2
+			// "Yes, and switch to accept edits"), so they are read off the
+			// dialog. A digit picks at once (4 denied the Bash command, 2
+			// answered AskUserQuestion's Blue); the plan's "Tell Claude what
+			// to change" only takes the highlight into its feedback field.
+			// Its last page of AskUserQuestion's ("Ready to submit your
+			// answers?", 1. Submit answers, 2. Cancel) has no footer: a
+			// question of its own, its list the bottom of the screen. Two
+			// choices are fields, whose keys type into them while the
+			// highlight is there (seen with 2.1.304): the plan's "Tell
+			// Claude what to change" ("❯ 3. abc", its hint "shift+tab to
+			// approve with this feedback" below; its digit only takes the
+			// highlight there) and AskUserQuestion's "Type something."
+			// ("❯ 3. xy", a rule between it and "4. Chat about this",
+			// arrows taking the highlight there and "ctrl+g to edit" in
+			// the footer then).
+			Questions: []Question{{
+				Prompt:            claudeDialog,
+				Anytime:           true,
+				AnswersFromScreen: true,
+				ModeAnswers:       `(?i)auto mode|accept edits|auto-accept|bypass permissions`,
+				TypedAnswers:      `shift\+tab to approve with this| ─$`,
+			}, {
+				Prompt:            claudeAnswersReview,
+				Anytime:           true,
+				AnswersFromScreen: true,
+			}},
 		},
 		{
 			ID:          "codex",

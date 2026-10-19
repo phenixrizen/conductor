@@ -87,7 +87,7 @@ func ChatToProto(m ChatMessage) proto.ChatMessage {
 	out := proto.ChatMessage{T: proto.CtlChat, ID: m.ID, At: m.At.UTC().Format(time.RFC3339Nano), Scope: m.Scope, Kind: m.Kind,
 		By: proto.ChatBy{ID: m.By.ID, Name: m.By.Name, Role: string(m.By.Role)}, Text: m.Text, Ref: m.Ref, To: m.To, On: m.On, Event: m.Event, Nonce: m.Nonce}
 	for _, o := range m.Options {
-		out.Options = append(out.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+		out.Options = append(out.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
 	if m.Quote != nil {
 		q := *m.Quote

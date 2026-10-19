@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { liveAttention, liveSession, ATTENTION_DOT_COLOR, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
+import { liveAttention, liveSession, ATTENTION_DOT_COLOR, answersInTerminal, choiceKey, firstChoice, isActive, needingInput, newlyNeedingInput, titleWithCount, waitingHeading, waitsForTerminal } from './attention'
 
 function s(id: string, state: '' | 'needs_input' | 'working' = '', since = '', status: SessionInfo['status'] = 'running'): SessionInfo {
   return {
@@ -81,5 +81,41 @@ describe('a question answered in the terminal (#258)', () => {
     expect(liveSession(s).attention).toEqual({ state: '', source: 'input', answered: 'terminal' })
     const t = { ...s, attention: open } as unknown as SessionInfo
     expect(liveSession(t)).toBe(t)
+  })
+})
+
+describe('the choices of a dialog read off the screen (#288)', () => {
+  const bash = [
+    { label: 'Yes', input: '1' },
+    { label: 'Yes, and always allow access to /home/dev/project from this project', input: '2' },
+    { label: 'Yes, and switch to auto mode · auto mode handles these prompts for you', input: '3', mode: true },
+    { label: 'No', input: '4' },
+  ]
+  const plan = [
+    { label: 'Yes, and switch to BYPASS PERMISSIONS (no further prompts)…', input: '1', mode: true },
+    { label: 'Yes, manually approve edits', input: '2' },
+    { label: 'Tell Claude what to change', input: '3' },
+  ]
+
+  it('gives each its number as its key, and none to one that changes the permission mode', () => {
+    expect(bash.map(choiceKey)).toEqual([1, 2, undefined, 4])
+    expect(plan.map(choiceKey)).toEqual([undefined, 2, 3])
+    expect(choiceKey({ label: 'tenth', input: 'x' }, 9)).toBeUndefined()
+  })
+
+  it('never offers first a choice that changes the permission mode', () => {
+    expect(firstChoice(bash)).toBe(0)
+    expect(firstChoice(plan)).toBe(1)
+    expect(firstChoice([{ label: 'Yes, and use auto mode', input: '1', mode: true }])).toBe(-1)
+    expect(firstChoice(undefined)).toBe(-1)
+  })
+
+  it('answers a permission dialog without choices in the terminal', () => {
+    expect(answersInTerminal({ state: 'needs_input', kind: 'permission' })).toBe(true)
+    expect(answersInTerminal({ state: 'needs_input', kind: 'permission', options: [] })).toBe(true)
+    expect(answersInTerminal({ state: 'needs_input', kind: 'permission', options: bash })).toBe(false)
+    expect(answersInTerminal({ state: 'needs_input', kind: 'prompt' })).toBe(false)
+    expect(answersInTerminal({ state: 'working', kind: 'permission' })).toBe(false)
+    expect(answersInTerminal(undefined)).toBe(false)
   })
 })

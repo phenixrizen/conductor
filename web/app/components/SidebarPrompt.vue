@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { RowPrompt } from '~/utils/sidebarActions'
+import { MODE_CHOICE, choiceKey } from '~/utils/attention'
 import { bindDraft } from '~/utils/reply'
 
 /**
@@ -40,18 +41,19 @@ function send() {
         :key="i"
         :label="o.label"
         :size="big ? 'lg' : 'xs'"
-        color="neutral"
+        :color="o.mode ? 'warning' : 'neutral'"
         variant="outline"
         class="min-w-0 max-w-full"
         :class="big && 'min-h-11 justify-start'"
         :ui="{ label: 'truncate' }"
-        :title="o.label"
+        :title="o.mode ? `${o.label} (${MODE_CHOICE.toLowerCase()})` : o.label"
         :disabled="off"
         :loading="busy"
         :data-row-choice="i + 1"
+        :data-choice-mode="o.mode || undefined"
         @click="emit('answer', i, prompt.question)"
       >
-        <template v-if="i < 9" #leading><UKbd :value="String(i + 1)" size="sm" class="opacity-70" /></template>
+        <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" class="opacity-70" /></template>
       </UButton>
     </template>
     <UInput

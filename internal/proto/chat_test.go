@@ -91,12 +91,12 @@ func TestChatFramesFitWithoutHTMLEscaping(t *testing.T) {
 
 // A question of the longest message with the most and longest choices fits
 // the control frame: the attention's bounds (500 bytes, six choices of 60
-// runes and 48 bytes) leave room even when every byte is a quote, the
-// longest raw escape.
+// runes and 48 bytes, each marked a change of mode) leave room even when
+// every byte is a quote, the longest raw escape.
 func TestAQuestionFrameFits(t *testing.T) {
 	opts := make([]AttentionOption, 6)
 	for i := range opts {
-		opts[i] = AttentionOption{Label: strings.Repeat(`"`, 60*4), Input: strings.Repeat(`"`, 48)}
+		opts[i] = AttentionOption{Label: strings.Repeat(`"`, 60*4), Input: strings.Repeat(`"`, 48), Mode: true}
 	}
 	msg := ChatMessage{T: CtlChat, ID: strings.Repeat("0", 16), At: "2026-10-06T08:32:40.123456789Z", Scope: ChatScopeRun, Kind: ChatKindQuestion, By: ChatBy{ID: "agent", Name: strings.Repeat("a", 40), Role: ChatRoleAgent}, Text: strings.Repeat(`"`, 500), On: strings.Repeat("m", 40), Options: opts}
 	raw := MustControlRaw(msg)
@@ -136,5 +136,21 @@ func TestChatRosterShapeAndBound(t *testing.T) {
 	}
 	if n := len(MustControl(full)); n > MaxControl {
 		t.Fatalf("a full roster is %d bytes, over %d", n, MaxControl)
+	}
+}
+
+// A choice that changes the session's permission mode says so (#288), and
+// one that does not says nothing: an older page reads the same choice.
+func TestAChoiceSaysWhenItChangesTheMode(t *testing.T) {
+	b, err := json.Marshal(Attention{T: CtlAttention, State: "needs_input", Kind: "permission", Options: []AttentionOption{{Label: "Yes", Input: "1"}, {Label: "Yes, and use auto mode", Input: "2", Mode: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"options":[{"label":"Yes","input":"1"},{"label":"Yes, and use auto mode","input":"2","mode":true}]`; !strings.Contains(string(b), want) {
+		t.Fatalf("%s", b)
+	}
+	var back Attention
+	if err := json.Unmarshal(b, &back); err != nil || back.Options[0].Mode || !back.Options[1].Mode {
+		t.Fatalf("back %+v %v", back, err)
 	}
 }

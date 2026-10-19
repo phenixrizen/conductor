@@ -180,6 +180,10 @@ export interface AgentQuestion {
   /** Asked at any time in the session's life (Codex's command approval), not only as it starts: held with source `question`. */
   anytime?: boolean
   answers?: AgentAnswer[]
+  /** Its answers read off the screen each time it is asked (Claude Code's dialogs, #288): its dialog's numbered list, in place of `answers`. */
+  answersFromScreen?: boolean
+  /** RE2 matching the labels of its answers that change the session's permission mode: no number key, never offered first. */
+  modeAnswers?: string
 }
 
 /** Body of POST /api/sessions/{id}/events: something the agent did, or an attention word. */

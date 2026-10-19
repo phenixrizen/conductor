@@ -147,6 +147,8 @@ export type AttentionKind = '' | 'permission' | 'prompt' | 'done'
 export interface AttentionOption {
   label: string
   input: string
+  /** The choice changes the session's permission mode (a dialog's "switch to auto mode"): no number key, never offered first (#288). */
+  mode?: boolean
 }
 
 export interface Attention {

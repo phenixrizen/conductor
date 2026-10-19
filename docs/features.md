@@ -181,13 +181,13 @@ that order.
 
 ## Open verification
 
-- **Claude Code permission keys.** Quick-reply buttons send the digits `1`,
-  `2`, `3` with no Enter, assuming Claude Code's permission dialog confirms
-  on the number key and offers three choices. This has not been checked
-  against a live Claude Code prompt from this repository's checks (no agent
-  runs in CI). First real use: trigger a permission prompt, press **Yes** in
-  the reply bar, and confirm Claude proceeds. If it only highlights, change
-  `permissionOptions()` in `internal/notify/mappers.go` to send `"1\r"` etc.
+- **Claude Code's dialogs.** Their choices are read off the dialog (#288),
+  checked in a PTY against Claude Code 2.1.304 on 2026-10-19: a digit picks
+  at once in a tool's permission dialog and in AskUserQuestion, and the
+  plan's "Tell Claude what to change" only takes the highlight into its
+  feedback field. A later release that changes the footers or the
+  highlight `❯` needs the Claude Code question in
+  `internal/catalog/defaults.go` checked again (no agent runs in CI).
 
 ## Decisions
 

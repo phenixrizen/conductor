@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
-import { TERMINAL_FIRST, waitsForTerminal } from '~/utils/attention'
+import { ANSWER_IN_TERMINAL, MODE_CHOICE, TERMINAL_FIRST, answersInTerminal, firstChoice, waitsForTerminal } from '~/utils/attention'
 import { agentInitials, relativeTime } from '~/utils/sessions'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
@@ -34,7 +34,7 @@ function inputRef(id: string) {
 function submit(s: SessionInfo) {
   const text = (drafts[s.id] ?? '').trim()
   // A session that waits for its terminal takes no reply: it would only wait (TERMINAL_FIRST).
-  if (!text || waitsForTerminal(s.attention)) return
+  if (!text || waitsForTerminal(s.attention) || answersInTerminal(s.attention)) return
   emit('reply', s, text, draftQuestions[s.id])
   drafts[s.id] = ''
 }
@@ -81,8 +81,10 @@ defineExpose({ focusSelected })
           :key="oi"
           :label="o.label"
           size="xs"
-          :variant="oi === 0 ? 'solid' : 'outline'"
-          :color="oi === 0 ? 'primary' : 'neutral'"
+          :variant="oi === firstChoice(s.attention.options) ? 'solid' : 'outline'"
+          :color="oi === firstChoice(s.attention.options) ? 'primary' : o.mode ? 'warning' : 'neutral'"
+          :title="o.mode ? MODE_CHOICE : undefined"
+          :data-choice-mode="o.mode || undefined"
           class="flex-1 justify-center"
           :loading="sending.has(s.id)"
           @click.stop="emit('option', s, oi, questionOf(s.attention))"
@@ -94,14 +96,14 @@ defineExpose({ focusSelected })
           :model-value="drafts[s.id]"
           size="sm"
           class="flex-1"
-          :placeholder="waitsForTerminal(s.attention) ? TERMINAL_FIRST : `Reply to ${agentName(s)}…`"
-          :disabled="waitsForTerminal(s.attention)"
+          :placeholder="waitsForTerminal(s.attention) ? TERMINAL_FIRST : answersInTerminal(s.attention) ? ANSWER_IN_TERMINAL : `Reply to ${agentName(s)}…`"
+          :disabled="waitsForTerminal(s.attention) || answersInTerminal(s.attention)"
           :loading="sending.has(s.id)"
           @update:model-value="(v: string | number) => setDraft(s, String(v ?? ''))"
           @click.stop
           @focus="emit('select', i)"
         />
-        <UButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" aria-label="Send" :disabled="waitsForTerminal(s.attention) || !(drafts[s.id] ?? '').trim()" />
+        <UButton type="submit" size="sm" icon="i-lucide-corner-down-left" color="neutral" variant="outline" aria-label="Send" :disabled="waitsForTerminal(s.attention) || answersInTerminal(s.attention) || !(drafts[s.id] ?? '').trim()" />
       </form>
     </div>
 

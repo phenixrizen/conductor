@@ -10,13 +10,37 @@ import (
 	"unicode/utf8"
 )
 
-// permissionOptions mirrors Claude Code's permission dialog. It assumes the
-// dialog selects and confirms on the digit key (so no trailing Enter is
-// sent) and offers three choices; this is the one place to change if a
-// Claude Code release differs. Not yet verified against a live dialog from
-// an automated test: see docs/features.md.
-func permissionOptions() []Option {
-	return []Option{{Label: "Yes", Input: "1"}, {Label: "Always for this session", Input: "2"}, {Label: "No, explain…", Input: "3"}}
+// claudeAsks is what a Claude Code PermissionRequest asks, in words: its
+// message when it has one; for ExitPlanMode the plan's approval, for
+// AskUserQuestion its first question; "Allow <tool>?" otherwise. The
+// report carries no choices: Claude Code's dialogs differ by tool,
+// permission mode and release (2.1.304's Bash dialog has four, its 3
+// switching to auto mode), and the session reads them off the dialog once
+// it is drawn (the catalog's Claude Code question, answersFromScreen); a
+// dialog the screen does not show them for is answered in the terminal.
+func claudeAsks(h ClaudeHook) string {
+	if msg := strings.TrimSpace(h.Message); msg != "" {
+		return msg
+	}
+	switch h.ToolName {
+	case "":
+		return "Allow this action?"
+	case "ExitPlanMode":
+		return "Claude Code has a plan for you to approve"
+	case "AskUserQuestion":
+		var in struct {
+			Questions []struct {
+				Question string `json:"question"`
+			} `json:"questions"`
+		}
+		if json.Unmarshal(h.ToolInput, &in) == nil && len(in.Questions) > 0 {
+			if q := strings.TrimSpace(in.Questions[0].Question); q != "" {
+				return q
+			}
+		}
+		return "Claude Code asks you a question"
+	}
+	return "Allow " + h.ToolName + "?"
 }
 
 // ClaudeHook is the subset of the Claude Code hook stdin payload we use.
@@ -235,14 +259,7 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 func mapClaudeHook(h ClaudeHook) (req Request, ok bool) {
 	switch h.HookEventName {
 	case "PermissionRequest":
-		msg := strings.TrimSpace(h.Message)
-		if msg == "" && h.ToolName != "" {
-			msg = "Allow " + h.ToolName + "?"
-		}
-		if msg == "" {
-			msg = "Allow this action?"
-		}
-		return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", Options: permissionOptions()}, true
+		return Request{State: "needs_input", Message: truncate(claudeAsks(h), 200), Kind: "permission"}, true
 	case "Notification":
 		msg := strings.TrimSpace(h.Message)
 		if msg == "" {
@@ -258,7 +275,7 @@ func mapClaudeHook(h ClaudeHook) (req Request, ok bool) {
 		case "auth_success", "elicitation_complete", "elicitation_response", "agent_completed":
 			return Request{State: "working", Message: truncate(msg, 200)}, true
 		case "permission_prompt":
-			return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission", Options: permissionOptions()}, true
+			return Request{State: "needs_input", Message: truncate(msg, 200), Kind: "permission"}, true
 		case "idle_prompt":
 			// Claude Code at rest after its turn ("Claude is waiting for your
 			// input", sent after a minute idle) asks nothing: it is done, as
