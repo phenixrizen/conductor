@@ -96,11 +96,12 @@ describe('SettingsSaver', () => {
     const a = app()
     await s.save(a.d, { closeToTray: false })
     // The app tells an update, then a page loaded before it saves its form.
-    const told = { ...a.stored(), updateAnnounced: '0.7.0-rc.12', updateFailedNoticed: '0.7.0-rc.11' }
+    const told = { ...a.stored(), updateAnnounced: '0.7.0-rc.12', updateDownloaded: '0.7.0-rc.12', updateFailedNoticed: '0.7.0-rc.11' }
     a.d.set(told)
-    await s.save(a.d, { closeToTray: true, updateAnnounced: '', updateFailedNoticed: '' } as Partial<DesktopSettings>)
+    await s.save(a.d, { closeToTray: true, updateAnnounced: '', updateDownloaded: '', updateFailedNoticed: '' } as Partial<DesktopSettings>)
     expect(a.stored().closeToTray).toBe(true)
     expect(a.stored().updateAnnounced).toBe('0.7.0-rc.12')
+    expect(a.stored().updateDownloaded).toBe('0.7.0-rc.12')
     expect(a.stored().updateFailedNoticed).toBe('0.7.0-rc.11')
   })
 })

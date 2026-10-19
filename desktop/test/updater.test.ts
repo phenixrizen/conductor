@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { UpdateNotice, compareVersions, installFailed, installVia, restartToInstall, updateChannel } from '../src/updater'
+import { UpdateNotice, compareVersions, failedAtStart, installFailed, installVia, restartToInstall, updateChannel } from '../src/updater'
 
 describe('update channel', () => {
   it('updates itself on macOS, Windows and AppImage, points at the releases for deb and rpm, and never in development', () => {
@@ -65,6 +65,16 @@ describe('the update notice (#290)', () => {
     expect(installFailed('0.7.0-rc.12', '0.7.0')).toBe(false)
     expect(installFailed('', '0.7.0-rc.11')).toBe(false)
     expect(installFailed('not a version', '0.7.0-rc.11')).toBe(false)
+  })
+
+  it('says at the start an update downloaded that did not install, told or not, once', () => {
+    const s = { updateDownloaded: '0.7.0-rc.12', updateAnnounced: '', updateFailedNoticed: '' }
+    // Never announced (no page asked: the window hidden), tried from the tray, and the app came back as the version before.
+    expect(failedAtStart(s, '0.7.0-rc.11')).toBe('0.7.0-rc.12')
+    expect(failedAtStart({ ...s, updateFailedNoticed: '0.7.0-rc.12' }, '0.7.0-rc.11')).toBe('')
+    expect(failedAtStart(s, '0.7.0-rc.12')).toBe('')
+    expect(failedAtStart({ updateDownloaded: '', updateAnnounced: '0.7.0-rc.12', updateFailedNoticed: '' }, '0.7.0-rc.11')).toBe('0.7.0-rc.12')
+    expect(failedAtStart({ updateDownloaded: '', updateAnnounced: '', updateFailedNoticed: '' }, '0.7.0-rc.11')).toBe('')
   })
 
   it('orders versions as semver does', () => {

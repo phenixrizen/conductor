@@ -35,7 +35,14 @@ export class SettingsSaver {
     const cur = d.get()
     // The zoom is the app's own (Ctrl+= and Ctrl+-): a form saved with an older level leaves the current one. So are the updates
     // told (#290): a form loaded before one was told would tell it again.
-    const next = { ...cur, ...patch, zoomLevel: cur.zoomLevel, updateAnnounced: cur.updateAnnounced, updateFailedNoticed: cur.updateFailedNoticed } as DesktopSettings
+    const next = {
+      ...cur,
+      ...patch,
+      zoomLevel: cur.zoomLevel,
+      updateAnnounced: cur.updateAnnounced,
+      updateDownloaded: cur.updateDownloaded,
+      updateFailedNoticed: cur.updateFailedNoticed,
+    } as DesktopSettings
     const problems = validate(next, d.posix)
     if (problems.length) throw new Error(problems.join('; '))
     d.set(next)

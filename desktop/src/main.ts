@@ -19,7 +19,7 @@ import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
 import { InviteDelivery, inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
-import { RELEASES_URL, UpdateNotice, installFailed, restartToInstall, startUpdater, updateChannel } from './updater'
+import { RELEASES_URL, UpdateNotice, failedAtStart, restartToInstall, startUpdater, updateChannel } from './updater'
 import { buildLine, showSplash, SPLASH_STEPS, splashQuery, type Splash } from './splash'
 
 const dev = !app.isPackaged
@@ -89,9 +89,8 @@ async function run() {
       saveSettings(settingsFile, settings)
     },
   )
-  const notInstalled = installFailed(settings.updateAnnounced, app.getVersion())
-  if (notInstalled) log('main', `updates: ${settings.updateAnnounced} was downloaded and announced, and this start is ${app.getVersion()}: it did not install`)
-  let failedUpdate = notInstalled && settings.updateFailedNoticed !== settings.updateAnnounced ? settings.updateAnnounced : ''
+  let failedUpdate = failedAtStart(settings, app.getVersion())
+  if (failedUpdate) log('main', `updates: ${failedUpdate} was downloaded, and this start is ${app.getVersion()}: it did not install`)
   let installUpdate: (() => Promise<void>) | null = null
   let trayUpdate: ((version: string) => void) | null = null
   const token = randomBytes(32).toString('hex')
@@ -371,6 +370,11 @@ async function run() {
   const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
   log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)
   void startUpdater(channel, logs, (version) => {
+    // Kept as downloaded, told or not: a later start older than it says it did not install (failedAtStart).
+    if (settings.updateDownloaded !== version) {
+      settings = { ...settings, updateDownloaded: version }
+      saveSettings(settingsFile, settings)
+    }
     updates.downloaded(version)
     trayUpdate?.(version)
     // Every workbench window asks what to say (UpdateNotice), a second one opened from the first too; one not open, or not

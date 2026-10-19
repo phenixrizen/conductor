@@ -147,6 +147,16 @@ export async function restartToInstall(d: RestartDeps): Promise<void> {
 }
 
 /**
+ * failedAtStart is the update this start of the app says did not install, '' for none: the one downloaded last (or, from a build
+ * that kept only the announced one, that one), newer than the version running, not said already. Whatever the way the install was
+ * tried (a quit, Restart to update from the workbench or the tray) and whether the update was ever announced.
+ */
+export function failedAtStart(s: { updateDownloaded: string; updateAnnounced: string; updateFailedNoticed: string }, running: string): string {
+  const tried = s.updateDownloaded || s.updateAnnounced
+  return installFailed(tried, running) && s.updateFailedNoticed !== tried ? tried : ''
+}
+
+/**
  * installFailed says whether the update announced (settings' updateAnnounced) is newer than the version running: the app was
  * quit, or ended, since, and the update did not install (macOS, for one, updates only a signed app). '' or unreadable: no.
  */
