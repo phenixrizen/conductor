@@ -61,5 +61,7 @@ describe('the update the desktop app downloaded (#290)', () => {
     expect(restartWords('0.7.0-rc.12', 0)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. No session runs on this computer, so none ends.')
     expect(restartWords('0.7.0-rc.12', 1)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. The session running on this computer ends.')
     expect(restartWords('0.7.0-rc.12', 3)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. The 3 sessions running on this computer end.')
+    // Not counted is never none.
+    expect(restartWords('0.7.0-rc.12', -1)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. The sessions running on this computer, if any, end: they could not be counted.')
   })
 })

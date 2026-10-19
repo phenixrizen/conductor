@@ -84,6 +84,34 @@ export class UpdateNotice {
   }
 }
 
+/** What restartToInstall needs of the app. */
+export interface RestartDeps {
+  /** Lets the windows close and a quit go through without stopping the server again (main.ts's quitting), or no longer. */
+  letGo: (on: boolean) => void
+  stopServer: () => Promise<void>
+  startServer: () => Promise<void>
+  /** autoUpdater.quitAndInstall: the updater quits the app to install. */
+  install: () => void
+  log: (line: string) => void
+}
+
+/**
+ * restartToInstall is Restart to update (#290). The server stops first, as a quit stops it; then the windows may close and the
+ * quit go through (closing to the tray would hide them, and macOS's updater closes them before it quits) and the updater quits
+ * the app to install. An install that throws gives the app back its server, so it goes on as it was.
+ */
+export async function restartToInstall(d: RestartDeps): Promise<void> {
+  d.letGo(true)
+  await d.stopServer().catch(() => {})
+  try {
+    d.install()
+  } catch (e) {
+    d.log(`updates: the install did not start: ${(e as Error).message}`)
+    d.letGo(false)
+    await d.startServer().catch(() => {})
+  }
+}
+
 /**
  * installFailed says whether the update announced (settings' updateAnnounced) is newer than the version running: the app was
  * quit, or ended, since, and the update did not install (macOS, for one, updates only a signed app). '' or unreadable: no.

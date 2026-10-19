@@ -100,9 +100,36 @@ test('restart to update says what it ends, Later leaves it, and the restart inst
   await expect(modal).toHaveCount(0)
   expect(await page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBeNull()
 
+  // Sessions that cannot be counted are never said to be none.
+  await page.route('**/api/sessions', (r) => r.abort())
   await page.locator('[data-header-update]').first().click()
+  await expect(modal).toContainText('The sessions running on this computer, if any, end: they could not be counted.')
+  await page.unroute('**/api/sessions')
   await page.locator('[data-update-restart]').click()
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBe('1')
+})
+
+// A window hidden in the tray asks nothing when a check finds the update:
+// told once, it would take the announcement for a toast nobody sees. It
+// asks as it shows again.
+test('a hidden window asks once it shows again, and only then is told', async ({ page, state }) => {
+  await stubApp(page, state.token, state.baseURL, { ready: '', announce: false, failed: '' })
+  await page.goto('/yard')
+  await expect(page.locator('[data-sidebar-menus]').first()).toBeVisible()
+  const shown = (visible: boolean) =>
+    page.evaluate((visible) => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (visible ? 'visible' : 'hidden') })
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => !visible })
+      document.dispatchEvent(new Event('visibilitychange'))
+    }, visible)
+  await shown(false)
+  await found(page, { ready: '0.7.0-rc.12', announce: true, failed: '' })
+  await page.waitForTimeout(500)
+  expect(await page.evaluate(() => (window as unknown as { e2eUpdate: Told }).e2eUpdate.announce)).toBe(true)
+  await expect(page.locator('li').filter({ hasText: READY })).toHaveCount(0)
+  await shown(true)
+  await expect(page.locator('li').filter({ hasText: READY })).toHaveCount(1)
+  await expect(page.locator('[data-header-update]').first()).toBeVisible()
 })
 
 test('an update that did not install is said once, with the way to the log', async ({ page, state }) => {

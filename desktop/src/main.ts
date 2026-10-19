@@ -13,13 +13,13 @@ import { ServerSupervisor } from './server'
 import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, saveSettings, switchyardRefused, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
-import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin } from './window'
+import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
 import { nextZoom, zoomKey, type ZoomMove } from './zoom'
 import { WslLauncher, wslAvailable, wslNetworkingMode } from './launcher-wsl'
 import { ICE_UDP_PORT, UdpForwarder, windowsLanAddress } from './udp-forwarder'
 import { allowIceThroughFirewall, firewallRuleExists, type IceStatus } from './firewall'
 import { InviteDelivery, inviteInArgv, invitePath, parseInvite, type Invite } from './invite'
-import { RELEASES_URL, UpdateNotice, installFailed, startUpdater, updateChannel } from './updater'
+import { RELEASES_URL, UpdateNotice, installFailed, restartToInstall, startUpdater, updateChannel } from './updater'
 import { buildLine, showSplash, SPLASH_STEPS, splashQuery, type Splash } from './splash'
 
 const dev = !app.isPackaged
@@ -275,7 +275,7 @@ async function run() {
       }
       return { ...updates.take(), failed }
     },
-    installUpdate: () => installUpdate?.(),
+    installUpdate: () => restartForUpdate(),
     mainWindow: () => main,
     inviteReady: (sender) => {
       if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageReady()
@@ -364,7 +364,7 @@ async function run() {
     restart: () => void supervisor.restart().catch(() => {}),
     showLog,
     quit: () => app.quit(),
-    installUpdate: () => installUpdate?.(),
+    installUpdate: () => restartForUpdate(),
   })
   tray = inTray.tray
   trayUpdate = inTray.update
@@ -373,8 +373,9 @@ async function run() {
   void startUpdater(channel, logs, (version) => {
     updates.downloaded(version)
     trayUpdate?.(version)
-    // The page asks what to say (UpdateNotice): one not open, or not ready yet, asks as it loads.
-    if (main && !main.isDestroyed()) main.webContents.send('conductor:update')
+    // Every workbench window asks what to say (UpdateNotice), a second one opened from the first too; one not open, or not
+    // ready yet, asks as it loads.
+    for (const w of workbenchWindows(BrowserWindow.getAllWindows(), origin())) w.webContents.send('conductor:update')
   }).then((install) => (installUpdate = install))
 
   app.on('second-instance', (_e, argv) => {
@@ -383,6 +384,21 @@ async function run() {
     show().focus()
   })
   app.on('activate', () => show())
+  // Restart to update (#290), from the workbench or the tray: the server stops, then the updater quits the app to install.
+  function restartForUpdate() {
+    const install = installUpdate
+    if (!install || quitting) return
+    log('main', 'updates: restarting to install')
+    void restartToInstall({
+      letGo: (on) => (quitting = on),
+      stopServer: () => supervisor.stop(),
+      startServer: async () => {
+        await supervisor.start()
+      },
+      install,
+      log: (l) => log('main', l),
+    })
+  }
   app.on('window-all-closed', () => {
     if (!settings.closeToTray) app.quit()
   })

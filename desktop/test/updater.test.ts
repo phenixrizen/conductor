@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { UpdateNotice, compareVersions, installFailed, updateChannel } from '../src/updater'
+import { UpdateNotice, compareVersions, installFailed, restartToInstall, updateChannel } from '../src/updater'
 
 describe('update channel', () => {
   it('updates itself on macOS, Windows and AppImage, points at the releases for deb and rpm, and never in development', () => {
@@ -74,5 +74,38 @@ describe('the update notice (#290)', () => {
       expect(compareVersions(order[i]!, order[i]!)).toBe(0)
     }
     expect(compareVersions('0.7.0+build.5', '0.7.0')).toBe(0)
+  })
+})
+
+describe('restart to install (#290)', () => {
+  function app(install: () => void) {
+    const steps: string[] = []
+    return {
+      steps,
+      d: {
+        letGo: (on: boolean) => steps.push(on ? 'let go' : 'hold'),
+        stopServer: async () => void steps.push('stop server'),
+        startServer: async () => void steps.push('start server'),
+        install: () => {
+          steps.push('install')
+          install()
+        },
+        log: (l: string) => steps.push(l),
+      },
+    }
+  }
+
+  it('stops the server, lets the windows close and the quit through, then installs', async () => {
+    const a = app(() => {})
+    await restartToInstall(a.d)
+    expect(a.steps).toEqual(['let go', 'stop server', 'install'])
+  })
+
+  it('gives the app back its server when the install does not start', async () => {
+    const a = app(() => {
+      throw new Error('No update filepath provided')
+    })
+    await restartToInstall(a.d)
+    expect(a.steps).toEqual(['let go', 'stop server', 'install', 'updates: the install did not start: No update filepath provided', 'hold', 'start server'])
   })
 })

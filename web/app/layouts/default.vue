@@ -106,13 +106,31 @@ async function askUpdate() {
     toast.add({ ...updateFailedWords(u.failed), icon: 'i-lucide-triangle-alert', color: 'warning', duration: 30000, actions: [{ label: 'Show the log', onClick: () => void b?.showLog() }] })
   }
 }
+// A window hidden in the tray asks nothing: the first to ask is told the update once, and a toast there would go unseen. It
+// asks once it shows again.
+let askWhenShown = false
+function askUpdateShown() {
+  if (document.visibilityState !== 'visible') {
+    askWhenShown = true
+    return
+  }
+  askWhenShown = false
+  void askUpdate()
+}
+function onVisibility() {
+  if (askWhenShown && document.visibilityState === 'visible') askUpdateShown()
+}
 let offUpdate: (() => void) | undefined
 onMounted(() => {
   if (!desktop.bridge.value?.update) return
-  void askUpdate()
-  offUpdate = desktop.bridge.value.onUpdate?.(() => void askUpdate())
+  document.addEventListener('visibilitychange', onVisibility)
+  askUpdateShown()
+  offUpdate = desktop.bridge.value.onUpdate?.(askUpdateShown)
 })
-onBeforeUnmount(() => offUpdate?.())
+onBeforeUnmount(() => {
+  offUpdate?.()
+  document.removeEventListener('visibilitychange', onVisibility)
+})
 
 /** Saves the full sidebar's width (Nuxt UI's `--width` on its root, in percent) once a drag or a double-click on the handle has set it. */
 async function keepWidth() {

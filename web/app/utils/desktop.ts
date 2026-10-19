@@ -135,10 +135,19 @@ export function updateFailedWords(version: string): { title: string; description
   }
 }
 
-/** What restarting to update ends: the app quits to install version, and the server with it, ending the sessions running on it. */
+/**
+ * What restarting to update ends: the app quits to install version, and the server with it, ending the sessions running on it;
+ * sessions is how many, or negative when they could not be counted, which never reads as none.
+ */
 export function restartWords(version: string, sessions: number): string {
   const ends =
-    sessions === 0 ? 'No session runs on this computer, so none ends.' : sessions === 1 ? 'The session running on this computer ends.' : `The ${sessions} sessions running on this computer end.`
+    sessions < 0
+      ? 'The sessions running on this computer, if any, end: they could not be counted.'
+      : sessions === 0
+        ? 'No session runs on this computer, so none ends.'
+        : sessions === 1
+          ? 'The session running on this computer ends.'
+          : `The ${sessions} sessions running on this computer end.`
   return `Conductor quits to install ${version}, and its server stops. ${ends}`
 }
 

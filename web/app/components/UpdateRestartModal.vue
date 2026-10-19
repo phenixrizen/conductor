@@ -13,8 +13,9 @@ const busy = ref(false)
 watch(restartOpen, async (open) => {
   if (!open) return
   running.value = null
-  const list = await sessions.list().catch(() => [])
-  running.value = list.filter((s) => s.kind === 'server' && sessionLive(s.status)).length
+  // Sessions that could not be counted are not none: the words say they may end (restartWords).
+  const list = await sessions.list().catch(() => null)
+  running.value = list ? list.filter((s) => s.kind === 'server' && sessionLive(s.status)).length : -1
 })
 async function restart() {
   busy.value = true
