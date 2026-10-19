@@ -96,7 +96,7 @@ computer's own address, there is one answer and the question is not asked. The w
 sidebar switches to light and remembers it. The session page shows the
 terminal, a reply bar whenever the agent
 is waiting (type an answer, or press the numbered buttons a Claude Code
-permission prompt offers), and an inspector with **People** (who is attached,
+dialog offers, read off the dialog itself), and an inspector with **People** (who is attached,
 their role and link, who is typing), **Files** (the file browser) and
 **Activity** (joins, answers, signals and link changes). The header names the
 agent, where it runs, the working directory and the git branch, shows a
@@ -664,9 +664,13 @@ an attention word, or a hook mapped to one) that the server answers `429` is
 tried again after 0.1, 0.25, 0.5, 1 and 2 s, within the 5 s the command takes
 at most; an event is tried once. Sessions that need a human show an amber
 **needs input** badge, move to the top of the sidebar, count in the tab title,
-can raise a browser notification, and appear in the Yard's queue. Claude Code
-permission requests arrive with their options, so **Yes / Always / No** buttons
-appear wherever the prompt is shown. Every report also lands in the session's
+can raise a browser notification, and appear in the Yard's queue. Claude Code's
+dialogs (a tool's permission, the plan's approval, AskUserQuestion's choices)
+offer their own choices wherever the prompt is shown, read off the dialog as
+it is drawn: a choice that changes the permission mode (auto mode, accept
+edits, bypass permissions) gets no number key and is never the highlighted
+one. A permission question whose dialog the screen does not show (a hosted
+session's) is answered in the terminal. Every report also lands in the session's
 activity log and in the live feed of the **Events** page.
 
 **The Events page** has three tabs. **Feed** (the default) lists the events
@@ -1036,6 +1040,9 @@ watches: the member is in Needs you with the question, the command and the
 three choices, each of which types its own key (`y`, `p`, Esc); typed text
 is refused while it shows, since its letters are the dialog's keys and its
 Enter would approve. A catalog question marked `anytime` is held this way.
+Claude Code's dialogs during the work are held the same way, their choices
+read off the dialog each time it shows (the catalog's `answersFromScreen`),
+since they change with the tool, the permission mode and the release.
 
 **Worktrees.** With isolation set to *Git worktree per agent*, the working
 directory must be in a git repository that has a commit (otherwise the launch

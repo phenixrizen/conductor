@@ -1,0 +1,178 @@
+package session
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+// newClaudeSession is a session of Claude Code's, 120 by 40 as its dialogs
+// were captured, with its question asked during the work (the catalog's)
+// and a controller attached.
+func newClaudeSession(t *testing.T) (*Local, *fakeProc, *Subscription) {
+	t.Helper()
+	p := newFakeProc()
+	s := NewLocal(Info{ID: "sess", Cwd: realDir(t, t.TempDir()), Cols: 120, Rows: 40}, p, quiet(Options{Questions: []StartupQuestion{claudeQuestion(t)}}))
+	t.Cleanup(func() { p.exit() })
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nater", Cols: 120, Rows: 40}, newChanSink(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, p, sub
+}
+
+// drawn is what a TUI writes to show text, a screen's rows: the screen
+// erased, then each row placed with a cursor move.
+func drawn(text string) []byte {
+	var b strings.Builder
+	b.WriteString("\x1b[H\x1b[2J")
+	for i, row := range strings.Split(text, "\n") {
+		fmt.Fprintf(&b, "\x1b[%d;1H%s", i+1, row)
+	}
+	return []byte(b.String())
+}
+
+// claudeBashFor is claudeBash for another command.
+func claudeBashFor(cmd string) string { return strings.ReplaceAll(claudeBash, "probe.txt", cmd) }
+
+// claudeAtRest is Claude Code at rest after a dialog went: what it said,
+// its prompt box and its status line.
+func claudeAtRest(said string) string {
+	return screenRows("  ⎿  "+said, "", solidRule, "❯ ", solidRule, "  ⏸ manual mode on · ? for shortcuts")
+}
+
+// The hook's report comes first, with no choices: a page offers none, for
+// the dialog's are not read yet. The dialog drawn takes its place with its
+// own words and choices, the one that switches to auto mode marked, and
+// holds typed text; its choice's key answers it, and it goes with the
+// dialog.
+func TestClaudeCodesDialogIsAskedWithItsOwnChoices(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := s.Info().Attention; a.Source != SourceAPI || a.Kind != KindPermission || a.Options != nil {
+		t.Fatalf("the hook's report: %+v", a)
+	}
+	p.outW.Write(drawn(claudeBash))
+	att := waitAttention(t, s, asked)
+	want := []Option{{Label: "Yes", Input: "1"}, {Label: "Yes, and always allow access to /home/dev/project from this project", Input: "2"}, {Label: "Yes, and switch to auto mode · auto mode handles these prompts for you", Input: "3", Mode: true}, {Label: "No", Input: "4"}}
+	if !sameOptions(att.Options, CleanOptions(want)) || att.Kind != KindPermission {
+		t.Fatalf("the dialog's choices %+v", att.Options)
+	}
+	if att.Message != `Bash command Tip: auto mode handles these prompts for you — choose "switch to auto mode" below Create empty file probe.txt touch probe.txt Do you want to proceed?` {
+		t.Fatalf("its words %q", att.Message)
+	}
+	// A report after it does not hide it (Claude Code's permission_prompt
+	// notification comes later).
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Claude needs your permission to use Bash", SourceAPI, KindPermission, nil); err != nil {
+		t.Fatal(err)
+	}
+	if a := s.Info().Attention; a.ID != att.ID || !asked(a) {
+		t.Fatalf("a later report hid the dialog: %+v", a)
+	}
+	if _, err := s.Submit(t.Context(), Submission{Text: "yes please", By: sub}); !errors.Is(err, ErrQuestion) {
+		t.Fatalf("typed text at the dialog: %v", err)
+	}
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("4")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "4" {
+		t.Fatalf("written %q", got)
+	}
+	p.outW.Write(drawn(claudeAtRest("Interrupted · What should Claude do instead?")))
+	waitAttention(t, s, func(a Attention) bool { return a.State != AttentionNeedsInput })
+}
+
+// Two dialogs one after the other are two questions, the hook's word that
+// Claude Code works again (its PreToolUse) between them: the second is
+// answered as the first was, the same command again included.
+func TestClaudeCodesDialogsOneAfterTheOtherAreEachAsked(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	for i, cmd := range []string{"probe.txt", "notes.txt", "notes.txt"} {
+		p.outW.Write(drawn(claudeBashFor(cmd)))
+		att := waitAttention(t, s, func(a Attention) bool { return asked(a) && strings.Contains(a.Message, "touch "+cmd) })
+		if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("1")); err != nil {
+			t.Fatalf("dialog %d: %v", i+1, err)
+		}
+		if got := nextWrite(t, p); got != "1" {
+			t.Fatalf("dialog %d: written %q", i+1, got)
+		}
+		p.outW.Write(drawn(claudeAtRest("$ touch " + cmd)))
+		if err := s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A reply to a dialog whose choices changed under it (another plan's
+// approval drawn, the words the same) is refused, nothing written: the
+// question a page showed is told by its choices too.
+func TestAReplyToAClaudeDialogWhoseChoicesChangedIsRefused(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	p.outW.Write(drawn(claudePlan(planAuto, 1)))
+	att := waitAttention(t, s, asked)
+	if len(att.Options) != 3 || !att.Options[0].Mode || att.Options[1].Mode || att.Message != "Claude has written up a plan and is ready to execute. Would you like to proceed?" {
+		t.Fatalf("the plan's approval %+v", att)
+	}
+	p.outW.Write(drawn(claudePlan(planBypass, 1)))
+	time.Sleep(100 * time.Millisecond) // read, not yet quiet
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("2")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the plan whose choices changed: %v", err)
+	}
+	noWrite(t, p, 100*time.Millisecond)
+	again := waitAttention(t, s, func(a Attention) bool {
+		return asked(a) && len(a.Options) == 3 && a.Options[0].Label == "Yes, and switch to BYPASS PERMISSIONS (no further prompts)…"
+	})
+	if err := s.AnswerInput(t.Context(), sub, again.ID, []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextWrite(t, p); got != "2" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// AskUserQuestion of two questions asks each page and then its last one,
+// "Ready to submit your answers?" with no footer, which holds Conductor's
+// own text as the pages do: its Enter would submit the answers.
+func TestClaudeCodesQuestionPagesAndItsLastPageAreAsked(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	second := strings.NewReplacer("☐ Color", "☒ Color", "red or blue", "small or large", "Red", "Small", "Blue", "Large").Replace(claudeAsk)
+	for i, page := range []string{claudeAsk, second} {
+		p.outW.Write(drawn(page))
+		att := waitAttention(t, s, func(a Attention) bool { return asked(a) && len(a.Options) == 4 })
+		if i == 1 && !strings.Contains(att.Message, "small or large") {
+			t.Fatalf("the second page: %+v", att)
+		}
+		if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("1")); err != nil {
+			t.Fatalf("page %d: %v", i+1, err)
+		}
+		nextWrite(t, p)
+	}
+	p.outW.Write(drawn(claudeAskReview))
+	last := waitAttention(t, s, func(a Attention) bool { return asked(a) && len(a.Options) == 2 })
+	if last.Options[0] != (Option{Label: "Submit answers", Input: "1"}) || !strings.HasSuffix(last.Message, "Ready to submit your answers?") {
+		t.Fatalf("the last page %+v", last)
+	}
+	if res, err := s.Submit(t.Context(), Submission{Text: "handoff", ByName: "crew", UnlessWaiting: true}); err != nil || res.Typed {
+		t.Fatalf("Conductor's own text at the last page: %+v %v", res, err)
+	}
+	noWrite(t, p, 200*time.Millisecond)
+}
+
+// A whole dialog quoted in the transcript, Claude Code's prompt box below
+// it, asks nothing: the hook's report stays as it is, without choices.
+func TestAClaudeDialogQuotedInTheTranscriptAsksNothing(t *testing.T) {
+	s, p, _ := newClaudeSession(t)
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, nil); err != nil {
+		t.Fatal(err)
+	}
+	p.outW.Write(drawn(claudeQuoted))
+	time.Sleep(900 * time.Millisecond)
+	if a := s.Info().Attention; a.Source != SourceAPI || a.Options != nil {
+		t.Fatalf("a quoted dialog was asked: %+v", a)
+	}
+}

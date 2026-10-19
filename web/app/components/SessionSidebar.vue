@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
-import { newlyNeedingInput } from '~/utils/attention'
+import { choiceKey, newlyNeedingInput } from '~/utils/attention'
 import { sidebarRunFor } from '~/utils/crews'
 import { filterSessions } from '~/utils/sessions'
 import { joinedPath } from '~/utils/joined'
@@ -291,8 +291,9 @@ function onKey(e: KeyboardEvent) {
   const n = Number(e.key)
   if (Number.isInteger(n) && n >= 1 && n <= 9) {
     own()
-    // The digit names the question the focused row shows as it is pressed.
-    if (row?.kind === 'session' && row.prompt?.options[n - 1]) answer(row, n - 1, row.prompt.question)
+    // The digit names the question the focused row shows as it is pressed; a choice that changes the permission mode has none.
+    const o = row?.kind === 'session' ? row.prompt?.options[n - 1] : undefined
+    if (row?.kind === 'session' && o && choiceKey(o, n - 1) === n) answer(row, n - 1, row.prompt?.question)
   }
 }
 

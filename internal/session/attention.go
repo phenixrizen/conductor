@@ -75,10 +75,14 @@ func ValidKind(k string) bool {
 }
 
 // Option is one quick-reply choice: Input is exactly what a client sends as
-// INPUT when the human picks it.
+// INPUT when the human picks it. Mode marks a choice that changes the
+// session's permission mode (a dialog's "switch to auto mode", read off
+// the screen: StartupQuestion.Mode): a page gives it no number key and
+// never offers it first.
 type Option struct {
 	Label string `json:"label"`
 	Input string `json:"input"`
+	Mode  bool   `json:"mode,omitempty"`
 }
 
 // Limits for quick-reply options.
@@ -95,7 +99,18 @@ func CleanOptions(in []Option) []Option {
 	for _, o := range in {
 		label := CleanMessage(o.Label)
 		if r := []rune(label); len(r) > MaxOptionLabel {
-			label = strings.TrimSpace(string(r[:MaxOptionLabel]))
+			// Cut with an ellipsis, where a word ends when one ends near
+			// the bound, so that a long label reads as cut (Claude Code's
+			// "Yes, and switch to BYPASS PERMISSIONS (no further prompts)
+			// for this session", read off its dialog).
+			cut := MaxOptionLabel - 1
+			for i := cut; i > MaxOptionLabel*2/3; i-- {
+				if r[i] == ' ' {
+					cut = i
+					break
+				}
+			}
+			label = strings.TrimSpace(string(r[:cut])) + "…"
 		}
 		input := o.Input
 		if len(input) > MaxOptionInput {
@@ -104,7 +119,7 @@ func CleanOptions(in []Option) []Option {
 		if label == "" || input == "" {
 			continue
 		}
-		out = append(out, Option{Label: label, Input: input})
+		out = append(out, Option{Label: label, Input: input, Mode: o.Mode})
 		if len(out) == MaxAttentionOptions {
 			break
 		}

@@ -73,23 +73,37 @@ func TestFromEnvAndSend(t *testing.T) {
 	}
 }
 
-func TestMapClaudeHookPermissionOptions(t *testing.T) {
+// A Claude Code permission request is reported with no choices (#288): its
+// dialog's choices differ by tool, mode and release (2.1.304's Bash dialog
+// has four, its 3 switching to auto mode, where the fixed list's "No,
+// explain…" was 3), and the session reads them off the dialog itself.
+func TestMapClaudeHookPermissionCarriesNoChoices(t *testing.T) {
 	req, ok := MapClaudeHook([]byte(`{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf x"}}`))
-	if !ok || req.State != "needs_input" || req.Kind != "permission" {
+	if !ok || req.State != "needs_input" || req.Kind != "permission" || req.Message != "Allow Bash?" || req.Options != nil {
 		t.Fatalf("%+v %v", req, ok)
-	}
-	if req.Message != "Allow Bash?" {
-		t.Fatalf("message %q", req.Message)
-	}
-	if len(req.Options) != 3 || req.Options[0].Input != "1" || req.Options[2].Input != "3" || req.Options[0].Label != "Yes" {
-		t.Fatalf("options %+v", req.Options)
 	}
 }
 
 func TestMapClaudeHookPermissionPromptNotification(t *testing.T) {
 	req, ok := MapClaudeHook([]byte(`{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}`))
-	if !ok || req.Kind != "permission" || len(req.Options) != 3 || req.Message != "Claude needs your permission to use Bash" {
+	if !ok || req.Kind != "permission" || req.Options != nil || req.Message != "Claude needs your permission to use Bash" {
 		t.Fatalf("%+v", req)
+	}
+}
+
+// The plan's approval and AskUserQuestion come as permission requests too
+// (seen with Claude Code 2.1.304): their words say what they ask, the
+// plan's approval and the question, never "Allow ExitPlanMode?".
+func TestMapClaudeHookPlanAndQuestionSayWhatTheyAsk(t *testing.T) {
+	for _, c := range []struct{ payload, want string }{
+		{`{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"Create hello.txt containing hi.\n","planFilePath":"/home/dev/.claude/plans/plan-creating-a-file.md"}}`, "Claude Code has a plan for you to approve"},
+		{`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Do you prefer red or blue?","header":"Color","options":[{"label":"Red","description":"Prefer red"},{"label":"Blue","description":"Prefer blue"}],"multiSelect":false}]}}`, "Do you prefer red or blue?"},
+		{`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{}}`, "Claude Code asks you a question"},
+	} {
+		req, ok := MapClaudeHook([]byte(c.payload))
+		if !ok || req.State != "needs_input" || req.Kind != "permission" || req.Message != c.want || req.Options != nil {
+			t.Fatalf("%s: %+v %v", c.payload, req, ok)
+		}
 	}
 }
 
@@ -102,7 +116,7 @@ func TestMapClaudeHookUnknownNotificationIsPlainPrompt(t *testing.T) {
 
 func TestMapClaudeHookPermissionWithoutToolName(t *testing.T) {
 	req, _ := MapClaudeHook([]byte(`{"hook_event_name":"PermissionRequest"}`))
-	if req.Message != "Allow this action?" || len(req.Options) != 3 {
+	if req.Message != "Allow this action?" || req.Options != nil {
 		t.Fatalf("%+v", req)
 	}
 }
@@ -183,7 +197,7 @@ func TestRequestEventBodyIsAnEventsRequest(t *testing.T) {
 }
 
 func TestRequestEventBodyKeepsKindAndOptions(t *testing.T) {
-	_, _, body := sendTo(t, "/api/sessions/s1/attention", Request{Event: "needs_input", Message: "Allow?", Kind: "permission", Options: permissionOptions()})
+	_, _, body := sendTo(t, "/api/sessions/s1/attention", Request{Event: "needs_input", Message: "Allow?", Kind: "permission", Options: []Option{{Label: "Yes", Input: "1"}, {Label: "Yes, and always allow", Input: "2"}, {Label: "No", Input: "3"}}})
 	if body["type"] != "needs_input" || body["kind"] != "permission" || len(body["options"].([]any)) != 3 {
 		t.Fatalf("body %v", body)
 	}

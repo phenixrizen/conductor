@@ -222,7 +222,7 @@ func TestHostAttentionMsgCarriesTheMark(t *testing.T) {
 	}
 	big := HostAttentionMsg{T: HostAttention, SessionID: strings.Repeat("s", 64), State: "needs_input", Message: strings.Repeat("é", 250), Source: "question", Kind: "permission", ID: strings.Repeat("0", 32), Ask: true}
 	for range 6 {
-		big.Options = append(big.Options, AttentionOption{Label: strings.Repeat("é", 60), Input: strings.Repeat("\x01", MaxAnswerInput)})
+		big.Options = append(big.Options, AttentionOption{Label: strings.Repeat("é", 60), Input: strings.Repeat("\x01", MaxAnswerInput), Mode: true})
 	}
 	if b, _ := json.Marshal(big); len(b) > MaxHostMessage/8 {
 		t.Fatalf("the largest attention message is %d bytes", len(b))

@@ -1,5 +1,5 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
-import { TERMINAL_FIRST, waitsForTerminal } from './attention'
+import { ANSWER_IN_TERMINAL, TERMINAL_FIRST, answersInTerminal, waitsForTerminal } from './attention'
 import type { AttentionOption } from './protocol'
 import type { SessionRow } from './sidebar'
 
@@ -69,7 +69,10 @@ export interface RowPrompt {
   choices: AttentionOption[]
   /** A hosted session whose host is away: nothing reaches it until the host is back. */
   away: boolean
-  /** The session waits for someone to type in its terminal (waitsForTerminal): a reply would only wait, so none is taken. */
+  /**
+   * The session waits for someone to type in its terminal (waitsForTerminal), a reply would only wait, or its question is answered
+   * there (answersInTerminal), a reply's Enter would pick what its dialog highlights: none is taken.
+   */
   held: boolean
   placeholder: string
   /** The question's id: an answer from the row names it, and the owner refuses it once the question no longer waits. */
@@ -81,8 +84,10 @@ export const HOST_AWAY = 'The host is away'
 export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPrompt | null {
   if (!row.prompt) return null
   const away = row.session.status === 'host_disconnected'
-  const held = waitsForTerminal(row.session.attention)
-  return { message: row.prompt.message, choices: row.prompt.options, away, held, placeholder: away ? HOST_AWAY : held ? TERMINAL_FIRST : 'Reply…', question: row.prompt.question }
+  const typing = waitsForTerminal(row.session.attention)
+  const terminal = answersInTerminal(row.session.attention)
+  const placeholder = away ? HOST_AWAY : typing ? TERMINAL_FIRST : terminal ? ANSWER_IN_TERMINAL : 'Reply…'
+  return { message: row.prompt.message, choices: row.prompt.options, away, held: typing || terminal, placeholder, question: row.prompt.question }
 }
 
 /** What the account menu beside the sidebar's name offers (design 3b): your name, the shortcuts, the theme, the workbench token. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionInfo } from '~/composables/useSessions'
-import { TERMINAL_FIRST } from './attention'
+import { ANSWER_IN_TERMINAL, TERMINAL_FIRST } from './attention'
 import { HOST_AWAY, accountItems, rowMenuItems, rowPrompt, sessionLive, stopQuestion } from './sidebarActions'
 
 const on = { open: () => {}, openRun: () => {}, share: () => {}, yard: () => {}, stop: () => {}, forget: () => {} }
@@ -70,6 +70,15 @@ describe('rowPrompt', () => {
     expect(p?.held).toBe(true)
     expect(p?.away).toBe(false)
     expect(p?.placeholder).toBe(TERMINAL_FIRST)
+  })
+
+  it('takes no reply to a permission dialog whose choices it was not given: it is answered in the terminal (#288)', () => {
+    const dialog = { ...session('running'), attention: { state: 'needs_input', source: 'api', kind: 'permission', message: 'Allow Bash?' } } as SessionInfo
+    const p = rowPrompt({ session: dialog, prompt: { message: 'Allow Bash?', options: [], kind: 'permission' } })
+    expect(p).toMatchObject({ held: true, away: false, placeholder: ANSWER_IN_TERMINAL, choices: [] })
+    // With its choices read off the dialog, they are the answer.
+    const read = { ...dialog, attention: { ...dialog.attention, source: 'question', options } } as SessionInfo
+    expect(rowPrompt({ session: read, prompt: { message: 'Allow Bash?', options, kind: 'permission' } })).toMatchObject({ held: false, placeholder: 'Reply…', choices: options })
   })
 })
 

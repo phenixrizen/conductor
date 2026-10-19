@@ -1,5 +1,5 @@
 import type { SessionInfo } from '~/composables/useSessions'
-import type { Attention } from '~/utils/protocol'
+import type { Attention, AttentionOption } from '~/utils/protocol'
 
 /**
  * Whether the session waits for a person to type into its terminal: a submission's text was typed and not entered,
@@ -19,6 +19,34 @@ export function waitingHeading(a: Pick<Attention, 'state' | 'source'> | undefine
  * terminal, and a reply box's connection would not see it go or fail.
  */
 export const TERMINAL_FIRST = 'Type in the terminal first'
+
+/**
+ * Whether the session's question is answered in its terminal (#288): a permission dialog whose choices the page has not been given
+ * (the screen did not show them: a hosted session's dialog, one not read, the moment before the screen is read). A typed reply's
+ * Enter would pick whatever the dialog highlights, so none is taken.
+ */
+export function answersInTerminal(a: Pick<Attention, 'state' | 'kind' | 'options'> | undefined): boolean {
+  return a?.state === 'needs_input' && a.kind === 'permission' && !a.options?.length
+}
+
+/** What a reply field says while the question is answered in the terminal (answersInTerminal). */
+export const ANSWER_IN_TERMINAL = 'Answer it in the terminal'
+
+/**
+ * The number key a page gives the choice at index i, which picks it: its place in the list, 1 to 9; none for one that changes the
+ * session's permission mode (#288), which is clicked or nothing.
+ */
+export function choiceKey(o: AttentionOption, i: number): number | undefined {
+  return o.mode || i >= 9 ? undefined : i + 1
+}
+
+/** The choice a page offers first, highlighted: the first that does not change the permission mode (#288); -1 for none. */
+export function firstChoice(options: AttentionOption[] | undefined): number {
+  return options?.findIndex((o) => !o.mode) ?? -1
+}
+
+/** What a choice that changes the session's permission mode says on hover. */
+export const MODE_CHOICE = "Changes the session's permission mode"
 
 /**
  * The attention as the pages read it (#258): a question keys typed in the terminal have answered (`answered`) is no question to

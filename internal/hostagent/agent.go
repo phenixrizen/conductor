@@ -851,7 +851,7 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
 	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered}
 	for _, o := range att.Options {
-		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
 	return m
 }
@@ -1275,7 +1275,7 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		}
 		var opts []session.Option
 		for _, o := range m.Options {
-			opts = append(opts, session.Option{Label: o.Label, Input: o.Input})
+			opts = append(opts, session.Option{Label: o.Label, Input: o.Input, Mode: o.Mode})
 		}
 		// The server's listing took this report without an id (the id is
 		// the session's, given as it applies it), and one the session

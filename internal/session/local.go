@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1059,17 +1060,19 @@ func (s *Local) fireAsked(text string) {
 	// answered. Output since the look (the frame's end, a resize) does not
 	// change that: the look decides on the screen it saw.
 	look, settled, cols := s.asked.Look()
-	for _, q := range s.askedQuestions {
-		if words := atWidth(q.words(text), cols); words != "" {
-			s.mu.Lock()
-			if settled && !sameWords(s.dialogAnswered, words) {
-				s.dialogGone(look)
-			}
-			s.mu.Unlock()
-			s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(q.Answers), unlessStartup|sameDialog)
-			return
-		}
+	_, words, answers := s.askedIn(text, cols)
+	if words == "" {
+		// Found, and no list to read on it (a question whose answers are
+		// read off the screen): the screen shows none of the questions.
+		s.missAsked(text)
+		return
 	}
+	s.mu.Lock()
+	if settled && !sameWords(s.dialogAnswered, words) {
+		s.dialogGone(look)
+	}
+	s.mu.Unlock()
+	s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), unlessStartup|sameDialog)
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
@@ -1216,6 +1219,52 @@ type StartupQuestion struct {
 	// question drawn last there.
 	Words   *regexp.Regexp
 	Answers []Option
+	// FromScreen has the answers read off the screen each time the
+	// question is asked (the catalog's answersFromScreen, with Anytime):
+	// the numbered list its dialog draws (readList), in place of Answers,
+	// and without Words its words are the rows above that list.
+	FromScreen bool
+	// Mode, when set, matches the labels of the answers that change the
+	// session's permission mode (the catalog's modeAnswers): they are
+	// marked so (Option.Mode).
+	Mode *regexp.Regexp
+}
+
+// read returns what text, the screen the questions asked during the work
+// are read from, shows of q: its words (words) and its answers, those its
+// dialog lists when q reads them off the screen (FromScreen: readList,
+// the labels the words when no row stands above the list), q's own
+// otherwise, the ones that change the permission mode marked (Mode); ""
+// and none when text does not show it, or shows no list to read.
+func (q StartupQuestion) read(text string) (string, []Option) {
+	words := q.words(text)
+	if words == "" {
+		return "", nil
+	}
+	if !q.FromScreen {
+		answers := q.Answers
+		if q.Mode != nil {
+			answers = slices.Clone(answers)
+			for i := range answers {
+				answers[i].Mode = q.Mode.MatchString(answers[i].Label)
+			}
+		}
+		return words, answers
+	}
+	list, above := readList(text, q.Mode)
+	if len(list) == 0 {
+		return "", nil
+	}
+	if q.Words == nil {
+		if words = above; words == "" {
+			labels := make([]string, len(list))
+			for i, o := range list {
+				labels[i] = o.Label
+			}
+			words = strings.Join(labels, "\n")
+		}
+	}
+	return words, list
 }
 
 // words returns the question's words when text shows it, "" when it does
@@ -1943,7 +1992,7 @@ func sameOptions(a, b []Option) bool {
 func attentionMessage(att Attention) proto.Attention {
 	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered}
 	for _, o := range att.Options {
-		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
 	return m
 }
@@ -2583,8 +2632,9 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 		if s.asked != nil && mayAnswerDialog(maybe) && !isTerminalReport(data) {
 			screen, cols := s.asked.TextAt()
 			var q *StartupQuestion
-			if q, words = s.askedIn(screen, cols); q != nil {
-				onScreen = readDialog(q, words, screen)
+			var answers []Option
+			if q, words, answers = s.askedIn(screen, cols); q != nil {
+				onScreen = readDialog(words, answers, screen)
 			}
 		}
 		// A startup question a key surely answers is consumed, its screen
@@ -2794,13 +2844,13 @@ func (s *Local) typedKeys(sub *Subscription, data []byte, enter bool) {
 // askedIn returns the question asked during the work that text (the
 // screen's, read cols wide: TextAt) shows, and its words; nil and ""
 // when it shows none.
-func (s *Local) askedIn(text string, cols int) (*StartupQuestion, string) {
+func (s *Local) askedIn(text string, cols int) (*StartupQuestion, string, []Option) {
 	for i := range s.askedQuestions {
-		if words := s.askedQuestions[i].words(text); words != "" {
-			return &s.askedQuestions[i], atWidth(words, cols)
+		if words, answers := s.askedQuestions[i].read(text); words != "" {
+			return &s.askedQuestions[i], atWidth(words, cols), answers
 		}
 	}
-	return nil, ""
+	return nil, "", nil
 }
 
 // sized records the PTY's new size, which the screen the questions asked
@@ -3337,8 +3387,11 @@ func (s *Local) stillOnScreen(id string) error {
 	}
 	if s.asked != nil {
 		text, cols := s.asked.TextAt()
-		_, words := s.askedIn(text, cols)
-		if att.Source == SourceQuestion && !sameWords(words, att.words()) || att.Source != SourceQuestion && words != "" {
+		_, words, answers := s.askedIn(text, cols)
+		// The dialog on the screen is the question's when its words and
+		// its choices are (a list read off the screen whose labels changed,
+		// the words typed into a choice's field, is another).
+		if att.Source == SourceQuestion && (!sameWords(words, att.words()) || !sameOptions(CleanOptions(answers), att.Options)) || att.Source != SourceQuestion && words != "" {
 			return ErrQuestionAnswered
 		}
 	}
@@ -4290,14 +4343,14 @@ var namedKey = regexp.MustCompile(`\(\s*([A-Za-z]{1,3})\s*\)\s*$`)
 // escToCancel matches a dialog's footer that names Escape.
 var escToCancel = regexp.MustCompile(`(?i)\besc\b`)
 
-// readDialog is the dialog view of words, the question q's, as screen (its
-// text, rows joined by line breaks) shows it: its numbered lines and the
+// readDialog is the dialog view of words, a question's with its answers,
+// as screen (its text, rows joined by line breaks) shows it: its numbered lines and the
 // keys its rows name are read from its own rows, the run of rows without a
 // blank one that holds the last numbered line, and the rows below it (the
 // footer); numbered lines elsewhere (a list in the output above) are not
 // its own.
-func readDialog(q *StartupQuestion, words, screen string) *dialogView {
-	v := &dialogView{words: words, answers: CleanOptions(q.Answers), keys: map[string]bool{}}
+func readDialog(words string, answers []Option, screen string) *dialogView {
+	v := &dialogView{words: words, answers: CleanOptions(answers), keys: map[string]bool{}}
 	rows := strings.Split(screen, "\n")
 	last := -1
 	for i := len(rows) - 1; i >= 0 && last < 0; i-- {

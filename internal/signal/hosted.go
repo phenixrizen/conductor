@@ -1188,7 +1188,7 @@ func sameAttention(a, b session.Attention) bool {
 func hostAttentionMsg(sessionID string, att session.Attention, ask bool) proto.HostAttentionMsg {
 	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, Ask: ask, Answered: att.Answered}
 	for _, o := range att.Options {
-		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input})
+		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
 	return m
 }
@@ -1200,7 +1200,7 @@ func OptionsFromProto(in []proto.AttentionOption) []session.Option {
 	}
 	out := make([]session.Option, 0, len(in))
 	for _, o := range in {
-		out = append(out, session.Option{Label: o.Label, Input: o.Input})
+		out = append(out, session.Option{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
 	return out
 }

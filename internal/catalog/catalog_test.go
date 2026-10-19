@@ -1199,6 +1199,12 @@ func TestStartupQuestions(t *testing.T) {
 		{{Prompt: "Ready\\?", Words: "(", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "Ready\\?", Words: ".*", Answers: []Answer{{Label: "Yes", Input: "\r"}}}},
 		{{Prompt: "a"}, {Prompt: "b"}, {Prompt: "c"}, {Prompt: "d"}, {Prompt: "e"}, {Prompt: "f"}, {Prompt: "g"}, {Prompt: "h"}, {Prompt: "i"}},
+		// Answers read off the screen are a question asked at any time's,
+		// with no answers of its own; the mode pattern is a pattern.
+		{{Prompt: "Ready\\?", AnswersFromScreen: true}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, Answers: []Answer{{Label: "Yes", Input: "1"}}}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "("}},
+		{{Prompt: "Ready\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: ".*"}},
 	} {
 		a := ok
 		a.Questions = bad
@@ -1207,9 +1213,52 @@ func TestStartupQuestions(t *testing.T) {
 		}
 	}
 	good := ok
-	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}}
+	good.Questions = []Question{{Prompt: "Ready\\?", Answers: []Answer{{Label: "Yes", Input: "y\r"}}}, {Prompt: "Proceed\\?", Anytime: true, AnswersFromScreen: true, ModeAnswers: "(?i)auto mode"}}
 	if err := validate(good); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Claude Code's dialogs during the work are one question whose answers are
+// read off the screen (#288), its choices that change the permission mode
+// marked by their words; it round-trips through a saved override as the
+// other question fields do.
+func TestClaudeCodesDialogQuestion(t *testing.T) {
+	claude, _ := Default().Get("claude")
+	if len(claude.Questions) != 1 {
+		t.Fatalf("claude: %+v", claude.Questions)
+	}
+	q := claude.Questions[0]
+	if !q.Anytime || !q.AnswersFromScreen || len(q.Answers) != 0 || q.Words != "" {
+		t.Fatalf("claude's question %+v", q)
+	}
+	mode, err := CompilePattern(q.ModeAnswers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for label, want := range map[string]bool{
+		"Yes, and switch to auto mode · auto mode handles these prompts for you":                                          true,
+		"Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)": true,
+		"Yes, and use auto mode": true,
+		"Yes, and switch to BYPASS PERMISSIONS (no further prompts) for this session": true,
+		"Yes, and auto-accept edits":  true,
+		"Yes":                         false,
+		"Yes, manually approve edits": false,
+		"Yes, and always allow access to /home/dev/project from this project": false,
+		"Tell Claude what to change":                                          false,
+		"No":                                                                  false,
+	} {
+		if mode.MatchString(label) != want {
+			t.Errorf("%q: mode %v", label, !want)
+		}
+	}
+	b, err := json.Marshal(claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Agent
+	if err := json.Unmarshal(b, &back); err != nil || !reflect.DeepEqual(back.Questions, claude.Questions) {
+		t.Fatalf("round trip %+v %v", back.Questions, err)
 	}
 }
 
@@ -1366,4 +1415,34 @@ func TestTheE2ECodexCarriesTheBuiltInQuestions(t *testing.T) {
 		return
 	}
 	t.Fatal("no codex in the e2e catalog")
+}
+
+// The e2e suite's Claude Code (web/e2e/conductor.e2e.json, the stub with
+// Claude Code's recipes) carries the built-in entry's question asked
+// during the work, its dialogs read off the screen (#288), so that what the
+// specs check is what ships, and every spec that runs the stub runs with it.
+func TestTheE2EClaudeCodeCarriesTheBuiltInQuestion(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "e2e", "conductor.e2e.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Catalog struct {
+			Agents []Agent `json:"agents"`
+		} `json:"catalog"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	builtIn, _ := Default().Get("claude")
+	for _, a := range cfg.Catalog.Agents {
+		if a.ID != "claude" {
+			continue
+		}
+		if !reflect.DeepEqual(a.Questions, builtIn.Questions) {
+			t.Fatalf("the e2e Claude Code's questions differ from the built-in's:\n%+v\n%+v", a.Questions, builtIn.Questions)
+		}
+		return
+	}
+	t.Fatal("no claude in the e2e catalog")
 }

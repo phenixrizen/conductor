@@ -722,10 +722,18 @@ listing never holds an older id or none for long.
 `kind` describes the shape of a prompt so clients can offer one-click answers:
 `permission` (a numbered permission dialog), `prompt` (a free-text reply is
 expected), `done` (the agent finished its turn), or empty when unknown.
-`options` is at most 6 entries of `{label, input}`: `label` is shown on a
-button (≤ 60 runes) and `input` (≤ 48 bytes) is what is written when the
+`options` is at most 6 entries of `{label, input, mode?}`: `label` is shown on a
+button (≤ 60 runes; a longer one is cut where a word ends, with an ellipsis)
+and `input` (≤ 48 bytes) is what is written when the
 human picks it: an `answer`'s `input`, naming the question (see Answering a
-question), or, to an owner that predates `answer`, an INPUT frame. Clearing the state drops `kind` and `options`.
+question), or, to an owner that predates `answer`, an INPUT frame. `mode:
+true` marks a choice that changes the session's permission mode (Claude
+Code's "switch to auto mode", "accept edits", "bypass permissions"): pages
+give it no number key and never offer it first, highlighted; it is omitted
+when false. Clearing the state drops `kind` and `options`. A `needs_input`
+of kind `permission` with no `options` is a dialog whose choices the page is
+not given: pages take no typed reply for it (its Enter would pick what the
+dialog highlights) and say to answer it in the terminal.
 `conductor notify --state needs_input --message "…" --choices "a|b|c"` (at most
 6 choices of 40 bytes) reports `kind:"prompt"` with one option per choice whose
 `input` is the choice and a CR, so a click types it as a line; the agent is
@@ -736,13 +744,15 @@ with `ask: true`, the agent's own question (below); `--ask` with another
 that refuses `ask` as an unknown field (an older one) is sent the report
 again without it, and the MCP tool `ask` does the same.
 `conductor notify --claude-hook` maps Claude Code `PermissionRequest` hooks
-(and `permission_prompt` notifications) to `kind:"permission"` with the
-options `Yes`/`1`, `Always for this session`/`2`, `No, explain…`/`3`; other
-notifications are `kind:"prompt"` with no options. The digit inputs assume
-Claude Code's permission dialog selects and confirms on the number key and
-that the dialog has three choices; if a prompt only highlights the choice, or
-offers two, `permissionOptions()` in `internal/notify/mappers.go` is the one
-place to change.
+(and `permission_prompt` notifications) to `kind:"permission"` with no
+options: the words are the hook's message, else "Claude Code has a plan for
+you to approve" for `ExitPlanMode`, the first question for `AskUserQuestion`
+(both come as permission requests), "Allow <tool>?" otherwise. Claude Code's
+dialogs differ by tool, permission mode and release (2.1.304's Bash dialog
+has four choices, its 3 switching to auto mode; the plan's approval offers
+auto mode or bypass first), so their choices are read off the dialog itself
+(the Claude Code entry's question asked at any time, below); other
+notifications are `kind:"prompt"` with no options.
 
 Automatic detection runs on whichever process owns the PTY. A bare BEL
 (`0x07`) outside an escape sequence, `ESC ] 9 ; text ST` (iTerm2/ConEmu style)
@@ -1109,7 +1119,7 @@ keys that pick it, the trusting answer first (Claude Code highlights "No,
 exit", so its trusting answer is Down then Enter; Codex highlights the trusting
 answer, so Enter). While it shows, the owner refuses a person's `submit`, a
 `chat` to the agent and a `chat_send` with `not_sent`. The agent's other
-startup questions, the catalog's `questions` (`[{prompt, words?, anytime?, answers}]`,
+startup questions, the catalog's `questions` (`[{prompt, words?, anytime?, answers, answersFromScreen?, modeAnswers?}]`,
 at most 8, each prompt and its answers bounded as `trustPrompt` and
 `trustAnswers` are; a saved agent that leaves them out keeps the replaced
 agent's), are held the same way, with `source` `trust`, the words of the one
@@ -1202,6 +1212,33 @@ highlighted Yes); the same dialog with "No, continue without running it
 again" choice Yes and No alone, and any other of Codex's approvals with the
 same footer (network access: "Do you want to approve network access to
 …?", "Yes, just this once (y)") its `y` and Escape.
+
+A question with `answersFromScreen: true` (only with `anytime`, and no
+`answers` of its own) has its answers read off the screen each time it is
+asked: the numbered list its dialog draws at the bottom, from the last row
+numbered N up through the rows numbered N−1 to 1 at that column, at most 4
+rows apart (a choice's description, a rule, the rest of a long label), each
+choice its first row's label and its number as the key (no Enter). Its
+words, without a `words` pattern, are the rows above the list up to the
+dialog's top rule (a row of `─` alone), rules within it left out. A screen
+its prompt finds with no such list (fewer than two choices, a number out of
+turn) asks nothing. `modeAnswers`, a pattern bounded as a prompt, marks
+`mode` the answers whose label, with the rows that follow it up to the next
+choice, it matches (a narrow screen wraps "switch to" and "BYPASS
+PERMISSIONS" onto two rows). A reply to such a question is refused, nothing
+written, when the dialog on the screen shows other choices than the
+question's. Claude Code's built-in entry has one (Claude Code 2.1.304): a
+row numbered with the highlight `❯` before it, then one of its footers as
+the last row the screen shows ("Esc to cancel · Tab to amend" under a
+tool's permission, "Enter to select · … · Esc to cancel" under
+AskUserQuestion's choices, "ctrl+g to edit in <editor> · <plan>" under the
+plan's approval), or AskUserQuestion's last page, "Ready to submit your
+answers?" with its list at the bottom; its prompt box and status line,
+gone while a dialog shows, keep a dialog quoted in the transcript or typed
+into the prompt box from counting. A digit picks at once in its dialogs;
+the plan's "Tell Claude what to change" only takes the highlight into its
+feedback field, which is typed in the terminal. Its mode answers are
+`(?i)auto mode|accept edits|auto-accept|bypass permissions`.
 
 ### Answering a question
 

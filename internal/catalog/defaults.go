@@ -23,6 +23,17 @@ const codexApprovalWords = `(?ism)((?:would\s+you\s+like|do\s+you\s+want)\s+to\s
 // bottom_pane/action_required_title.rs, Codex 0.161).
 const CodexWorkingTitle = `^(?:\S+\s+)?(?:Working|Thinking|Waiting)$`
 
+// claudeDialog finds a Claude Code dialog asked during the work: a row
+// whose number the highlight ❯ stands before, then, within its dialog, one
+// of the footers Claude Code ends its dialogs with as the last row the
+// screen shows (a dialog is the bottom of what Claude Code draws, its
+// prompt box and status line gone while it shows), so that a numbered list
+// or a whole dialog quoted in the transcript, or typed into the prompt
+// box, is not taken for one; or AskUserQuestion's last page, "Ready to
+// submit your answers?" with its list at the bottom and no footer (seen
+// with 2.1.304: "1. Submit answers", "2. Cancel").
+const claudeDialog = `(?m)(?:^[ \t]*❯[ \t]*[1-9]\.[ \t].*(?:\n.*){0,40}\n[ \t]*(?:Esc to cancel|Enter to select|ctrl\+g to edit)[^\n]*|^Ready to submit your answers\?(?:\n.*){1,8})\s*\z`
+
 // codexApprovalFooter ends a pattern of Codex's approval dialog: its footer,
 // on one of the last rows the screen shows (the dialog is the bottom of
 // what Codex draws), so that a dialog's words in a file or a log on the
@@ -56,6 +67,26 @@ func defaults() []Agent {
 			TrustAnswers: []Answer{{Label: "Yes, I trust this folder", Input: "\x1b[B\r"}, {Label: "No, exit", Input: "\r"}},
 			// Verified live (2.1.287).
 			Session: &SessionRecipe{StartArgs: []string{"--session-id", IDArg}, IDFrom: "hook", ResumeArgs: []string{"--resume", IDArg}, IDPattern: uuidPattern},
+			// Claude Code's dialogs during the work, as 2.1.304 drew them in
+			// a PTY on 2026-10-19 (#288): a tool's permission ("Do you want
+			// to proceed?", "Do you want to create c288.txt?"), the plan's
+			// approval ("Claude has written up a plan and is ready to
+			// execute. Would you like to proceed?") and AskUserQuestion's
+			// choices, each a numbered list with ❯ on the highlighted row,
+			// ending in "Esc to cancel · Tab to amend", "Enter to select · …
+			// · Esc to cancel" or "ctrl+g to edit in <editor> · <plan>". Their
+			// choices change with the tool, the permission mode and the
+			// release (Bash's 3 was "Yes, and switch to auto mode", Write's 2
+			// "Yes, and switch to accept edits"), so they are read off the
+			// dialog. A digit picks at once (4 denied the Bash command, 2
+			// answered AskUserQuestion's Blue); the plan's "Tell Claude what
+			// to change" only takes the highlight into its feedback field.
+			Questions: []Question{{
+				Prompt:            claudeDialog,
+				Anytime:           true,
+				AnswersFromScreen: true,
+				ModeAnswers:       `(?i)auto mode|accept edits|auto-accept|bypass permissions`,
+			}},
 		},
 		{
 			ID:          "codex",
