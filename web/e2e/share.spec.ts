@@ -24,6 +24,10 @@ test('Share makes a link in one click, says where it reaches, and keeps it for t
   await expect(dialog.locator('[data-share-link]').first()).toContainText('View')
   const url = await dialog.locator('[data-created-url]').getAttribute('title')
   expect(url).toMatch(/\/join\//)
+  // The link as a QR code for a phone (#144), labelled with the link's text, drawn module by module.
+  const qr = dialog.locator('[data-share-qr]')
+  await expect(qr).toHaveAttribute('aria-label', url!)
+  expect(((await qr.locator('path').getAttribute('d')) ?? '').split('h1v1h-1z').length, 'modules drawn').toBeGreaterThan(200)
   await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)
   await page.getByRole('button', { name: 'Share', exact: true }).first().click()
