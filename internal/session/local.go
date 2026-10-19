@@ -560,15 +560,19 @@ func (s *Local) pump() {
 			if s.pattern != nil {
 				s.pattern.Feed(chunk)
 			}
+			var left string
 			s.feedMu.Lock()
 			if s.trust != nil && !title {
 				s.trust.Feed(chunk)
 			}
 			if s.asked != nil && !title {
 				s.asked.Feed(chunk)
-				s.answeredLeft()
+				left = s.answeredLeft()
 			}
 			s.feedMu.Unlock()
+			if left != "" {
+				s.withdraw(left)
+			}
 			if !title {
 				s.shot.Feed(chunk)
 			}
@@ -1890,7 +1894,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			}
 		}
 	}
-	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) {
+	// The same question again: its words, its choices and, read off the
+	// screen, its whole list (a choice changed past what its label shows is
+	// another question, whose reply is weighed against the list now).
+	if cur.State == state && sameWords(cur.words(), words) && cur.Source == source && cur.Kind == kind && sameOptions(cur.Options, options) && cur.list == list {
 		if rows != "" && rows != cur.rows {
 			// The same question read at another width (the window
 			// resized, its rows broken elsewhere): it is told by its rows
@@ -3540,27 +3547,36 @@ func (s *Local) dialogGone(look uint64) {
 // gives no quiet look before its next dialog, which may have the answered
 // one's words (the same command asked again) and is a question of its own.
 // A frame under way decides nothing, nor does one drawn before the answer.
-// The caller holds feedMu, which keeps the screen as fed while it looks.
-func (s *Local) answeredLeft() {
+// It returns the id of the question still shown for that dialog (a key
+// typed in the terminal answered it, consumed), which the caller withdraws
+// as missAsked would at a quiet look, after feedMu: the next dialog with
+// its words is asked anew rather than taken for it. The caller holds
+// feedMu, which keeps the screen as fed while it looks.
+func (s *Local) answeredLeft() string {
 	s.mu.Lock()
 	words, at := s.dialogAnswered, s.dialogAnsweredAt
 	s.mu.Unlock()
 	if words == "" {
-		return
+		return ""
 	}
 	fed := s.asked.Fed()
 	text, settled, cols := s.asked.TextSettled()
 	if fed <= at || !settled {
-		return
+		return ""
 	}
 	if _, shown, _, _ := s.askedIn(text, cols); shown != "" && sameWords(shown, words) {
-		return
+		return ""
 	}
 	s.mu.Lock()
-	if s.dialogAnswered == words {
-		s.dialogGone(fed)
+	defer s.mu.Unlock()
+	if s.dialogAnswered != words {
+		return ""
 	}
-	s.mu.Unlock()
+	s.dialogGone(fed)
+	if att := s.info.Attention; s.dialogAnswered == "" && att.State == AttentionNeedsInput && att.Source == SourceQuestion && att.ID != "" && sameWords(att.words(), words) {
+		return att.ID
+	}
+	return ""
 }
 
 // rawKeys is what keys typed in the terminal, or a line naming no question

@@ -143,7 +143,8 @@ func TestAClaudeDialogOnANarrowScreenIsAsked(t *testing.T) {
 
 // A reply is weighed against the dialog's choices whole: one whose second
 // choice changed past what its label shows (a folder's long path, cut at
-// 60 characters) is another dialog, and the reply writes nothing.
+// 60 characters) is another dialog, and the reply writes nothing. That
+// dialog is a question of its own, which takes its reply.
 func TestAReplyToAClaudeDialogChangedPastItsLabelsIsRefused(t *testing.T) {
 	s, p, sub := newClaudeSession(t)
 	long := "/home/dev/a-project-with-a-name-long-enough-to-pass-the-cut"
@@ -159,6 +160,48 @@ func TestAReplyToAClaudeDialogChangedPastItsLabelsIsRefused(t *testing.T) {
 		t.Fatalf("a reply to the dialog changed past its labels: %v", err)
 	}
 	noWrite(t, p, 100*time.Millisecond)
+	next := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != att.ID })
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("2")); !errors.Is(err, ErrQuestionAnswered) {
+		t.Fatalf("a reply to the first dialog after the second was asked: %v", err)
+	}
+	if err := s.AnswerInput(t.Context(), sub, next.ID, []byte("2")); err != nil {
+		t.Fatalf("a reply to the second: %v", err)
+	}
+	if got := nextWrite(t, p); got != "2" {
+		t.Fatalf("written %q", got)
+	}
+}
+
+// A dialog answered by a key typed in its terminal leaves its question
+// answered while Claude Code works, its spinner never letting the screen
+// go quiet: the first whole frame without the dialog withdraws it, so the
+// same dialog asked again is a fresh question that takes a reply.
+func TestAClaudeDialogAnsweredInTheTerminalGivesWayToTheSameAgain(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	p.outW.Write(drawn(claudeBash))
+	first := waitAttention(t, s, asked)
+	if err := s.Input(sub, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	if a := s.Info().Attention; a.ID != first.ID || a.Answered != AnsweredTerminal {
+		t.Fatalf("the key typed in the terminal: %+v", a)
+	}
+	working(p, 1200*time.Millisecond)
+	if a := s.Info().Attention; a.State == AttentionNeedsInput {
+		t.Fatalf("the answered dialog still shown as Claude Code works: %+v", a)
+	}
+	p.outW.Write(drawn(claudeBash))
+	again := waitAttention(t, s, func(a Attention) bool { return asked(a) && a.ID != first.ID })
+	if again.Answered != "" {
+		t.Fatalf("the same dialog asked again is answered already: %+v", again)
+	}
+	if err := s.AnswerInput(t.Context(), sub, again.ID, []byte("1")); err != nil {
+		t.Fatalf("a reply to the same dialog asked again: %v", err)
+	}
+	if got := nextWrite(t, p); got != "1" {
+		t.Fatalf("written %q", got)
+	}
 }
 
 // The plan's "Tell Claude what to change" takes the highlight into its

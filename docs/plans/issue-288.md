@@ -162,6 +162,20 @@ wide.
   no choices, so no click types a digit into the feedback and no new
   question is asked at each pause while it is typed.
 
+## Code review, second round (Codex, 2026-10-19)
+
+- A changed whole list is another question: the same words and labels
+  with a list changed past the labels' cut gave the old question again,
+  whose list then refused every reply. The list is part of what makes a
+  question the same; the new one, with a new id, takes its reply.
+- A consumed question goes with its dialog: a key typed in the terminal
+  leaves the question shown and answered, and with Claude Code's spinner
+  no quiet look withdraws it, so the same dialog drawn next was taken for
+  it, hidden and refusing replies. The frame that shows the answered
+  dialog gone now withdraws its question too (after `feedMu`, as a quiet
+  look's `missAsked` would). Both have regression tests that fail without
+  the change.
+
 ## Not changed
 
 - Hosted sessions (`conductor host`) watch no startup or screen questions

@@ -462,9 +462,9 @@ func TestATitleLeavesAQuestionOnTheScreen(t *testing.T) {
 		t.Fatalf("the key cleared the dialog before the screen moved on: %+v", a)
 	}
 	out(p, approvalGone("\x1b[12;1H\xe2\x80\xa2 Ran curl -sI https://example.com"), codexWorking(5))
-	// The dialog gone from the screen is withdrawn at the quiet look; the
-	// next frame shows working.
-	waitAttention(t, s, func(a Attention) bool { return a.State == AttentionNone })
+	// The dialog answered is withdrawn by the first whole frame that no
+	// longer shows it, quiet or not (#288); the next frame shows working.
+	waitAttention(t, s, func(a Attention) bool { return !asked(a) })
 	out(p, codexWorking(6))
 	if a := s.Info().Attention; !titleWorks(a) {
 		t.Fatalf("a frame after the answer: %+v", a)
