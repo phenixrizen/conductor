@@ -106,18 +106,19 @@ export function switchyardExtra(url: string): boolean {
 }
 
 /** The words for a switchyard written as the server does not read a URL; web/app/utils/desktop.ts's check says the same. */
-export const SWITCHYARD_SHAPE = 'the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape in its path'
+export const SWITCHYARD_SHAPE = 'the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape'
 
 /**
  * switchyardShape says whether url is written so that the server (Go's url.Parse) reads it, and as the URL parser does: http:// or
  * https://, two slashes exactly, a host of letters, digits, dots, hyphens, underscores, tildes, an IPv6 address's brackets and colons,
- * a port's colon and digits, or letters past ASCII (an @ and what comes before it are switchyardExtra's), then a path with no control
- * character or backslash and a % only in an escape, and no space around it all. The parser repairs what the server refuses (an extra
+ * a port's colon and digits, or letters past ASCII, written or escaped (Go takes an escape in a host only of a byte past ASCII; an @
+ * and what comes before it are switchyardExtra's), then a path with no control character or backslash and a % only in an escape, and
+ * no space around it all. The parser repairs what the server refuses (an extra
  * slash, a backslash for a slash, a space around it, a broken escape, a host escaped), so the server would not start with a switchyard
  * the app had saved; this holds the app to the narrower of the two. internal/config/testdata/switchyard-urls.json holds both to it.
  */
 export function switchyardShape(url: string): boolean {
-  if (url !== url.trim() || !/^https?:\/\/[\w.~:[\]@\u0080-\uffff-]+(?:\/(?:[^\x00-\x1f\x7f\\%?#]|%[0-9a-f]{2})*)?$/i.test(url)) return false
+  if (url !== url.trim() || !/^https?:\/\/(?:[\w.~:[\]@\u0080-\uffff-]|%[89a-f][0-9a-f])+(?:\/(?:[^\x00-\x1f\x7f\\%?#]|%[0-9a-f]{2})*)?$/i.test(url)) return false
   try {
     const u = new URL(url)
     return (u.protocol === 'https:' || u.protocol === 'http:') && !!u.host
@@ -127,9 +128,10 @@ export function switchyardShape(url: string): boolean {
 }
 
 /**
- * switchyardRefusal is why the server would refuse the switchyard url, in validate's words, '' for one it takes: named with more than
- * its address (SWITCHYARD_EXTRA), written as it does not read a URL (SWITCHYARD_SHAPE), or plain http on another machine
- * (PLAIN_SWITCHYARD). The app hands the server no switchyard it refuses (serverEnv), publishing on or off.
+ * switchyardRefusal is why the server would refuse the switchyard url as a URL, in validate's words, '' for one it takes: named with
+ * more than its address (SWITCHYARD_EXTRA), written as it does not read a URL (SWITCHYARD_SHAPE), or plain http on another machine
+ * (PLAIN_SWITCHYARD). The app hands the server no switchyard it refuses so (serverEnv), publishing on or off. (One the server takes
+ * for its own default address is a matter of its config: #297.)
  */
 export function switchyardRefusal(url: string): string {
   if (switchyardExtra(url)) return SWITCHYARD_EXTRA

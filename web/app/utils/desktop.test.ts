@@ -49,7 +49,7 @@ describe('switchyardProblem', () => {
   it('says of each switchyard what the app says, and nothing of one the server takes', () => {
     const urls = JSON.parse(readFileSync(new URL('../../../internal/config/testdata/switchyard-urls.json', import.meta.url), 'utf8')) as Array<{ url: string; app: '' | 'plain' | 'extra' | 'shape' }>
     const words = { '': '', plain: PLAIN_SWITCHYARD, extra: SWITCHYARD_EXTRA, shape: SWITCHYARD_SHAPE }
-    expect(SWITCHYARD_SHAPE).toBe('the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape in its path')
+    expect(SWITCHYARD_SHAPE).toBe('the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape')
     expect(urls.length).toBeGreaterThan(40)
     for (const { url, app } of urls) {
       expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: url }), url).toBe(words[app])

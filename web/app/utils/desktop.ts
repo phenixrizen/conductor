@@ -23,7 +23,7 @@ export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs 
 export const SWITCHYARD_EXTRA = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
 
 /** The words for a switchyard written as the server does not read a URL: the desktop app's validate (desktop/src/settings.ts SWITCHYARD_SHAPE) says the same. */
-export const SWITCHYARD_SHAPE = 'the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape in its path'
+export const SWITCHYARD_SHAPE = 'the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape'
 
 /**
  * switchyardProblem is what the Settings page says, as it opens and before it saves, of a switchyard that the app and its server refuse:
@@ -43,7 +43,7 @@ export function switchyardProblem(s: Pick<DesktopSettings, 'switchyardEnabled' |
 
 /** switchyardShape is desktop/src/settings.ts's: a URL written so that the server reads it, and as the URL parser does. */
 function switchyardShape(url: string): boolean {
-  if (url !== url.trim() || !/^https?:\/\/[\w.~:[\]@\u0080-\uffff-]+(?:\/(?:[^\x00-\x1f\x7f\\%?#]|%[0-9a-f]{2})*)?$/i.test(url)) return false
+  if (url !== url.trim() || !/^https?:\/\/(?:[\w.~:[\]@\u0080-\uffff-]|%[89a-f][0-9a-f])+(?:\/(?:[^\x00-\x1f\x7f\\%?#]|%[0-9a-f]{2})*)?$/i.test(url)) return false
   try {
     const p = new URL(url)
     return (p.protocol === 'https:' || p.protocol === 'http:') && !!p.host

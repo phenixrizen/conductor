@@ -1076,11 +1076,13 @@ func TestRendezvousServerIsItsAddressAlone(t *testing.T) {
 	}
 }
 
-// The desktop app and its Settings page take a switchyard exactly when the
+// The desktop app and its Settings page take a switchyard only when the
 // config does, for each URL in testdata/switchyard-urls.json, which their
 // tests read too (desktop/src/settings.ts switchyardRefusal,
 // web/app/utils/desktop.ts switchyardProblem): the app hands its server no
-// switchyard the server refuses, and refuses none it takes.
+// switchyard URL the server refuses. It refuses none the server takes but the
+// few the list marks so ("server": "takes"), written as the browser's URL
+// parser does not read them.
 func TestTheAppTakesTheSwitchyardsTheConfigTakes(t *testing.T) {
 	f, err := os.Open("testdata/switchyard-urls.json")
 	if err != nil {
@@ -1088,8 +1090,9 @@ func TestTheAppTakesTheSwitchyardsTheConfigTakes(t *testing.T) {
 	}
 	defer f.Close()
 	var urls []struct {
-		URL string `json:"url"`
-		App string `json:"app"`
+		URL    string `json:"url"`
+		App    string `json:"app"`
+		Server string `json:"server"`
 	}
 	dec := json.NewDecoder(f)
 	dec.DisallowUnknownFields()
@@ -1097,9 +1100,12 @@ func TestTheAppTakesTheSwitchyardsTheConfigTakes(t *testing.T) {
 		t.Fatalf("%d urls: %v", len(urls), err)
 	}
 	for _, u := range urls {
+		if u.Server != "" && (u.Server != "takes" || u.App != "shape") {
+			t.Errorf("%q: the server %q of a URL the app takes as %q", u.URL, u.Server, u.App)
+		}
 		c := Defaults()
 		c.Rendezvous.Server = u.URL
-		if err := c.Validate(); (err == nil) != (u.App == "") {
+		if err := c.Validate(); (err == nil) != (u.App == "" || u.Server == "takes") {
 			t.Errorf("%q, which the app takes as %q: %v", u.URL, u.App, err)
 		}
 	}

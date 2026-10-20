@@ -169,7 +169,7 @@ describe('the switchyards the server takes', () => {
   const urls = JSON.parse(readFileSync(join(__dirname, '../../internal/config/testdata/switchyard-urls.json'), 'utf8')) as Array<{ url: string; app: '' | 'plain' | 'extra' | 'shape' }>
   const words = { '': '', plain: PLAIN_SWITCHYARD, extra: SWITCHYARD_EXTRA, shape: SWITCHYARD_SHAPE }
   it('refuses, while publishing, exactly those the server refuses, in words of their own, and hands it only the others', () => {
-    expect(SWITCHYARD_SHAPE).toBe('the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape in its path')
+    expect(SWITCHYARD_SHAPE).toBe('the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape')
     for (const { url, app } of urls) {
       expect(switchyardRefusal(url), url).toBe(words[app])
       if (app === 'shape') expect(switchyardShape(url), url).toBe(false)
