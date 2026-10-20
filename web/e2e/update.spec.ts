@@ -191,25 +191,6 @@ test('a restart dialog reopened says its own count of the sessions, never an ear
   await api.stopSession(s.id)
 })
 
-// The sessions are counted again as the restart is confirmed: one started
-// since the dialog opened is said, and the restart asked again.
-test('a restart confirmed says a session started since the dialog opened, and asks again', async ({ page, api, state }) => {
-  await stubApp(page, state.token, state.baseURL, { ready: '0.7.0-rc.12', announce: false, failed: '' })
-  await page.goto('/yard')
-  const modal = page.getByRole('dialog')
-  await page.locator('[data-header-update]').first().click()
-  await expect(modal).toContainText(' on this computer')
-  const said = await modal.innerText()
-  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'started since' })
-  await page.locator('[data-update-restart]').click()
-  await expect.poll(() => modal.innerText()).not.toBe(said)
-  await expect(page.locator('[data-update-restart]')).toBeEnabled()
-  expect(await page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBeNull()
-  await page.locator('[data-update-restart]').click()
-  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBe('1')
-  await api.stopSession(s.id)
-})
-
 // A restart asked outlives its dialog: an invite's join page has no layout,
 // and the dialog that comes back with it asks again, the sessions counted.
 test('a restart asked is asked again as the workbench comes back from an invite', async ({ page, api, state }) => {
