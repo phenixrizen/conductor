@@ -1003,8 +1003,7 @@ func TestRendezvousPlainServerOffThisMachineRefused(t *testing.T) {
 			c.Switchyard.Enabled = true
 			c.Rendezvous.Server = "http://yard.example:8080"
 		},
-		"a password in it": func(c *Config) { c.Rendezvous.Server = "http://me:pw@yard.example:8080" },
-		"an address":       func(c *Config) { c.Rendezvous.Server = "http://192.0.2.7:8080"; c.Rendezvous.Token = "t" },
+		"an address": func(c *Config) { c.Rendezvous.Server = "http://192.0.2.7:8080"; c.Rendezvous.Token = "t" },
 	} {
 		c := Defaults()
 		mutate(c)
@@ -1017,9 +1016,6 @@ func TestRendezvousPlainServerOffThisMachineRefused(t *testing.T) {
 		}
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1)") {
 			t.Errorf("%s: %v", name, err)
-		}
-		if err != nil && strings.Contains(err.Error(), "pw") {
-			t.Errorf("%s: the message repeats the password: %v", name, err)
 		}
 	}
 
@@ -1036,6 +1032,62 @@ func TestRendezvousPlainServerOffThisMachineRefused(t *testing.T) {
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != string(body) {
 		t.Fatalf("the file changed: %q %v", got, err)
+	}
+}
+
+// rendezvous.server is the switchyard's address alone: one with user
+// information (an @ alone included), a query or a fragment (an empty one
+// included) is refused, from the file and the environment, with publishing
+// on or off, in words that repeat nothing of it. A path stays allowed, an @
+// in it too.
+func TestRendezvousServerIsItsAddressAlone(t *testing.T) {
+	const want = "rendezvous.server must carry no user name, password, query or fragment: the switchyard's host token goes in rendezvous.token (CONDUCTOR_RENDEZVOUS_TOKEN)"
+	for _, server := range []string{
+		"https://me:SECRET@yard.example", "https://SECRET@yard.example", "https://:SECRET@yard.example", "https://@yard.example", "https://:@yard.example",
+		"https://yard.example/?token=SECRET", "https://yard.example?", "https://yard.example/#SECRET", "https://yard.example#",
+		"http://me:SECRET@localhost:9090", "http://me:SECRET@yard.example:8080",
+	} {
+		for name, set := range map[string]func(*Config){
+			"the file": func(c *Config) { c.Rendezvous.Server = server },
+			"the environment": func(c *Config) {
+				if err := applyEnv(c, func(k string) string { return map[string]string{"CONDUCTOR_RENDEZVOUS_SERVER": server}[k] }); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"publishing off": func(c *Config) {
+				off := false
+				c.Rendezvous = Rendezvous{Enabled: &off, Server: server}
+			},
+		} {
+			c := Defaults()
+			set(c)
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "SECRET") {
+				t.Errorf("%s from %s: %v", server, name, err)
+			}
+		}
+	}
+	for _, server := range []string{"https://yard.example/prefix", "https://yard.example/team@two", "http://localhost:9090/yard"} {
+		c := Defaults()
+		c.Rendezvous.Server = server
+		if err := c.Validate(); err != nil || c.RendezvousServer() != server {
+			t.Errorf("%s: %v %q", server, err, c.RendezvousServer())
+		}
+	}
+}
+
+// ShownURL is a URL's scheme, host and path, nothing else of it.
+func TestShownURL(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://yard.example": "https://yard.example",
+		"https://me:SECRET@yard.example:8443/a/b?t=SECRET#SECRET": "https://yard.example:8443/a/b",
+		"https://@yard.example/?":                                 "https://yard.example/",
+		"http://[::1]:9000/yard#x":                                "http://[::1]:9000/yard",
+		"https://yard.example/a%2Fb?t=1":                          "https://yard.example/a%2Fb",
+		"https://yard.example:SECRET/c":                           "",
+	} {
+		if got := ShownURL(raw); got != want {
+			t.Errorf("%s: %q, want %q", raw, got, want)
+		}
 	}
 }
 

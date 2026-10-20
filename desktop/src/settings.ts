@@ -84,6 +84,21 @@ function thisMachine(raw: string, u: URL): boolean {
   return !!quad && quad.slice(1).every((p) => (p === '0' || !p.startsWith('0')) && Number(p) <= 255)
 }
 
+/** The words for a switchyard named with more than its address; web/app/utils/desktop.ts's check, which the Settings page runs first, says the same. */
+export const SWITCHYARD_EXTRA = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
+
+/**
+ * switchyardExtra says whether url, as written, carries more than a scheme, a host and a path: user information (anything before an @
+ * in the authority, an @ alone included, which the URL parser reads as no user name and no password), a query or a fragment (a ? or a
+ * #, an empty one included). The server refuses such a switchyard (config.ServerURLExtra): it is named by its address alone, and its
+ * host token is a setting of its own.
+ */
+export function switchyardExtra(url: string): boolean {
+  if (/[?#]/.test(url)) return true
+  const authority = url.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
+  return authority.includes('@')
+}
+
 /** switchyardRefused says whether s publishes to a switchyard that is plain http on another machine, which the server refuses to start with. */
 export function switchyardRefused(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): boolean {
   return !!s.switchyardEnabled && !!s.switchyardServer && plainSwitchyard(s.switchyardServer)
@@ -107,11 +122,12 @@ export function validate(s: DesktopSettings, posix = false): string[] {
     let ok = false
     try {
       const u = new URL(s.switchyardServer)
-      ok = (u.protocol === 'https:' || u.protocol === 'http:') && !!u.host && !u.search && !u.hash && !u.username
+      ok = (u.protocol === 'https:' || u.protocol === 'http:') && !!u.host
     } catch {
       ok = false
     }
-    if (!ok) out.push('the switchyard must be an http(s) URL with a host and nothing after it')
+    if (!ok) out.push('the switchyard must be an http(s) URL with a host')
+    else if (s.switchyardEnabled && switchyardExtra(s.switchyardServer)) out.push(SWITCHYARD_EXTRA)
     else if (switchyardRefused(s)) out.push(PLAIN_SWITCHYARD)
   }
   if ((s.switchyardName ?? '').length > 64) out.push('the name at the switchyard is at most 64 characters')
@@ -143,14 +159,15 @@ export function migrateToWsl(s: DesktopSettings, linuxHome: string): { settings:
 
 /**
  * loadSettings reads the file, filling what it lacks from the defaults; a missing or broken file gives the defaults. Settings saved
- * before a plain switchyard on another machine was refused keep it, and everything else: the server is started without publishing
- * for them (serverEnv), the Settings page shows why, and nothing is rewritten. The defaults would publish to the public switchyard.
+ * before a switchyard was refused, plain http on another machine or named with more than its address, keep it, and everything else:
+ * the server is started without publishing for them (serverEnv), the Settings page shows why, and nothing is rewritten. The defaults
+ * would publish to the public switchyard.
  */
 export function loadSettings(file: string, defaults: DesktopSettings): DesktopSettings {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<DesktopSettings>
     const merged: DesktopSettings = { ...defaults, ...pick(raw) }
-    return validate(merged).some((p) => p !== PLAIN_SWITCHYARD) ? defaults : merged
+    return validate(merged).some((p) => p !== PLAIN_SWITCHYARD && p !== SWITCHYARD_EXTRA) ? defaults : merged
   } catch {
     return defaults
   }

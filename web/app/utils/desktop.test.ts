@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
+import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -17,12 +17,13 @@ describe('desktop bridge', () => {
 })
 
 // The Settings page's check before a save: the words the app's validate
-// says (desktop/src/settings.ts PLAIN_SWITCHYARD), for the same switchyards.
+// says (desktop/src/settings.ts PLAIN_SWITCHYARD, SWITCHYARD_EXTRA), for the
+// same switchyards.
 describe('switchyardProblem', () => {
   const words = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
   it('refuses a plain switchyard on another machine with the words why', () => {
     expect(PLAIN_SWITCHYARD).toBe(words)
-    for (const server of ['http://yard.example:8080', 'http://192.168.1.10:8080', 'HTTP://yard.example', 'http://localhost.yard.example', 'http://127.0.0.1.yard.example', 'http://127.1:8080', 'http://0x7f.0.0.1', 'http://127.000.0.1', 'http://0.0.0.0:8080', 'http://[fe80::1]:8080', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example', 'http://LOCALHOST:8080', 'http://LocalHost:8080/']) {
+    for (const server of ['http://yard.example:8080', 'http://192.168.1.10:8080', 'HTTP://yard.example', 'http://localhost.yard.example', 'http://127.0.0.1.yard.example', 'http://127.1:8080', 'http://0x7f.0.0.1', 'http://127.000.0.1', 'http://0.0.0.0:8080', 'http://[fe80::1]:8080', 'http://LOCALHOST:8080', 'http://LocalHost:8080/']) {
       expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe(words)
     }
   })
@@ -31,6 +32,17 @@ describe('switchyardProblem', () => {
       expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe('')
     }
     expect(switchyardProblem({ switchyardEnabled: false, switchyardServer: 'http://yard.example' })).toBe('')
+  })
+  it('refuses one named with more than its address, before the plain http rule, and nothing of it while publishing is off', () => {
+    const extra = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
+    expect(SWITCHYARD_EXTRA).toBe(extra)
+    for (const server of ['https://me:pw@yard.example', 'https://me@yard.example', 'https://:pw@yard.example', 'https://@yard.example', 'https://:@yard.example', 'https://yard.example/?token=t', 'https://yard.example?', 'https://yard.example/#f', 'https://yard.example#', 'http://me:pw@localhost:9090', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example']) {
+      expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe(extra)
+      expect(switchyardProblem({ switchyardEnabled: false, switchyardServer: server }), server).toBe('')
+    }
+    for (const server of ['https://yard.example/prefix/', 'https://yard.example/team@two']) {
+      expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe('')
+    }
   })
 })
 

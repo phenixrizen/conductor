@@ -17,7 +17,8 @@ import (
 type Publisher interface {
 	Publish(ctx context.Context, local *session.Local) (PublishedSession, error)
 	// Server is the rendezvous's URL, for a reply that says where a session
-	// was meant to be published.
+	// was meant to be published: its scheme, host and path, never user
+	// information, a query or a fragment.
 	Server() string
 }
 

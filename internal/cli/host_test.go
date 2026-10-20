@@ -316,13 +316,10 @@ func TestHostRefusesPlainServerWithoutInsecure(t *testing.T) {
 		return hostagent.Result{}, nil
 	}
 	t.Cleanup(func() { runHostAgent = hostagent.Run })
-	for _, server := range []string{"http://yard.example:8080", "ws://yard.example:8080", "http://me:pw@yard.example:8080/", "HTTP://yard.example:8080"} {
+	for _, server := range []string{"http://yard.example:8080", "ws://yard.example:8080", "http://yard.example:8080/", "HTTP://yard.example:8080"} {
 		code, stderr, err := runHostWith(t, "--server", server, "--no-local", "--", "sh")
 		if code != 2 || err == nil || !strings.Contains(err.Error(), "the server yard.example:8080 is plain http and not localhost or a loopback address") || !strings.Contains(err.Error(), "pass --insecure to go ahead") {
 			t.Errorf("%s: exit %d, %v, %q", server, code, err, stderr)
-		}
-		if err != nil && strings.Contains(err.Error(), "pw") {
-			t.Errorf("%s: the message repeats the password: %v", server, err)
 		}
 	}
 	t.Setenv("CONDUCTOR_SERVER", "http://192.0.2.7:8080")
@@ -348,6 +345,74 @@ func TestHostRefusesPlainServerWithoutInsecure(t *testing.T) {
 	}
 }
 
+// A server is named by its address alone: --server or CONDUCTOR_SERVER with
+// user information, a query or a fragment is refused before the host runs
+// anything or dials, in words that repeat nothing of it; --server-is-mine's
+// refusal names the host alone.
+func TestHostRefusesAServerURLThatCarriesMore(t *testing.T) {
+	clearConductorEnv(t)
+	var got []hostagent.Options
+	runHostAgent = func(_ context.Context, opts hostagent.Options) (hostagent.Result, error) {
+		got = append(got, opts)
+		return hostagent.Result{}, nil
+	}
+	t.Cleanup(func() { runHostAgent = hostagent.Run })
+	const want = "--server (CONDUCTOR_SERVER) must carry no user name, password, query or fragment: a host token goes in --token (CONDUCTOR_HOST_TOKEN)"
+	for _, server := range []string{"https://me:SECRET@yard.example", "https://SECRET@yard.example", "https://:SECRET@yard.example", "http://@localhost:8080", "https://yard.example/?token=SECRET", "https://yard.example#SECRET", "http://me:SECRET@yard.example:8080"} {
+		code, stderr, err := runHostWith(t, "--server", server, "--no-local", "--", "sh")
+		if code != 2 || err == nil || err.Error() != want || strings.Contains(stderr, "SECRET") {
+			t.Errorf("--server %s: exit %d, %v, %q", server, code, err, stderr)
+		}
+		t.Setenv("CONDUCTOR_SERVER", server)
+		code, stderr, err = runHostWith(t, "--no-local", "--", "sh")
+		if code != 2 || err == nil || err.Error() != want || strings.Contains(stderr, "SECRET") {
+			t.Errorf("CONDUCTOR_SERVER=%s: exit %d, %v, %q", server, code, err, stderr)
+		}
+		t.Setenv("CONDUCTOR_SERVER", "")
+	}
+	if len(got) != 0 {
+		t.Fatalf("hosted with a server URL that carries more: %+v", got)
+	}
+	if err := serverIsMineOK(true, "https://me:SECRET@yard.example/p?t=SECRET"); err == nil || err.Error() != "--server-is-mine needs a server on this machine (localhost), not yard.example" {
+		t.Fatalf("--server-is-mine: %v", err)
+	}
+}
+
+// The server is --server, else CONDUCTOR_SERVER, else the default, read once
+// the flags are: --help, a flag it does not know and a missing command print
+// the usage, which shows no server the environment names.
+func TestHostReadsTheServerFromTheEnvironmentAfterItsFlags(t *testing.T) {
+	clearConductorEnv(t)
+	var got []hostagent.Options
+	runHostAgent = func(_ context.Context, opts hostagent.Options) (hostagent.Result, error) {
+		got = append(got, opts)
+		return hostagent.Result{}, nil
+	}
+	t.Cleanup(func() { runHostAgent = hostagent.Run })
+	t.Setenv("CONDUCTOR_SERVER", "https://me:SECRET@yard.example")
+	for _, args := range [][]string{{"--help"}, {"--nope"}, {"--no-local"}} {
+		_, stderr, err := runHostWith(t, args...)
+		if !strings.Contains(stderr, "env CONDUCTOR_SERVER, default http://localhost:8080") || strings.Contains(stderr, "SECRET") || (err != nil && strings.Contains(err.Error(), "SECRET")) {
+			t.Errorf("%v: %q %v", args, stderr, err)
+		}
+	}
+	for _, tc := range []struct{ env, flag, want string }{
+		{"", "", "http://localhost:8080"},
+		{"https://yard.example", "", "https://yard.example"},
+		{"https://yard.example", "https://other.example", "https://other.example"},
+	} {
+		got = nil
+		t.Setenv("CONDUCTOR_SERVER", tc.env)
+		args := []string{"--no-local", "--", "sh"}
+		if tc.flag != "" {
+			args = append([]string{"--server", tc.flag}, args...)
+		}
+		if code, _, err := runHostWith(t, args...); code != 0 || err != nil || len(got) != 1 || got[0].ServerURL != tc.want {
+			t.Errorf("env %q, flag %q: exit %d, %v, %+v", tc.env, tc.flag, code, err, got)
+		}
+	}
+}
+
 // --insecure lets a plain server on another machine through and says so on
 // stderr, before the host runs; the host is told (hostagent.Options.Insecure)
 // and logs it too. With a server that is not plain it says nothing.
@@ -359,7 +424,7 @@ func TestHostInsecurePrintsTheWarning(t *testing.T) {
 		return hostagent.Result{}, nil
 	}
 	t.Cleanup(func() { runHostAgent = hostagent.Run })
-	code, stderr, err := runHostWith(t, "--server", "http://me:pw@yard.example:8080", "--insecure", "--no-local", "--", "sh")
+	code, stderr, err := runHostWith(t, "--server", "http://yard.example:8080", "--insecure", "--no-local", "--", "sh")
 	if code != 0 || err != nil || len(got) != 1 || !got[0].Insecure {
 		t.Fatalf("exit %d, %v, %+v", code, err, got)
 	}

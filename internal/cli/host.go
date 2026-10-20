@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -36,7 +37,7 @@ const linkBanner = "conductor: share link "
 func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	fs := flag.NewFlagSet("host", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	server := fs.String("server", envOr("CONDUCTOR_SERVER", "http://localhost:8080"), "conductor server URL (env CONDUCTOR_SERVER)")
+	server := fs.String("server", "", "conductor server URL, its address alone (env CONDUCTOR_SERVER, default "+defaultServer+")")
 	token := fs.String("token", "", "host token (env CONDUCTOR_HOST_TOKEN); none for a switchyard that admits open hosts")
 	name := fs.String("name", "", "session name shown in the UI")
 	hostName := fs.String("host-name", "", "machine label (default: hostname)")
@@ -70,6 +71,14 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	if len(argv) == 0 {
 		fs.Usage()
 		return 2, errors.New("a command is required after --")
+	}
+	// The environment's server is read once the flags are, as conductor up
+	// reads it: never a flag's default, which usage messages print.
+	*server = cmp.Or(*server, os.Getenv("CONDUCTOR_SERVER"), defaultServer)
+	// Before anything is dialed or printed: a server is named by its address
+	// alone (config.ServerURLExtra), and no message repeats what else it held.
+	if config.ServerURLExtra(*server) {
+		return 2, errors.New("--server (CONDUCTOR_SERVER) must carry no user name, password, query or fragment: a host token goes in --token (CONDUCTOR_HOST_TOKEN)")
 	}
 	// Before anything is dialed: a plain server on another machine only on
 	// the person's word, and then said out loud (hostagent.Run logs it too).
@@ -225,7 +234,7 @@ func envInt(key string) int {
 // held to this machine; hostagent.Options.ServerIsOwners).
 func serverIsMineOK(mine bool, server string) error {
 	if mine && !hostagent.LoopbackServer(server) {
-		return fmt.Errorf("--server-is-mine needs a server on this machine (localhost), not %s", server)
+		return fmt.Errorf("--server-is-mine needs a server on this machine (localhost), not %s", cmp.Or(urlHost(server), "this one"))
 	}
 	return nil
 }

@@ -19,11 +19,15 @@ export interface DesktopSettings {
 /** The words for a switchyard that is plain http on another machine: the desktop app's validate (desktop/src/settings.ts PLAIN_SWITCHYARD) says the same. */
 export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
 
+/** The words for a switchyard named with more than its address: the desktop app's validate (desktop/src/settings.ts SWITCHYARD_EXTRA) says the same. */
+export const SWITCHYARD_EXTRA = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
+
 /**
- * switchyardProblem is what the Settings page says before it saves a switchyard that is plain http on another machine, which the
- * app and its server refuse (PLAIN_SWITCHYARD); '' for one it may save, and while publishing is off. This machine is localhost, in lower case, by
- * that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or 127 mapped into IPv6), as the server reads it
- * (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is not. The app checks the rest of the URL.
+ * switchyardProblem is what the Settings page says before it saves a switchyard that the app and its server refuse: one named with more
+ * than its address (SWITCHYARD_EXTRA), or plain http on another machine (PLAIN_SWITCHYARD); '' for one it may save, and while publishing
+ * is off. This machine is localhost, in lower case, by that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or
+ * 127 mapped into IPv6), as the server reads it (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is
+ * not. The app checks the rest of the URL.
  */
 export function switchyardProblem(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): string {
   if (!s.switchyardEnabled || !s.switchyardServer) return ''
@@ -33,7 +37,20 @@ export function switchyardProblem(s: Pick<DesktopSettings, 'switchyardEnabled' |
   } catch {
     return ''
   }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || !u.host) return ''
+  if (switchyardExtra(s.switchyardServer)) return SWITCHYARD_EXTRA
   return u.protocol === 'http:' && !thisMachine(s.switchyardServer, u) ? PLAIN_SWITCHYARD : ''
+}
+
+/**
+ * switchyardExtra says whether url, as written, carries more than a scheme, a host and a path: user information (anything before an @
+ * in the authority, an @ alone included, which the URL parser reads as no user name and no password), a query or a fragment (a ? or a
+ * #, an empty one included); desktop/src/settings.ts's is the same.
+ */
+function switchyardExtra(url: string): boolean {
+  if (/[?#]/.test(url)) return true
+  const authority = url.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
+  return authority.includes('@')
 }
 
 function thisMachine(raw: string, u: URL): boolean {

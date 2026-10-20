@@ -58,11 +58,7 @@ func ValidWebhookEvent(t string) bool {
 // shows of it. The path is kept, so a service that puts its credential there
 // (Slack, Discord) shows it to admins. It is "" for a URL that does not parse.
 func (w Webhook) Endpoint() string {
-	u, err := url.Parse(w.URL)
-	if err != nil {
-		return ""
-	}
-	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}).String()
+	return ShownURL(w.URL)
 }
 
 // check checks one webhook without looking anything up, and returns the host

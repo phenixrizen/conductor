@@ -40,7 +40,11 @@ import (
 
 // Options configure a host run.
 type Options struct {
-	ServerURL string // http(s)://conductor.example
+	// ServerURL is the server's address alone, http(s):// or ws(s)://, with
+	// a path when it serves under one: Run and Uplink.Publish refuse one with
+	// user information, a query or a fragment (controlURL); the token is
+	// Token.
+	ServerURL string
 	Token     string
 	Name      string // session name shown in the UI
 	HostName  string // machine label
@@ -155,6 +159,10 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if err := plainRefused(opts.ServerURL, opts.Insecure); err != nil {
 		return Result{}, err
 	}
+	wsURL, err := controlURL(opts.ServerURL)
+	if err != nil {
+		return Result{}, err
+	}
 	if opts.Log == nil {
 		opts.Log = slog.Default()
 	}
@@ -178,11 +186,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if dir == "" {
 		dir, _ = os.Getwd()
 	}
-	dir, err := filepath.Abs(dir)
-	if err != nil {
-		return Result{}, err
-	}
-	wsURL, err := controlURL(opts.ServerURL)
+	dir, err = filepath.Abs(dir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -204,7 +208,7 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	notifyURL := strings.TrimRight(opts.ServerURL, "/") + "/api/sessions/" + registered.SessionID + "/attention"
+	notifyURL := attentionURL(opts.ServerURL, registered.SessionID)
 	// The binary the hooks run (the one the assets name when injectHooks
 	// wrote them), for what the agent runs itself (the skill).
 	bin, _ := agents.Binary()
@@ -435,10 +439,17 @@ func (a *agent) sessionID() string {
 	return a.sessID
 }
 
+// controlURL is the control connection's URL for a server's: ws or wss,
+// the server's host and path, then /ws/host. A server URL is its address
+// alone: one with user information, a query or a fragment is refused
+// (config.ServerURLExtra). No error repeats any of the URL.
 func controlURL(server string) (string, error) {
 	u, err := url.Parse(strings.TrimRight(server, "/"))
 	if err != nil || u.Host == "" {
-		return "", fmt.Errorf("host: invalid server url %q", server)
+		return "", errors.New("host: the server URL cannot be read, or names no host")
+	}
+	if config.ServerURLExtra(server) {
+		return "", errors.New("host: the server URL must carry no user name, password, query or fragment: the host token is a setting of its own")
 	}
 	switch u.Scheme {
 	case "http", "ws":
@@ -446,11 +457,17 @@ func controlURL(server string) (string, error) {
 	case "https", "wss":
 		u.Scheme = "wss"
 	default:
-		return "", fmt.Errorf("host: unsupported scheme %q", u.Scheme)
+		return "", errors.New("host: the server URL must be http, https, ws or wss")
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/ws/host"
-	u.RawQuery = ""
 	return u.String(), nil
+}
+
+// attentionURL is where a hosted session's hooks report its attention, its
+// process's CONDUCTOR_NOTIFY_URL: the server's scheme, host and path
+// (config.ShownURL), then the session's route.
+func attentionURL(server, sessionID string) string {
+	return strings.TrimRight(config.ShownURL(server), "/") + "/api/sessions/" + sessionID + "/attention"
 }
 
 // currentUser returns the OS user name for "hosted by", bounded and never
@@ -571,7 +588,7 @@ func (a *agent) dialAndRegister(ctx context.Context) (*websocket.Conn, proto.Reg
 		if errors.As(err, &refusedRedirect) {
 			return nil, proto.Registered{}, refusedRedirect.err
 		}
-		return nil, proto.Registered{}, err
+		return nil, proto.Registered{}, dialFailure(err, resp, serverHost(a.wsURL))
 	}
 	c.SetReadLimit(proto.MaxHostMessage + proto.MaxFrame)
 
@@ -1789,7 +1806,7 @@ func ownersServerClient() *http.Client {
 			return err
 		}
 		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-			return fmt.Errorf("host: %s is not this machine", address)
+			return &offMachine{address}
 		}
 		return nil
 	}}

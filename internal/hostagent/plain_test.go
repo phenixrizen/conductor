@@ -174,7 +174,7 @@ func TestInsecureAllowsPlainServerAndWarns(t *testing.T) {
 	_, port, _ := net.SplitHostPort(addr)
 	d := &namedDialer{to: map[string]string{"yard.example:" + port: addr}}
 	var logs syncLog
-	runUntilRegistered(t, Options{ServerURL: "http://me:pw@yard.example:" + port, Insecure: true, Token: hostToken, Argv: []string{"/bin/cat"}, RelayOnly: true, Log: slog.New(slog.NewTextHandler(&logs, nil)), transport: d.transport(nil)})
+	runUntilRegistered(t, Options{ServerURL: "http://yard.example:" + port, Insecure: true, Token: hostToken, Argv: []string{"/bin/cat"}, RelayOnly: true, Log: slog.New(slog.NewTextHandler(&logs, nil)), transport: d.transport(nil)})
 	if got := d.dialed(); len(got) == 0 || got[0] != "yard.example:"+port {
 		t.Fatalf("dialed %v", got)
 	}
@@ -184,7 +184,7 @@ func TestInsecureAllowsPlainServerAndWarns(t *testing.T) {
 			warnings = append(warnings, line)
 		}
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "travels in the clear and unverified") || !strings.Contains(warnings[0], "server=yard.example:"+port) || strings.Contains(warnings[0], "pw") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "travels in the clear and unverified") || !strings.Contains(warnings[0], "server=yard.example:"+port) {
 		t.Fatalf("want one warning naming the host:\n%s", logs.String())
 	}
 }
