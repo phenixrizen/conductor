@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -1071,6 +1072,35 @@ func TestRendezvousServerIsItsAddressAlone(t *testing.T) {
 		c.Rendezvous.Server = server
 		if err := c.Validate(); err != nil || c.RendezvousServer() != server {
 			t.Errorf("%s: %v %q", server, err, c.RendezvousServer())
+		}
+	}
+}
+
+// The desktop app and its Settings page take a switchyard exactly when the
+// config does, for each URL in testdata/switchyard-urls.json, which their
+// tests read too (desktop/src/settings.ts switchyardRefusal,
+// web/app/utils/desktop.ts switchyardProblem): the app hands its server no
+// switchyard the server refuses, and refuses none it takes.
+func TestTheAppTakesTheSwitchyardsTheConfigTakes(t *testing.T) {
+	f, err := os.Open("testdata/switchyard-urls.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var urls []struct {
+		URL string `json:"url"`
+		App string `json:"app"`
+	}
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&urls); err != nil || len(urls) == 0 {
+		t.Fatalf("%d urls: %v", len(urls), err)
+	}
+	for _, u := range urls {
+		c := Defaults()
+		c.Rendezvous.Server = u.URL
+		if err := c.Validate(); (err == nil) != (u.App == "") {
+			t.Errorf("%q, which the app takes as %q: %v", u.URL, u.App, err)
 		}
 	}
 }

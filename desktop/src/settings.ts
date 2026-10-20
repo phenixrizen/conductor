@@ -105,19 +105,37 @@ export function switchyardExtra(url: string): boolean {
   }
 }
 
+/** The words for a switchyard written as the server does not read a URL; web/app/utils/desktop.ts's check says the same. */
+export const SWITCHYARD_SHAPE = 'the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape in its path'
+
 /**
- * switchyardShape says whether url is written as the server reads it (Go's url.Parse), which the URL parser does not check: http:// or
- * https://, two slashes exactly, a host, then a path, with no space and no backslash anywhere. The parser repairs an extra slash, a space
- * around the URL or a backslash for a slash, and the server, which reads it as written, would refuse a switchyard the app had saved.
+ * switchyardShape says whether url is written so that the server (Go's url.Parse) reads it, and as the URL parser does: http:// or
+ * https://, two slashes exactly, a host of letters, digits, dots, hyphens, underscores, tildes, an IPv6 address's brackets and colons,
+ * a port's colon and digits, or letters past ASCII (an @ and what comes before it are switchyardExtra's), then a path with no control
+ * character or backslash and a % only in an escape, and no space around it all. The parser repairs what the server refuses (an extra
+ * slash, a backslash for a slash, a space around it, a broken escape, a host escaped), so the server would not start with a switchyard
+ * the app had saved; this holds the app to the narrower of the two. internal/config/testdata/switchyard-urls.json holds both to it.
  */
 export function switchyardShape(url: string): boolean {
-  if (!/^https?:\/\/[^\s/?#\\]+(?:[/?#][^\s\\]*)?$/i.test(url)) return false
+  if (url !== url.trim() || !/^https?:\/\/[\w.~:[\]@\u0080-\uffff-]+(?:\/(?:[^\x00-\x1f\x7f\\%?#]|%[0-9a-f]{2})*)?$/i.test(url)) return false
   try {
     const u = new URL(url)
     return (u.protocol === 'https:' || u.protocol === 'http:') && !!u.host
   } catch {
     return false
   }
+}
+
+/**
+ * switchyardRefusal is why the server would refuse the switchyard url, in validate's words, '' for one it takes: named with more than
+ * its address (SWITCHYARD_EXTRA), written as it does not read a URL (SWITCHYARD_SHAPE), or plain http on another machine
+ * (PLAIN_SWITCHYARD). The app hands the server no switchyard it refuses (serverEnv), publishing on or off.
+ */
+export function switchyardRefusal(url: string): string {
+  if (switchyardExtra(url)) return SWITCHYARD_EXTRA
+  if (!switchyardShape(url)) return SWITCHYARD_SHAPE
+  if (plainSwitchyard(url)) return PLAIN_SWITCHYARD
+  return ''
 }
 
 /** switchyardRefused says whether s publishes to a switchyard that is plain http on another machine, which the server refuses to start with. */
@@ -139,10 +157,10 @@ export function validate(s: DesktopSettings, posix = false): string[] {
   if (!s.defaultCwd || !absolute(s.defaultCwd)) out.push(`the default working directory must be ${kind}`)
   else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => s.defaultCwd === r || s.defaultCwd.startsWith(r.replace(/\/+$/, '') + '/'))) out.push('the default working directory must lie under an allowed root')
   if (!['auto', 'manual', 'off'].includes(s.reach)) out.push('reach must be auto, manual or off')
-  if (s.switchyardServer) {
-    if (s.switchyardEnabled && switchyardExtra(s.switchyardServer)) out.push(SWITCHYARD_EXTRA)
-    else if (!switchyardShape(s.switchyardServer)) out.push('the switchyard must be an http(s) URL with a host')
-    else if (switchyardRefused(s)) out.push(PLAIN_SWITCHYARD)
+  // Off, nothing is published there: a switchyard the server would refuse is kept, and never handed to it (serverEnv).
+  if (s.switchyardEnabled && s.switchyardServer) {
+    const why = switchyardRefusal(s.switchyardServer)
+    if (why) out.push(why)
   }
   if ((s.switchyardName ?? '').length > 64) out.push('the name at the switchyard is at most 64 characters')
   return out
@@ -173,15 +191,15 @@ export function migrateToWsl(s: DesktopSettings, linuxHome: string): { settings:
 
 /**
  * loadSettings reads the file, filling what it lacks from the defaults; a missing or broken file gives the defaults. Settings saved
- * before a switchyard was refused, plain http on another machine or named with more than its address, keep it, and everything else:
- * the server is started without publishing for them (serverEnv), the Settings page shows why, and nothing is rewritten. The defaults
+ * with a switchyard the server would refuse (switchyardRefusal), before the app refused it too, keep it, and everything else: the
+ * server is started without publishing for them (serverEnv), the Settings page shows why, and nothing is rewritten. The defaults
  * would publish to the public switchyard.
  */
 export function loadSettings(file: string, defaults: DesktopSettings): DesktopSettings {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8')) as Partial<DesktopSettings>
     const merged: DesktopSettings = { ...defaults, ...pick(raw) }
-    return validate(merged).some((p) => p !== PLAIN_SWITCHYARD && p !== SWITCHYARD_EXTRA) ? defaults : merged
+    return validate(merged).some((p) => p !== PLAIN_SWITCHYARD && p !== SWITCHYARD_EXTRA && p !== SWITCHYARD_SHAPE) ? defaults : merged
   } catch {
     return defaults
   }

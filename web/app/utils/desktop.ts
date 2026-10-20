@@ -22,25 +22,34 @@ export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs 
 /** The words for a switchyard named with more than its address: the desktop app's validate (desktop/src/settings.ts SWITCHYARD_EXTRA) says the same. */
 export const SWITCHYARD_EXTRA = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
 
+/** The words for a switchyard written as the server does not read a URL: the desktop app's validate (desktop/src/settings.ts SWITCHYARD_SHAPE) says the same. */
+export const SWITCHYARD_SHAPE = 'the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape in its path'
+
 /**
- * switchyardProblem is what the Settings page says before it saves a switchyard that the app and its server refuse: one named with more
- * than its address (SWITCHYARD_EXTRA), or plain http on another machine (PLAIN_SWITCHYARD); '' for one it may save, and while publishing
- * is off. This machine is localhost, in lower case, by that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or
- * 127 mapped into IPv6), as the server reads it (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is
- * not. The app checks the rest of the URL.
+ * switchyardProblem is what the Settings page says, as it opens and before it saves, of a switchyard that the app and its server refuse:
+ * one named with more than its address (SWITCHYARD_EXTRA), written as the server does not read a URL (SWITCHYARD_SHAPE), or plain http
+ * on another machine (PLAIN_SWITCHYARD); '' for one it may save, and while publishing is off. The app's switchyardRefusal
+ * (desktop/src/settings.ts) is the same check, and internal/config/testdata/switchyard-urls.json holds both to the server's. This machine
+ * is localhost, in lower case, by that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or 127 mapped into
+ * IPv6), as the server reads it (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is not.
  */
 export function switchyardProblem(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): string {
   if (!s.switchyardEnabled || !s.switchyardServer) return ''
   if (switchyardExtra(s.switchyardServer)) return SWITCHYARD_EXTRA
-  // One the server would not read as written: the app's validate says so as it saves.
-  if (!/^https?:\/\/[^\s/?#\\]+(?:[/?#][^\s\\]*)?$/i.test(s.switchyardServer)) return ''
-  let u: URL
-  try {
-    u = new URL(s.switchyardServer)
-  } catch {
-    return ''
-  }
+  if (!switchyardShape(s.switchyardServer)) return SWITCHYARD_SHAPE
+  const u = new URL(s.switchyardServer)
   return u.protocol === 'http:' && !thisMachine(s.switchyardServer, u) ? PLAIN_SWITCHYARD : ''
+}
+
+/** switchyardShape is desktop/src/settings.ts's: a URL written so that the server reads it, and as the URL parser does. */
+function switchyardShape(url: string): boolean {
+  if (url !== url.trim() || !/^https?:\/\/[\w.~:[\]@\u0080-\uffff-]+(?:\/(?:[^\x00-\x1f\x7f\\%?#]|%[0-9a-f]{2})*)?$/i.test(url)) return false
+  try {
+    const p = new URL(url)
+    return (p.protocol === 'https:' || p.protocol === 'http:') && !!p.host
+  } catch {
+    return false
+  }
 }
 
 /**

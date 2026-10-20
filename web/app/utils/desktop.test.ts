@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
+import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -28,7 +29,7 @@ describe('switchyardProblem', () => {
     }
   })
   it('keeps one on this machine, an https one anywhere, and anything while publishing is off', () => {
-    for (const server of ['', 'http://localhost:8080', 'http://localhost:8080/', 'http://127.0.0.1:8080', 'http://127.20.30.40', 'http://[::1]:8080', 'http://[::ffff:127.0.0.1]:8080', 'https://yard.example', 'https://192.168.1.10:8443', 'not a url']) {
+    for (const server of ['', 'http://localhost:8080', 'http://localhost:8080/', 'http://127.0.0.1:8080', 'http://127.20.30.40', 'http://[::1]:8080', 'http://[::ffff:127.0.0.1]:8080', 'https://yard.example', 'https://192.168.1.10:8443']) {
       expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe('')
     }
     expect(switchyardProblem({ switchyardEnabled: false, switchyardServer: 'http://yard.example' })).toBe('')
@@ -43,9 +44,16 @@ describe('switchyardProblem', () => {
     for (const server of ['https://yard.example/prefix/', 'https://yard.example/team@two']) {
       expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe('')
     }
-    // One the server would not read as written is the app's validate's to name as it saves: an extra slash, a space, a backslash.
-    for (const server of ['https:///yard.example', ' http://yard.example', 'http://yard.example ', 'http:\\\\yard.example']) {
-      expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe('')
+  })
+  // The URLs the app and its server must agree on: the app's tests (desktop/test/settings.test.ts) and internal/config's read the same list.
+  it('says of each switchyard what the app says, and nothing of one the server takes', () => {
+    const urls = JSON.parse(readFileSync(new URL('../../../internal/config/testdata/switchyard-urls.json', import.meta.url), 'utf8')) as Array<{ url: string; app: '' | 'plain' | 'extra' | 'shape' }>
+    const words = { '': '', plain: PLAIN_SWITCHYARD, extra: SWITCHYARD_EXTRA, shape: SWITCHYARD_SHAPE }
+    expect(SWITCHYARD_SHAPE).toBe('the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape in its path')
+    expect(urls.length).toBeGreaterThan(40)
+    for (const { url, app } of urls) {
+      expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: url }), url).toBe(words[app])
+      expect(switchyardProblem({ switchyardEnabled: false, switchyardServer: url }), url).toBe('')
     }
   })
 })
