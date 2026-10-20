@@ -19,21 +19,55 @@ export interface DesktopSettings {
 /** The words for a switchyard that is plain http on another machine: the desktop app's validate (desktop/src/settings.ts PLAIN_SWITCHYARD) says the same. */
 export const PLAIN_SWITCHYARD = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
 
+/** The words for a switchyard named with more than its address: the desktop app's validate (desktop/src/settings.ts SWITCHYARD_EXTRA) says the same. */
+export const SWITCHYARD_EXTRA = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
+
+/** The words for a switchyard written as the server does not read a URL: the desktop app's validate (desktop/src/settings.ts SWITCHYARD_SHAPE) says the same. */
+export const SWITCHYARD_SHAPE = 'the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape'
+
 /**
- * switchyardProblem is what the Settings page says before it saves a switchyard that is plain http on another machine, which the
- * app and its server refuse (PLAIN_SWITCHYARD); '' for one it may save, and while publishing is off. This machine is localhost, in lower case, by
- * that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or 127 mapped into IPv6), as the server reads it
- * (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is not. The app checks the rest of the URL.
+ * switchyardProblem is what the Settings page says, as it opens and before it saves, of a switchyard that the app and its server refuse:
+ * one named with more than its address (SWITCHYARD_EXTRA), written as the server does not read a URL (SWITCHYARD_SHAPE), or plain http
+ * on another machine (PLAIN_SWITCHYARD); '' for one it may save, and while publishing is off. The app's switchyardRefusal
+ * (desktop/src/settings.ts) is the same check, and internal/config/testdata/switchyard-urls.json holds both to the server's. This machine
+ * is localhost, in lower case, by that name, an address in 127.0.0.0/8 written as four decimal numbers, or ::1 (or 127 mapped into
+ * IPv6), as the server reads it (config.PlainOffMachine); a short form of an address the browser reads as 127.0.0.1 is not.
  */
 export function switchyardProblem(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): string {
   if (!s.switchyardEnabled || !s.switchyardServer) return ''
-  let u: URL
-  try {
-    u = new URL(s.switchyardServer)
-  } catch {
-    return ''
-  }
+  if (switchyardExtra(s.switchyardServer)) return SWITCHYARD_EXTRA
+  if (!switchyardShape(s.switchyardServer)) return SWITCHYARD_SHAPE
+  const u = new URL(s.switchyardServer)
   return u.protocol === 'http:' && !thisMachine(s.switchyardServer, u) ? PLAIN_SWITCHYARD : ''
+}
+
+/** switchyardShape is desktop/src/settings.ts's: a URL written so that the server reads it, and as the URL parser does. */
+function switchyardShape(url: string): boolean {
+  if (url !== url.trim() || !/^https?:\/\/(?:[\w.~:[\]@\u0080-\uffff-]|%[89a-f][0-9a-f])+(?:\/(?:[^\x00-\x1f\x7f\\%?#]|%[0-9a-f]{2})*)?$/i.test(url)) return false
+  try {
+    const p = new URL(url)
+    return (p.protocol === 'https:' || p.protocol === 'http:') && !!p.host
+  } catch {
+    return false
+  }
+}
+
+/**
+ * switchyardExtra says whether url carries more than a scheme, a host and a path: user information, a query or a fragment (a ? or a #,
+ * an empty one included). User information is an @ in the authority as written, an @ alone included, which the URL parser reads as no
+ * user name and no password, or a user name or password the parser finds where it repairs what is written (an extra slash).
+ * desktop/src/settings.ts's is the same.
+ */
+function switchyardExtra(url: string): boolean {
+  if (/[?#]/.test(url)) return true
+  const authority = url.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
+  if (authority.includes('@')) return true
+  try {
+    const u = new URL(url)
+    return !!u.username || !!u.password
+  } catch {
+    return false
+  }
 }
 
 function thisMachine(raw: string, u: URL): boolean {

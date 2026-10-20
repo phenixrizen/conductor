@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, switchyardRefused, validate } from '../src/settings'
+import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, refusedSwitchyardNote, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
 import { serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -76,7 +76,7 @@ describe('switchyard settings', () => {
     const base = defaultSettings('/home/me', '/home/me/.config/conductor')
     expect(base.switchyardEnabled).toBe(true)
     expect(validate(base)).toEqual([])
-    expect(validate({ ...base, switchyardServer: 'ftp://x' })).toContain('the switchyard must be an http(s) URL with a host and nothing after it')
+    expect(validate({ ...base, switchyardServer: 'ftp://x' })).toContain(SWITCHYARD_SHAPE)
     expect(validate({ ...base, switchyardServer: 'https://switchyard.example.net' })).toEqual([]) // no token needed
     expect(validate({ ...base, switchyardName: 'x'.repeat(65) })).toContain('the name at the switchyard is at most 64 characters')
     const byDefault = serverEnv({}, base, 'tok', '/usr/bin', '')
@@ -105,7 +105,7 @@ describe('a plain switchyard', () => {
   const words = 'the switchyard must be https:// unless it runs on this machine (localhost): over plain http:// what is published there travels in the clear and unverified'
   it('is refused on another machine, with the words why', () => {
     expect(PLAIN_SWITCHYARD).toBe(words)
-    for (const server of ['http://yard.example:8080', 'http://192.168.1.10:8080', 'HTTP://yard.example', 'http://localhost.yard.example', 'http://127.0.0.1.yard.example', 'http://127.1:8080', 'http://0x7f.0.0.1', 'http://127.000.0.1', 'http://0.0.0.0:8080', 'http://[fe80::1]:8080', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example', 'http://LOCALHOST:8080', 'http://LocalHost:8080/']) {
+    for (const server of ['http://yard.example:8080', 'http://192.168.1.10:8080', 'HTTP://yard.example', 'http://localhost.yard.example', 'http://127.0.0.1.yard.example', 'http://127.1:8080', 'http://0x7f.0.0.1', 'http://127.000.0.1', 'http://0.0.0.0:8080', 'http://[fe80::1]:8080', 'http://LOCALHOST:8080', 'http://LocalHost:8080/']) {
       expect(plainSwitchyard(server), server).toBe(true)
       expect(validate({ ...base, switchyardServer: server }), server).toEqual([words])
     }
@@ -118,7 +118,7 @@ describe('a plain switchyard', () => {
     // Off, nothing is published there: no refusal, and nothing handed to the server.
     expect(validate({ ...base, switchyardEnabled: false, switchyardServer: 'http://yard.example' })).toEqual([])
     // A malformed one is the shape check's.
-    expect(validate({ ...base, switchyardServer: 'http://' })).toEqual(['the switchyard must be an http(s) URL with a host and nothing after it'])
+    expect(validate({ ...base, switchyardServer: 'http://' })).toEqual([SWITCHYARD_SHAPE])
   })
   it('saved before it was refused, is kept, never handed to the server, and the server publishes nowhere', () => {
     const s = { ...base, switchyardServer: 'http://yard.example:8080', yolo: true }
@@ -145,6 +145,70 @@ describe('a plain switchyard', () => {
     // Another problem still gives the defaults.
     writeFileSync(file, JSON.stringify({ ...s, defaultCwd: '/elsewhere' }))
     expect(loadSettings(file, base)).toEqual(base)
+  })
+})
+
+describe('a switchyard named with more than its address', () => {
+  const words = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
+  it('is its user information, query or fragment as written, or a user name the URL parser finds', () => {
+    expect(SWITCHYARD_EXTRA).toBe(words)
+    // As written: the URL parser reads an @ alone, or a : before it, as no user name and no password, and an empty ? or # as none; it
+    // finds a user name past an extra slash, where the server finds no host.
+    for (const server of ['https:///me:pw@yard.example', 'https://me:pw@yard.example', 'https://@yard.example', 'https://:@yard.example', 'https://yard.example?', 'https://yard.example#', 'http://127.0.0.1\\@yard.example']) {
+      expect(switchyardExtra(server), server).toBe(true)
+    }
+    for (const server of ['https://yard.example', 'https://yard.example/team@two', 'http://localhost:9090']) {
+      expect(switchyardExtra(server), server).toBe(false)
+    }
+  })
+})
+
+describe('the switchyards the server takes', () => {
+  const base = defaultSettings('/home/me', '/home/me/.config/conductor')
+  // The URLs the app and its server must agree on: internal/config's tests hold the server to the same list.
+  const urls = JSON.parse(readFileSync(join(__dirname, '../../internal/config/testdata/switchyard-urls.json'), 'utf8')) as Array<{ url: string; app: '' | 'plain' | 'extra' | 'shape' }>
+  const words = { '': '', plain: PLAIN_SWITCHYARD, extra: SWITCHYARD_EXTRA, shape: SWITCHYARD_SHAPE }
+  it('refuses, while publishing, exactly those the server refuses, in words of their own, and hands it only the others', () => {
+    expect(SWITCHYARD_SHAPE).toBe('the switchyard must be an http(s) URL with a host, written as the server reads it: no space around it, no backslash, and a % only in an escape')
+    for (const { url, app } of urls) {
+      expect(switchyardRefusal(url), url).toBe(words[app])
+      if (app === 'shape') expect(switchyardShape(url), url).toBe(false)
+      else if (app !== 'extra') expect(switchyardShape(url), url).toBe(true)
+      expect(validate({ ...base, switchyardServer: url }), url).toEqual(app ? [words[app]] : [])
+      const env = serverEnv({}, { ...base, switchyardServer: url }, 'tok', '/usr/bin', '')
+      expect(env.CONDUCTOR_RENDEZVOUS, url).toBe(app ? '0' : '1')
+      expect(env.CONDUCTOR_RENDEZVOUS_SERVER, url).toBe(app ? undefined : url.replace(/\/+$/, ''))
+      // Off, nothing is published there: no refusal, and nothing the server would refuse handed to it.
+      expect(validate({ ...base, switchyardEnabled: false, switchyardServer: url }), url).toEqual([])
+      expect(serverEnv({}, { ...base, switchyardEnabled: false, switchyardServer: url }, 'tok', '/usr/bin', '').CONDUCTOR_RENDEZVOUS_SERVER, url).toBe(app ? undefined : url.replace(/\/+$/, ''))
+    }
+  })
+  it('logs a refused one as it starts in validate\'s words alone, never a part of the URL', () => {
+    for (const { url, app } of urls) {
+      const note = refusedSwitchyardNote({ switchyardEnabled: true, switchyardServer: url })
+      expect(note, url).toBe(app ? `settings: ${words[app]}; sessions are not published until Settings names a switchyard the server takes` : '')
+      expect(refusedSwitchyardNote({ switchyardEnabled: false, switchyardServer: url }), url).toBe('')
+    }
+    // The URL parser reads the backslash as a slash, and its host as me:12345.
+    expect(refusedSwitchyardNote({ switchyardEnabled: true, switchyardServer: 'http://me:12345\\@yard.example' })).not.toMatch(/me:|12345/)
+  })
+  it.skipIf(win)('keeps every setting saved with one it refuses, publishing on or off, and publishes nowhere', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cd-settings-refused-'))
+    const file = join(dir, 'settings.json')
+    for (const { url } of urls.filter((u) => u.app)) {
+      for (const switchyardEnabled of [true, false]) {
+        // Not the defaults, which would publish to the public switchyard and forget the data directory.
+        const s = { ...base, switchyardEnabled, switchyardServer: url, dataDir: '/srv/conductor-data', yolo: true }
+        saveSettings(file, s)
+        const before = readFileSync(file, 'utf8')
+        const loaded = loadSettings(file, base)
+        expect(loaded, url).toEqual(s)
+        const env = serverEnv({}, loaded, 'tok', '/usr/bin', '')
+        expect(env.CONDUCTOR_RENDEZVOUS, url).toBe('0')
+        expect(env.CONDUCTOR_RENDEZVOUS_SERVER, url).toBeUndefined()
+        expect(readFileSync(file, 'utf8')).toBe(before)
+      }
+    }
   })
 })
 

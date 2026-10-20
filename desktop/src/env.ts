@@ -1,4 +1,4 @@
-import { plainSwitchyard, type DesktopSettings } from './settings'
+import { switchyardRefusal, type DesktopSettings } from './settings'
 
 /**
  * serverEnv is the environment the server runs with: the app's own minus any CONDUCTOR_* that was set, the login shell's PATH, and
@@ -25,13 +25,15 @@ export function serverEnv(base: NodeJS.ProcessEnv, settings: DesktopSettings, to
   out.CONDUCTOR_PATHS_BROWSE = 'any'
   // Publishing is the server's default; off is a choice. The server's own
   // default switchyard stands when none is named, and a token is optional.
-  // A plain http switchyard on another machine, which the server refuses to
-  // start with (settings saved before the app refused it too), is never
-  // handed to it: the server starts without publishing, and the Settings
-  // page says why.
-  const plain = !!settings.switchyardServer && plainSwitchyard(settings.switchyardServer)
-  out.CONDUCTOR_RENDEZVOUS = settings.switchyardEnabled && !plain ? '1' : '0'
-  if (settings.switchyardServer && !plain) out.CONDUCTOR_RENDEZVOUS_SERVER = settings.switchyardServer.replace(/\/+$/, '')
+  // A switchyard the server refuses to start with, plain http on another
+  // machine, named with more than its address or written as it does not read
+  // a URL (settings saved before the app refused it too), is never handed to
+  // it, publishing on or off: the server starts without publishing, and the
+  // Settings page says why.
+  const s = settings.switchyardServer
+  const refused = !!s && switchyardRefusal(s) !== ''
+  out.CONDUCTOR_RENDEZVOUS = settings.switchyardEnabled && !refused ? '1' : '0'
+  if (s && !refused) out.CONDUCTOR_RENDEZVOUS_SERVER = s.replace(/\/+$/, '')
   if (settings.switchyardToken) out.CONDUCTOR_RENDEZVOUS_TOKEN = settings.switchyardToken
   if (settings.switchyardName) out.CONDUCTOR_RENDEZVOUS_HOST_NAME = settings.switchyardName
   if (!out.HOME && base.HOME) out.HOME = base.HOME

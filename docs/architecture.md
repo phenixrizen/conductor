@@ -322,6 +322,17 @@ registers the `conductor:` scheme: an invite opens its own join page with
   app's Settings page refuses such a switchyard as it is saved; settings
   saved with one before are kept, and the app starts its server without
   publishing until Settings names an `https` one.
+- A server is named by its address alone. `rendezvous.server` (file or
+  environment) and `conductor host --server` (`CONDUCTOR_SERVER`, read once
+  the flags are) refuse a URL with user information, a query or a fragment
+  (`config.ServerURLExtra`), publishing on or off: tokens have settings of
+  their own. Logs, errors and replies show a server URL as its scheme, host
+  and path (`config.ShownURL`), as the URL a hosted session's hooks report to
+  is built; a failed control dial is said in the host package's own words
+  (`dialFailure`), never the HTTP, TLS or WebSocket library's, which quote the
+  URL dialed or what the server sent. The desktop app refuses such a
+  switchyard as Settings saves it; one saved before is kept, never handed to
+  the server, and Settings says why.
 - Commands are argv arrays from the catalog; user-supplied extra arguments are
   appended element-wise only for agents that allow it. Server sessions get an
   allowlisted environment; `CONDUCTOR_*` from the server's own environment never

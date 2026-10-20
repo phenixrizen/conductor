@@ -28,6 +28,7 @@ import (
 
 	"github.com/phenixrizen/conductor/internal/agents"
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/hostagent"
 )
 
 // syncBuffer collects what the server logs while the test reads it.
@@ -1088,6 +1089,57 @@ func TestServeRefusesAPlainSwitchyardOffThisMachine(t *testing.T) {
 	}
 }
 
+// A switchyard named with more than its address (user information, a
+// query, a fragment) stops conductor serve at start, from the file and the
+// environment, in words that repeat nothing of it, before anything listens;
+// the file is left as it was.
+func TestServeRefusesASwitchyardURLThatCarriesMore(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	dir := t.TempDir()
+	const want = "rendezvous.server must carry no user name, password, query or fragment"
+	body := fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "https://me:SECRET@yard.example/yard"}}`, dir, dir, filepath.Join(dir, "state"))
+	cfg := writeServeConfig(t, dir, body)
+	bare := writeServeConfig(t, t.TempDir(), fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, filepath.Join(dir, "state2")))
+	for _, tc := range []struct{ name, cfg, env string }{
+		{"the file", cfg, ""},
+		{"the environment", bare, "https://yard.example/?token=SECRET"},
+	} {
+		t.Setenv("CONDUCTOR_RENDEZVOUS_SERVER", tc.env)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		var logs syncBuffer
+		code, err := Run(ctx, []string{"serve", "--config", tc.cfg, "--listen", "127.0.0.1:0"}, strings.NewReader(""), io.Discard, &logs)
+		cancel()
+		if code != 1 || err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "SECRET") || strings.Contains(logs.String(), "SECRET") {
+			t.Errorf("%s: exit %d, %v\n%s", tc.name, code, err, logs.String())
+		}
+		if strings.Contains(logs.String(), "conductor serving") {
+			t.Errorf("%s: served:\n%s", tc.name, logs.String())
+		}
+	}
+	if got, err := os.ReadFile(cfg); err != nil || string(got) != body {
+		t.Fatalf("the config file changed: %q %v", got, err)
+	}
+}
+
+// The switchyard is logged as it starts, and handed to the links' replies, as
+// its scheme, host and path (config.ShownURL).
+func TestServeShowsTheSwitchyardAsItsAddress(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	t.Setenv("CONDUCTOR_RENDEZVOUS_SERVER", "https://yard.example/team/")
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, filepath.Join(dir, "state")))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "published to the switchyard"); len(lines) != 1 || !strings.Contains(lines[0], "server=https://yard.example/team ") {
+		t.Fatalf("want one line naming the switchyard:\n%s", logs)
+	}
+	p := uplinkPublisher{&hostagent.Uplink{ServerURL: "https://me:SECRET@yard.example/team?t=SECRET#SECRET"}}
+	if got := p.Server(); got != "https://yard.example/team" {
+		t.Fatalf("Server() = %q", got)
+	}
+}
+
 // With rendezvous.insecure the server starts and says once that what it
 // publishes there travels in the clear; it dials nothing until a session is
 // launched. The environment's 0 over the file's true refuses it again.
@@ -1095,10 +1147,10 @@ func TestServeWarnsOnceForAnInsecureSwitchyard(t *testing.T) {
 	clearConductorEnv(t)
 	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
 	dir := t.TempDir()
-	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://me:pw-secret@yard.example:8080/yard?k=q-secret", "insecure": true}}`, dir, dir, filepath.Join(dir, "state")))
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q, "rendezvous": {"server": "http://yard.example:8080/yard", "insecure": true}}`, dir, dir, filepath.Join(dir, "state")))
 	logs := serveUntilListening(t, "--config", cfg)
-	// It names the switchyard's host and port, nothing else of its URL.
-	if lines := logLines(logs, "level=WARN", "rendezvous.insecure", "travels in the clear and unverified"); len(lines) != 1 || !strings.Contains(lines[0], "server=yard.example:8080") || strings.Contains(lines[0], "secret") {
+	// It names the switchyard's host and port.
+	if lines := logLines(logs, "level=WARN", "rendezvous.insecure", "travels in the clear and unverified"); len(lines) != 1 || !strings.Contains(lines[0], "server=yard.example:8080") || strings.Contains(lines[0], "/yard") {
 		t.Fatalf("want one warning naming the host alone:\n%s", logs)
 	}
 	t.Setenv("CONDUCTOR_RENDEZVOUS_INSECURE", "0")

@@ -280,6 +280,93 @@ test('a plain switchyard on another machine is refused at save with the words wh
   await expect(page.locator('[data-switchyard-server]')).not.toContainText(words)
 })
 
+// A switchyard named with more than its address (a user name, a password, a
+// query, a fragment) is refused as it is saved, with the words why, and
+// nothing reaches the app; settings saved with one before the app refused it
+// show the words as the page opens. Its address alone is saved.
+test('a switchyard named with more than its address is refused at save with the words why', async ({ page, state }) => {
+  const words = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
+  const form = {
+    dataDir: state.data,
+    allowedRoots: [state.root],
+    defaultCwd: state.root,
+    yolo: false,
+    reach: 'off',
+    closeToTray: true,
+    wslDistro: '',
+    wslWindowsHome: false,
+    switchyardEnabled: true,
+    switchyardServer: 'https://:pw@yard.example',
+    switchyardToken: '',
+    switchyardName: '',
+    noticed: ['publishing'],
+  }
+  await page.addInitScript(
+    ({ token, form, url }) => {
+      // The app's settings across reloads of the page, and every save the page asked of it.
+      const kept = sessionStorage.getItem('e2e.settings')
+      const settings = kept ? JSON.parse(kept) : { ...form }
+      const w = window as unknown as { conductorDesktop: unknown; e2eSets: object[] }
+      w.e2eSets = JSON.parse(sessionStorage.getItem('e2e.sets') ?? '[]')
+      w.conductorDesktop = {
+        version: 'e2e',
+        platform: 'linux',
+        token: async () => token,
+        openExternal: async () => {},
+        settings: {
+          get: async () => ({ ...settings }),
+          set: async (p: object) => {
+            w.e2eSets.push(p)
+            sessionStorage.setItem('e2e.sets', JSON.stringify(w.e2eSets))
+            Object.assign(settings, p)
+            sessionStorage.setItem('e2e.settings', JSON.stringify(settings))
+            return { ...settings }
+          },
+        },
+        restartServer: async () => {},
+        openInBrowser: async () => {},
+        showLog: async () => {},
+        serverState: async () => ({ state: 'running', url, failures: 0 }),
+        notice: async () => '',
+        ice: async () => ({ forwarding: false, port: 0, publicIp: '', wslAddress: '', firewall: 'unknown' }),
+        allowIceFirewall: async () => 'unknown',
+        versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
+        onServerState: () => () => {},
+      }
+    },
+    { token: state.token, form, url: state.baseURL },
+  )
+  const sets = () => page.evaluate(() => (window as unknown as { e2eSets: Array<{ switchyardServer?: string }> }).e2eSets)
+  await page.goto('/settings')
+  const field = page.locator('[data-switchyard-server]')
+  const input = field.locator('input')
+  const save = page.locator('[data-save-settings]')
+
+  // Saved with one before the app refused it: the words as the page opens.
+  await expect(input).toHaveValue('https://:pw@yard.example')
+  await expect(field).toContainText(words)
+
+  // Each refused at save, the words under the field and at the top, nothing sent to the app.
+  for (const server of ['https://me:pw@yard.example', 'https://@yard.example', 'https://yard.example/?token=t', 'https://yard.example#']) {
+    await input.fill(server)
+    await expect(field).not.toContainText(words)
+    await save.click()
+    await expect(field).toContainText(words)
+    await expect(page.locator('[data-settings-error]')).toContainText(words)
+  }
+  expect(await sets()).toEqual([])
+
+  // Its address alone, a path included: saved, and kept.
+  await input.fill('https://yard.example/team')
+  await save.click()
+  await expect(page.locator('[data-settings-error]')).toHaveCount(0)
+  await expect(field).not.toContainText(words)
+  await expect.poll(async () => (await sets()).map((s) => s.switchyardServer)).toEqual(['https://yard.example/team'])
+  await page.reload()
+  await expect(page.locator('[data-switchyard-server] input')).toHaveValue('https://yard.example/team')
+  await expect(page.locator('[data-switchyard-server]')).not.toContainText(words)
+})
+
 // The save toast says what became of the save: the server restarted for a
 // change to where or how agents run, or it was saved alone. The app says which
 // (the bridge's settings.outcome, once): a restarted server listens on a fresh

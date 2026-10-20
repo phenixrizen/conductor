@@ -262,6 +262,28 @@ func LoopbackHost(host string) bool {
 	return err == nil && ip.Unmap().IsLoopback()
 }
 
+// ServerURLExtra reports whether a server URL carries more than a scheme, a
+// host and a path: user information (user:password@, or an @ alone), a
+// query or a fragment (an empty one included). rendezvous.server and
+// conductor host --server refuse such a URL: a server is named by its
+// address alone, and its token has a setting of its own. A URL that does not
+// parse is not one: its callers refuse it as they refuse any malformed URL.
+func ServerURLExtra(server string) bool {
+	u, err := url.Parse(server)
+	return err == nil && (u.User != nil || strings.ContainsAny(server, "?#"))
+}
+
+// ShownURL is a URL as a message, a log or a reply shows it: its scheme,
+// host and path, never user information, a query or a fragment; "" for one
+// that does not parse.
+func ShownURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path, RawPath: u.RawPath}).String()
+}
+
 // PlainOffMachine reports whether server is a plain URL (http or ws) to a
 // host that is not this machine: what passes on it travels in the clear and
 // unverified on the way. A host dials one, and the admin client sends its
@@ -906,6 +928,8 @@ func (c *Config) Validate() error {
 		r.Server = strings.TrimRight(r.Server, "/")
 		if u, err := url.Parse(r.Server); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, errors.New("rendezvous.server must be an http or https URL with a host"))
+		} else if ServerURLExtra(r.Server) {
+			errs = append(errs, errors.New("rendezvous.server must carry no user name, password, query or fragment: the switchyard's host token goes in rendezvous.token (CONDUCTOR_RENDEZVOUS_TOKEN)"))
 		} else if PlainOffMachine(r.Server) && !r.Insecure {
 			errs = append(errs, fmt.Errorf("rendezvous.server %s is plain http and not localhost or a loopback address: what this server publishes there would travel in the clear and unverified; use https, or set rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1) to allow it", u.Host))
 		}
