@@ -1264,17 +1264,22 @@ request each from main.
   Linux; all but one came from the machine (`/var` and `/tmp` are links,
   APFS ignores case, the configuration directory is `~/Library/Application
   Support`, no Neovim, bash 3.2), and the tests and their harness now allow
-  for it, the product unchanged. The e2e harness needs Bash 4 or later with
+  for most of it, the product unchanged. Not yet: one clipboard spec and
+  three mouse specs still expect Windows and Linux keys (⌘C, a Shift+right
+  click), which is the owner's call, and the last Bash change was checked
+  on Linux, not in a full e2e run on the Mac. The e2e harness needs Bash 4 or later with
   a numeric microsecond clock, finds one on the PATH for its stub agents,
   and stops at once without one. The one Mac failure that is the product's
   is #285: with `ice.publicIp` set, a host's IPv6 addresses are still
   advertised. Two test races (`credential_test`'s begun write, the serve
   test's terminal) were reproduced under load and fixed in the tests. `make
-  preflight` runs every check CI runs, from the committed head, and writes a
-  receipt with a log per step under the git common dir's `preflight/`;
-  `--machines mac,windows` adds the Mac's rows (over `ssh mac`) and the
-  Windows host's; a failed step, an unreachable machine or a subset run
-  makes a failed or partial receipt, never a silent skip. The weekly
+  preflight` runs CI's checks on this machine, Linux, from the committed
+  head, and writes a receipt with a log per step under the git common
+  dir's `preflight/`; `--machines linux,mac,windows` runs the Mac's rows
+  too (over `ssh mac`) and the Windows host's, and a list without `linux`
+  runs only the machines it names. CI's darwin builds are not among the
+  local steps. A failed step, an unreachable machine or a subset run makes
+  a failed or partial receipt, never a silent skip. The weekly
   `nightly` and `live` workflows, which failed on both their runs, install
   pi and Amp from their new packages (`@earendil-works/pi-coding-agent`,
   `@ampcode/cli`), check Amp's `--dangerously-allow-all` by use since its
@@ -1315,7 +1320,10 @@ request each from main.
   `PreToolUse` does, and such a wait gives way while the agent works; the
   agents table names the events. Antigravity's payload names no event: its
   pre-tool call is told from the post-tool one by the `error` field, which
-  only a tool that ran carries.
+  only a tool that ran carries. These four install their hooks by hand, so
+  hooks installed before this release report as before until installed
+  again: Install on this machine on the Events page, or `conductor hooks
+  install <adapter>`.
 - **The Events page says what reports working** (#264, issue #206). On the
   Routing tab the `working` event reads "An agent is at work", and the line
   under it names what reports it: a prompt submitted, a tool about to run
@@ -1365,8 +1373,9 @@ request each from main.
   Keys that may reach a startup question now count as reaching the dialog,
   read off the screen model as one frame: the question's heading on a whole
   frame, a dialog's numbered choice row when the heading has scrolled off a
-  short screen, or a frame half drawn or cut by a smaller window once the
-  output has drawn a startup question. A numbered list in a program's own
+  short screen, or a frame half drawn or cut by a smaller window while the
+  output's recent tail still holds a startup question drawn (a heading
+  pushed out of that tail with the screen cut is a gap left open). A numbered list in a program's own
   startup output reads as a choice and keeps the hold, erring on the side of
   keeping it.
 - **A submission's Enter waits while a startup question may show** (#279,
@@ -1376,10 +1385,11 @@ request each from main.
   while a question reported through the API showed: the Enter went into the
   trust dialog and picked what it highlighted. The guard now reads the
   screen as well, as #278 does, and the Enter stays out while a startup
-  question may show. A frame cut or half drawn counts only once the output
-  has drawn a startup question, so a program that prints lines and never
-  erases its screen whole (a crew's example launch) still gets its first
-  prompt's Enter.
+  question may show. A frame cut or half drawn counts only while the
+  output's recent tail still holds a startup question drawn, so a program
+  that prints lines and never erases its screen whole (a crew's example
+  launch) still gets its first prompt's Enter; a heading pushed out of that
+  tail with the screen cut is the gap #279 leaves.
 - **Codex's program status** (#280, issue #197). Codex writes the same
   window title, Action Required, for a question that stops its turn and for
   an async one it posts while its turn goes on, so a wait raised while an
@@ -1446,8 +1456,9 @@ request each from main.
   model, with submissions held while one shows, each choice its label and
   number as the dialog draws them each time it is asked, and a digit picking
   it at once. Only a dialog that ends the screen with one of Claude Code's
-  footers counts, so one quoted in the transcript or pasted into the prompt
-  asks nothing. A choice that changes the permission mode (auto mode, accept
+  footers counts, and AskUserQuestion's last page ("Ready to submit your
+  answers?", Submit answers or Cancel), which has none, by its own words;
+  so one quoted in the transcript or pasted into the prompt asks nothing. A choice that changes the permission mode (auto mode, accept
   edits, bypass permissions; `mode` on the choice in the protocol) gets no
   number key, shows outlined in the warning colour, and is never the
   highlighted first choice. While the highlight is on a field (the plan's
@@ -1457,8 +1468,10 @@ request each from main.
   question that takes its own reply, and the same dialog twice is two
   questions. The hook's report carries no choices, and its words say what is
   asked ("Claude Code has a plan for you to approve", or AskUserQuestion's
-  own question); a permission question with no choices, a hosted session's
-  among them (#293), is answered in the terminal. A label over 60 characters
+  own question); a permission question with no choices is answered in the
+  terminal. All of this is for the sessions the server launches: a hosted
+  session (`conductor host`) reads none of these dialogs and holds no
+  submission at them yet, so typed text and its Enter can reach one (#293). A label over 60 characters
   is cut at a word with an ellipsis. Codex reviewed the plan once and the
   code five times.
 - **An update is said once, in the workbench** (#294, issue #290).
