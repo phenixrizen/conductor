@@ -17,6 +17,16 @@ const EVERY = 6 * 60 * 60 * 1000
 /** How long an install may take to quit the app before it is taken for one that did not start. */
 const INSTALL_WAIT = 60 * 1000
 
+/** What the app does with the updater it started (startUpdater). */
+export interface StartedUpdater {
+  /** Quits the app to install the update held (installVia). */
+  install: () => Promise<void>
+  /** Whether a check, or the download it started, is under way (UpdateChecks). */
+  busy: () => boolean
+  /** Starts no check from now on (UpdateChecks). */
+  pause: () => void
+}
+
 /**
  * startUpdater checks for a release on start and every six hours where the
  * app updates itself, downloads it in the background and installs it on
@@ -27,28 +37,71 @@ const INSTALL_WAIT = 60 * 1000
  * (electron-updater emits update-downloaded for a cached download too), and
  * gone once it holds it no more; UpdateNotice decides what is said. It
  * returns what installs the downloaded update now (quitting the app, which
- * stops the server: installVia), null where the app does not update itself.
+ * stops the server: installVia) and what a restart to update holds the
+ * checks with (UpdateChecks), null where the app does not update itself.
  */
-export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, on: UpdaterEvents): Promise<(() => Promise<void>) | null> {
+export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, on: UpdaterEvents): Promise<StartedUpdater | null> {
   if (channel !== 'auto') return null
   try {
     const { autoUpdater } = await import('electron-updater')
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true
     autoUpdater.logger = { info: (m: unknown) => logs.line('main', `updater: ${String(m)}`), warn: (m: unknown) => logs.line('main', `updater: ${String(m)}`), error: (m: unknown) => logs.line('main', `updater: ${String(m)}`), debug: () => {} }
-    watchUpdater(autoUpdater, on, (line) => logs.line('main', `updater: ${line}`))
-    // The download a check starts fails through the error event (watchUpdater), never as a rejection left unhandled.
-    const check = () =>
-      autoUpdater
-        .checkForUpdates()
-        .then((r) => void r?.downloadPromise?.catch(() => {}))
-        .catch((e: Error) => logs.line('main', `updater: ${e.message}`))
-    await check()
-    setInterval(check, EVERY).unref()
-    return () => installVia(autoUpdater)
+    const log = (line: string) => logs.line('main', `updater: ${line}`)
+    watchUpdater(autoUpdater, on, log)
+    const checks = new UpdateChecks(() => autoUpdater.checkForUpdates(), log)
+    await checks.check()
+    setInterval(() => void checks.check(), EVERY).unref()
+    return { install: () => installVia(autoUpdater), busy: () => checks.busy(), pause: () => checks.pause() }
   } catch (e) {
     logs.line('main', `updater unavailable: ${(e as Error).message}`)
     return null
+  }
+}
+
+/**
+ * UpdateChecks runs the updater's checks (start: autoUpdater.checkForUpdates) and knows when one is under way: from its start
+ * until the download it started, if any, is done or has failed. Only then does electron-updater empty or replace its cache
+ * (watchUpdater), the same version's included: one whose cached installer is gone is downloaded again. A restart to update
+ * starts only while none is (busy), and pauses them, so the update it installs stays while the server stops.
+ */
+export class UpdateChecks {
+  private running = 0
+  private paused = false
+
+  constructor(
+    private readonly start: () => Promise<{ downloadPromise?: Promise<unknown> | null } | null>,
+    private readonly log: (line: string) => void,
+  ) {}
+
+  /** check starts one unless paused, and settles with the check; a failed one is logged, a failed download said by error. */
+  check(): Promise<void> {
+    if (this.paused) return Promise.resolve()
+    this.running++
+    let checked: Promise<{ downloadPromise?: Promise<unknown> | null } | null>
+    try {
+      checked = this.start()
+    } catch (e) {
+      checked = Promise.reject(e)
+    }
+    void checked
+      .then((r) => r?.downloadPromise)
+      .catch(() => {})
+      .finally(() => this.running--)
+    return checked.then(
+      () => {},
+      (e: Error) => this.log(e.message),
+    )
+  }
+
+  /** busy says whether a check, or the download it started, is under way. */
+  busy(): boolean {
+    return this.running > 0
+  }
+
+  /** pause starts no check from now on: the app restarts to install. */
+  pause(): void {
+    this.paused = true
   }
 }
 
@@ -181,10 +234,48 @@ export class UpdateNotice {
   }
 }
 
+/**
+ * offerUpdates is what the app does as the updater holds an update and lets it go (#290): the notice, the tray's item (tray,
+ * '' for none), every workbench window told (tell), and the version downloaded kept for the next start (keep, failedAtStart).
+ * What is offered follows the updater whatever keeping it does: a settings file that cannot be written is logged, and never
+ * leaves offered an update that is gone, whose restart would stop the server for nothing.
+ */
+export function offerUpdates(
+  notice: UpdateNotice,
+  d: { tray: (version: string) => void; tell: () => void; keep: (downloaded: string) => void; log: (line: string) => void },
+): UpdaterEvents {
+  const keep = (version: string) => {
+    try {
+      d.keep(version)
+    } catch (e) {
+      d.log(`updates: the settings could not be saved: ${(e as Error).message}`)
+    }
+  }
+  return {
+    downloaded: (version) => {
+      keep(version)
+      notice.downloaded(version)
+      d.tray(version)
+      d.tell()
+    },
+    gone: (why) => {
+      d.log(`updates: ${notice.ready()} is no longer ready to install: ${why}`)
+      notice.withdraw()
+      d.tray('')
+      d.tell()
+      keep('')
+    },
+  }
+}
+
 /** What restartToInstall needs of the app. */
 export interface RestartDeps {
   /** The version the updater holds to install now, '' for none (UpdateNotice.ready). */
   ready: () => string
+  /** Whether a check, or the download it started, is under way: either can empty or replace what the updater holds. */
+  busy: () => boolean
+  /** Starts no check from now on. */
+  pause: () => void
   /** Lets the windows close and a quit go through without stopping the server again (main.ts's quitting). */
   letGo: () => void
   stopServer: () => Promise<void>
@@ -195,23 +286,32 @@ export interface RestartDeps {
   log: (line: string) => void
 }
 
+/** What a restart to update came to: under way; refused, the version gone; or put off while a check is under way. */
+export type RestartOutcome = 'started' | 'gone' | 'busy'
+
 /**
  * restartToInstall is Restart to update to version (#290), asked from the workbench or the tray. It starts only while the updater
  * still holds that version (ready): one gone since (watchUpdater) would stop the server and its sessions and quit with nothing
- * to install. started says whether it did. The server stops first, as a quit stops it; then the windows may close and the quit
- * go through (closing to the tray would hide them, and macOS's updater closes them before it quits) and the updater quits the
- * app to install. An install that does not go through quits the app all the same: the person asked for the restart, the server
- * and its sessions are stopped already, and what the updater still has queued (Windows' quit after an installer that did not
- * launch, macOS's install once its native updater is ready) ends in a quit too, never in a server started again that a late
- * install would stop unasked. The next start says the update did not install (failedAtStart). done settles when the install
- * did not go through; one that does quits the app first.
+ * to install. While a check is under way (busy), which may yet empty or replace what is held, it is put off; once it starts, no
+ * check does (pause), so what is held stays while the server stops. The server stops first, as a quit stops it; then the windows
+ * may close and the quit go through (closing to the tray would hide them, and macOS's updater closes them before it quits) and
+ * the updater quits the app to install. An install that does not go through quits the app all the same: the person asked for
+ * the restart, the server and its sessions are stopped already, and what the updater still has queued (Windows' quit after an
+ * installer that did not launch, macOS's install once its native updater is ready) ends in a quit too, never in a server started
+ * again that a late install would stop unasked. The next start says the update did not install (failedAtStart). done settles
+ * when the install did not go through; one that does quits the app first.
  */
-export function restartToInstall(version: string, d: RestartDeps): { started: boolean; done: Promise<void> } {
+export function restartToInstall(version: string, d: RestartDeps): { outcome: RestartOutcome; done: Promise<void> } {
   const held = d.ready()
   if (!version || held !== version) {
     d.log(`updates: no restart to update to ${version || 'no version'}: ${held ? `the update ready is ${held}` : 'no update is ready'}`)
-    return { started: false, done: Promise.resolve() }
+    return { outcome: 'gone', done: Promise.resolve() }
   }
+  if (d.busy()) {
+    d.log(`updates: no restart to update to ${version} yet: a check for updates is under way`)
+    return { outcome: 'busy', done: Promise.resolve() }
+  }
+  d.pause()
   d.log(`updates: restarting to install ${version}`)
   const done = (async () => {
     d.letGo()
@@ -223,7 +323,7 @@ export function restartToInstall(version: string, d: RestartDeps): { started: bo
       d.quit()
     }
   })()
-  return { started: true, done }
+  return { outcome: 'started', done }
 }
 
 /**

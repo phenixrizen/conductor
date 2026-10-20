@@ -119,11 +119,11 @@ export interface DesktopBridge {
   /** A check found an update downloaded, or the one downloaded is gone: ask update() what to say. Older apps lack it. */
   onUpdate?(cb: () => void): () => void
   /**
-   * Installs the update downloaded now, the version offered: the app quits, its server and the sessions running on it with it.
-   * False when that version is no longer ready (a check found a newer one, or a download failed), and nothing stops. Older
-   * apps lack it.
+   * Installs the update downloaded now, the version offered: the app quits, its server and the sessions running on it with it
+   * ('started'). 'gone' when that version is no longer ready (a check found a newer one, or a download failed), 'busy' while a
+   * check for updates is under way; nothing stops then. Older apps lack it.
    */
-  installUpdate?(version: string): Promise<boolean>
+  installUpdate?(version: string): Promise<'started' | 'gone' | 'busy'>
 }
 
 /** What the workbench says of an update the desktop app downloaded, once per version (#290). */
@@ -140,6 +140,11 @@ export function updateGoneWords(version: string): { title: string; description: 
     title: `Conductor ${version} is no longer ready`,
     description: 'A newer update replaced it, or its download failed, and nothing restarted. The button in the header shows when an update is ready.',
   }
+}
+
+/** What the workbench says of a restart to update put off while the app checks for updates, which may change the one held. */
+export function updateBusyWords(): { title: string; description: string } {
+  return { title: 'Conductor is checking for updates', description: 'Nothing restarted. Restart to update again in a moment.' }
 }
 
 /** What the workbench says of an update the app downloaded and this start of it runs older than: its install did not take. */

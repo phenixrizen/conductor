@@ -22,10 +22,10 @@ const bridge = {
   /** The update downloaded ('' for none), whether to say so (the first page to ask, once per version), and one whose install did not take, said once (#290). */
   update: (): Promise<{ ready: string; announce: boolean; failed: string }> => ipcRenderer.invoke('conductor:update'),
   /**
-   * Installs the update downloaded now, the version offered: the app quits, its server and the sessions on it with it. False when
-   * that version is no longer ready, and nothing stops.
+   * Installs the update downloaded now, the version offered: the app quits, its server and the sessions on it with it
+   * ('started'). 'gone' when that version is no longer ready, 'busy' while a check for updates is under way: nothing stops then.
    */
-  installUpdate: (version: string): Promise<boolean> => ipcRenderer.invoke('conductor:installUpdate', version),
+  installUpdate: (version: string): Promise<'started' | 'gone' | 'busy'> => ipcRenderer.invoke('conductor:installUpdate', version),
   /** A check found an update downloaded, or the one downloaded is gone: ask update() what to say. */
   onUpdate: (cb: () => void): (() => void) => {
     const handler = () => cb()

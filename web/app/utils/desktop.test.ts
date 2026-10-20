@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
+import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -61,6 +61,10 @@ describe('the update the desktop app downloaded (#290)', () => {
     const w = updateGoneWords('0.7.0-rc.12')
     expect(w.title).toBe('Conductor 0.7.0-rc.12 is no longer ready')
     expect(w.description).toContain('nothing restarted')
+  })
+
+  it('says a restart put off while the app checks for updates, and that nothing restarted', () => {
+    expect(updateBusyWords()).toEqual({ title: 'Conductor is checking for updates', description: 'Nothing restarted. Restart to update again in a moment.' })
   })
 
   it('says what a restart to update ends: the server, and the sessions running on this computer', () => {

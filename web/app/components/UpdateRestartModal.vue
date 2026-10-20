@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { restartWords, updateGoneWords } from '~/utils/desktop'
+import { restartWords, updateBusyWords, updateGoneWords } from '~/utils/desktop'
 import { sessionLive } from '~/utils/sidebarActions'
 
 /**
  * Restart to update (#290): what it ends, the server and the sessions running on this computer, counted as it opens; then the
  * app quits to install the version asked for. Later closes it; the header's button stays until the update installs. A version
  * the app no longer holds (a check found a newer one, or a download failed) restarts nothing: the dialog closes and says so,
- * when the app refuses it and as soon as the app says it is gone.
+ * when the app refuses it and as soon as the app says it is gone. While the app checks for updates, which may change the one it
+ * holds, the restart is put off: the dialog stays, and says so.
  */
 const { ready, restartFor, install } = useDesktopUpdate()
 const sessions = useSessions()
@@ -42,10 +43,12 @@ watch(ready, (now) => {
 async function restart() {
   const version = restartFor.value
   busy.value = true
-  // Started, the app quits to install; refused, it holds that version no more and nothing stopped.
-  if (await install(version).catch(() => false)) return
+  const outcome = await install(version).catch(() => 'gone' as const)
+  // Started, the app quits to install. Otherwise nothing stopped.
+  if (outcome === 'started') return
   busy.value = false
-  gone(version)
+  if (outcome === 'busy') toast.add({ ...updateBusyWords(), icon: 'i-lucide-circle-arrow-up', color: 'info', duration: 10000 })
+  else gone(version)
 }
 </script>
 

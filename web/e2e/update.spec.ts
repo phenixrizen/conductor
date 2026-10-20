@@ -8,10 +8,11 @@ import { expect, test } from './fixtures'
 // the restart says what it ends before the app quits to install; an update
 // the app no longer holds restarts nothing; an update that did not install is
 // said once. The app is a stub bridge here, which hands the announcement out
-// once and refuses to install a version it does not hold, as the app does.
+// once, refuses to install a version it does not hold and puts a restart off
+// while it checks for updates, as the app does.
 test.describe.configure({ mode: 'serial' })
 
-type Told = { ready: string; announce: boolean; failed: string }
+type Told = { ready: string; announce: boolean; failed: string; checking?: boolean }
 
 async function stubApp(page: Page, token: string, url: string, init: Told) {
   await page.addInitScript(
@@ -45,9 +46,10 @@ async function stubApp(page: Page, token: string, url: string, init: Told) {
           return () => {}
         },
         installUpdate: async (version: string) => {
-          if (!version || version !== w.e2eUpdate.ready) return false
+          if (!version || version !== w.e2eUpdate.ready) return 'gone'
+          if (w.e2eUpdate.checking) return 'busy'
           sessionStorage.setItem('e2e.installed', String(Number(sessionStorage.getItem('e2e.installed') ?? '0') + 1))
-          return true
+          return 'started'
         },
       }
     },
@@ -104,6 +106,24 @@ test('restart to update says what it ends, Later leaves it, and the restart inst
   await modal.getByRole('button', { name: 'Later' }).click()
   await expect(modal).toHaveCount(0)
   expect(await page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBeNull()
+
+  // Put off while the app checks for updates, which may change the one it holds: the dialog stays, and nothing installs.
+  await page.evaluate(() => {
+    const w = window as unknown as { e2eUpdate: Told }
+    w.e2eUpdate = { ...w.e2eUpdate, checking: true }
+  })
+  await page.locator('[data-header-update]').first().click()
+  await expect(modal).toContainText(' on this computer')
+  await page.locator('[data-update-restart]').click()
+  await expect(page.locator('li').filter({ hasText: 'Conductor is checking for updates' })).toHaveCount(1)
+  await expect(modal).toContainText('Restart to update to 0.7.0-rc.12?')
+  expect(await page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBeNull()
+  await page.evaluate(() => {
+    const w = window as unknown as { e2eUpdate: Told }
+    w.e2eUpdate = { ...w.e2eUpdate, checking: false }
+  })
+  await modal.getByRole('button', { name: 'Later' }).click()
+  await expect(modal).toHaveCount(0)
 
   // Sessions that cannot be counted are never said to be none.
   await page.route('**/api/sessions', (r) => r.abort())

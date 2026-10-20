@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { UpdateNotice, compareVersions, failedAtStart, installFailed, installVia, restartToInstall, updateChannel, watchUpdater } from '../src/updater'
+import { UpdateChecks, UpdateNotice, compareVersions, failedAtStart, installFailed, installVia, offerUpdates, restartToInstall, updateChannel, watchUpdater } from '../src/updater'
 
 describe('update channel', () => {
   it('updates itself on macOS, Windows and AppImage, points at the releases for deb and rpm, and never in development', () => {
@@ -209,13 +209,102 @@ describe('what the updater holds to install (#290)', () => {
   })
 })
 
+// What the app offers follows the updater first: a settings file that cannot be written must not leave an update offered that
+// is gone, whose restart would stop the server for nothing.
+describe('offering the update held (#290)', () => {
+  function offer(keep: (v: string) => void) {
+    const steps: string[] = []
+    const n = notice({ announced: '' })
+    const on = offerUpdates(n, { tray: (v) => steps.push(`tray ${v || 'none'}`), tell: () => steps.push('tell'), keep, log: (l) => steps.push(l) })
+    return { n, on, steps }
+  }
+
+  it('offers the update downloaded, keeps it, and lets it go everywhere once gone', () => {
+    const kept: string[] = []
+    const { n, on, steps } = offer((v) => kept.push(v))
+    on.downloaded('0.7.0-rc.12')
+    expect(n.ready()).toBe('0.7.0-rc.12')
+    on.gone('a check found 0.7.0-rc.13')
+    expect(n.ready()).toBe('')
+    expect(kept).toEqual(['0.7.0-rc.12', ''])
+    expect(steps).toEqual(['tray 0.7.0-rc.12', 'tell', 'updates: 0.7.0-rc.12 is no longer ready to install: a check found 0.7.0-rc.13', 'tray none', 'tell'])
+  })
+
+  it('offers and lets go all the same when the settings cannot be saved', () => {
+    const { n, on, steps } = offer(() => {
+      throw new Error("EACCES: permission denied, open 'settings.json.tmp'")
+    })
+    on.downloaded('0.7.0-rc.12')
+    expect(n.ready()).toBe('0.7.0-rc.12')
+    on.gone('its download failed')
+    expect(n.ready()).toBe('')
+    expect(steps.filter((s) => s.startsWith('tray') || s === 'tell')).toEqual(['tray 0.7.0-rc.12', 'tell', 'tray none', 'tell'])
+    expect(steps.filter((s) => s.includes('could not be saved'))).toHaveLength(2)
+  })
+})
+
+/** A check as electron-updater's checkForUpdates runs one: settled with the check, its download going on after. */
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  let reject!: (e: Error) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+describe('the checks for updates (#290)', () => {
+  it('are under way from the start of a check until the download it started is done or has failed', async () => {
+    const lines: string[] = []
+    const check = deferred<{ downloadPromise?: Promise<unknown> | null } | null>()
+    const download = deferred<unknown>()
+    const checks = new UpdateChecks(() => check.promise, (l) => lines.push(l))
+    expect(checks.busy()).toBe(false)
+    const checked = checks.check()
+    expect(checks.busy()).toBe(true)
+    check.resolve({ downloadPromise: download.promise })
+    await checked
+    // The same version downloaded again (its cached installer gone), or another one: the cache can change until it is done.
+    expect(checks.busy()).toBe(true)
+    download.reject(new Error('net::ERR_CONNECTION_RESET'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(checks.busy()).toBe(false)
+    expect(lines).toEqual([])
+  })
+
+  it('logs a check that fails, which starts no download', async () => {
+    const lines: string[] = []
+    const checks = new UpdateChecks(() => Promise.reject(new Error('getaddrinfo ENOTFOUND github.com')), (l) => lines.push(l))
+    await checks.check()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(checks.busy()).toBe(false)
+    expect(lines).toEqual(['getaddrinfo ENOTFOUND github.com'])
+  })
+
+  it('starts none once paused', async () => {
+    let started = 0
+    const checks = new UpdateChecks(async () => {
+      started++
+      return null
+    }, () => {})
+    await checks.check()
+    checks.pause()
+    await checks.check()
+    expect(started).toBe(1)
+    expect(checks.busy()).toBe(false)
+  })
+})
+
 describe('restart to install (#290)', () => {
-  function app(install: () => Promise<void>, ready = '0.7.0-rc.12') {
+  function app(install: () => Promise<void>, ready = '0.7.0-rc.12', busy = false) {
     const steps: string[] = []
     return {
       steps,
       d: {
         ready: () => ready,
+        busy: () => busy,
+        pause: () => void steps.push('pause'),
         letGo: () => void steps.push('let go'),
         stopServer: async () => void steps.push('stop server'),
         install: () => {
@@ -228,11 +317,22 @@ describe('restart to install (#290)', () => {
     }
   }
 
-  it('stops the server, lets the windows close and the quit through, then installs', async () => {
+  // No check starts once it does: one could empty or replace the update held while the server stops.
+  it('pauses the checks, stops the server, lets the windows close and the quit through, then installs', async () => {
     const a = app(() => new Promise(() => {}))
-    expect(restartToInstall('0.7.0-rc.12', a.d).started).toBe(true)
+    expect(restartToInstall('0.7.0-rc.12', a.d).outcome).toBe('started')
     await new Promise((r) => setTimeout(r, 20))
-    expect(a.steps).toEqual(['updates: restarting to install 0.7.0-rc.12', 'let go', 'stop server', 'install'])
+    expect(a.steps).toEqual(['pause', 'updates: restarting to install 0.7.0-rc.12', 'let go', 'stop server', 'install'])
+  })
+
+  // A check, or the download it started, may yet empty or replace what is held: the same version's too, downloaded again
+  // when its cached installer is gone.
+  it('is put off while a check is under way, and stops nothing', async () => {
+    const a = app(() => Promise.reject(new Error('never asked')), '0.7.0-rc.12', true)
+    const r = restartToInstall('0.7.0-rc.12', a.d)
+    await r.done
+    expect(r.outcome).toBe('busy')
+    expect(a.steps).toEqual(['updates: no restart to update to 0.7.0-rc.12 yet: a check for updates is under way'])
   })
 
   // A check that found a newer version, or a download that failed, took the update offered away: a restart would stop the
@@ -246,7 +346,7 @@ describe('restart to install (#290)', () => {
       const a = app(() => Promise.reject(new Error('never asked')), held)
       const r = restartToInstall(asked, a.d)
       await r.done
-      expect(r.started).toBe(false)
+      expect(r.outcome).toBe('gone')
       expect(a.steps).toEqual([`updates: no restart to update to ${asked || 'no version'}: ${why}`])
     }
   })
@@ -256,9 +356,9 @@ describe('restart to install (#290)', () => {
   it('quits all the same when the updater emits an error, or the install neither quits nor fails in time', async () => {
     const failed = app(() => installVia(new FakeUpdater('fails'), 1000))
     await restartToInstall('0.7.0-rc.12', failed.d).done
-    expect(failed.steps).toEqual(['updates: restarting to install 0.7.0-rc.12', 'let go', 'stop server', 'install', 'updates: the install did not go through: EACCES: permission denied, open the installer; quitting', 'quit'])
+    expect(failed.steps).toEqual(['pause', 'updates: restarting to install 0.7.0-rc.12', 'let go', 'stop server', 'install', 'updates: the install did not go through: EACCES: permission denied, open the installer; quitting', 'quit'])
     const stuck = app(() => installVia(new FakeUpdater('hangs'), 30))
     await restartToInstall('0.7.0-rc.12', stuck.d).done
-    expect(stuck.steps).toEqual(['updates: restarting to install 0.7.0-rc.12', 'let go', 'stop server', 'install', 'updates: the install did not go through: the app did not quit to install within 0 s; quitting', 'quit'])
+    expect(stuck.steps).toEqual(['pause', 'updates: restarting to install 0.7.0-rc.12', 'let go', 'stop server', 'install', 'updates: the install did not go through: the app did not quit to install within 0 s; quitting', 'quit'])
   })
 })

@@ -31,10 +31,11 @@ export interface IpcDeps {
    */
   update?: () => { ready: string; announce: boolean; failed: string }
   /**
-   * Installs the update downloaded now, the version the page offered: the app quits, the server with it. False when that
-   * version is no longer the one ready (a newer one found, a download failed), and nothing stops.
+   * Installs the update downloaded now, the version the page offered: the app quits, the server with it ('started'). 'gone'
+   * when that version is no longer the one ready (a newer one found, a download failed), 'busy' while a check is under way;
+   * nothing stops then.
    */
-  installUpdate?: (version: string) => boolean
+  installUpdate?: (version: string) => 'started' | 'gone' | 'busy'
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -67,7 +68,7 @@ export function registerIpc(d: IpcDeps): void {
   ipcMain.handle('conductor:update', guard(() => d.update?.() ?? { ready: '', announce: false, failed: '' }))
   ipcMain.handle(
     'conductor:installUpdate',
-    guard((_e, version) => typeof version === 'string' && (d.installUpdate?.(version) ?? false)),
+    guard((_e, version) => (typeof version === 'string' && d.installUpdate?.(version)) || 'gone'),
   )
   ipcMain.handle('conductor:notice', guard(() => d.notice()))
   ipcMain.handle(
