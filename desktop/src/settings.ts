@@ -88,15 +88,36 @@ function thisMachine(raw: string, u: URL): boolean {
 export const SWITCHYARD_EXTRA = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
 
 /**
- * switchyardExtra says whether url, as written, carries more than a scheme, a host and a path: user information (anything before an @
- * in the authority, an @ alone included, which the URL parser reads as no user name and no password), a query or a fragment (a ? or a
- * #, an empty one included). The server refuses such a switchyard (config.ServerURLExtra): it is named by its address alone, and its
- * host token is a setting of its own.
+ * switchyardExtra says whether url carries more than a scheme, a host and a path: user information, a query or a fragment (a ? or a #,
+ * an empty one included). User information is an @ in the authority as written, an @ alone included, which the URL parser reads as no
+ * user name and no password, or a user name or password the parser finds where it repairs what is written (an extra slash). The server
+ * refuses such a switchyard (config.ServerURLExtra): it is named by its address alone, and its host token is a setting of its own.
  */
 export function switchyardExtra(url: string): boolean {
   if (/[?#]/.test(url)) return true
   const authority = url.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
-  return authority.includes('@')
+  if (authority.includes('@')) return true
+  try {
+    const u = new URL(url)
+    return !!u.username || !!u.password
+  } catch {
+    return false
+  }
+}
+
+/**
+ * switchyardShape says whether url is written as the server reads it (Go's url.Parse), which the URL parser does not check: http:// or
+ * https://, two slashes exactly, a host, then a path, with no space and no backslash anywhere. The parser repairs an extra slash, a space
+ * around the URL or a backslash for a slash, and the server, which reads it as written, would refuse a switchyard the app had saved.
+ */
+export function switchyardShape(url: string): boolean {
+  if (!/^https?:\/\/[^\s/?#\\]+(?:[/?#][^\s\\]*)?$/i.test(url)) return false
+  try {
+    const u = new URL(url)
+    return (u.protocol === 'https:' || u.protocol === 'http:') && !!u.host
+  } catch {
+    return false
+  }
 }
 
 /** switchyardRefused says whether s publishes to a switchyard that is plain http on another machine, which the server refuses to start with. */
@@ -119,15 +140,8 @@ export function validate(s: DesktopSettings, posix = false): string[] {
   else if (s.allowedRoots?.length && !s.allowedRoots.some((r) => s.defaultCwd === r || s.defaultCwd.startsWith(r.replace(/\/+$/, '') + '/'))) out.push('the default working directory must lie under an allowed root')
   if (!['auto', 'manual', 'off'].includes(s.reach)) out.push('reach must be auto, manual or off')
   if (s.switchyardServer) {
-    let ok = false
-    try {
-      const u = new URL(s.switchyardServer)
-      ok = (u.protocol === 'https:' || u.protocol === 'http:') && !!u.host
-    } catch {
-      ok = false
-    }
-    if (!ok) out.push('the switchyard must be an http(s) URL with a host')
-    else if (s.switchyardEnabled && switchyardExtra(s.switchyardServer)) out.push(SWITCHYARD_EXTRA)
+    if (s.switchyardEnabled && switchyardExtra(s.switchyardServer)) out.push(SWITCHYARD_EXTRA)
+    else if (!switchyardShape(s.switchyardServer)) out.push('the switchyard must be an http(s) URL with a host')
     else if (switchyardRefused(s)) out.push(PLAIN_SWITCHYARD)
   }
   if ((s.switchyardName ?? '').length > 64) out.push('the name at the switchyard is at most 64 characters')

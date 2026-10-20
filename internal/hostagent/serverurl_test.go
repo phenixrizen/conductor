@@ -1,6 +1,7 @@
 package hostagent
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -17,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,6 +222,32 @@ func TestAFailedDialNamesItsHostAlone(t *testing.T) {
 		c.TLSClientConfig = &tls.Config{RootCAs: roots}
 		return c
 	}
+	// A proxy, with a password in its URL, that answers the CONNECT with a
+	// status and a reason phrase of its own.
+	viaProxy := func(status string) *http.Transport {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					defer c.Close()
+					if _, err := http.ReadRequest(bufio.NewReader(c)); err == nil {
+						io.WriteString(c, "HTTP/1.1 "+status+"\r\nContent-Length: 0\r\n\r\n")
+					}
+				}()
+			}
+		}()
+		c := tr.Clone()
+		c.Proxy = http.ProxyURL(&url.URL{Scheme: "http", User: url.UserPassword("me", "PROXY-SECRET"), Host: ln.Addr().String()})
+		return c
+	}
 
 	for _, tc := range []struct {
 		name      string
@@ -236,6 +264,8 @@ func TestAFailedDialNamesItsHostAlone(t *testing.T) {
 		{"a certificate for another name", named.URL, withRoots(namedRoots), "host: the control connection to " + strings.TrimPrefix(named.URL, "https://") + " failed: its certificate is for another name"},
 		{"a certificate expired", expired.URL, withRoots(expiredRoots), "host: the control connection to " + strings.TrimPrefix(expired.URL, "https://") + " failed: its certificate has expired, or is not valid yet"},
 		{"no TLS", strings.Replace(away.URL, "http://", "https://", 1), tr, "host: the control connection to " + awayHost + " failed: it did not answer in TLS"},
+		{"a proxy that asks for authentication", "https://yard.example", viaProxy("407 SECRET reason"), "host: the control connection to yard.example failed: the proxy the environment names (HTTPS_PROXY) asks for authentication"},
+		{"a proxy that refuses", "https://yard.example", viaProxy("403 SECRET reason"), "host: the control connection to yard.example failed: the proxy the environment names (HTTPS_PROXY) refused it with HTTP 403"},
 	} {
 		wsURL, err := controlURL(tc.server)
 		if err != nil {
@@ -308,6 +338,8 @@ func TestFailureCause(t *testing.T) {
 		{&net.OpError{Op: "dial", Err: &net.DNSError{Err: "SECRET", Name: "SECRET.example", IsNotFound: true}}, "its name does not resolve"},
 		{&net.OpError{Op: "dial", Err: &net.DNSError{Err: "SECRET", Name: "SECRET.example", IsTimeout: true}}, "looking up its name timed out"},
 		{&net.OpError{Op: "proxyconnect", Err: secret}, "the proxy the environment names (HTTPS_PROXY, HTTP_PROXY) did not connect it"},
+		{&proxyRefused{http.StatusProxyAuthRequired}, "the proxy the environment names (HTTPS_PROXY) asks for authentication"},
+		{&proxyRefused{http.StatusBadGateway}, "the proxy the environment names (HTTPS_PROXY) refused it with HTTP 502"},
 		{&tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, "its certificate is signed by an authority this machine does not trust"},
 		{&tls.CertificateVerificationError{Err: x509.HostnameError{Host: "SECRET"}}, "its certificate is for another name"},
 		{&tls.CertificateVerificationError{Err: x509.CertificateInvalidError{Reason: x509.Expired, Detail: "SECRET"}}, "its certificate has expired, or is not valid yet"},

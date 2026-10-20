@@ -263,6 +263,7 @@ func pacedDial(ctx context.Context, url string, header http.Header, base *http.C
 		return nil, nil, nil, errNotPaced
 	}
 	t = t.Clone()
+	t.OnProxyConnectResponse = proxyStatus(t.OnProxyConnectResponse)
 	dial := t.DialContext
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext

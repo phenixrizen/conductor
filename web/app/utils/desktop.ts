@@ -31,26 +31,34 @@ export const SWITCHYARD_EXTRA = 'the switchyard must be named by its address alo
  */
 export function switchyardProblem(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): string {
   if (!s.switchyardEnabled || !s.switchyardServer) return ''
+  if (switchyardExtra(s.switchyardServer)) return SWITCHYARD_EXTRA
+  // One the server would not read as written: the app's validate says so as it saves.
+  if (!/^https?:\/\/[^\s/?#\\]+(?:[/?#][^\s\\]*)?$/i.test(s.switchyardServer)) return ''
   let u: URL
   try {
     u = new URL(s.switchyardServer)
   } catch {
     return ''
   }
-  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || !u.host) return ''
-  if (switchyardExtra(s.switchyardServer)) return SWITCHYARD_EXTRA
   return u.protocol === 'http:' && !thisMachine(s.switchyardServer, u) ? PLAIN_SWITCHYARD : ''
 }
 
 /**
- * switchyardExtra says whether url, as written, carries more than a scheme, a host and a path: user information (anything before an @
- * in the authority, an @ alone included, which the URL parser reads as no user name and no password), a query or a fragment (a ? or a
- * #, an empty one included); desktop/src/settings.ts's is the same.
+ * switchyardExtra says whether url carries more than a scheme, a host and a path: user information, a query or a fragment (a ? or a #,
+ * an empty one included). User information is an @ in the authority as written, an @ alone included, which the URL parser reads as no
+ * user name and no password, or a user name or password the parser finds where it repairs what is written (an extra slash).
+ * desktop/src/settings.ts's is the same.
  */
 function switchyardExtra(url: string): boolean {
   if (/[?#]/.test(url)) return true
   const authority = url.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0] ?? ''
-  return authority.includes('@')
+  if (authority.includes('@')) return true
+  try {
+    const u = new URL(url)
+    return !!u.username || !!u.password
+  } catch {
+    return false
+  }
 }
 
 function thisMachine(raw: string, u: URL): boolean {

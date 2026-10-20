@@ -20,9 +20,13 @@ import (
 // was dialing, a redirect's whole, and quotes a Location it could not read
 // as it came; the WebSocket library's and the certificate checks' quote
 // what the server sent (a handshake's headers, a certificate's names).
-// host is the control URL's; a redirect's host replaces it. A refusal the
-// server answered with (RefusedError) and a redirect the dial's policy
-// refused (redirectRefused) are the caller's to say first.
+// host is the control URL's; a redirect's host replaces it. A redirect the
+// dial's policy refused (redirectRefused) is the caller's to say first, and
+// so is a refusal the server answered with (RefusedError): its code and
+// words are the server's own, how a switchyard says why (a revoked token, a
+// limit), and are kept, as a close's reason is once registered. The URL the
+// host dials carries no credential of the person's (controlURL), so the
+// server can repeat only what it was sent or chose itself.
 func dialFailure(err error, resp *http.Response, host string) error {
 	if errors.Is(err, errNotPaced) {
 		return errNotPaced
@@ -49,6 +53,31 @@ func dialFailure(err error, resp *http.Response, host string) error {
 	return fmt.Errorf("host: the control connection to %s failed", host)
 }
 
+// proxyRefused is a proxy that answered the dial's CONNECT with a status
+// other than 200: the status alone. The transport's own error is the
+// proxy's reason phrase, as the proxy wrote it (proxyStatus).
+type proxyRefused struct{ status int }
+
+func (e *proxyRefused) Error() string {
+	return fmt.Sprintf("host: the proxy answered HTTP %d", e.status)
+}
+
+// proxyStatus is a transport's OnProxyConnectResponse: next has its say, then
+// a CONNECT answered with anything but 200 is a proxyRefused.
+func proxyStatus(next func(context.Context, *url.URL, *http.Request, *http.Response) error) func(context.Context, *url.URL, *http.Request, *http.Response) error {
+	return func(ctx context.Context, proxy *url.URL, req *http.Request, resp *http.Response) error {
+		if next != nil {
+			if err := next(ctx, proxy, req, resp); err != nil {
+				return err
+			}
+		}
+		if resp.StatusCode != http.StatusOK {
+			return &proxyRefused{resp.StatusCode}
+		}
+		return nil
+	}
+}
+
 // offMachine is the owner's server's dial refusing an address that is not
 // this machine's (ownersServerClient): the address it resolved, ip:port.
 type offMachine struct{ address string }
@@ -60,6 +89,7 @@ func (e *offMachine) Error() string { return "host: " + e.address + " is not thi
 func failureCause(err error) string {
 	var (
 		off       *offMachine
+		proxy     *proxyRefused
 		dns       *net.DNSError
 		authority x509.UnknownAuthorityError
 		name      x509.HostnameError
@@ -80,6 +110,11 @@ func failureCause(err error) string {
 			return "looking up its name timed out"
 		}
 		return "its name does not resolve"
+	case errors.As(err, &proxy):
+		if proxy.status == http.StatusProxyAuthRequired {
+			return "the proxy the environment names (HTTPS_PROXY) asks for authentication"
+		}
+		return fmt.Sprintf("the proxy the environment names (HTTPS_PROXY) refused it with HTTP %d", proxy.status)
 	case errors.As(err, &op) && op.Op == "proxyconnect":
 		return "the proxy the environment names (HTTPS_PROXY, HTTP_PROXY) did not connect it"
 	case errors.As(err, &authority):

@@ -36,11 +36,15 @@ describe('switchyardProblem', () => {
   it('refuses one named with more than its address, before the plain http rule, and nothing of it while publishing is off', () => {
     const extra = 'the switchyard must be named by its address alone, with no user name, password, query or fragment; a host token has a field of its own'
     expect(SWITCHYARD_EXTRA).toBe(extra)
-    for (const server of ['https://me:pw@yard.example', 'https://me@yard.example', 'https://:pw@yard.example', 'https://@yard.example', 'https://:@yard.example', 'https://yard.example/?token=t', 'https://yard.example?', 'https://yard.example/#f', 'https://yard.example#', 'http://me:pw@localhost:9090', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example']) {
+    for (const server of ['https:///me:pw@yard.example', 'https://me:pw@yard.example', 'https://me@yard.example', 'https://:pw@yard.example', 'https://@yard.example', 'https://:@yard.example', 'https://yard.example/?token=t', 'https://yard.example?', 'https://yard.example/#f', 'https://yard.example#', 'http://me:pw@localhost:9090', 'http://:pw@yard.example', 'http://127.0.0.1\\@yard.example']) {
       expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe(extra)
       expect(switchyardProblem({ switchyardEnabled: false, switchyardServer: server }), server).toBe('')
     }
     for (const server of ['https://yard.example/prefix/', 'https://yard.example/team@two']) {
+      expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe('')
+    }
+    // One the server would not read as written is the app's validate's to name as it saves: an extra slash, a space, a backslash.
+    for (const server of ['https:///yard.example', ' http://yard.example', 'http://yard.example ', 'http:\\\\yard.example']) {
       expect(switchyardProblem({ switchyardEnabled: true, switchyardServer: server }), server).toBe('')
     }
   })
