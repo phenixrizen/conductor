@@ -7,8 +7,8 @@ export interface TrayDeps {
   restart: () => void
   showLog: () => void
   quit: () => void
-  /** Installs the update downloaded now, the version the menu offers: the app quits, the server with it. */
-  installUpdate: (version: string) => void
+  /** Asks for the restart to update to the version the menu offers, in the workbench, whose dialog says what it ends first. */
+  askRestart: (version: string) => void
 }
 
 /**
@@ -25,7 +25,7 @@ export function trayItems(d: Omit<TrayDeps, 'icon'>, update: string): MenuItemCo
     { type: 'separator' },
     { label: 'Quit', click: d.quit },
   ]
-  return update ? [{ label: `Restart to update to ${update}`, click: () => d.installUpdate(update) }, { type: 'separator' }, ...items] : items
+  return update ? [{ label: `Restart to update to ${update}`, click: () => d.askRestart(update) }, { type: 'separator' }, ...items] : items
 }
 
 /** createTray puts Conductor in the tray (trayItems); its update shows the menu with the update downloaded, '' for none. */

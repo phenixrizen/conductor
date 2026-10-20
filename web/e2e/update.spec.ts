@@ -12,7 +12,7 @@ import { expect, test } from './fixtures'
 // while it checks for updates, as the app does.
 test.describe.configure({ mode: 'serial' })
 
-type Told = { ready: string; announce: boolean; failed: string; checking?: boolean }
+type Told = { ready: string; announce: boolean; failed: string; restart?: string; checking?: boolean }
 
 async function stubApp(page: Page, token: string, url: string, init: Told) {
   await page.addInitScript(
@@ -34,10 +34,10 @@ async function stubApp(page: Page, token: string, url: string, init: Told) {
         allowIceFirewall: async () => 'unknown',
         versions: async () => ({ app: 'e2e', electron: '', node: '', chrome: '', server: '' }),
         onServerState: () => () => {},
-        // The app's UpdateNotice: the announcement and a failed install go to the first page that asks, once.
+        // The app's UpdateNotice: the announcement, the tray's restart and a failed install go to the first page that asks, once.
         update: async () => {
           const told = { ...w.e2eUpdate }
-          w.e2eUpdate = { ...w.e2eUpdate, announce: false, failed: '' }
+          w.e2eUpdate = { ...w.e2eUpdate, announce: false, restart: '', failed: '' }
           sessionStorage.setItem('e2e.update', JSON.stringify(w.e2eUpdate))
           return told
         },
@@ -130,6 +130,21 @@ test('restart to update says what it ends, Later leaves it, and the restart inst
   await page.locator('[data-header-update]').first().click()
   await expect(modal).toContainText('The sessions running on this computer, if any, end: they could not be counted.')
   await page.unroute('**/api/sessions')
+  await page.locator('[data-update-restart]').click()
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBe('1')
+})
+
+// The tray's Restart to update shows the workbench and asks there, in the
+// dialog that says what the restart ends; only the dialog restarts.
+test("the tray's restart to update is asked in the workbench's dialog", async ({ page, state }) => {
+  await stubApp(page, state.token, state.baseURL, { ready: '0.7.0-rc.12', announce: false, failed: '' })
+  await page.goto('/yard')
+  await expect(page.locator('[data-header-update]').first()).toBeVisible()
+  await found(page, { ready: '0.7.0-rc.12', announce: false, failed: '', restart: '0.7.0-rc.12' })
+  const modal = page.getByRole('dialog')
+  await expect(modal).toContainText('Restart to update to 0.7.0-rc.12?')
+  await expect(modal).toContainText(' on this computer')
+  expect(await page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBeNull()
   await page.locator('[data-update-restart]').click()
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBe('1')
 })

@@ -26,10 +26,10 @@ export interface IpcDeps {
   /** The page in sender routed the invite it was sent with id. */
   inviteTaken?: (sender: WebContents, id: number) => void
   /**
-   * The update downloaded and waiting for the app to quit ('' for none), whether to say so (once per version), and one whose
-   * install did not take (said once, '' after).
+   * The update downloaded and waiting for the app to quit ('' for none), whether to say so (once per version), the version the
+   * tray's Restart to update asked for (handed out once), and one whose install did not take (said once, '' after).
    */
-  update?: () => { ready: string; announce: boolean; failed: string }
+  update?: () => { ready: string; announce: boolean; restart: string; failed: string }
   /**
    * Installs the update downloaded now, the version the page offered: the app quits, the server with it ('started'). 'gone'
    * when that version is no longer the one ready (a newer one found, a download failed), 'busy' while a check is under way;
@@ -65,7 +65,7 @@ export function registerIpc(d: IpcDeps): void {
     }),
   )
   ipcMain.handle('conductor:settings:get', guard(() => d.settings.get()))
-  ipcMain.handle('conductor:update', guard(() => d.update?.() ?? { ready: '', announce: false, failed: '' }))
+  ipcMain.handle('conductor:update', guard(() => d.update?.() ?? { ready: '', announce: false, restart: '', failed: '' }))
   ipcMain.handle(
     'conductor:installUpdate',
     guard((_e, version) => (typeof version === 'string' && d.installUpdate?.(version)) || 'gone'),

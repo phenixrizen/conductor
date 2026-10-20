@@ -113,10 +113,11 @@ export interface DesktopBridge {
   onInvite?(cb: (invite: { server: string; token: string }) => boolean | Promise<boolean>): () => void
   /**
    * The update the app downloaded ('' for none) and whether to say so, which the first page to ask after the download is told,
-   * once per version; and one whose install did not take ('' for none), said once (#290). Older apps lack it.
+   * once per version; the version the tray's Restart to update asked for, which the page asks in its dialog (once, '' for none);
+   * and one whose install did not take ('' for none), said once (#290). Older apps lack it.
    */
-  update?(): Promise<{ ready: string; announce: boolean; failed: string }>
-  /** A check found an update downloaded, or the one downloaded is gone: ask update() what to say. Older apps lack it. */
+  update?(): Promise<{ ready: string; announce: boolean; restart?: string; failed: string }>
+  /** A check found an update downloaded, the one downloaded is gone, or the tray asked for the restart: ask update() what to say. Older apps lack it. */
   onUpdate?(cb: () => void): () => void
   /**
    * Installs the update downloaded now, the version offered: the app quits, its server and the sessions running on it with it

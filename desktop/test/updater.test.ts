@@ -24,14 +24,14 @@ describe('the update notice (#290)', () => {
   it('says an update once, to the first page that asks, however many checks find it', () => {
     const store = { announced: '' }
     const n = notice(store)
-    expect(n.take()).toEqual({ ready: '', announce: false })
+    expect(n.take()).toEqual({ ready: '', announce: false, restart: '' })
     n.downloaded('0.7.0-rc.12')
-    expect(n.take()).toEqual({ ready: '0.7.0-rc.12', announce: true })
+    expect(n.take()).toEqual({ ready: '0.7.0-rc.12', announce: true, restart: '' })
     expect(store.announced).toBe('0.7.0-rc.12')
     // Another page, and the checks six hours apart that find the same download.
-    expect(n.take()).toEqual({ ready: '0.7.0-rc.12', announce: false })
+    expect(n.take()).toEqual({ ready: '0.7.0-rc.12', announce: false, restart: '' })
     for (let i = 0; i < 4; i++) n.downloaded('0.7.0-rc.12')
-    expect(n.take()).toEqual({ ready: '0.7.0-rc.12', announce: false })
+    expect(n.take()).toEqual({ ready: '0.7.0-rc.12', announce: false, restart: '' })
   })
 
   it('says it to a page that asks later when none was there to ask, and never again after a restart', () => {
@@ -46,7 +46,7 @@ describe('the update notice (#290)', () => {
     expect(next.take().announce).toBe(true)
     const after = notice(store)
     after.downloaded('0.7.0-rc.12')
-    expect(after.take()).toEqual({ ready: '0.7.0-rc.12', announce: false })
+    expect(after.take()).toEqual({ ready: '0.7.0-rc.12', announce: false, restart: '' })
   })
 
   it('says a newer version again', () => {
@@ -55,7 +55,7 @@ describe('the update notice (#290)', () => {
     n.downloaded('0.7.0-rc.12')
     expect(n.take().announce).toBe(false)
     n.downloaded('0.7.0')
-    expect(n.take()).toEqual({ ready: '0.7.0', announce: true })
+    expect(n.take()).toEqual({ ready: '0.7.0', announce: true, restart: '' })
     expect(store.announced).toBe('0.7.0')
   })
 
@@ -66,10 +66,28 @@ describe('the update notice (#290)', () => {
     expect(n.ready()).toBe('0.7.0-rc.12')
     n.withdraw()
     expect(n.ready()).toBe('')
-    expect(n.take()).toEqual({ ready: '', announce: false })
+    expect(n.take()).toEqual({ ready: '', announce: false, restart: '' })
     expect(store.announced).toBe('')
     n.downloaded('0.7.0-rc.13')
-    expect(n.take()).toEqual({ ready: '0.7.0-rc.13', announce: true })
+    expect(n.take()).toEqual({ ready: '0.7.0-rc.13', announce: true, restart: '' })
+  })
+
+  // Restart to update from the tray is asked in the workbench's dialog, which says what the restart ends: handed to one page, for
+  // the update ready still.
+  it("hands the tray's restart to one page, for the update ready still", () => {
+    const n = notice({ announced: '0.7.0-rc.12' })
+    n.downloaded('0.7.0-rc.12')
+    n.ask('0.7.0-rc.12')
+    expect(n.take()).toEqual({ ready: '0.7.0-rc.12', announce: false, restart: '0.7.0-rc.12' })
+    expect(n.take().restart).toBe('')
+    // Asked, then gone, or another downloaded: nothing to ask.
+    n.ask('0.7.0-rc.12')
+    n.withdraw()
+    expect(n.take().restart).toBe('')
+    n.downloaded('0.7.0-rc.12')
+    n.ask('0.7.0-rc.12')
+    n.downloaded('0.7.0-rc.13')
+    expect(n.take()).toEqual({ ready: '0.7.0-rc.13', announce: true, restart: '' })
   })
 
   it('knows an install that did not take: the version downloaded is newer than the one running', () => {

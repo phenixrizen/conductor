@@ -102,6 +102,8 @@ async function askUpdate() {
       actions: [{ label: 'Restart to update', onClick: () => (update.restartFor.value = u.ready) }, { label: 'Later', color: 'neutral', variant: 'outline' }],
     })
   }
+  // The tray's Restart to update: asked here, in the dialog that says what it ends.
+  if (u.restart) update.restartFor.value = u.restart
   if (u.failed) {
     toast.add({ ...updateFailedWords(u.failed), icon: 'i-lucide-triangle-alert', color: 'warning', duration: 30000, actions: [{ label: 'Show the log', onClick: () => void b?.showLog() }] })
   }

@@ -183,10 +183,14 @@ export function installVia(updater: InstallingUpdater, wait = INSTALL_WAIT): Pro
   })
 }
 
-/** What the workbench is told of the update downloaded as it asks: its version ('' for none), and whether to say so. */
+/**
+ * What the workbench is told of the update downloaded as it asks: its version ('' for none), whether to say so, and the version
+ * the tray's Restart to update asked for, which the page asks in its dialog ('' for none).
+ */
 export interface UpdateTold {
   ready: string
   announce: boolean
+  restart: string
 }
 
 /**
@@ -200,6 +204,7 @@ export interface UpdateTold {
 export class UpdateNotice {
   private version = ''
   private owed = false
+  private restart = ''
 
   constructor(
     private readonly announced: () => string,
@@ -216,6 +221,15 @@ export class UpdateNotice {
   withdraw(): void {
     this.version = ''
     this.owed = false
+    this.restart = ''
+  }
+
+  /**
+   * ask records Restart to update to version asked from the tray: the workbench asks it in its dialog, which says what the restart
+   * ends, before anything does.
+   */
+  ask(version: string): void {
+    this.restart = version
   }
 
   /** ready is the version downloaded and held to install, '' for none. */
@@ -223,14 +237,19 @@ export class UpdateNotice {
     return this.version
   }
 
-  /** take is what the page asking is told: the update ready, and whether to say so, which only the first to ask for it is told. */
+  /**
+   * take is what the page asking is told: the update ready, and whether to say so, which only the first to ask for it is told; so
+   * is the tray's ask, for the update ready still.
+   */
   take(): UpdateTold {
     const announce = this.owed
     if (announce) {
       this.owed = false
       this.remember(this.version)
     }
-    return { ready: this.version, announce }
+    const restart = this.restart === this.version ? this.restart : ''
+    this.restart = ''
+    return { ready: this.version, announce, restart }
   }
 }
 

@@ -19,14 +19,17 @@ const bridge = {
   ice: () => ipcRenderer.invoke('conductor:ice'),
   allowIceFirewall: (): Promise<string> => ipcRenderer.invoke('conductor:allowIceFirewall'),
   versions: () => ipcRenderer.invoke('conductor:versions'),
-  /** The update downloaded ('' for none), whether to say so (the first page to ask, once per version), and one whose install did not take, said once (#290). */
-  update: (): Promise<{ ready: string; announce: boolean; failed: string }> => ipcRenderer.invoke('conductor:update'),
+  /**
+   * The update downloaded ('' for none), whether to say so (the first page to ask, once per version), the version the tray's
+   * Restart to update asked for, to ask in the dialog (once), and one whose install did not take, said once (#290).
+   */
+  update: (): Promise<{ ready: string; announce: boolean; restart: string; failed: string }> => ipcRenderer.invoke('conductor:update'),
   /**
    * Installs the update downloaded now, the version offered: the app quits, its server and the sessions on it with it
    * ('started'). 'gone' when that version is no longer ready, 'busy' while a check for updates is under way: nothing stops then.
    */
   installUpdate: (version: string): Promise<'started' | 'gone' | 'busy'> => ipcRenderer.invoke('conductor:installUpdate', version),
-  /** A check found an update downloaded, or the one downloaded is gone: ask update() what to say. */
+  /** A check found an update downloaded, the one downloaded is gone, or the tray asked for the restart: ask update() what to say. */
   onUpdate: (cb: () => void): (() => void) => {
     const handler = () => cb()
     ipcRenderer.on('conductor:update', handler)

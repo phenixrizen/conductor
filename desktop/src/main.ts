@@ -368,7 +368,13 @@ async function run() {
     restart: () => void supervisor.restart().catch(() => {}),
     showLog,
     quit: () => app.quit(),
-    installUpdate: (version) => void restartForUpdate(version),
+    // Restart to update from the tray is asked in the workbench, whose dialog says what the restart ends before anything does.
+    askRestart: (version) => {
+      updates.ask(version)
+      const w = show()
+      w.focus()
+      w.webContents.send('conductor:update')
+    },
   })
   tray = inTray.tray
   trayUpdate = inTray.update
@@ -402,8 +408,9 @@ async function run() {
     show().focus()
   })
   app.on('activate', () => show())
-  // Restart to update to version (#290), from the workbench or the tray: while the updater holds it still and no check is under
-  // way, the server stops, then the updater quits the app to install. A second ask, the app quitting already, is the same restart.
+  // Restart to update to version (#290), confirmed in the workbench's dialog: while the updater holds it still and no check is
+  // under way, the server stops, then the updater quits the app to install. A second ask, the app quitting already, is the same
+  // restart.
   function restartForUpdate(version: string): RestartOutcome {
     const u = updater
     if (!u) return 'gone'
