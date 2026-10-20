@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { trusted } from '../src/ipc'
 import { join } from 'node:path'
-import { external, followOrigin, logWindowOptions, permissionAllowed, sameOrigin } from '../src/window'
+import { external, followOrigin, logWindowOptions, permissionAllowed, sameOrigin, workbenchWindows } from '../src/window'
 
 describe('window guards', () => {
   it('keeps navigation on the server\'s origin and opens only http(s) outside', () => {
@@ -48,5 +48,13 @@ describe('the permissions the app grants its pages', () => {
     expect(permissionAllowed('clipboard-sanitized-write')).toBe(true)
     expect(permissionAllowed('fullscreen')).toBe(true)
     for (const p of ['media', 'geolocation', 'notifications', 'openExternal', 'pointerLock', 'midi', 'unknown']) expect(permissionAllowed(p)).toBe(false)
+  })
+})
+
+describe('the workbench windows', () => {
+  it('are the open windows at the server\'s origin: a second one opened from the first, not the log or a closed one (#290)', () => {
+    const win = (url: string, destroyed = false) => ({ url, isDestroyed: () => destroyed, webContents: { getURL: () => url } })
+    const all = [win('http://127.0.0.1:43123/yard'), win('http://127.0.0.1:43123/sessions/s1'), win('file:///app/static/log.html'), win('http://127.0.0.1:43123/', true), win('http://127.0.0.1:9999/')]
+    expect(workbenchWindows(all, 'http://127.0.0.1:43123').map((w) => w.url)).toEqual(['http://127.0.0.1:43123/yard', 'http://127.0.0.1:43123/sessions/s1'])
   })
 })

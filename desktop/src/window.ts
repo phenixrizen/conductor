@@ -20,6 +20,11 @@ export function sameOrigin(url: string, origin: string): boolean {
   }
 }
 
+/** workbenchWindows are the windows of all that show the workbench of the app's own server (origin): open, at its origin. */
+export function workbenchWindows<W extends { isDestroyed(): boolean; webContents: { getURL(): string } }>(all: W[], origin: string): W[] {
+  return all.filter((w) => !w.isDestroyed() && sameOrigin(w.webContents.getURL(), origin))
+}
+
 /**
  * followOrigin is where a window showing the app's own server goes once that server listens on a new origin: a restart (a crash, the
  * health check, Restart server) binds a fresh port, and a window left on the old one shows a dead page. The same path, query and hash

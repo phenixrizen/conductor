@@ -40,6 +40,11 @@ describe('settings', () => {
     // The zoom kept is bounded; a file without one is at 100%.
     writeFileSync(file, JSON.stringify({ ...defaults, zoomLevel: 40 }))
     expect(loadSettings(file, defaults).zoomLevel).toBe(5)
+    // The updates told (#290) round-trip; an earlier build's file has told none.
+    saveSettings(file, { ...defaults, updateAnnounced: '0.7.0-rc.12', updateDownloaded: '0.7.0-rc.13', updateFailedNoticed: '0.7.0-rc.11' })
+    expect(loadSettings(file, defaults)).toMatchObject({ updateAnnounced: '0.7.0-rc.12', updateDownloaded: '0.7.0-rc.13', updateFailedNoticed: '0.7.0-rc.11' })
+    writeFileSync(file, JSON.stringify({ closeToTray: false, updateAnnounced: 7 }))
+    expect(loadSettings(file, defaults)).toMatchObject({ updateAnnounced: '', updateDownloaded: '', updateFailedNoticed: '' })
   })
   it('knows which changes restart the server', () => {
     expect(serverAffecting(defaults, { ...defaults, closeToTray: false })).toBe(false)

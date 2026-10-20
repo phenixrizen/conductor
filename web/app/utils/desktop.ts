@@ -111,6 +111,65 @@ export interface DesktopBridge {
   onServerState(cb: (state: DesktopServerState) => void): () => void
   /** An invite the app was handed while this page is open (desktop/src/invite.ts InviteDelivery); cb says whether the page routed it. Older apps lack it. */
   onInvite?(cb: (invite: { server: string; token: string }) => boolean | Promise<boolean>): () => void
+  /**
+   * The update the app downloaded ('' for none) and whether to say so, which the first page to ask after the download is told,
+   * once per version; the version the tray's Restart to update asked for, which the page asks in its dialog (once, '' for none);
+   * and one whose install did not take ('' for none), said once (#290). Older apps lack it.
+   */
+  update?(): Promise<{ ready: string; announce: boolean; restart?: string; failed: string }>
+  /** A check found an update downloaded, the one downloaded is gone, or the tray asked for the restart: ask update() what to say. Older apps lack it. */
+  onUpdate?(cb: () => void): () => void
+  /**
+   * Installs the update downloaded now, the version offered: the app quits, its server and the sessions running on it with it
+   * ('started'). 'gone' when that version is no longer ready (a check found a newer one, or a download failed), 'busy' while a
+   * check for updates is under way; nothing stops then. Older apps lack it.
+   */
+  installUpdate?(version: string): Promise<'started' | 'gone' | 'busy'>
+}
+
+/** What the workbench says of an update the desktop app downloaded, once per version (#290). */
+export function updateReadyWords(version: string): { title: string; description: string } {
+  return { title: `Conductor ${version} is ready`, description: 'It installs when you quit Conductor. Restart to update now, or later.' }
+}
+
+/**
+ * What the workbench says of an update offered that the app's updater no longer holds: a check found a newer one, whose download
+ * replaced it, or a download failed. Nothing restarted.
+ */
+export function updateGoneWords(version: string): { title: string; description: string } {
+  return {
+    title: `Conductor ${version} is no longer ready`,
+    description: 'A newer update replaced it, or its download failed, and nothing restarted. The button in the header shows when an update is ready.',
+  }
+}
+
+/** What the workbench says of a restart to update put off while the app checks for updates, which may change the one held. */
+export function updateBusyWords(): { title: string; description: string } {
+  return { title: 'Conductor is checking for updates', description: 'Nothing restarted. Restart to update again in a moment.' }
+}
+
+/** What the workbench says of an update the app downloaded and this start of it runs older than: its install did not take. */
+export function updateFailedWords(version: string): { title: string; description: string } {
+  return {
+    title: `Conductor ${version} did not install`,
+    description: "It was downloaded and Conductor started again as the version before. The app's log says why; the update is offered again.",
+  }
+}
+
+/**
+ * What restarting to update ends: the app quits to install version, and the server with it, ending the sessions running on it;
+ * sessions is how many, or negative when they could not be counted, which never reads as none.
+ */
+export function restartWords(version: string, sessions: number): string {
+  const ends =
+    sessions < 0
+      ? 'The sessions running on this computer, if any, end: they could not be counted.'
+      : sessions === 0
+        ? 'No session runs on this computer, so none ends.'
+        : sessions === 1
+          ? 'The session running on this computer ends.'
+          : `The ${sessions} sessions running on this computer end.`
+  return `Conductor quits to install ${version}, and its server stops. ${ends}`
 }
 
 /** desktopBridge is the bridge when the workbench runs in the desktop app, else null. */

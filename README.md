@@ -1382,6 +1382,18 @@ it up on first run; the agents are the ones installed there). While the
 server starts, a small splash shows the version and what the app is doing.
 Ctrl+= and Ctrl+- (Cmd on macOS) zoom the workbench, Ctrl+0 resets it, and
 the app remembers the level.
+The macOS, Windows and AppImage builds update themselves from the GitHub
+releases: the app checks on start and every six hours and downloads an
+update in the background, and the update installs when you quit. The app
+never opens a dialog for an update. The workbench says it once per version,
+in a toast with **Restart to update**, and keeps a button in the sidebar's
+header until the update installs or a newer one replaces it; the tray's
+menu offers **Restart to update** too. Whichever asks, the workbench first
+says what the restart ends: the server, and the sessions running on this
+computer. An update the app downloaded that did
+not install (it started again as the version before) is said once, with
+the way to the app's log. The deb and rpm builds are updated by your
+package manager.
 `make desktop-dev` runs it from a checkout; `desktop/README.md` has the rest.
 
 **Windows.** There is no Windows build of the server: the installer bundles
