@@ -10,7 +10,7 @@ import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
 import { ServerSupervisor } from './server'
-import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, saveSettings, switchyardRefusal, switchyardRefused, type DesktopSettings } from './settings'
+import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
 import { createWindow, followOrigin, logWindowOptions, restrictPermissions, sameOrigin, workbenchWindows } from './window'
@@ -67,13 +67,9 @@ async function run() {
   const settingsFile = join(userData, 'settings.json')
   const defaults = defaultSettings(homedir(), userData)
   let settings = loadSettings(settingsFile, defaults)
-  if (switchyardRefused(settings)) {
-    // Saved before the app refused it: kept as it is, never dialed (serverEnv); Settings shows why.
-    log('main', `settings: the switchyard ${new URL(settings.switchyardServer).host} is plain http on another machine; sessions are not published until Settings names an https one`)
-  } else if (settings.switchyardEnabled && settings.switchyardServer && switchyardRefusal(settings.switchyardServer)) {
-    // The same, in validate's words, which name nothing of the URL.
-    log('main', `settings: ${switchyardRefusal(settings.switchyardServer)}; sessions are not published until Settings names one the server takes`)
-  }
+  // Saved before the app refused it: kept as it is, never dialed (serverEnv); Settings shows why.
+  const refusedSwitchyard = refusedSwitchyardNote(settings)
+  if (refusedSwitchyard) log('main', refusedSwitchyard)
   // A notice owed to these settings (a fresh install's, or an earlier build's) is handed to the workbench once and marked then:
   // a start that never shows the workbench (Windows without WSL yet) still owes it.
   const takeNotice = noticeOnce(

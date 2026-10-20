@@ -28,6 +28,8 @@
   {"url": "https://yard.example#", "app": "extra"},
   {"url": "http://me:pw@localhost:9090", "app": "extra"},
   {"url": "http://127.0.0.1\\@yard.example", "app": "extra"},
+  {"url": "http://me:12345\\@yard.example", "app": "extra"},
+  {"url": "http://me:12345\\@yard.example/?token=x", "app": "extra"},
   {"url": "https:///yard.example", "app": "shape"},
   {"url": "https:/yard.example", "app": "shape"},
   {"url": "https:yard.example", "app": "shape"},

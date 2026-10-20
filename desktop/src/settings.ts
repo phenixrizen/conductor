@@ -140,6 +140,16 @@ export function switchyardRefusal(url: string): string {
   return ''
 }
 
+/**
+ * refusedSwitchyardNote is the line the app logs as it starts with settings that publish to a switchyard the server would refuse (kept
+ * as saved, never handed over: serverEnv), '' for none: validate's words, which name nothing of the URL. The URL parser's host is not
+ * named either: where it reads a backslash as a slash, its host is not the one the server reads.
+ */
+export function refusedSwitchyardNote(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): string {
+  const why = s.switchyardEnabled && s.switchyardServer ? switchyardRefusal(s.switchyardServer) : ''
+  return why ? `settings: ${why}; sessions are not published until Settings names a switchyard the server takes` : ''
+}
+
 /** switchyardRefused says whether s publishes to a switchyard that is plain http on another machine, which the server refuses to start with. */
 export function switchyardRefused(s: Pick<DesktopSettings, 'switchyardEnabled' | 'switchyardServer'>): boolean {
   return !!s.switchyardEnabled && !!s.switchyardServer && plainSwitchyard(s.switchyardServer)

@@ -76,7 +76,7 @@ func runHost(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	// reads it: never a flag's default, which usage messages print.
 	*server = cmp.Or(*server, os.Getenv("CONDUCTOR_SERVER"), defaultServer)
 	// Before anything is dialed or printed: a server is named by its address
-	// alone (config.ServerURLExtra), and no message repeats what else it held.
+	// alone (config.ServerURLExtra).
 	if config.ServerURLExtra(*server) {
 		return 2, errors.New("--server (CONDUCTOR_SERVER) must carry no user name, password, query or fragment: a host token goes in --token (CONDUCTOR_HOST_TOKEN)")
 	}

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
+import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, owedNotice, PLAIN_SWITCHYARD, plainSwitchyard, saveSettings, serverAffecting, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, refusedSwitchyardNote, switchyardExtra, switchyardRefusal, switchyardRefused, switchyardShape, validate } from '../src/settings'
 import { serverEnv, SERVE_ARGS } from '../src/env'
 
 // On Windows the server and its files live in WSL (launcher-wsl); these POSIX paths, modes and shells are not the app's there.
@@ -182,6 +182,15 @@ describe('the switchyards the server takes', () => {
       expect(validate({ ...base, switchyardEnabled: false, switchyardServer: url }), url).toEqual([])
       expect(serverEnv({}, { ...base, switchyardEnabled: false, switchyardServer: url }, 'tok', '/usr/bin', '').CONDUCTOR_RENDEZVOUS_SERVER, url).toBe(app ? undefined : url.replace(/\/+$/, ''))
     }
+  })
+  it('logs a refused one as it starts in validate\'s words alone, never a part of the URL', () => {
+    for (const { url, app } of urls) {
+      const note = refusedSwitchyardNote({ switchyardEnabled: true, switchyardServer: url })
+      expect(note, url).toBe(app ? `settings: ${words[app]}; sessions are not published until Settings names a switchyard the server takes` : '')
+      expect(refusedSwitchyardNote({ switchyardEnabled: false, switchyardServer: url }), url).toBe('')
+    }
+    // The URL parser reads the backslash as a slash, and its host as me:12345.
+    expect(refusedSwitchyardNote({ switchyardEnabled: true, switchyardServer: 'http://me:12345\\@yard.example' })).not.toMatch(/me:|12345/)
   })
   it.skipIf(win)('keeps every setting saved with one it refuses, publishing on or off, and publishes nowhere', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cd-settings-refused-'))

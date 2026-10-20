@@ -24,9 +24,8 @@ import (
 // dial's policy refused (redirectRefused) is the caller's to say first, and
 // so is a refusal the server answered with (RefusedError): its code and
 // words are the server's own, how a switchyard says why (a revoked token, a
-// limit), and are kept, as a close's reason is once registered. The URL the
-// host dials carries no credential of the person's (controlURL), so the
-// server can repeat only what it was sent or chose itself.
+// limit), and are kept, as a close's reason is once registered: the URL the
+// host dials is an address alone (controlURL).
 func dialFailure(err error, resp *http.Response, host string) error {
 	if errors.Is(err, errNotPaced) {
 		return errNotPaced
