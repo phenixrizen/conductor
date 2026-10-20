@@ -154,6 +154,43 @@ test("the tray's restart to update is asked in the workbench's dialog", async ({
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBe('1')
 })
 
+// The sessions are counted as the dialog opens: a count asked by a dialog
+// closed since, answering late, never stands for the one open now.
+test('a restart dialog reopened says its own count of the sessions, never an earlier one', async ({ page, api, state }) => {
+  await stubApp(page, state.token, state.baseURL, { ready: '0.7.0-rc.12', announce: false, failed: '' })
+  await page.goto('/yard')
+  await expect(page.locator('[data-header-update]').first()).toBeVisible()
+  let release!: () => void
+  const released = new Promise<void>((r) => (release = r))
+  let counts = 0
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue()
+    // The first count, taken before the session below starts, answers late.
+    if (++counts === 1) {
+      const response = await route.fetch()
+      await released
+      return route.fulfill({ response })
+    }
+    return route.continue()
+  })
+  const modal = page.getByRole('dialog')
+  await page.locator('[data-header-update]').first().click()
+  await expect(modal).toContainText('Counting the sessions')
+  await modal.getByRole('button', { name: 'Later' }).click()
+  await expect(modal).toHaveCount(0)
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'counted' })
+  await page.locator('[data-header-update]').first().click()
+  await expect(modal).toContainText(' on this computer')
+  const said = await modal.innerText()
+  expect(said).not.toContain('No session runs')
+  release()
+  await page.waitForTimeout(500)
+  expect(await modal.innerText()).toBe(said)
+  await modal.getByRole('button', { name: 'Later' }).click()
+  await page.unroute('**/api/sessions')
+  await api.stopSession(s.id)
+})
+
 // A restart asked outlives its dialog: an invite's join page has no layout,
 // and the dialog that comes back with it asks again, the sessions counted.
 test('a restart asked is asked again as the workbench comes back from an invite', async ({ page, api, state }) => {

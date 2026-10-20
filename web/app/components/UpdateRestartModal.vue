@@ -30,14 +30,17 @@ function gone(version: string) {
 // finds it as it comes back.
 watch(
   restartFor,
-  async (version) => {
+  async (version, _was, onCleanup) => {
+    // A count asked for a dialog closed, or asked again, since says nothing of the one open now.
+    let current = true
+    onCleanup(() => (current = false))
     if (!version) return
     if (ready.value !== version) return gone(version)
     shown.value = version
     running.value = null
     // Sessions that could not be counted are not none: the words say they may end (restartWords).
     const list = await sessions.list().catch(() => null)
-    running.value = list ? list.filter((s) => s.kind === 'server' && sessionLive(s.status)).length : -1
+    if (current) running.value = list ? list.filter((s) => s.kind === 'server' && sessionLive(s.status)).length : -1
   },
   { immediate: true },
 )
