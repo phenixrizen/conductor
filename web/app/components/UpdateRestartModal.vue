@@ -26,15 +26,21 @@ function gone(version: string) {
   restartFor.value = ''
   toast.add({ ...updateGoneWords(version), icon: 'i-lucide-circle-arrow-up', color: 'warning', duration: 20000 })
 }
-watch(restartFor, async (version) => {
-  if (!version) return
-  if (ready.value !== version) return gone(version)
-  shown.value = version
-  running.value = null
-  // Sessions that could not be counted are not none: the words say they may end (restartWords).
-  const list = await sessions.list().catch(() => null)
-  running.value = list ? list.filter((s) => s.kind === 'server' && sessionLive(s.status)).length : -1
-})
+// At once too: a restart asked outlives the dialog (the layout goes with a page that has none, an invite's join page), which
+// finds it as it comes back.
+watch(
+  restartFor,
+  async (version) => {
+    if (!version) return
+    if (ready.value !== version) return gone(version)
+    shown.value = version
+    running.value = null
+    // Sessions that could not be counted are not none: the words say they may end (restartWords).
+    const list = await sessions.list().catch(() => null)
+    running.value = list ? list.filter((s) => s.kind === 'server' && sessionLive(s.status)).length : -1
+  },
+  { immediate: true },
+)
 // The app says the update is gone, or that another is ready, while this asks for one.
 watch(ready, (now) => {
   const asked = restartFor.value

@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { expect, test } from './fixtures'
+import { expect, test, type Session } from './fixtures'
 
 // The update the desktop app downloaded (#290): never a dialog of the app's
 // own, which every check that found the same download used to open again.
@@ -13,11 +13,12 @@ import { expect, test } from './fixtures'
 test.describe.configure({ mode: 'serial' })
 
 type Told = { ready: string; announce: boolean; failed: string; restart?: string; checking?: boolean }
+type Invited = { e2eInvite?: (invite: unknown) => Promise<boolean> }
 
 async function stubApp(page: Page, token: string, url: string, init: Told) {
   await page.addInitScript(
     ({ token, url, init }) => {
-      const w = window as unknown as { conductorDesktop: unknown; e2eUpdate: Told; e2eFound?: () => void }
+      const w = window as unknown as { conductorDesktop: unknown; e2eUpdate: Told; e2eFound?: () => void } & Invited
       w.e2eUpdate = JSON.parse(sessionStorage.getItem('e2e.update') ?? JSON.stringify(init))
       w.conductorDesktop = {
         version: 'e2e',
@@ -43,6 +44,10 @@ async function stubApp(page: Page, token: string, url: string, init: Told) {
         },
         onUpdate: (cb: () => void) => {
           w.e2eFound = cb
+          return () => {}
+        },
+        onInvite: (cb: (invite: unknown) => Promise<boolean>) => {
+          w.e2eInvite = cb
           return () => {}
         },
         installUpdate: async (version: string) => {
@@ -147,6 +152,28 @@ test("the tray's restart to update is asked in the workbench's dialog", async ({
   expect(await page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBeNull()
   await page.locator('[data-update-restart]').click()
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBe('1')
+})
+
+// A restart asked outlives its dialog: an invite's join page has no layout,
+// and the dialog that comes back with it asks again, the sessions counted.
+test('a restart asked is asked again as the workbench comes back from an invite', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'invited' })
+  const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'view' })
+  await stubApp(page, state.token, state.baseURL, { ready: '0.7.0-rc.12', announce: false, failed: '' })
+  await page.goto('/yard')
+  const modal = page.getByRole('dialog')
+  await page.locator('[data-header-update]').first().click()
+  await expect(modal).toContainText(' on this computer')
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as Invited).e2eInvite)).toBe('function')
+  expect(await page.evaluate(({ server, token }) => (window as unknown as Invited).e2eInvite!({ server, token }), { server: state.baseURL, token })).toBe(true)
+  await expect(page).toHaveURL(new RegExp(`/join/${token}`))
+  await page.goBack()
+  await expect(page).toHaveURL(/\/yard$/)
+  await expect(modal).toContainText('Restart to update to 0.7.0-rc.12?')
+  await expect(modal).toContainText(' on this computer')
+  await expect(page.locator('[data-update-restart]')).toBeEnabled()
+  await modal.getByRole('button', { name: 'Later' }).click()
+  await api.stopSession(s.id)
 })
 
 // A check that finds a newer version empties the updater's cache as its
