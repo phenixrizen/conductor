@@ -21,22 +21,28 @@ const INSTALL_WAIT = 60 * 1000
  * startUpdater checks for a release on start and every six hours where the
  * app updates itself, downloads it in the background and installs it on
  * quit; it logs what it does and never interrupts a session. electron-updater
- * is loaded lazily so the unit tests need no Electron. onAvailable runs at
- * every check that finds the update downloaded, the same version again
- * included (electron-updater emits update-downloaded for a cached download
- * too): UpdateNotice decides what is said. It returns what installs the
- * downloaded update now (quitting the app, which stops the server: installVia),
- * null where the app does not update itself.
+ * is loaded lazily so the unit tests need no Electron. on hears what the
+ * updater holds to install (watchUpdater): downloaded at every check that
+ * finds the update downloaded, the same version again included
+ * (electron-updater emits update-downloaded for a cached download too), and
+ * gone once it holds it no more; UpdateNotice decides what is said. It
+ * returns what installs the downloaded update now (quitting the app, which
+ * stops the server: installVia), null where the app does not update itself.
  */
-export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, onAvailable: (version: string) => void): Promise<(() => Promise<void>) | null> {
+export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs, on: UpdaterEvents): Promise<(() => Promise<void>) | null> {
   if (channel !== 'auto') return null
   try {
     const { autoUpdater } = await import('electron-updater')
     autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true
     autoUpdater.logger = { info: (m: unknown) => logs.line('main', `updater: ${String(m)}`), warn: (m: unknown) => logs.line('main', `updater: ${String(m)}`), error: (m: unknown) => logs.line('main', `updater: ${String(m)}`), debug: () => {} }
-    autoUpdater.on('update-downloaded', (info: { version: string }) => onAvailable(info.version))
-    const check = () => autoUpdater.checkForUpdates().catch((e: Error) => logs.line('main', `updater: ${e.message}`))
+    watchUpdater(autoUpdater, on, (line) => logs.line('main', `updater: ${line}`))
+    // The download a check starts fails through the error event (watchUpdater), never as a rejection left unhandled.
+    const check = () =>
+      autoUpdater
+        .checkForUpdates()
+        .then((r) => void r?.downloadPromise?.catch(() => {}))
+        .catch((e: Error) => logs.line('main', `updater: ${e.message}`))
     await check()
     setInterval(check, EVERY).unref()
     return () => installVia(autoUpdater)
@@ -44,6 +50,55 @@ export async function startUpdater(channel: 'auto' | 'link' | 'none', logs: Logs
     logs.line('main', `updater unavailable: ${(e as Error).message}`)
     return null
   }
+}
+
+/** What the app hears of the update the updater holds to install (watchUpdater). */
+export interface UpdaterEvents {
+  /** An installer for version is held: a download done, or a check that found it cached, the same version again included. */
+  downloaded: (version: string) => void
+  /** The installer held is gone, and why: nothing installs until the next is downloaded. */
+  gone: (why: string) => void
+}
+
+/** What watchUpdater needs of electron-updater's autoUpdater: its events. */
+export interface WatchedUpdater {
+  on(event: 'update-available', listener: (info: { version: string }) => void): unknown
+  on(event: 'update-downloaded', listener: (info: { version: string }) => void): unknown
+  on(event: 'error', listener: (e: Error) => void): unknown
+}
+
+/**
+ * watchUpdater follows what electron-updater (6.8) holds to install. update-downloaded is an installer held, at every check that
+ * finds it cached too. A check that finds another version empties the cache as that one's download begins
+ * (DownloadedUpdateHelper.getValidCachedUpdateFile), and a download that fails clears what was held (AppUpdater.executeDownload's
+ * removeFileIfAny): the update said to be ready is gone then, and offered still, Restart to update would stop the server and its
+ * sessions and quit with nothing to install. A check that fails, or an install, holds on to it. log says what failed a download,
+ * which electron-updater emits and does not log.
+ */
+export function watchUpdater(updater: WatchedUpdater, on: UpdaterEvents, log: (line: string) => void): void {
+  let held = ''
+  let downloading = false
+  const gone = (why: string) => {
+    if (!held) return
+    held = ''
+    on.gone(why)
+  }
+  updater.on('update-available', (info) => {
+    // The app downloads what a check finds (autoDownload).
+    downloading = true
+    if (info.version !== held) gone(`a check found ${info.version}`)
+  })
+  updater.on('update-downloaded', (info) => {
+    downloading = false
+    held = info.version
+    on.downloaded(info.version)
+  })
+  updater.on('error', (e) => {
+    if (!downloading) return
+    downloading = false
+    log(`the download failed: ${e.message}`)
+    gone('its download failed')
+  })
 }
 
 /** What installVia needs of electron-updater's autoUpdater. */
@@ -104,6 +159,17 @@ export class UpdateNotice {
     this.owed = this.announced() !== version
   }
 
+  /** withdraw records that the update downloaded is gone (watchUpdater): none is ready, nor owed, until the next is downloaded. */
+  withdraw(): void {
+    this.version = ''
+    this.owed = false
+  }
+
+  /** ready is the version downloaded and held to install, '' for none. */
+  ready(): string {
+    return this.version
+  }
+
   /** take is what the page asking is told: the update ready, and whether to say so, which only the first to ask for it is told. */
   take(): UpdateTold {
     const announce = this.owed
@@ -117,6 +183,8 @@ export class UpdateNotice {
 
 /** What restartToInstall needs of the app. */
 export interface RestartDeps {
+  /** The version the updater holds to install now, '' for none (UpdateNotice.ready). */
+  ready: () => string
   /** Lets the windows close and a quit go through without stopping the server again (main.ts's quitting). */
   letGo: () => void
   stopServer: () => Promise<void>
@@ -128,40 +196,52 @@ export interface RestartDeps {
 }
 
 /**
- * restartToInstall is Restart to update (#290). The server stops first, as a quit stops it; then the windows may close and the
- * quit go through (closing to the tray would hide them, and macOS's updater closes them before it quits) and the updater quits
- * the app to install. An install that does not go through quits the app all the same: the person asked for the restart, the
- * server and its sessions are stopped already, and what the updater still has queued (Windows' quit after an installer that did
- * not launch, macOS's install once its native updater is ready) ends in a quit too, never in a server started again that a late
- * install would stop unasked. The next start says the update did not install (installFailed).
+ * restartToInstall is Restart to update to version (#290), asked from the workbench or the tray. It starts only while the updater
+ * still holds that version (ready): one gone since (watchUpdater) would stop the server and its sessions and quit with nothing
+ * to install. started says whether it did. The server stops first, as a quit stops it; then the windows may close and the quit
+ * go through (closing to the tray would hide them, and macOS's updater closes them before it quits) and the updater quits the
+ * app to install. An install that does not go through quits the app all the same: the person asked for the restart, the server
+ * and its sessions are stopped already, and what the updater still has queued (Windows' quit after an installer that did not
+ * launch, macOS's install once its native updater is ready) ends in a quit too, never in a server started again that a late
+ * install would stop unasked. The next start says the update did not install (failedAtStart). done settles when the install
+ * did not go through; one that does quits the app first.
  */
-export async function restartToInstall(d: RestartDeps): Promise<void> {
-  d.letGo()
-  await d.stopServer().catch(() => {})
-  try {
-    await d.install()
-  } catch (e) {
-    d.log(`updates: the install did not go through: ${(e as Error).message}; quitting`)
-    d.quit()
+export function restartToInstall(version: string, d: RestartDeps): { started: boolean; done: Promise<void> } {
+  const held = d.ready()
+  if (!version || held !== version) {
+    d.log(`updates: no restart to update to ${version || 'no version'}: ${held ? `the update ready is ${held}` : 'no update is ready'}`)
+    return { started: false, done: Promise.resolve() }
   }
+  d.log(`updates: restarting to install ${version}`)
+  const done = (async () => {
+    d.letGo()
+    await d.stopServer().catch(() => {})
+    try {
+      await d.install()
+    } catch (e) {
+      d.log(`updates: the install did not go through: ${(e as Error).message}; quitting`)
+      d.quit()
+    }
+  })()
+  return { started: true, done }
 }
 
 /**
- * failedAtStart is the update this start of the app says did not install, '' for none: the one downloaded last (or, from a build
- * that kept only the announced one, that one), newer than the version running, not said already. Whatever the way the install was
- * tried (a quit, Restart to update from the workbench or the tray) and whether the update was ever announced.
+ * failedAtStart is the update this start of the app says did not install, '' for none: the one downloaded last and held still
+ * (settings' updateDownloaded, which gone clears), newer than the version running, not said already. Whatever the way the install
+ * was tried (a quit, Restart to update from the workbench or the tray) and whether the update was ever announced.
  */
-export function failedAtStart(s: { updateDownloaded: string; updateAnnounced: string; updateFailedNoticed: string }, running: string): string {
-  const tried = s.updateDownloaded || s.updateAnnounced
+export function failedAtStart(s: { updateDownloaded: string; updateFailedNoticed: string }, running: string): string {
+  const tried = s.updateDownloaded
   return installFailed(tried, running) && s.updateFailedNoticed !== tried ? tried : ''
 }
 
 /**
- * installFailed says whether the update announced (settings' updateAnnounced) is newer than the version running: the app was
- * quit, or ended, since, and the update did not install (macOS, for one, updates only a signed app). '' or unreadable: no.
+ * installFailed says whether the update downloaded is newer than the version running: the app was quit, or ended, since, and the
+ * update did not install (macOS, for one, updates only a signed app). '' or unreadable: no.
  */
-export function installFailed(announced: string, running: string): boolean {
-  return announced !== '' && compareVersions(announced, running) > 0
+export function installFailed(downloaded: string, running: string): boolean {
+  return downloaded !== '' && compareVersions(downloaded, running) > 0
 }
 
 /**

@@ -6,8 +6,9 @@ import { expect, test } from './fixtures'
 // The workbench is told once per version, in a toast that offers the
 // restart, and keeps a button in the sidebar's header until it installs;
 // the restart says what it ends before the app quits to install; an update
-// that did not install is said once. The app is a stub bridge here, which
-// hands the announcement out once, as the app does.
+// the app no longer holds restarts nothing; an update that did not install is
+// said once. The app is a stub bridge here, which hands the announcement out
+// once and refuses to install a version it does not hold, as the app does.
 test.describe.configure({ mode: 'serial' })
 
 type Told = { ready: string; announce: boolean; failed: string }
@@ -43,14 +44,18 @@ async function stubApp(page: Page, token: string, url: string, init: Told) {
           w.e2eFound = cb
           return () => {}
         },
-        installUpdate: async () => sessionStorage.setItem('e2e.installed', String(Number(sessionStorage.getItem('e2e.installed') ?? '0') + 1)),
+        installUpdate: async (version: string) => {
+          if (!version || version !== w.e2eUpdate.ready) return false
+          sessionStorage.setItem('e2e.installed', String(Number(sessionStorage.getItem('e2e.installed') ?? '0') + 1))
+          return true
+        },
       }
     },
     { token, url, init },
   )
 }
 
-/** The app's check finds an update downloaded: told the version (and that it is new), it says so to the page. */
+/** The app's check finds an update downloaded, or lets it go (ready ''): told what is ready now, it says so to the page. */
 async function found(page: Page, told: Told) {
   await page.evaluate((told) => {
     const w = window as unknown as { e2eUpdate: Told; e2eFound?: () => void }
@@ -107,6 +112,38 @@ test('restart to update says what it ends, Later leaves it, and the restart inst
   await page.unroute('**/api/sessions')
   await page.locator('[data-update-restart]').click()
   await expect.poll(() => page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBe('1')
+})
+
+// A check that finds a newer version empties the updater's cache as its
+// download begins, and a download that fails clears it: the app lets the
+// update offered go and refuses to install it, and the dialog that asked
+// for it closes and says so, before anything stops.
+test('an update the app no longer holds restarts nothing, and the dialog says so', async ({ page, state }) => {
+  await stubApp(page, state.token, state.baseURL, { ready: '0.7.0-rc.12', announce: false, failed: '' })
+  await page.goto('/yard')
+  const modal = page.getByRole('dialog')
+  const gone = page.locator('li').filter({ hasText: 'Conductor 0.7.0-rc.12 is no longer ready' })
+
+  // Let go while the dialog is open.
+  await page.locator('[data-header-update]').first().click()
+  await expect(modal).toContainText('Restart to update to 0.7.0-rc.12?')
+  await found(page, { ready: '', announce: false, failed: '' })
+  await expect(modal).toHaveCount(0)
+  await expect(gone).toHaveCount(1)
+  await expect(page.locator('[data-header-update]')).toHaveCount(0)
+
+  // Let go as the restart is asked, before the page hears: the app refuses it.
+  await found(page, { ready: '0.7.0-rc.12', announce: false, failed: '' })
+  await page.locator('[data-header-update]').first().click()
+  await expect(modal).toContainText(' on this computer')
+  await page.evaluate(() => {
+    const w = window as unknown as { e2eUpdate: Told }
+    w.e2eUpdate = { ...w.e2eUpdate, ready: '' }
+  })
+  await page.locator('[data-update-restart]').click()
+  await expect(modal).toHaveCount(0)
+  await expect(gone).toHaveCount(2)
+  expect(await page.evaluate(() => sessionStorage.getItem('e2e.installed'))).toBeNull()
 })
 
 // A window hidden in the tray asks nothing when a check finds the update:

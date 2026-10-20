@@ -7,8 +7,8 @@ export interface TrayDeps {
   restart: () => void
   showLog: () => void
   quit: () => void
-  /** Installs the update downloaded now: the app quits, the server with it. */
-  installUpdate: () => void
+  /** Installs the update downloaded now, the version the menu offers: the app quits, the server with it. */
+  installUpdate: (version: string) => void
 }
 
 /**
@@ -25,10 +25,10 @@ export function trayItems(d: Omit<TrayDeps, 'icon'>, update: string): MenuItemCo
     { type: 'separator' },
     { label: 'Quit', click: d.quit },
   ]
-  return update ? [{ label: `Restart to update to ${update}`, click: d.installUpdate }, { type: 'separator' }, ...items] : items
+  return update ? [{ label: `Restart to update to ${update}`, click: () => d.installUpdate(update) }, { type: 'separator' }, ...items] : items
 }
 
-/** createTray puts Conductor in the tray (trayItems); its update shows the menu with an update downloaded. */
+/** createTray puts Conductor in the tray (trayItems); its update shows the menu with the update downloaded, '' for none. */
 export function createTray(d: TrayDeps): { tray: Tray; update: (version: string) => void } {
   const image = nativeImage.createFromPath(d.icon)
   const tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 18, height: 18 }))

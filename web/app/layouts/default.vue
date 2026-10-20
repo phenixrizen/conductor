@@ -99,7 +99,7 @@ async function askUpdate() {
       icon: 'i-lucide-circle-arrow-up',
       color: 'info',
       duration: 30000,
-      actions: [{ label: 'Restart to update', onClick: () => (update.restartOpen.value = true) }, { label: 'Later', color: 'neutral', variant: 'outline' }],
+      actions: [{ label: 'Restart to update', onClick: () => (update.restartFor.value = u.ready) }, { label: 'Later', color: 'neutral', variant: 'outline' }],
     })
   }
   if (u.failed) {

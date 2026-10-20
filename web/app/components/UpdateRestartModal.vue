@@ -1,39 +1,64 @@
 <script setup lang="ts">
-import { restartWords } from '~/utils/desktop'
+import { restartWords, updateGoneWords } from '~/utils/desktop'
 import { sessionLive } from '~/utils/sidebarActions'
 
 /**
  * Restart to update (#290): what it ends, the server and the sessions running on this computer, counted as it opens; then the
- * app quits to install the update it downloaded. Later closes it; the header's button stays until the update installs.
+ * app quits to install the version asked for. Later closes it; the header's button stays until the update installs. A version
+ * the app no longer holds (a check found a newer one, or a download failed) restarts nothing: the dialog closes and says so,
+ * when the app refuses it and as soon as the app says it is gone.
  */
-const { ready, restartOpen, install } = useDesktopUpdate()
+const { ready, restartFor, install } = useDesktopUpdate()
 const sessions = useSessions()
+const toast = useToast()
 const running = ref<number | null>(null)
 const busy = ref(false)
-watch(restartOpen, async (open) => {
-  if (!open) return
+// The version shown, kept while the dialog closes.
+const shown = ref('')
+const open = computed({
+  get: () => restartFor.value !== '',
+  set: (v: boolean) => {
+    if (!v) restartFor.value = ''
+  },
+})
+function gone(version: string) {
+  restartFor.value = ''
+  toast.add({ ...updateGoneWords(version), icon: 'i-lucide-circle-arrow-up', color: 'warning', duration: 20000 })
+}
+watch(restartFor, async (version) => {
+  if (!version) return
+  if (ready.value !== version) return gone(version)
+  shown.value = version
   running.value = null
   // Sessions that could not be counted are not none: the words say they may end (restartWords).
   const list = await sessions.list().catch(() => null)
   running.value = list ? list.filter((s) => s.kind === 'server' && sessionLive(s.status)).length : -1
 })
+// The app says the update is gone, or that another is ready, while this asks for one.
+watch(ready, (now) => {
+  const asked = restartFor.value
+  if (asked && now !== asked && !busy.value) gone(asked)
+})
 async function restart() {
+  const version = restartFor.value
   busy.value = true
-  await install().catch(() => {})
+  // Started, the app quits to install; refused, it holds that version no more and nothing stopped.
+  if (await install(version).catch(() => false)) return
   busy.value = false
+  gone(version)
 }
 </script>
 
 <template>
   <UModal
-    v-model:open="restartOpen"
-    :title="`Restart to update to ${ready}?`"
-    :description="running === null ? 'Counting the sessions running on this computer…' : restartWords(ready, running)"
+    v-model:open="open"
+    :title="`Restart to update to ${shown}?`"
+    :description="running === null ? 'Counting the sessions running on this computer…' : restartWords(shown, running)"
     data-update-restart-modal
   >
     <template #footer>
       <div class="flex w-full justify-end gap-2">
-        <UButton label="Later" color="neutral" variant="outline" @click="restartOpen = false" />
+        <UButton label="Later" color="neutral" variant="outline" @click="open = false" />
         <UButton label="Restart to update" icon="i-lucide-circle-arrow-up" :loading="busy" :disabled="running === null" data-update-restart @click="restart" />
       </div>
     </template>

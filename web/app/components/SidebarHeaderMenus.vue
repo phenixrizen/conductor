@@ -15,7 +15,7 @@ const emit = defineEmits<{ token: [] }>()
 
 const alerts = useAttentionSettings()
 // The update the desktop app downloaded (#290): a button here until it installs, which asks for the restart.
-const { ready: updateReady, restartOpen } = useDesktopUpdate()
+const { ready: updateReady, restartFor } = useDesktopUpdate()
 const identity = useIdentity()
 const { hasToken, clear } = useWorkbenchToken()
 const shortcuts = useShortcutsModal()
@@ -43,7 +43,7 @@ const who = computed(() => (identity.name.value ? `Your menu, ${identity.name.va
         :size="collapsed ? 'sm' : 'xs'"
         :aria-label="`Conductor ${updateReady} is ready to install`"
         data-header-update
-        @click="restartOpen = true"
+        @click="restartFor = updateReady"
       />
     </UTooltip>
     <UPopover :content="side">

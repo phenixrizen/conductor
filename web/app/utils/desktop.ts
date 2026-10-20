@@ -116,10 +116,14 @@ export interface DesktopBridge {
    * once per version; and one whose install did not take ('' for none), said once (#290). Older apps lack it.
    */
   update?(): Promise<{ ready: string; announce: boolean; failed: string }>
-  /** A check found an update downloaded: ask update() what to say. Older apps lack it. */
+  /** A check found an update downloaded, or the one downloaded is gone: ask update() what to say. Older apps lack it. */
   onUpdate?(cb: () => void): () => void
-  /** Installs the update downloaded now: the app quits, its server and the sessions running on it with it. Older apps lack it. */
-  installUpdate?(): Promise<void>
+  /**
+   * Installs the update downloaded now, the version offered: the app quits, its server and the sessions running on it with it.
+   * False when that version is no longer ready (a check found a newer one, or a download failed), and nothing stops. Older
+   * apps lack it.
+   */
+  installUpdate?(version: string): Promise<boolean>
 }
 
 /** What the workbench says of an update the desktop app downloaded, once per version (#290). */
@@ -127,7 +131,18 @@ export function updateReadyWords(version: string): { title: string; description:
   return { title: `Conductor ${version} is ready`, description: 'It installs when you quit Conductor. Restart to update now, or later.' }
 }
 
-/** What the workbench says of an update the app announced and this start of it runs older than: its install did not take. */
+/**
+ * What the workbench says of an update offered that the app's updater no longer holds: a check found a newer one, whose download
+ * replaced it, or a download failed. Nothing restarted.
+ */
+export function updateGoneWords(version: string): { title: string; description: string } {
+  return {
+    title: `Conductor ${version} is no longer ready`,
+    description: 'A newer update replaced it, or its download failed, and nothing restarted. The button in the header shows when an update is ready.',
+  }
+}
+
+/** What the workbench says of an update the app downloaded and this start of it runs older than: its install did not take. */
 export function updateFailedWords(version: string): { title: string; description: string } {
   return {
     title: `Conductor ${version} did not install`,

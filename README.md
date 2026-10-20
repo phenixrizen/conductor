@@ -1387,8 +1387,8 @@ releases: the app checks on start and every six hours and downloads an
 update in the background, and the update installs when you quit. The app
 never opens a dialog for an update. The workbench says it once per version,
 in a toast with **Restart to update**, and keeps a button in the sidebar's
-header until the update installs, beside a **Restart to update** item in
-the tray's menu. The restart first says what it ends: the server, and the
+header until the update installs or a newer one replaces it, beside a
+**Restart to update** item in the tray's menu. The restart first says what it ends: the server, and the
 sessions running on this computer. An update the app downloaded that did
 not install (it started again as the version before) is said once, with
 the way to the app's log. The deb and rpm builds are updated by your

@@ -30,8 +30,11 @@ export interface IpcDeps {
    * install did not take (said once, '' after).
    */
   update?: () => { ready: string; announce: boolean; failed: string }
-  /** Installs the update downloaded now: the app quits, the server with it. */
-  installUpdate?: () => void
+  /**
+   * Installs the update downloaded now, the version the page offered: the app quits, the server with it. False when that
+   * version is no longer the one ready (a newer one found, a download failed), and nothing stops.
+   */
+  installUpdate?: (version: string) => boolean
 }
 
 /** trusted says whether the sender is the workbench served by this app's own server, or the app's own pages. */
@@ -64,9 +67,7 @@ export function registerIpc(d: IpcDeps): void {
   ipcMain.handle('conductor:update', guard(() => d.update?.() ?? { ready: '', announce: false, failed: '' }))
   ipcMain.handle(
     'conductor:installUpdate',
-    guard(() => {
-      d.installUpdate?.()
-    }),
+    guard((_e, version) => typeof version === 'string' && (d.installUpdate?.(version) ?? false)),
   )
   ipcMain.handle('conductor:notice', guard(() => d.notice()))
   ipcMain.handle(

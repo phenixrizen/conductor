@@ -12,7 +12,7 @@ describe('the tray', () => {
     restart: () => calls.push('restart'),
     showLog: () => calls.push('log'),
     quit: () => calls.push('quit'),
-    installUpdate: () => calls.push('install'),
+    installUpdate: (version: string) => calls.push(`install ${version}`),
   }
 
   it('offers the window, the browser, the server, its log and quit', () => {
@@ -23,6 +23,6 @@ describe('the tray', () => {
     const items = trayItems(d, '0.7.0-rc.12')
     expect(items.map((i) => i.label ?? i.type)).toEqual(['Restart to update to 0.7.0-rc.12', 'separator', 'Open Conductor', 'Open in browser', 'separator', 'Restart server', 'Server log', 'separator', 'Quit'])
     ;(items[0]!.click as () => void)()
-    expect(calls).toEqual(['install'])
+    expect(calls).toEqual(['install 0.7.0-rc.12'])
   })
 })

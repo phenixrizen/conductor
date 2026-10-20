@@ -81,7 +81,7 @@ async function run() {
     },
   )
   // The updates downloaded (#290): told to the workbench once per version, never in a dialog of the app's own, which every
-  // check that found the same download opened again. One announced that this start runs older than did not install: said once.
+  // check that found the same download opened again. One downloaded that this start runs older than did not install: said once.
   const updates = new UpdateNotice(
     () => settings.updateAnnounced,
     (version) => {
@@ -274,7 +274,7 @@ async function run() {
       }
       return { ...updates.take(), failed }
     },
-    installUpdate: () => restartForUpdate(),
+    installUpdate: (version) => restartForUpdate(version),
     mainWindow: () => main,
     inviteReady: (sender) => {
       if (main && !main.isDestroyed() && sender === main.webContents) delivery.pageReady()
@@ -363,23 +363,40 @@ async function run() {
     restart: () => void supervisor.restart().catch(() => {}),
     showLog,
     quit: () => app.quit(),
-    installUpdate: () => restartForUpdate(),
+    installUpdate: (version) => void restartForUpdate(version),
   })
   tray = inTray.tray
   trayUpdate = inTray.update
   const channel = updateChannel(process.platform, !!process.env.APPIMAGE, app.isPackaged)
   log('main', `updates: ${channel === 'auto' ? 'from the GitHub releases, checked every six hours' : channel === 'link' ? `by your package manager (${RELEASES_URL})` : 'none in development'}`)
-  void startUpdater(channel, logs, (version) => {
-    // Kept as downloaded, told or not: a later start older than it says it did not install (failedAtStart).
-    if (settings.updateDownloaded !== version) {
-      settings = { ...settings, updateDownloaded: version }
-      saveSettings(settingsFile, settings)
-    }
-    updates.downloaded(version)
-    trayUpdate?.(version)
-    // Every workbench window asks what to say (UpdateNotice), a second one opened from the first too; one not open, or not
-    // ready yet, asks as it loads.
+  // Every workbench window asks what to say (UpdateNotice), a second one opened from the first too; one not open, or not ready
+  // yet, asks as it loads.
+  const tellWorkbench = () => {
     for (const w of workbenchWindows(BrowserWindow.getAllWindows(), origin())) w.webContents.send('conductor:update')
+  }
+  // Kept as downloaded, told or not, and cleared once the updater holds it no more: a later start older than it says it did not
+  // install (failedAtStart).
+  const keepDownloaded = (version: string) => {
+    if (settings.updateDownloaded === version) return
+    settings = { ...settings, updateDownloaded: version }
+    saveSettings(settingsFile, settings)
+  }
+  void startUpdater(channel, logs, {
+    downloaded: (version) => {
+      keepDownloaded(version)
+      updates.downloaded(version)
+      trayUpdate?.(version)
+      tellWorkbench()
+    },
+    // A check found a newer version, whose download emptied the cache, or a download failed: nothing installs now, so nothing
+    // offers to, until the next is downloaded.
+    gone: (why) => {
+      log('main', `updates: ${updates.ready()} is no longer ready to install: ${why}`)
+      keepDownloaded('')
+      updates.withdraw()
+      trayUpdate?.('')
+      tellWorkbench()
+    },
   }).then((install) => (installUpdate = install))
 
   app.on('second-instance', (_e, argv) => {
@@ -388,18 +405,19 @@ async function run() {
     show().focus()
   })
   app.on('activate', () => show())
-  // Restart to update (#290), from the workbench or the tray: the server stops, then the updater quits the app to install.
-  function restartForUpdate() {
+  // Restart to update to version (#290), from the workbench or the tray: while the updater holds it still, the server stops,
+  // then the updater quits the app to install. Says whether it started.
+  function restartForUpdate(version: string): boolean {
     const install = installUpdate
-    if (!install || quitting) return
-    log('main', 'updates: restarting to install')
-    void restartToInstall({
+    if (!install || quitting) return false
+    return restartToInstall(version, {
+      ready: () => updates.ready(),
       letGo: () => (quitting = true),
       stopServer: () => supervisor.stop(),
       install,
       quit: () => app.quit(),
       log: (l) => log('main', l),
-    })
+    }).started
   }
   app.on('window-all-closed', () => {
     if (!settings.closeToTray) app.quit()
