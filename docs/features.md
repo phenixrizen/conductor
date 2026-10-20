@@ -1243,6 +1243,275 @@ request each from main.
   startup dialog drawn before a stranded line's hold; a wrapped row
   rewritten after the screen grew; a synchronized frame ending on the
   alternate screen).
+- **The work flow on GitHub's own primitives** (#252, #254, #273, #275,
+  #283, issues #251, #272, #274, #282). The scripted issue workflow #252 and
+  #254 added (helpers that claimed an issue and kept review receipts and
+  budgets, a CI job checking them, skills and templates to match) gave way
+  the next day to GitHub's own (#273, about 11,500 lines removed): one
+  issue, one `issue-N` branch in a worktree of its own, one pull request, a
+  draft from its first commit with `Fixes #N` or `Part of #N`, the checks of
+  every affected surface before each push (`docs/checks.md`), every review
+  comment answered, and the owner merges. `AGENTS.md` says it in a dozen
+  lines, `CLAUDE.md` is `@AGENTS.md`, and `ci.yml` gains `required-checks`,
+  a job that is green only when every other job passed. The workflow #273
+  added to run Claude Code on ready pull requests went with #275: no
+  Anthropic credential goes into CI. A test that fails a pull request's own
+  checks is fixed in that pull request and named in its body; a flake seen
+  once that blocks nothing is a line in the standing issue #281 (#283).
+- **Checks: a Mac, two races, CI's checks run locally, the weekly runs**
+  (#255, #267, #270, #276, #287, issues #256, #220, #269, #271, #286). On an
+  Apple Silicon Mac 21 Go tests and 39 Playwright specs failed that pass on
+  Linux; all but one came from the machine (`/var` and `/tmp` are links,
+  APFS ignores case, the configuration directory is `~/Library/Application
+  Support`, no Neovim, bash 3.2), and the tests and their harness now allow
+  for it, the product unchanged. The e2e harness needs Bash 4 or later with
+  a numeric microsecond clock, finds one on the PATH for its stub agents,
+  and stops at once without one. The one Mac failure that is the product's
+  is #285: with `ice.publicIp` set, a host's IPv6 addresses are still
+  advertised. Two test races (`credential_test`'s begun write, the serve
+  test's terminal) were reproduced under load and fixed in the tests. `make
+  preflight` runs every check CI runs, from the committed head, and writes a
+  receipt with a log per step under the git common dir's `preflight/`;
+  `--machines mac,windows` adds the Mac's rows (over `ssh mac`) and the
+  Windows host's; a failed step, an unreachable machine or a subset run
+  makes a failed or partial receipt, never a silent skip. The weekly
+  `nightly` and `live` workflows, which failed on both their runs, install
+  pi and Amp from their new packages (`@earendil-works/pi-coding-agent`,
+  `@ampcode/cli`), check Amp's `--dangerously-allow-all` by use since its
+  `--help` leaves it out, and run the live tier on Ubuntu 22.04; the catalog
+  names pi's new site, github.com/earendil-works/pi.
+- **A host back from away clears a question answered meanwhile** (#259,
+  issue #208). A `conductor host` now sends its session's attention on every
+  connection it starts, the empty state included, in order with the
+  session's other changes. The server keeps the attention it had when a host
+  went, so a question answered at the host's own terminal while the host was
+  disconnected stayed in the listing (the sidebar, the Yard, a switchyard's
+  view) as Needs you until the attention next changed; it now leaves when
+  the host is back. An attention retry under way when the connection is
+  replaced tells the new connection. No protocol change: one more
+  `attention` message, the empty one.
+- **The Launch dialog's host command carries `--insecure` when the host
+  needs it** (#260, issue #213). With the workbench open over plain
+  `http://` from another machine, the "On this computer" tab's `conductor
+  host --server …` command carries `--insecure`, without which the host
+  refuses such a server (#212), and a notice under it says why: the
+  session's output and its viewers' keys would travel in the clear and
+  unverified, and a workbench served over https needs no flag. The dialog
+  reads the address as the host does: `localhost` in lower case and loopback
+  addresses are this machine, `LOCALHOST` and `127.1` are not.
+- **The Files pane on a very short window** (#261, issue #203). At 1440×230
+  the pane's section tabs, filter and breadcrumb took all its height, and
+  the tree's rows were laid out under its foot, out of a click's reach. The
+  tree keeps a few rows' height and the pane scrolls as a whole when the
+  window is shorter than that; the Explorer's hint ("Paths the agent prints
+  in the terminal are clickable") gives way below 360 px of window height.
+- **Copilot, Cursor, Antigravity and Goose report working** (#262, issue
+  #195). The four reported their turn's end and their tools' results and
+  nothing in between, so a question one of them asked with `conductor notify
+  --ask` or the MCP `ask` tool and then carried on from, or any other wait
+  raised mid-turn, stood until the turn ended. Their hooks now report
+  `working` from the pre-tool event and, where the agent has one, the
+  prompt-submitted event (Copilot's already did), as Claude Code's
+  `PreToolUse` does, and such a wait gives way while the agent works; the
+  agents table names the events. Antigravity's payload names no event: its
+  pre-tool call is told from the post-tool one by the `error` field, which
+  only a tool that ran carries.
+- **The Events page says what reports working** (#264, issue #206). On the
+  Routing tab the `working` event reads "An agent is at work", and the line
+  under it names what reports it: a prompt submitted, a tool about to run
+  (the hooks), Codex's title saying Working. The line wraps rather than
+  being cut to one.
+- **A wrapped row rewritten after the window grew reads what was drawn**
+  (#265, issue #225, one of the three set aside in #207's review). The
+  screen model reads a wrapped row joined to the next up to the width it
+  wrapped at, and a row rewritten in place after the window grew kept that
+  join, so the cells newly drawn past it were dropped: a startup question
+  still on the screen could be withdrawn after a held key, or a submission
+  let into its dialog. A character other than a blank written at or past
+  that width now ends the join; blanks repainting the growth's padding keep
+  it.
+- **A synchronized frame ends for both screens** (#266, issue #226, set
+  aside in #207's review). The end of a synchronized update (`CSI ?2026h` …
+  `CSI ?2026l`) laid out only the screen selected at that moment, so a frame
+  that erased and redrew the main screen after a resize and ended on the
+  alternate screen left the main screen counted as cut: a question the frame
+  had erased (Codex's approval, with its outcome drawn) stayed, and typed
+  text was refused until the program next erased the whole screen. The end
+  now lays out every screen the frame erased whole, whichever is selected.
+- **Codex's update question reads its heading** (#268, issue #165). In the
+  rc.8 app Codex's update question read "Update now (runs": Codex draws it
+  over its splash and writes only the cells that change, so the output's
+  tail held "Updat available" and the heading matched nothing there. A
+  startup question's words are now read off the session's screen model,
+  where the heading reads whole ("Update available 0.163.0 → 0.164.0", from
+  bytes Codex 0.163.0 wrote in a PTY), with its two choices, "Skip this
+  update" and "Skip until next version". Every place that compares a reply
+  or a key with the question reads the same words, so a key typed at it is
+  noted as its answer and the question goes when Codex draws its next
+  screen.
+- **The Settings toast says when the server restarted** (#277, issue #214).
+  The desktop Settings page's save toast said "Saved" whatever the save did.
+  The app now says what became of it: "Saved; the server restarted" when the
+  change restarted the server, shown also by the page that followed the
+  restarted server to its new port, and "Saved" when nothing the server
+  reads changed, the retry after a failed restart included (the settings
+  were kept, so nothing restarts).
+- **An Enter at a startup question keeps a stranded line's hold** (#278,
+  issue #224, set aside in #207's review). With a reported question showing
+  and a line whose Enter was left out waiting for its hold, an Enter typed
+  at a startup question (trust, hooks review, update) drawn meanwhile was
+  taken as entering that line: the hold went, the reported question was
+  counted answered, and a later submission could join the stranded text.
+  Keys that may reach a startup question now count as reaching the dialog,
+  read off the screen model as one frame: the question's heading on a whole
+  frame, a dialog's numbered choice row when the heading has scrolled off a
+  short screen, or a frame half drawn or cut by a smaller window once the
+  output has drawn a startup question. A numbered list in a program's own
+  startup output reads as a choice and keeps the hold, erring on the side of
+  keeping it.
+- **A submission's Enter waits while a startup question may show** (#279,
+  issue #263). A submission's Enter follows a pause so that a question
+  raised meanwhile keeps it out, but its guard asked only the session's
+  attention, which a trust question drawn during the pause could not take
+  while a question reported through the API showed: the Enter went into the
+  trust dialog and picked what it highlighted. The guard now reads the
+  screen as well, as #278 does, and the Enter stays out while a startup
+  question may show. A frame cut or half drawn counts only once the output
+  has drawn a startup question, so a program that prints lines and never
+  erases its screen whole (a crew's example launch) still gets its first
+  prompt's Enter.
+- **Codex's program status** (#280, issue #197). Codex writes the same
+  window title, Action Required, for a question that stops its turn and for
+  an async one it posts while its turn goes on, so a wait raised while an
+  async question was pending (a hook's report, the agent's own question, an
+  approval already answered) kept a Codex member in Needs you until the
+  title said Working again, up to 30 s after the person had acted. Codex
+  0.163 and later also declare their state in a program status (OSC 7501);
+  once a session has read one, it is weighed in place of the title (the
+  agents table has the states). With Codex 0.164, which reports `working`
+  while an async question is pending, such a wait gives way a second later;
+  with 0.163 it stays as under the title. A `blocked` status with its kind
+  raises a wait in words of its own ("The agent asks for a permission", "The
+  agent asks a question", "The agent needs you to sign in") where nothing
+  with words of its own shows, so a form no pattern knows shows in Needs
+  you. Hosted sessions read no status, as they read no title. The sequence
+  is from Codex's source at 0.163.0 and 0.164.0-alpha.3, not a live capture.
+- **A question answered in its terminal is offered nowhere** (#284, issue
+  #258). A dialog answered by a key typed in its terminal stays a question
+  while the program's dialog is on the screen, by design, and now carries
+  `answered:"terminal"` from the moment of the key (on the session's info,
+  the terminal's `attention` message and a host's report): the sidebar's
+  row, the Yard's queue, the reply bar and the chat's choices drop it at
+  once in every tab, the run view no longer counts the member as waiting,
+  and a page whose reply is refused as answered drops the question it named
+  without waiting for the stream. Found on the way and fixed: a dialog
+  answered by a key is remembered by its words, so that its redraw is not a
+  new question, and the memory went only when the screen settled, which the
+  reply bar's rows (resizing the terminal around every question) and a
+  program that never erases a grown screen whole (Codex) could put off for
+  good, so the next approval with the same words, a turn later, was taken as
+  answered on sight. The program's own word now ends the memory: its status
+  or title saying it works, its hook or a report saying the turn is done.
+- **A share link as a QR code** (#284, issue #144). The share dialog draws
+  the link it made as a QR code, for a phone in the room to scan; the code
+  holds the link alone. The encoder is the page's own
+  (`web/app/utils/qr.ts`: byte mode, level M, versions 1 to 10), with no new
+  dependency, and is checked against the codes `qrencode` 4.0.2 makes; no
+  phone has scanned one yet.
+- **Small things in the workbench** (#284, issues #137, #138, #167–#169,
+  #257). A folder picked in the Launch dialog leaves the caret and the view
+  at the end of its path. The Files tab's breadcrumb keeps the working
+  directory's own folder, and in file mode the folders down to the file,
+  whole; the folders above fold into one "…" crumb whose menu lists them (a
+  pick copies that folder's path), and the full path is the row's tooltip.
+  The Explorer's filter takes a path: with a slash it narrows the tree to
+  that folder and what is under it, and a click on a folder clears it. The
+  editor's Ask the agent and Comment box takes the editor's width, at most
+  56rem, and wraps its heading and the file's location. From the rc.7 app's
+  list: a long choice label is cut to its row, whole in its tooltip; a
+  stop's Cancel and Stop sit below a row's words, not over them; a stopped
+  run's header shows Resume and no Stop; the run page's name gives way last;
+  a line Conductor typed (a crew's prompt, a broadcast) reads "sent" in the
+  inspector, not "answered" (`op: typed` on its activity entry); a run's
+  times are on the 24-hour clock everywhere. An exited row's Resume is no
+  longer under the hover actions.
+- **Claude Code's dialogs offer their own choices** (#292, issue #288).
+  Every Claude Code permission request came with one fixed list, Yes `1`,
+  Always for this session `2`, No `3`, whatever its dialog showed; in Claude
+  Code 2.1.304 its No sent `3`, which in the Bash dialog switches the
+  session to auto mode, and its Always sent `2`, which in the Write dialog
+  switches it to accept edits. Claude Code's numbered dialogs (a tool's
+  permission, the plan's approval, AskUserQuestion) are now questions asked
+  during the work, as Codex's approvals are: read off the session's screen
+  model, with submissions held while one shows, each choice its label and
+  number as the dialog draws them each time it is asked, and a digit picking
+  it at once. Only a dialog that ends the screen with one of Claude Code's
+  footers counts, so one quoted in the transcript or pasted into the prompt
+  asks nothing. A choice that changes the permission mode (auto mode, accept
+  edits, bypass permissions; `mode` on the choice in the protocol) gets no
+  number key, shows outlined in the warning colour, and is never the
+  highlighted first choice. While the highlight is on a field (the plan's
+  "Tell Claude what to change", AskUserQuestion's "Type something."), no
+  choices are offered and the page says to answer in the terminal. A reply
+  is weighed against the dialog as asked: a dialog that changed is a new
+  question that takes its own reply, and the same dialog twice is two
+  questions. The hook's report carries no choices, and its words say what is
+  asked ("Claude Code has a plan for you to approve", or AskUserQuestion's
+  own question); a permission question with no choices, a hosted session's
+  among them (#293), is answered in the terminal. A label over 60 characters
+  is cut at a word with an ellipsis. Codex reviewed the plan once and the
+  code five times.
+- **An update is said once, in the workbench** (#294, issue #290).
+  electron-updater reports a downloaded update at every check that finds it,
+  on start and every six hours, and the desktop app answered each with a
+  dialog of its own, so a machine left running stacked them up. The app
+  opens no dialog for an update now. Each version is said once, to the first
+  workbench window that shows after the download (kept in the settings, so
+  across starts too), in a toast with **Restart to update** and **Later**; a
+  button in the sidebar's header stays until the update installs, and the
+  tray's menu gains `Restart to update to <version>`, which shows the
+  workbench and asks there. Whichever asks, a dialog first says what the
+  restart ends: the server, and the sessions running on this computer ("if
+  any" when they could not be counted). The restart goes ahead only for the
+  version the updater still holds: a newer download or a failed one
+  withdraws the offer, a restart asked during a check is put off with words
+  that say so, and one that starts pauses the checks, stops the server,
+  quits and installs; an install that fails quits all the same. An update
+  that did not install (the app started again as the version before) is said
+  once, with **Show the log**. A session started while the dialog stays open
+  is not counted, and ends with the restart. Codex reviewed it ten times.
+  Not yet seen: the app updating itself from one published release to the
+  next with this code in it, for which rc.12 to the next prerelease is the
+  first chance.
+- **A server is named by its address alone** (#298). `rendezvous.server`
+  (the config file or `CONDUCTOR_RENDEZVOUS_SERVER`) and `conductor host
+  --server` (`CONDUCTOR_SERVER`) refuse a URL with a user name or password
+  (`user:pass@`, or an `@` alone), a query or a fragment, an empty one
+  included, publishing on or off; tokens have settings of their own
+  (`rendezvous.token`, `--token`), as the refusal says. Such a
+  `rendezvous.server` stops `conductor serve` at start, as a plain-http one
+  does, and `conductor host` exits 2 before anything is dialed. `conductor
+  host` reads `CONDUCTOR_SERVER` after its flags, as `conductor up` does, so
+  its usage text (`--help`, a bad flag, no command) names no server from the
+  environment. Logs, errors and replies show a server URL as its scheme,
+  host and path, and a hosted session's hooks report to the server's scheme,
+  host and path. A failed control dial is said in fixed words by its kind,
+  with the host it was dialing: the name does not resolve, the connection
+  was refused, the certificate is for another name, is signed by an
+  authority this machine does not trust or has expired, it did not answer in
+  TLS, the proxy the environment names asks for authentication. While
+  publishing is on, the desktop app's Settings refuse such a switchyard
+  (`https://@host` and an empty `?` or `#` among them) and one not written
+  as the server reads a URL (a space around it, a backslash, a `%` outside
+  an escape). A switchyard setting the server would refuse is kept as saved
+  with the other settings, never handed to the server, publishing on or off,
+  so nothing is published meanwhile, and Settings says why as it opens and
+  before it saves. What stops working: a switchyard URL with `user:pass@`
+  behind a reverse proxy that asks for Basic authentication (with no host
+  token set) now gets the refusal at start; no such setup is known. Filed on
+  the way: #296 (a `ws://` or `wss://` server gives a hosted session's hooks
+  a notify URL they cannot post to) and #297 (a switchyard at
+  `http://localhost:8080` is refused as the server itself).
 
 ## Round 14: the bugs the owner met in the rc.4 app (started 2026-10-09)
 
