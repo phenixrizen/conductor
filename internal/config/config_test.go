@@ -4,9 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1027,8 +1030,10 @@ func TestPublishesToItself(t *testing.T) {
 		{"127.0.0.1, the listener on localhost", "localhost:9000", "", "", "http://127.0.0.1:9000", true},
 		{"::1, the listener on localhost (127.0.0.1)", "localhost:9000", "", "", "http://[::1]:9000", false},
 		{"0.0.0.0, the listener on localhost", "localhost:9000", "", "", "http://0.0.0.0:9000", true},
-		{"::, the listener on 127.0.0.1", "127.0.0.1:9000", "", "", "http://[::]:9000", false},
-		{"no host, the listener on ::1", "[::1]:9000", "", "", "http://:9000", true},
+		{"::, the listener on 127.0.0.1 (the dial falls back to 0.0.0.0)", "127.0.0.1:9000", "", "", "http://[::]:9000", true},
+		{"::, the listener on 127.0.0.2", "127.0.0.2:9000", "", "", "http://[::]:9000", false},
+		{"no host, the listener on 127.0.0.1", "127.0.0.1:9000", "", "", "http://:9000", true},
+		{"no host (dialed over IPv4), the listener on ::1", "[::1]:9000", "", "", "http://:9000", false},
 		{"127.0.0.2, the listener on localhost", "localhost:9000", "", "", "http://127.0.0.2:9000", false},
 		{"localhost, the listener on a LAN address", "192.0.2.5:8080", "", "", "http://localhost:8080", false},
 		{"0.0.0.0, the listener on a LAN address", "192.0.2.5:8080", "", "", "http://0.0.0.0:8080", false},
@@ -1062,6 +1067,49 @@ func TestPublishesToItself(t *testing.T) {
 		if c.PublishesToItself() {
 			t.Errorf("%s publishes to itself", name)
 		}
+	}
+}
+
+// dialedAddrs agrees with the standard library's dial on this machine: a
+// listener on 127.0.0.1, and on ::1 where the machine has it, answers a
+// dial of each host at its port exactly when dialedAddrs names its address.
+// The answer counts only from that listener's own address, whatever else
+// may hold the port on the other family. localhost may reach fewer: it is
+// taken as both its usual addresses, and a hosts file may give it one (on
+// Linux often 127.0.0.1 alone; macOS gives both).
+func TestDialedAddrsAgreesWithTheDial(t *testing.T) {
+	for _, lhost := range []string{"127.0.0.1", "::1"} {
+		ln, err := net.Listen("tcp", net.JoinHostPort(lhost, "0"))
+		if err != nil {
+			if lhost == "::1" {
+				t.Logf("no listener on ::1 here: %v", err)
+				continue
+			}
+			t.Fatal(err)
+		}
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				c.Close()
+			}
+		}()
+		_, port, _ := net.SplitHostPort(ln.Addr().String())
+		l := netip.MustParseAddr(lhost)
+		for _, host := range []string{"localhost", "", "0.0.0.0", "::", "127.0.0.1", "::1", "::ffff:127.0.0.1"} {
+			reached := false
+			if c, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 5*time.Second); err == nil {
+				peer, _ := netip.ParseAddrPort(c.RemoteAddr().String())
+				reached = peer.Addr().Unmap() == l
+				c.Close()
+			}
+			if want := slices.Contains(dialedAddrs(host), l); reached && !want || !reached && want && host != "localhost" {
+				t.Errorf("a dial of %q at a listener on %s: reached %v, dialedAddrs %v", host, lhost, reached, dialedAddrs(host))
+			}
+		}
+		ln.Close()
 	}
 }
 

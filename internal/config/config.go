@@ -426,14 +426,19 @@ func listenerTakes(addr, host string, port int) bool {
 	return slices.Contains(dests, l)
 }
 
-// dialedAddrs is where on this machine a dial of host may land: for
-// localhost (or no host) localhost's addresses, 127.0.0.1 and ::1; for an
-// unspecified address its family's loopback address; for any other address
-// that address; for any other name nothing known.
+// dialedAddrs is where on this machine the standard library's dial of host
+// may land: for localhost, its usual addresses 127.0.0.1 and ::1 (a hosts
+// file may give it one alone; both is the cautious answer); for no host
+// (dialed over IPv4) and 0.0.0.0, 127.0.0.1; for ::, ::1 and then, as the
+// dial falls back to 0.0.0.0, 127.0.0.1; for any other address that
+// address; for any other name nothing known.
 func dialedAddrs(host string) []netip.Addr {
 	v4, v6 := netip.AddrFrom4([4]byte{127, 0, 0, 1}), netip.IPv6Loopback()
-	if host == "" || strings.EqualFold(host, "localhost") {
+	if strings.EqualFold(host, "localhost") {
 		return []netip.Addr{v4, v6}
+	}
+	if host == "" {
+		return []netip.Addr{v4}
 	}
 	a, err := netip.ParseAddr(host)
 	if err != nil {
@@ -443,7 +448,7 @@ func dialedAddrs(host string) []netip.Addr {
 	case netip.IPv4Unspecified():
 		return []netip.Addr{v4}
 	case netip.IPv6Unspecified():
-		return []netip.Addr{v6}
+		return []netip.Addr{v6, v4}
 	}
 	return []netip.Addr{a}
 }
