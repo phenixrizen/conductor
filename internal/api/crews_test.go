@@ -1795,3 +1795,50 @@ func TestRunChatReachesAQuietConnectionOnAnotherMember(t *testing.T) {
 		t.Fatalf("priya after the send got %v", m)
 	}
 }
+
+// A run the engine no longer holds is answered from its record, marked
+// `record`, as it was when it ended: its page opens read-only. Its actions
+// answer 404 as for any run the engine does not hold, so a record's Resume
+// (hidden on the pages until a run can be resumed from its record) and
+// Stop have nothing to reach (#127).
+func TestGetRunAnswersItsRecordReadOnly(t *testing.T) {
+	e := newTestEnv(t, nil)
+	members := []any{map[string]any{"name": "solo", "agentId": "cat", "prompt": "", "start": map[string]any{"when": "manual"}}}
+	runID := e.launchCrew(t, "records", members...)
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	file := filepath.Join(e.srv.cfg.DataDir, "runs", runID+".json")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(file); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no record at %s", file)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Held by the engine: the run itself, no record mark.
+	if resp, out := e.do("GET", "/api/runs/"+runID, adminToken, nil); resp.StatusCode != http.StatusOK || out["record"] != nil {
+		t.Fatalf("while held: %d %v", resp.StatusCode, out)
+	}
+	e.srv.runs.ForgetForTest(runID)
+	resp, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	run, _ := out["run"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || out["record"] != true || run["id"] != runID || run["state"] != "stopped" || run["stoppedAt"] == nil {
+		t.Fatalf("from the record: %d %v", resp.StatusCode, out)
+	}
+	for _, c := range []struct{ method, path string }{
+		{"POST", "/api/runs/" + runID + "/stop"},
+		{"POST", "/api/runs/" + runID + "/resume"},
+		{"POST", "/api/runs/" + runID + "/members/solo/start"},
+	} {
+		if resp, out := e.do(c.method, c.path, adminToken, nil); resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s %s on a record: %d %v", c.method, c.path, resp.StatusCode, out)
+		}
+	}
+	if resp, _ := e.do("GET", "/api/runs/no-such-run-00000000", adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown run: %d", resp.StatusCode)
+	}
+}

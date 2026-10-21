@@ -24,8 +24,10 @@ const toast = useToast()
 const { create } = useTerminalTransport()
 
 const runId = computed(() => String(route.params.run))
-/** The run as the live store last read it. */
-const run = computed<RunInfo | null>(() => live.runOf(runId.value) ?? null)
+/** The record of a run the server no longer holds, as the page read it (`record`): shown read-only, never among the live runs. */
+const recordRun = ref<RunInfo | null>(null)
+/** The run as the live store last read it, else its record. */
+const run = computed<RunInfo | null>(() => live.runOf(runId.value) ?? recordRun.value)
 const error = ref('')
 const gone = ref(false)
 const now = ref(Date.now())
@@ -47,6 +49,7 @@ async function load() {
     if (id !== runId.value) return
     error.value = ''
     gone.value = !r
+    recordRun.value = r?.record ? r : null
   } catch (e) {
     if (id === runId.value) error.value = (e as Error).message
   }
@@ -260,7 +263,7 @@ watch(() => admin.token.value, load)
 <template>
   <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <CrewRunHeader :run="run" :run-id="runId" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
+      <CrewRunHeader :record="!!run?.record" :run="run" :run-id="runId" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
 
     <template #body>

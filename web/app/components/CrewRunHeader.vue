@@ -11,7 +11,20 @@ import { relativeTime } from '~/utils/sessions'
  * stopped resume it as a new run. Each action calls the server and hands the
  * run as it is after it to the page (`changed`).
  */
-const props = withDefaults(defineProps<{ run: RunInfo | null; runId: string; counts: { needs: number; running: number }; now: number; chatUnread?: number; chatOpen?: boolean; chatOffline?: boolean }>(), { chatUnread: 0, chatOpen: false, chatOffline: false })
+const props = withDefaults(
+  defineProps<{
+    run: RunInfo | null
+    runId: string
+    counts: { needs: number; running: number }
+    now: number
+    chatUnread?: number
+    chatOpen?: boolean
+    chatOffline?: boolean
+    /** A record of a run the server no longer holds (#127): read-only, so no agent added, nothing stopped, no resume until a run can be resumed from its record. */
+    record?: boolean
+  }>(),
+  { chatUnread: 0, chatOpen: false, chatOffline: false, record: false },
+)
 const emit = defineEmits<{ changed: [run: RunInfo]; chat: [] }>()
 
 const api = useSessions()
@@ -122,6 +135,7 @@ async function stopAll() {
     </template>
     <template #trailing>
       <div v-if="run" class="ml-2 hidden min-w-0 items-center gap-1.5 sm:flex">
+        <UBadge v-if="record" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-run-record />
         <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
         <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
         <span class="ml-1 truncate font-mono text-xs text-muted">{{ uptime }}</span>
@@ -129,15 +143,15 @@ async function stopAll() {
     </template>
     <template #right>
       <!-- Icons only on a phone: the labels would push the name off the bar. -->
-      <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!run || stopped" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
+      <UButton icon="i-lucide-plus" color="neutral" variant="outline" aria-label="Add agent" :disabled="!run || stopped || record" @click="openAdd"><span class="hidden sm:inline">Add agent</span></UButton>
       <UButton icon="i-lucide-share-2" color="neutral" variant="outline" aria-label="Share" :disabled="!run" @click="shareOpen = true"><span class="hidden sm:inline">Share</span></UButton>
       <!-- The run's chat (design 2e): the count while the drawer is closed. -->
       <UButton icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :disabled="!run" :class="chatOpen && 'ring-2 ring-primary/40'" data-run-chat-button :data-run-chat-offline="chatOffline ? '' : undefined" @click="emit('chat')">
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="chatUnread" />
       </UButton>
-      <UButton v-if="stopped" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
-      <UButton v-if="!stopped" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
+      <UButton v-if="stopped && !record" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
+      <UButton v-if="!stopped && !record" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton class="hidden sm:inline-flex" />
     </template>
   </UDashboardNavbar>

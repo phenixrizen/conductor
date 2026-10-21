@@ -74,6 +74,16 @@ function reader(over: Partial<RunReader> = {}): RunReader & { gets: string[]; li
 }
 
 describe('RunStore', () => {
+  it('hands a record back without taking it among the live runs, and drops the run it replaces', async () => {
+    const r = reader({ get: async (id) => (id === 'r1' ? run({ id: 'r1', state: 'stopped', record: true }) : null) })
+    const store = new RunStore(r, () => {})
+    store.apply(run({ id: 'r1', state: 'running' }))
+    const got = await store.read('r1')
+    expect(got?.record).toBe(true)
+    expect(store.runs.get('r1')).toBeUndefined()
+    expect(store.list()).toEqual([])
+  })
+
   afterEach(() => vi.useRealTimers())
 
   it('never lets an older reply replace a newer one', async () => {

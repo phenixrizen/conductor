@@ -265,14 +265,29 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"runs": s.runs.List()})
 }
 
-// handleGetRun answers one run with the diff of every member's branch.
+// handleGetRun answers one run with the diff of every member's branch; a
+// run the engine no longer holds (ended before the server last started, or
+// evicted) is answered from its record (crew.Records), marked `record`, so
+// that its page opens read-only: no diffs, nothing of it live, and its
+// actions (stop, resume, a member added or started, a broadcast, its links)
+// answer 404 as for any run the engine does not hold.
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
-	run, ok := s.runs.GetWithDiffs(r.Context(), r.PathValue("run"))
-	if !ok {
-		writeError(w, http.StatusNotFound, "not_found", "no such run")
+	id := r.PathValue("run")
+	if run, ok := s.runs.GetWithDiffs(r.Context(), id); ok {
+		writeJSON(w, http.StatusOK, map[string]any{"run": run})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": run})
+	if s.records != nil {
+		run, ok, err := s.records.Get(id)
+		if err != nil {
+			s.log.Warn("run record", "run", id, "err", err)
+		}
+		if ok {
+			writeJSON(w, http.StatusOK, map[string]any{"run": run, "record": true})
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "not_found", "no such run")
 }
 
 // handleAddRunMember adds a member to a run: 201 {run}. A member that starts

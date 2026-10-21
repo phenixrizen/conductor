@@ -190,6 +190,14 @@ export function runWhen(iso: string, now = Date.now(), time = true): string {
 }
 
 /** How long a run has gone or went: "up 4m" while it goes, else "22m". */
+/**
+ * Whether a run's row offers Resume as new run: a run that is not live, was stopped, has not been resumed already, and is held by the server
+ * (a record of one the server no longer holds offers none until a run can be resumed from its record, #127).
+ */
+export function runResumable(r: RunInfo, live: boolean): boolean {
+  return !live && !!r.stoppedAt && !r.resumedBy && !r.record
+}
+
 export function runTook(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'members' | 'state'>, live: boolean, now = Date.now()): string {
   if (live) return `up ${relativeTime(run.startedAt, now)}`
   const start = Date.parse(run.startedAt)

@@ -123,6 +123,13 @@ export class RunStore {
   async read(id: string): Promise<RunInfo | null> {
     const ticket = ++this.ticket
     const run = await this.reader.get(id)
+    if (run?.record) {
+      // A record of a run the server no longer holds: the page that asked
+      // gets it, the live runs do not (nothing of it is live), and a run of
+      // that id the store held is gone.
+      this.remove(id, ticket)
+      return run
+    }
     if (run) this.apply(run, ticket)
     else this.remove(id, ticket)
     return run && (this.runs.get(id) ?? run)

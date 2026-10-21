@@ -408,6 +408,11 @@ export interface RunInfo {
   /** The stopped run this one resumed, and the run that resumed this one (Resume as new run). */
   resumedFrom?: string
   resumedBy?: string
+  /**
+   * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
+   * marks it and the crew's runs list it: read-only, nothing of it live, no action reaches it until a run can be resumed from its record.
+   */
+  record?: boolean
 }
 
 /** GET /api/reach: what the server knows about being reached from outside its network, and whether its TLS listener has a certificate. */
@@ -546,7 +551,7 @@ export function useSessions() {
     /** Every run in the server's memory, newest first. */
     listRuns: () => request<{ runs: RunInfo[] }>('/api/runs').then((r) => r.runs ?? []),
     /** One run, with each worktree member's diff. */
-    getRun: (id: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(id)}`).then((r) => r.run),
+    getRun: (id: string) => request<{ run: RunInfo; record?: boolean }>(`/api/runs/${encodeURIComponent(id)}`).then((r) => (r.record ? { ...r.run, record: true } : r.run)),
     /**
      * Adds a member mid-run; one that starts immediately has its session when this resolves. 400 `invalid_crew` (a name the run has,
      * one whose start failed included), 409 `run_stopped`; a session that cannot be created leaves the member in the run, ended.

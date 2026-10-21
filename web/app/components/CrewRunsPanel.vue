@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { enough } from '~/utils/charts'
-import { barClass, barsSummary, DEFAULT_RUN_FILTER, filterCounts, filterRuns, memberTiles, minutesLabel, outcomeBadge, readRunFilter, RUN_FILTER_KEY, runBars, runNote, runOutcome, runTook, runWhen, shortRunId, type RunFilter, type RunFilterSince, type RunFilterState } from '~/utils/crewWords'
+import { barClass, barsSummary, DEFAULT_RUN_FILTER, filterCounts, filterRuns, memberTiles, minutesLabel, outcomeBadge, readRunFilter, RUN_FILTER_KEY, runBars, runNote, runOutcome, runResumable, runTook, runWhen, shortRunId, type RunFilter, type RunFilterSince, type RunFilterState } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { agentInitials } from '~/utils/sessions'
 
@@ -86,7 +86,7 @@ const rows = computed(() =>
       tiles: memberTiles(r, props.sessions),
       took: runTook(r, isLive, props.now),
       note: runNote(r, props.sessions),
-      resumable: !isLive && !!r.stoppedAt && !r.resumedBy,
+      resumable: runResumable(r, isLive),
     }
   }),
 )
