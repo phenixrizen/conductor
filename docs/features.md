@@ -2075,18 +2075,35 @@ tool, and Conductor offered it as Goose.
   Raw HTML is parsed as text, never rendered (no script, no handler,
   no `javascript:` link); a web link opens outside the app; a relative
   link opens its file in a tab; a relative image loads through the
-  session's file reads; an image on the web is not loaded (its alt text
-  shows). A `mermaid` fence is drawn by Mermaid, loaded only when a
-  previewed file has one, with `securityLevel: strict` (no HTML in labels,
-  no `click` run, its bind functions never called), in the app's theme and
-  again at a theme switch; a block it cannot draw keeps its source with
-  the error above it. The same component serves a guest's view-only editor
-  and the Yard. Tests: vitest `markdown.test.ts` (the rendering, the
-  sanitising, the links and images, the Mermaid marks), `editorTabs.test.ts`
-  (the toggle per tab); Playwright `markdown.spec.ts` (a README with a
-  table, a task list, a script shown as text, a flowchart drawn, a link
-  opening its file, the source back). Mermaid's SVG is not drawn in
-  vitest's node environment, so the drawing is checked in the browser.
+  session's file reads (the link's path decoded once, as markdown-it
+  encodes it); an image on the web is not loaded (its alt text shows). A
+  `mermaid` fence is drawn by Mermaid, loaded only when a previewed file
+  has one, in the app's theme and again at a theme switch; a block it
+  cannot draw keeps its source with the error above it. A diagram loads
+  nothing from outside the page, three ways: a source that would (an image
+  node `img:`, a `url(` or `@import` in its CSS, an HTML element or URL
+  attribute in a label) is not drawn and says why above its source;
+  Mermaid runs with `securityLevel: strict` and a DOMPurify configuration
+  forbidding every label element and attribute that loads or navigates
+  (Mermaid's own forbids only `style`; an `<img>` in a label survives it);
+  and the SVG is scrubbed of any such element or attribute before it goes
+  in, its bind functions never called. Diagram ids are unique across every
+  preview on the page (Mermaid removes an element of the id it is given
+  before drawing) and a render pass overtaken by a later one or by the
+  preview going stops at its next step. Inside the text, Alt+P is an action
+  of the Monaco editor on Markdown files (Monaco keeps a chord it sees from
+  reaching the page); on the preview it is the area's key handler; it is
+  kept from Neovim on a Markdown file (`keptByConductor`). The same component serves a guest's
+  view-only editor and the Yard. Tests: vitest `markdown.test.ts` (the
+  rendering, the sanitising, the links and images with their decoding, the
+  Mermaid marks and the guard), `editorTabs.test.ts` (the toggle per tab),
+  `nvimKeys.test.ts` (Alt+P kept); Playwright `markdown.spec.ts` (a README
+  with a table, a task list, a script shown as text, a flowchart drawn, two
+  diagrams that would fetch held, no request outside the page's origin, a
+  link opening its file, two previews switched between, the source back by
+  Alt+P, with Neovim on too where nvim is on PATH). Mermaid's SVG is not
+  drawn in vitest's node environment, so the drawing is checked in the
+  browser.
 
 From the design screens 4a–4g and 5a–5c in "Conductor UI mockups" (the
 owner designed them on 2026-10-08 from a brief written here). The plan with

@@ -34,6 +34,16 @@ describe('keyToNvim', () => {
     expect(keptByConductor(k('w', { ctrlKey: true }))).toBe(false)
     expect(keptByConductor(k('Tab'))).toBe(false)
   })
+  it('keeps Alt+P for the Markdown preview when the file has one, by the physical key, and gives it to Neovim otherwise', () => {
+    expect(keptByConductor(k('p', { altKey: true }), true)).toBe(true)
+    expect(keptByConductor({ ...k('π', { altKey: true }), code: 'KeyP' }, true)).toBe(true)
+    expect(keptByConductor(k('p', { altKey: true }))).toBe(false)
+    expect(keptByConductor(k('p', { altKey: true }), false)).toBe(false)
+    expect(keptByConductor(k('p', { altKey: true, shiftKey: true }), true)).toBe(false)
+    expect(keptByConductor(k('p', { altKey: true, ctrlKey: true }), true)).toBe(false)
+    expect(keptByConductor(k('p', { ctrlKey: true }), true)).toBe(false)
+    expect(keptByConductor(k('p'), true)).toBe(false)
+  })
 })
 
 describe('the mode', () => {

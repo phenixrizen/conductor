@@ -24,7 +24,7 @@ const SPECIAL: Record<string, string> = {
 
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock', 'Dead', 'Unidentified'])
 
-export type KeyLike = Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey'>
+export type KeyLike = Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 'metaKey' | 'shiftKey'> & { code?: string }
 
 /** keyToNvim is the Neovim notation of a key event, or null when it is nothing Neovim should see. */
 export function keyToNvim(e: KeyLike): string | null {
@@ -83,8 +83,10 @@ export function textToNvim(text: string): string[] {
 }
 
 /** Keys the editor area keeps for itself in the Neovim keymap: the tab cycle, the fold. */
-export function keptByConductor(e: KeyLike): boolean {
-  return (e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Tab'
+export function keptByConductor(e: KeyLike, preview = false): boolean {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key === 'Tab') return true
+  // Alt+P is the Markdown preview's (#166) when the file has one, by the physical key: Option+P is π on a Mac.
+  return preview && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === 'KeyP' || e.key.toLowerCase() === 'p')
 }
 
 /** The cursor style Monaco shows for a Neovim mode (the `mode()` letter or a UI mode name). */

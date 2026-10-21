@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dirOf, isMarkdownPath, renderMarkdown, resolveRelative } from './markdown'
+import { dirOf, isMarkdownPath, localPath, mermaidFetches, nextMermaidId, renderMarkdown, resolveRelative } from './markdown'
 
 const dir = '/repo/docs'
 const rawUrl = (p: string) => `/api/sessions/s1/files?path=${encodeURIComponent(p)}&raw=1`
@@ -40,6 +40,35 @@ describe('the Markdown preview', () => {
     expect(resolveRelative('/repo/docs', '../img/../a.md')).toBe('/repo/a.md')
     expect(resolveRelative('/repo/docs', '/abs/b.md')).toBe('/abs/b.md')
     expect(resolveRelative('/repo/docs', './c.md')).toBe('/repo/docs/c.md')
+  })
+
+  it('names the file a local link or image means: the encoding markdown-it gives undone once, the query and fragment cut', () => {
+    expect(localPath('my%20notes.md')).toBe('my notes.md')
+    expect(localPath('a%2520b.md')).toBe('a%20b.md')
+    expect(localPath('a%23b.md#x')).toBe('a#b.md')
+    expect(localPath('c.md?x=1#y')).toBe('c.md')
+    expect(localPath('%E0%A4%A.md')).toBe('%E0%A4%A.md')
+    const { html } = renderMarkdown('[n](my%20notes.md) [j](日本.md) [p](a%2520b.md) [h](a%23b.md#x) ![s](im%20g.png)\n', { dir, rawUrl })
+    expect(html).toContain('data-md-link="/repo/docs/my notes.md"')
+    expect(html).toContain('data-md-link="/repo/docs/日本.md"')
+    expect(html).toContain('data-md-link="/repo/docs/a%20b.md"')
+    expect(html).toContain('data-md-link="/repo/docs/a#b.md"')
+    expect(html).toContain(`src="${rawUrl('/repo/docs/im g.png').replace(/&/g, '&amp;')}"`)
+  })
+
+  it('holds a Mermaid diagram that would reach outside the page, and draws one that would not', () => {
+    expect(mermaidFetches('flowchart LR\n  A[Yard] --> B[Roundhouse]\n')).toBeNull()
+    expect(mermaidFetches('sequenceDiagram\n  a->>b: the image is at /img/a.png\n')).toBeNull()
+    expect(mermaidFetches('flowchart LR\n  A@{ img: "https://attacker.invalid/p.png", h: 60 }\n')).toMatch(/image node/)
+    expect(mermaidFetches('flowchart LR\n  A@{\n    shape: image,\n    img: \'x.png\'\n  }\n')).toMatch(/image node/)
+    expect(mermaidFetches('flowchart LR\n  A --> B\n  style A fill:url(https://attacker.invalid/x.svg#p)\n')).toMatch(/url\(/)
+    expect(mermaidFetches('%%{init: {"themeCSS": "@import url(https://attacker.invalid/x.css);"}}%%\nflowchart LR\n  A --> B\n')).toMatch(/url\(/)
+    expect(mermaidFetches('flowchart LR\n  A["<img src=https://attacker.invalid/p.png>"]\n')).toMatch(/HTML element/)
+    expect(mermaidFetches('flowchart LR\n  A["<a href=https://attacker.invalid>go</a>"]\n')).toMatch(/HTML element/)
+    expect(mermaidFetches('flowchart LR\n  A["`**bold** src=https://attacker.invalid`"]\n')).toMatch(/attribute/)
+    const ids = new Set([nextMermaidId(), nextMermaidId(), nextMermaidId()])
+    expect(ids.size).toBe(3)
+    for (const id of ids) expect(id).toMatch(/^md-mermaid-\d+$/)
   })
 
   it('loads a relative image through the session, holds one on the web unless allowed, and shows the alt text otherwise', () => {

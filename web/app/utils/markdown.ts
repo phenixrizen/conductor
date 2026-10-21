@@ -56,6 +56,52 @@ export function isRemote(href: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//')
 }
 
+/**
+ * The file path a local link or image names: markdown-it gives link destinations URL-encoded (a space as %20, a
+ * name in Japanese as its bytes), so the query and fragment are cut and the rest decoded once; one that is not
+ * valid encoding is taken as written.
+ */
+export function localPath(href: string): string {
+  const path = href.split(/[?#]/, 1)[0] ?? ''
+  try {
+    return decodeURIComponent(path)
+  } catch {
+    return path
+  }
+}
+
+/**
+ * Why a Mermaid diagram would reach outside the page, or null when it would not. Mermaid under
+ * securityLevel strict still loads an image node's URL (`A@{ img: "…" }`) while it draws, puts CSS from
+ * `style`, `classDef` and `themeCSS` into the SVG (a `url(…)` in it is fetched by the browser), and keeps an
+ * HTML element in a label that would load something or navigate (its sanitiser forbids only script).
+ * A diagram with any of these is not drawn: its source shows with this reason. The match is on the source
+ * as written, so a label that merely mentions one of these words is held too (it stays readable as source).
+ */
+export function mermaidFetches(source: string): string | null {
+  if (/(^|[\s{,])img\s*:/i.test(source)) return 'an image node (img:) would be loaded from its URL'
+  if (/url\s*\(/i.test(source)) return 'a url( in its CSS would be fetched'
+  if (/@import\b/i.test(source)) return 'an @import in its CSS would be fetched'
+  if (/<\s*(img|image|picture|source|video|audio|iframe|object|embed|link|use|svg|script|style|a|form|meta|base)\b/i.test(source)) return 'an HTML element in a label would load something or navigate'
+  if (/\b(src|srcset|href|xlink:href|poster|background|action|formaction|data)\s*=/i.test(source)) return 'an attribute in a label names a URL'
+  return null
+}
+
+/**
+ * Mermaid's DOMPurify configuration for labels under this preview, in place of its own (which forbids only
+ * style): nothing that loads a resource or navigates survives in a label, whatever the diagram's text said.
+ */
+export const MERMAID_PURIFY = {
+  FORBID_TAGS: ['style', 'script', 'img', 'image', 'picture', 'source', 'video', 'audio', 'iframe', 'object', 'embed', 'link', 'use', 'svg', 'a', 'form', 'meta', 'base'],
+  FORBID_ATTR: ['src', 'srcset', 'href', 'xlink:href', 'poster', 'background', 'style', 'action', 'formaction', 'data', 'ping'],
+}
+
+let mermaidSeq = 0
+/** An id for Mermaid to draw under, unique across every preview on the page: Mermaid removes an element of the id it is given before it draws, so two previews sharing a counter would erase each other's diagrams. */
+export function nextMermaidId(): string {
+  return `md-mermaid-${++mermaidSeq}`
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
@@ -93,8 +139,7 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
       t.attrSet('rel', 'noopener noreferrer')
     } else if (href && !href.startsWith('#')) {
       // A file in the repository: the component opens it in a tab.
-      const path = href.split('#')[0] ?? ''
-      t.attrSet('data-md-link', resolveRelative(opts.dir, path))
+      t.attrSet('data-md-link', resolveRelative(opts.dir, localPath(href)))
       t.attrSet('href', '#')
     }
     return self.renderToken(tokens, idx, options)
@@ -109,7 +154,7 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     } else if (isRemote(src)) {
       if (!opts.allowRemote) return `<span class="md-image-held" title="An image on the web is not loaded here">${escapeHtml(alt || src)}</span>`
     } else {
-      const url = opts.rawUrl?.(resolveRelative(opts.dir, src)) ?? null
+      const url = opts.rawUrl?.(resolveRelative(opts.dir, localPath(src))) ?? null
       if (!url) return `<span class="md-image-held" title="${escapeHtml(src)}">${escapeHtml(alt || src)}</span>`
       t.attrSet('src', url)
     }

@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { renderMarkdown } from '~/utils/markdown'
+import { MERMAID_PURIFY, mermaidFetches, nextMermaidId, renderMarkdown } from '~/utils/markdown'
 /**
  * A Markdown file rendered (#166): the editor's Preview. The HTML is
  * renderMarkdown's (raw HTML never rendered, links and images under its
  * rules), set into the host and then enhanced: fenced code highlighted with
  * shiki in the editor's theme, and Mermaid blocks drawn by Mermaid, loaded
- * only when the file has one (it is large). Mermaid runs with
- * securityLevel strict: no HTML in labels, no `click` directive run; its
- * SVG goes in as it gives it, its bind functions never called. A block
- * Mermaid cannot draw keeps its source with Mermaid's error above it. The
- * theme switch draws the diagrams again. A click on a relative link asks
- * the editor to open that file.
+ * only when the file has one (it is large). A Mermaid diagram reaches the
+ * page three ways short: a source that would load from a URL (an image
+ * node, a url( in its CSS, an HTML element in a label; mermaidFetches) is
+ * not drawn; Mermaid runs with securityLevel strict and a DOMPurify
+ * configuration that forbids every label element and attribute that loads
+ * or navigates (its own forbids only style); and the SVG it gives is
+ * scrubbed of any such element or attribute before it goes in, its bind
+ * functions never called. A block Mermaid cannot draw keeps its source
+ * with Mermaid's error above it. The theme switch draws the diagrams
+ * again. Each pass of enhancement is numbered; a pass overtaken by a later
+ * one, or by the preview going, stops at its next step. A click on a
+ * relative link asks the editor to open that file.
  */
 const props = defineProps<{
   text: string
@@ -27,7 +33,6 @@ const rendered = computed(() => renderMarkdown(props.text, { dir: props.dir, raw
 
 /** Code shiki highlights at most; past it the block stays plain. */
 const HIGHLIGHT_LIMIT = 100_000
-let seq = 0
 let pass = 0
 
 async function enhance() {
@@ -36,6 +41,7 @@ async function enhance() {
   const n = ++pass
   el.innerHTML = rendered.value.html
   await highlightCode(el, n)
+  if (n !== pass) return
   if (rendered.value.mermaid > 0) await drawMermaid(el, n)
 }
 
@@ -74,27 +80,57 @@ async function drawMermaid(el: HTMLElement, n: number) {
   if (!blocks.length) return
   const { default: mermaid } = await import('mermaid')
   if (n !== pass) return
-  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark.value ? 'dark' : 'default', fontFamily: 'inherit' })
+  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', dompurifyConfig: MERMAID_PURIFY, theme: dark.value ? 'dark' : 'default', fontFamily: 'inherit' })
   for (const pre of blocks) {
     if (n !== pass) return
     const source = pre.textContent ?? ''
+    const fetches = mermaidFetches(source)
+    if (fetches) {
+      hold(pre, `This diagram is not drawn: ${fetches}. Diagrams here load nothing from outside the page.`, 'held')
+      continue
+    }
     try {
-      const { svg } = await mermaid.render(`md-mermaid-${++seq}`, source)
+      const { svg } = await mermaid.render(nextMermaidId(), source)
       if (n !== pass) return
       const figure = document.createElement('div')
       figure.className = 'md-diagram'
       figure.setAttribute('data-mermaid-rendered', '')
       figure.innerHTML = svg
+      scrub(figure)
       pre.replaceWith(figure)
     } catch (e) {
       if (n !== pass) return
-      pre.classList.add('md-mermaid-error')
-      pre.setAttribute('data-mermaid-error', '')
-      const note = document.createElement('div')
-      note.className = 'md-error'
-      note.textContent = `Mermaid could not draw this block: ${(e as Error).message || String(e)}`
-      pre.prepend(note)
+      hold(pre, `Mermaid could not draw this block: ${(e as Error).message || String(e)}`, 'error')
     }
+  }
+}
+
+/** Keeps a Mermaid block as its source, with why above it. */
+function hold(pre: HTMLElement, why: string, kind: 'held' | 'error') {
+  pre.classList.add('md-mermaid-error')
+  pre.setAttribute(kind === 'held' ? 'data-mermaid-held' : 'data-mermaid-error', '')
+  const note = document.createElement('div')
+  note.className = 'md-error'
+  note.textContent = why
+  pre.prepend(note)
+}
+
+const LOADING_TAGS = new Set(['image', 'img', 'picture', 'source', 'video', 'audio', 'iframe', 'object', 'embed', 'link', 'use', 'script', 'a', 'form', 'meta', 'base'])
+const URL_ATTRS = ['src', 'srcset', 'href', 'xlink:href', 'poster', 'background', 'action', 'formaction', 'data', 'ping']
+/** Takes out of Mermaid's SVG anything that would load a resource or navigate; a style's url( goes too. The diagram's own style stays. */
+function scrub(root: HTMLElement) {
+  for (const el of Array.from(root.querySelectorAll('*'))) {
+    if (LOADING_TAGS.has(el.localName)) {
+      el.remove()
+      continue
+    }
+    for (const a of URL_ATTRS) {
+      const v = el.getAttribute(a)
+      if (v !== null && !v.startsWith('#')) el.removeAttribute(a)
+    }
+    const style = el.getAttribute('style')
+    if (style && /url\s*\(/i.test(style)) el.setAttribute('style', style.replace(/url\s*\([^)]*\)/gi, 'none'))
+    if (el.localName === 'style' && /url\s*\(|@import/i.test(el.textContent ?? '')) el.textContent = (el.textContent ?? '').replace(/url\s*\([^)]*\)/gi, 'none').replace(/@import[^;]*;?/gi, '')
   }
 }
 
@@ -107,6 +143,9 @@ function onClick(e: MouseEvent) {
 }
 
 onMounted(() => void enhance())
+onBeforeUnmount(() => {
+  pass++
+})
 watch([rendered, dark], () => void nextTick(enhance))
 defineExpose({ focus: () => host.value?.focus() })
 </script>
