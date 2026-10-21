@@ -11,9 +11,13 @@ import { renderMermaidIsolated } from '~/utils/mermaidFrame'
  * securityLevel strict, errors kept out of the document, and a DOMPurify
  * configuration forbidding every label element and attribute that loads or
  * navigates), made at the first diagram on the page. The SVG that comes
- * back is scrubbed once more of anything that would load, navigate or run
- * before it goes in. A block Mermaid cannot draw keeps its source with
- * Mermaid's error above it. The theme switch draws the diagrams again.
+ * back is scrubbed of anything that would load, navigate or run, then
+ * shown as an image (an img with a data URL): a browser loads nothing
+ * from inside an SVG it shows as an image, runs nothing in it, and follows
+ * no link, whatever its CSS says (a custom property holding an image-set,
+ * say, which no scrub would know), so the display is as closed as the
+ * frame. A block Mermaid cannot draw keeps its source with Mermaid's error
+ * above it. The theme switch draws the diagrams again.
  * Each pass of enhancement is numbered; a pass overtaken by a later one,
  * or by the preview going, stops at its next step. A click on a relative
  * link asks the editor to open that file; a `#fragment` link scrolls to
@@ -87,8 +91,7 @@ async function drawMermaid(el: HTMLElement, n: number) {
       const figure = document.createElement('div')
       figure.className = 'md-diagram'
       figure.setAttribute('data-mermaid-rendered', '')
-      figure.innerHTML = svg
-      scrub(figure)
+      figure.append(asImage(svg, source))
       pre.replaceWith(figure)
     } catch (e) {
       if (n !== pass) return
@@ -102,14 +105,40 @@ async function drawMermaid(el: HTMLElement, n: number) {
   }
 }
 
+/**
+ * The SVG Mermaid gave, as an image: parsed the way Mermaid serialised it (as HTML), scrubbed, serialised again as XML (an
+ * image document is parsed strictly) and set as a data URL on an img sized by the diagram's viewBox, so it scales down with
+ * the pane. The alt text is the diagram's first line.
+ */
+function asImage(svg: string, source: string): HTMLImageElement {
+  const tpl = document.createElement('template')
+  tpl.innerHTML = svg
+  const root = tpl.content.querySelector('svg')
+  if (!root) throw new Error('no diagram came back')
+  scrub(root)
+  const img = document.createElement('img')
+  img.alt = `Diagram: ${source.trim().split('\n')[0] ?? ''}`
+  img.decoding = 'async'
+  const vb = (root.getAttribute('viewBox') ?? '').trim().split(/[\s,]+/).map(Number)
+  if (vb.length === 4 && vb[2]! > 0 && vb[3]! > 0) {
+    img.width = Math.ceil(vb[2]!)
+    img.height = Math.ceil(vb[3]!)
+  }
+  img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(root))}`
+  return img
+}
+
 const LOADING_TAGS = new Set(['image', 'img', 'picture', 'source', 'video', 'audio', 'iframe', 'object', 'embed', 'link', 'use', 'script', 'a', 'form', 'meta', 'base'])
 const URL_ATTRS = ['src', 'srcset', 'href', 'xlink:href', 'poster', 'background', 'action', 'formaction', 'data', 'ping']
+/** A url( in CSS that points anywhere but into the document (`url(#marker)` is a diagram's own arrowhead or gradient). */
+const OUTSIDE_URL = /url\s*\(\s*(?!["']?\s*#)[^)]*\)/gi
 /**
  * Takes out of Mermaid's SVG anything that would load a resource, navigate or run: the elements that do, a URL attribute
  * pointing anywhere but into the document, every on* handler, a url( or @import in a style. The diagram's own style stays.
+ * The image display (asImage) is what closes the door; this keeps the SVG honest on its way there.
  */
-function scrub(root: HTMLElement) {
-  for (const el of Array.from(root.querySelectorAll('*'))) {
+function scrub(root: Element) {
+  for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
     if (LOADING_TAGS.has(el.localName)) {
       el.remove()
       continue
@@ -122,8 +151,10 @@ function scrub(root: HTMLElement) {
       if (/^on/i.test(name)) el.removeAttribute(name)
     }
     const style = el.getAttribute('style')
-    if (style && /url\s*\(|@import/i.test(style)) el.setAttribute('style', style.replace(/url\s*\([^)]*\)/gi, 'none').replace(/@import[^;]*;?/gi, ''))
-    if (el.localName === 'style' && /url\s*\(|@import/i.test(el.textContent ?? '')) el.textContent = (el.textContent ?? '').replace(/url\s*\([^)]*\)/gi, 'none').replace(/@import[^;]*;?/gi, '')
+    if (style && (OUTSIDE_URL.test(style) || /@import/i.test(style))) el.setAttribute('style', style.replace(OUTSIDE_URL, 'none').replace(/@import[^;]*;?/gi, ''))
+    OUTSIDE_URL.lastIndex = 0
+    if (el.localName === 'style' && (OUTSIDE_URL.test(el.textContent ?? '') || /@import/i.test(el.textContent ?? ''))) el.textContent = (el.textContent ?? '').replace(OUTSIDE_URL, 'none').replace(/@import[^;]*;?/gi, '')
+    OUTSIDE_URL.lastIndex = 0
   }
 }
 
@@ -259,7 +290,8 @@ defineExpose({ focus: () => host.value?.focus() })
   color: var(--ui-text-muted);
   font-style: italic;
 }
-.md-preview .md-diagram svg {
+.md-preview .md-diagram img {
+  display: block;
   max-width: 100%;
   height: auto;
 }

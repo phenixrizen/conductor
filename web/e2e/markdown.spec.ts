@@ -11,8 +11,9 @@ import { expect, test, type Session } from './fixtures'
 // on PATH). A repository file is untrusted: an image on the web is held, a
 // Mermaid image node fails inside the sandboxed renderer (its frame's policy
 // lets nothing be fetched), an HTML image in a label and a url( in a
-// diagram's CSS are stripped, and the page makes no request outside its own
-// origin while it shows all four. An empty link and a fragment link never
+// diagram's CSS are stripped, every diagram is shown as an image (an img
+// with a data URL, from which a browser loads nothing), and the page makes
+// no request outside its own origin while it shows all four. An empty link and a fragment link never
 // navigate the page. A reload of the source while previewing refreshes the
 // preview. Mermaid draws SVG only in a browser (vitest's node environment
 // has no DOM), so the drawing is checked here.
@@ -125,19 +126,26 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     // come back as SVG; the image node fails there, its URL refused by the frame's policy, and keeps its source with
     // Mermaid's words.
     await expect(preview.locator('.md-image-held')).toHaveText('tracker')
-    await expect(preview.locator('img')).toHaveCount(0)
-    await expect(preview.locator('[data-mermaid-rendered] svg').first()).toBeVisible({ timeout: 30_000 })
+    await expect(preview.locator('img:not([src^="data:image/svg+xml"])')).toHaveCount(0)
+    const diagrams = preview.locator('[data-mermaid-rendered] img[src^="data:image/svg+xml"]')
+    // Each diagram as the browser has it: decoded (a width once the image document parsed) and its SVG text.
+    const drawn = () => diagrams.evaluateAll((els) => els.map((e) => ({ width: (e as HTMLImageElement).naturalWidth, svg: decodeURIComponent((e.getAttribute('src') ?? '').split(',').slice(1).join(',')) })))
+    await expect(diagrams.first()).toBeVisible({ timeout: 30_000 })
     await expect(preview.locator('[data-mermaid-rendered]')).toHaveCount(3, { timeout: 30_000 })
-    await expect(preview.locator('[data-mermaid-rendered]').first()).toContainText('Roundhouse')
+    await expect(diagrams).toHaveCount(3)
+    await expect.poll(async () => (await drawn()).map((d) => d.width > 0)).toEqual([true, true, true])
+    const svgs = await drawn()
+    expect(svgs[0]!.svg).toContain('Roundhouse')
+    for (const d of svgs) {
+      expect(d.svg).toContain('<style')
+      // A url( may point into the document (an arrowhead marker), never outside it. A match shows with what is around it.
+      const bad = /url\s*\(\s*["']?\s*[^#"'\s)]|@import|<image|<a |<script|<foreignObject|\son[a-z]+=/i.exec(d.svg)
+      expect(bad ? d.svg.slice(Math.max(0, bad.index - 80), bad.index + 120) : '').toBe('')
+    }
     await expect(preview.locator('[data-mermaid-error]')).toHaveCount(1, { timeout: 30_000 })
     await expect(preview.locator('[data-mermaid-error]')).toContainText('Mermaid could not draw this block')
     await expect(preview.locator('[data-mermaid-error]')).toContainText('attacker.invalid/node.png')
-    await expect(preview.locator('[data-mermaid-rendered] image, [data-mermaid-rendered] img, [data-mermaid-rendered] a')).toHaveCount(0)
-    const styles = await preview.locator('[data-mermaid-rendered] [style]').evaluateAll((els) => els.map((e) => e.getAttribute('style') ?? '').join('\n'))
-    expect(styles).not.toMatch(/url\s*\(/i)
-    const sheets = await preview.locator('[data-mermaid-rendered] style').evaluateAll((els) => els.map((e) => e.textContent ?? '').join('\n'))
-    expect(sheets).not.toMatch(/url\s*\(|@import|attacker/i)
-    expect(sheets.length).toBeGreaterThan(0)
+    await expect(preview.locator('[data-mermaid-rendered] svg, [data-mermaid-rendered] a, [data-mermaid-rendered] image')).toHaveCount(0)
     const frame = page.locator('iframe[data-mermaid-frame]')
     await expect(frame).toHaveCount(1)
     await expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
@@ -150,22 +158,23 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     expect(new URL(page.url()).hash).toBe('')
     await expect(preview.locator('h2#md-the-table')).toBeInViewport()
     // A relative link opens its file in a tab of its own, previewable in turn; the README's tab keeps its preview; switching
-    // between the two previews (each a diagram of its own) leaves both drawn.
+    // between the two previews at once (their requests to the one frame interleaving) leaves both drawn.
     await preview.locator('a[data-md-link]').click()
     await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
     await expect(area.locator('[data-editor-tab-active]')).toContainText('users.md')
     await expect(toggle).toHaveAttribute('data-editor-preview', 'off')
     await toggle.click()
     await expect(preview.locator('h1')).toHaveText('Users')
-    await expect(preview.locator('[data-mermaid-rendered] svg')).toBeVisible({ timeout: 30_000 })
     await area.locator('[data-editor-tab]', { hasText: 'README.md' }).click()
     await expect(toggle).toHaveAttribute('data-editor-preview', 'on')
     await expect(preview.locator('h1')).toHaveText('Signals')
-    await expect(preview.locator('[data-mermaid-rendered] svg').first()).toBeVisible({ timeout: 30_000 })
+    await expect(diagrams).toHaveCount(3, { timeout: 30_000 })
+    await expect.poll(async () => (await drawn()).map((d) => d.width > 0)).toEqual([true, true, true])
     await area.locator('[data-editor-tab]', { hasText: 'users.md' }).click()
     await expect(preview.locator('h1')).toHaveText('Users')
-    await expect(preview.locator('[data-mermaid-rendered] svg')).toBeVisible({ timeout: 30_000 })
-    await expect(preview.locator('[data-mermaid-rendered]')).toContainText('who is free?')
+    await expect(diagrams).toHaveCount(1, { timeout: 30_000 })
+    await expect.poll(async () => (await drawn()).map((d) => d.width > 0)).toEqual([true])
+    expect((await drawn())[0]!.svg).toContain('who is free?')
     // Alt+P in the preview brings the source back; Alt+P in the text (Monaco's own action: Monaco keeps a chord it sees from the
     // page) shows the preview again, and once more the source.
     await preview.click()

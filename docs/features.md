@@ -2089,12 +2089,19 @@ tool, and Conductor offered it as Goose.
   the notices as a worker's are). There Mermaid runs with `securityLevel:
   strict`, errors kept out of the document, and a DOMPurify configuration
   forbidding every label element and attribute that loads or navigates
-  (`mermaidRules.ts`; Mermaid's own forbids only `style`). The page gets
-  the SVG as a string and scrubs it once more of anything that would load,
-  navigate or run before it goes in, its bind functions never called. A
-  scan of the source was tried first and dropped: Mermaid loads an image
-  node's URL while it measures it, and a quoted key or a JSON escape slips
-  any regular expression. A render pass overtaken by a later one or by the
+  (`mermaidRules.ts`; Mermaid's own forbids only `style`), labels as SVG
+  text rather than HTML, and takes the page's requests one after another
+  (Mermaid queues renders of its own accord, and a cleanup beside the next
+  render would take its container away). The page gets the SVG as a
+  string, scrubs it of anything that would load, navigate or run, and
+  shows it as an image (an `img` with a data URL, sized by the viewBox):
+  a browser loads nothing from inside an SVG it shows as an image, runs
+  nothing in it and follows no link, whatever its CSS says, so the display
+  is as closed as the frame (a scrub of CSS was tried and dropped: a custom
+  property holding an `image-set()` is one of many spellings no scrub
+  knows). A scan of the source was tried first and dropped too: Mermaid
+  loads an image node's URL while it measures it, and a quoted key or a
+  JSON escape slips any regular expression. A render pass overtaken by a later one or by the
   preview going stops at its next step; a change to the editor's model
   while previewing (a reload after a save conflict) refreshes the preview.
   A `[words]()` link with no destination is no link; a `#fragment` link
@@ -2108,10 +2115,11 @@ tool, and Conductor offered it as Goose.
   the heading ids, the Mermaid marks), `editorTabs.test.ts` (the toggle per
   tab), `nvimKeys.test.ts` (Alt+P kept); Playwright `markdown.spec.ts` (a
   README with a table, a task list, a script shown as text, an image on the
-  web held, a flowchart drawn, an image node failing in the frame, a url(
-  in theme CSS and an HTML image in a label stripped, no request outside the page's
-  origin, the frame sandboxed, an empty and a fragment link not navigating,
-  a link opening its file, two previews switched between, the source back
+  web held, a flowchart drawn as an image the browser decoded, an image
+  node failing in the frame, a url( in theme CSS and an HTML image in a
+  label stripped, no request outside the page's origin, the frame
+  sandboxed, an empty and a fragment link not navigating, a link opening
+  its file, two previews switched between at once, the source back
   by Alt+P from the preview and the text, a reload during preview, and
   Neovim on where nvim is on PATH). Mermaid's SVG is not drawn in vitest's
   node environment, so the drawing is checked in the browser.
