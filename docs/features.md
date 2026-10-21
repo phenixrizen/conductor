@@ -1269,9 +1269,12 @@ request each from main.
   click), which is the owner's call, and the last Bash change was checked
   on Linux, not in a full e2e run on the Mac. The e2e harness needs Bash 4 or later with
   a numeric microsecond clock, finds one on the PATH for its stub agents,
-  and stops at once without one. The one Mac failure that is the product's
-  is #285: with `ice.publicIp` set, a host's IPv6 addresses are still
-  advertised. Two test races (`credential_test`'s begun write, the serve
+  and stops at once without one. The one Mac failure that was the product's
+  was #285: with `ice.publicIp` set, a host's IPv6 addresses were still
+  advertised beside it, since the rewrite rule replaces the address's own
+  family alone; the peers now gather on that family alone (the mux shown
+  through `familyMux`, the network types narrowed), and the mirror case, an
+  IPv6 address given on an IPv4 machine, is tested on every machine. Two test races (`credential_test`'s begun write, the serve
   test's terminal) were reproduced under load and fixed in the tests. `make
   preflight` runs CI's checks on this machine, Linux, from the committed
   head, and writes a receipt with a log per step under the git common

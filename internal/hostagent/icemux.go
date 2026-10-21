@@ -60,22 +60,59 @@ func udpMuxFor(port int) (ice.UDPMux, error) {
 	return m, nil
 }
 
-// applyICE configures se as c says.
+// applyICE configures se as c says. Without PublicIP the peers gather on
+// IPv4 and IPv6 alike. With it they gather on its family alone: the rewrite
+// rule replaces the host candidates of that family with the address, and
+// one of the other family would pass through as the interface's own
+// address, which the option is there to keep out of the SDP. The mux lists
+// the addresses of both families whatever the network types say, so with
+// PublicIP it is shown through familyMux.
 func applyICE(se *webrtc.SettingEngine, c ICE) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	types := []webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6}
+	var public netip.Addr
+	if c.PublicIP != "" {
+		public = netip.MustParseAddr(c.PublicIP).Unmap()
+		types = []webrtc.NetworkType{webrtc.NetworkTypeUDP6}
+		if public.Is4() {
+			types = []webrtc.NetworkType{webrtc.NetworkTypeUDP4}
+		}
+	}
+	se.SetNetworkTypes(types)
 	if c.UDPPort > 0 {
 		m, err := udpMuxFor(c.UDPPort)
 		if err != nil {
 			return err
 		}
+		if public.IsValid() {
+			m = familyMux{UDPMux: m, v4: public.Is4()}
+		}
 		se.SetICEUDPMux(m)
 	}
-	if c.PublicIP != "" {
+	if public.IsValid() {
 		// The host candidates carry the forwarder's address in place of the
 		// interfaces' own (pion's NAT 1:1 as a rewrite rule).
-		return se.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{External: []string{c.PublicIP}, AsCandidateType: webrtc.ICECandidateTypeHost, Mode: webrtc.ICEAddressRewriteReplace})
+		return se.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{External: []string{public.String()}, AsCandidateType: webrtc.ICECandidateTypeHost, Mode: webrtc.ICEAddressRewriteReplace})
 	}
 	return nil
+}
+
+// familyMux is a mux as one address family sees it: its listen addresses
+// of that family alone, so the peers gather host candidates on no other.
+// The socket beneath stays as it is, open to both.
+type familyMux struct {
+	ice.UDPMux
+	v4 bool
+}
+
+func (m familyMux) GetListenAddresses() []net.Addr {
+	var out []net.Addr
+	for _, a := range m.UDPMux.GetListenAddresses() {
+		if u, ok := a.(*net.UDPAddr); ok && (u.IP.To4() != nil) == m.v4 {
+			out = append(out, a)
+		}
+	}
+	return out
 }

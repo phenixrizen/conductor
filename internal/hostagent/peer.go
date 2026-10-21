@@ -105,7 +105,6 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 		cfg.ICEServers = append(cfg.ICEServers, webrtc.ICEServer{URLs: s.URLs, Username: s.Username, Credential: s.Credential})
 	}
 	se := webrtc.SettingEngine{}
-	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4, webrtc.NetworkTypeUDP6})
 	if err := applyICE(&se, p.a.opts.ICE); err != nil {
 		return err
 	}

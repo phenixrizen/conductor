@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/phenixrizen/conductor/internal/proto"
@@ -83,10 +84,76 @@ func testAgent(t *testing.T, opts Options) (*agent, chan any) {
 	return a, out
 }
 
+// fakeMux is a mux that lists the addresses it is given.
+type fakeMux struct {
+	ice.UDPMux
+	addrs []net.Addr
+}
+
+func (m fakeMux) GetListenAddresses() []net.Addr { return m.addrs }
+
+// A mux seen through one family lists that family's addresses alone; a
+// 4-in-6 address counts as IPv4, as the dial treats it.
+func TestFamilyMuxListsOneFamily(t *testing.T) {
+	var addrs []net.Addr
+	for _, s := range []string{"127.0.0.1", "10.0.0.5", "::1", "fd00::1", "::ffff:192.0.2.1"} {
+		addrs = append(addrs, &net.UDPAddr{IP: net.ParseIP(s), Port: 9})
+	}
+	list := func(v4 bool) string {
+		var out []string
+		for _, a := range (familyMux{UDPMux: fakeMux{addrs: addrs}, v4: v4}).GetListenAddresses() {
+			out = append(out, a.(*net.UDPAddr).IP.String())
+		}
+		return strings.Join(out, " ")
+	}
+	if got := list(true); got != "127.0.0.1 10.0.0.5 192.0.2.1" {
+		t.Errorf("IPv4: %q", got)
+	}
+	if got := list(false); got != "::1 fd00::1" {
+		t.Errorf("IPv6: %q", got)
+	}
+}
+
+// With a public address of the other family than the interfaces' (an IPv6
+// one on a machine with IPv4 addresses, as the Mac's IPv6 addresses are to
+// an IPv4 forwarder's), the host candidates are still that address alone:
+// the interfaces' own addresses, which the rewrite rule leaves as they
+// are, are not gathered. The loopback address of the given family is
+// enough to gather one candidate from.
+func TestICEWithAPublicAddressOfTheOtherFamilyAdvertisesItAlone(t *testing.T) {
+	port := freeUDPPort(t)
+	a, out := testAgent(t, Options{ICE: ICE{UDPPort: port, PublicIP: "2001:db8::9"}})
+	p := newPeer(a, "0123456789abcdef", session.RoleControl, "", "", true)
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	viewer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { viewer.Close() })
+	if _, err := viewer.CreateDataChannel("term", nil); err != nil {
+		t.Fatal(err)
+	}
+	offer, _ := viewer.CreateOffer(nil)
+	_ = viewer.SetLocalDescription(offer)
+	if err := p.handleOffer(offer.SDP); err != nil {
+		t.Fatal(err)
+	}
+	cands := hostCandidates(t, out)
+	for _, c := range cands {
+		if c != "2001:db8::9:"+strconv.Itoa(port) {
+			t.Fatalf("host candidate %s, want 2001:db8::9:%d (all: %v)", c, port, cands)
+		}
+	}
+}
+
 // With a UDP port and a public address, every host candidate the peer
 // advertises carries that address and that port, whatever the interfaces
-// say; with the port alone, a viewer still connects through the mux, and
-// two peers share it.
+// say (on a machine with IPv6 addresses too: they are not gathered); with
+// the port alone, a viewer still connects through the mux, and two peers
+// share it.
 func TestICEOnOneUDPPortAdvertisesTheGivenAddress(t *testing.T) {
 	port := freeUDPPort(t)
 	a, out := testAgent(t, Options{ICE: ICE{UDPPort: port, PublicIP: "203.0.113.9"}})
