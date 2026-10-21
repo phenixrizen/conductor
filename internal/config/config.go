@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -394,15 +395,12 @@ func urlPort(u *url.URL) int {
 
 // listenerTakes reports whether a dial of host:port lands on a listener at
 // addr (as net.Listen takes it): the same port (a service name read as the
-// standard library reads it), at a host the listener accepts. A listener on
-// all addresses (no host, 0.0.0.0, ::) accepts localhost and the loopback
-// addresses. One on localhost, 127.0.0.1 or ::1 (localhost's addresses)
-// accepts localhost and those addresses; one on another loopback address,
-// such as 127.0.0.2, accepts that address alone. These accept an
-// unspecified host too (none, 0.0.0.0, ::), which dials localhost's
-// addresses, except one on another loopback address. One on any other
-// address or name accepts that alone. A listener on port 0 accepts nothing:
-// its port is the kernel's choice.
+// standard library reads it), and an address the dial may reach
+// (dialedAddrs) that the listener has. A listener on all addresses (no
+// host, 0.0.0.0, ::) has every loopback address; one on localhost has
+// 127.0.0.1, since net.Listen takes a name's first IPv4 address; one on an
+// address has that address, and one on another name that name alone. A
+// listener on port 0 takes nothing: its port is the kernel's choice.
 func listenerTakes(addr, host string, port int) bool {
 	lhost, lport, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -411,32 +409,43 @@ func listenerTakes(addr, host string, port int) bool {
 	if p, err := net.LookupPort("tcp", lport); err != nil || p == 0 || p != port {
 		return false
 	}
-	dest, derr := netip.ParseAddr(host)
-	dest = dest.Unmap()
-	unspecified := host == "" || derr == nil && dest.IsUnspecified()
-	l, lerr := netip.ParseAddr(lhost)
-	l = l.Unmap()
-	switch {
-	case lhost == "" || lerr == nil && l.IsUnspecified():
-		return unspecified || LoopbackHost(host)
-	case strings.EqualFold(lhost, "localhost"):
-		// localhost is 127.0.0.1 or ::1, whichever the listener got.
-		return unspecified || strings.EqualFold(host, "localhost") || derr == nil && localhostAddr(dest)
-	case lerr == nil && l.IsLoopback():
-		if derr == nil && dest == l {
-			return true
-		}
-		return localhostAddr(l) && (unspecified || strings.EqualFold(host, "localhost"))
-	case lerr == nil:
-		return derr == nil && dest == l
+	dests := dialedAddrs(host)
+	if strings.EqualFold(lhost, "localhost") {
+		lhost = "127.0.0.1"
 	}
-	return strings.EqualFold(lhost, host)
+	if lhost == "" {
+		return slices.ContainsFunc(dests, netip.Addr.IsLoopback)
+	}
+	l, err := netip.ParseAddr(lhost)
+	if err != nil {
+		return strings.EqualFold(lhost, host)
+	}
+	if l = l.Unmap(); l.IsUnspecified() {
+		return slices.ContainsFunc(dests, netip.Addr.IsLoopback)
+	}
+	return slices.Contains(dests, l)
 }
 
-// localhostAddr reports whether a is one of the addresses localhost
-// resolves to: 127.0.0.1 or ::1.
-func localhostAddr(a netip.Addr) bool {
-	return a == netip.AddrFrom4([4]byte{127, 0, 0, 1}) || a == netip.IPv6Loopback()
+// dialedAddrs is where on this machine a dial of host may land: for
+// localhost (or no host) localhost's addresses, 127.0.0.1 and ::1; for an
+// unspecified address its family's loopback address; for any other address
+// that address; for any other name nothing known.
+func dialedAddrs(host string) []netip.Addr {
+	v4, v6 := netip.AddrFrom4([4]byte{127, 0, 0, 1}), netip.IPv6Loopback()
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return []netip.Addr{v4, v6}
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil
+	}
+	switch a = a.Unmap(); a {
+	case netip.IPv4Unspecified():
+		return []netip.Addr{v4}
+	case netip.IPv6Unspecified():
+		return []netip.Addr{v6}
+	}
+	return []netip.Addr{a}
 }
 
 // ACME challenges.
