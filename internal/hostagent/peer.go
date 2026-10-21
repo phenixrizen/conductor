@@ -451,9 +451,18 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 		h, part, err := proto.DecodeFileWrite(f.Payload)
 		if err != nil {
 			// A part that cannot be read names no save to answer: a protocol
-			// error, so the viewer is let go with the error, as one whose
-			// hello cannot be read is. No client of Conductor's sends one.
-			p.a.sendViewerError(p.id, proto.ErrCodeBadFrame, "malformed file write")
+			// error. The viewer is let go with the error through the server,
+			// as one whose hello cannot be read is (the server closes it and
+			// tells this host it left); a peer no server serves (a paste
+			// invite's) is told on its data channel and closed here, the
+			// save under way dropped with it. No client of Conductor's sends
+			// such a part.
+			if !p.a.sendViewerError(p.id, proto.ErrCodeBadFrame, "malformed file write") {
+				if via != nil {
+					_ = via.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
+				}
+				p.close()
+			}
 			return
 		}
 		p.saveIn(sub, h, part)

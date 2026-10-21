@@ -1606,14 +1606,21 @@ func (a *agent) sendRelayWithin(viewerID string, frame []byte, gone <-chan struc
 // the connection, and waiting as long as the connection lasts and the
 // viewer is there (tell), the first of a viewer's alone, for the first
 // closes it. One for a viewer that has left goes nowhere.
-func (a *agent) sendViewerError(viewerID, code, msg string) {
+// It reports whether the server is told (or was, by the viewer's first):
+// false for a viewer this agent does not know, a paste invite's peer, which
+// no server serves and which tells and lets the viewer go itself.
+func (a *agent) sendViewerError(viewerID, code, msg string) bool {
 	p := a.peer(viewerID)
-	if p == nil || !p.erred.CompareAndSwap(false, true) {
-		return
+	if p == nil {
+		return false
+	}
+	if !p.erred.CompareAndSwap(false, true) {
+		return true
 	}
 	go func() {
 		_ = a.tell(proto.ViewerError{T: proto.HostViewerError, ViewerID: viewerID, Code: code, Message: msg}, p.left)
 	}()
+	return true
 }
 
 // tell is send for a message the server must have while the connection

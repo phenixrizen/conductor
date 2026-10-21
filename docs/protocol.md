@@ -1627,8 +1627,9 @@ that cannot be read (a header past 4 KiB, or one that does not parse) names
 no save to answer and is a protocol error: the owner sends
 `error{bad_frame, "malformed file write"}` and closes the connection (1002),
 a host letting the viewer go with that error as it does one whose hello
-cannot be read; no client of Conductor's sends one (the editor refuses such
-a part before sending it).
+cannot be read (a paste invite's viewer, which no server serves, is told on
+its data channel and the channel closed); no client of Conductor's sends
+one (the editor refuses such a part before sending it).
 When the last part arrives the owner resolves `path` as a read does (the same
 deny list), and refuses with a FILE frame of kind `error` and code
 `changed_on_disk` when the file's sha256 is not `baseSha256` (the read's),

@@ -1239,3 +1239,90 @@ func TestAForgottenRunRevokesItsLinksAtTheRendezvous(t *testing.T) {
 		t.Fatalf("records kept of the forgotten run's links: %v", links)
 	}
 }
+
+// heldMintPublisher publishes every session as a publication whose run link
+// mints wait for a gate, and which records the links it is asked to revoke.
+type heldMintPublisher struct{ h *heldMint }
+
+type heldMint struct {
+	minting chan struct{} // closed as the first mint begins
+	gate    chan struct{} // the mint returns once closed
+	once    sync.Once
+	mu      sync.Mutex
+	revoked []string
+}
+
+func (p heldMintPublisher) Publish(_ context.Context, local *session.Local) (PublishedSession, error) {
+	return &heldMintPublication{gatedPublication: gatedPublication{id: "there-" + local.Info().ID, done: make(chan struct{})}, h: p.h}, nil
+}
+
+func (p heldMintPublisher) Server() string { return "https://rendezvous.example.net" }
+
+type heldMintPublication struct {
+	gatedPublication
+	h *heldMint
+}
+
+func (p *heldMintPublication) RunLink(ctx context.Context, role string, _ time.Duration, label string, g proto.RunGroup) (proto.LinkCreated, error) {
+	p.h.once.Do(func() { close(p.h.minting) })
+	select {
+	case <-p.h.gate:
+	case <-ctx.Done():
+		return proto.LinkCreated{}, ctx.Err()
+	}
+	return proto.LinkCreated{LinkID: "late-link", Role: role, Label: label, RunID: g.ID, URL: p.Base() + "/join/token"}, nil
+}
+
+func (p *heldMintPublication) Revoke(_ context.Context, linkID string) error {
+	p.h.mu.Lock()
+	defer p.h.mu.Unlock()
+	p.h.revoked = append(p.h.revoked, linkID)
+	return nil
+}
+
+// A run link minted at the rendezvous while the engine forgets the run (the
+// forget between the run's check and the mint's answer) is not left there
+// unmanaged: it is recorded only while the engine keeps the run, else
+// revoked there at once, and the request is answered as a forgotten run's
+// (Codex's review of #148's change).
+func TestALinkMintedAsTheRunIsForgottenIsRevokedAtOnce(t *testing.T) {
+	local := newTestEnv(t, nil)
+	h := &heldMint{minting: make(chan struct{}), gate: make(chan struct{})}
+	local.srv.SetPublisher(heldMintPublisher{h})
+	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	type reply struct {
+		status int
+		out    map[string]any
+	}
+	answered := make(chan reply, 1)
+	go func() {
+		resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+		answered <- reply{resp.StatusCode, out}
+	}()
+	select {
+	case <-h.minting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the mint never began")
+	}
+	local.srv.runs.ForgetForTest(runID)
+	close(h.gate)
+	var got reply
+	select {
+	case got = <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request was never answered")
+	}
+	if got.status != http.StatusNotFound || !strings.Contains(fmt.Sprint(got.out), "not_found") {
+		t.Fatalf("the link request after the run was forgotten: %d %v", got.status, got.out)
+	}
+	h.mu.Lock()
+	revoked := append([]string(nil), h.revoked...)
+	h.mu.Unlock()
+	if fmt.Sprint(revoked) != "[late-link]" {
+		t.Fatalf("revoked at the rendezvous: %v", revoked)
+	}
+	if links := local.srv.remoteRunLinksOf(runID); len(links) != 0 {
+		t.Fatalf("records kept of the forgotten run's links: %v", links)
+	}
+}
