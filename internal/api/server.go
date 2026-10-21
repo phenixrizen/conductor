@@ -83,6 +83,12 @@ type Server struct {
 	// of one conversation at once make one session (#126). Under resumingMu.
 	resumingMu sync.Mutex
 	resuming   map[string]struct{}
+	// recordMarks are the continuations of records resumed (source to
+	// continuation) whose mark on the record (ResumedBy) could not be
+	// written: the claim stands in memory, a second resume answering the
+	// continuation and trying the mark again (resumeRecord). Under
+	// resumingMu.
+	recordMarks map[string]string
 	// journaling holds the runs whose record is about to be written again
 	// (scheduleJournal), under journalMu.
 	journalMu  sync.Mutex

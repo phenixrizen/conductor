@@ -2072,3 +2072,58 @@ func TestAForgottenRunsRecordNamesItsContinuation(t *testing.T) {
 	}
 	e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil)
 }
+
+// A run forgotten keeps its chat in its record: the record written as it
+// goes is the whole of it (Codex's review of #153's change). And a held
+// run's continuation has its record as its resume answers.
+func TestAForgottenRunsRecordKeepsItsChat(t *testing.T) {
+	e := newTestEnv(t, nil)
+	runID := e.launchCrew(t, "chat kept", catMember("solo", "immediately"))
+	sid := e.waitRunning(t, runID, "solo")
+	v := dialViewer(t, e, sid, adminToken)
+	v.hello(80, 24)
+	v.expectControl(proto.CtlReady)
+	v.send(proto.MustControl(proto.ChatPost{T: proto.CtlChat, Scope: proto.ChatScopeRun, Text: "kept in the record?", Nonce: "k1"}))
+	v.expectChat(proto.ChatKindMessage)
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rec, ok, _ := e.srv.records.Get(runID); ok && rec.StoppedAt != nil && len(rec.Chat) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			rec, ok, _ := e.srv.records.Get(runID)
+			t.Fatalf("no stopped record with the chat: %v %d messages", ok, len(rec.Chat))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	resp, out := e.do("POST", "/api/runs/"+runID+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume: %d %v", resp.StatusCode, out)
+	}
+	next := out["run"].(map[string]any)["id"].(string)
+	if _, ok, _ := e.srv.records.Get(next); !ok {
+		t.Fatal("the continuation has no record as its resume answers")
+	}
+	e.srv.runs.ForgetForTest(runID)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	e.srv.runs.WaitRecorded(ctx)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		rec, ok, _ := e.srv.records.Get(runID)
+		if ok && rec.ResumedBy == next {
+			if !slices.ContainsFunc(rec.Chat, func(m proto.ChatMessage) bool { return m.Text == "kept in the record?" }) {
+				t.Fatalf("the forgotten run's record lost its chat: %+v", rec.Chat)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the forgotten run's record: %v %q", ok, rec.ResumedBy)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil)
+}

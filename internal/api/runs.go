@@ -557,23 +557,66 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + rec.ResumedBy, "run": rec.ResumedBy}})
 		return true
 	}
+	if by := s.recordMark(id); by != "" {
+		// Resumed already, its mark not yet on the record: tried again, and
+		// the continuation named.
+		s.markRecord(rec, by)
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + by, "run": by}})
+		return true
+	}
 	run, err := s.runs.ResumeRecord(ctx, rec)
 	if err != nil {
 		s.runError(w, "resume run from its record", id, err)
 		return true
 	}
-	s.runs.Journal(run.ID)
-	wctx, cancel := context.WithTimeout(ctx, recordsGrace)
-	if !s.runs.WaitRecorded(wctx) {
-		s.log.Warn("the continuation's record is still being written", "run", run.ID)
-	}
-	cancel()
-	rec.ResumedBy = run.ID
-	if err := s.records.Save(rec); err != nil {
-		s.log.Warn("run record not saved", "run", id, "err", err)
-	}
+	s.recordContinuation(ctx, run.ID)
+	s.markRecord(rec, run.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
 	return true
+}
+
+// recordContinuation writes the record of a run just made by a resume and
+// waits for it (recordsGrace at most, under ctx): the source's mark
+// (resumedBy) follows it, never the other way round.
+func (s *Server) recordContinuation(ctx context.Context, runID string) {
+	if s.records == nil {
+		return
+	}
+	s.runs.Journal(runID)
+	wctx, cancel := context.WithTimeout(ctx, recordsGrace)
+	defer cancel()
+	if !s.runs.WaitRecorded(wctx) {
+		s.log.Warn("the continuation's record is still being written", "run", runID)
+	}
+}
+
+// markRecord marks the record rec with its continuation by (ResumedBy) and
+// writes it. A write that fails leaves the claim in memory (recordMarks),
+// for the next resume of the record to answer the continuation and try
+// again, so a failed write never lets a record be resumed twice.
+func (s *Server) markRecord(rec crew.Run, by string) {
+	s.resumingMu.Lock()
+	if s.recordMarks == nil {
+		s.recordMarks = map[string]string{}
+	}
+	s.recordMarks[rec.ID] = by
+	s.resumingMu.Unlock()
+	rec.ResumedBy = by
+	if err := s.records.Save(rec); err != nil {
+		s.log.Warn("run record not marked with its continuation; the mark is kept here", "run", rec.ID, "continuation", by, "err", err)
+		return
+	}
+	s.resumingMu.Lock()
+	delete(s.recordMarks, rec.ID)
+	s.resumingMu.Unlock()
+}
+
+// recordMark is the continuation a record was resumed as whose mark is not
+// on the record yet, "" for none.
+func (s *Server) recordMark(id string) string {
+	s.resumingMu.Lock()
+	defer s.resumingMu.Unlock()
+	return s.recordMarks[id]
 }
 
 // handleResumeRun starts a new run of a stopped run's crew in which every
@@ -590,6 +633,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		if s.resumeRecord(w, ctx, id) {
 			return
 		}
+	}
+	if err == nil {
+		// Its record first, before the source's journal can name it: the
+		// source never names a run no record holds.
+		s.recordContinuation(ctx, run.ID)
 	}
 	var resumed *crew.RunResumedError
 	if errors.As(err, &resumed) {

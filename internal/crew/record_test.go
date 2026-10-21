@@ -324,3 +324,29 @@ func TestARecordsOpenMarksASourceWithItsContinuation(t *testing.T) {
 		t.Fatalf("the source after the open: %v %+v", ok, got)
 	}
 }
+
+// The records open with a source naming a continuation no record holds
+// (the server ended between the source's mark and the continuation's
+// record) cleared of the mark, so that it can be resumed (#153).
+func TestARecordsOpenClearsAMarkNamingNoRecord(t *testing.T) {
+	rs, runsDir := newRecords(t)
+	at := time.Now().UTC()
+	source := Run{ID: "crew-0000cccc", CrewID: "crew", Name: "Crew", State: RunStopped, StartedAt: at.Add(-time.Hour), StoppedAt: &at, ResumedBy: "crew-0000dddd",
+		Members: []MemberState{{Name: "a", AgentID: "cat", Status: MemberEnded}}}
+	if err := rs.Save(source); err != nil {
+		t.Fatal(err)
+	}
+	rs.Close()
+	st, err := store.Open(filepath.Dir(runsDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewRecords(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(again.Close)
+	if got, ok, _ := again.Get(source.ID); !ok || got.ResumedBy != "" {
+		t.Fatalf("the source after the open: %v %q", ok, got.ResumedBy)
+	}
+}

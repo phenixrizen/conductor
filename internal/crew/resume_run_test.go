@@ -336,3 +336,48 @@ func TestTheSourceOfAResumeIsNotEvictedBeforeItIsMarked(t *testing.T) {
 		t.Fatal("the next idle run was kept: nothing was evicted for the continuation")
 	}
 }
+
+// A run stopped while a resumed member waits for its session to be ready
+// ends that member with the stop (nothing of a completed stop is left
+// starting), so the member is resumed again afterwards and the run can be
+// evicted (Codex's review of #153's change).
+func TestAStopDuringAResumedMembersReadinessWaitEndsIt(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	var gating atomic.Bool
+	e.await = func(ctx context.Context, l *session.Local, held func(string)) error {
+		if !gating.Load() {
+			return awaitReady(ctx, l, held)
+		}
+		select {
+		case <-l.Ended():
+			return session.ErrSessionEnded
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	lead, p := fl.member("lead")
+	p.End(0)
+	<-lead.Ended()
+	gating.Store(true)
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", "3f80c8bd-0000-4000-8000-000000000001"); err != nil {
+		t.Fatal(err)
+	}
+	if m := memberState(t, e, run.ID, "lead"); m.Status != MemberStarting {
+		t.Fatalf("before the stop: %+v", m)
+	}
+	stopRun(t, e, run.ID)
+	if m := waitStatus(t, e, run.ID, "lead", MemberEnded, 5*time.Second); m.Ended == nil {
+		t.Fatalf("after the stop: %+v", m)
+	}
+	gating.Store(false)
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", ""); err != nil {
+		t.Fatalf("resumed again after the stop: %v", err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+}

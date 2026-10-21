@@ -43,11 +43,12 @@ const maxRecordSize = 4 << 20
 // of the runs that were running when the server last stopped (journaled
 // since their launch, never ended) are marked interrupted, their sessions
 // gone with that server, never relaunched on their own (a resume from the
-// record is the person's, ResumeRecord); and a record whose continuation
-// (a run resumed from it, ResumedFrom) has a record while it does not name
-// one (the server ended between the two writes) is marked with it, so that
-// it is not resumed twice. A record that cannot be read or marked is left
-// as it is.
+// record is the person's, ResumeRecord); a record whose continuation (a run
+// resumed from it, ResumedFrom) has a record while it does not name one
+// (the server ended between the two writes) is marked with it, so that it
+// is not resumed twice; and a record naming a continuation no record holds
+// (the server ended the other way round) has the mark cleared, so that it
+// can be resumed. A record that cannot be read or marked is left as it is.
 func NewRecords(st *store.Store) (*Records, error) {
 	sub, err := st.Sub("runs")
 	if err != nil {
@@ -95,6 +96,14 @@ func (rs *Records) reconcile() error {
 			if j, ok := byID[from]; ok && files[j].run.ResumedBy == "" {
 				files[j].run.ResumedBy = f.run.ID
 				changed[j] = true
+			}
+		}
+	}
+	for i, f := range files {
+		if by := f.run.ResumedBy; f.ok && by != "" {
+			if _, ok := byID[by]; !ok {
+				files[i].run.ResumedBy = ""
+				changed[i] = true
 			}
 		}
 	}
@@ -341,14 +350,18 @@ func (e *Engine) Journal(runID string) {
 	}
 }
 
-// JournalRun saves r, a snapshot the engine handed out (OnForget's: the run
-// as it last was, which no end follows), brought up to date as a read is
-// (refresh), through the records RecordEnds wired; nothing without them.
-// It takes no engine lock.
+// JournalRun saves r, a snapshot the engine handed out (a forgotten run's:
+// the run as it last was, which no end follows), brought up to date as a
+// read is (refresh), through the records RecordEnds wired; nothing without
+// them. It takes its place in the saves under endMu, as Journal and the
+// ends do, so a snapshot an earlier Journal took of the same run never
+// lands after it. It takes no engine lock.
 func (e *Engine) JournalRun(r Run) {
 	if e.journal == nil {
 		return
 	}
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
 	e.refresh(&r)
 	e.journal(r)
 }

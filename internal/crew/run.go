@@ -1060,6 +1060,16 @@ func (e *Engine) settle(r *run, m *member, local *session.Local) {
 		e.endedEarly(r, m, local, "before it was ready again")
 		return
 	case err != nil && !errors.Is(err, errNotReady):
+		// The run stopped while it waited: the stop ends its session, and
+		// the member ends here, so that nothing of a completed stop is
+		// left starting (which a resume refuses and eviction waits for).
+		now := time.Now().UTC()
+		e.mu.Lock()
+		if m.state.Status == MemberStarting && m.state.SessionID == local.Info().ID {
+			m.state.Status, m.state.Ended = MemberEnded, &now
+			r.touch()
+		}
+		e.mu.Unlock()
 		return
 	}
 	e.mu.Lock()
@@ -1407,7 +1417,7 @@ func (e *Engine) journalForgotten(r *run) {
 	if e.journal == nil {
 		return
 	}
-	snap := r.snapshot(false, false)
+	snap := r.snapshot(false, true) // with its chat: the record is the whole of it
 	go e.JournalRun(snap)
 }
 
@@ -1735,10 +1745,11 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		err = ErrRunStopped
 	case m.state.Status == MemberPending:
 		err = ErrMemberRunning
-	case m.state.Status == MemberStarting:
+	case m.state.Status == MemberStarting && !e.ended(m):
 		// Marked starting by a resume under way, its ended session's id
 		// still on it: a second resume meanwhile is refused, not started
-		// beside it.
+		// beside it. One left starting by a session that ended (a stop
+		// during its readiness wait) is resumed.
 		err = ErrMemberRunning
 	case m.state.Status != MemberEnded && !e.ended(m):
 		err = ErrMemberRunning
