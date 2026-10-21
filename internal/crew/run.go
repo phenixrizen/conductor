@@ -67,12 +67,13 @@ const (
 	readyCap   = 60 * time.Second       // after this the prompt is typed anyway
 )
 
+// maxRuns is how many runs the engine keeps: a launch past it forgets the
+// oldest run with nothing running. A variable, so that a test may lower it.
+var maxRuns = 100
+
 const (
 	// maxRunLog bounds a run's log.
 	maxRunLog = 200
-	// maxRuns is how many runs the engine keeps: a launch past it forgets
-	// the oldest run with nothing running.
-	maxRuns = 100
 	// diffTTL is how long GetWithDiffs keeps a member's diff.
 	diffTTL = 10 * time.Second
 	// typedBy is the name what a run types into a session is recorded by.
@@ -1348,6 +1349,7 @@ func (e *Engine) abort(r *run) {
 	defer cancel()
 	_ = e.stop(ctx, r)
 	e.mu.Lock()
+	e.journalForgotten(r)
 	e.forget(r)
 	e.mu.Unlock()
 }
@@ -1358,10 +1360,13 @@ func (e *Engine) abort(r *run) {
 // The caller holds e.mu.
 func (e *Engine) evict() {
 	for len(e.order) >= maxRuns {
-		i := slices.IndexFunc(e.order, func(r *run) bool { return !r.launching && e.idle(r) })
+		// A run being resumed stays until its continuation names it
+		// (resumedBy), or it would be forgotten with its record unmarked.
+		i := slices.IndexFunc(e.order, func(r *run) bool { return !r.launching && !r.resuming && e.idle(r) })
 		if i < 0 {
 			return
 		}
+		e.journalForgotten(e.order[i])
 		e.forget(e.order[i])
 	}
 }
@@ -1389,8 +1394,21 @@ func (e *Engine) ForgetForTest(runID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if r, ok := e.runs[runID]; ok {
+		e.journalForgotten(r)
 		e.forget(r)
 	}
+}
+
+// journalForgotten writes r's record once more as it is forgotten (evict,
+// abort, ForgetForTest), on a goroutine of its own, through the records
+// RecordEnds wired: a resume's mark on it (resumedBy) made since the
+// journal last wrote it is not lost with the run. The caller holds e.mu.
+func (e *Engine) journalForgotten(r *run) {
+	if e.journal == nil {
+		return
+	}
+	snap := r.snapshot(false, false)
+	go e.JournalRun(snap)
 }
 
 // forget drops r and the index of its sessions, and tells OnForget. The

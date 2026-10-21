@@ -294,3 +294,33 @@ func TestARecordOfARunStillRunningIsInterruptedWhenTheRecordsOpen(t *testing.T) 
 		t.Fatalf("the stopped run's record changed: %+v", got)
 	}
 }
+
+// The records open with a source not yet marked by its continuation (the
+// server ended between the continuation's record and the source's mark)
+// repaired: the source names it, so it is not resumed twice (#153).
+func TestARecordsOpenMarksASourceWithItsContinuation(t *testing.T) {
+	rs, runsDir := newRecords(t)
+	at := time.Now().UTC()
+	source := Run{ID: "crew-0000aaaa", CrewID: "crew", Name: "Crew", State: RunStopped, StartedAt: at.Add(-time.Hour), StoppedAt: &at,
+		Members: []MemberState{{Name: "a", AgentID: "cat", Status: MemberEnded}}}
+	next := Run{ID: "crew-0000bbbb", CrewID: "crew", Name: "Crew", State: RunStopped, StartedAt: at, StoppedAt: &at, ResumedFrom: source.ID,
+		Members: []MemberState{{Name: "a", AgentID: "cat", Status: MemberEnded}}}
+	for _, r := range []Run{source, next} {
+		if err := rs.Save(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rs.Close()
+	st, err := store.Open(filepath.Dir(runsDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewRecords(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(again.Close)
+	if got, ok, _ := again.Get(source.ID); !ok || got.ResumedBy != next.ID {
+		t.Fatalf("the source after the open: %v %+v", ok, got)
+	}
+}

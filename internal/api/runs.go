@@ -530,30 +530,50 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 	}
 }
 
-// resumeRecord resumes a run from its record (Engine.ResumeRecord): 201
-// {run}, the record marked with the continuation; 409 already_resumed,
-// naming it, for a record resumed already or being resumed.
-func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, rec crew.Run) {
-	if rec.ResumedBy != "" {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + rec.ResumedBy, "run": rec.ResumedBy}})
-		return
-	}
-	key := "record:" + rec.ID
+// resumeRecord resumes the run with the given ID from its record
+// (Engine.ResumeRecord), and reports whether it answered: false for no
+// record. The record is read and checked under a lease on it, so two
+// requests at once make one continuation (the other is refused as being
+// resumed); 409 already_resumed, naming the continuation, for a record
+// resumed already. The continuation's record is written before the source
+// is marked with it, so the source never names a run no record holds (the
+// records' open repairs the other order, a continuation recorded while its
+// source is not yet marked); then 201 {run}.
+func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id string) bool {
+	key := "record:" + id
 	if !s.takeResume(key) {
 		writeError(w, http.StatusConflict, "already_resumed", "the run is being resumed")
-		return
+		return true
 	}
 	defer s.releaseResume(key)
+	rec, ok, err := s.records.Get(id)
+	if err != nil {
+		s.log.Warn("run record", "run", id, "err", err)
+	}
+	if !ok {
+		return false
+	}
+	if rec.ResumedBy != "" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + rec.ResumedBy, "run": rec.ResumedBy}})
+		return true
+	}
 	run, err := s.runs.ResumeRecord(ctx, rec)
 	if err != nil {
-		s.runError(w, "resume run from its record", rec.ID, err)
-		return
+		s.runError(w, "resume run from its record", id, err)
+		return true
 	}
+	s.runs.Journal(run.ID)
+	wctx, cancel := context.WithTimeout(ctx, recordsGrace)
+	if !s.runs.WaitRecorded(wctx) {
+		s.log.Warn("the continuation's record is still being written", "run", run.ID)
+	}
+	cancel()
 	rec.ResumedBy = run.ID
 	if err := s.records.Save(rec); err != nil {
-		s.log.Warn("run record not saved", "run", rec.ID, "err", err)
+		s.log.Warn("run record not saved", "run", id, "err", err)
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
+	return true
 }
 
 // handleResumeRun starts a new run of a stopped run's crew in which every
@@ -567,12 +587,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, crew.ErrRunNotFound) && s.records != nil {
 		// A run the engine no longer holds is resumed from its record,
 		// once: the record then names the continuation, as a held run does.
-		rec, ok, rerr := s.records.Get(id)
-		if rerr != nil {
-			s.log.Warn("run record", "run", id, "err", rerr)
-		}
-		if ok {
-			s.resumeRecord(w, ctx, rec)
+		if s.resumeRecord(w, ctx, id) {
 			return
 		}
 	}

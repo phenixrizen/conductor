@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1932,4 +1933,142 @@ func TestARunIsResumedFromItsRecord(t *testing.T) {
 		t.Fatalf("a second resume of the record: %d %v", resp.StatusCode, out)
 	}
 	e.do("POST", "/api/runs/"+nextID+"/stop", adminToken, nil)
+}
+
+// The journal follows the conversation a resume from the record would
+// continue: a member's agent session reported after the launch's record was
+// written reaches the record on its own, with no other change of the run
+// (Codex's review of #153's change).
+func TestAConversationReportedLaterReachesTheJournal(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.saveResumable("talker")
+	runID := e.launchCrew(t, "late report", map[string]any{"name": "solo", "agentId": "talker", "prompt": "", "start": map[string]any{"when": "immediately"}})
+	sid := e.waitRunning(t, runID, "solo")
+	file := filepath.Join(e.srv.cfg.DataDir, "runs", runID+".json")
+	record := func() crew.Run {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return crew.Run{}
+		}
+		var rec crew.Run
+		_ = json.Unmarshal(b, &rec)
+		return rec
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for record().ID != runID {
+		if time.Now().After(deadline) {
+			t.Fatal("no record of the running run")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if m := record().Members[0]; m.AgentSession != nil && m.AgentSession.Resumable {
+		t.Fatalf("resumable before any turn: %+v", m)
+	}
+	tok := e.agentToken(sid)
+	_, info := e.do("GET", "/api/sessions/"+sid, adminToken, nil)
+	pid := info["session"].(map[string]any)["agentSession"].(map[string]any)["id"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+sid+"/attention", tok, map[string]any{"state": "done", "agentSession": pid, "turn": true}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("report: %d %v", resp.StatusCode, out)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		if m := record().Members[0]; m.AgentSession != nil && m.AgentSession.Resumable && m.AgentSession.ID == pid {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the record never learnt of the conversation: %+v", record().Members)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil)
+}
+
+// Resumes of one record fired together make one continuation: the record is
+// read and checked under a lease, the others refused. And the continuation
+// is recorded before the source names it (Codex's review of #153's change).
+func TestResumesOfARecordFiredTogetherMakeOneContinuation(t *testing.T) {
+	e := newTestEnv(t, nil)
+	runID := e.launchCrew(t, "record race", map[string]any{"name": "solo", "agentId": "cat", "prompt": "", "start": map[string]any{"when": "manual"}})
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	file := filepath.Join(e.srv.cfg.DataDir, "runs", runID+".json")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if b, err := os.ReadFile(file); err == nil && strings.Contains(string(b), `"stoppedAt"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no stopped record at %s", file)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.srv.runs.ForgetForTest(runID)
+	const n = 6
+	codes := make(chan int, n)
+	ids := make(chan string, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			resp, out := e.do("POST", "/api/runs/"+runID+"/resume", adminToken, nil)
+			codes <- resp.StatusCode
+			if resp.StatusCode == http.StatusCreated {
+				ids <- out["run"].(map[string]any)["id"].(string)
+			}
+		})
+	}
+	wg.Wait()
+	close(codes)
+	close(ids)
+	created, conflicts := 0, 0
+	for c := range codes {
+		switch c {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("a resume answered %d", c)
+		}
+	}
+	if created != 1 || conflicts != n-1 {
+		t.Fatalf("%d continuations made and %d refused of %d resumes of the record at once", created, conflicts, n)
+	}
+	next := <-ids
+	if _, ok, _ := e.srv.records.Get(next); !ok {
+		t.Fatal("the continuation has no record as its resume answers")
+	}
+	if rec, _, _ := e.srv.records.Get(runID); rec.ResumedBy != next {
+		t.Fatalf("the source names %q, want %s", rec.ResumedBy, next)
+	}
+	e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil)
+}
+
+// A run forgotten right after it was resumed, before the journal wrote it
+// again, has its record name the continuation all the same: a forgotten
+// run's last state is its record (Codex's review of #153's change).
+func TestAForgottenRunsRecordNamesItsContinuation(t *testing.T) {
+	e := newTestEnv(t, nil)
+	runID := e.launchCrew(t, "forget after resume", map[string]any{"name": "solo", "agentId": "cat", "prompt": "", "start": map[string]any{"when": "manual"}})
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	resp, out := e.do("POST", "/api/runs/"+runID+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume: %d %v", resp.StatusCode, out)
+	}
+	next := out["run"].(map[string]any)["id"].(string)
+	e.srv.runs.ForgetForTest(runID)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rec, ok, _ := e.srv.records.Get(runID); ok && rec.ResumedBy == next {
+			break
+		}
+		if time.Now().After(deadline) {
+			rec, ok, _ := e.srv.records.Get(runID)
+			t.Fatalf("the forgotten run's record: %v %q", ok, rec.ResumedBy)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil)
 }

@@ -299,3 +299,40 @@ func TestAResumedMemberIsRunningOnceItsSessionIsReady(t *testing.T) {
 		t.Fatalf("ended: %+v", m)
 	}
 }
+
+// The source of a resume is not evicted while its continuation is made: at
+// the cap, the launch of the continuation forgets another idle run, and the
+// source is still there to name the continuation (Codex's review of #153's
+// change).
+func TestTheSourceOfAResumeIsNotEvictedBeforeItIsMarked(t *testing.T) {
+	old := maxRuns
+	maxRuns = 3
+	t.Cleanup(func() { maxRuns = old })
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	var ids []string
+	for range 3 {
+		run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, run.ID)
+		waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+		stopRun(t, e, run.ID)
+	}
+	oldest := ids[0]
+	next, err := e.ResumeRun(t.Context(), oldest)
+	if err != nil {
+		t.Fatalf("resume the oldest at the cap: %v", err)
+	}
+	src, ok := e.Get(oldest)
+	if !ok {
+		t.Fatal("the source was evicted as its continuation was made")
+	}
+	if src.ResumedBy != next.ID {
+		t.Fatalf("the source names %q, want %s", src.ResumedBy, next.ID)
+	}
+	if _, ok := e.Get(ids[1]); ok {
+		t.Fatal("the next idle run was kept: nothing was evicted for the continuation")
+	}
+}

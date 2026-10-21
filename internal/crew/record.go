@@ -39,24 +39,26 @@ const maxRecords = 500
 // well under it.
 const maxRecordSize = 4 << 20
 
-// NewRecords opens runs/ under st, and marks the records of the runs that
-// were running when the server last stopped (journaled since their launch,
-// never ended) as interrupted: their sessions are gone with that server,
-// and they are never relaunched on their own (a resume from the record is
-// the person's, ResumeRecord). A record that cannot be read or marked is
-// left as it is.
+// NewRecords opens runs/ under st and reconciles what it holds: the records
+// of the runs that were running when the server last stopped (journaled
+// since their launch, never ended) are marked interrupted, their sessions
+// gone with that server, never relaunched on their own (a resume from the
+// record is the person's, ResumeRecord); and a record whose continuation
+// (a run resumed from it, ResumedFrom) has a record while it does not name
+// one (the server ended between the two writes) is marked with it, so that
+// it is not resumed twice. A record that cannot be read or marked is left
+// as it is.
 func NewRecords(st *store.Store) (*Records, error) {
 	sub, err := st.Sub("runs")
 	if err != nil {
 		return nil, err
 	}
 	rs := &Records{st: sub}
-	return rs, rs.markInterrupted()
+	return rs, rs.reconcile()
 }
 
-// markInterrupted marks every record of a run still running as interrupted
-// (NewRecords): its running and starting members ended, with why.
-func (rs *Records) markInterrupted() error {
+// reconcile is what NewRecords does to the records it finds.
+func (rs *Records) reconcile() error {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	entries, err := rs.st.List()
@@ -67,20 +69,38 @@ func (rs *Records) markInterrupted() error {
 	if err != nil {
 		return err
 	}
-	var errs []error
-	for _, f := range files {
-		if !f.ok || f.run.StoppedAt != nil || (f.run.State != RunRunning && f.run.State != RunNeedsInput) {
+	byID := map[string]int{}
+	for i, f := range files {
+		if f.ok {
+			byID[f.run.ID] = i
+		}
+	}
+	changed := map[int]bool{}
+	for i, f := range files {
+		if !f.ok {
 			continue
 		}
-		r := f.run
-		r.State, r.NeedsInput = RunInterrupted, 0
-		for i := range r.Members {
-			if m := &r.Members[i]; m.Status == MemberRunning || m.Status == MemberStarting {
-				m.Status, m.NeedsInput = MemberEnded, false
-				m.Err = "interrupted: the server stopped while it ran"
+		if f.run.StoppedAt == nil && (f.run.State == RunRunning || f.run.State == RunNeedsInput) {
+			r := &files[i].run
+			r.State, r.NeedsInput = RunInterrupted, 0
+			for j := range r.Members {
+				if m := &r.Members[j]; m.Status == MemberRunning || m.Status == MemberStarting {
+					m.Status, m.NeedsInput = MemberEnded, false
+					m.Err = "interrupted: the server stopped while it ran"
+				}
+			}
+			changed[i] = true
+		}
+		if from := f.run.ResumedFrom; from != "" {
+			if j, ok := byID[from]; ok && files[j].run.ResumedBy == "" {
+				files[j].run.ResumedBy = f.run.ID
+				changed[j] = true
 			}
 		}
-		errs = append(errs, rs.st.Save(r.ID+".json", r))
+	}
+	var errs []error
+	for i := range changed {
+		errs = append(errs, rs.st.Save(files[i].run.ID+".json", files[i].run))
 	}
 	return errors.Join(errs...)
 }
@@ -307,14 +327,30 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 
 // Journal saves the run with the given ID as it is now, through the records
 // RecordEnds wired (nothing without them, or for a run the engine does not
-// hold): the server calls it a while after each change of a run.
+// hold): the server calls it a while after each change of a run. The
+// snapshot and its place in the saves are one step under endMu, as an end's
+// are (noteEnd), so a snapshot taken before an end never lands after it.
 func (e *Engine) Journal(runID string) {
 	if e.journal == nil {
 		return
 	}
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
 	if r, ok := e.Get(runID); ok {
 		e.journal(r)
 	}
+}
+
+// JournalRun saves r, a snapshot the engine handed out (OnForget's: the run
+// as it last was, which no end follows), brought up to date as a read is
+// (refresh), through the records RecordEnds wired; nothing without them.
+// It takes no engine lock.
+func (e *Engine) JournalRun(r Run) {
+	if e.journal == nil {
+		return
+	}
+	e.refresh(&r)
+	e.journal(r)
 }
 
 // WaitRecorded waits, as long as ctx allows, until every end handed to the
