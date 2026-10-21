@@ -859,7 +859,9 @@ func (a *agent) retryAttention() {
 func sameAttention(x, y session.Attention) bool {
 	// The source too: a switchyard is told no words, and a held turn
 	// (source submit) differs from a bell's wait by its source alone there.
-	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked()
+	// The plan too (#289): a plan set on the question showing (the dialog's
+	// footer read after the hook's report) changes nothing else of it.
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked() && x.Plan == y.Plan
 }
 
 // toServer is an attention change as the server is told it: in full to the

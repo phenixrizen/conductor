@@ -392,8 +392,8 @@ func resolvePath(root, raw string, deny denySet) (real, rootReal string, err err
 		return "", "", errors.New("path contains NUL")
 	}
 	if raw == "~" || strings.HasPrefix(raw, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
+		home := homeDir()
+		if home == "" {
 			return "", "", errors.New("home directory unavailable")
 		}
 		raw = filepath.Join(home, strings.TrimPrefix(raw, "~"))

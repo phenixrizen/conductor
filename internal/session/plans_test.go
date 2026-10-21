@@ -230,6 +230,70 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	}
 }
 
+// A plans directory named through a link (Options.Plans a link to it, as
+// /var is to /private/var on macOS): a plan the agent names by the
+// directory's target, or through the link, is the same plan, learnt,
+// listed once, read by either spelling and forgotten by either.
+func TestPlansDirectoryThroughALink(t *testing.T) {
+	home := realDir(t, t.TempDir())
+	target := filepath.Join(home, "real-plans")
+	link := filepath.Join(home, ".claude", "plans")
+	os.MkdirAll(target, 0o755)
+	os.MkdirAll(filepath.Dir(link), 0o755)
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("no symlinks here")
+	}
+	s, _ := newLocalWith(t, Options{ScrollbackBytes: 4096, Plans: link})
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(target, "a.md"), []byte("# A\n"), 0o644)
+	os.WriteFile(filepath.Join(target, "b.md"), []byte("# B\n"), 0o644)
+	// Named by the target, and through the link.
+	s.Record(ActivityEntry{Type: ActivityFile, Op: FileOpWrite, Path: filepath.Join(target, "a.md"), Tool: "Write"})
+	s.Record(ActivityEntry{Type: ActivityFile, Op: FileOpWrite, Path: filepath.Join(link, "b.md"), Tool: "Write"})
+	for i, p := range []string{filepath.Join(target, "a.md"), filepath.Join(link, "a.md"), filepath.Join(target, "b.md"), filepath.Join(link, "b.md")} {
+		if h, _ := get(t, s, sub, sink, "r"+string(rune('0'+i)), proto.FileGet{Path: p}); h.Kind != "file" {
+			t.Fatalf("%s: %+v %+v", p, h, h.Error)
+		}
+	}
+	if h, _ := get(t, s, sub, sink, "p1", proto.FileGet{Op: proto.FileOpPlans}); len(h.Entries) != 2 || h.Entries[0].Name != "a.md" || h.Entries[1].Name != "b.md" {
+		t.Fatalf("listed once each: %+v", h)
+	}
+	// Forgotten by the other spelling.
+	s.Record(ActivityEntry{Type: ActivityFile, Op: FileOpDelete, Path: filepath.Join(link, "a.md"), Tool: "Bash"})
+	if h, _ := get(t, s, sub, sink, "r5", proto.FileGet{Path: filepath.Join(target, "a.md")}); h.Kind != "error" {
+		t.Fatalf("forgotten: %+v", h)
+	}
+}
+
+// The plan named while a bell's wait shows (the dialog's footer read as
+// the bell rang, the hook's report late) is set on that wait and kept by
+// the dialog read off the screen that takes its place; the hook's report
+// that comes after the dialog changes nothing of it.
+func TestPlanSetOnABellsWaitIsKeptByTheDialog(t *testing.T) {
+	s, _, _, plan := plansLocal(t)
+	s.SetAttentionFull(AttentionNeedsInput, "terminal bell", SourceBell, "", nil)
+	s.NotePlan(plan)
+	if att := s.Info().Attention; att.Source != SourceBell || att.Plan != plan {
+		t.Fatalf("set on the bell's wait: %+v", att)
+	}
+	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != plan {
+		t.Fatalf("kept by the dialog: %+v", att)
+	}
+	id := s.Info().Attention.ID
+	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.NotePlan(plan)
+	if att := s.Info().Attention; att.ID != id || att.Plan != plan {
+		t.Fatalf("the hook's late report changes nothing: %+v", att)
+	}
+}
+
 // A request's path is allowed by what it resolves to, the file then opened
 // from the plans folder with no link followed: a link to a plan reads the
 // plan; the same link made to lead to another file of the directory, one

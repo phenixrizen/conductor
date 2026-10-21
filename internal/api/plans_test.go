@@ -68,8 +68,17 @@ func TestPlansOutsideTheFolder(t *testing.T) {
 	if att, _ := out["attention"].(map[string]any); att["plan"] != plan {
 		t.Fatalf("the question's plan: %v", out)
 	}
-	if m := c.expectControl(proto.CtlAttention); m["plan"] != plan || m["state"] != "needs_input" {
-		t.Fatalf("over the connection: %v", m)
+	// Over the connection: the question, then the plan set on it (the report taken first, the plan after it).
+	var carried bool
+	for i := 0; i < 2 && !carried; i++ {
+		m := c.expectControl(proto.CtlAttention)
+		if m["state"] != "needs_input" {
+			t.Fatalf("over the connection: %v", m)
+		}
+		carried = m["plan"] == plan
+	}
+	if !carried {
+		t.Fatal("the question's plan never reached the connection")
 	}
 	if resp, _ := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "working"}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("working %d", resp.StatusCode)
@@ -79,5 +88,20 @@ func TestPlansOutsideTheFolder(t *testing.T) {
 	}
 	if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "plan": "/" + strings.Repeat("p", proto.MaxPlanPath) + ".md"}); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a plan past the bound: %d %v", resp.StatusCode, out)
+	}
+	// A report refused names no plan into the session: another plan, named by a report with a kind the route refuses.
+	other := filepath.Join(plans, "another.md")
+	os.WriteFile(other, []byte("# Another\n"), 0o644)
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "kind": "bogus", "plan": other}); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a refused report: %d %v", resp.StatusCode, out)
+	}
+	c.send(proto.MustControl(proto.FileGet{T: proto.CtlFileGet, ReqID: "r5", Path: other}))
+	if h, _ := c.expectFile("r5"); h.Kind != "error" || h.Error.Code != "denied" {
+		t.Fatalf("not learnt from a refused report: %+v", h)
+	}
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", adminToken, map[string]any{"state": "needs_input", "kind": "permission", "message": "Allow Bash?"}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("attention %d %v", resp.StatusCode, out)
+	} else if att, _ := out["attention"].(map[string]any); att["plan"] != nil {
+		t.Fatalf("the next question carries none: %v", out)
 	}
 }

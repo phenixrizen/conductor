@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"os/user"
 	"path/filepath"
 	"testing"
 )
@@ -37,8 +38,18 @@ func TestPlansDir(t *testing.T) {
 	if got := PlansDir("nothing", envOf(nil), cwd); got != "" {
 		t.Errorf("an unknown adapter: %q", got)
 	}
-	// With no home in the environment, the one the system knows (never empty on a machine the tests run on).
+	// With no home in the agent's environment, the process's own; with none
+	// there either (a service started without HOME), the account database's.
 	if got := PlansDir("claude", envOf(nil), cwd); got == "" || filepath.Base(got) != "plans" {
-		t.Errorf("the system's home: %q", got)
+		t.Errorf("the process's home: %q", got)
+	}
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	u, err := user.Current()
+	if err != nil || u.HomeDir == "" {
+		t.Skipf("no account database here: %v", err)
+	}
+	if got, want := PlansDir("claude", envOf(nil), cwd), filepath.Join(u.HomeDir, ".claude", "plans"); got != want {
+		t.Errorf("the account's home: %q, want %q", got, want)
 	}
 }

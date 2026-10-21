@@ -51,11 +51,19 @@ in. This is the design as built, in plain terms.
   retargeted between the check and the open reaches nothing that was not
   allowed (Codex's first-round finding). No request names a root; a plan
   is addressed by its path, absolute or through `~`.
-- **The plan on the question** is consumed by the one question it is
-  for: the hook's report that names it, with the dialog read off the
-  screen in its place keeping it; named while the approval already shows,
-  it is set on that question and told to every client; a question asked
-  after the approval was answered carries none.
+- **The plan on the question** is applied after the report that names it
+  is taken (a refused or rate-limited report names nothing), to the
+  question then showing (the approval, or a wait of the same moment such
+  as a bell's), and told to every client; the dialog read off the screen
+  that takes the place of such a wait keeps it; the dialog that follows an
+  answered approval takes the place of a dialog and carries none. The
+  dialog's footer is applied after the dialog is set. A host tells its
+  server the plan set on a question it already reported (its change
+  detector compares it).
+- **Aliases of the plans directory** (a linked `~/.claude/plans`, macOS's
+  `/var` for `/private/var`) are matched by their resolved paths, for
+  learning and forgetting alike, and a home with no `HOME` set falls back
+  to the account database, as Claude Code's own `os.homedir()` does.
 - **The listing** is the file request `op: plans`: kind `plans`, `path`
   the plans directory, `entries` the session's plans that are files there
   now. The Files tab shows them as a Plans group at the top of the

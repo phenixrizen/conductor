@@ -2,6 +2,7 @@ package session
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -34,13 +35,27 @@ import (
 // reports file events and plans, so a viewer cannot name a plan into the
 // session.
 
+// homeDir is the process's home, as a path's leading ~ expands: what the
+// environment names (os.UserHomeDir: HOME, Windows's USERPROFILE), else
+// the account database's (os/user), which a service started with no HOME
+// still has; "" when neither knows.
+func homeDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
+	}
+	if u, err := user.Current(); err == nil {
+		return u.HomeDir
+	}
+	return ""
+}
+
 // planPath is raw as a request or a report names a plan: absolute (a
 // leading ~ the process's home, as ResolvePath takes it), cleaned; "" for a
 // relative path or one that cannot be a plan's.
 func planPath(raw string) string {
 	if raw == "~" || strings.HasPrefix(raw, "~/") || runtime.GOOS == "windows" && strings.HasPrefix(raw, `~\`) {
-		home, err := os.UserHomeDir()
-		if err != nil {
+		home := homeDir()
+		if home == "" {
 			return ""
 		}
 		raw = filepath.Join(home, raw[1:])
@@ -104,12 +119,36 @@ func (s *Local) planAllowed(real string) bool {
 	return s.planFiles[real]
 }
 
+// plansRealLocked is the plans directory with its links resolved: as kept
+// once the folder is open, else as it is now ("" when it is not there).
+// s.mu held.
+func (s *Local) plansRealLocked() string {
+	if s.plansReal != "" {
+		return s.plansReal
+	}
+	if real, err := filepath.EvalSymlinks(s.opts.Plans); err == nil {
+		return real
+	}
+	return ""
+}
+
+// inPlansLocked reports whether abs (planPath's) names a file in the plans
+// directory: under it as named, or under it with every link resolved (the
+// agent may name a linked directory by its target, or spell /var as
+// /private/var). s.mu held.
+func (s *Local) inPlansLocked(abs string) bool {
+	if s.opts.Plans == "" || abs == "" {
+		return false
+	}
+	return underDir(abs, s.opts.Plans) || underDir(planKey(abs), s.plansRealLocked())
+}
+
 // learnPlanLocked keeps abs (planPath's) as one of the session's plans when
 // it is a regular file in the plans directory now, by its path with its
 // links resolved (a link out of the directory is not kept, nor a denied
 // file, nor nothing there), and reports whether it is. s.mu held.
 func (s *Local) learnPlanLocked(abs string) bool {
-	if s.opts.Plans == "" || !underDir(abs, s.opts.Plans) || !s.openPlansLocked() {
+	if !s.inPlansLocked(abs) || !s.openPlansLocked() {
 		return false
 	}
 	real, _, err := resolvePath(s.opts.Plans, abs, newDenySet(s.fileDeny()))
@@ -134,7 +173,7 @@ func (s *Local) notePlanLocked(e ActivityEntry) {
 		return
 	}
 	abs := planPath(touchedAbs(s.info.Cwd, e.Path))
-	if !underDir(abs, s.opts.Plans) {
+	if !s.inPlansLocked(abs) {
 		return
 	}
 	if e.Op == FileOpDelete {

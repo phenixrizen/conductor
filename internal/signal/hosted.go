@@ -1154,6 +1154,10 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 	h.mu.Lock()
 	conn := h.conn
 	if forward && !h.events.Take(time.Now()) {
+		// The report refused names no plan into the next question either.
+		if state == session.AttentionNeedsInput {
+			h.plan = ""
+		}
 		h.mu.Unlock()
 		return ErrRateLimited
 	}

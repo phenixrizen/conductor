@@ -223,15 +223,24 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "plan is longer than 1024 bytes")
 		return
 	}
-	// The plan the question is about, named before the question is set,
-	// so that the question carries it: a server session learns it as one
-	// of its plans (session.Local.NotePlan), a hosted one sends it on to
-	// its host with the question (signal.HostedSession.NotePlan).
-	if n, ok := d.(interface{ NotePlan(string) }); ok && req.Plan != "" && state == session.AttentionNeedsInput {
-		n.NotePlan(req.Plan)
+	// The plan the question is about (#289): a hosted session sends it on
+	// to its host with the question (signal.HostedSession.NotePlan, before
+	// the report, which carries it); a server session learns it as one of
+	// its plans once the report is taken (session.Local.NotePlan, after: a
+	// report refused, or one the session's bucket has no token for, names
+	// no plan into the session).
+	plan := ""
+	if req.Plan != "" && state == session.AttentionNeedsInput {
+		plan = req.Plan
+	}
+	if hs, ok := d.(*signal.HostedSession); ok && plan != "" {
+		hs.NotePlan(plan)
 	}
 	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
 		return
+	}
+	if local, ok := d.(*session.Local); ok && plan != "" {
+		local.NotePlan(plan)
 	}
 	if local, ok := d.(*session.Local); ok && req.AgentSession != "" {
 		s.captureAgentSession(local, req.AgentSession, req.Turn)
