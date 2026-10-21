@@ -211,6 +211,10 @@ type Local struct {
 	// any controller by asking (ResizeWith take, Fit to my window), and
 	// every other viewer follows the size, scaled to its window. Under mu.
 	sizer string
+	// takes counts the times the size was taken by asking (ResizeWith take,
+	// Fit to my window), for a sizer's move to tell a Fit made meanwhile
+	// from the hand-over its leave made (Subscription.leftSize). Under mu.
+	takes uint64
 	// nvimCount is the editors open on the session (nvim.go), every
 	// connection's together.
 	nvimCount atomic.Int32
@@ -2230,7 +2234,16 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 	// screen, and two of the owner's windows never take turns. The role
 	// comes from the token, never from the hello.
 	sized := role == RoleControl && proto.HelloSize(cols, rows) && !s.info.Status.Ended()
-	if sized && o.LinkID == "" && !o.ChatOnly && s.sizer == "" {
+	// A viewer moving to the relay under the same id (Replaces) whose old
+	// connection's leave handed the size on, the move seen after that leave,
+	// takes the size back: a move keeps the size where it was, to whichever
+	// window it went or to nobody, unless someone took it by asking (Fit to
+	// my window) meanwhile.
+	back := sized && !o.ChatOnly && r != nil && r.ID == id && r.leftSize && r.takesThen == s.takes
+	if back {
+		r.leftSize = false
+	}
+	if back || sized && o.LinkID == "" && !o.ChatOnly && s.sizer == "" {
 		s.sizer = id
 		if cols != s.info.Cols || rows != s.info.Rows {
 			if err := s.proc.Resize(cols, rows); err == nil {
@@ -2379,8 +2392,10 @@ func (s *Local) Detach(sub *Subscription) {
 	}
 	// Only the client that held the size as it left hands it on: a late
 	// Detach of one a replacement took over (the same id) leaves the size
-	// with the replacement.
+	// with the replacement. A replacement attached after this leave takes
+	// the size back (AttachWith, leftSize).
 	if present && s.sizer == sub.ID {
+		sub.leftSize, sub.takesThen = true, s.takes
 		s.handOverSize()
 	}
 	var left ChatMessage
@@ -4607,6 +4622,11 @@ func (s *Local) ResizeWith(sub *Subscription, cols, rows uint16, take bool) erro
 	sub.want = [2]uint16{cols, rows}
 	if !take && s.sizer != sub.ID && (s.sizer != "" || !sub.ownsSize()) {
 		return ErrNotSizer
+	}
+	if take {
+		// Asked for, at the same size by the sizer itself too: a viewer
+		// moving meanwhile does not undo it (leftSize).
+		s.takes++
 	}
 	handed := s.sizer != sub.ID
 	s.sizer = sub.ID

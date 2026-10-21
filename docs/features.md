@@ -1564,7 +1564,14 @@ first, found measuring the echo over the switchyard (round 13, PR #81).
   controller the sizer, and every viewer hears who in the `resize`
   frame's `by`, a hand-over at the same size included; when the sizer
   leaves, the owner's window that attached last takes it at its own size,
-  else nobody holds it and the size stays. The welcome says `sizer` and
+  else nobody holds it and the size stays. A viewer moving to the relay (a
+  host's viewer whose WebRTC connection failed: the same id taking over
+  its old connection, `AttachOptions.Replaces`) keeps the size in either
+  order (#130): taken over where the old connection stands, the size stays
+  with the id; the old connection's end seen first hands the size on as
+  at any leave, and the relay's attach takes it back at its hello's size,
+  unless someone took it with Fit to my window meanwhile, which stands.
+  The welcome says `sizer` and
   `sizedBy`; a page talking to an older host (no `sizer`) keeps the old
   rule. In the browser a full view that does not hold the size shows the
   session's grid scaled to its pane (the run tiles' scale), a view-only

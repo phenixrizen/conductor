@@ -915,3 +915,133 @@ func TestALateDetachLeavesTheSizeWithTheReplacement(t *testing.T) {
 	close(held.closes)
 	<-old.Closed()
 }
+
+// A controller holding the size whose move is seen after its old
+// connection's Detach (a host's viewer falling back to the relay: its data
+// channel's end before its hello over the relay) takes the size back as it
+// attaches again under the same id (Replaces), at its own size: whether it
+// held the size as one of the owner's windows or took it through a link
+// with Fit to my window, and whether the leave handed the size to another
+// of the owner's windows or to nobody. A Fit to my window made meanwhile
+// stands: the move does not undo it. A connection under the same id that
+// replaces nothing takes nothing back.
+func TestAMoveSeenAfterTheDetachTakesTheSizeBack(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		linkID   string
+		other    bool // another of the owner's windows, which a hand-over goes to
+		fit      bool // that window takes the size by asking meanwhile
+		replaces bool
+	}{
+		{"the owner's window, handed to the owner's other window", "", true, false, true},
+		{"the owner's window, handed to nobody", "", false, false, true},
+		{"a link that took it, handed to the owner's window", "link1", true, false, true},
+		{"a link that took it, handed to nobody", "link1", false, false, true},
+		{"a Fit to my window meanwhile", "link1", true, true, true},
+		{"the same id replacing nothing", "link1", true, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, p := newLocalWith(t, Options{ScrollbackBytes: 4096, MaxViewers: 4})
+			var other *Subscription
+			otherSink := newChanSink(false)
+			if c.other {
+				var err error
+				if other, err = s.AttachWith(AttachOptions{ID: "other", Role: RoleControl, Name: "nate", Cols: 100, Rows: 30}, otherSink); err != nil {
+					t.Fatal(err)
+				}
+				<-p.resize
+			}
+			old, err := s.AttachWith(AttachOptions{ID: "mover", Role: RoleControl, LinkID: c.linkID, Name: "mover", Cols: 120, Rows: 40}, newChanSink(false))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.linkID != "" || c.other {
+				if err := s.ResizeWith(old, 120, 40, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := <-p.resize; got != [2]uint16{120, 40} {
+				t.Fatalf("the mover's size: %v", got)
+			}
+			sizer := func() string {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				return s.sizer
+			}
+			if got := sizer(); got != "mover" {
+				t.Fatalf("sizer before the move: %q", got)
+			}
+			// The old transport's end, seen first: the size is handed on.
+			s.Detach(old)
+			handedTo := ""
+			if c.other {
+				handedTo = "other"
+				if got := <-p.resize; got != [2]uint16{100, 30} {
+					t.Fatalf("handed to the owner's other window: %v", got)
+				}
+			}
+			if got := sizer(); got != handedTo {
+				t.Fatalf("sizer after the leave: %q, want %q", got, handedTo)
+			}
+			if c.fit {
+				if err := s.ResizeWith(other, 100, 30, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var replaces *Subscription
+			if c.replaces {
+				replaces = old
+			}
+			replSink := newChanSink(false)
+			repl, err := s.AttachWith(AttachOptions{ID: "mover", Role: RoleControl, LinkID: c.linkID, Name: "mover", Cols: 120, Rows: 40, Replaces: replaces}, replSink)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, size := "mover", [2]uint16{120, 40}
+			if c.fit || !c.replaces {
+				want, size = handedTo, [2]uint16{100, 30}
+			}
+			if got := sizer(); got != want {
+				t.Fatalf("sizer after the move: %q, want %q", got, want)
+			}
+			if info := s.Info(); [2]uint16{info.Cols, info.Rows} != size {
+				t.Fatalf("size after the move: %dx%d, want %v", info.Cols, info.Rows, size)
+			}
+			if w := firstControl(t, replSink, proto.CtlWelcome); w["sizedBy"] != want || w["cols"] != float64(size[0]) {
+				t.Fatalf("the replacement's welcome: %v", w)
+			}
+			if want == "mover" {
+				if c.other {
+					// Taken back from the other window, at the mover's size.
+					if got := <-p.resize; got != size {
+						t.Fatalf("taken back: %v", got)
+					}
+					waitResize(t, otherSink, "mover", 120)
+				} else {
+					// Handed to nobody, the size stayed: nothing to resize.
+					select {
+					case got := <-p.resize:
+						t.Fatalf("taken back from nobody resized the terminal to %v", got)
+					case <-time.After(50 * time.Millisecond):
+					}
+				}
+				// Its window sizes the session, as before the move.
+				if err := s.Resize(repl, 110, 32); err != nil {
+					t.Fatalf("the mover's resize after the move: %v", err)
+				}
+				if got := <-p.resize; got != [2]uint16{110, 32} {
+					t.Fatalf("the mover's resize after the move: %v", got)
+				}
+			} else {
+				select {
+				case got := <-p.resize:
+					t.Fatalf("the move resized the terminal to %v", got)
+				case <-time.After(50 * time.Millisecond):
+				}
+				if err := s.Resize(repl, 110, 32); !errors.Is(err, ErrNotSizer) {
+					t.Fatalf("the mover's resize after the move: %v", err)
+				}
+			}
+		})
+	}
+}
