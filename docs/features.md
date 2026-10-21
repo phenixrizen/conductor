@@ -3339,5 +3339,3 @@ branch `design/crews-graph`.
   skills directory.
 - Signing and notarisation of the desktop builds until the secrets exist; the
   builds ship unsigned.
-- Resuming a run from its record after a server restart (the record holds the
-  agent session ids and worktrees it needs).

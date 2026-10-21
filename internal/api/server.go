@@ -83,6 +83,10 @@ type Server struct {
 	// of one conversation at once make one session (#126). Under resumingMu.
 	resumingMu sync.Mutex
 	resuming   map[string]struct{}
+	// journaling holds the runs whose record is about to be written again
+	// (scheduleJournal), under journalMu.
+	journalMu  sync.Mutex
+	journaling map[string]bool
 	// records keeps the runs that ended, under runs/ in the data directory
 	// (crew.Records); nil without one.
 	records *crew.Records
@@ -306,6 +310,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.run(runID, false)
 		// Its links at the switchyard follow its members (nothing for a run without any).
 		s.scheduleRunSync(runID)
+		// Its record follows it from its launch on (the journal).
+		s.scheduleJournal(runID)
 	}
 	// A run's chat reaches the browsers' unread counts the same way a session's does.
 	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {

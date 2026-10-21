@@ -73,6 +73,14 @@ function reader(over: Partial<RunReader> = {}): RunReader & { gets: string[]; li
   return r
 }
 
+describe('runState', () => {
+  it('takes a record as recorded, its interrupted state included, since nothing of it is live', () => {
+    const r = run({ id: 'r1', state: 'interrupted', needsInput: 0, record: true, members: [{ name: 'a', agentId: 'cat', start: { when: 'immediately' }, status: 'ended' }] })
+    expect(runState(r, [])).toEqual({ state: 'interrupted', needs: 0 })
+    expect(runBadge('interrupted', 0)).toEqual({ label: 'Interrupted', color: 'warning' })
+  })
+})
+
 describe('RunStore', () => {
   it('hands a record back without taking it among the live runs, and drops the run it replaces', async () => {
     const r = reader({ get: async (id) => (id === 'r1' ? run({ id: 'r1', state: 'stopped', record: true }) : null) })

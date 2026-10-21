@@ -530,6 +530,32 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 	}
 }
 
+// resumeRecord resumes a run from its record (Engine.ResumeRecord): 201
+// {run}, the record marked with the continuation; 409 already_resumed,
+// naming it, for a record resumed already or being resumed.
+func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, rec crew.Run) {
+	if rec.ResumedBy != "" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + rec.ResumedBy, "run": rec.ResumedBy}})
+		return
+	}
+	key := "record:" + rec.ID
+	if !s.takeResume(key) {
+		writeError(w, http.StatusConflict, "already_resumed", "the run is being resumed")
+		return
+	}
+	defer s.releaseResume(key)
+	run, err := s.runs.ResumeRecord(ctx, rec)
+	if err != nil {
+		s.runError(w, "resume run from its record", rec.ID, err)
+		return
+	}
+	rec.ResumedBy = run.ID
+	if err := s.records.Save(rec); err != nil {
+		s.log.Warn("run record not saved", "run", rec.ID, "err", err)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"run": run})
+}
+
 // handleResumeRun starts a new run of a stopped run's crew in which every
 // member with a resumable conversation continues it in its kept worktree
 // (Engine.ResumeRun): 201 {run}.
@@ -538,6 +564,18 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := runContext(r)
 	defer cancel()
 	run, err := s.runs.ResumeRun(ctx, id)
+	if errors.Is(err, crew.ErrRunNotFound) && s.records != nil {
+		// A run the engine no longer holds is resumed from its record,
+		// once: the record then names the continuation, as a held run does.
+		rec, ok, rerr := s.records.Get(id)
+		if rerr != nil {
+			s.log.Warn("run record", "run", id, "err", rerr)
+		}
+		if ok {
+			s.resumeRecord(w, ctx, rec)
+			return
+		}
+	}
 	var resumed *crew.RunResumedError
 	if errors.As(err, &resumed) {
 		// Resumed already, or being: 409 naming the continuation, which the

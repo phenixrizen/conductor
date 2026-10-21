@@ -399,7 +399,7 @@ export interface RunInfo {
    * session waits on a prompt (`needsInput` of them); stopped after a stop; finished once every member has ended. The live view is
    * `runState` (utils/runs.ts), which brings it up to date with the sessions.
    */
-  state: 'running' | 'needs_input' | 'stopped' | 'finished'
+  state: 'running' | 'needs_input' | 'stopped' | 'finished' | 'interrupted'
   needsInput: number
   /** The run's yolo choice, fixed at launch: every member, one added later included, follows it. */
   yolo: boolean
@@ -410,7 +410,8 @@ export interface RunInfo {
   resumedBy?: string
   /**
    * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
-   * marks it and the crew's runs list it: read-only, nothing of it live, no action reaches it until a run can be resumed from its record.
+   * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running
+   * when the server last stopped); Resume as new run resumes it from the record, once.
    */
   record?: boolean
 }

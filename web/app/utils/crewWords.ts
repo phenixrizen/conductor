@@ -126,12 +126,13 @@ export function startSentence(members: readonly ShapeMember[]): string {
 }
 
 /** The ways a run can be, as a badge says them. */
-export type RunOutcome = 'needs you' | 'running' | 'finished' | 'stopped' | 'failed'
+export type RunOutcome = 'needs you' | 'running' | 'finished' | 'stopped' | 'failed' | 'interrupted'
 
 /** A run's outcome from its live state: failed when a member ended with an error of its own, whether the run was then stopped or not. */
 export function runOutcome(run: Pick<RunInfo, 'members'>, state: RunState): RunOutcome {
   if (state === 'needs_input') return 'needs you'
   if (state === 'running') return 'running'
+  if (state === 'interrupted') return 'interrupted'
   if (run.members.some((m) => ownError(m))) return 'failed'
   return state === 'stopped' ? 'stopped' : 'finished'
 }
@@ -147,6 +148,8 @@ export function outcomeBadge(o: RunOutcome): { label: string; color: 'warning' |
       return { label: 'failed', color: 'error', variant: 'subtle' }
     case 'stopped':
       return { label: 'stopped', color: 'neutral', variant: 'outline' }
+    case 'interrupted':
+      return { label: 'interrupted', color: 'warning', variant: 'outline' }
   }
   return { label: 'finished', color: 'neutral', variant: 'outline' }
 }
@@ -191,11 +194,12 @@ export function runWhen(iso: string, now = Date.now(), time = true): string {
 
 /** How long a run has gone or went: "up 4m" while it goes, else "22m". */
 /**
- * Whether a run's row offers Resume as new run: a run that is not live, was stopped, has not been resumed already, and is held by the server
- * (a record of one the server no longer holds offers none until a run can be resumed from its record, #127).
+ * Whether a run's row offers Resume as new run: a run that is not live, was stopped and has not been resumed already; a record of a run the
+ * server no longer holds (#127) when it stopped, finished or was interrupted and has not been resumed from its record yet (#153).
  */
 export function runResumable(r: RunInfo, live: boolean): boolean {
-  return !live && !!r.stoppedAt && !r.resumedBy && !r.record
+  if (r.record) return !r.resumedBy && (r.state === 'stopped' || r.state === 'finished' || r.state === 'interrupted')
+  return !live && !!r.stoppedAt && !r.resumedBy
 }
 
 export function runTook(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'members' | 'state'>, live: boolean, now = Date.now()): string {
@@ -382,7 +386,9 @@ export const RUN_FILTER_KEY = 'conductor.crewRuns.filter'
 
 /** The chip an outcome falls under. */
 export function filterState(o: RunOutcome): Exclude<RunFilterState, 'all'> {
-  return o === 'needs you' || o === 'running' ? 'live' : o
+  if (o === 'needs you' || o === 'running') return 'live'
+  // A run the server's end cut short did not finish: it sits with the stopped ones.
+  return o === 'interrupted' ? 'stopped' : o
 }
 
 /** The instant a window begins: local midnight for today, now minus 7 or 30 days, -Infinity for all. */

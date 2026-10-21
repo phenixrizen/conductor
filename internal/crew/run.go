@@ -133,6 +133,12 @@ type MemberState struct {
 	// AgentSession is the agent's own session in the member's latest session,
 	// kept when that session has left the server: what ResumeMember resumes.
 	AgentSession *session.AgentSession `json:"agentSession,omitempty"`
+	// Prompt and Args are the member's as it ran (its crew's may have
+	// changed since), and Base the commit its worktree branched from: what
+	// a resume from the run's record needs (ResumeRecord).
+	Prompt string   `json:"prompt,omitempty"`
+	Args   []string `json:"args,omitempty"`
+	Base   string   `json:"base,omitempty"`
 	// Diff is set by GetWithDiffs for a member with a worktree: tracked
 	// changes against the base, uncommitted included.
 	Diff *Diff `json:"diff,omitempty"`
@@ -144,6 +150,10 @@ const (
 	RunNeedsInput = "needs_input" // the session of a starting or running member waits on a prompt
 	RunStopped    = "stopped"     // stopped (Stop): its sessions were stopped
 	RunFinished   = "finished"    // every member ended, and none is pending
+	// RunInterrupted is a record's state alone: the run was running when the
+	// server last stopped (its record journaled, not ended), so its sessions
+	// are gone; it is never relaunched on its own (Records).
+	RunInterrupted = "interrupted"
 )
 
 // Run is a launch of a crew as the engine reports it.
@@ -231,8 +241,10 @@ type Engine struct {
 	// first launch.
 	OnEnd func(r Run)
 	// recordsIdle, set by RecordEnds, gives a channel closed while no end
-	// handed to the records waits to be written (WaitRecorded).
+	// handed to the records waits to be written (WaitRecorded); journal,
+	// set with it, saves a run as it is now (Journal).
 	recordsIdle func() <-chan struct{}
+	journal     func(r Run)
 	// endMu orders the ends: a snapshot and its OnEnd are one step under it,
 	// so the ends reach OnEnd in the order their snapshots were taken.
 	endMu sync.Mutex
@@ -503,7 +515,6 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	old.resuming = true
 	yolo := old.yolo
 	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo}
-	type kept struct{ agentSession, sessionID, worktree, branch, base string }
 	keeps := map[string]kept{}
 	for _, m := range old.members {
 		c.Members = append(c.Members, m.def)
@@ -518,21 +529,62 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 		}
 	}
 	e.mu.Unlock()
+	return e.resumeInto(ctx, c, keeps, old.label, old.id, old)
+}
+
+// kept is what a resumed member continues with: its agent conversation, the
+// session that held it, and its worktree, branch and base commit.
+type kept struct{ agentSession, sessionID, worktree, branch, base string }
+
+// ResumeRecord is ResumeRun for a run the engine no longer holds, from its
+// record (Records): the crew as the record has it (its members' prompts,
+// arguments and start rules as they ran, not the crew as saved since), every
+// member whose last agent session is resumable continuing its conversation
+// in its kept worktree and branch as recorded (one gone fails that member's
+// start, as a session that cannot be made does), and the others starting
+// afresh under their start rules. The caller refuses a record resumed
+// already (ResumedBy) and marks the record with the new run; a run the
+// engine holds is resumed as it is (ResumeRun), never from its record.
+func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
+	if _, ok := e.Get(rec.ID); ok {
+		return nil, ErrRunRunning
+	}
+	yolo := rec.Yolo
+	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo}
+	keeps := map[string]kept{}
+	for _, st := range rec.Members {
+		c.Members = append(c.Members, Member{Name: st.Name, AgentID: st.AgentID, Prompt: st.Prompt, Args: slices.Clone(st.Args), Start: st.Start})
+		if st.AgentSession != nil && st.AgentSession.Resumable && st.AgentSession.ID != "" {
+			keeps[st.Name] = kept{agentSession: st.AgentSession.ID, sessionID: st.SessionID, worktree: st.Worktree, branch: st.Branch, base: st.Base}
+		}
+	}
+	return e.resumeInto(ctx, c, keeps, rec.Label, rec.ID, nil)
+}
+
+// resumeInto makes the run that resumes fromID: a run of c, labelled, in
+// which the members in keeps continue their conversations and the others
+// start under their start rules. With old, the run the engine holds that is
+// resumed, its bookkeeping (resumedBy, resuming) and its note.
+func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, label, fromID string, old *run) (*Run, error) {
 	prefix, err := e.prepare(ctx, c)
 	if err != nil {
-		e.mu.Lock()
-		old.resuming = false
-		e.mu.Unlock()
+		if old != nil {
+			e.mu.Lock()
+			old.resuming = false
+			e.mu.Unlock()
+		}
 		return nil, err
 	}
-	r := e.add(c, prefix, old.label)
+	r := e.add(c, prefix, label)
 	defer e.launched(r)
 	e.mu.Lock()
-	r.resumedFrom = old.id
-	old.resumedBy = r.id
-	old.resuming = false
-	old.note(session.ActivityStatus, "resumed as %s", r.id)
-	r.note(session.ActivityStatus, "resumes %s: %d conversations continue", old.id, len(keeps))
+	r.resumedFrom = fromID
+	if old != nil {
+		old.resumedBy = r.id
+		old.resuming = false
+		old.note(session.ActivityStatus, "resumed as %s", r.id)
+	}
+	r.note(session.ActivityStatus, "resumes %s: %d conversations continue", fromID, len(keeps))
 	var resumes []*member
 	for _, m := range r.members {
 		k, ok := keeps[m.def.Name]
@@ -1491,6 +1543,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 			d := *m.diff
 			st.Diff = &d
 		}
+		st.Prompt, st.Args, st.Base = m.def.Prompt, slices.Clone(m.def.Args), m.base
 		out.Members = append(out.Members, st)
 	}
 	if withChat {

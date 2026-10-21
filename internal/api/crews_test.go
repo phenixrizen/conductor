@@ -1798,9 +1798,8 @@ func TestRunChatReachesAQuietConnectionOnAnotherMember(t *testing.T) {
 
 // A run the engine no longer holds is answered from its record, marked
 // `record`, as it was when it ended: its page opens read-only. Its actions
-// answer 404 as for any run the engine does not hold, so a record's Resume
-// (hidden on the pages until a run can be resumed from its record) and
-// Stop have nothing to reach (#127).
+// but a resume (TestARunIsResumedFromItsRecord) answer 404 as for any run
+// the engine does not hold (#127).
 func TestGetRunAnswersItsRecordReadOnly(t *testing.T) {
 	e := newTestEnv(t, nil)
 	members := []any{map[string]any{"name": "solo", "agentId": "cat", "prompt": "", "start": map[string]any{"when": "manual"}}}
@@ -1829,16 +1828,108 @@ func TestGetRunAnswersItsRecordReadOnly(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || out["record"] != true || run["id"] != runID || run["state"] != "stopped" || run["stoppedAt"] == nil {
 		t.Fatalf("from the record: %d %v", resp.StatusCode, out)
 	}
-	for _, c := range []struct{ method, path string }{
-		{"POST", "/api/runs/" + runID + "/stop"},
-		{"POST", "/api/runs/" + runID + "/resume"},
-		{"POST", "/api/runs/" + runID + "/members/solo/start"},
+	for _, c := range []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", "/api/runs/" + runID + "/stop", nil},
+		{"POST", "/api/runs/" + runID + "/members/solo/start", nil},
+		{"POST", "/api/runs/" + runID + "/broadcast", map[string]any{"text": "anyone?"}},
 	} {
-		if resp, out := e.do(c.method, c.path, adminToken, nil); resp.StatusCode != http.StatusNotFound {
+		if resp, out := e.do(c.method, c.path, adminToken, c.body); resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s %s on a record: %d %v", c.method, c.path, resp.StatusCode, out)
 		}
 	}
 	if resp, _ := e.do("GET", "/api/runs/no-such-run-00000000", adminToken, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown run: %d", resp.StatusCode)
 	}
+}
+
+// A run's record is written from its launch on (the journal, a couple of
+// seconds after a change), not only as it ends: a run cut short by the
+// server's end has one (#153).
+func TestARunIsJournaledFromItsLaunch(t *testing.T) {
+	e := newTestEnv(t, nil)
+	runID := e.launchCrew(t, "journal", catMember("solo", "immediately"))
+	file := filepath.Join(e.srv.cfg.DataDir, "runs", runID+".json")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if b, err := os.ReadFile(file); err == nil {
+			var rec crew.Run
+			if json.Unmarshal(b, &rec) != nil || rec.ID != runID || rec.StoppedAt != nil || (rec.State != crew.RunRunning && rec.State != crew.RunNeedsInput) {
+				t.Fatalf("the journal: %s", b)
+			}
+			if len(rec.Members) != 1 || rec.Members[0].Prompt != "" || rec.Members[0].Start.When != "immediately" {
+				t.Fatalf("the journal's member: %+v", rec.Members)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no record of the running run at %s", file)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A run the server no longer holds is resumed from its record, once: the
+// member whose conversation is resumable continues it (its agent resumed
+// with the id the record kept), the new run names the record, the record
+// names the new run, and a second resume is refused naming it (#153).
+func TestARunIsResumedFromItsRecord(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.saveResumable("talker")
+	runID := e.launchCrew(t, "from record", map[string]any{"name": "solo", "agentId": "talker", "prompt": "Carry on.", "start": map[string]any{"when": "immediately"}})
+	sid := e.waitRunning(t, runID, "solo")
+	tok := e.agentToken(sid)
+	_, info := e.do("GET", "/api/sessions/"+sid, adminToken, nil)
+	pid := info["session"].(map[string]any)["agentSession"].(map[string]any)["id"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+sid+"/attention", tok, map[string]any{"state": "done", "agentSession": pid, "turn": true}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("report: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	file := filepath.Join(e.srv.cfg.DataDir, "runs", runID+".json")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if b, err := os.ReadFile(file); err == nil {
+			var rec crew.Run
+			if json.Unmarshal(b, &rec) == nil && rec.StoppedAt != nil {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no stopped record at %s", file)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.srv.runs.ForgetForTest(runID)
+	resp, out := e.do("POST", "/api/runs/"+runID+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("resume from the record: %d %v", resp.StatusCode, out)
+	}
+	next := out["run"].(map[string]any)
+	nextID := next["id"].(string)
+	if next["resumedFrom"] != runID || next["crewId"] == nil {
+		t.Fatalf("the new run: %v", next)
+	}
+	member := next["members"].([]any)[0].(map[string]any)
+	nsid, _ := member["sessionId"].(string)
+	if nsid == "" {
+		t.Fatalf("the member has no session: %v", member)
+	}
+	_, ninfo := e.do("GET", "/api/sessions/"+nsid, adminToken, nil)
+	if cmd := commandOf(ninfo["session"].(map[string]any)); !slices.Contains(cmd, "--resume") || !slices.Contains(cmd, pid) {
+		t.Fatalf("the member's command: %q", cmd)
+	}
+	// The record names the continuation, and is resumed no more.
+	_, rec := e.do("GET", "/api/runs/"+runID, adminToken, nil)
+	if rec["record"] != true || rec["run"].(map[string]any)["resumedBy"] != nextID {
+		t.Fatalf("the record after: %v", rec)
+	}
+	resp, out = e.do("POST", "/api/runs/"+runID+"/resume", adminToken, nil)
+	if apiErr, _ := out["error"].(map[string]any); resp.StatusCode != http.StatusConflict || apiErr["code"] != "already_resumed" || apiErr["run"] != nextID {
+		t.Fatalf("a second resume of the record: %d %v", resp.StatusCode, out)
+	}
+	e.do("POST", "/api/runs/"+nextID+"/stop", adminToken, nil)
 }

@@ -239,3 +239,58 @@ func TestAnOlderEndNeverOverwritesANewerRecord(t *testing.T) {
 		t.Fatalf("the later end was dropped: %+v", r)
 	}
 }
+
+// The records open with the runs still running in them (journaled from
+// their launch, never ended: the server stopped while they ran) marked
+// interrupted, their running and starting members ended with why; a record
+// of a run that ended is left as it is (#153).
+func TestARecordOfARunStillRunningIsInterruptedWhenTheRecordsOpen(t *testing.T) {
+	rs, runsDir := newRecords(t)
+	running := Run{ID: "crew-0123abcd", CrewID: "crew", Name: "Crew", State: RunNeedsInput, NeedsInput: 1, StartedAt: time.Now().UTC(),
+		Members: []MemberState{{Name: "a", AgentID: "cat", Status: MemberRunning, NeedsInput: true}, {Name: "b", AgentID: "cat", Status: MemberStarting}, {Name: "c", AgentID: "cat", Status: MemberPending}, {Name: "d", AgentID: "cat", Status: MemberEnded}}}
+	if err := rs.Save(running); err != nil {
+		t.Fatal(err)
+	}
+	stoppedAt := time.Now().UTC()
+	stopped := Run{ID: "crew-4567cdef", CrewID: "crew", Name: "Crew", State: RunStopped, StartedAt: stoppedAt.Add(-time.Minute), StoppedAt: &stoppedAt,
+		Members: []MemberState{{Name: "a", AgentID: "cat", Status: MemberEnded}}}
+	if err := rs.Save(stopped); err != nil {
+		t.Fatal(err)
+	}
+	rs.Close()
+	st, err := store.Open(filepath.Dir(runsDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewRecords(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(again.Close)
+	got, ok, err := again.Get(running.ID)
+	if err != nil || !ok {
+		t.Fatalf("the running run's record: %v %v", ok, err)
+	}
+	if got.State != RunInterrupted || got.NeedsInput != 0 || got.StoppedAt != nil {
+		t.Fatalf("not interrupted: %+v", got)
+	}
+	for _, m := range got.Members {
+		switch m.Name {
+		case "a", "b":
+			if m.Status != MemberEnded || m.NeedsInput || !strings.Contains(m.Err, "interrupted") {
+				t.Fatalf("member %s: %+v", m.Name, m)
+			}
+		case "c":
+			if m.Status != MemberPending {
+				t.Fatalf("member c: %+v", m)
+			}
+		case "d":
+			if m.Status != MemberEnded || m.Err != "" {
+				t.Fatalf("member d: %+v", m)
+			}
+		}
+	}
+	if got, ok, _ := again.Get(stopped.ID); !ok || got.State != RunStopped || got.StoppedAt == nil {
+		t.Fatalf("the stopped run's record changed: %+v", got)
+	}
+}

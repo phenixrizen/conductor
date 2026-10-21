@@ -2,7 +2,7 @@
 import { ApiError } from '~/composables/useApi'
 import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '~/utils/crews'
-import { runSubtitle, shortRunId } from '~/utils/crewWords'
+import { runResumable, runSubtitle, shortRunId } from '~/utils/crewWords'
 import { relativeTime } from '~/utils/sessions'
 
 /**
@@ -34,6 +34,8 @@ const live = useAttention()
 const router = useRouter()
 
 const stopped = computed(() => !!props.run?.stoppedAt)
+/** Resume as new run: a stopped run the server holds, or a record (#153) not resumed yet. */
+const resumable = computed(() => !!props.run && runResumable(props.run, !stopped.value && !props.record))
 const uptime = computed(() => {
   const r = props.run
   if (!r) return ''
@@ -156,7 +158,7 @@ async function stopAll() {
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="chatUnread" />
       </UButton>
-      <UButton v-if="stopped && !record && !run?.resumedBy" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
+      <UButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
       <UButton v-if="!stopped && !record" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton class="hidden sm:inline-flex" />
     </template>

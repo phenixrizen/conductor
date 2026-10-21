@@ -39,13 +39,50 @@ const maxRecords = 500
 // well under it.
 const maxRecordSize = 4 << 20
 
-// NewRecords opens runs/ under st.
+// NewRecords opens runs/ under st, and marks the records of the runs that
+// were running when the server last stopped (journaled since their launch,
+// never ended) as interrupted: their sessions are gone with that server,
+// and they are never relaunched on their own (a resume from the record is
+// the person's, ResumeRecord). A record that cannot be read or marked is
+// left as it is.
 func NewRecords(st *store.Store) (*Records, error) {
 	sub, err := st.Sub("runs")
 	if err != nil {
 		return nil, err
 	}
-	return &Records{st: sub}, nil
+	rs := &Records{st: sub}
+	return rs, rs.markInterrupted()
+}
+
+// markInterrupted marks every record of a run still running as interrupted
+// (NewRecords): its running and starting members ended, with why.
+func (rs *Records) markInterrupted() error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	entries, err := rs.st.List()
+	if err != nil {
+		return err
+	}
+	files, err := rs.load(entries)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, f := range files {
+		if !f.ok || f.run.StoppedAt != nil || (f.run.State != RunRunning && f.run.State != RunNeedsInput) {
+			continue
+		}
+		r := f.run
+		r.State, r.NeedsInput = RunInterrupted, 0
+		for i := range r.Members {
+			if m := &r.Members[i]; m.Status == MemberRunning || m.Status == MemberStarting {
+				m.Status, m.NeedsInput = MemberEnded, false
+				m.Err = "interrupted: the server stopped while it ran"
+			}
+		}
+		errs = append(errs, rs.st.Save(r.ID+".json", r))
+	}
+	return errors.Join(errs...)
 }
 
 // Save writes r's record, replacing an earlier one of the same run (a
@@ -200,12 +237,16 @@ func (e *Engine) noteEnd(runID string) {
 // RecordEnds wires OnEnd to rs: each run that ends is saved on a goroutine
 // of its own, started through run (the server's tracked goroutines, which
 // its shutdown waits for; a plain go when nil), and a save that fails is
-// logged by warn.
+// logged by warn. Journal saves the run as it is now the same way, for the
+// caller to make from its launch on (the server, after each change, a
+// while apart), so that a run cut short by the server's end has a record,
+// marked interrupted as the records open next.
 //
 // The saves run on goroutines of their own, so a later end of a run (a run
-// reopened and ended again) could be saved before an earlier one: each end
-// is numbered as OnEnd gets it (in the order noteEnd took the snapshots),
-// and a save older than the one already written for its run is dropped.
+// reopened and ended again) could be saved before an earlier one: each
+// snapshot is numbered as it is handed in (the ends in the order noteEnd
+// took them), and a save older than the one already written for its run is
+// dropped.
 func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run func(func())) {
 	if run == nil {
 		run = func(f func()) { go f() }
@@ -229,7 +270,7 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 		defer mu.Unlock()
 		return idle
 	}
-	e.OnEnd = func(r Run) {
+	enqueue := func(r Run) {
 		mu.Lock()
 		seq++
 		n := seq
@@ -259,6 +300,20 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 				close(idle)
 			}
 		})
+	}
+	e.OnEnd = enqueue
+	e.journal = enqueue
+}
+
+// Journal saves the run with the given ID as it is now, through the records
+// RecordEnds wired (nothing without them, or for a run the engine does not
+// hold): the server calls it a while after each change of a run.
+func (e *Engine) Journal(runID string) {
+	if e.journal == nil {
+		return
+	}
+	if r, ok := e.Get(runID); ok {
+		e.journal(r)
 	}
 }
 
