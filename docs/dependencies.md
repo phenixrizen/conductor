@@ -21,6 +21,7 @@
 | shiki | 4.4.3 |
 | markdown-it (the editor's Markdown preview, #166: raw HTML parsed as text, scripted links refused) | 15.0.3 |
 | mermaid (the preview's diagrams, run only in a sandboxed frame under a no-fetch Content Security Policy, loaded at the first diagram; `securityLevel: strict`) | 12.2.0 |
+| vite (declared as a dev dependency at the version Nuxt ships: `nuxt.config.ts` calls its library build to bundle the Mermaid renderer as one classic script for the dev server) | 8.3.1 |
 | @vue-flow/core (+ background, controls) | 1.48.2 (1.3.2, 1.1.3) |
 | @iconify-json/lucide (icon client bundle) | 1.2.137 |
 | monaco-editor (the Files editor, loaded with the first file) | 0.57.0 |

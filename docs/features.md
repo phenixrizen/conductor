@@ -2103,10 +2103,12 @@ tool, and Conductor offered it as Goose.
   its drawing as a group, the link gone. A scan of the source was tried
   first and dropped too: Mermaid loads an image node's URL while it
   measures it, and a quoted key or a JSON escape slips any regular
-  expression. Under the dev server the renderer is a module served
-  import by import, loaded by a module script with the app's origin
-  allowed, and the dev server answers the frame's `Origin: null` with the
-  CORS header it gives localhost origins (`nuxt.config.ts`, dev only). A render pass overtaken by a later one or by the
+  expression. Under the dev server, where Vite serves modules import by
+  import (which the frame, its origin opaque, could load only with a CORS
+  allowance for every opaque origin), `nuxt.config.ts` bundles the same
+  entry with Vite's library build as the dev server starts and serves it
+  as one classic script at a path of its own; the frame's policy and
+  script element are the same in both. A render pass overtaken by a later one or by the
   preview going stops at its next step; a change to the editor's model
   while previewing (a reload after a save conflict) refreshes the preview.
   A `[words]()` link with no destination is no link; a `#fragment` link

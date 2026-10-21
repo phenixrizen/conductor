@@ -21,6 +21,13 @@ export const MERMAID_PURIFY = {
  */
 export const MERMAID_FONT = 'ui-sans-serif, system-ui, sans-serif'
 
+/**
+ * Where the dev server serves the renderer as one classic script (nuxt.config.ts bundles it when the dev server starts):
+ * Vite would otherwise serve it as a module, import by import, which a sandboxed frame (its origin opaque) could load only
+ * with a CORS allowance for every opaque origin. The built app serves the same bundle as a worker-format asset.
+ */
+export const MERMAID_RENDERER_DEV_PATH = '/__conductor/mermaid-renderer.js'
+
 /** What the page asks the frame to draw. */
 export interface DrawRequest {
   id: number

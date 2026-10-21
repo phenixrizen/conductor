@@ -1,6 +1,8 @@
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { AGENT_ICONS } from './app/utils/agentIcons'
 import { bundledPackages } from './build/bundledPackages'
+import { MERMAID_RENDERER_DEV_PATH } from './app/utils/mermaidRules'
 
 const webRoot = fileURLToPath(new URL('.', import.meta.url))
 
@@ -62,11 +64,45 @@ export default defineNuxtConfig({
     // The npm packages the client bundle and its workers carry, for THIRD_PARTY_NOTICES (scripts/notices.py).
     plugins: [bundled.client],
     worker: { plugins: () => [bundled.worker] },
-    // The dev server only: the Markdown preview draws Mermaid in a sandboxed frame (app/utils/mermaidFrame.ts), whose
-    // origin is opaque, so the frame's fetch of the renderer module and its imports carries `Origin: null` and needs the
-    // CORS answer Vite gives localhost origins by default (the built app serves one classic script, which needs none).
-    server: { cors: { origin: [/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/, 'null'] } },
     optimizeDeps: { include: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-webgl', '@xterm/addon-web-links'] },
+  },
+  hooks: {
+    // The dev server only: the Markdown preview's Mermaid renderer (app/utils/mermaidFrame.entry.ts) as one classic script
+    // at a path of its own, bundled by Vite's library build as the dev server starts. The built app serves the same entry
+    // as a worker-format asset; under the dev server Vite serves modules, which the preview's sandboxed frame (its origin
+    // opaque) could load only with a CORS allowance for every opaque origin. A classic script needs none.
+    'vite:serverCreated'(server, { isClient }) {
+      if (!isClient) return
+      const bundle = import('vite')
+        .then(({ build }) =>
+          build({
+            configFile: false,
+            root: webRoot,
+            logLevel: 'silent',
+            build: { write: false, minify: false, lib: { entry: `${webRoot}app/utils/mermaidFrame.entry.ts`, formats: ['iife'], name: 'conductorMermaidRenderer', fileName: () => 'mermaid-renderer.js' } },
+          }),
+        )
+        .then((out) => {
+          const first = (Array.isArray(out) ? out[0] : out) as { output?: Array<{ code?: string }> }
+          const code = first.output?.find((c) => typeof c.code === 'string')?.code
+          if (!code) throw new Error('the Mermaid renderer did not build')
+          return code
+        })
+      bundle.catch(() => {})
+      server.middlewares.stack.unshift({
+        route: MERMAID_RENDERER_DEV_PATH,
+        handle: (_req: IncomingMessage, res: ServerResponse, next: (err?: unknown) => void) => {
+          bundle.then(
+            (code) => {
+              res.setHeader('Content-Type', 'text/javascript; charset=utf-8')
+              res.setHeader('Cache-Control', 'no-store')
+              res.end(code)
+            },
+            (e) => next(e),
+          )
+        },
+      })
+    },
   },
   typescript: { strict: true, typeCheck: false },
 })

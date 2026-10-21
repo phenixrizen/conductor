@@ -1,5 +1,5 @@
 import frameUrl from '~/utils/mermaidFrame.entry?worker&url'
-import type { DrawReply, DrawRequest } from '~/utils/mermaidRules'
+import { MERMAID_RENDERER_DEV_PATH, type DrawReply, type DrawRequest } from '~/utils/mermaidRules'
 
 /**
  * Mermaid drawn at arm's length (#166). A repository's diagram is untrusted
@@ -24,20 +24,16 @@ let ready: Promise<Window> | null = null
 let seq = 0
 const pending = new Map<number, { resolve: (svg: string) => void; reject: (e: Error) => void; timer: number }>()
 
-/**
- * The frame's policy: the renderer's script and nothing else at all; styles inline (Mermaid writes its own). In the built
- * app the renderer is one classic file, allowed by its exact URL. Under the dev server it is a module whose imports are
- * served one by one from the app's origin, so that origin is allowed and the script element is a module.
- */
+/** The frame's policy: the renderer's script by its exact URL and nothing else at all; styles inline (Mermaid writes its own). */
 function policy(script: string): string {
-  const scripts = import.meta.dev ? new URL(script).origin : script
-  return `default-src 'none'; script-src ${scripts}; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'`
+  return `default-src 'none'; script-src ${script}; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'`
 }
 
 function boot(): Promise<Window> {
   if (ready) return ready
   ready = new Promise<Window>((resolve, reject) => {
-    const script = new URL(frameUrl, location.href).href
+    // One classic script either way: the worker-format asset of the built app, or the dev server's bundle of the same entry.
+    const script = new URL(import.meta.dev ? MERMAID_RENDERER_DEV_PATH : frameUrl, location.href).href
     const f = document.createElement('iframe')
     f.setAttribute('sandbox', 'allow-scripts')
     f.setAttribute('aria-hidden', 'true')
@@ -69,8 +65,7 @@ function boot(): Promise<Window> {
       else p.reject(new Error(typeof r.error === 'string' ? r.error : 'the diagram was not drawn'))
     }
     window.addEventListener('message', onMessage)
-    const tag = import.meta.dev ? `<script type="module" src="${script}"></script>` : `<script src="${script}"></script>`
-    f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy(script)}"></head><body>${tag}</body></html>`
+    f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy(script)}"></head><body><script src="${script}"></script></body></html>`
     document.body.appendChild(f)
     frame = f
   })
