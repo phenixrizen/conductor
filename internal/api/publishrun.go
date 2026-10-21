@@ -156,14 +156,15 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 }
 
 // liveCarriers are the publications that can carry a request about run to
-// the switchyard now: its members' still up, else any of this server's
-// still up (the run's links there are the publisher's, which any of its
-// publications may revoke: a run the engine evicts has no member running,
-// so their publications have ended by then). A publication that ended
-// (its session's end, and the while it lingers after, or its connection's)
-// stays in the published map until its session leaves the server, and
-// would answer nothing but the wait; it is left out. None when nothing of
-// this server's is published.
+// the switchyard now: its members' still up, first, then every other of
+// this server's still up (the run's links there are the publisher's, which
+// any of its publications may revoke: a run the engine evicts has no member
+// running, so their publications have ended or are about to, and one that
+// ends as the requests go leaves the rest to the next carrier). A
+// publication that ended (its session's end, and the while it lingers
+// after, or its connection's) stays in the published map until its session
+// leaves the server, and would answer nothing but the wait; it is left out.
+// None when nothing of this server's is published.
 func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
 	live := func(pub PublishedSession) bool {
 		select {
@@ -183,9 +184,6 @@ func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
 		if pub := s.publishedOf(m.SessionID); pub != nil && live(pub) {
 			out = append(out, pub)
 		}
-	}
-	if len(out) > 0 {
-		return out
 	}
 	s.pubMu.Lock()
 	defer s.pubMu.Unlock()

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/crew"
 	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -1487,5 +1488,35 @@ func TestARevokeGoesOnPastACarrierThatHoldsNoSuchLink(t *testing.T) {
 	mu.Unlock()
 	if got != "[a:l2 b:l2 a:l3 b:l3]" {
 		t.Fatalf("asked %s", got)
+	}
+}
+
+// The carriers of a forgotten run's requests are its members' publications
+// still up, first, then every other publication of this server's still up;
+// one that ended, a member's or not, is left out. So a member's publication
+// ending as the revokes go (its linger running out) leaves the rest of them
+// to the next carrier (Codex's review of #148's change).
+func TestLiveCarriersListTheMembersFirstThenTheRest(t *testing.T) {
+	e := newTestEnv(t, nil)
+	pub := func(id string, live bool) *gatedPublication {
+		p := &gatedPublication{id: id, done: make(chan struct{})}
+		if !live {
+			close(p.done)
+		}
+		return p
+	}
+	e.srv.pubMu.Lock()
+	e.srv.published = map[string]PublishedSession{
+		"m1": pub("m1", false), "m2": pub("m2", true),
+		"other": pub("other", true), "gone": pub("gone", false),
+	}
+	e.srv.pubMu.Unlock()
+	run := crew.Run{ID: "run", Members: []crew.MemberState{{Name: "a", SessionID: "m1"}, {Name: "b", SessionID: "m2"}, {Name: "c"}}}
+	var ids []string
+	for _, c := range e.srv.liveCarriers(run) {
+		ids = append(ids, c.ID())
+	}
+	if fmt.Sprint(ids) != "[m2 other]" {
+		t.Fatalf("carriers %v, want the live member's publication then the unrelated live one", ids)
 	}
 }
