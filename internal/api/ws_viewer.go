@@ -132,8 +132,14 @@ func (s *Server) serveLocalViewer(ctx context.Context, c *websocket.Conn, raw ne
 			// A save from the editor (design round 12, F6): its answer is a FILE frame.
 			h, part, err := proto.DecodeFileWrite(f.Payload)
 			if err != nil {
-				local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
-				continue
+				// A part that cannot be read names no save to answer: a
+				// protocol error, which closes the connection as an
+				// unexpected frame does, the error written on the sink first
+				// so that it is on the wire before the close. No client of
+				// Conductor's sends one.
+				_ = sink.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
+				c.Close(proto.CloseProtocolError, "malformed file write")
+				return
 			}
 			local.FileWrite(sub, h, part)
 		default:

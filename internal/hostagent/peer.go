@@ -450,7 +450,10 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 		}
 		h, part, err := proto.DecodeFileWrite(f.Payload)
 		if err != nil {
-			p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
+			// A part that cannot be read names no save to answer: a protocol
+			// error, so the viewer is let go with the error, as one whose
+			// hello cannot be read is. No client of Conductor's sends one.
+			p.a.sendViewerError(p.id, proto.ErrCodeBadFrame, "malformed file write")
 			return
 		}
 		p.saveIn(sub, h, part)

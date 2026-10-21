@@ -1617,7 +1617,13 @@ FILE frame's layout in the other direction: the header
 at most 32 KiB (under a data channel's message cap), in order, one save at a
 time per connection; a save's next part is waited for however long it takes
 (a relayed save's parts can be slowed on their way), and an unfinished save
-goes when the connection's next save starts, or with the connection.
+goes when the connection's next save starts, or with the connection. A part
+that cannot be read (a header past 4 KiB, or one that does not parse) names
+no save to answer and is a protocol error: the owner sends
+`error{bad_frame, "malformed file write"}` and closes the connection (1002),
+a host letting the viewer go with that error as it does one whose hello
+cannot be read; no client of Conductor's sends one (the editor refuses such
+a part before sending it).
 When the last part arrives the owner resolves `path` as a read does (the same
 deny list), and refuses with a FILE frame of kind `error` and code
 `changed_on_disk` when the file's sha256 is not `baseSha256` (the read's),
