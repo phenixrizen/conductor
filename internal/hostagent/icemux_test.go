@@ -116,10 +116,11 @@ func TestFamilyMuxListsOneFamily(t *testing.T) {
 
 // With a public address of the other family than the interfaces' (an IPv6
 // one on a machine with IPv4 addresses, as the Mac's IPv6 addresses are to
-// an IPv4 forwarder's), the host candidates are still that address alone:
-// the interfaces' own addresses, which the rewrite rule leaves as they
-// are, are not gathered. The loopback address of the given family is
-// enough to gather one candidate from.
+// an IPv4 forwarder's), the host candidates are that address alone, or
+// none at all on a machine without an IPv6 address pion gathers from (it
+// leaves ::1 out): the interfaces' own addresses, which the rewrite rule
+// leaves as they are, are never gathered. Gathering is waited for to its
+// end, so none is the answer and not a late one.
 func TestICEWithAPublicAddressOfTheOtherFamilyAdvertisesItAlone(t *testing.T) {
 	port := freeUDPPort(t)
 	a, out := testAgent(t, Options{ICE: ICE{UDPPort: port, PublicIP: "2001:db8::9"}})
@@ -141,12 +142,33 @@ func TestICEWithAPublicAddressOfTheOtherFamilyAdvertisesItAlone(t *testing.T) {
 	if err := p.handleOffer(offer.SDP); err != nil {
 		t.Fatal(err)
 	}
-	cands := hostCandidates(t, out)
+	deadline := time.Now().Add(10 * time.Second)
+	for p.pc.ICEGatheringState() != webrtc.ICEGatheringStateComplete {
+		if time.Now().After(deadline) {
+			t.Fatalf("gathering did not finish: %s", p.pc.ICEGatheringState())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var cands []string
+	for {
+		select {
+		case v := <-out:
+			if m, ok := v.(proto.ViewerICE); ok {
+				if f := strings.Fields(m.Candidate.Candidate); len(f) >= 8 && f[7] == "host" {
+					cands = append(cands, f[4]+":"+f[5])
+				}
+			}
+			continue
+		default:
+		}
+		break
+	}
 	for _, c := range cands {
 		if c != "2001:db8::9:"+strconv.Itoa(port) {
-			t.Fatalf("host candidate %s, want 2001:db8::9:%d (all: %v)", c, port, cands)
+			t.Fatalf("host candidate %s, want 2001:db8::9:%d or none (all: %v)", c, port, cands)
 		}
 	}
+	t.Logf("%d host candidate(s): %v", len(cands), cands)
 }
 
 // With a UDP port and a public address, every host candidate the peer
