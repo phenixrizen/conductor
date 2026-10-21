@@ -2066,6 +2066,28 @@ tool, and Conductor offered it as Goose.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 
+- **Markdown preview, Mermaid included (#166, 2026-10-21).** A `.md` or
+  `.markdown` file in the editor gets a Preview toggle in the header
+  (Alt+P in the editor, listed in the shortcuts modal): the file rendered
+  with markdown-it (headings, lists, tables, task lists, code highlighted
+  by shiki in the editor's theme, links), the choice kept per tab, what
+  the editor holds previewed (unsaved changes included, as of the toggle).
+  Raw HTML is parsed as text, never rendered (no script, no handler,
+  no `javascript:` link); a web link opens outside the app; a relative
+  link opens its file in a tab; a relative image loads through the
+  session's file reads; an image on the web is not loaded (its alt text
+  shows). A `mermaid` fence is drawn by Mermaid, loaded only when a
+  previewed file has one, with `securityLevel: strict` (no HTML in labels,
+  no `click` run, its bind functions never called), in the app's theme and
+  again at a theme switch; a block it cannot draw keeps its source with
+  the error above it. The same component serves a guest's view-only editor
+  and the Yard. Tests: vitest `markdown.test.ts` (the rendering, the
+  sanitising, the links and images, the Mermaid marks), `editorTabs.test.ts`
+  (the toggle per tab); Playwright `markdown.spec.ts` (a README with a
+  table, a task list, a script shown as text, a flowchart drawn, a link
+  opening its file, the source back). Mermaid's SVG is not drawn in
+  vitest's node environment, so the drawing is checked in the browser.
+
 From the design screens 4a–4g and 5a–5c in "Conductor UI mockups" (the
 owner designed them on 2026-10-08 from a brief written here). The plan with
 its decisions and layers is `docs/round12-plan.md`: Monaco as the editor,

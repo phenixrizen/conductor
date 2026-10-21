@@ -7,7 +7,8 @@ import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, toggleFold, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, toggleFold, togglePreview, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { dirOf, isMarkdownPath } from '~/utils/markdown'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
 
@@ -165,6 +166,7 @@ watch(
 
 /** The line (or a quote's range) a tab was opened at, once the editor is up. */
 function onReady() {
+  previewSeq.value++
   const t = active.value
   if (t?.line) {
     if (t.lineTo && t.lineTo > t.line) editorRef.value?.showRange(t.line, t.lineTo)
@@ -430,6 +432,26 @@ const editable = computed(
 )
 const activeConflict = computed(() => (conflict.value && conflict.value.tabId === active.value?.id ? conflict.value : null))
 const activeCompare = computed(() => (compare.value && compare.value.tabId === active.value?.id ? compare.value : null))
+
+// The Markdown preview (#166): a `.md` tab shown rendered by its Preview toggle (the header's button; Alt+P), the choice
+// kept per tab. The source editor stays mounted behind it (hidden), so its model, cursor and unsaved edits are as they
+// were; the preview shows the editor's text as of the toggle (the edits included), or the file as read until the editor has it.
+const previewRef = ref<{ focus: () => void } | null>(null)
+const previewable = computed(() => active.value?.kind === 'file' && view.value?.state === 'text' && isMarkdownPath(active.value.path))
+const previewing = computed(() => previewable.value && !!active.value?.preview && !activeCompare.value)
+const previewSeq = ref(0)
+const previewText = computed(() => {
+  void previewSeq.value
+  const ed = editorRef.value
+  return ed && ed.version() !== undefined ? ed.getText() : (view.value?.text ?? '')
+})
+function togglePreviewOf() {
+  const t = active.value
+  if (!t || !previewable.value) return
+  tabs.value = togglePreview(tabs.value, t.id)
+  previewSeq.value++
+  void nextTick(() => (previewing.value ? previewRef.value?.focus() : editorRef.value?.focus()))
+}
 function setDirty(id: string, d: boolean) {
   if (d) dirty.add(id)
   else dirty.delete(id)
@@ -577,6 +599,13 @@ async function closingDiscard() {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === 'KeyP' || e.key.toLowerCase() === 'p')) {
+    // Alt+P: the Markdown preview, or the source again (#166). By the physical key: Option+P types π on a Mac.
+    if (!previewable.value) return
+    e.preventDefault()
+    togglePreviewOf()
+    return
+  }
   if (!(e.ctrlKey || e.metaKey)) return
   if (e.shiftKey && !e.altKey && (e.key.toLowerCase() === 'm' || e.key.toLowerCase() === 'a') && commentable.value) {
     e.preventDefault()
@@ -678,11 +707,14 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
           </template>
           <UBadge v-if="view?.header?.kind === 'file' && view.state !== 'text'" :label="view.dims || fmtSize(view.header.size)" color="neutral" variant="subtle" size="sm" />
           <UBadge v-if="view?.header?.truncated" label="truncated" color="warning" variant="subtle" size="sm" />
-          <span v-if="view?.state === 'text'" class="flex-none font-mono text-[11px] text-muted" data-editor-pos>Ln {{ pos.line }}, Col {{ pos.col }}</span>
+          <span v-if="view?.state === 'text' && !previewing" class="flex-none font-mono text-[11px] text-muted" data-editor-pos>Ln {{ pos.line }}, Col {{ pos.col }}</span>
           <UBadge v-if="readOnlyBadge || (view?.state === 'text' && active.kind === 'file' && !editable && !nvimOn)" label="Read only" icon="i-lucide-lock" color="neutral" variant="subtle" size="sm" :title="fileReadOnly || undefined" data-editor-readonly />
           <span v-if="savedFlash" class="flex-none text-[11px] text-success" data-editor-saved>Saved</span>
           <UTooltip v-if="editable" text="Save (Ctrl+S)">
             <UButton label="Save" icon="i-lucide-save" size="xs" :color="active && dirty.has(active.id) ? 'primary' : 'neutral'" :variant="active && dirty.has(active.id) ? 'soft' : 'ghost'" :disabled="!active || !dirty.has(active.id)" :loading="saving" data-editor-save @click="save()" />
+          </UTooltip>
+          <UTooltip v-if="previewable" :text="previewing ? 'The source (Alt+P)' : 'Preview (Alt+P)'">
+            <UButton :label="previewing ? 'Source' : 'Preview'" :icon="previewing ? 'i-lucide-code' : 'i-lucide-eye'" size="xs" :color="previewing ? 'primary' : 'neutral'" :variant="previewing ? 'soft' : 'ghost'" :data-editor-preview="previewing ? 'on' : 'off'" @click="togglePreviewOf" />
           </UTooltip>
           <UButton icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" aria-label="Copy path" data-editor-copy @click="copy(active.path, 'Path copied')" />
           <UButton v-if="rawHref" icon="i-lucide-file-output" size="xs" color="neutral" variant="ghost" aria-label="Open raw" :to="rawHref" target="_blank" rel="noopener noreferrer" data-editor-raw />
@@ -754,7 +786,10 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <div v-else-if="!view || view.state === 'loading'" class="flex items-center gap-2 p-6 text-sm text-muted"><UIcon name="i-lucide-loader-circle" class="size-4 animate-spin" /> Loading…</div>
         <iframe v-else-if="view.state === 'url'" :src="active!.path" class="h-full w-full bg-white" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerpolicy="no-referrer" title="URL preview" />
         <DiffEditor v-else-if="activeCompare" :key="`${active!.id}:compare`" :path="active!.path" :original="activeCompare.disk" :modified="activeCompare.mine" :inline="false" data-editor-compare-view />
-        <CodeEditor v-else-if="view.state === 'text'" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" @selection="onSelection" />
+        <template v-else-if="view.state === 'text'">
+          <MarkdownPreview v-if="previewing" ref="previewRef" :key="`${active!.id}:preview`" :text="previewText" :dir="dirOf(active!.path)" :raw-url="rawUrl" @open="tabs = openTab(tabs, 'file', $event)" />
+          <CodeEditor v-show="!previewing" ref="editorRef" :key="`${active!.id}:${nvimOn ? 'nvim' : 'keys'}`" :path="active!.path" :text="view.text ?? ''" :line="active!.line" :read-only="!editable" :nvim="nvimOn ? nvim : undefined" @cursor="pos = $event" @ready="onReady" @nvim="nvimState = $event" @nvim-closed="closeActive" @dirty="setDirty(active!.id, $event)" @selection="onSelection" />
+        </template>
         <DiffEditor v-else-if="view.state === 'diff'" :key="active!.id" :path="active!.path" :original="view.original ?? ''" :modified="view.modified ?? ''" :inline="inlineDiff" />
         <div v-else-if="view.state === 'image'" class="flex h-full items-center justify-center overflow-auto p-4 [background-image:linear-gradient(45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(-45deg,var(--ui-bg-elevated)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--ui-bg-elevated)_75%),linear-gradient(-45deg,transparent_75%,var(--ui-bg-elevated)_75%)] [background-size:16px_16px] [background-position:0_0,0_8px,8px_-8px,-8px_0]">
           <img :src="view.imageSrc" alt="" class="max-h-full max-w-full" />

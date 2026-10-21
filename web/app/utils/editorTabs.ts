@@ -24,6 +24,8 @@ export interface EditorTab {
    * also names the commit (`rev`, the right side, in place of the working directory; `short` for the title) and a rename's old path (`from`).
    */
   meta?: { status?: string; added?: number; removed?: number; base?: string; against?: string; rev?: string; short?: string; from?: string }
+  /** A Markdown file shown rendered (the editor's Preview toggle, Alt+P, #166) rather than as source; kept per tab. */
+  preview?: boolean
 }
 
 export interface TabsState {
@@ -98,6 +100,11 @@ export function cycleTab(state: TabsState, step: 1 | -1 = 1): TabsState {
 export function toggleFold(state: TabsState): TabsState {
   if (!state.tabs.length) return state
   return { ...state, folded: !state.folded }
+}
+
+/** Shows the tab rendered rather than as source, or back: a Markdown file's Preview toggle (#166). Other tabs keep their choice. */
+export function togglePreview(state: TabsState, id: string): TabsState {
+  return { ...state, tabs: state.tabs.map((t) => (t.id === id ? { ...t, preview: !t.preview } : t)) }
 }
 
 /** The line a tab was opened at, taken once. */

@@ -19,6 +19,8 @@
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |
 | shiki | 4.4.3 |
+| markdown-it (the editor's Markdown preview, #166: raw HTML parsed as text, scripted links refused) | 15.0.3 |
+| mermaid (the preview's diagrams, loaded only when a previewed file has a `mermaid` block; `securityLevel: strict`) | 12.2.0 |
 | @vue-flow/core (+ background, controls) | 1.48.2 (1.3.2, 1.1.3) |
 | @iconify-json/lucide (icon client bundle) | 1.2.137 |
 | monaco-editor (the Files editor, loaded with the first file) | 0.57.0 |
