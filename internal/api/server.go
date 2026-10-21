@@ -276,13 +276,22 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// A run the engine forgets takes its links: under the engine's lock only
 	// the share store's maps change (the store never calls the engine); the
 	// viewers attached through them are closed as on a revoke, on a goroutine
-	// of the server's own (track), which Shutdown waits for.
-	s.runs.OnForget = func(runID string) {
-		s.forgetRemoteRunLinks(runID, "")
-		if live := s.links.DeleteRun(runID); len(live) > 0 {
+	// of the server's own (track), which Shutdown waits for. Its links minted
+	// at the switchyard are revoked there the same way, over any member's
+	// publication still up (revokeRemoteRunLinks); with none up nothing can
+	// carry the revoke, and the switchyard lets them expire or sweeps them
+	// with the host's others.
+	s.runs.OnForget = func(run crew.Run) {
+		remote := s.remoteRunLinksOf(run.ID)
+		_, carrier := s.runGroup(run)
+		s.forgetRemoteRunLinks(run.ID, "")
+		if live := s.links.DeleteRun(run.ID); len(live) > 0 {
 			s.track(func() { s.disconnectLinks(live) })
 		}
-		s.events.run(runID, true)
+		if carrier != nil && len(remote) > 0 {
+			s.track(func() { s.revokeRemoteRunLinks(run.ID, carrier, remote) })
+		}
+		s.events.run(run.ID, true)
 	}
 	// What a session change does not carry of a run reaches the browsers as
 	// a run event, which they read the run again for.

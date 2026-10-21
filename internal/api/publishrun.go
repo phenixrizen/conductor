@@ -155,6 +155,23 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 	delete(s.remoteRunLinks[runID], linkID)
 }
 
+// revokeRemoteRunLinks revokes at the switchyard, over carrier, the links of
+// a run the engine forgot that were minted there (their records already
+// dropped, forgetRemoteRunLinks): each in its turn, within runSyncWait, as a
+// revoke of one of them from the Share dialog goes. One the switchyard no
+// longer holds is done; any other failure is logged, the link left to its
+// expiry there or to the switchyard's sweep.
+func (s *Server) revokeRemoteRunLinks(runID string, carrier PublishedSession, links []remoteLink) {
+	for _, rl := range links {
+		ctx, cancel := context.WithTimeout(context.Background(), runSyncWait)
+		err := carrier.Revoke(ctx, rl.ID)
+		cancel()
+		if err != nil && !refusedAs(err, "not_found") {
+			s.log.Warn("a forgotten run's link was not revoked at the rendezvous", "run", runID, "link", rl.ID, "err", err)
+		}
+	}
+}
+
 // scheduleRunSync tells the switchyard a run's members after runSyncDelay,
 // once for the changes in between; nothing for a run without remote links.
 func (s *Server) scheduleRunSync(runID string) { s.scheduleRunSyncAfter(runID, false) }

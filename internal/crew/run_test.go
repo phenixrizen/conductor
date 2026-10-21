@@ -563,7 +563,7 @@ func TestLaunchFailureStopsStartedMembers(t *testing.T) {
 	e, fl := newEngine(t)
 	fl.onLaunch = printOnce
 	var forgotten []string
-	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
+	e.OnForget = func(run Run) { forgotten = append(forgotten, run.ID) }
 	limit := errors.New("session limit reached")
 	fl.fail["core"] = limit
 	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("core", "Build it."), immediate("web", "Style it."), manual("tests", "")))
@@ -1062,7 +1062,7 @@ func TestRunLogKeepsTheNewest(t *testing.T) {
 func TestOldRunsAreForgotten(t *testing.T) {
 	e, _ := newEngine(t)
 	var forgotten []string
-	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
+	e.OnForget = func(run Run) { forgotten = append(forgotten, run.ID) }
 	var first, second string
 	for i := range maxRuns + 1 {
 		run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))
@@ -1094,7 +1094,7 @@ func TestOldRunsAreForgotten(t *testing.T) {
 func TestALaunchingRunIsNeverForgotten(t *testing.T) {
 	e, _ := newEngine(t)
 	var forgotten []string
-	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
+	e.OnForget = func(run Run) { forgotten = append(forgotten, run.ID) }
 	// Launch keeps its run first (add), then starts what starts at once.
 	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), "", "")
 	var first string
@@ -1440,7 +1440,7 @@ func TestStopBeforeTheFirstStartEndsTheLaunch(t *testing.T) {
 func TestAHeldRunIsNeverForgotten(t *testing.T) {
 	e, _ := newEngine(t)
 	var forgotten []string
-	e.OnForget = func(runID string) { forgotten = append(forgotten, runID) }
+	e.OnForget = func(run Run) { forgotten = append(forgotten, run.ID) }
 	held, release, err := e.LaunchHeld(t.Context(), testCrew(manual("lead", "")))
 	if err != nil {
 		t.Fatal(err)

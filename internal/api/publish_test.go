@@ -1204,3 +1204,38 @@ func TestARunSyncThatFailedIsMadeAgain(t *testing.T) {
 	}
 	quiet("after not_found", time.Second)
 }
+
+// A run the engine forgets while a member is still published takes its
+// links at the rendezvous with it: the revoke goes over the member's
+// publication, and the rendezvous refuses the join at once, not at the
+// link's expiry or its sweep of a gone host's links (#148).
+func TestAForgottenRunRevokesItsLinksAtTheRendezvous(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "for the team"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	if resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the rendezvous does not resolve the link: %d %v", resp.StatusCode, out)
+	}
+	local.srv.runs.ForgetForTest(runID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		if resp.StatusCode == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous still resolves the forgotten run's link: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if links := local.srv.remoteRunLinksOf(runID); len(links) != 0 {
+		t.Fatalf("records kept of the forgotten run's links: %v", links)
+	}
+}

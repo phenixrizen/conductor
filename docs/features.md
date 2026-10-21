@@ -2926,8 +2926,6 @@ picked.
 - Pushing an invite to the open window over a bridge event instead of a
   full load; the join route answering a browser origin named in Settings;
   link tokens in the OS keychain; a page behind a machine's sidebar header.
-- A forgotten run revoking its links at the switchyard (they expire, or the
-  orphan sweep takes them after seven days).
 
 ## Round 8: saved crews and runs told apart (2026-10-04)
 
