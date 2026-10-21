@@ -662,9 +662,10 @@ to a new link of that address that has no other once its host has been
 gone five minutes, and is ended (`registered.links` leaves it out). A run
 the publishing server forgets (idle and evicted past its hundred, or one
 whose launch failed) has the links minted for it at the switchyard revoked
-over any member's publication still up, as a revoke of one of them from
-the Share dialog goes; with none up nothing can carry the revoke, and they
-expire or go with the host's others.
+over a member's publication still up, else any of the server's (the links
+are the publisher's there), as a revoke of one of them from the Share
+dialog goes; with nothing of the server's published, nothing can carry the
+revoke, and they expire or go with the host's others.
 
 ## Attention
 

@@ -277,10 +277,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 	// the share store's maps change (the store never calls the engine); the
 	// viewers attached through them are closed as on a revoke, on a goroutine
 	// of the server's own (track), which Shutdown waits for. Its links minted
-	// at the switchyard are revoked there the same way, over any member's
-	// publication still up (liveCarriers, revokeRemoteRunLinks); with none
-	// up nothing can carry the revoke, and the switchyard lets them expire
-	// or sweeps them with the host's others.
+	// at the switchyard are revoked there the same way, over a member's
+	// publication still up, else any of this server's (liveCarriers,
+	// revokeRemoteRunLinks); with none up nothing can carry the revoke, and
+	// the switchyard lets them expire or sweeps them with the host's others.
 	s.runs.OnForget = func(run crew.Run) {
 		remote := s.remoteRunLinksOf(run.ID)
 		carriers := s.liveCarriers(run)

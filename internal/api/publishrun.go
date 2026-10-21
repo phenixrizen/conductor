@@ -155,27 +155,44 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 	delete(s.remoteRunLinks[runID], linkID)
 }
 
-// liveCarriers are the publications of run's members that can carry a
-// request to the switchyard now: those still up. One that ended (its
-// session's end, and the while it lingers after, or its connection's) stays
-// in the published map until its session leaves the server, and would
-// answer nothing but the wait; it is left out.
+// liveCarriers are the publications that can carry a request about run to
+// the switchyard now: its members' still up, else any of this server's
+// still up (the run's links there are the publisher's, which any of its
+// publications may revoke: a run the engine evicts has no member running,
+// so their publications have ended by then). A publication that ended
+// (its session's end, and the while it lingers after, or its connection's)
+// stays in the published map until its session leaves the server, and
+// would answer nothing but the wait; it is left out. None when nothing of
+// this server's is published.
 func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
+	live := func(pub PublishedSession) bool {
+		select {
+		case <-pub.Done():
+			return false
+		default:
+			return pub != nil
+		}
+	}
 	var out []PublishedSession
+	members := map[string]bool{}
 	for _, m := range run.Members {
 		if m.SessionID == "" {
 			continue
 		}
-		pub := s.publishedOf(m.SessionID)
-		if pub == nil {
-			continue
+		members[m.SessionID] = true
+		if pub := s.publishedOf(m.SessionID); pub != nil && live(pub) {
+			out = append(out, pub)
 		}
-		select {
-		case <-pub.Done():
-			continue
-		default:
+	}
+	if len(out) > 0 {
+		return out
+	}
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	for id, pub := range s.published {
+		if !members[id] && live(pub) {
+			out = append(out, pub)
 		}
-		out = append(out, pub)
 	}
 	return out
 }

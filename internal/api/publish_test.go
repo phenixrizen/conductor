@@ -1379,3 +1379,61 @@ func TestAForgottenRunRevokesItsLinksOverALivePublication(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// A run the engine evicts has no member running, so its members'
+// publications have all ended by then: its revokes go over another
+// publication of this server's, since the switchyard holds the run's links
+// under the publisher, whichever session minted them (Codex's review of
+// #148's change). The member's session ends and its publication with it;
+// an unrelated session stays published; the forgotten run's link is
+// refused at the rendezvous.
+func TestAnEvictedRunsLinksAreRevokedOverAnotherSessionsPublication(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "for the team"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	other := local.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(other) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the unrelated session is not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	run, _ := local.srv.runs.Get(runID)
+	member := run.Members[0].SessionID
+	d, ok := local.srv.registry.Get(member)
+	if !ok {
+		t.Fatal("the member's session is not on the server")
+	}
+	if err := d.(*session.Local).Stop(t.Context()); err != nil {
+		t.Fatalf("stop the member: %v", err)
+	}
+	pub := local.srv.publishedOf(member)
+	if pub == nil {
+		t.Fatal("the member is not published")
+	}
+	select {
+	case <-pub.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("the member's publication never ended")
+	}
+	local.srv.runs.ForgetForTest(runID)
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		if resp.StatusCode == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous still resolves the evicted run's link: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
