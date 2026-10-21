@@ -381,3 +381,51 @@ func TestAStopDuringAResumedMembersReadinessWaitEndsIt(t *testing.T) {
 	}
 	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
 }
+
+// A second resume of a member while the first makes its session is refused,
+// whatever the ended session still on the member says, and never touches
+// the member: the first's failure ends the member, which is then resumed
+// again (Codex's review of #153's change).
+func TestASecondResumeOfAMemberWhileTheFirstLaunchesIsRefused(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	lead, p := fl.member("lead")
+	p.End(0)
+	<-lead.Ended()
+	// The first resume's launch blocks until its context ends.
+	fl.mu.Lock()
+	if fl.block == nil {
+		fl.block = map[string]bool{}
+	}
+	fl.block["lead"] = true
+	fl.mu.Unlock()
+	ctx, cancel := context.WithCancel(t.Context())
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.ResumeMember(ctx, run.ID, "lead", "3f80c8bd-0000-4000-8000-000000000001")
+		first <- err
+	}()
+	waitStatus(t, e, run.ID, "lead", MemberStarting, 5*time.Second)
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", "3f80c8bd-0000-4000-8000-000000000001"); !errors.Is(err, ErrMemberRunning) {
+		t.Fatalf("a second resume while the first launches: %v", err)
+	}
+	cancel()
+	if err := <-first; err == nil {
+		t.Fatal("the first resume, its launch cut short, succeeded")
+	}
+	if m := waitStatus(t, e, run.ID, "lead", MemberEnded, 5*time.Second); m.Err == "" {
+		t.Fatalf("after the failed resume: %+v", m)
+	}
+	fl.mu.Lock()
+	fl.block["lead"] = false
+	fl.mu.Unlock()
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", ""); err != nil {
+		t.Fatalf("resumed again: %v", err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+}

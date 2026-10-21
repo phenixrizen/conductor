@@ -329,6 +329,11 @@ type member struct {
 	def   Member
 	state MemberState
 	base  string // the commit its worktree branched from, for DiffStat
+	// resuming is set, under e.mu, while a ResumeMember makes the member's
+	// new session (its ended session's id still on the state): a second
+	// resume meanwhile is refused, and only the one making the session
+	// touches the member's state.
+	resuming bool
 	// prompted is set as its prompt is typed (or at once without one), and
 	// promptedAt is when: a done whose entry is stamped after it starts the
 	// members after it (startAfter). One stamped before it, even if it
@@ -713,6 +718,11 @@ func (e *Engine) add(c Crew, prefix, label string) *run {
 			immediate++
 		}
 	}
+	// Under endMu as well: a run evict forgets has its record written
+	// (journalForgotten) in its turn among the saves, before the run is
+	// gone for a resume from that record to find.
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for r.id == "" || e.runs[r.id] != nil {
@@ -1358,10 +1368,12 @@ func (e *Engine) abort(r *run) {
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
 	_ = e.stop(ctx, r)
+	e.endMu.Lock()
 	e.mu.Lock()
 	e.journalForgotten(r)
 	e.forget(r)
 	e.mu.Unlock()
+	e.endMu.Unlock()
 }
 
 // evict forgets the oldest runs with nothing running until there is room for
@@ -1401,6 +1413,8 @@ func (e *Engine) idle(r *run) bool {
 // ForgetForTest drops a run as evict would, so a test sees the engine
 // without it (its record stays).
 func (e *Engine) ForgetForTest(runID string) {
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if r, ok := e.runs[runID]; ok {
@@ -1410,15 +1424,20 @@ func (e *Engine) ForgetForTest(runID string) {
 }
 
 // journalForgotten writes r's record once more as it is forgotten (evict,
-// abort, ForgetForTest), on a goroutine of its own, through the records
-// RecordEnds wired: a resume's mark on it (resumedBy) made since the
-// journal last wrote it is not lost with the run. The caller holds e.mu.
+// abort, ForgetForTest), through the records RecordEnds wired: a resume's
+// mark on it (resumedBy) made since the journal last wrote it is not lost
+// with the run. The snapshot, with the chat (the record is the whole of
+// it), takes its place among the saves here, before the run is gone: a
+// resume from the record waits for it (WaitRecorded) before marking the
+// record, so the mark is never written over by it. The caller holds endMu
+// and e.mu, as the forget sites do.
 func (e *Engine) journalForgotten(r *run) {
 	if e.journal == nil {
 		return
 	}
-	snap := r.snapshot(false, true) // with its chat: the record is the whole of it
-	go e.JournalRun(snap)
+	snap := r.snapshot(false, true)
+	e.refresh(&snap)
+	e.journal(snap)
 }
 
 // forget drops r and the index of its sessions, and tells OnForget. The
@@ -1745,6 +1764,10 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		err = ErrRunStopped
 	case m.state.Status == MemberPending:
 		err = ErrMemberRunning
+	case m.resuming:
+		// A resume of it is making its session: refused, not started
+		// beside it, whatever the ended session on its state says.
+		err = ErrMemberRunning
 	case m.state.Status == MemberStarting && !e.ended(m):
 		// Marked starting by a resume under way, its ended session's id
 		// still on it: a second resume meanwhile is refused, not started
@@ -1774,6 +1797,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		cwd = filepath.Join(m.state.Worktree, r.prefix)
 	}
 	m.state.Status = MemberStarting
+	m.resuming = true
 	r.starts.Add(1)
 	r.touch()
 	e.mu.Unlock()
@@ -1785,6 +1809,9 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
 		Resume: resume, ResumedFrom: old})
 	if err != nil {
+		e.mu.Lock()
+		m.resuming = false
+		e.mu.Unlock()
 		r.starts.Done()
 		e.fail(r, m, err)
 		return "", fmt.Errorf("member %s: %w", quote(name), err)
@@ -1792,6 +1819,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	id := local.Info().ID
 	started := time.Now().UTC()
 	e.mu.Lock()
+	m.resuming = false
 	if old != "" {
 		e.bySession.Delete(old)
 	}

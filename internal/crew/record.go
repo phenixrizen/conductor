@@ -350,22 +350,6 @@ func (e *Engine) Journal(runID string) {
 	}
 }
 
-// JournalRun saves r, a snapshot the engine handed out (a forgotten run's:
-// the run as it last was, which no end follows), brought up to date as a
-// read is (refresh), through the records RecordEnds wired; nothing without
-// them. It takes its place in the saves under endMu, as Journal and the
-// ends do, so a snapshot an earlier Journal took of the same run never
-// lands after it. It takes no engine lock.
-func (e *Engine) JournalRun(r Run) {
-	if e.journal == nil {
-		return
-	}
-	e.endMu.Lock()
-	defer e.endMu.Unlock()
-	e.refresh(&r)
-	e.journal(r)
-}
-
 // WaitRecorded waits, as long as ctx allows, until every end handed to the
 // records so far (RecordEnds) is written or dropped, and reports whether it
 // is so; true at once when none waits, or no records are kept. The server's
