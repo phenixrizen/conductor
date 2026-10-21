@@ -96,6 +96,8 @@ var (
 	ErrRunStopped     = errors.New("the run is stopped")
 	ErrMemberRunning  = errors.New("the member is still running")
 	ErrRunRunning     = errors.New("the run is still running: stop it first")
+	// ErrRunResumed is what a RunResumedError is (errors.Is).
+	ErrRunResumed = errors.New("the run was resumed already")
 	// errNotReady is awaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )
@@ -273,6 +275,10 @@ type run struct {
 	// stopDone once the stop completed (every session stopped, every start
 	// and delivery drained), which a member's Resume may reopen.
 	stopping, stopDone bool
+	// resuming is set, under e.mu, while ResumeRun makes the run that
+	// resumes this one, so that a second ResumeRun meanwhile is refused
+	// (RunResumedError) rather than making another.
+	resuming bool
 	// resumedFrom and resumedBy link a run to the one it resumed, and to the
 	// one that resumed it (ResumeRun).
 	resumedFrom, resumedBy string
@@ -289,6 +295,22 @@ type run struct {
 	// excludeNoted is set once the log says info/exclude could not be written.
 	excludeNoted bool
 }
+
+// RunResumedError refuses a ResumeRun of a run resumed already, or being
+// resumed: By names the run that resumed it, "" while that run is still
+// being made (a second ResumeRun landing meanwhile). One live session per
+// agent conversation: a second continuation would put two agents on one
+// branch, each appending to one transcript.
+type RunResumedError struct{ By string }
+
+func (e *RunResumedError) Error() string {
+	if e.By == "" {
+		return "the run is being resumed"
+	}
+	return "the run was resumed already, as " + e.By
+}
+
+func (e *RunResumedError) Is(target error) bool { return target == ErrRunResumed }
 
 type member struct {
 	def   Member
@@ -471,7 +493,14 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	case cur.State != RunStopped && cur.State != RunFinished:
 		e.mu.Unlock()
 		return nil, ErrRunRunning
+	case old.resumedBy != "":
+		e.mu.Unlock()
+		return nil, &RunResumedError{By: old.resumedBy}
+	case old.resuming:
+		e.mu.Unlock()
+		return nil, &RunResumedError{}
 	}
+	old.resuming = true
 	yolo := old.yolo
 	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo}
 	type kept struct{ agentSession, sessionID, worktree, branch, base string }
@@ -491,6 +520,9 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	e.mu.Unlock()
 	prefix, err := e.prepare(ctx, c)
 	if err != nil {
+		e.mu.Lock()
+		old.resuming = false
+		e.mu.Unlock()
 		return nil, err
 	}
 	r := e.add(c, prefix, old.label)
@@ -498,6 +530,7 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	e.mu.Lock()
 	r.resumedFrom = old.id
 	old.resumedBy = r.id
+	old.resuming = false
 	old.note(session.ActivityStatus, "resumed as %s", r.id)
 	r.note(session.ActivityStatus, "resumes %s: %d conversations continue", old.id, len(keeps))
 	var resumes []*member
@@ -1593,6 +1626,11 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	case r.stopping && !r.stopDone:
 		err = ErrRunStopped
 	case m.state.Status == MemberPending:
+		err = ErrMemberRunning
+	case m.state.Status == MemberStarting:
+		// Marked starting by a resume under way, its ended session's id
+		// still on it: a second resume meanwhile is refused, not started
+		// beside it.
 		err = ErrMemberRunning
 	case m.state.Status != MemberEnded && !e.ended(m):
 		err = ErrMemberRunning

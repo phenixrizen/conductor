@@ -76,6 +76,13 @@ type Server struct {
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
+	// resuming holds the agent conversations a session is being made for
+	// (createLocalSession with a resume id): taken before the process
+	// starts, released once the session is registered (liveAgentSession
+	// holds the conversation from then) or the start failed, so two resumes
+	// of one conversation at once make one session (#126). Under resumingMu.
+	resumingMu sync.Mutex
+	resuming   map[string]struct{}
 	// records keeps the runs that ended, under runs/ in the data directory
 	// (crew.Records); nil without one.
 	records *crew.Records

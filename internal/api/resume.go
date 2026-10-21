@@ -78,6 +78,28 @@ func resumeID(agent catalog.Agent, as *session.AgentSession) string {
 	return as.ID
 }
 
+// takeResume takes the agent conversation id for a session being made
+// (Server.resuming), unless a session that runs holds it or one is being
+// made for it; releaseResume lets it go.
+func (s *Server) takeResume(id string) bool {
+	s.resumingMu.Lock()
+	defer s.resumingMu.Unlock()
+	if _, taken := s.resuming[id]; taken || s.liveAgentSession(id) {
+		return false
+	}
+	if s.resuming == nil {
+		s.resuming = map[string]struct{}{}
+	}
+	s.resuming[id] = struct{}{}
+	return true
+}
+
+func (s *Server) releaseResume(id string) {
+	s.resumingMu.Lock()
+	defer s.resumingMu.Unlock()
+	delete(s.resuming, id)
+}
+
 // liveAgentSession reports whether a session that runs holds the agent
 // session id: one conversation is resumed by one session at a time.
 func (s *Server) liveAgentSession(id string) bool {

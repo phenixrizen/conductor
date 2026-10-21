@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ApiError } from '~/composables/useApi'
 import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '~/utils/crews'
 import { runSubtitle, shortRunId } from '~/utils/crewWords'
@@ -94,6 +95,11 @@ async function resumeRun() {
     toast.add({ title: 'Run resumed', description: `${next.id}: the conversations continue in their worktrees.`, icon: 'i-lucide-play', color: 'success' })
     await router.push(`/runs/${encodeURIComponent(next.id)}`)
   } catch (e) {
+    // Resumed already (#126): the continuation the server names is the run to open.
+    if (e instanceof ApiError && e.code === 'already_resumed' && typeof e.details.run === 'string') {
+      await router.push(`/runs/${encodeURIComponent(e.details.run)}`)
+      return
+    }
     toast.add({ title: 'Resume failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
     resuming.value = false
@@ -150,7 +156,7 @@ async function stopAll() {
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="chatUnread" />
       </UButton>
-      <UButton v-if="stopped && !record" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
+      <UButton v-if="stopped && !record && !run?.resumedBy" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
       <UButton v-if="!stopped && !record" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton class="hidden sm:inline-flex" />
     </template>

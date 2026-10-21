@@ -204,6 +204,10 @@ test('a member of a stopped run resumed reopens the run, and Resume as new run c
     expect((r as unknown as { resumedBy?: string }).resumedBy).toBe(nextId)
     expect(r.state).toBe('stopped')
     await expect(page.locator('[data-crew-run-header] [data-run-resume]')).toHaveCount(0)
+    // The stopped run, resumed already, offers no Resume as new run on its own page either (#126).
+    await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+    await expect(page.locator('[data-crew-run-header] [data-run-subtitle]')).toBeVisible()
+    await expect(page.locator('[data-crew-run-header] [data-run-resume]')).toHaveCount(0)
     // The Crews page lists the new run as running now, and the stopped run no longer offers Resume as new run once resumed.
     await page.goto('/crews')
     await expect(page.locator(`[data-running-now] [data-run="${nextId}"]`)).toHaveAttribute('data-state', 'running')

@@ -518,6 +518,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "run_stopped", err.Error())
 	case errors.Is(err, crew.ErrRunRunning):
 		writeError(w, http.StatusConflict, "run_running", err.Error())
+	case errors.Is(err, crew.ErrRunResumed):
+		writeError(w, http.StatusConflict, "already_resumed", err.Error())
 	case errors.Is(err, crew.ErrMemberRunning):
 		writeError(w, http.StatusConflict, "still_running", err.Error())
 	case errors.As(err, &aerr):
@@ -536,6 +538,17 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := runContext(r)
 	defer cancel()
 	run, err := s.runs.ResumeRun(ctx, id)
+	var resumed *crew.RunResumedError
+	if errors.As(err, &resumed) {
+		// Resumed already, or being: 409 naming the continuation, which the
+		// page opens in place of making another.
+		body := map[string]any{"code": "already_resumed", "message": err.Error()}
+		if resumed.By != "" {
+			body["run"] = resumed.By
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{"error": body})
+		return
+	}
 	if err != nil {
 		s.runError(w, "resume run", id, err)
 		return
