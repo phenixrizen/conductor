@@ -62,6 +62,10 @@ export default defineNuxtConfig({
     // The npm packages the client bundle and its workers carry, for THIRD_PARTY_NOTICES (scripts/notices.py).
     plugins: [bundled.client],
     worker: { plugins: () => [bundled.worker] },
+    // The dev server only: the Markdown preview draws Mermaid in a sandboxed frame (app/utils/mermaidFrame.ts), whose
+    // origin is opaque, so the frame's fetch of the renderer module and its imports carries `Origin: null` and needs the
+    // CORS answer Vite gives localhost origins by default (the built app serves one classic script, which needs none).
+    server: { cors: { origin: [/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/, 'null'] } },
     optimizeDeps: { include: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-webgl', '@xterm/addon-web-links'] },
   },
   typescript: { strict: true, typeCheck: false },

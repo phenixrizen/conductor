@@ -2099,9 +2099,14 @@ tool, and Conductor offered it as Goose.
   nothing in it and follows no link, whatever its CSS says, so the display
   is as closed as the frame (a scrub of CSS was tried and dropped: a custom
   property holding an `image-set()` is one of many spellings no scrub
-  knows). A scan of the source was tried first and dropped too: Mermaid
-  loads an image node's URL while it measures it, and a quoted key or a
-  JSON escape slips any regular expression. A render pass overtaken by a later one or by the
+  knows); a node Mermaid wrapped in an anchor for a `click … href` keeps
+  its drawing as a group, the link gone. A scan of the source was tried
+  first and dropped too: Mermaid loads an image node's URL while it
+  measures it, and a quoted key or a JSON escape slips any regular
+  expression. Under the dev server the renderer is a module served
+  import by import, loaded by a module script with the app's origin
+  allowed, and the dev server answers the frame's `Origin: null` with the
+  CORS header it gives localhost origins (`nuxt.config.ts`, dev only). A render pass overtaken by a later one or by the
   preview going stops at its next step; a change to the editor's model
   while previewing (a reload after a save conflict) refreshes the preview.
   A `[words]()` link with no destination is no link; a `#fragment` link

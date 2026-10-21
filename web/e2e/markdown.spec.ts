@@ -70,6 +70,12 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
       '  A["<img src=https://attacker.invalid/label.png>"] --> B',
       '```',
       '',
+      '```mermaid',
+      'flowchart LR',
+      '  Docs[Docs] --> Read[Read]',
+      '  click Docs href "https://attacker.invalid/docs"',
+      '```',
+      '',
       '```go',
       'package main',
       '```',
@@ -122,20 +128,23 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     await expect(preview.locator('pre.shiki')).toContainText('package main', { timeout: 30_000 })
     await expect(area.locator('[data-editor-pos]')).toHaveCount(0)
     // The image on the web is held as its alt text. The diagrams are drawn in a sandboxed frame: the plain one, the one whose
-    // theme CSS names a url( and an @import (stripped from its style) and the one with an HTML image in a label (stripped)
-    // come back as SVG; the image node fails there, its URL refused by the frame's policy, and keeps its source with
-    // Mermaid's words.
+    // theme CSS names a url( and an @import (stripped from its style), the one with an HTML image in a label (stripped) and
+    // the one whose node is a link (the link gone, the node kept) come back as SVG; the image node fails there, its URL
+    // refused by the frame's policy, and keeps its source with Mermaid's words.
     await expect(preview.locator('.md-image-held')).toHaveText('tracker')
     await expect(preview.locator('img:not([src^="data:image/svg+xml"])')).toHaveCount(0)
     const diagrams = preview.locator('[data-mermaid-rendered] img[src^="data:image/svg+xml"]')
     // Each diagram as the browser has it: decoded (a width once the image document parsed) and its SVG text.
     const drawn = () => diagrams.evaluateAll((els) => els.map((e) => ({ width: (e as HTMLImageElement).naturalWidth, svg: decodeURIComponent((e.getAttribute('src') ?? '').split(',').slice(1).join(',')) })))
     await expect(diagrams.first()).toBeVisible({ timeout: 30_000 })
-    await expect(preview.locator('[data-mermaid-rendered]')).toHaveCount(3, { timeout: 30_000 })
-    await expect(diagrams).toHaveCount(3)
-    await expect.poll(async () => (await drawn()).map((d) => d.width > 0)).toEqual([true, true, true])
+    await expect(preview.locator('[data-mermaid-rendered]')).toHaveCount(4, { timeout: 30_000 })
+    await expect(diagrams).toHaveCount(4)
+    await expect.poll(async () => (await drawn()).map((d) => d.width > 0)).toEqual([true, true, true, true])
     const svgs = await drawn()
     expect(svgs[0]!.svg).toContain('Roundhouse')
+    expect(svgs[3]!.svg).toContain('Docs')
+    expect(svgs[3]!.svg).toContain('Read')
+    expect(svgs[3]!.svg).not.toContain('attacker')
     for (const d of svgs) {
       expect(d.svg).toContain('<style')
       // A url( may point into the document (an arrowhead marker), never outside it. A match shows with what is around it.
@@ -168,8 +177,8 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     await area.locator('[data-editor-tab]', { hasText: 'README.md' }).click()
     await expect(toggle).toHaveAttribute('data-editor-preview', 'on')
     await expect(preview.locator('h1')).toHaveText('Signals')
-    await expect(diagrams).toHaveCount(3, { timeout: 30_000 })
-    await expect.poll(async () => (await drawn()).map((d) => d.width > 0)).toEqual([true, true, true])
+    await expect(diagrams).toHaveCount(4, { timeout: 30_000 })
+    await expect.poll(async () => (await drawn()).map((d) => d.width > 0)).toEqual([true, true, true, true])
     await area.locator('[data-editor-tab]', { hasText: 'users.md' }).click()
     await expect(preview.locator('h1')).toHaveText('Users')
     await expect(diagrams).toHaveCount(1, { timeout: 30_000 })

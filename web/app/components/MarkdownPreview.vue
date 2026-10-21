@@ -128,7 +128,7 @@ function asImage(svg: string, source: string): HTMLImageElement {
   return img
 }
 
-const LOADING_TAGS = new Set(['image', 'img', 'picture', 'source', 'video', 'audio', 'iframe', 'object', 'embed', 'link', 'use', 'script', 'a', 'form', 'meta', 'base'])
+const LOADING_TAGS = new Set(['image', 'img', 'picture', 'source', 'video', 'audio', 'iframe', 'object', 'embed', 'link', 'use', 'script', 'form', 'meta', 'base'])
 const URL_ATTRS = ['src', 'srcset', 'href', 'xlink:href', 'poster', 'background', 'action', 'formaction', 'data', 'ping']
 /** A url( in CSS that points anywhere but into the document (`url(#marker)` is a diagram's own arrowhead or gradient). */
 const OUTSIDE_URL = /url\s*\(\s*(?!["']?\s*#)[^)]*\)/gi
@@ -141,6 +141,16 @@ function scrub(root: Element) {
   for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
     if (LOADING_TAGS.has(el.localName)) {
       el.remove()
+      continue
+    }
+    if (el.localName === 'a') {
+      // A `click A href "…"` wraps the node in an anchor: the node stays (as a group, its transform and class kept), the link goes.
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+      for (const name of el.getAttributeNames()) {
+        if (!URL_ATTRS.includes(name) && name !== 'target' && !/^on/i.test(name)) g.setAttribute(name, el.getAttribute(name) ?? '')
+      }
+      g.append(...Array.from(el.childNodes))
+      el.replaceWith(g)
       continue
     }
     for (const a of URL_ATTRS) {

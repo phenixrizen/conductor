@@ -24,9 +24,14 @@ let ready: Promise<Window> | null = null
 let seq = 0
 const pending = new Map<number, { resolve: (svg: string) => void; reject: (e: Error) => void; timer: number }>()
 
+/**
+ * The frame's policy: the renderer's script and nothing else at all; styles inline (Mermaid writes its own). In the built
+ * app the renderer is one classic file, allowed by its exact URL. Under the dev server it is a module whose imports are
+ * served one by one from the app's origin, so that origin is allowed and the script element is a module.
+ */
 function policy(script: string): string {
-  // The renderer's script by its exact URL; styles inline (Mermaid writes its own); nothing else at all.
-  return `default-src 'none'; script-src ${script}; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'`
+  const scripts = import.meta.dev ? new URL(script).origin : script
+  return `default-src 'none'; script-src ${scripts}; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'`
 }
 
 function boot(): Promise<Window> {
@@ -64,7 +69,8 @@ function boot(): Promise<Window> {
       else p.reject(new Error(typeof r.error === 'string' ? r.error : 'the diagram was not drawn'))
     }
     window.addEventListener('message', onMessage)
-    f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy(script)}"></head><body><script src="${script}"></script></body></html>`
+    const tag = import.meta.dev ? `<script type="module" src="${script}"></script>` : `<script src="${script}"></script>`
+    f.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy(script)}"></head><body>${tag}</body></html>`
     document.body.appendChild(f)
     frame = f
   })
