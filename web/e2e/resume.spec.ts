@@ -194,7 +194,8 @@ test('a member of a stopped run resumed reopens the run, and Resume as new run c
     const next = await api.run(nextId)
     expect(next.id).not.toBe(run.id)
     expect((next as unknown as { resumedFrom?: string }).resumedFrom).toBe(run.id)
-    expect(member(next, 'lead').status).toBe('running')
+    // Starting until its session is ready for a prompt (#155), then running.
+    await expect.poll(async () => member(await api.run(nextId), 'lead').status, { timeout: 15_000 }).toBe('running')
     expect(member(next, 'lead').branch).toBe(lead.branch)
     expect(member(next, 'later').status).toBe('pending')
     const nextLead = await api.session(member(next, 'lead').sessionId ?? '')

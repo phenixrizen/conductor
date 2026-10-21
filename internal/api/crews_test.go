@@ -1375,8 +1375,11 @@ func TestRunLinksGoWithTheirForgottenRun(t *testing.T) {
 			t.Fatalf("launch %d: %d %v", i, resp.StatusCode, out)
 		}
 	}
+	// Forgotten by the engine: answered from its record alone (#127).
 	resp, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
-	wantAPIError(t, "the forgotten run", resp, out, http.StatusNotFound, "not_found", "")
+	if resp.StatusCode != http.StatusOK || out["record"] != true {
+		t.Fatalf("the forgotten run: %d %v", resp.StatusCode, out)
+	}
 
 	// Closed as on a revoke, its member's session's end long past: the
 	// session's end closes the viewers of the session's own links alone.

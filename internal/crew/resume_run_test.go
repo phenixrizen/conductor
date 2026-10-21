@@ -209,9 +209,8 @@ func TestResumeRunOfAFinishedRunStartsTheOthersAnew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st := memberState(t, e, next.ID, "lead"); st.Status != MemberRunning {
-		t.Fatalf("lead %+v", st)
-	}
+	// Starting until its session is ready for a prompt (#155), then running.
+	waitStatus(t, e, next.ID, "lead", MemberRunning, 5*time.Second)
 	waitStatus(t, e, next.ID, "core", MemberRunning, 5*time.Second)
 	_, ncp := fl.member("core")
 	if got := waitTyped(t, ncp, 5*time.Second); got != "Build it.\r" {
