@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dirOf, isMarkdownPath, localPath, mermaidFetches, nextMermaidId, renderMarkdown, resolveRelative } from './markdown'
+import { dirOf, headingId, isMarkdownPath, localPath, renderMarkdown, resolveRelative } from './markdown'
 
 const dir = '/repo/docs'
 const rawUrl = (p: string) => `/api/sessions/s1/files?path=${encodeURIComponent(p)}&raw=1`
@@ -7,7 +7,7 @@ const rawUrl = (p: string) => `/api/sessions/s1/files?path=${encodeURIComponent(
 describe('the Markdown preview', () => {
   it('renders headings, lists, tables, task lists and code, and names Markdown files and their folders', () => {
     const { html, mermaid } = renderMarkdown('# Title\n\n- one\n- [x] done\n- [ ] not yet\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```go\nfunc main() {}\n```\n', { dir })
-    expect(html).toContain('<h1>Title</h1>')
+    expect(html).toContain('<h1 id="md-title">Title</h1>')
     expect(html).toContain('<li class="task"><input type="checkbox" disabled checked> done</li>')
     expect(html).toContain('<li class="task"><input type="checkbox" disabled> not yet</li>')
     expect(html).toContain('<li>one</li>')
@@ -56,19 +56,18 @@ describe('the Markdown preview', () => {
     expect(html).toContain(`src="${rawUrl('/repo/docs/im g.png').replace(/&/g, '&amp;')}"`)
   })
 
-  it('holds a Mermaid diagram that would reach outside the page, and draws one that would not', () => {
-    expect(mermaidFetches('flowchart LR\n  A[Yard] --> B[Roundhouse]\n')).toBeNull()
-    expect(mermaidFetches('sequenceDiagram\n  a->>b: the image is at /img/a.png\n')).toBeNull()
-    expect(mermaidFetches('flowchart LR\n  A@{ img: "https://attacker.invalid/p.png", h: 60 }\n')).toMatch(/image node/)
-    expect(mermaidFetches('flowchart LR\n  A@{\n    shape: image,\n    img: \'x.png\'\n  }\n')).toMatch(/image node/)
-    expect(mermaidFetches('flowchart LR\n  A --> B\n  style A fill:url(https://attacker.invalid/x.svg#p)\n')).toMatch(/url\(/)
-    expect(mermaidFetches('%%{init: {"themeCSS": "@import url(https://attacker.invalid/x.css);"}}%%\nflowchart LR\n  A --> B\n')).toMatch(/url\(/)
-    expect(mermaidFetches('flowchart LR\n  A["<img src=https://attacker.invalid/p.png>"]\n')).toMatch(/HTML element/)
-    expect(mermaidFetches('flowchart LR\n  A["<a href=https://attacker.invalid>go</a>"]\n')).toMatch(/HTML element/)
-    expect(mermaidFetches('flowchart LR\n  A["`**bold** src=https://attacker.invalid`"]\n')).toMatch(/attribute/)
-    const ids = new Set([nextMermaidId(), nextMermaidId(), nextMermaidId()])
-    expect(ids.size).toBe(3)
-    for (const id of ids) expect(id).toMatch(/^md-mermaid-\d+$/)
+  it('gives headings ids for fragment links, each unique, and makes no link of an empty destination', () => {
+    expect(headingId('Intro')).toBe('md-intro')
+    expect(headingId('  The Yard & the Roundhouse!  ')).toBe('md-the-yard-the-roundhouse')
+    expect(headingId('日本語 の 見出し')).toBe('md-日本語-の-見出し')
+    const { html } = renderMarkdown('# Intro\n\n## Intro\n\n### Users, by name\n\nSee [the intro](#intro) and [placeholder]() and [nothing]( ).\n', { dir })
+    expect(html).toContain('<h1 id="md-intro">Intro</h1>')
+    expect(html).toContain('<h2 id="md-intro-2">Intro</h2>')
+    expect(html).toContain('<h3 id="md-users-by-name">Users, by name</h3>')
+    expect(html).toContain('<a href="#intro">the intro</a>')
+    expect(html).toContain('<a>placeholder</a>')
+    expect(html).toContain('<a>nothing</a>')
+    expect(html).not.toContain('href=""')
   })
 
   it('loads a relative image through the session, holds one on the web unless allowed, and shows the alt text otherwise', () => {

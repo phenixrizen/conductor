@@ -1,17 +1,21 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Request } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
 // The Markdown preview (#166): a `.md` file in the editor shown rendered by
 // the header's Preview, a Mermaid block drawn, raw HTML shown as text, a
 // relative link opening its file in a tab, the choice kept per tab, Alt+P
 // bringing the source back (with Neovim holding the keys too, where nvim is
-// on PATH). A repository file is untrusted: an image on the web, a Mermaid
-// image node, an HTML image in a Mermaid label and a url( in a diagram's
-// CSS all stay unloaded, and the page makes no request outside its own
-// origin while it shows them. Mermaid draws SVG only in a browser (vitest's
-// node environment has no DOM), so the drawing is checked here.
+// on PATH). A repository file is untrusted: an image on the web is held, a
+// Mermaid image node fails inside the sandboxed renderer (its frame's policy
+// lets nothing be fetched), an HTML image in a label and a url( in a
+// diagram's CSS are stripped, and the page makes no request outside its own
+// origin while it shows all four. An empty link and a fragment link never
+// navigate the page. A reload of the source while previewing refreshes the
+// preview. Mermaid draws SVG only in a browser (vitest's node environment
+// has no DOM), so the drawing is checked here.
 const hasNvim = (() => {
   try {
     execFileSync('sh', ['-c', 'command -v nvim'], { stdio: 'ignore' })
@@ -29,11 +33,13 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     [
       '# Signals',
       '',
-      'The crew reads [the users guide](docs/users.md) first.',
+      'The crew reads [the users guide](docs/users.md) first, then [the table](#the-table); [a placeholder]() leads nowhere.',
       '',
       '<script>alert(1)</script>',
       '',
       '![tracker](https://attacker.invalid/pixel.png)',
+      '',
+      '## The table',
       '',
       '| Signal | Means |',
       '|---|---|',
@@ -49,13 +55,13 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
       '',
       '```mermaid',
       'flowchart LR',
-      '  A@{ img: "https://attacker.invalid/node.png", h: 60 }',
+      '  A@{ "img": "https://attacker.invalid/node.png", h: 60 }',
       '```',
       '',
       '```mermaid',
+      '%%{init: {"themeCSS": ".node rect { fill: url(https://attacker.invalid/fill.svg#p); } @import url(https://attacker.invalid/x.css);"}}%%',
       'flowchart LR',
       '  A --> B',
-      '  style B fill:url(https://attacker.invalid/fill.svg#p)',
       '```',
       '',
       '```mermaid',
@@ -69,20 +75,28 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
       '',
     ].join('\n'),
   )
-  writeFileSync(join(cwd, 'docs', 'users.md'), '# Users\n\n```mermaid\nsequenceDiagram\n  Yard->>Roundhouse: who is free?\n```\n')
+  const users = join(cwd, 'docs', 'users.md')
+  writeFileSync(users, '# Users\n\n```mermaid\nsequenceDiagram\n  Yard->>Roundhouse: who is free?\n```\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'markdown', cwd })
-  // Every request the page makes to another origin: there must be none (the file names attacker.invalid four ways).
-  const outside: string[] = []
+  // Every request the page makes to another origin (the file names attacker.invalid four ways). The browser reports one the
+  // frame's policy refused as a request that failed with ERR_BLOCKED_BY_CSP before anything was sent; nothing else may show.
+  const outside: Request[] = []
   let origin = ''
   page.on('request', (r) => {
     const u = new URL(r.url())
-    if (u.protocol === 'data:' || u.protocol === 'blob:') return
+    if (u.protocol === 'data:' || u.protocol === 'blob:' || u.protocol === 'about:') return
     // The first request is the page itself, from the server: its origin is the one everything else must have.
     if (!origin) origin = u.origin
-    else if (u.origin !== origin) outside.push(r.url())
+    else if (u.origin !== origin) outside.push(r)
   })
+  // Chromium names the refusal `csp` (its blocked reason) through Playwright; the net error name is accepted too.
+  const refused = (r: Request) => /^(csp|net::ERR_BLOCKED_BY_CSP)$/.test(r.failure()?.errorText ?? '')
+  const leaked = () => outside.filter((r) => !refused(r)).map((r) => `${r.url()} ${r.failure()?.errorText ?? 'sent'}`)
   try {
     await page.goto(`/sessions/${s.id}`)
+    // A mark on the window: a navigation of the page would lose it.
+    await page.evaluate(() => ((window as unknown as { __alive: boolean }).__alive = true))
+    const alive = () => page.evaluate(() => (window as unknown as { __alive?: boolean }).__alive === true)
     await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
     const pane = page.locator('[data-files-mode]')
     const box = pane.locator('[data-files-box] input, input[data-files-box]').first()
@@ -106,19 +120,35 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     await expect(preview.locator('script')).toHaveCount(0)
     await expect(preview.locator('pre.shiki')).toContainText('package main', { timeout: 30_000 })
     await expect(area.locator('[data-editor-pos]')).toHaveCount(0)
-    // The image on the web is held as its alt text; the plain diagram is drawn; the three that would fetch are held with why.
+    // The image on the web is held as its alt text. The diagrams are drawn in a sandboxed frame: the plain one, the one whose
+    // theme CSS names a url( and an @import (stripped from its style) and the one with an HTML image in a label (stripped)
+    // come back as SVG; the image node fails there, its URL refused by the frame's policy, and keeps its source with
+    // Mermaid's words.
     await expect(preview.locator('.md-image-held')).toHaveText('tracker')
     await expect(preview.locator('img')).toHaveCount(0)
-    await expect(preview.locator('[data-mermaid-rendered] svg')).toBeVisible({ timeout: 30_000 })
-    await expect(preview.locator('[data-mermaid-rendered]')).toHaveCount(1)
-    await expect(preview.locator('[data-mermaid-rendered]')).toContainText('Roundhouse')
-    const held = preview.locator('[data-mermaid-held]')
-    await expect(held).toHaveCount(3)
-    await expect(held.nth(0)).toContainText('not drawn: an image node')
-    await expect(held.nth(1)).toContainText('not drawn: a url(')
-    await expect(held.nth(2)).toContainText('not drawn: an HTML element')
-    await expect(held.nth(2)).toContainText('attacker.invalid/label.png')
-    expect(outside).toEqual([])
+    await expect(preview.locator('[data-mermaid-rendered] svg').first()).toBeVisible({ timeout: 30_000 })
+    await expect(preview.locator('[data-mermaid-rendered]')).toHaveCount(3, { timeout: 30_000 })
+    await expect(preview.locator('[data-mermaid-rendered]').first()).toContainText('Roundhouse')
+    await expect(preview.locator('[data-mermaid-error]')).toHaveCount(1, { timeout: 30_000 })
+    await expect(preview.locator('[data-mermaid-error]')).toContainText('Mermaid could not draw this block')
+    await expect(preview.locator('[data-mermaid-error]')).toContainText('attacker.invalid/node.png')
+    await expect(preview.locator('[data-mermaid-rendered] image, [data-mermaid-rendered] img, [data-mermaid-rendered] a')).toHaveCount(0)
+    const styles = await preview.locator('[data-mermaid-rendered] [style]').evaluateAll((els) => els.map((e) => e.getAttribute('style') ?? '').join('\n'))
+    expect(styles).not.toMatch(/url\s*\(/i)
+    const sheets = await preview.locator('[data-mermaid-rendered] style').evaluateAll((els) => els.map((e) => e.textContent ?? '').join('\n'))
+    expect(sheets).not.toMatch(/url\s*\(|@import|attacker/i)
+    expect(sheets.length).toBeGreaterThan(0)
+    const frame = page.locator('iframe[data-mermaid-frame]')
+    await expect(frame).toHaveCount(1)
+    await expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
+    expect(leaked()).toEqual([])
+    expect(outside.map((r) => r.url())).toContain('https://attacker.invalid/node.png')
+    // An empty link and a fragment link never navigate the page: the fragment scrolls to its heading in the preview.
+    await preview.locator('a', { hasText: 'a placeholder' }).click()
+    await preview.locator('a[href="#the-table"]').click()
+    expect(await alive()).toBe(true)
+    expect(new URL(page.url()).hash).toBe('')
+    await expect(preview.locator('h2#md-the-table')).toBeInViewport()
     // A relative link opens its file in a tab of its own, previewable in turn; the README's tab keeps its preview; switching
     // between the two previews (each a diagram of its own) leaves both drawn.
     await preview.locator('a[data-md-link]').click()
@@ -131,7 +161,7 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     await area.locator('[data-editor-tab]', { hasText: 'README.md' }).click()
     await expect(toggle).toHaveAttribute('data-editor-preview', 'on')
     await expect(preview.locator('h1')).toHaveText('Signals')
-    await expect(preview.locator('[data-mermaid-rendered] svg')).toBeVisible({ timeout: 30_000 })
+    await expect(preview.locator('[data-mermaid-rendered] svg').first()).toBeVisible({ timeout: 30_000 })
     await area.locator('[data-editor-tab]', { hasText: 'users.md' }).click()
     await expect(preview.locator('h1')).toHaveText('Users')
     await expect(preview.locator('[data-mermaid-rendered] svg')).toBeVisible({ timeout: 30_000 })
@@ -144,19 +174,44 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     await expect(area.locator('[data-md-preview]')).toHaveCount(0)
     await expect(area.locator('[data-code-editor]')).toBeVisible()
     await expect(area.locator('[data-editor-pos]')).toBeVisible()
-    await area.locator('.monaco-editor .view-lines').click()
+    const lines = area.locator('.monaco-editor .view-lines')
+    await lines.click()
     await page.keyboard.press('Alt+KeyP')
     await expect(toggle).toHaveAttribute('data-editor-preview', 'on')
     await expect(preview.locator('h1')).toHaveText('Users')
     await preview.click()
     await page.keyboard.press('Alt+KeyP')
     await expect(toggle).toHaveAttribute('data-editor-preview', 'off')
+    // The preview shows the editor's text, unsaved edits included; a reload of the source while previewing (the file changed
+    // on disk, a save refused) shows the file as read again, the edits gone.
+    await lines.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type('\nEdited here\n')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+    await toggle.click()
+    await expect(preview).toContainText('Edited here')
+    await toggle.click()
+    writeFileSync(users, '# Users\n\nFrom the agent\n')
+    await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'file', op: 'edit', path: 'docs/users.md', tool: 'Edit' })
+    await lines.click()
+    await page.keyboard.press('Control+s')
+    const conflict = area.locator('[data-editor-conflict]')
+    await expect(conflict).toContainText('Changed on disk since you opened it', { timeout: 15_000 })
+    await toggle.click()
+    await expect(preview).toContainText('Edited here')
+    await conflict.locator('[data-editor-reload]').click()
+    await expect(conflict).toHaveCount(0)
+    await expect(preview).toContainText('From the agent', { timeout: 15_000 })
+    await expect(preview).not.toContainText('Edited here')
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0)
+    await toggle.click()
+    await expect(toggle).toHaveAttribute('data-editor-preview', 'off')
     // With Neovim holding the keys, Alt+P is still the preview's: it never reaches Neovim.
     if (hasNvim) {
       await area.locator('[data-editor-keymap]').click()
       await expect(area.locator('[data-editor-keymap]')).toHaveAttribute('data-editor-keymap', 'nvim')
       await expect(area.locator('[data-nvim-status]')).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
-      await area.locator('.monaco-editor .view-lines').click()
+      await lines.click()
       await page.keyboard.press('Alt+KeyP')
       await expect(toggle).toHaveAttribute('data-editor-preview', 'on')
       await expect(preview.locator('h1')).toHaveText('Users')
@@ -165,7 +220,8 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
       await expect(toggle).toHaveAttribute('data-editor-preview', 'off')
       await expect(area.locator('[data-nvim-status]')).toHaveAttribute('data-nvim-mode', /^(n|normal)$/)
     }
-    expect(outside).toEqual([])
+    expect(await alive()).toBe(true)
+    expect(leaked()).toEqual([])
   } finally {
     await api.stopSession(s.id)
   }

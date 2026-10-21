@@ -54,7 +54,7 @@ describe("the editor's keys", () => {
     const fold = EDITOR_SHORTCUTS.rows.find((r) => r.keys.join('') === 'T')
     expect(fold?.terminal).toEqual(['alt', 'T'])
     expect(ALT_PASSTHROUGH_CODES.has('KeyT')).toBe(true)
-    expect(EDITOR_SHORTCUTS.rows.map((r) => r.keys.join('+'))).toEqual(['T', 'ctrl+tab', 'ctrl+W', 'ctrl+F', 'ctrl+G'])
+    expect(EDITOR_SHORTCUTS.rows.map((r) => r.keys.join('+'))).toEqual(['T', 'alt+P', 'ctrl+tab', 'ctrl+W', 'ctrl+F', 'ctrl+G'])
     for (const r of EDITOR_SHORTCUTS.rows) expect(r.label).not.toMatch(/in a terminal/)
   })
 })

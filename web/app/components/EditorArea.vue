@@ -455,6 +455,8 @@ function togglePreviewOf() {
 function setDirty(id: string, d: boolean) {
   if (d) dirty.add(id)
   else dirty.delete(id)
+  // Told on every change to the model (a reload after a save conflict, Neovim's buffer): the preview shows the text as it is now.
+  previewSeq.value++
 }
 async function save(force = false) {
   const t = active.value

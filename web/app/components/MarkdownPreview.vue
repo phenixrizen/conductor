@@ -1,22 +1,23 @@
 <script setup lang="ts">
-import { MERMAID_PURIFY, mermaidFetches, nextMermaidId, renderMarkdown } from '~/utils/markdown'
+import { headingId, renderMarkdown } from '~/utils/markdown'
+import { renderMermaidIsolated } from '~/utils/mermaidFrame'
 /**
  * A Markdown file rendered (#166): the editor's Preview. The HTML is
  * renderMarkdown's (raw HTML never rendered, links and images under its
  * rules), set into the host and then enhanced: fenced code highlighted with
- * shiki in the editor's theme, and Mermaid blocks drawn by Mermaid, loaded
- * only when the file has one (it is large). A Mermaid diagram reaches the
- * page three ways short: a source that would load from a URL (an image
- * node, a url( in its CSS, an HTML element in a label; mermaidFetches) is
- * not drawn; Mermaid runs with securityLevel strict and a DOMPurify
- * configuration that forbids every label element and attribute that loads
- * or navigates (its own forbids only style); and the SVG it gives is
- * scrubbed of any such element or attribute before it goes in, its bind
- * functions never called. A block Mermaid cannot draw keeps its source
- * with Mermaid's error above it. The theme switch draws the diagrams
- * again. Each pass of enhancement is numbered; a pass overtaken by a later
- * one, or by the preview going, stops at its next step. A click on a
- * relative link asks the editor to open that file.
+ * shiki in the editor's theme, and Mermaid blocks drawn by Mermaid in the
+ * sandboxed frame (mermaidFrame.ts: an opaque origin under a Content
+ * Security Policy that lets nothing be fetched; Mermaid there runs with
+ * securityLevel strict, errors kept out of the document, and a DOMPurify
+ * configuration forbidding every label element and attribute that loads or
+ * navigates), made at the first diagram on the page. The SVG that comes
+ * back is scrubbed once more of anything that would load, navigate or run
+ * before it goes in. A block Mermaid cannot draw keeps its source with
+ * Mermaid's error above it. The theme switch draws the diagrams again.
+ * Each pass of enhancement is numbered; a pass overtaken by a later one,
+ * or by the preview going, stops at its next step. A click on a relative
+ * link asks the editor to open that file; a `#fragment` link scrolls to
+ * its heading in the preview.
  */
 const props = defineProps<{
   text: string
@@ -77,20 +78,11 @@ async function highlightCode(el: HTMLElement, n: number) {
 
 async function drawMermaid(el: HTMLElement, n: number) {
   const blocks = Array.from(el.querySelectorAll<HTMLElement>('pre[data-mermaid]'))
-  if (!blocks.length) return
-  const { default: mermaid } = await import('mermaid')
-  if (n !== pass) return
-  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', dompurifyConfig: MERMAID_PURIFY, theme: dark.value ? 'dark' : 'default', fontFamily: 'inherit' })
   for (const pre of blocks) {
     if (n !== pass) return
     const source = pre.textContent ?? ''
-    const fetches = mermaidFetches(source)
-    if (fetches) {
-      hold(pre, `This diagram is not drawn: ${fetches}. Diagrams here load nothing from outside the page.`, 'held')
-      continue
-    }
     try {
-      const { svg } = await mermaid.render(nextMermaidId(), source)
+      const svg = await renderMermaidIsolated(source, dark.value ? 'dark' : 'default')
       if (n !== pass) return
       const figure = document.createElement('div')
       figure.className = 'md-diagram'
@@ -100,24 +92,22 @@ async function drawMermaid(el: HTMLElement, n: number) {
       pre.replaceWith(figure)
     } catch (e) {
       if (n !== pass) return
-      hold(pre, `Mermaid could not draw this block: ${(e as Error).message || String(e)}`, 'error')
+      pre.classList.add('md-mermaid-error')
+      pre.setAttribute('data-mermaid-error', '')
+      const note = document.createElement('div')
+      note.className = 'md-error'
+      note.textContent = `Mermaid could not draw this block: ${(e as Error).message || String(e)}`
+      pre.prepend(note)
     }
   }
 }
 
-/** Keeps a Mermaid block as its source, with why above it. */
-function hold(pre: HTMLElement, why: string, kind: 'held' | 'error') {
-  pre.classList.add('md-mermaid-error')
-  pre.setAttribute(kind === 'held' ? 'data-mermaid-held' : 'data-mermaid-error', '')
-  const note = document.createElement('div')
-  note.className = 'md-error'
-  note.textContent = why
-  pre.prepend(note)
-}
-
 const LOADING_TAGS = new Set(['image', 'img', 'picture', 'source', 'video', 'audio', 'iframe', 'object', 'embed', 'link', 'use', 'script', 'a', 'form', 'meta', 'base'])
 const URL_ATTRS = ['src', 'srcset', 'href', 'xlink:href', 'poster', 'background', 'action', 'formaction', 'data', 'ping']
-/** Takes out of Mermaid's SVG anything that would load a resource or navigate; a style's url( goes too. The diagram's own style stays. */
+/**
+ * Takes out of Mermaid's SVG anything that would load a resource, navigate or run: the elements that do, a URL attribute
+ * pointing anywhere but into the document, every on* handler, a url( or @import in a style. The diagram's own style stays.
+ */
 function scrub(root: HTMLElement) {
   for (const el of Array.from(root.querySelectorAll('*'))) {
     if (LOADING_TAGS.has(el.localName)) {
@@ -128,18 +118,35 @@ function scrub(root: HTMLElement) {
       const v = el.getAttribute(a)
       if (v !== null && !v.startsWith('#')) el.removeAttribute(a)
     }
+    for (const name of el.getAttributeNames()) {
+      if (/^on/i.test(name)) el.removeAttribute(name)
+    }
     const style = el.getAttribute('style')
-    if (style && /url\s*\(/i.test(style)) el.setAttribute('style', style.replace(/url\s*\([^)]*\)/gi, 'none'))
+    if (style && /url\s*\(|@import/i.test(style)) el.setAttribute('style', style.replace(/url\s*\([^)]*\)/gi, 'none').replace(/@import[^;]*;?/gi, ''))
     if (el.localName === 'style' && /url\s*\(|@import/i.test(el.textContent ?? '')) el.textContent = (el.textContent ?? '').replace(/url\s*\([^)]*\)/gi, 'none').replace(/@import[^;]*;?/gi, '')
   }
 }
 
 function onClick(e: MouseEvent) {
-  const a = (e.target as HTMLElement | null)?.closest?.('a[data-md-link]') as HTMLAnchorElement | null
-  if (!a) return
-  e.preventDefault()
+  const a = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
+  if (!a || !host.value?.contains(a)) return
   const path = a.getAttribute('data-md-link')
-  if (path) emit('open', path)
+  if (path) {
+    e.preventDefault()
+    emit('open', path)
+    return
+  }
+  const href = a.getAttribute('href') ?? ''
+  if (href.startsWith('#')) {
+    // A fragment: its heading in the preview, by the id renderMarkdown gave it; the page's URL does not change.
+    e.preventDefault()
+    const id = href.slice(1)
+    const target = id ? host.value.querySelector(`#${CSS.escape(headingId(decodeURIComponent(id)))}`) : null
+    target?.scrollIntoView({ block: 'start' })
+    return
+  }
+  // Anything else that is not a link to the web (which opens in a new tab): nothing, never a navigation of the page.
+  if (a.target !== '_blank') e.preventDefault()
 }
 
 onMounted(() => void enhance())

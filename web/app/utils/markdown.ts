@@ -39,6 +39,11 @@ export function dirOf(path: string): string {
   return i > 0 ? path.slice(0, i) : i === 0 ? '/' : ''
 }
 
+/** The id a heading gets, for a `#fragment` link in the same file: its text lowered, runs of anything but letters and digits as one dash, prefixed so it meets no id of the page's own. */
+export function headingId(text: string): string {
+  return 'md-' + text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '')
+}
+
 /** A relative path resolved against dir: `.` and `..` folded, an absolute path kept. */
 export function resolveRelative(dir: string, href: string): string {
   const base = href.startsWith('/') ? [] : dir.split('/').filter(Boolean)
@@ -70,37 +75,6 @@ export function localPath(href: string): string {
   }
 }
 
-/**
- * Why a Mermaid diagram would reach outside the page, or null when it would not. Mermaid under
- * securityLevel strict still loads an image node's URL (`A@{ img: "…" }`) while it draws, puts CSS from
- * `style`, `classDef` and `themeCSS` into the SVG (a `url(…)` in it is fetched by the browser), and keeps an
- * HTML element in a label that would load something or navigate (its sanitiser forbids only script).
- * A diagram with any of these is not drawn: its source shows with this reason. The match is on the source
- * as written, so a label that merely mentions one of these words is held too (it stays readable as source).
- */
-export function mermaidFetches(source: string): string | null {
-  if (/(^|[\s{,])img\s*:/i.test(source)) return 'an image node (img:) would be loaded from its URL'
-  if (/url\s*\(/i.test(source)) return 'a url( in its CSS would be fetched'
-  if (/@import\b/i.test(source)) return 'an @import in its CSS would be fetched'
-  if (/<\s*(img|image|picture|source|video|audio|iframe|object|embed|link|use|svg|script|style|a|form|meta|base)\b/i.test(source)) return 'an HTML element in a label would load something or navigate'
-  if (/\b(src|srcset|href|xlink:href|poster|background|action|formaction|data)\s*=/i.test(source)) return 'an attribute in a label names a URL'
-  return null
-}
-
-/**
- * Mermaid's DOMPurify configuration for labels under this preview, in place of its own (which forbids only
- * style): nothing that loads a resource or navigates survives in a label, whatever the diagram's text said.
- */
-export const MERMAID_PURIFY = {
-  FORBID_TAGS: ['style', 'script', 'img', 'image', 'picture', 'source', 'video', 'audio', 'iframe', 'object', 'embed', 'link', 'use', 'svg', 'a', 'form', 'meta', 'base'],
-  FORBID_ATTR: ['src', 'srcset', 'href', 'xlink:href', 'poster', 'background', 'style', 'action', 'formaction', 'data', 'ping'],
-}
-
-let mermaidSeq = 0
-/** An id for Mermaid to draw under, unique across every preview on the page: Mermaid removes an element of the id it is given before it draws, so two previews sharing a counter would erase each other's diagrams. */
-export function nextMermaidId(): string {
-  return `md-mermaid-${++mermaidSeq}`
-}
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -131,10 +105,27 @@ export function renderMarkdown(src: string, opts: RenderOptions): Rendered {
     }
   })
 
+  // Headings carry an id (headingId), each unique in the file, so a `#fragment` link scrolls to its heading.
+  md.core.ruler.after('inline', 'heading-ids', (state) => {
+    const seen = new Map<string, number>()
+    const tokens = state.tokens
+    for (let i = 0; i + 1 < tokens.length; i++) {
+      const t = tokens[i]!
+      if (t.type !== 'heading_open') continue
+      const base = headingId(tokens[i + 1]!.content)
+      const n = (seen.get(base) ?? 0) + 1
+      seen.set(base, n)
+      t.attrSet('id', n === 1 ? base : `${base}-${n}`)
+    }
+  })
+
   md.renderer.rules.link_open = (tokens, idx, options, _env, self) => {
     const t = tokens[idx]!
     const href = String(t.attrGet('href') ?? '')
-    if (isRemote(href)) {
+    if (!href) {
+      // `[words]()`: no destination, so no link (an empty href would reload the page).
+      t.attrs = (t.attrs ?? []).filter((a) => a[0] !== 'href')
+    } else if (isRemote(href)) {
       t.attrSet('target', '_blank')
       t.attrSet('rel', 'noopener noreferrer')
     } else if (href && !href.startsWith('#')) {
