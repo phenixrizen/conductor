@@ -1140,6 +1140,67 @@ func TestServeShowsTheSwitchyardAsItsAddress(t *testing.T) {
 	}
 }
 
+// A server on a free port publishes to a switchyard on this machine's
+// default port, as the desktop app's does (--listen 127.0.0.1:0, no
+// publicUrl, which is http://localhost:8080 until the bind): the switchyard
+// is not this server. It dials nothing until a session is launched.
+func TestServePublishesToASwitchyardOnThisMachinesDefaultPort(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	t.Setenv("CONDUCTOR_RENDEZVOUS_SERVER", "http://localhost:8080")
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, filepath.Join(dir, "state")))
+	logs := serveUntilListening(t, "--config", cfg)
+	if lines := logLines(logs, "published to the switchyard", "server=http://localhost:8080 "); len(lines) != 1 {
+		t.Fatalf("want one line naming the switchyard:\n%s", logs)
+	}
+}
+
+// A switchyard at a port this server listens on, at a host that listener
+// takes, is this server: conductor serve stops at start with the words why,
+// before it writes or binds anything (no port need be free).
+func TestServeRefusesASwitchyardOnItsOwnPort(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	t.Cleanup(agents.ForgetBinary())
+	dir := t.TempDir()
+	data := filepath.Join(dir, "state")
+	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, dir, dir, data))
+	for _, tc := range []struct{ listen, server string }{
+		{"127.0.0.1:9", "http://localhost:9"},
+		{":9", "http://127.0.0.1:9/yard"},
+	} {
+		t.Setenv("CONDUCTOR_RENDEZVOUS_SERVER", tc.server)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		var logs syncBuffer
+		code, err := Run(ctx, []string{"serve", "--config", cfg, "--listen", tc.listen}, strings.NewReader(""), io.Discard, &logs)
+		cancel()
+		if code != 1 || !errors.Is(err, config.ErrPublishesToItself) || !strings.Contains(err.Error(), tc.server+" is this server") || !strings.Contains(err.Error(), "CONDUCTOR_RENDEZVOUS=0") {
+			t.Errorf("--listen %s, switchyard %s: exit %d, %v", tc.listen, tc.server, code, err)
+		}
+		if strings.Contains(logs.String(), "conductor serving") {
+			t.Errorf("--listen %s, switchyard %s: served:\n%s", tc.listen, tc.server, logs.String())
+		}
+	}
+	if _, err := os.Stat(data); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the data directory was made: %v", err)
+	}
+}
+
+// conductor switchyard publishes nowhere: a public URL that is the public
+// switchyard's, as the public switchyard's own is, does not stop it.
+func TestSwitchyardServesAtThePublicSwitchyardsURL(t *testing.T) {
+	clearConductorEnv(t)
+	t.Setenv("CONDUCTOR_RENDEZVOUS", "")
+	t.Setenv("CONDUCTOR_PUBLIC_URL", config.DefaultRendezvousServer)
+	dir := t.TempDir()
+	cfg := writeServeConfig(t, dir, `{"workbenchToken": "t", "dataDir": "`+filepath.Join(dir, "state")+`"}`)
+	logs := serveUntilListening(t, "--config", cfg, "--switchyard")
+	if lines := logLines(logs, "switchyard: coordinating hosted sessions"); len(lines) != 1 {
+		t.Fatalf("no switchyard line:\n%s", logs)
+	}
+}
+
 // With rendezvous.insecure the server starts and says once that what it
 // publishes there travels in the clear; it dials nothing until a session is
 // launched. The environment's 0 over the file's true refuses it again.

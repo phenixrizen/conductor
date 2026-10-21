@@ -102,6 +102,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if *switchyard {
 		cfg.Switchyard.Enabled = true
 	}
+	// With the flags applied, before anything is written, started or bound.
+	if cfg.PublishesToItself() {
+		return 1, fmt.Errorf("%w: %s is this server, by its publicUrl or a port it listens on; name the switchyard in rendezvous.server (CONDUCTOR_RENDEZVOUS_SERVER), or turn publishing off (rendezvous.enabled false, CONDUCTOR_RENDEZVOUS=0)", config.ErrPublishesToItself, config.ShownURL(cfg.RendezvousServer()))
+	}
 	if cfg.Yolo {
 		log.Warn("yolo is on: agents launch with their yolo recipes and skip their permission prompts (Codex's also drops its sandbox)")
 	}

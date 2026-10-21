@@ -3,14 +3,17 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -322,6 +325,162 @@ func (c *Config) RendezvousServer() string {
 		return c.Rendezvous.Server
 	}
 	return DefaultRendezvousServer
+}
+
+// ErrPublishesToItself is why conductor serve stops when the switchyard it
+// would publish to is itself (PublishesToItself).
+var ErrPublishesToItself = errors.New("rendezvous.server must be another server")
+
+// PublishesToItself reports whether the switchyard this server publishes to
+// (RendezvousServer) is this server: a publicUrl that names another machine
+// names the same server (scheme, host in any case, port and path), or a
+// listener of this server takes the switchyard's address (listen, and
+// tls.listen when TLS is on; listenerTakes). conductor serve asks once its
+// flags are applied, before it starts anything. A local publicUrl is not
+// compared: serve moves it to the port the listener gets (--listen :0, the
+// desktop app), and the listener is compared instead. A listener on port 0
+// takes no part, its port unknown before the bind, and a switchyard named
+// by this machine's LAN address or host name is not recognized. localhost
+// is resolved, as listen and dial resolve it (localhostAddrs).
+func (c *Config) PublishesToItself() bool {
+	server := c.RendezvousServer()
+	if server == "" {
+		return false
+	}
+	u, err := url.Parse(server)
+	if err != nil {
+		return false
+	}
+	if !c.PublicURLIsLocal() {
+		if p, err := url.Parse(c.PublicURL); err == nil && sameServer(p, u) {
+			return true
+		}
+	}
+	listeners := []string{c.Listen}
+	if c.TLSEnabled() {
+		listeners = append(listeners, c.TLS.Listen)
+	}
+	for _, l := range listeners {
+		if listenerTakes(l, u.Hostname(), urlPort(u)) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameServer reports whether a and b name the same server: the same scheme,
+// host (in any case), port (the scheme's when none is written) and path (a
+// trailing slash aside).
+func sameServer(a, b *url.URL) bool {
+	return a.Scheme == b.Scheme && strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		urlPort(a) == urlPort(b) && strings.TrimRight(a.Path, "/") == strings.TrimRight(b.Path, "/")
+}
+
+// urlPort is the port a dial of u reaches: the one written (url.Parse admits
+// digits only), else the scheme's; 0 when neither is known.
+func urlPort(u *url.URL) int {
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	switch u.Scheme {
+	case "http":
+		return 80
+	case "https":
+		return 443
+	}
+	return 0
+}
+
+// listenerTakes reports whether a dial of host:port lands on a listener at
+// addr (as net.Listen takes it): the same port (a service name read as the
+// standard library reads it), and an address the dial may reach
+// (dialedAddrs) that the listener has. A listener on all addresses (no
+// host, 0.0.0.0, ::) has every loopback address; one on localhost has
+// localhostListenAddr; one on an address has that address, and one on
+// another name that name alone. A listener on port 0 takes nothing: its
+// port is the kernel's choice.
+func listenerTakes(addr, host string, port int) bool {
+	lhost, lport, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if p, err := net.LookupPort("tcp", lport); err != nil || p == 0 || p != port {
+		return false
+	}
+	dests := dialedAddrs(host)
+	var l netip.Addr
+	switch {
+	case lhost == "":
+		return slices.ContainsFunc(dests, netip.Addr.IsLoopback)
+	case strings.EqualFold(lhost, "localhost"):
+		l = localhostListenAddr()
+	default:
+		a, err := netip.ParseAddr(lhost)
+		if err != nil {
+			return strings.EqualFold(lhost, host)
+		}
+		if l = a.Unmap(); l.IsUnspecified() {
+			return slices.ContainsFunc(dests, netip.Addr.IsLoopback)
+		}
+	}
+	return slices.Contains(dests, l)
+}
+
+// localhostAddrs is what localhost resolves to on this machine, in order,
+// by the resolver the standard library's listen and dial use: a hosts file
+// may give it 127.0.0.1 and ::1, or one alone. When it does not resolve,
+// both. The tests replace it.
+var localhostAddrs = func() []netip.Addr {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", "localhost")
+	if err != nil || len(addrs) == 0 {
+		return []netip.Addr{netip.AddrFrom4([4]byte{127, 0, 0, 1}), netip.IPv6Loopback()}
+	}
+	for i, a := range addrs {
+		addrs[i] = a.Unmap()
+	}
+	return addrs
+}
+
+// localhostListenAddr is the address net.Listen binds for localhost: its
+// first IPv4 address, else its first.
+func localhostListenAddr() netip.Addr {
+	addrs := localhostAddrs()
+	if i := slices.IndexFunc(addrs, netip.Addr.Is4); i >= 0 {
+		return addrs[i]
+	}
+	return addrs[0]
+}
+
+// dialedAddrs is where on this machine the standard library's dial of host
+// may land: for localhost, its addresses (localhostAddrs); for no host
+// (dialed over IPv4) and 0.0.0.0, 127.0.0.1; for ::, ::1 and then, as the
+// dial falls back to 0.0.0.0, 127.0.0.1; for any other address that
+// address; for any other name nothing known.
+func dialedAddrs(host string) []netip.Addr {
+	v4, v6 := netip.AddrFrom4([4]byte{127, 0, 0, 1}), netip.IPv6Loopback()
+	if strings.EqualFold(host, "localhost") {
+		return localhostAddrs()
+	}
+	if host == "" {
+		return []netip.Addr{v4}
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil
+	}
+	switch a = a.Unmap(); a {
+	case netip.IPv4Unspecified():
+		return []netip.Addr{v4}
+	case netip.IPv6Unspecified():
+		return []netip.Addr{v6, v4}
+	}
+	return []netip.Addr{a}
 }
 
 // ACME challenges.
@@ -934,9 +1093,8 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("rendezvous.server %s is plain http and not localhost or a loopback address: what this server publishes there would travel in the clear and unverified; use https, or set rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1) to allow it", u.Host))
 		}
 	}
-	if server := c.RendezvousServer(); server != "" && server == strings.TrimRight(c.PublicURL, "/") {
-		errs = append(errs, errors.New("rendezvous.server must be another server, not this one's publicUrl"))
-	}
+	// Whether the switchyard is this server waits for conductor serve's
+	// flags (PublishesToItself): --listen and --switchyard change the answer.
 	hookErrs, warnings := c.validateWebhooks()
 	errs = append(errs, hookErrs...)
 	c.warnings = warnings
