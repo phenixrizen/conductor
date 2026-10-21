@@ -1222,6 +1222,7 @@ nothing else happens.
 conductor crews                        # one line per saved crew: id, name, members
 conductor crews --ids                  # the ids only, one per line (for shell completion)
 conductor up <crew-id> [--name N] [--open]  # launch a crew (named, with --name); prints the run, its URL and its view link
+conductor up --resume <run-id> [--open]     # resume a stopped run as a new run; prints the new run and its URL
 ```
 
 Both talk to the server at `--server` (env `CONDUCTOR_SERVER`, default

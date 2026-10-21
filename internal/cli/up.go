@@ -41,6 +41,11 @@ const crewsUsage = `Usage:
   conductor up <crew-id> [--server URL] [--token T] [--insecure] [--name N] [--open]
       launch a saved crew as a run; prints the run and the URL of its page,
       and the crew's view link when it has one; --name names the run
+  conductor up --resume <run-id> [--server URL] [--token T] [--insecure] [--open]
+      resume a stopped run as a new run (POST /api/runs/{run}/resume): every
+      member with a conversation continues it in its kept worktree, the
+      others start afresh; prints the new run and the URL of its page; the
+      run's name is kept, so --name does not apply
   conductor crews [--server URL] [--token T] [--insecure] [--ids]
       list the saved crews: id, name and members; with --ids the ids only,
       one per line, for shell completion (nothing, and exit 0, when the
@@ -87,6 +92,7 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 	fs.SetOutput(stderr)
 	api := addAPIFlags(fs)
 	name := fs.String("name", "", "a name for this run; the pages otherwise say the crew and the start time")
+	resume := fs.String("resume", "", "resume this stopped run as a new run instead of launching a crew; its name is kept")
 	open := fs.Bool("open", false, "open the run's page in the browser (xdg-open, or open on macOS)")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, crewsUsage)
@@ -99,7 +105,14 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 		}
 		return 2, err
 	}
-	if len(rest) != 1 || rest[0] == "" {
+	switch {
+	case *resume != "" && len(rest) != 0:
+		fs.Usage()
+		return 2, errors.New("up: --resume names the run to resume; no crew with it")
+	case *resume != "" && strings.TrimSpace(*name) != "":
+		fs.Usage()
+		return 2, errors.New("up: a resumed run keeps its name; --name does not apply with --resume")
+	case *resume == "" && (len(rest) != 1 || rest[0] == ""):
 		fs.Usage()
 		return 2, errors.New("up: name one crew: conductor up <crew-id>")
 	}
@@ -125,7 +138,12 @@ func runUp(ctx context.Context, args []string, stdout, stderr io.Writer) (int, e
 	if n := strings.TrimSpace(*name); n != "" {
 		body = map[string]string{"label": n}
 	}
-	if err := c.doBody(ctx, http.MethodPost, "/api/crews/"+url.PathEscape(rest[0])+"/launch", body, &reply); err != nil {
+	path := "/api/runs/" + url.PathEscape(*resume) + "/resume"
+	if *resume == "" {
+		path = "/api/crews/" + url.PathEscape(rest[0]) + "/launch"
+	}
+	// A resume's reply names the new run as a launch's does.
+	if err := c.doBody(ctx, http.MethodPost, path, body, &reply); err != nil {
 		return 1, err
 	}
 	if reply.Run.ID == "" {
