@@ -783,18 +783,29 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 	}
 }
 
+// recordsGrace is how long Shutdown waits, past its own context, for the
+// records of the runs it stopped to be written before the records close:
+// a budget spent on the stops must not cost the records, each a file
+// written in a moment.
+const recordsGrace = 5 * time.Second
+
 // Shutdown stops the webhooks, then the runs, so that no crew member starts
 // any more, then every session, and closes every viewer. The webhooks go
 // first: the entries the sessions record as they stop are not sent. The
-// goroutines the server started on its own (track) are waited for last, once
-// every viewer is closed, until they end or ctx does.
+// runs are stopped together, so that one slow to stop costs the others
+// none of the budget. The goroutines the server started on its own (track)
+// are waited for last, once every viewer is closed, until they end or ctx
+// does; the records of the runs stopped are then waited for within
+// recordsGrace, whatever ctx says, and closed.
 func (s *Server) Shutdown(ctx context.Context) {
 	s.webhooks.close(ctx)
+	var stops sync.WaitGroup
 	for _, run := range s.runs.List() {
 		if run.StoppedAt == nil {
-			_ = s.runs.Stop(ctx, run.ID)
+			stops.Go(func() { _ = s.runs.Stop(ctx, run.ID) })
 		}
 	}
+	stops.Wait()
 	s.registry.Each(func(d session.Driver) {
 		if local, ok := d.(*session.Local); ok {
 			_ = local.Stop(ctx)
@@ -838,6 +849,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	if s.records != nil {
+		wctx, cancel := context.WithTimeout(context.Background(), recordsGrace)
+		if !s.runs.WaitRecorded(wctx) {
+			s.log.Warn("run records still being written as the server exits", "grace", recordsGrace)
+		}
+		cancel()
 		s.records.Close()
 	}
 }

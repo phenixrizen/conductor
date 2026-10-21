@@ -2,6 +2,7 @@ package crew
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -217,7 +218,17 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 		mu    sync.Mutex
 		seq   uint64
 		byRun = map[string]*pending{}
+		// waiting counts the ends not yet written or dropped, every run's;
+		// idle is closed while it is zero, and made anew as it rises.
+		waiting int
+		idle    = make(chan struct{})
 	)
+	close(idle)
+	e.recordsIdle = func() <-chan struct{} {
+		mu.Lock()
+		defer mu.Unlock()
+		return idle
+	}
 	e.OnEnd = func(r Run) {
 		mu.Lock()
 		seq++
@@ -228,6 +239,9 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 			byRun[r.ID] = p
 		}
 		p.inflight++
+		if waiting++; waiting == 1 {
+			idle = make(chan struct{})
+		}
 		mu.Unlock()
 		run(func() {
 			mu.Lock()
@@ -241,6 +255,27 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 			if p.inflight--; p.inflight == 0 {
 				delete(byRun, r.ID)
 			}
+			if waiting--; waiting == 0 {
+				close(idle)
+			}
 		})
+	}
+}
+
+// WaitRecorded waits, as long as ctx allows, until every end handed to the
+// records so far (RecordEnds) is written or dropped, and reports whether it
+// is so; true at once when none waits, or no records are kept. The server's
+// shutdown closes the records after it: a run stopped as the shutdown's
+// budget ran out is recorded all the same, a record being a file written in
+// a moment.
+func (e *Engine) WaitRecorded(ctx context.Context) bool {
+	if e.recordsIdle == nil {
+		return true
+	}
+	select {
+	case <-e.recordsIdle():
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }

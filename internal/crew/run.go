@@ -228,6 +228,9 @@ type Engine struct {
 	// must not wait; RecordEnds sets it to save the run. Set it before the
 	// first launch.
 	OnEnd func(r Run)
+	// recordsIdle, set by RecordEnds, gives a channel closed while no end
+	// handed to the records waits to be written (WaitRecorded).
+	recordsIdle func() <-chan struct{}
 	// endMu orders the ends: a snapshot and its OnEnd are one step under it,
 	// so the ends reach OnEnd in the order their snapshots were taken.
 	endMu sync.Mutex
