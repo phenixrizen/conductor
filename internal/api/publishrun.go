@@ -200,24 +200,30 @@ func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
 // revokeRemoteRunLinks revokes at the switchyard the links of a run the
 // engine forgot that were minted there (their records already dropped,
 // forgetRemoteRunLinks), and one minted as it was forgotten (links.go): each
-// over the first of carriers to answer, in turn, within runSyncWait each, as
-// a revoke of one of them from the Share dialog goes. One the switchyard no
-// longer holds is done; a link no carrier could revoke is logged and left
-// to its expiry there or to the switchyard's sweep.
+// over the carriers in turn, within runSyncWait each, as a revoke of one of
+// them from the Share dialog goes, until one revokes it. A carrier that
+// holds no such link (not_found) is passed: the link is the publisher's
+// there, and a publication of another publisher (SetPublisher changed
+// while sessions were published) holds none of its links; a link every
+// carrier answers so is gone. A link no carrier revoked otherwise is logged
+// and left to its expiry there or to the switchyard's sweep.
 func (s *Server) revokeRemoteRunLinks(runID string, carriers []PublishedSession, links []remoteLink) {
 	for _, rl := range links {
-		var err error
+		var last error
 		for _, carrier := range carriers {
 			ctx, cancel := context.WithTimeout(context.Background(), runSyncWait)
-			err = carrier.Revoke(ctx, rl.ID)
+			err := carrier.Revoke(ctx, rl.ID)
 			cancel()
-			if err == nil || refusedAs(err, "not_found") {
-				err = nil
+			if err == nil {
+				last = nil
 				break
 			}
+			if last == nil || !refusedAs(err, "not_found") {
+				last = err
+			}
 		}
-		if err != nil {
-			s.log.Warn("a forgotten run's link was not revoked at the rendezvous", "run", runID, "link", rl.ID, "err", err)
+		if last != nil && !refusedAs(last, "not_found") {
+			s.log.Warn("a forgotten run's link was not revoked at the rendezvous", "run", runID, "link", rl.ID, "err", last)
 		}
 	}
 }

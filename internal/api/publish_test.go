@@ -1437,3 +1437,55 @@ func TestAnEvictedRunsLinksAreRevokedOverAnotherSessionsPublication(t *testing.T
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// scriptedRevokes is a publication whose revokes answer as scripted, in
+// order, and are recorded.
+type scriptedRevokes struct {
+	gatedPublication
+	answers []error
+	mu      *sync.Mutex
+	asked   *[]string
+}
+
+func (p *scriptedRevokes) Revoke(_ context.Context, linkID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	*p.asked = append(*p.asked, p.id+":"+linkID)
+	if len(p.answers) == 0 {
+		return nil
+	}
+	err := p.answers[0]
+	p.answers = p.answers[1:]
+	return err
+}
+
+// A forgotten run's revoke goes on past a carrier that holds no such link
+// (a publication of another publisher, which holds none of the link's
+// owner's) to the next, and stops at the first that revokes it; a link
+// every carrier answers not_found for is gone, and any other answer from
+// every carrier is what is logged (Codex's review of #148's change).
+func TestARevokeGoesOnPastACarrierThatHoldsNoSuchLink(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var mu sync.Mutex
+	var asked []string
+	carrier := func(id string, answers ...error) *scriptedRevokes {
+		return &scriptedRevokes{gatedPublication: gatedPublication{id: id, done: make(chan struct{})}, answers: answers, mu: &mu, asked: &asked}
+	}
+	notFound := errors.New("not_found: no such link")
+	e.srv.revokeRemoteRunLinks("run", []PublishedSession{carrier("other", notFound), carrier("owner"), carrier("spare")}, []remoteLink{{ID: "l1"}})
+	mu.Lock()
+	got := fmt.Sprint(asked)
+	asked = nil
+	mu.Unlock()
+	if got != "[other:l1 owner:l1]" {
+		t.Fatalf("asked %s, want the other publisher's carrier passed and the owner's revoke to end it", got)
+	}
+	// Every carrier holding none: the link is gone, and no carrier is asked twice.
+	e.srv.revokeRemoteRunLinks("run", []PublishedSession{carrier("a", notFound, notFound), carrier("b", notFound, notFound)}, []remoteLink{{ID: "l2"}, {ID: "l3"}})
+	mu.Lock()
+	got = fmt.Sprint(asked)
+	mu.Unlock()
+	if got != "[a:l2 b:l2 a:l3 b:l3]" {
+		t.Fatalf("asked %s", got)
+	}
+}
