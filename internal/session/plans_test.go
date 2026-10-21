@@ -171,8 +171,9 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	if h, _ := get(t, s, sub, sink, "r1", proto.FileGet{Path: plan, Stat: true}); h.Kind != "file" {
 		t.Fatalf("learnt from the approval: %+v", h)
 	}
-	// The dialog read off the screen takes the hook's place: the same plan.
-	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	// The approval's dialog read off the screen (its footer says so) takes the hook's place: the same plan.
+	approval := []Option{{Label: "Yes, and use auto mode", Input: "1", Mode: true}, {Label: "Yes, manually approve edits", Input: "2"}, {Label: "Tell Claude what to change", Input: "3"}}
+	s.setAttentionWith(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, approval, planApproval, "")
 	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != plan {
 		t.Fatalf("the dialog carries it too: %+v", att)
 	}
@@ -189,9 +190,23 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	if att := s.Info().Attention; att.Plan != "" {
 		t.Fatalf("working carries no plan: %+v", att)
 	}
-	// The dialog first, the hook's report after it (the screen settled quickly): the report changes nothing of the dialog but
-	// its plan, set on it and told.
-	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	// A dialog that is not the approval's, taking the place of the hook's report of one, carries none.
+	s.SetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, plan)
+	s.SetAttentionFull(AttentionNeedsInput, "Do you want to proceed?\nBash command: ls", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	if att := s.Info().Attention; att.Plan != "" {
+		t.Fatalf("another dialog keeps nothing: %+v", att)
+	}
+	// A late report of the approval, while another dialog shows: nothing set on it.
+	if err := s.TrySetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, plan); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != "" {
+		t.Fatalf("a late report names no plan into another dialog: %+v", att)
+	}
+	s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil)
+	// The approval's dialog first, the hook's report after it (the screen settled quickly): the report changes nothing of the
+	// dialog but its plan, set on it and told.
+	s.setAttentionWith(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, approval, planApproval, "")
 	if att := s.Info().Attention; att.Plan != "" {
 		t.Fatalf("nothing named yet: %+v", att)
 	}
@@ -292,15 +307,16 @@ func TestPlanRidesTheReportThatTakesABellsPlace(t *testing.T) {
 	if att := s.Info().Attention; att.Source != SourceAPI || att.Plan != plan {
 		t.Fatalf("the report's question: %+v", att)
 	}
-	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	approval := []Option{{Label: "Yes, and use auto mode", Input: "1", Mode: true}, {Label: "Yes, manually approve edits", Input: "2"}, {Label: "Tell Claude what to change", Input: "3"}}
+	s.setAttentionWith(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, approval, planApproval, "")
 	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != plan {
 		t.Fatalf("kept by the dialog: %+v", att)
 	}
 	// The same dialog read again, its footer now whole: the plan set on it (none was, say, at a narrower width).
 	s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil)
-	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	s.setAttentionWith(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, approval, planApproval, "")
 	id := s.Info().Attention.ID
-	s.SetAttentionPlan(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}}, plan)
+	s.setAttentionWith(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, approval, planApproval, plan)
 	if att := s.Info().Attention; att.ID != id || att.Plan != plan {
 		t.Fatalf("the footer read later: %+v", att)
 	}
@@ -383,16 +399,24 @@ func TestPlansDirectoryMadeLater(t *testing.T) {
 }
 
 // The plan's path on the last row of Claude Code's plan approval, the rows
-// a narrow screen wrapped it over joined; nothing from another footer.
+// a narrow screen wrapped it over joined; nothing from another footer. The
+// footer alone marks the dialog as the approval, the path read or not.
 func TestPlanFooter(t *testing.T) {
-	for _, c := range []struct{ text, want string }{
-		{"   ❯ 1. Yes, and use auto mode\n     2. Yes, manually approve edits\n\n   ctrl+g to edit in Vim · ~/.claude/plans/plan.md", "~/.claude/plans/plan.md"},
-		{"   ❯ 1. Yes\n   ctrl+g to edit in Vim · ~/.claude/pla\n   ns/plan.md\n", "~/.claude/plans/plan.md"},
-		{"   ❯ 1. Yes\n     2. No\n\n   Esc to cancel · Tab to amend", ""},
-		{"ctrl+g to edit in Vim · /tmp/x.md\n\n\n\n\n\n\n   the prompt", ""},
+	for _, c := range []struct {
+		text, want string
+		approval   bool
+	}{
+		{"   ❯ 1. Yes, and use auto mode\n     2. Yes, manually approve edits\n\n   ctrl+g to edit in Vim · ~/.claude/plans/plan.md", "~/.claude/plans/plan.md", true},
+		{"   ❯ 1. Yes\n   ctrl+g to edit in Vim · ~/.claude/pla\n   ns/plan.md\n", "~/.claude/plans/plan.md", true},
+		{"   ❯ 1. Yes\n   ctrl+g to edit in Vim ·\n   ~/.claude/plans/plan.md\n", "", true},
+		{"   ❯ 1. Yes\n     2. No\n\n   Esc to cancel · Tab to amend", "", false},
+		{"ctrl+g to edit in Vim · /tmp/x.md\n\n\n\n\n\n\n   the prompt", "", false},
 	} {
 		if got := planFooter(c.text); got != c.want {
 			t.Errorf("%q: %q, want %q", c.text, got, c.want)
+		}
+		if got := planApprovalShown(c.text); got != c.approval {
+			t.Errorf("%q: approval %v, want %v", c.text, got, c.approval)
 		}
 	}
 }

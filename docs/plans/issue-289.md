@@ -57,12 +57,14 @@ in. This is the design as built, in plain terms.
   change is past the session's bucket, set on the question the change
   shows, or on the dialog of that approval already showing (told to every
   client); a refused or rate-limited report names nothing, and nothing is
-  staged for a later question. The dialog read off the screen that takes
-  the place of the hook's report keeps its plan; the dialog's own footer
-  rides the dialog's change; the dialog that follows an answered approval
-  takes the place of a dialog and carries none. A host tells its server
-  the plan set on a question it already reported (its change detector
-  compares it).
+  staged for a later question. A dialog read off the screen is marked the
+  approval of a plan only when its own footer says so (`ctrl+g to edit
+  in`): only such a dialog keeps the plan of the hook's report it takes
+  the place of, or takes the plan of a late report while it shows; the
+  dialog's own footer rides the dialog's change; any other dialog carries
+  none (Codex's rounds three and four). A host tells its server the plan
+  set on a question it already reported (its change detector compares
+  it).
 - **Aliases of the plans directory** (a linked `~/.claude/plans`, macOS's
   `/var` for `/private/var`) are matched by their resolved paths, for
   learning and forgetting alike, and a home with no `HOME` set falls back

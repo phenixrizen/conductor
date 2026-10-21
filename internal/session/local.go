@@ -1102,10 +1102,15 @@ func (s *Local) fireAsked(text string) {
 	if whole != "" {
 		words += "\n" + listMark + "\n" + whole
 	}
-	// The plan's approval prints the plan's path on its last row (#289):
-	// the dialog carries it, once the path is seen to be a plan, in the
-	// one step that sets it.
-	s.setAttentionWith(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), unlessStartup|sameDialog, planFooter(text))
+	// The plan's approval ends in a footer of its own (#289): the dialog is
+	// marked the approval (planApproval), and carries the plan's path the
+	// footer prints, once the path is seen to be a plan, in the one step
+	// that sets it.
+	rules := unlessStartup | sameDialog
+	if planApprovalShown(text) {
+		rules |= planApproval
+	}
+	s.setAttentionWith(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), rules, planFooter(text))
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
@@ -1683,6 +1688,9 @@ const (
 	// question, which the session keeps (own); with another state it
 	// changes nothing.
 	agentAsks
+	// planApproval (fireAsked) marks a dialog read off the screen as a
+	// plan's approval, by its footer (Attention.approval, #289).
+	planApproval
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -1820,8 +1828,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	if (rules&unlessWaiting != 0 && waiting && !answeredStartup && !movedOn) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook ||
 		held || onScreen || fresh || working || ended || notSettling || worded {
 		// The report of an approval that names its plan, while the dialog
-		// of that approval shows (keepAsked): the plan set on the dialog.
-		told := keepAsked && plan != "" && s.planOnShownLocked(plan)
+		// of that approval shows (keepAsked, and the dialog's footer says
+		// it is one: another dialog is not that approval's): the plan set
+		// on the dialog.
+		told := keepAsked && plan != "" && s.info.Attention.approval && s.planOnShownLocked(plan)
 		s.mu.Unlock()
 		if told {
 			s.notifyChange()
@@ -2008,14 +2018,16 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.lastBell = time.Now()
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list}
-	// The plan the change names rides its question; the dialog read off
-	// the screen that takes the place of a wait carrying one (the hook's
-	// report of that approval) keeps it; any other question carries none
-	// (the dialog that follows an answered approval takes the place of a
+	// The plan the change names rides its question; the approval's dialog
+	// read off the screen (planApproval) that takes the place of a wait
+	// carrying one (the hook's report of that approval) keeps it; any
+	// other question carries none (another dialog is not that approval's;
+	// the dialog that follows an answered approval takes the place of a
 	// dialog, which passes nothing on) (#289).
 	if state == AttentionNeedsInput {
 		att.Plan = plan
-		if att.Plan == "" && source == SourceQuestion && cur.State == AttentionNeedsInput && cur.Source != SourceQuestion {
+		att.approval = rules&planApproval != 0
+		if att.Plan == "" && att.approval && cur.State == AttentionNeedsInput && cur.Source != SourceQuestion {
 			att.Plan = cur.Plan
 		}
 	}

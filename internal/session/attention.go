@@ -169,6 +169,11 @@ type Attention struct {
 	// so: Local.Ask), which the session keeps through its turn's done
 	// (Local.own). Kept by the session, never sent to a browser.
 	ask bool
+	// approval marks a dialog read off the screen as a plan's approval (its
+	// footer says so: planApprovalShown, #289): the one a late report of
+	// that approval names the plan for, and the one that keeps the plan of
+	// the report it takes the place of. Kept by the session, never sent.
+	approval bool
 }
 
 // Asked reports whether a is the agent's own question (Local.Ask): what a

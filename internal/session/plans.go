@@ -250,11 +250,28 @@ func (s *Local) PlansPath(deny []string, role Role) proto.FileHeader {
 	return h
 }
 
+// planApprovalShown reports whether text, the screen a dialog is read
+// from, ends in the footer of Claude Code's plan approval ("ctrl+g to edit
+// in <editor> · <path>", on one of the last rows): the dialog is the
+// approval of a plan, whether or not the path can be read off it, and a
+// report that names the plan is about that dialog.
+var approvalFooterRe = regexp.MustCompile(`ctrl\+g to edit in `)
+
+func planApprovalShown(text string) bool {
+	rows := strings.Split(text, "\n")
+	for i := len(rows) - 1; i >= 0 && i >= len(rows)-6; i-- {
+		if approvalFooterRe.MatchString(rows[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // planFooter is the plan's path on the last row of Claude Code's plan
 // approval ("ctrl+g to edit in <editor> · <path>"), with the rows a narrow
 // screen wrapped it over joined; "" when the screen shows no such row. A
 // path Claude Code shortened to fit (an ellipsis in it) names no file, and
-// NotePlan leaves it.
+// the change it rides learns nothing from it.
 var planFooterRe = regexp.MustCompile(`ctrl\+g to edit in [^·\n]*·[ \t]*(\S+)[ \t]*$`)
 
 func planFooter(text string) string {
