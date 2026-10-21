@@ -67,6 +67,7 @@ export const EDITOR_SHORTCUTS: ShortcutGroup = {
   title: 'The editor',
   rows: [
     { keys: ['T'], label: 'Terminal only: fold the editor to its tab strip, or bring it back', terminal: ['alt', 'T'] },
+    { keys: ['alt', 'P'], label: 'In the editor: a Markdown file rendered (Mermaid diagrams drawn), or its source again' },
     { keys: ['ctrl', 'tab'], label: 'Next file (Ctrl+Shift+Tab the one before)' },
     { keys: ['ctrl', 'W'], label: 'Close the file' },
     { keys: ['ctrl', 'F'], label: 'Find in the file (Ctrl+H replace)' },

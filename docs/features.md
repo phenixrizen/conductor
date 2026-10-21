@@ -2066,6 +2066,71 @@ tool, and Conductor offered it as Goose.
 
 ## Round 12: the Files tab as four sections, and a Monaco editor beside the terminal (started 2026-10-08)
 
+- **Markdown preview, Mermaid included (#166, 2026-10-21).** A `.md` or
+  `.markdown` file in the editor gets a Preview toggle in the header
+  (Alt+P in the editor, listed in the shortcuts modal): the file rendered
+  with markdown-it (headings, lists, tables, task lists, code highlighted
+  by shiki in the editor's theme, links), the choice kept per tab, what
+  the editor holds previewed (unsaved changes included, as of the toggle).
+  Raw HTML is parsed as text, never rendered (no script, no handler,
+  no `javascript:` link); a web link opens outside the app; a relative
+  link opens its file in a tab; a relative image loads through the
+  session's file reads (the link's path decoded once, as markdown-it
+  encodes it); an image on the web is not loaded (its alt text shows). A
+  `mermaid` fence is drawn by Mermaid in the app's theme and again at a
+  theme switch; a block it cannot draw keeps its source with the error
+  above it. Mermaid never runs in the page: it runs in a sandboxed frame
+  (`web/app/utils/mermaidFrame.ts`, made at the first diagram on the
+  page), scripts only, so an opaque origin with none of the app's cookies
+  or storage, under a Content Security Policy whose default is none, so no
+  image, font, style sheet, connection or navigation can leave it, and only
+  the renderer's own script loads, from the app's origin (built as a
+  worker-format bundle, `mermaidFrame.entry.ts`, its packages recorded for
+  the notices as a worker's are). There Mermaid runs with `securityLevel:
+  strict`, errors kept out of the document, and a DOMPurify configuration
+  forbidding every label element and attribute that loads or navigates
+  (`mermaidRules.ts`; Mermaid's own forbids only `style`), labels as SVG
+  text rather than HTML, and takes the page's requests one after another
+  (Mermaid queues renders of its own accord, and a cleanup beside the next
+  render would take its container away). The page gets the SVG as a
+  string, scrubs it of anything that would load, navigate or run, and
+  shows it as an image (an `img` with a data URL, sized by the viewBox):
+  a browser loads nothing from inside an SVG it shows as an image, runs
+  nothing in it and follows no link, whatever its CSS says, so the display
+  is as closed as the frame (a scrub of CSS was tried and dropped: a custom
+  property holding an `image-set()` is one of many spellings no scrub
+  knows); a node Mermaid wrapped in an anchor for a `click … href` keeps
+  its drawing as a group, the link gone. A scan of the source was tried
+  first and dropped too: Mermaid loads an image node's URL while it
+  measures it, and a quoted key or a JSON escape slips any regular
+  expression. Under the dev server, where Vite serves modules import by
+  import (which the frame, its origin opaque, could load only with a CORS
+  allowance for every opaque origin), `nuxt.config.ts` bundles the same
+  entry with Vite's library build as the dev server starts and serves it
+  as one classic script at a path of its own; the frame's policy and
+  script element are the same in both. A render pass overtaken by a later one or by the
+  preview going stops at its next step; a change to the editor's model
+  while previewing (a reload after a save conflict) refreshes the preview.
+  A `[words]()` link with no destination is no link; a `#fragment` link
+  scrolls to its heading in the preview (headings carry `md-` ids); neither
+  navigates the page. Inside the text, Alt+P is an action of the Monaco
+  editor on Markdown files (Monaco keeps a chord it sees from reaching the
+  page); on the preview it is the area's key handler; it is kept from
+  Neovim on a Markdown file (`keptByConductor`). The same component serves
+  a guest's view-only editor and the Yard. Tests: vitest `markdown.test.ts`
+  (the rendering, the sanitising, the links and images with their decoding,
+  the heading ids, the Mermaid marks), `editorTabs.test.ts` (the toggle per
+  tab), `nvimKeys.test.ts` (Alt+P kept); Playwright `markdown.spec.ts` (a
+  README with a table, a task list, a script shown as text, an image on the
+  web held, a flowchart drawn as an image the browser decoded, an image
+  node failing in the frame, a url( in theme CSS and an HTML image in a
+  label stripped, no request outside the page's origin, the frame
+  sandboxed, an empty and a fragment link not navigating, a link opening
+  its file, two previews switched between at once, the source back
+  by Alt+P from the preview and the text, a reload during preview, and
+  Neovim on where nvim is on PATH). Mermaid's SVG is not drawn in vitest's
+  node environment, so the drawing is checked in the browser.
+
 From the design screens 4a–4g and 5a–5c in "Conductor UI mockups" (the
 owner designed them on 2026-10-08 from a brief written here). The plan with
 its decisions and layers is `docs/round12-plan.md`: Monaco as the editor,

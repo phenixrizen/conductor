@@ -3,6 +3,7 @@ import type { editor as MonacoEditor } from 'monaco-editor'
 import type { NvimBridge, NvimEvent, NvimSwapChoice } from '~/utils/protocol'
 import type { NvimViewState } from '~/utils/nvimSwap'
 import { cursorStyleFor, isVisual, keptByConductor, keyToNvim, textToNvim } from '~/utils/nvimKeys'
+import { isMarkdownPath } from '~/utils/markdown'
 import { byteColToUtf16, linesEdit } from '~/utils/nvimLines'
 import { ECHO_HOLD_MS, NvimEcho, type EchoDoc, type EchoLines } from '~/utils/nvimEcho'
 import { heldChanges, type HeldNvim } from '~/utils/nvimHold'
@@ -24,6 +25,8 @@ const emit = defineEmits<{
   dirty: [dirty: boolean]
   /** Lines selected (F7): the range and where below it, in the editor's pixels, a bar can sit; null when nothing is. */
   selection: [sel: { from: number; to: number; top: number; left: number } | null]
+  /** Alt+P on a Markdown file (#166): the area shows the preview, or the source again. */
+  preview: []
 }>()
 
 const host = ref<HTMLElement>()
@@ -87,6 +90,11 @@ async function mount() {
     acceptSuggestionOnEnter: 'smart',
   })
   editor.onDidChangeCursorPosition((e) => emit('cursor', { line: e.position.lineNumber, col: e.position.column }))
+  // Monaco keeps a key chord it sees from reaching the page, so the preview's Alt+P (#166) is an action of this editor: by the physical
+  // key (Option+P is π on a Mac), on a Markdown file only, and in the Neovim keymap too (keptByConductor keeps the chord from Neovim).
+  if (isMarkdownPath(props.path)) {
+    editor.addAction({ id: 'conductor.markdownPreview', label: 'Markdown: preview, or the source again', keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyP], run: () => emit('preview') })
+  }
   editor.onDidChangeCursorSelection(() => tellSelection())
   editor.onDidScrollChange(() => tellSelection())
   emit('cursor', { line: 1, col: 1 })
@@ -240,7 +248,7 @@ function attachNvim(bridge: NvimBridge, resumed: NvimEcho | null) {
     const be = e.browserEvent
     // A key an input method or a dead key is composing with: theirs, not Neovim's (round 13, G4).
     if (be.isComposing || be.keyCode === 229) return
-    if (keptByConductor(be)) return
+    if (keptByConductor(be, isMarkdownPath(props.path))) return
     const keys = keyToNvim(be)
     if (keys === null) return
     e.preventDefault()

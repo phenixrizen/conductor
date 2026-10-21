@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activateTab, closeAllTabs, closeTab, cycleTab, editorHeight, emptyTabs, openTab, readSplit, SPLIT_DEFAULT, SPLIT_KEY, tabTitle, takeLine, toggleFold, writeSplit } from './editorTabs'
+import { activateTab, closeAllTabs, closeTab, cycleTab, editorHeight, emptyTabs, openTab, readSplit, SPLIT_DEFAULT, SPLIT_KEY, tabTitle, takeLine, toggleFold, togglePreview, writeSplit } from './editorTabs'
 
 describe('the editor tabs', () => {
   it('opens one tab per file, brings an open one to the front at the line asked for, and unfolds', () => {
@@ -116,5 +116,17 @@ describe('a commit\'s diff tab', () => {
     st = openTab(st, 'diff', '/r/users.go', undefined, { status: 'M', rev: 'a'.repeat(40), short: 'aaaaaaa' })
     expect(st.tabs).toHaveLength(3)
     expect(st.active).toBe(`diff@${'a'.repeat(40)}:/r/users.go`)
+  })
+})
+
+describe('the Markdown preview toggle', () => {
+  it('shows one tab rendered, or its source again, and leaves the other tabs as they were', () => {
+    let s = openTab(openTab(emptyTabs(), 'file', '/r/README.md'), 'file', '/r/docs/users.md')
+    s = togglePreview(s, 'file:/r/README.md')
+    expect(s.tabs.map((t) => !!t.preview)).toEqual([true, false])
+    expect(s.active).toBe('file:/r/docs/users.md')
+    s = togglePreview(s, 'file:/r/README.md')
+    expect(s.tabs.map((t) => !!t.preview)).toEqual([false, false])
+    expect(togglePreview(s, 'file:/nope').tabs.map((t) => !!t.preview)).toEqual([false, false])
   })
 })
