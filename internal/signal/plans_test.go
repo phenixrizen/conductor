@@ -26,16 +26,14 @@ func nextOwn(t *testing.T, conn *HostConn) proto.HostAttentionMsg {
 	}
 }
 
-// The plan a report names (NotePlan, the attention route's plan) goes to
-// the host with the next question forwarded, once; the host tells its
-// attention back with the plan, which the server's copy then carries; a
-// state that is no question carries none, and a plan past the bound is
-// left (#289).
+// The plan a report names goes to the host with that question, and no
+// other; the host tells its attention back with the plan, which the
+// server's copy then carries; a state that is no question carries none,
+// and a plan past the bound is left (#289).
 func TestPlanRidesTheQuestionForwardedToTheHost(t *testing.T) {
 	hs, conn := register(t, NewHub(session.NewRegistry(4), nil))
 	plan := "/home/dev/.claude/plans/plan-creating-a-file.md"
-	hs.NotePlan(plan)
-	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Claude Code has a plan for you to approve", session.SourceAPI, session.KindPermission, nil, true); err != nil {
+	if err := hs.SetAttentionPlan(session.AttentionNeedsInput, "Claude Code has a plan for you to approve", session.SourceAPI, session.KindPermission, nil, true, plan); err != nil {
 		t.Fatal(err)
 	}
 	if m := nextOwn(t, conn); m.T != proto.HostAttention || m.State != "needs_input" || m.Plan != plan {
@@ -49,28 +47,19 @@ func TestPlanRidesTheQuestionForwardedToTheHost(t *testing.T) {
 	if att := hs.Info().Attention; att.Source != session.SourceQuestion || att.Plan != plan || att.ID != "0123456789abcdef" {
 		t.Fatalf("the host's: %+v", att)
 	}
-	// Sent once: the next question forwarded carries no plan unless named again.
+	// The next question forwarded carries none unless its report names one.
 	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Allow Bash?", session.SourceAPI, session.KindPermission, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	if m := nextOwn(t, conn); m.Plan != "" {
-		t.Fatalf("named once: %+v", m)
+		t.Fatalf("its own report names none: %+v", m)
 	}
-	hs.NotePlan(plan)
-	if err := hs.SetAttentionFull(session.AttentionWorking, "", session.SourceAPI, "", nil, true); err != nil {
+	if err := hs.SetAttentionPlan(session.AttentionWorking, "", session.SourceAPI, "", nil, true, plan); err != nil {
 		t.Fatal(err)
 	}
 	if m := nextOwn(t, conn); m.Plan != "" || hs.Info().Attention.Plan != "" {
 		t.Fatalf("working carries none: %+v", m)
 	}
-	// Still kept for the next question.
-	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Claude Code has a plan for you to approve", session.SourceAPI, session.KindPermission, nil, true); err != nil {
-		t.Fatal(err)
-	}
-	if m := nextOwn(t, conn); m.Plan != plan {
-		t.Fatalf("kept for the question: %+v", m)
-	}
-	hs.NotePlan("/" + strings.Repeat("p", proto.MaxPlanPath) + ".md")
 	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, nil, "fedcba9876543210", false, "", "/"+strings.Repeat("q", proto.MaxPlanPath)+".md")
 	if att := hs.Info().Attention; att.Plan != "" {
 		t.Fatalf("past the bound: %+v", att)

@@ -164,8 +164,7 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.NotePlan("~/.claude/plans/plan-creating-a-file.md")
-	s.SetAttentionFull(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil)
+	s.SetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, "~/.claude/plans/plan-creating-a-file.md")
 	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Plan != plan {
 		t.Fatalf("the question carries the plan: %+v", att)
 	}
@@ -190,13 +189,17 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	if att := s.Info().Attention; att.Plan != "" {
 		t.Fatalf("working carries no plan: %+v", att)
 	}
-	// The dialog first, the hook's report after it (the screen settled quickly): the plan is set on the dialog showing, and told.
+	// The dialog first, the hook's report after it (the screen settled quickly): the report changes nothing of the dialog but
+	// its plan, set on it and told.
 	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
 	if att := s.Info().Attention; att.Plan != "" {
 		t.Fatalf("nothing named yet: %+v", att)
 	}
-	s.NotePlan(plan)
-	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != plan {
+	id := s.Info().Attention.ID
+	if err := s.TrySetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, plan); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.Source != SourceQuestion || att.ID != id || att.Plan != plan {
 		t.Fatalf("set on the question showing: %+v", att)
 	}
 	var told bool
@@ -220,10 +223,16 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 		t.Fatalf("named once: %+v", att)
 	}
 	s.SetAttentionFull(AttentionDone, "", SourceAPI, KindDone, nil)
-	s.NotePlan(filepath.Join(home, ".claude", ".credentials.json"))
-	s.SetAttentionFull(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil)
-	if att := s.Info().Attention; att.Plan != "" {
+	s.SetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, filepath.Join(home, ".claude", ".credentials.json"))
+	if att := s.Info().Attention; att.State != AttentionNeedsInput || att.Plan != "" {
 		t.Fatalf("not a plan: %+v", att)
+	}
+	// A state that is no question names nothing either.
+	s.SetAttentionPlan(AttentionWorking, "", SourceAPI, "", nil, plan)
+	s.Record(ActivityEntry{Type: ActivityFile, Op: FileOpDelete, Path: plan, Tool: "Bash"})
+	s.SetAttentionPlan(AttentionDone, "", SourceAPI, KindDone, nil, plan)
+	if h, _ := get(t, s, sub, sink, "r3", proto.FileGet{Path: plan}); h.Kind != "error" {
+		t.Fatalf("a working or done report names no plan: %+v", h)
 	}
 	if h, _ := get(t, s, sub, sink, "r2", proto.FileGet{Path: filepath.Join(home, ".claude", ".credentials.json")}); h.Kind != "error" || h.Error.Code != "denied" {
 		t.Fatalf("the credentials: %+v", h)
@@ -269,28 +278,47 @@ func TestPlansDirectoryThroughALink(t *testing.T) {
 	}
 }
 
-// The plan named while a bell's wait shows (the dialog's footer read as
-// the bell rang, the hook's report late) is set on that wait and kept by
-// the dialog read off the screen that takes its place; the hook's report
-// that comes after the dialog changes nothing of it.
-func TestPlanSetOnABellsWaitIsKeptByTheDialog(t *testing.T) {
+// The hook's report of the approval, with its plan, takes the place of a
+// bell's wait: its question carries the plan, the bell's wait is not
+// touched, and the dialog read off the screen in its place keeps it; the
+// dialog's footer, read on a later look of the same dialog, sets the plan
+// on it; a report the bucket refuses names nothing.
+func TestPlanRidesTheReportThatTakesABellsPlace(t *testing.T) {
 	s, _, _, plan := plansLocal(t)
 	s.SetAttentionFull(AttentionNeedsInput, "terminal bell", SourceBell, "", nil)
-	s.NotePlan(plan)
-	if att := s.Info().Attention; att.Source != SourceBell || att.Plan != plan {
-		t.Fatalf("set on the bell's wait: %+v", att)
+	if err := s.TrySetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, plan); err != nil {
+		t.Fatal(err)
+	}
+	if att := s.Info().Attention; att.Source != SourceAPI || att.Plan != plan {
+		t.Fatalf("the report's question: %+v", att)
 	}
 	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
 	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != plan {
 		t.Fatalf("kept by the dialog: %+v", att)
 	}
+	// The same dialog read again, its footer now whole: the plan set on it (none was, say, at a narrower width).
+	s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil)
+	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
 	id := s.Info().Attention.ID
-	if err := s.TrySetAttentionFull(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil); err != nil {
+	s.SetAttentionPlan(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}}, plan)
+	if att := s.Info().Attention; att.ID != id || att.Plan != plan {
+		t.Fatalf("the footer read later: %+v", att)
+	}
+	// The bucket empty: the report is refused whole, its plan with it.
+	s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil)
+	s.Record(ActivityEntry{Type: ActivityFile, Op: FileOpDelete, Path: plan, Tool: "Bash"})
+	for s.TrySetAttentionFull(AttentionWorking, "", SourceAPI, "", nil) == nil {
+	}
+	if err := s.TrySetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, plan); err != ErrRateLimited {
+		t.Fatalf("refused: %v", err)
+	}
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
 		t.Fatal(err)
 	}
-	s.NotePlan(plan)
-	if att := s.Info().Attention; att.ID != id || att.Plan != plan {
-		t.Fatalf("the hook's late report changes nothing: %+v", att)
+	if h, _ := get(t, s, sub, sink, "r1", proto.FileGet{Path: plan}); h.Kind != "error" {
+		t.Fatalf("a refused report names nothing: %+v", h)
 	}
 }
 

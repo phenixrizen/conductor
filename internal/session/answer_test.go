@@ -902,7 +902,7 @@ func TestAnOlderStartupLookSetsNothingOnceAnAnswerCame(t *testing.T) {
 	}
 	nextWrite(t, p)
 	// The look's question set only now, after the answer.
-	s.setAttentionLooked(AttentionNeedsInput, first.Message, SourceTrust, KindPrompt, first.Options, unlessWaiting|startupLook, anyTurn, look)
+	s.setAttentionLooked(AttentionNeedsInput, first.Message, SourceTrust, KindPrompt, first.Options, unlessWaiting|startupLook, anyTurn, look, "")
 	if a := s.Info().Attention; a.State != AttentionNone {
 		t.Fatalf("an older look set the answered question again: %+v", a)
 	}

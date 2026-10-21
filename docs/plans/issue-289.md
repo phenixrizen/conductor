@@ -51,15 +51,18 @@ in. This is the design as built, in plain terms.
   retargeted between the check and the open reaches nothing that was not
   allowed (Codex's first-round finding). No request names a root; a plan
   is addressed by its path, absolute or through `~`.
-- **The plan on the question** is applied after the report that names it
-  is taken (a refused or rate-limited report names nothing), to the
-  question then showing (the approval, or a wait of the same moment such
-  as a bell's), and told to every client; the dialog read off the screen
-  that takes the place of such a wait keeps it; the dialog that follows an
-  answered approval takes the place of a dialog and carries none. The
-  dialog's footer is applied after the dialog is set. A host tells its
-  server the plan set on a question it already reported (its change
-  detector compares it).
+- **The plan on the question** travels inside the attention change that
+  names it (`SetAttentionPlan`, the attention route's `plan`, the host's
+  forwarded message), in the one step that change takes: learnt once the
+  change is past the session's bucket, set on the question the change
+  shows, or on the dialog of that approval already showing (told to every
+  client); a refused or rate-limited report names nothing, and nothing is
+  staged for a later question. The dialog read off the screen that takes
+  the place of the hook's report keeps its plan; the dialog's own footer
+  rides the dialog's change; the dialog that follows an answered approval
+  takes the place of a dialog and carries none. A host tells its server
+  the plan set on a question it already reported (its change detector
+  compares it).
 - **Aliases of the plans directory** (a linked `~/.claude/plans`, macOS's
   `/var` for `/private/var`) are matched by their resolved paths, for
   learning and forgetting alike, and a home with no `HOME` set falls back

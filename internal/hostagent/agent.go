@@ -1322,16 +1322,15 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		a.mu.Lock()
 		a.attentionUntold = true
 		a.mu.Unlock()
-		// The plan the question is about (#289), named before the question
-		// is set, so that the session's question carries it.
-		if m.Plan != "" && session.AttentionState(m.State) == session.AttentionNeedsInput {
-			a.local.NotePlan(m.Plan)
-		}
-		if m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput {
+		switch {
+		case m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput:
 			// The agent's own question (the server's Ask): the session
 			// keeps it through its turn's done.
 			a.local.Ask(m.Message, source, m.Kind, opts)
-		} else {
+		case m.Plan != "":
+			// The plan the question is about (#289), set with it.
+			a.local.SetAttentionPlan(session.AttentionState(m.State), m.Message, source, m.Kind, opts, m.Plan)
+		default:
 			a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
 		}
 		a.noteChange(a.local.Info())

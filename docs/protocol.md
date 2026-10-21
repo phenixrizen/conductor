@@ -998,9 +998,11 @@ Explicit updates: `POST /api/sessions/{id}/attention` with
 a boolean: with `needs_input`, the agent's own question, see above; a value
 that is no boolean is `400 invalid_request`; `plan`, with `needs_input`, the
 path of the plan the question asks approval for, at most 1,024 bytes, #289:
-a server session keeps it as one of its plans when it is a file in the
-agent's plans directory, a hosted session sends it to its host with the
-question, and the question carries it as `attention.plan`, see Attention) and
+in the one step the report takes, a server session keeps it as one of its
+plans when it is a file in the agent's plans directory and sets it on the
+question, a hosted session sends it to its host with the question, and the
+question carries it as `attention.plan`, see Attention; a report refused
+names nothing) and
 `Authorization: Bearer <agent token>` (or the workbench token). Every session's
 process receives `CONDUCTOR_SESSION_ID`, `CONDUCTOR_NOTIFY_URL` and
 `CONDUCTOR_NOTIFY_TOKEN`, which `conductor notify` and `conductor crew` read,

@@ -189,12 +189,10 @@ type Local struct {
 	// plans is the agent's plans directory (Options.Plans) as opened, once
 	// the agent reported a plan (openPlansLocked), plansReal its path with
 	// its links resolved, and planFiles the session's plans by their real
-	// paths (planKey); askedPlan is the plan the agent last named for its
-	// approval (NotePlan), which the next question shown carries. All under mu.
+	// paths (planKey). All under mu.
 	plans     *Folder
 	plansReal string
 	planFiles map[string]bool
-	askedPlan string
 
 	mu   sync.Mutex // guards info, events and lastOutput, and orders ring writes against attaches
 	info Info
@@ -1026,7 +1024,7 @@ func (s *Local) settled(gen uint64) {
 		source = SourceStatus
 	}
 	s.mu.Unlock()
-	s.setAttentionLooked(AttentionWorking, "", source, "", nil, titleRules|onlySettling, anyTurn, gen)
+	s.setAttentionLooked(AttentionWorking, "", source, "", nil, titleRules|onlySettling, anyTurn, gen, "")
 }
 
 // firePattern is the pattern watcher's fire: the last line matched after the
@@ -1058,7 +1056,7 @@ func (s *Local) fireTrust(text string) {
 			// An Escape typed at it before it was asked took it away.
 			return
 		}
-		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt())
+		s.setAttentionLooked(AttentionNeedsInput, words, SourceTrust, KindPrompt, CleanOptions(q.Answers), unlessWaiting|startupLook, anyTurn, s.trust.LookedAt(), "")
 		// One held answered that the screen no longer shows (the program
 		// took the Escape) is cleared.
 		s.escGone()
@@ -1104,12 +1102,10 @@ func (s *Local) fireAsked(text string) {
 	if whole != "" {
 		words += "\n" + listMark + "\n" + whole
 	}
-	s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), unlessStartup|sameDialog)
 	// The plan's approval prints the plan's path on its last row (#289):
-	// the dialog, set, carries it once the path is seen to be a plan.
-	if p := planFooter(text); p != "" {
-		s.NotePlan(p)
-	}
+	// the dialog carries it, once the path is seen to be a plan, in the
+	// one step that sets it.
+	s.setAttentionWith(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), unlessStartup|sameDialog, planFooter(text))
 }
 
 // missAsked is the same watcher's look at a quiet screen that shows none of
@@ -1561,6 +1557,25 @@ func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind 
 	return s.setAttention(state, message, source, kind, options, spendToken)
 }
 
+// SetAttentionPlan is SetAttentionFull for a report that names the plan
+// its question asks approval for (#289, the ExitPlanMode hook's
+// planFilePath): in the one step the change takes, the plan is learnt as
+// one of the session's plans (plans.go) and set on the question the
+// change shows, or on the dialog of that approval already showing; a
+// change refused names nothing, and a path that is not a plan's is
+// nothing. It is for a report that has paid already (a host applying what
+// its server sends on).
+func (s *Local) SetAttentionPlan(state AttentionState, message, source, kind string, options []Option, plan string) {
+	s.setAttentionWith(state, message, source, kind, options, 0, plan)
+}
+
+// TrySetAttentionPlan is SetAttentionPlan for a report from outside the
+// session, as TrySetAttentionFull: the token spent first, and with none
+// left ErrRateLimited, nothing changed and no plan learnt.
+func (s *Local) TrySetAttentionPlan(state AttentionState, message, source, kind string, options []Option, plan string) error {
+	return s.setAttentionWith(state, message, source, kind, options, spendToken, plan)
+}
+
 // Ask is SetAttentionFull for the agent's own question: needs_input, from a
 // report that says the agent asks it (the MCP tool ask, conductor notify
 // --ask), which the session keeps until it is answered (own). In the turn it
@@ -1681,6 +1696,12 @@ func (s *Local) setAttention(state AttentionState, message, source, kind string,
 	return s.setAttentionRead(state, message, source, kind, options, rules, anyTurn)
 }
 
+// setAttentionWith is setAttention for a change that names the plan its
+// question asks approval for (SetAttentionPlan; the dialog's footer).
+func (s *Local) setAttentionWith(state AttentionState, message, source, kind string, options []Option, rules attentionRules, plan string) error {
+	return s.setAttentionLooked(state, message, source, kind, options, rules, anyTurn, 0, plan)
+}
+
 // anyTurn is the turn of a change that is not output read (setAttentionRead).
 const anyTurn = ^uint64(0)
 
@@ -1689,14 +1710,17 @@ const anyTurn = ^uint64(0)
 // changes nothing once another turn has begun, the turn that ended asking
 // nothing more. anyTurn is setAttention's.
 func (s *Local) setAttentionRead(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn uint64) error {
-	return s.setAttentionLooked(state, message, source, kind, options, rules, turn, 0)
+	return s.setAttentionLooked(state, message, source, kind, options, rules, turn, 0, "")
 }
 
 // setAttentionLooked is setAttentionRead for a change a look of the startup
 // questions' watcher found (startupLook): look is the Feeds that look's text
 // had seen (PatternWatcher.LookedAt); for the settle timer's change
-// (onlySettling), the timer's generation.
-func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64) error {
+// (onlySettling), the timer's generation. plan is the plan the change's
+// question asks approval for, when the change names one (#289): learnt
+// once the change is past the bucket, and set on the question shown, or
+// on the dialog of that approval already showing.
+func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -1731,6 +1755,16 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.mu.Unlock()
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
+	}
+	// The plan the change names (#289), learnt now, past the bucket, under
+	// the lock the change takes: a question's alone, and nothing when the
+	// path is not a plan's.
+	if plan != "" {
+		if abs := planPath(plan); state == AttentionNeedsInput && s.learnPlanLocked(abs) {
+			plan = abs
+		} else {
+			plan = ""
+		}
 	}
 	if rules&whileHeld != 0 && (s.held == nil || s.info.Status.Ended() ||
 		s.info.Attention.State == AttentionNeedsInput && heldSource(s.info.Attention.Source)) {
@@ -1785,7 +1819,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	movedOn := rules&startupLook != 0 && waiting && cur.Source == SourceTrust && state == AttentionNeedsInput && source == SourceTrust && !sameWords(words, cur.words())
 	if (rules&unlessWaiting != 0 && waiting && !answeredStartup && !movedOn) || (rules&unlessChoices != 0 && answerable) || keepAsked || turnsOwn || startup || paced || lastTurns || staleLook ||
 		held || onScreen || fresh || working || ended || notSettling || worded {
+		// The report of an approval that names its plan, while the dialog
+		// of that approval shows (keepAsked): the plan set on the dialog.
+		told := keepAsked && plan != "" && s.planOnShownLocked(plan)
 		s.mu.Unlock()
+		if told {
+			s.notifyChange()
+		}
 		return nil
 	}
 	// Whether the change comes in the turn the agent's own question was
@@ -1949,7 +1989,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.info.Attention.ask = true
 			s.own, s.ownAside, s.ownTurn = s.info.Attention, false, s.turn.Load()
 		}
+		// The same question, now with its plan named (the dialog's footer
+		// read on a later look): set on it.
+		told := plan != "" && s.planOnShownLocked(plan)
 		s.mu.Unlock()
+		if told {
+			s.notifyChange()
+		}
 		return nil
 	}
 	if state != AttentionDone {
@@ -1962,20 +2008,16 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.lastBell = time.Now()
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list}
-	// The plan the agent named for its approval (NotePlan) rides the
-	// question shown next, once; the dialog read off the screen that takes
-	// the place of a wait that carries it (the hook's report of that
-	// approval, a bell's wait the plan was set on) keeps it; any other
-	// question carries none (the dialog that follows an answered approval
-	// takes the place of a dialog, which passes nothing on), and the plan
-	// named goes as the agent moves on (#289).
+	// The plan the change names rides its question; the dialog read off
+	// the screen that takes the place of a wait carrying one (the hook's
+	// report of that approval) keeps it; any other question carries none
+	// (the dialog that follows an answered approval takes the place of a
+	// dialog, which passes nothing on) (#289).
 	if state == AttentionNeedsInput {
-		att.Plan, s.askedPlan = s.askedPlan, ""
+		att.Plan = plan
 		if att.Plan == "" && source == SourceQuestion && cur.State == AttentionNeedsInput && cur.Source != SourceQuestion {
 			att.Plan = cur.Plan
 		}
-	} else {
-		s.askedPlan = ""
 	}
 	if source == SourceSubmit {
 		// The hold of the turn shows (holdTyped): the question it takes the

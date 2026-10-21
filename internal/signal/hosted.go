@@ -844,9 +844,6 @@ type HostedSession struct {
 	// host does not replace here, as it does not on the host's session.
 	// Guarded by mu.
 	asked bool
-	// plan is the path of the plan the next question forwarded to the host
-	// is about (NotePlan, #289), sent with it once. Guarded by mu.
-	plan string
 }
 
 // Owner is the hash of the host instance that registered the session, "" when none.
@@ -1110,17 +1107,13 @@ func (h *HostedSession) HostAttention(state session.AttentionState, message, sou
 	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered, plan)
 }
 
-// NotePlan keeps the path of the plan the next question forwarded to the
-// host is about (the attention route's plan, #289): it goes to the host
-// with the question, whose session learns it as one of its plans and
-// tells its attention back with it (HostAttention's plan).
-func (h *HostedSession) NotePlan(plan string) {
-	if plan == "" || len(plan) > proto.MaxPlanPath {
-		return
-	}
-	h.mu.Lock()
-	h.plan = plan
-	h.mu.Unlock()
+// SetAttentionPlan is SetAttentionFull for a report that names the plan
+// its question asks approval for (the attention route's plan, #289): it
+// goes to the host with the question, whose session learns it as one of
+// its plans and tells its attention back with it (HostAttention's plan);
+// the server's copy carries it meanwhile.
+func (h *HostedSession) SetAttentionPlan(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, plan string) error {
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", plan)
 }
 
 // setAttention is SetAttentionFull with the change's id: the host's, or,
@@ -1154,17 +1147,8 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 	h.mu.Lock()
 	conn := h.conn
 	if forward && !h.events.Take(time.Now()) {
-		// The report refused names no plan into the next question either.
-		if state == session.AttentionNeedsInput {
-			h.plan = ""
-		}
 		h.mu.Unlock()
 		return ErrRateLimited
-	}
-	if forward && state == session.AttentionNeedsInput && plan == "" {
-		// The plan the last report named (NotePlan) goes to the host with
-		// this question.
-		plan, h.plan = h.plan, ""
 	}
 	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, Answered: answered, Plan: plan}
 	if forward && state == session.AttentionDone && h.asked && h.info.Attention.State == session.AttentionNeedsInput {

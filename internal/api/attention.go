@@ -136,7 +136,7 @@ func eventType(t string) bool {
 // share it, so they cannot drift apart. It writes the response and returns
 // false when the report is refused. ask, with needs_input, reports the
 // agent's own question (session.Local.Ask).
-func reportAttention(w http.ResponseWriter, d session.Driver, source string, state session.AttentionState, message, kind string, options []session.Option, ask bool) bool {
+func reportAttention(w http.ResponseWriter, d session.Driver, source string, state session.AttentionState, message, kind string, options []session.Option, ask bool, plan string) bool {
 	if len(message) > 4096 {
 		writeError(w, http.StatusBadRequest, "invalid_request", "message too long")
 		return false
@@ -154,12 +154,22 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 		return false
 	}
 	ask = ask && state == session.AttentionNeedsInput
+	// The plan the question is about (#289) goes with the change itself:
+	// a server session learns it as one of its plans as the question is
+	// set, a hosted one sends it to its host with the question. A report
+	// refused above, or by the bucket, names nothing.
+	if state != session.AttentionNeedsInput || ask {
+		plan = ""
+	}
 	switch drv := d.(type) {
 	case *session.Local:
 		var err error
-		if ask {
+		switch {
+		case ask:
 			err = drv.TryAsk(message, source, kind, options)
-		} else {
+		case plan != "":
+			err = drv.TrySetAttentionPlan(state, message, source, kind, options, plan)
+		default:
 			err = drv.TrySetAttentionFull(state, message, source, kind, options)
 		}
 		if err != nil {
@@ -176,7 +186,7 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 		if ask {
 			err = drv.Ask(message, source, kind, options)
 		} else {
-			err = drv.SetAttentionFull(state, message, source, kind, options, true)
+			err = drv.SetAttentionPlan(state, message, source, kind, options, true, plan)
 		}
 		if err != nil {
 			writeSessionLimited(w)
@@ -223,24 +233,8 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "plan is longer than 1024 bytes")
 		return
 	}
-	// The plan the question is about (#289): a hosted session sends it on
-	// to its host with the question (signal.HostedSession.NotePlan, before
-	// the report, which carries it); a server session learns it as one of
-	// its plans once the report is taken (session.Local.NotePlan, after: a
-	// report refused, or one the session's bucket has no token for, names
-	// no plan into the session).
-	plan := ""
-	if req.Plan != "" && state == session.AttentionNeedsInput {
-		plan = req.Plan
-	}
-	if hs, ok := d.(*signal.HostedSession); ok && plan != "" {
-		hs.NotePlan(plan)
-	}
-	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
+	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask, req.Plan) {
 		return
-	}
-	if local, ok := d.(*session.Local); ok && plan != "" {
-		local.NotePlan(plan)
 	}
 	if local, ok := d.(*session.Local); ok && req.AgentSession != "" {
 		s.captureAgentSession(local, req.AgentSession, req.Turn)
@@ -275,7 +269,7 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if state, isAttention := attentionState(req.Type); isAttention {
-		if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
+		if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask, "") {
 			return
 		}
 	} else if eventType(req.Type) {

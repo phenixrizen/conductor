@@ -20,9 +20,11 @@ import (
 // second folder (Folder: an os.Root, held to the same checks as the working
 // directory, the deny list included) the first time the agent reports a
 // file in it, and the files the agent reports there are the session's
-// plans: its hooks' file events, the plan its approval names (NotePlan,
-// from the hook's planFilePath), and the path its dialog prints, once that
-// is seen to be a file there. A request's path is routed to the plans
+// plans: its hooks' file events, the plan its approval names (the hook's
+// planFilePath, carried by the report that sets the question:
+// SetAttentionPlan), and the path its dialog prints (carried by the
+// dialog's own change), once that is seen to be a file there. A request's
+// path is routed to the plans
 // folder when it leads into the directory (folderFor), and the folder
 // allows the file it resolves to only when it is one of the plans
 // (Folder.allow, asked of the resolved path, which the folder then opens
@@ -183,33 +185,20 @@ func (s *Local) notePlanLocked(e ActivityEntry) {
 	s.learnPlanLocked(abs)
 }
 
-// NotePlan takes the path of a plan the agent names for its approval,
-// outside a file event: its hook's planFilePath, or the path its dialog
-// prints. Learnt as a file event's path is; then the question showing, if
-// one is, is the approval and carries it from now (Attention.Plan, told to
-// every client), else the next question shown carries it, once
-// (askedPlan). A path that is not a plan's changes nothing.
-func (s *Local) NotePlan(path string) {
-	abs := planPath(path)
-	s.mu.Lock()
-	if !s.learnPlanLocked(abs) {
-		s.mu.Unlock()
-		return
+// planOnShownLocked sets plan (planPath's, learnt) on the question
+// showing, when it carries another or none, and tells every client;
+// reports whether it did. A change that names the plan of the approval
+// already showing (setAttentionLooked: the hook's report after the dialog
+// was read, the dialog's footer read on a later look). The caller holds
+// s.mu and, when it did, calls notifyChange once unlocked.
+func (s *Local) planOnShownLocked(plan string) bool {
+	cur := &s.info.Attention
+	if cur.State != AttentionNeedsInput || cur.ID == "" || cur.Plan == plan {
+		return false
 	}
-	if cur := s.info.Attention; cur.State == AttentionNeedsInput && cur.ID != "" {
-		if cur.Plan == abs {
-			s.mu.Unlock()
-			return
-		}
-		s.info.Attention.Plan = abs
-		s.askedPlan = ""
-		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
-		s.mu.Unlock()
-		s.notifyChange()
-		return
-	}
-	s.askedPlan = abs
-	s.mu.Unlock()
+	cur.Plan = plan
+	s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
+	return true
 }
 
 // folderFor is the folder a request's path raw is read from, saved to or
