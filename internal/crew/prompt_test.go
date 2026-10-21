@@ -482,11 +482,13 @@ func TestResumeMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := memberState(t, e, run.ID, "lead")
+	// Running once its session is ready for a prompt (#155), which the fake
+	// session is at once.
+	m := waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
 	fl.mu.Lock()
 	call := fl.calls[len(fl.calls)-1]
 	fl.mu.Unlock()
-	if m.SessionID != id || m.Status != MemberRunning || call.resume != "3f80c8bd-0000-4000-8000-000000000001" || call.cwd != "/work" {
+	if m.SessionID != id || call.resume != "3f80c8bd-0000-4000-8000-000000000001" || call.cwd != "/work" {
 		t.Fatalf("resumed: %+v %+v", m, call)
 	}
 	_, p2 := fl.member("lead")

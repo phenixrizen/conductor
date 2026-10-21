@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,9 +47,11 @@ func TestResumeMemberReopensACompletedStop(t *testing.T) {
 	if !logged(got, "reopened: lead resumes") || !logged(got, "lead resumed its conversation") {
 		t.Fatalf("log %+v", got.Log)
 	}
-	lead := memberState(t, e, run.ID, "lead")
+	// Running once its session is ready for a prompt (#155), which the
+	// fake session is at once.
+	lead := waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
 	core := memberState(t, e, run.ID, "core")
-	if lead.SessionID != id || lead.Status != MemberRunning || core.Status != MemberEnded {
+	if lead.SessionID != id || core.Status != MemberEnded {
 		t.Fatalf("lead %+v core %+v", lead, core)
 	}
 	// The other ended member is resumed on its own, afresh.
@@ -216,5 +219,83 @@ func TestResumeRunOfAFinishedRunStartsTheOthersAnew(t *testing.T) {
 	}
 	if st := memberState(t, e, next.ID, "core"); st.SessionID == "" || st.Status != MemberRunning {
 		t.Fatalf("core %+v", st)
+	}
+}
+
+// A resumed member is starting until its session is ready for a prompt, as
+// a started member is until its prompt is typed (#155): a handoff typed
+// into it meanwhile waits, queued, and is typed once the session is ready;
+// the readiness wait is held by the test until then. A resumed session
+// that ends before it is ready ends the member, with the reason.
+func TestAResumedMemberIsRunningOnceItsSessionIsReady(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	ready := make(chan struct{})
+	var gating atomic.Bool
+	e.await = func(ctx context.Context, l *session.Local, held func(string)) error {
+		if !gating.Load() {
+			return awaitReady(ctx, l, held)
+		}
+		select {
+		case <-ready:
+			return nil
+		case <-l.Ended():
+			return session.ErrSessionEnded
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it."), immediate("qa", "Check it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	waitStatus(t, e, run.ID, "qa", MemberRunning, 5*time.Second)
+	lead, p := fl.member("lead")
+	p.End(0)
+	<-lead.Ended()
+	gating.Store(true)
+	id, err := e.ResumeMember(t.Context(), run.ID, "lead", "3f80c8bd-0000-4000-8000-000000000001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := memberState(t, e, run.ID, "lead"); m.Status != MemberStarting || m.SessionID != id {
+		t.Fatalf("resumed, before its session is ready: %+v", m)
+	}
+	// A handoff to lead meanwhile: queued, nothing typed.
+	qa, _ := fl.member("qa")
+	e.OnActivity(qa.Info().ID, handoffEntry("lead", "over to you"), "")
+	time.Sleep(100 * time.Millisecond)
+	_, p2 := fl.member("lead")
+	if w := typed(p2); len(w) != 0 {
+		t.Fatalf("typed into lead before it was ready: %q", w)
+	}
+	if got, _ := e.Get(run.ID); !logged(got, "handoff queued from qa to lead: lead has not had its prompt yet") {
+		t.Fatalf("log %+v", got.Log)
+	}
+	close(ready)
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	// The fake session asks at once; a handoff waits while a member waits
+	// on a prompt, so lead is at work before it is typed.
+	l2, _ := fl.member("lead")
+	l2.SetAttention(session.AttentionWorking, "", session.SourceAPI)
+	if got := waitTyped(t, p2, 5*time.Second); got != "Handoff from qa: over to you\r" {
+		t.Fatalf("typed once ready: %q", got)
+	}
+
+	// Ended before it was ready: the member ends with the reason.
+	ready = make(chan struct{})
+	_, p3 := fl.member("lead")
+	p3.End(0)
+	<-l2.Ended()
+	if _, err := e.ResumeMember(t.Context(), run.ID, "lead", "3f80c8bd-0000-4000-8000-000000000001"); err != nil {
+		t.Fatal(err)
+	}
+	l3, p4 := fl.member("lead")
+	p4.End(3)
+	<-l3.Ended()
+	m := waitStatus(t, e, run.ID, "lead", MemberEnded, 5*time.Second)
+	if !strings.Contains(m.Err, "before it was ready again") {
+		t.Fatalf("ended: %+v", m)
 	}
 }

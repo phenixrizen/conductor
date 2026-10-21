@@ -569,15 +569,15 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 		id := local.Info().ID
 		started := time.Now().UTC()
 		e.mu.Lock()
-		m.state.SessionID, m.state.Started, m.state.Status = id, &started, MemberRunning
-		// Its conversation has its prompt: a done from now on starts the
+		// Starting until its session is ready for a prompt (settle): its
+		// conversation has its prompt, so a done from now on starts the
 		// members after it.
+		m.state.SessionID, m.state.Started, m.state.Status = id, &started, MemberStarting
 		m.prompted, m.promptedAt = true, started
 		e.bySession.Store(id, sessionMember{r, m})
 		r.note(session.ActivityStatus, "%s resumed its conversation", name)
 		e.mu.Unlock()
-		r.starts.Done()
-		m.poke()
+		go e.settle(r, m, local)
 	}
 	run, err := e.startImmediate(ctx, r)
 	if err != nil {
@@ -861,7 +861,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				r.note(session.ActivityStatus, "%s was not ready after %v: typing its prompt anyway", name, readyCap)
 				e.mu.Unlock()
 			case errors.Is(err, session.ErrSessionEnded):
-				e.endedEarly(r, m, local)
+				e.endedEarly(r, m, local, "before its prompt was typed")
 				return nil
 			case err != nil:
 				return err
@@ -896,7 +896,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-local.Ended():
-					e.endedEarly(r, m, local)
+					e.endedEarly(r, m, local, "before its prompt was typed")
 					return nil
 				case <-time.After(readyPoll):
 				}
@@ -907,7 +907,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				break
 			}
 			if errors.Is(err, session.ErrSessionEnded) || endsSoon(local) {
-				e.endedEarly(r, m, local)
+				e.endedEarly(r, m, local, "before its prompt was typed")
 				return nil
 			}
 			return fmt.Errorf("typing its prompt: %w", err)
@@ -966,8 +966,9 @@ func endsSoon(l *session.Local) bool {
 	}
 }
 
-// endedEarly ends m, whose process ended before its prompt was typed.
-func (e *Engine) endedEarly(r *run, m *member, local *session.Local) {
+// endedEarly ends m, whose process ended before its start was done: before
+// its prompt was typed, or, resumed, before it was ready again (why).
+func (e *Engine) endedEarly(r *run, m *member, local *session.Local, why string) {
 	info := local.Info()
 	how := string(info.Status)
 	if info.ExitCode != nil {
@@ -981,8 +982,44 @@ func (e *Engine) endedEarly(r *run, m *member, local *session.Local) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m.state.Status, m.state.Ended = MemberEnded, ended
-	m.state.Err = how + " before its prompt was typed"
-	r.note(session.ActivityStatus, "%s ended before its prompt was typed: %s", m.def.Name, how)
+	m.state.Err = how + " " + why
+	r.note(session.ActivityStatus, "%s ended %s: %s", m.def.Name, why, how)
+}
+
+// settle makes a resumed member, starting since its session was made,
+// running once that session is ready for a prompt (await: a trust question
+// holding it is noted, as at a start), or after readyCap, noted: its agent
+// takes a while to show its prompt, and a handoff typed into it meanwhile
+// (deliver holds one for a member not running) would be lost in its
+// startup. A session that ends first ends the member, as at a start; a run
+// stopped meanwhile leaves it to the stop. It ends the start and wakes the
+// member's deliveries.
+func (e *Engine) settle(r *run, m *member, local *session.Local) {
+	defer r.starts.Done()
+	name := m.def.Name
+	err := e.await(r.ctx, local, func(question string) {
+		e.mu.Lock()
+		r.note(session.ActivityStatus, "%s asks %s: answer it in %s's terminal; its handoffs wait", name, quote(question), name)
+		e.mu.Unlock()
+	})
+	switch {
+	case errors.Is(err, session.ErrSessionEnded):
+		e.endedEarly(r, m, local, "before it was ready again")
+		return
+	case err != nil && !errors.Is(err, errNotReady):
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if m.state.Status != MemberStarting || m.state.SessionID != local.Info().ID {
+		return
+	}
+	m.state.Status = MemberRunning
+	if errors.Is(err, errNotReady) {
+		r.note(session.ActivityStatus, "%s was not ready after %v: taken as running anyway", name, readyCap)
+	}
+	r.touch()
+	m.poke()
 }
 
 // start runs m's start, which the caller has reserved: its worktree and
@@ -1679,7 +1716,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	m.state.SessionID, m.state.Started, m.state.Ended, m.state.Err = id, &started, nil, ""
 	e.bySession.Store(id, sessionMember{r, m})
 	if resume != "" {
-		m.state.Status = MemberRunning
+		// Starting until its session is ready for a prompt (settle).
 		r.note(session.ActivityStatus, "%s resumed its conversation", name)
 	} else {
 		// A new conversation: its prompt is typed again, and only a done
@@ -1689,8 +1726,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	}
 	e.mu.Unlock()
 	if resume != "" {
-		r.starts.Done()
-		m.poke()
+		go e.settle(r, m, local) // running once its session is ready, and ends the start
 		return id, nil
 	}
 	go e.finish(r, m, local) // types its prompt again, and ends the start

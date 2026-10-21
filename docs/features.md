@@ -3332,12 +3332,6 @@ branch `design/crews-graph`.
   machine is still to do.
 ### Deferred (round 5)
 
-- A readiness wait for a resumed member: it is `running` the moment its
-  session exists, while its agent takes a few seconds to show its prompt and
-  no hook reports that, so a handoff or broadcast typed into it meanwhile
-  can be lost (the live spec waits ten seconds). The start path's readiness
-  wait (`awaitReady`) could hold the member at `starting` until then.
-
 - A multi-session host protocol (one `conductor host` serving several
   sessions); round 5 publishes one session per connection.
 - TURN credential minting, unless a network needs it.
