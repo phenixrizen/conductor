@@ -396,11 +396,13 @@ func urlPort(u *url.URL) int {
 // addr (as net.Listen takes it): the same port (a service name read as the
 // standard library reads it), at a host the listener accepts. A listener on
 // all addresses (no host, 0.0.0.0, ::) accepts localhost and the loopback
-// addresses; one on localhost or a loopback address accepts that address
-// and localhost; these accept an unspecified host too (none, 0.0.0.0, ::),
-// which dials this machine. One on any other address or name accepts that
-// alone. A listener on port 0 accepts nothing: its port is the kernel's
-// choice.
+// addresses. One on localhost, 127.0.0.1 or ::1 (localhost's addresses)
+// accepts localhost and those addresses; one on another loopback address,
+// such as 127.0.0.2, accepts that address alone. These accept an
+// unspecified host too (none, 0.0.0.0, ::), which dials localhost's
+// addresses, except one on another loopback address. One on any other
+// address or name accepts that alone. A listener on port 0 accepts nothing:
+// its port is the kernel's choice.
 func listenerTakes(addr, host string, port int) bool {
 	lhost, lport, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -419,14 +421,22 @@ func listenerTakes(addr, host string, port int) bool {
 		return unspecified || LoopbackHost(host)
 	case strings.EqualFold(lhost, "localhost"):
 		// localhost is 127.0.0.1 or ::1, whichever the listener got.
-		return unspecified || strings.EqualFold(host, "localhost") ||
-			derr == nil && (dest == netip.AddrFrom4([4]byte{127, 0, 0, 1}) || dest == netip.IPv6Loopback())
+		return unspecified || strings.EqualFold(host, "localhost") || derr == nil && localhostAddr(dest)
 	case lerr == nil && l.IsLoopback():
-		return unspecified || strings.EqualFold(host, "localhost") || derr == nil && dest == l
+		if derr == nil && dest == l {
+			return true
+		}
+		return localhostAddr(l) && (unspecified || strings.EqualFold(host, "localhost"))
 	case lerr == nil:
 		return derr == nil && dest == l
 	}
 	return strings.EqualFold(lhost, host)
+}
+
+// localhostAddr reports whether a is one of the addresses localhost
+// resolves to: 127.0.0.1 or ::1.
+func localhostAddr(a netip.Addr) bool {
+	return a == netip.AddrFrom4([4]byte{127, 0, 0, 1}) || a == netip.IPv6Loopback()
 }
 
 // ACME challenges.
