@@ -163,6 +163,13 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	var agentSession *session.AgentSession
 	switch r := agent.Session; {
 	case req.resume != "":
+		// One live session per agent conversation: the conversation is
+		// taken now, before the process starts, and let go as this returns
+		// (registered, the session itself holds it; failed, a retry may).
+		if !s.takeResume(req.resume) {
+			return nil, newAPIError(http.StatusConflict, "already_resumed", "a running session holds that conversation, or one is being made for it")
+		}
+		defer s.releaseResume(req.resume)
 		argv = append(argv, catalog.Expand(r.ResumeArgs, req.resume)...)
 		agentSession = &session.AgentSession{ID: req.resume, Resumable: true, Source: session.AgentSessionResumed}
 	case !r.Empty() && len(r.StartArgs) > 0:

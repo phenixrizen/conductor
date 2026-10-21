@@ -22,7 +22,8 @@ export function useCrewRecords(crewId: MaybeRefOrGetter<string>, live: Ref<RunIn
     try {
       const r = await api.crewRuns(id)
       if (n !== seq) return
-      recorded.value = r.runs.slice(r.live)
+      // The records are marked: a row from one opens read-only, and offers no Resume.
+      recorded.value = r.runs.slice(r.live).map((x) => ({ ...x, record: true }))
       error.value = ''
     } catch (e) {
       if (n === seq) error.value = (e as Error).message

@@ -2,6 +2,7 @@ package crew
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -38,13 +39,79 @@ const maxRecords = 500
 // well under it.
 const maxRecordSize = 4 << 20
 
-// NewRecords opens runs/ under st.
+// NewRecords opens runs/ under st and reconciles what it holds: the records
+// of the runs that were running when the server last stopped (journaled
+// since their launch, never ended) are marked interrupted, their sessions
+// gone with that server, never relaunched on their own (a resume from the
+// record is the person's, ResumeRecord); a record whose continuation (a run
+// resumed from it, ResumedFrom) has a record while it does not name one
+// (the server ended between the two writes) is marked with it, so that it
+// is not resumed twice; and a record naming a continuation no record holds
+// (the server ended the other way round) has the mark cleared, so that it
+// can be resumed. A record that cannot be read or marked is left as it is.
 func NewRecords(st *store.Store) (*Records, error) {
 	sub, err := st.Sub("runs")
 	if err != nil {
 		return nil, err
 	}
-	return &Records{st: sub}, nil
+	rs := &Records{st: sub}
+	return rs, rs.reconcile()
+}
+
+// reconcile is what NewRecords does to the records it finds.
+func (rs *Records) reconcile() error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	entries, err := rs.st.List()
+	if err != nil {
+		return err
+	}
+	files, err := rs.load(entries)
+	if err != nil {
+		return err
+	}
+	byID := map[string]int{}
+	for i, f := range files {
+		if f.ok {
+			byID[f.run.ID] = i
+		}
+	}
+	changed := map[int]bool{}
+	for i, f := range files {
+		if !f.ok {
+			continue
+		}
+		if f.run.StoppedAt == nil && (f.run.State == RunRunning || f.run.State == RunNeedsInput) {
+			r := &files[i].run
+			r.State, r.NeedsInput = RunInterrupted, 0
+			for j := range r.Members {
+				if m := &r.Members[j]; m.Status == MemberRunning || m.Status == MemberStarting {
+					m.Status, m.NeedsInput = MemberEnded, false
+					m.Err = "interrupted: the server stopped while it ran"
+				}
+			}
+			changed[i] = true
+		}
+		if from := f.run.ResumedFrom; from != "" {
+			if j, ok := byID[from]; ok && files[j].run.ResumedBy == "" {
+				files[j].run.ResumedBy = f.run.ID
+				changed[j] = true
+			}
+		}
+	}
+	for i, f := range files {
+		if by := f.run.ResumedBy; f.ok && by != "" {
+			if _, ok := byID[by]; !ok {
+				files[i].run.ResumedBy = ""
+				changed[i] = true
+			}
+		}
+	}
+	var errs []error
+	for i := range changed {
+		errs = append(errs, rs.st.Save(files[i].run.ID+".json", files[i].run))
+	}
+	return errors.Join(errs...)
 }
 
 // Save writes r's record, replacing an earlier one of the same run (a
@@ -199,12 +266,16 @@ func (e *Engine) noteEnd(runID string) {
 // RecordEnds wires OnEnd to rs: each run that ends is saved on a goroutine
 // of its own, started through run (the server's tracked goroutines, which
 // its shutdown waits for; a plain go when nil), and a save that fails is
-// logged by warn.
+// logged by warn. Journal saves the run as it is now the same way, for the
+// caller to make from its launch on (the server, after each change, a
+// while apart), so that a run cut short by the server's end has a record,
+// marked interrupted as the records open next.
 //
 // The saves run on goroutines of their own, so a later end of a run (a run
-// reopened and ended again) could be saved before an earlier one: each end
-// is numbered as OnEnd gets it (in the order noteEnd took the snapshots),
-// and a save older than the one already written for its run is dropped.
+// reopened and ended again) could be saved before an earlier one: each
+// snapshot is numbered as it is handed in (the ends in the order noteEnd
+// took them), and a save older than the one already written for its run is
+// dropped.
 func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run func(func())) {
 	if run == nil {
 		run = func(f func()) { go f() }
@@ -217,8 +288,18 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 		mu    sync.Mutex
 		seq   uint64
 		byRun = map[string]*pending{}
+		// waiting counts the ends not yet written or dropped, every run's;
+		// idle is closed while it is zero, and made anew as it rises.
+		waiting int
+		idle    = make(chan struct{})
 	)
-	e.OnEnd = func(r Run) {
+	close(idle)
+	e.recordsIdle = func() <-chan struct{} {
+		mu.Lock()
+		defer mu.Unlock()
+		return idle
+	}
+	enqueue := func(r Run) {
 		mu.Lock()
 		seq++
 		n := seq
@@ -228,6 +309,9 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 			byRun[r.ID] = p
 		}
 		p.inflight++
+		if waiting++; waiting == 1 {
+			idle = make(chan struct{})
+		}
 		mu.Unlock()
 		run(func() {
 			mu.Lock()
@@ -241,6 +325,45 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 			if p.inflight--; p.inflight == 0 {
 				delete(byRun, r.ID)
 			}
+			if waiting--; waiting == 0 {
+				close(idle)
+			}
 		})
+	}
+	e.OnEnd = enqueue
+	e.journal = enqueue
+}
+
+// Journal saves the run with the given ID as it is now, through the records
+// RecordEnds wired (nothing without them, or for a run the engine does not
+// hold): the server calls it a while after each change of a run. The
+// snapshot and its place in the saves are one step under endMu, as an end's
+// are (noteEnd), so a snapshot taken before an end never lands after it.
+func (e *Engine) Journal(runID string) {
+	if e.journal == nil {
+		return
+	}
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
+	if r, ok := e.Get(runID); ok {
+		e.journal(r)
+	}
+}
+
+// WaitRecorded waits, as long as ctx allows, until every end handed to the
+// records so far (RecordEnds) is written or dropped, and reports whether it
+// is so; true at once when none waits, or no records are kept. The server's
+// shutdown closes the records after it: a run stopped as the shutdown's
+// budget ran out is recorded all the same, a record being a file written in
+// a moment.
+func (e *Engine) WaitRecorded(ctx context.Context) bool {
+	if e.recordsIdle == nil {
+		return true
+	}
+	select {
+	case <-e.recordsIdle():
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }

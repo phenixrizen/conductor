@@ -67,12 +67,13 @@ const (
 	readyCap   = 60 * time.Second       // after this the prompt is typed anyway
 )
 
+// maxRuns is how many runs the engine keeps: a launch past it forgets the
+// oldest run with nothing running. A variable, so that a test may lower it.
+var maxRuns = 100
+
 const (
 	// maxRunLog bounds a run's log.
 	maxRunLog = 200
-	// maxRuns is how many runs the engine keeps: a launch past it forgets
-	// the oldest run with nothing running.
-	maxRuns = 100
 	// diffTTL is how long GetWithDiffs keeps a member's diff.
 	diffTTL = 10 * time.Second
 	// typedBy is the name what a run types into a session is recorded by.
@@ -96,6 +97,8 @@ var (
 	ErrRunStopped     = errors.New("the run is stopped")
 	ErrMemberRunning  = errors.New("the member is still running")
 	ErrRunRunning     = errors.New("the run is still running: stop it first")
+	// ErrRunResumed is what a RunResumedError is (errors.Is).
+	ErrRunResumed = errors.New("the run was resumed already")
 	// errNotReady is awaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )
@@ -131,6 +134,12 @@ type MemberState struct {
 	// AgentSession is the agent's own session in the member's latest session,
 	// kept when that session has left the server: what ResumeMember resumes.
 	AgentSession *session.AgentSession `json:"agentSession,omitempty"`
+	// Prompt and Args are the member's as it ran (its crew's may have
+	// changed since), and Base the commit its worktree branched from: what
+	// a resume from the run's record needs (ResumeRecord).
+	Prompt string   `json:"prompt,omitempty"`
+	Args   []string `json:"args,omitempty"`
+	Base   string   `json:"base,omitempty"`
 	// Diff is set by GetWithDiffs for a member with a worktree: tracked
 	// changes against the base, uncommitted included.
 	Diff *Diff `json:"diff,omitempty"`
@@ -142,6 +151,10 @@ const (
 	RunNeedsInput = "needs_input" // the session of a starting or running member waits on a prompt
 	RunStopped    = "stopped"     // stopped (Stop): its sessions were stopped
 	RunFinished   = "finished"    // every member ended, and none is pending
+	// RunInterrupted is a record's state alone: the run was running when the
+	// server last stopped (its record journaled, not ended), so its sessions
+	// are gone; it is never relaunched on its own (Records).
+	RunInterrupted = "interrupted"
 )
 
 // Run is a launch of a crew as the engine reports it.
@@ -228,6 +241,11 @@ type Engine struct {
 	// must not wait; RecordEnds sets it to save the run. Set it before the
 	// first launch.
 	OnEnd func(r Run)
+	// recordsIdle, set by RecordEnds, gives a channel closed while no end
+	// handed to the records waits to be written (WaitRecorded); journal,
+	// set with it, saves a run as it is now (Journal).
+	recordsIdle func() <-chan struct{}
+	journal     func(r Run)
 	// endMu orders the ends: a snapshot and its OnEnd are one step under it,
 	// so the ends reach OnEnd in the order their snapshots were taken.
 	endMu sync.Mutex
@@ -270,6 +288,10 @@ type run struct {
 	// stopDone once the stop completed (every session stopped, every start
 	// and delivery drained), which a member's Resume may reopen.
 	stopping, stopDone bool
+	// resuming is set, under e.mu, while ResumeRun makes the run that
+	// resumes this one, so that a second ResumeRun meanwhile is refused
+	// (RunResumedError) rather than making another.
+	resuming bool
 	// resumedFrom and resumedBy link a run to the one it resumed, and to the
 	// one that resumed it (ResumeRun).
 	resumedFrom, resumedBy string
@@ -287,10 +309,31 @@ type run struct {
 	excludeNoted bool
 }
 
+// RunResumedError refuses a ResumeRun of a run resumed already, or being
+// resumed: By names the run that resumed it, "" while that run is still
+// being made (a second ResumeRun landing meanwhile). One live session per
+// agent conversation: a second continuation would put two agents on one
+// branch, each appending to one transcript.
+type RunResumedError struct{ By string }
+
+func (e *RunResumedError) Error() string {
+	if e.By == "" {
+		return "the run is being resumed"
+	}
+	return "the run was resumed already, as " + e.By
+}
+
+func (e *RunResumedError) Is(target error) bool { return target == ErrRunResumed }
+
 type member struct {
 	def   Member
 	state MemberState
 	base  string // the commit its worktree branched from, for DiffStat
+	// resuming is set, under e.mu, while a ResumeMember makes the member's
+	// new session (its ended session's id still on the state): a second
+	// resume meanwhile is refused, and only the one making the session
+	// touches the member's state.
+	resuming bool
 	// prompted is set as its prompt is typed (or at once without one), and
 	// promptedAt is when: a done whose entry is stamped after it starts the
 	// members after it (startAfter). One stamped before it, even if it
@@ -468,10 +511,16 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 	case cur.State != RunStopped && cur.State != RunFinished:
 		e.mu.Unlock()
 		return nil, ErrRunRunning
+	case old.resumedBy != "":
+		e.mu.Unlock()
+		return nil, &RunResumedError{By: old.resumedBy}
+	case old.resuming:
+		e.mu.Unlock()
+		return nil, &RunResumedError{}
 	}
+	old.resuming = true
 	yolo := old.yolo
 	c := Crew{ID: old.crewID, Name: old.name, Goal: old.goal, Cwd: old.cwd, Where: WhereServer, Isolation: old.isolation, Yolo: &yolo}
-	type kept struct{ agentSession, sessionID, worktree, branch, base string }
 	keeps := map[string]kept{}
 	for _, m := range old.members {
 		c.Members = append(c.Members, m.def)
@@ -486,17 +535,62 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 		}
 	}
 	e.mu.Unlock()
+	return e.resumeInto(ctx, c, keeps, old.label, old.id, old)
+}
+
+// kept is what a resumed member continues with: its agent conversation, the
+// session that held it, and its worktree, branch and base commit.
+type kept struct{ agentSession, sessionID, worktree, branch, base string }
+
+// ResumeRecord is ResumeRun for a run the engine no longer holds, from its
+// record (Records): the crew as the record has it (its members' prompts,
+// arguments and start rules as they ran, not the crew as saved since), every
+// member whose last agent session is resumable continuing its conversation
+// in its kept worktree and branch as recorded (one gone fails that member's
+// start, as a session that cannot be made does), and the others starting
+// afresh under their start rules. The caller refuses a record resumed
+// already (ResumedBy) and marks the record with the new run; a run the
+// engine holds is resumed as it is (ResumeRun), never from its record.
+func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
+	if _, ok := e.Get(rec.ID); ok {
+		return nil, ErrRunRunning
+	}
+	yolo := rec.Yolo
+	c := Crew{ID: rec.CrewID, Name: rec.Name, Goal: rec.Goal, Cwd: rec.Cwd, Where: WhereServer, Isolation: rec.Isolation, Yolo: &yolo}
+	keeps := map[string]kept{}
+	for _, st := range rec.Members {
+		c.Members = append(c.Members, Member{Name: st.Name, AgentID: st.AgentID, Prompt: st.Prompt, Args: slices.Clone(st.Args), Start: st.Start})
+		if st.AgentSession != nil && st.AgentSession.Resumable && st.AgentSession.ID != "" {
+			keeps[st.Name] = kept{agentSession: st.AgentSession.ID, sessionID: st.SessionID, worktree: st.Worktree, branch: st.Branch, base: st.Base}
+		}
+	}
+	return e.resumeInto(ctx, c, keeps, rec.Label, rec.ID, nil)
+}
+
+// resumeInto makes the run that resumes fromID: a run of c, labelled, in
+// which the members in keeps continue their conversations and the others
+// start under their start rules. With old, the run the engine holds that is
+// resumed, its bookkeeping (resumedBy, resuming) and its note.
+func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, label, fromID string, old *run) (*Run, error) {
 	prefix, err := e.prepare(ctx, c)
 	if err != nil {
+		if old != nil {
+			e.mu.Lock()
+			old.resuming = false
+			e.mu.Unlock()
+		}
 		return nil, err
 	}
-	r := e.add(c, prefix, old.label)
+	r := e.add(c, prefix, label)
 	defer e.launched(r)
 	e.mu.Lock()
-	r.resumedFrom = old.id
-	old.resumedBy = r.id
-	old.note(session.ActivityStatus, "resumed as %s", r.id)
-	r.note(session.ActivityStatus, "resumes %s: %d conversations continue", old.id, len(keeps))
+	r.resumedFrom = fromID
+	if old != nil {
+		old.resumedBy = r.id
+		old.resuming = false
+		old.note(session.ActivityStatus, "resumed as %s", r.id)
+	}
+	r.note(session.ActivityStatus, "resumes %s: %d conversations continue", fromID, len(keeps))
 	var resumes []*member
 	for _, m := range r.members {
 		k, ok := keeps[m.def.Name]
@@ -533,15 +627,15 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 		id := local.Info().ID
 		started := time.Now().UTC()
 		e.mu.Lock()
-		m.state.SessionID, m.state.Started, m.state.Status = id, &started, MemberRunning
-		// Its conversation has its prompt: a done from now on starts the
+		// Starting until its session is ready for a prompt (settle): its
+		// conversation has its prompt, so a done from now on starts the
 		// members after it.
+		m.state.SessionID, m.state.Started, m.state.Status = id, &started, MemberStarting
 		m.prompted, m.promptedAt = true, started
 		e.bySession.Store(id, sessionMember{r, m})
 		r.note(session.ActivityStatus, "%s resumed its conversation", name)
 		e.mu.Unlock()
-		r.starts.Done()
-		m.poke()
+		go e.settle(r, m, local)
 	}
 	run, err := e.startImmediate(ctx, r)
 	if err != nil {
@@ -624,6 +718,11 @@ func (e *Engine) add(c Crew, prefix, label string) *run {
 			immediate++
 		}
 	}
+	// Under endMu as well: a run evict forgets has its record written
+	// (journalForgotten) in its turn among the saves, before the run is
+	// gone for a resume from that record to find.
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for r.id == "" || e.runs[r.id] != nil {
@@ -825,7 +924,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				r.note(session.ActivityStatus, "%s was not ready after %v: typing its prompt anyway", name, readyCap)
 				e.mu.Unlock()
 			case errors.Is(err, session.ErrSessionEnded):
-				e.endedEarly(r, m, local)
+				e.endedEarly(r, m, local, "before its prompt was typed")
 				return nil
 			case err != nil:
 				return err
@@ -860,7 +959,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-local.Ended():
-					e.endedEarly(r, m, local)
+					e.endedEarly(r, m, local, "before its prompt was typed")
 					return nil
 				case <-time.After(readyPoll):
 				}
@@ -871,7 +970,7 @@ func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.L
 				break
 			}
 			if errors.Is(err, session.ErrSessionEnded) || endsSoon(local) {
-				e.endedEarly(r, m, local)
+				e.endedEarly(r, m, local, "before its prompt was typed")
 				return nil
 			}
 			return fmt.Errorf("typing its prompt: %w", err)
@@ -930,8 +1029,9 @@ func endsSoon(l *session.Local) bool {
 	}
 }
 
-// endedEarly ends m, whose process ended before its prompt was typed.
-func (e *Engine) endedEarly(r *run, m *member, local *session.Local) {
+// endedEarly ends m, whose process ended before its start was done: before
+// its prompt was typed, or, resumed, before it was ready again (why).
+func (e *Engine) endedEarly(r *run, m *member, local *session.Local, why string) {
 	info := local.Info()
 	how := string(info.Status)
 	if info.ExitCode != nil {
@@ -945,8 +1045,54 @@ func (e *Engine) endedEarly(r *run, m *member, local *session.Local) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	m.state.Status, m.state.Ended = MemberEnded, ended
-	m.state.Err = how + " before its prompt was typed"
-	r.note(session.ActivityStatus, "%s ended before its prompt was typed: %s", m.def.Name, how)
+	m.state.Err = how + " " + why
+	r.note(session.ActivityStatus, "%s ended %s: %s", m.def.Name, why, how)
+}
+
+// settle makes a resumed member, starting since its session was made,
+// running once that session is ready for a prompt (await: a trust question
+// holding it is noted, as at a start), or after readyCap, noted: its agent
+// takes a while to show its prompt, and a handoff typed into it meanwhile
+// (deliver holds one for a member not running) would be lost in its
+// startup. A session that ends first ends the member, as at a start; a run
+// stopped meanwhile leaves it to the stop. It ends the start and wakes the
+// member's deliveries.
+func (e *Engine) settle(r *run, m *member, local *session.Local) {
+	defer r.starts.Done()
+	name := m.def.Name
+	err := e.await(r.ctx, local, func(question string) {
+		e.mu.Lock()
+		r.note(session.ActivityStatus, "%s asks %s: answer it in %s's terminal; its handoffs wait", name, quote(question), name)
+		e.mu.Unlock()
+	})
+	switch {
+	case errors.Is(err, session.ErrSessionEnded):
+		e.endedEarly(r, m, local, "before it was ready again")
+		return
+	case err != nil && !errors.Is(err, errNotReady):
+		// The run stopped while it waited: the stop ends its session, and
+		// the member ends here, so that nothing of a completed stop is
+		// left starting (which a resume refuses and eviction waits for).
+		now := time.Now().UTC()
+		e.mu.Lock()
+		if m.state.Status == MemberStarting && m.state.SessionID == local.Info().ID {
+			m.state.Status, m.state.Ended = MemberEnded, &now
+			r.touch()
+		}
+		e.mu.Unlock()
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if m.state.Status != MemberStarting || m.state.SessionID != local.Info().ID {
+		return
+	}
+	m.state.Status = MemberRunning
+	if errors.Is(err, errNotReady) {
+		r.note(session.ActivityStatus, "%s was not ready after %v: taken as running anyway", name, readyCap)
+	}
+	r.touch()
+	m.poke()
 }
 
 // start runs m's start, which the caller has reserved: its worktree and
@@ -1222,9 +1368,12 @@ func (e *Engine) abort(r *run) {
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
 	_ = e.stop(ctx, r)
+	e.endMu.Lock()
 	e.mu.Lock()
+	e.journalForgotten(r)
 	e.forget(r)
 	e.mu.Unlock()
+	e.endMu.Unlock()
 }
 
 // evict forgets the oldest runs with nothing running until there is room for
@@ -1233,10 +1382,13 @@ func (e *Engine) abort(r *run) {
 // The caller holds e.mu.
 func (e *Engine) evict() {
 	for len(e.order) >= maxRuns {
-		i := slices.IndexFunc(e.order, func(r *run) bool { return !r.launching && e.idle(r) })
+		// A run being resumed stays until its continuation names it
+		// (resumedBy), or it would be forgotten with its record unmarked.
+		i := slices.IndexFunc(e.order, func(r *run) bool { return !r.launching && !r.resuming && e.idle(r) })
 		if i < 0 {
 			return
 		}
+		e.journalForgotten(e.order[i])
 		e.forget(e.order[i])
 	}
 }
@@ -1261,11 +1413,31 @@ func (e *Engine) idle(r *run) bool {
 // ForgetForTest drops a run as evict would, so a test sees the engine
 // without it (its record stays).
 func (e *Engine) ForgetForTest(runID string) {
+	e.endMu.Lock()
+	defer e.endMu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if r, ok := e.runs[runID]; ok {
+		e.journalForgotten(r)
 		e.forget(r)
 	}
+}
+
+// journalForgotten writes r's record once more as it is forgotten (evict,
+// abort, ForgetForTest), through the records RecordEnds wired: a resume's
+// mark on it (resumedBy) made since the journal last wrote it is not lost
+// with the run. The snapshot, with the chat (the record is the whole of
+// it), takes its place among the saves here, before the run is gone: a
+// resume from the record waits for it (WaitRecorded) before marking the
+// record, so the mark is never written over by it. The caller holds endMu
+// and e.mu, as the forget sites do.
+func (e *Engine) journalForgotten(r *run) {
+	if e.journal == nil {
+		return
+	}
+	snap := r.snapshot(false, true)
+	e.refresh(&snap)
+	e.journal(snap)
 }
 
 // forget drops r and the index of its sessions, and tells OnForget. The
@@ -1418,6 +1590,7 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 			d := *m.diff
 			st.Diff = &d
 		}
+		st.Prompt, st.Args, st.Base = m.def.Prompt, slices.Clone(m.def.Args), m.base
 		out.Members = append(out.Members, st)
 	}
 	if withChat {
@@ -1591,6 +1764,16 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		err = ErrRunStopped
 	case m.state.Status == MemberPending:
 		err = ErrMemberRunning
+	case m.resuming:
+		// A resume of it is making its session: refused, not started
+		// beside it, whatever the ended session on its state says.
+		err = ErrMemberRunning
+	case m.state.Status == MemberStarting && !e.ended(m):
+		// Marked starting by a resume under way, its ended session's id
+		// still on it: a second resume meanwhile is refused, not started
+		// beside it. One left starting by a session that ended (a stop
+		// during its readiness wait) is resumed.
+		err = ErrMemberRunning
 	case m.state.Status != MemberEnded && !e.ended(m):
 		err = ErrMemberRunning
 	}
@@ -1614,6 +1797,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		cwd = filepath.Join(m.state.Worktree, r.prefix)
 	}
 	m.state.Status = MemberStarting
+	m.resuming = true
 	r.starts.Add(1)
 	r.touch()
 	e.mu.Unlock()
@@ -1625,6 +1809,9 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: name}, Yolo: r.yolo,
 		Resume: resume, ResumedFrom: old})
 	if err != nil {
+		e.mu.Lock()
+		m.resuming = false
+		e.mu.Unlock()
 		r.starts.Done()
 		e.fail(r, m, err)
 		return "", fmt.Errorf("member %s: %w", quote(name), err)
@@ -1632,13 +1819,14 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	id := local.Info().ID
 	started := time.Now().UTC()
 	e.mu.Lock()
+	m.resuming = false
 	if old != "" {
 		e.bySession.Delete(old)
 	}
 	m.state.SessionID, m.state.Started, m.state.Ended, m.state.Err = id, &started, nil, ""
 	e.bySession.Store(id, sessionMember{r, m})
 	if resume != "" {
-		m.state.Status = MemberRunning
+		// Starting until its session is ready for a prompt (settle).
 		r.note(session.ActivityStatus, "%s resumed its conversation", name)
 	} else {
 		// A new conversation: its prompt is typed again, and only a done
@@ -1648,8 +1836,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	}
 	e.mu.Unlock()
 	if resume != "" {
-		r.starts.Done()
-		m.poke()
+		go e.settle(r, m, local) // running once its session is ready, and ends the start
 		return id, nil
 	}
 	go e.finish(r, m, local) // types its prompt again, and ends the start

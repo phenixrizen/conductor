@@ -15,6 +15,8 @@ export type RunState = RunInfo['state']
  * same rule as runState in internal/crew/run.go.
  */
 export function runState(run: RunInfo, sessions: readonly SessionInfo[]): { state: RunState; needs: number } {
+  // A record's state is as recorded: nothing of it is live, and a run interrupted by the server's end stays so.
+  if (run.record) return { state: run.state, needs: run.needsInput }
   let needs = 0
   let ended = 0
   for (const m of run.members) {
@@ -42,6 +44,8 @@ export function runBadge(state: RunState, needs: number): { label: string; color
       return { label: 'Stopped', color: 'neutral' }
     case 'finished':
       return { label: 'Finished', color: 'neutral' }
+    case 'interrupted':
+      return { label: 'Interrupted', color: 'warning' }
   }
   return { label: 'Running', color: 'success' }
 }
@@ -123,6 +127,13 @@ export class RunStore {
   async read(id: string): Promise<RunInfo | null> {
     const ticket = ++this.ticket
     const run = await this.reader.get(id)
+    if (run?.record) {
+      // A record of a run the server no longer holds: the page that asked
+      // gets it, the live runs do not (nothing of it is live), and a run of
+      // that id the store held is gone.
+      this.remove(id, ticket)
+      return run
+    }
     if (run) this.apply(run, ticket)
     else this.remove(id, ticket)
     return run && (this.runs.get(id) ?? run)

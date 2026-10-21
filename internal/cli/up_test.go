@@ -648,3 +648,33 @@ func TestUpSendsTheName(t *testing.T) {
 		t.Fatalf("unnamed launch sent %+v", r)
 	}
 }
+
+// conductor up --resume posts to the run's resume route, with no body, and
+// prints the new run and its URL as a launch does; a crew named beside it,
+// or a --name (a resumed run keeps its name), is a usage error; the server's
+// refusal (the run resumed already, naming the continuation) is the error.
+func TestUpResumesARun(t *testing.T) {
+	clearConductorEnv(t)
+	srv, seen := stubServer(t, http.StatusCreated, `{"run":{"id":"r-2","crewId":"crew-1","name":"Ship it","resumedFrom":"r-1","yolo":true}}`)
+	code, stdout, stderr, err := up(t, "--resume", "r-1", "--server", srv.URL, "--token", secretToken)
+	if code != 0 || err != nil {
+		t.Fatalf("exit %d %v\nstdout:\n%s\nstderr:\n%s", code, err, stdout, stderr)
+	}
+	if want := "run r-2\n" + srv.URL + "/runs/r-2\nyolo: its members skip their permission prompts\n"; stdout != want {
+		t.Fatalf("stdout:\n%q\nwant:\n%q", stdout, want)
+	}
+	if len(*seen) != 1 || (*seen)[0].method != http.MethodPost || (*seen)[0].path != "/api/runs/r-1/resume" || (*seen)[0].body != "" {
+		t.Fatalf("requests: %+v", *seen)
+	}
+	noSecret(t, stdout, stderr)
+	for _, args := range [][]string{{"crew-1", "--resume", "r-1"}, {"--resume", "r-1", "--name", "again"}} {
+		if code, _, _, err := up(t, append(args, "--server", srv.URL, "--token", secretToken)...); code != 2 || err == nil {
+			t.Fatalf("%v: exit %d %v", args, code, err)
+		}
+	}
+	refused, _ := stubServer(t, http.StatusConflict, `{"error":{"code":"already_resumed","message":"the run was resumed already, as r-2","run":"r-2"}}`)
+	code, _, _, err = up(t, "--resume", "r-1", "--server", refused.URL, "--token", secretToken)
+	if code != 1 || err == nil || !strings.Contains(err.Error(), "resumed already") {
+		t.Fatalf("refused: exit %d %v", code, err)
+	}
+}

@@ -242,3 +242,29 @@ describe('run names and the Runs tab filter', () => {
     expect(readRunFilter('{"state":"nope","since":"1y"}')).toEqual(DEFAULT_RUN_FILTER)
   })
 })
+
+describe('runResumable', () => {
+  it('offers Resume to a stopped run the server holds, not to one live, resumed already, or a record', async () => {
+    const { runResumable } = await import('./crewWords')
+    const base = { id: 'c-1', crewId: 'c', name: 'C', goal: '', cwd: '/', isolation: 'none', startedAt: '2026-10-21T00:00:00Z', members: [], log: [], state: 'stopped', needsInput: 0, yolo: false } as unknown as import('~/composables/useSessions').RunInfo
+    expect(runResumable({ ...base, stoppedAt: '2026-10-21T00:01:00Z' }, false)).toBe(true)
+    expect(runResumable({ ...base, stoppedAt: '2026-10-21T00:01:00Z' }, true)).toBe(false)
+    expect(runResumable({ ...base, stoppedAt: '2026-10-21T00:01:00Z', resumedBy: 'c-2' }, false)).toBe(false)
+    expect(runResumable(base, false)).toBe(false)
+    // A record is resumed from the record (#153): stopped, finished or interrupted, once.
+    expect(runResumable({ ...base, stoppedAt: '2026-10-21T00:01:00Z', record: true }, false)).toBe(true)
+    expect(runResumable({ ...base, state: 'interrupted', record: true }, false)).toBe(true)
+    expect(runResumable({ ...base, state: 'finished', record: true }, false)).toBe(true)
+    expect(runResumable({ ...base, state: 'interrupted', record: true, resumedBy: 'c-2' }, false)).toBe(false)
+    expect(runResumable({ ...base, state: 'running', record: true }, false)).toBe(false)
+  })
+})
+
+describe('runOutcome', () => {
+  it('says interrupted for a run the server\'s end cut short, filed with the stopped ones', async () => {
+    const { runOutcome, filterState, outcomeBadge } = await import('./crewWords')
+    expect(runOutcome({ members: [] }, 'interrupted')).toBe('interrupted')
+    expect(filterState('interrupted')).toBe('stopped')
+    expect(outcomeBadge('interrupted')).toEqual({ label: 'interrupted', color: 'warning', variant: 'outline' })
+  })
+})

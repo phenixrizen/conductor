@@ -76,6 +76,23 @@ type Server struct {
 	// crews holds the saved crews, one file each in crews/ of the data
 	// directory; nil when there is no store.
 	crews *crew.Store
+	// resuming holds the agent conversations a session is being made for
+	// (createLocalSession with a resume id): taken before the process
+	// starts, released once the session is registered (liveAgentSession
+	// holds the conversation from then) or the start failed, so two resumes
+	// of one conversation at once make one session (#126). Under resumingMu.
+	resumingMu sync.Mutex
+	resuming   map[string]struct{}
+	// recordMarks are the continuations of records resumed (source to
+	// continuation) whose mark on the record (ResumedBy) could not be
+	// written: the claim stands in memory, a second resume answering the
+	// continuation and trying the mark again (resumeRecord). Under
+	// resumingMu.
+	recordMarks map[string]string
+	// journaling holds the runs whose record is about to be written again
+	// (scheduleJournal), under journalMu.
+	journalMu  sync.Mutex
+	journaling map[string]bool
 	// records keeps the runs that ended, under runs/ in the data directory
 	// (crew.Records); nil without one.
 	records *crew.Records
@@ -299,6 +316,8 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.events.run(runID, false)
 		// Its links at the switchyard follow its members (nothing for a run without any).
 		s.scheduleRunSync(runID)
+		// Its record follows it from its launch on (the journal).
+		s.scheduleJournal(runID)
 	}
 	// A run's chat reaches the browsers' unread counts the same way a session's does.
 	s.runs.OnRunChat = func(runID string, m session.ChatMessage) {
@@ -783,18 +802,29 @@ func (s *Server) RunMaintenance(ctx context.Context) {
 	}
 }
 
+// recordsGrace is how long Shutdown waits, past its own context, for the
+// records of the runs it stopped to be written before the records close:
+// a budget spent on the stops must not cost the records, each a file
+// written in a moment.
+const recordsGrace = 5 * time.Second
+
 // Shutdown stops the webhooks, then the runs, so that no crew member starts
 // any more, then every session, and closes every viewer. The webhooks go
 // first: the entries the sessions record as they stop are not sent. The
-// goroutines the server started on its own (track) are waited for last, once
-// every viewer is closed, until they end or ctx does.
+// runs are stopped together, so that one slow to stop costs the others
+// none of the budget. The goroutines the server started on its own (track)
+// are waited for last, once every viewer is closed, until they end or ctx
+// does; the records of the runs stopped are then waited for within
+// recordsGrace, whatever ctx says, and closed.
 func (s *Server) Shutdown(ctx context.Context) {
 	s.webhooks.close(ctx)
+	var stops sync.WaitGroup
 	for _, run := range s.runs.List() {
 		if run.StoppedAt == nil {
-			_ = s.runs.Stop(ctx, run.ID)
+			stops.Go(func() { _ = s.runs.Stop(ctx, run.ID) })
 		}
 	}
+	stops.Wait()
 	s.registry.Each(func(d session.Driver) {
 		if local, ok := d.(*session.Local); ok {
 			_ = local.Stop(ctx)
@@ -838,6 +868,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	case <-ctx.Done():
 	}
 	if s.records != nil {
+		wctx, cancel := context.WithTimeout(context.Background(), recordsGrace)
+		if !s.runs.WaitRecorded(wctx) {
+			s.log.Warn("run records still being written as the server exits", "grace", recordsGrace)
+		}
+		cancel()
 		s.records.Close()
 	}
 }

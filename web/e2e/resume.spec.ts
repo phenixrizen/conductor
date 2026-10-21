@@ -194,7 +194,8 @@ test('a member of a stopped run resumed reopens the run, and Resume as new run c
     const next = await api.run(nextId)
     expect(next.id).not.toBe(run.id)
     expect((next as unknown as { resumedFrom?: string }).resumedFrom).toBe(run.id)
-    expect(member(next, 'lead').status).toBe('running')
+    // Starting until its session is ready for a prompt (#155), then running.
+    await expect.poll(async () => member(await api.run(nextId), 'lead').status, { timeout: 15_000 }).toBe('running')
     expect(member(next, 'lead').branch).toBe(lead.branch)
     expect(member(next, 'later').status).toBe('pending')
     const nextLead = await api.session(member(next, 'lead').sessionId ?? '')
@@ -203,6 +204,10 @@ test('a member of a stopped run resumed reopens the run, and Resume as new run c
     r = await api.run(run.id)
     expect((r as unknown as { resumedBy?: string }).resumedBy).toBe(nextId)
     expect(r.state).toBe('stopped')
+    await expect(page.locator('[data-crew-run-header] [data-run-resume]')).toHaveCount(0)
+    // The stopped run, resumed already, offers no Resume as new run on its own page either (#126).
+    await page.goto(`/runs/${encodeURIComponent(run.id)}`)
+    await expect(page.locator('[data-crew-run-header] [data-run-subtitle]')).toBeVisible()
     await expect(page.locator('[data-crew-run-header] [data-run-resume]')).toHaveCount(0)
     // The Crews page lists the new run as running now, and the stopped run no longer offers Resume as new run once resumed.
     await page.goto('/crews')

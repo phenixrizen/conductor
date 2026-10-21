@@ -61,7 +61,13 @@ func (e *Engine) OnChange(info session.Info) {
 		e.mu.Lock()
 		if sm.m.state.SessionID == info.ID {
 			as := *info.AgentSession
+			was := sm.m.state.AgentSession
 			sm.m.state.AgentSession = &as
+			if was == nil || *was != as {
+				// A change of the run: its record follows the conversation
+				// a resume from it would continue (the journal).
+				sm.r.touch()
+			}
 		}
 		e.mu.Unlock()
 	}

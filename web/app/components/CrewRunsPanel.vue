@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { ApiError } from '~/composables/useApi'
 import type { RunInfo, SessionInfo } from '~/composables/useSessions'
 import { enough } from '~/utils/charts'
-import { barClass, barsSummary, DEFAULT_RUN_FILTER, filterCounts, filterRuns, memberTiles, minutesLabel, outcomeBadge, readRunFilter, RUN_FILTER_KEY, runBars, runNote, runOutcome, runTook, runWhen, shortRunId, type RunFilter, type RunFilterSince, type RunFilterState } from '~/utils/crewWords'
+import { barClass, barsSummary, DEFAULT_RUN_FILTER, filterCounts, filterRuns, memberTiles, minutesLabel, outcomeBadge, readRunFilter, RUN_FILTER_KEY, runBars, runNote, runOutcome, runResumable, runTook, runWhen, shortRunId, type RunFilter, type RunFilterSince, type RunFilterState } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 import { agentInitials } from '~/utils/sessions'
 
@@ -86,7 +87,7 @@ const rows = computed(() =>
       tiles: memberTiles(r, props.sessions),
       took: runTook(r, isLive, props.now),
       note: runNote(r, props.sessions),
-      resumable: !isLive && !!r.stoppedAt && !r.resumedBy,
+      resumable: runResumable(r, isLive),
     }
   }),
 )
@@ -111,6 +112,11 @@ async function resume(r: RunInfo) {
     live.applyRun(next)
     await navigateTo(`/runs/${encodeURIComponent(next.id)}`)
   } catch (e) {
+    // Resumed already (#126): the continuation the server names is the run to open.
+    if (e instanceof ApiError && e.code === 'already_resumed' && typeof e.details.run === 'string') {
+      await navigateTo(`/runs/${encodeURIComponent(e.details.run)}`)
+      return
+    }
     toast.add({ title: 'Resume failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
     resuming.value = ''

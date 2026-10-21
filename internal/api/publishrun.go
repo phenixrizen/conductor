@@ -226,6 +226,36 @@ func (s *Server) revokeRemoteRunLinks(runID string, carriers []PublishedSession,
 	}
 }
 
+// journalDelay coalesces a run's changes before its record is written again
+// (scheduleJournal): the engine reports a change on every log line.
+const journalDelay = 2 * time.Second
+
+// scheduleJournal writes a run's record again after journalDelay, once for
+// the changes in between (Engine.Journal): a run's record follows it from
+// its launch on, so that one cut short by the server's end has a record,
+// marked interrupted as the records open next. Nothing without records.
+func (s *Server) scheduleJournal(runID string) {
+	if s.records == nil {
+		return
+	}
+	s.journalMu.Lock()
+	if s.journaling[runID] {
+		s.journalMu.Unlock()
+		return
+	}
+	if s.journaling == nil {
+		s.journaling = map[string]bool{}
+	}
+	s.journaling[runID] = true
+	s.journalMu.Unlock()
+	time.AfterFunc(journalDelay, func() {
+		s.journalMu.Lock()
+		delete(s.journaling, runID)
+		s.journalMu.Unlock()
+		s.runs.Journal(runID)
+	})
+}
+
 // scheduleRunSync tells the switchyard a run's members after runSyncDelay,
 // once for the changes in between; nothing for a run without remote links.
 func (s *Server) scheduleRunSync(runID string) { s.scheduleRunSyncAfter(runID, false) }

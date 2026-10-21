@@ -399,7 +399,7 @@ export interface RunInfo {
    * session waits on a prompt (`needsInput` of them); stopped after a stop; finished once every member has ended. The live view is
    * `runState` (utils/runs.ts), which brings it up to date with the sessions.
    */
-  state: 'running' | 'needs_input' | 'stopped' | 'finished'
+  state: 'running' | 'needs_input' | 'stopped' | 'finished' | 'interrupted'
   needsInput: number
   /** The run's yolo choice, fixed at launch: every member, one added later included, follows it. */
   yolo: boolean
@@ -408,6 +408,12 @@ export interface RunInfo {
   /** The stopped run this one resumed, and the run that resumed this one (Resume as new run). */
   resumedFrom?: string
   resumedBy?: string
+  /**
+   * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
+   * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running
+   * when the server last stopped); Resume as new run resumes it from the record, once.
+   */
+  record?: boolean
 }
 
 /** GET /api/reach: what the server knows about being reached from outside its network, and whether its TLS listener has a certificate. */
@@ -546,7 +552,7 @@ export function useSessions() {
     /** Every run in the server's memory, newest first. */
     listRuns: () => request<{ runs: RunInfo[] }>('/api/runs').then((r) => r.runs ?? []),
     /** One run, with each worktree member's diff. */
-    getRun: (id: string) => request<{ run: RunInfo }>(`/api/runs/${encodeURIComponent(id)}`).then((r) => r.run),
+    getRun: (id: string) => request<{ run: RunInfo; record?: boolean }>(`/api/runs/${encodeURIComponent(id)}`).then((r) => (r.record ? { ...r.run, record: true } : r.run)),
     /**
      * Adds a member mid-run; one that starts immediately has its session when this resolves. 400 `invalid_crew` (a name the run has,
      * one whose start failed included), 409 `run_stopped`; a session that cannot be created leaves the member in the run, ended.

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -187,5 +188,65 @@ func TestResumeWhenTheDirectoryIsGone(t *testing.T) {
 		} else if errorCode(out) != "invalid_cwd" {
 			t.Fatalf("%s: %v", tc.agent, out)
 		}
+	}
+}
+
+// Resumes of one ended session fired together make one session: the
+// conversation is taken before the first process starts, so the others are
+// refused already_resumed, and one live session holds it (#126; before,
+// eight of eight launched).
+func TestResumeASessionFiredTogetherMakesOneSession(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.saveResumable("talker")
+	info := e.launch("talker", nil)
+	id := info["id"].(string)
+	tok := e.agentToken(id)
+	pid := info["agentSession"].(map[string]any)["id"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+id+"/attention", tok, map[string]any{"state": "done", "agentSession": pid, "turn": true}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("report: %d %v", resp.StatusCode, out)
+	}
+	e.stopAndWait(id)
+	const n = 8
+	type reply struct {
+		status int
+		out    map[string]any
+	}
+	replies := make(chan reply, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			resp, out := e.do("POST", "/api/sessions/"+id+"/resume", adminToken, nil)
+			replies <- reply{resp.StatusCode, out}
+		})
+	}
+	wg.Wait()
+	close(replies)
+	created, refused := 0, 0
+	for r := range replies {
+		switch r.status {
+		case http.StatusCreated:
+			created++
+			next := r.out["session"].(map[string]any)
+			t.Cleanup(func() { e.stopAndWait(next["id"].(string)) })
+		case http.StatusConflict:
+			if errorCode(r.out) != "already_resumed" {
+				t.Fatalf("refused as %v", r.out)
+			}
+			refused++
+		default:
+			t.Fatalf("a resume answered %d %v", r.status, r.out)
+		}
+	}
+	if created != 1 || refused != n-1 {
+		t.Fatalf("%d sessions made and %d refused of %d resumes at once", created, refused, n)
+	}
+	live := 0
+	for _, s := range e.srv.registry.List() {
+		if !s.Status.Ended() && s.AgentSession != nil && s.AgentSession.ID == pid {
+			live++
+		}
+	}
+	if live != 1 {
+		t.Fatalf("%d live sessions hold the conversation", live)
 	}
 }
