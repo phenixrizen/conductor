@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/notify"
 	"github.com/phenixrizen/conductor/internal/pty"
 	"github.com/phenixrizen/conductor/internal/session"
 )
@@ -95,8 +96,9 @@ func TestControlURL(t *testing.T) {
 	}
 }
 
-// The URL an agent reports its attention to is the server's scheme, host
-// and path, then the session's route, whatever else the server URL held.
+// The URL an agent reports its attention to is the server's host and path,
+// then the session's route, whatever else the server URL held: over http
+// for an http or ws server, over https for an https or wss one.
 func TestAttentionURL(t *testing.T) {
 	for server, want := range map[string]string{
 		"https://yard.example":                              "https://yard.example/api/sessions/s1/attention",
@@ -104,6 +106,10 @@ func TestAttentionURL(t *testing.T) {
 		"http://127.0.0.1:8080":                             "http://127.0.0.1:8080/api/sessions/s1/attention",
 		"https://me:SECRET@yard.example/p?t=SECRET#SECRET":  "https://yard.example/p/api/sessions/s1/attention",
 		"https://yard.example/a%2Fb/?token=SECRET#fragment": "https://yard.example/a%2Fb/api/sessions/s1/attention",
+		"ws://127.0.0.1:8080":                               "http://127.0.0.1:8080/api/sessions/s1/attention",
+		"wss://yard.example/prefix/":                        "https://yard.example/prefix/api/sessions/s1/attention",
+		"WSS://yard.example":                                "https://yard.example/api/sessions/s1/attention",
+		"ws://me:SECRET@yard.example/p?t=SECRET#SECRET":     "http://yard.example/p/api/sessions/s1/attention",
 	} {
 		if got := attentionURL(server, "s1"); got != want {
 			t.Errorf("%s: %q, want %q", server, got, want)
@@ -113,50 +119,73 @@ func TestAttentionURL(t *testing.T) {
 
 // The process the host starts finds the attention URL in its environment
 // (CONDUCTOR_NOTIFY_URL): the server's address, its path kept, and the
-// session's route.
+// session's route, over http for a server named http:// or ws:// alike,
+// so that a hook's report with it and the session's token reaches the
+// server.
 func TestTheProcessIsToldTheServersAddressToReportTo(t *testing.T) {
 	srv, _ := startServer(t)
 	hs := httptest.NewServer(http.StripPrefix("/yard", srv.Handler()))
 	t.Cleanup(hs.Close)
-	out := filepath.Join(t.TempDir(), "notify-url")
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	registered := make(chan string, 1)
-	done := make(chan error, 1)
-	go func() {
-		_, err := Run(ctx, Options{
-			ServerURL:  hs.URL + "/yard/",
-			Token:      hostToken,
-			Argv:       []string{"/bin/sh", "-c", `printf '%s' "$CONDUCTOR_NOTIFY_URL" > "$0"; exec /bin/cat`, out},
-			RelayOnly:  true,
-			Log:        slog.New(slog.DiscardHandler),
-			Registered: func(id, _ string) { registered <- id },
+	for _, server := range []string{hs.URL + "/yard/", "ws://" + strings.TrimPrefix(hs.URL, "http://") + "/yard/"} {
+		scheme, _, _ := strings.Cut(server, ":")
+		t.Run(scheme, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "notify")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			registered := make(chan string, 1)
+			done := make(chan error, 1)
+			go func() {
+				_, err := Run(ctx, Options{
+					ServerURL:  server,
+					Token:      hostToken,
+					Argv:       []string{"/bin/sh", "-c", `printf '%s\n%s\n' "$CONDUCTOR_NOTIFY_URL" "$CONDUCTOR_NOTIFY_TOKEN" > "$0"; exec /bin/cat`, out},
+					RelayOnly:  true,
+					Log:        slog.New(slog.DiscardHandler),
+					Registered: func(id, _ string) { registered <- id },
+				})
+				done <- err
+			}()
+			var id string
+			select {
+			case id = <-registered:
+			case err := <-done:
+				t.Fatalf("run returned before registering: %v", err)
+			case <-time.After(10 * time.Second):
+				t.Fatal("the host did not register")
+			}
+			want := hs.URL + "/yard/api/sessions/" + id + "/attention"
+			var got []byte
+			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+				if got, _ = os.ReadFile(out); strings.Count(string(got), "\n") == 2 {
+					break
+				}
+			}
+			notifyURL, token, _ := strings.Cut(strings.TrimSuffix(string(got), "\n"), "\n")
+			if notifyURL != want {
+				t.Fatalf("CONDUCTOR_NOTIFY_URL %q, want %q", notifyURL, want)
+			}
+			if err := notify.Send(ctx, notifyURL, token, notify.Request{State: "needs_input", Message: "from the hook"}); err != nil {
+				t.Fatalf("the report: %v", err)
+			}
+			d, ok := srv.Registry().Get(id)
+			if !ok {
+				t.Fatal("the hosted session is not listed")
+			}
+			for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				if att := d.Info().Attention; att.State == session.AttentionNeedsInput && att.Message == "from the hook" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the server's attention %+v, want the report", d.Info().Attention)
+				}
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(15 * time.Second):
+				t.Fatal("run did not end")
+			}
 		})
-		done <- err
-	}()
-	var id string
-	select {
-	case id = <-registered:
-	case err := <-done:
-		t.Fatalf("run returned before registering: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("the host did not register")
-	}
-	want := hs.URL + "/yard/api/sessions/" + id + "/attention"
-	var got []byte
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if got, _ = os.ReadFile(out); len(got) > 0 {
-			break
-		}
-	}
-	if string(got) != want {
-		t.Errorf("CONDUCTOR_NOTIFY_URL %q, want %q", got, want)
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("run did not end")
 	}
 }
 

@@ -464,10 +464,18 @@ func controlURL(server string) (string, error) {
 }
 
 // attentionURL is where a hosted session's hooks report its attention, its
-// process's CONDUCTOR_NOTIFY_URL: the server's scheme, host and path
-// (config.ShownURL), then the session's route.
+// process's CONDUCTOR_NOTIFY_URL: the server's host and path
+// (config.ShownURL), then the session's route, over http or https, which
+// is what `conductor notify` posts with: a ws server's is http and a wss
+// server's https, the reverse of controlURL.
 func attentionURL(server, sessionID string) string {
-	return strings.TrimRight(config.ShownURL(server), "/") + "/api/sessions/" + sessionID + "/attention"
+	shown := config.ShownURL(server)
+	if rest, ok := strings.CutPrefix(shown, "ws://"); ok {
+		shown = "http://" + rest
+	} else if rest, ok := strings.CutPrefix(shown, "wss://"); ok {
+		shown = "https://" + rest
+	}
+	return strings.TrimRight(shown, "/") + "/api/sessions/" + sessionID + "/attention"
 }
 
 // currentUser returns the OS user name for "hosted by", bounded and never
