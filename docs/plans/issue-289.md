@@ -62,9 +62,12 @@ in. This is the design as built, in plain terms.
   in`): only such a dialog keeps the plan of the hook's report it takes
   the place of, or takes the plan of a late report while it shows; the
   dialog's own footer rides the dialog's change; any other dialog carries
-  none (Codex's rounds three and four). A host tells its server the plan
-  set on a question it already reported (its change detector compares
-  it).
+  none (Codex's rounds three and four). A report the server sends on to a
+  host is held to the same rule as one through the API: while a dialog
+  shows it hides nothing (the rule is its own flag now, apart from the
+  token a report spends; Codex's fifth round). A host tells its server
+  the plan set on a question it already reported (its change detector
+  compares it).
 - **Aliases of the plans directory** (a linked `~/.claude/plans`, macOS's
   `/var` for `/private/var`) are matched by their resolved paths, for
   learning and forgetting alike, and a home with no `HOME` set falls back

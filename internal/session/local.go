@@ -1546,7 +1546,7 @@ func (s *Local) SetAttention(state AttentionState, message, source string) {
 // session's host once it has spent the token it keeps for that host. A report
 // from outside the session goes through TrySetAttentionFull.
 func (s *Local) SetAttentionFull(state AttentionState, message, source, kind string, options []Option) {
-	s.setAttention(state, message, source, kind, options, 0)
+	s.setAttention(state, message, source, kind, options, fromReport)
 }
 
 // TrySetAttentionFull is SetAttentionFull for a report from outside the
@@ -1559,7 +1559,7 @@ func (s *Local) SetAttentionFull(state AttentionState, message, source, kind str
 // the same size before it sends a report on to a hosted session's host, so a
 // report is limited alike on both kinds of session.
 func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind string, options []Option) error {
-	return s.setAttention(state, message, source, kind, options, spendToken)
+	return s.setAttention(state, message, source, kind, options, spendToken|fromReport)
 }
 
 // SetAttentionPlan is SetAttentionFull for a report that names the plan
@@ -1571,14 +1571,14 @@ func (s *Local) TrySetAttentionFull(state AttentionState, message, source, kind 
 // nothing. It is for a report that has paid already (a host applying what
 // its server sends on).
 func (s *Local) SetAttentionPlan(state AttentionState, message, source, kind string, options []Option, plan string) {
-	s.setAttentionWith(state, message, source, kind, options, 0, plan)
+	s.setAttentionWith(state, message, source, kind, options, fromReport, plan)
 }
 
 // TrySetAttentionPlan is SetAttentionPlan for a report from outside the
 // session, as TrySetAttentionFull: the token spent first, and with none
 // left ErrRateLimited, nothing changed and no plan learnt.
 func (s *Local) TrySetAttentionPlan(state AttentionState, message, source, kind string, options []Option, plan string) error {
-	return s.setAttentionWith(state, message, source, kind, options, spendToken, plan)
+	return s.setAttentionWith(state, message, source, kind, options, spendToken|fromReport, plan)
 }
 
 // Ask is SetAttentionFull for the agent's own question: needs_input, from a
@@ -1691,6 +1691,12 @@ const (
 	// planApproval (fireAsked) marks a dialog read off the screen as a
 	// plan's approval, by its footer (Attention.approval, #289).
 	planApproval
+	// fromReport marks a report from outside the session (an agent's or an
+	// admin's through the API, or one the server sends on to a hosted
+	// session's host): one that says the session waits does not hide a
+	// question asked during the work (keepAsked), whether or not it spends
+	// a token here (a forwarded report paid on the server).
+	fromReport
 )
 
 // setAttention is SetAttentionFull, applied as rules say. The token, the look
@@ -1800,7 +1806,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// on the screen is what answers go to (a hook that reports the same
 	// dialog late, say, or another question whose choices would land on
 	// it).
-	keepAsked := rules&spendToken != 0 && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
+	keepAsked := rules&fromReport != 0 && source != SourceQuestion && state == AttentionNeedsInput && waiting && cur.Source == SourceQuestion
 	turnsOwn := rules&unlessTurnEnded != 0 && (cur.State == AttentionDone || ownShown || ownHeld) && s.turnEnded
 	startup := rules&unlessStartup != 0 && waiting && cur.Source == SourceTrust
 	paced := rules&bellPaced != 0 && !s.lastBell.IsZero() && time.Since(s.lastBell) < bellPace

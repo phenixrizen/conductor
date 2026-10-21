@@ -233,8 +233,10 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	if !told {
 		t.Fatal("the plan set on the question showing was not told to the client")
 	}
+	// The screen moved on; the next report names no plan.
+	s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil)
 	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, nil)
-	if att := s.Info().Attention; att.Plan != "" {
+	if att := s.Info().Attention; att.Message != "Allow Bash?" || att.Plan != "" {
 		t.Fatalf("named once: %+v", att)
 	}
 	s.SetAttentionFull(AttentionDone, "", SourceAPI, KindDone, nil)
@@ -251,6 +253,28 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	}
 	if h, _ := get(t, s, sub, sink, "r2", proto.FileGet{Path: filepath.Join(home, ".claude", ".credentials.json")}); h.Kind != "error" || h.Error.Code != "denied" {
 		t.Fatalf("the credentials: %+v", h)
+	}
+}
+
+// A report the server sends on to a host (SetAttentionPlan, paid on the
+// server) is held to the same rule as one through the API: while a dialog
+// shows, it hides nothing; the approval's dialog takes its plan, another
+// dialog takes nothing.
+func TestForwardedReportKeepsTheDialogShown(t *testing.T) {
+	s, _, _, plan := plansLocal(t)
+	approval := []Option{{Label: "Yes, and use auto mode", Input: "1", Mode: true}, {Label: "Yes, manually approve edits", Input: "2"}, {Label: "Tell Claude what to change", Input: "3"}}
+	s.setAttentionWith(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, approval, planApproval, "")
+	id := s.Info().Attention.ID
+	s.SetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, plan)
+	if att := s.Info().Attention; att.ID != id || att.Source != SourceQuestion || len(att.Options) != 3 || att.Plan != plan {
+		t.Fatalf("the approval's dialog kept, with the plan: %+v", att)
+	}
+	s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil)
+	s.setAttentionWith(AttentionNeedsInput, "Do you want to proceed?\nBash command: ls", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}}, 0, "")
+	id = s.Info().Attention.ID
+	s.SetAttentionPlan(AttentionNeedsInput, "Claude Code has a plan for you to approve", SourceAPI, KindPermission, nil, plan)
+	if att := s.Info().Attention; att.ID != id || att.Source != SourceQuestion || att.Plan != "" {
+		t.Fatalf("another dialog kept, without the plan: %+v", att)
 	}
 }
 
