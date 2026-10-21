@@ -177,9 +177,10 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	if !s.nvimAllowed(sub) || !nvimAvailable() {
 		return ErrNvimUnavailable
 	}
-	// Checked as a read is, the session's path still naming its folder;
-	// Neovim then opens and writes the file by its path itself.
-	target, _, err := s.folder.resolve(req.Path, newDenySet(s.fileDeny()))
+	// Checked as a read is (one of the agent's plans through the plans
+	// folder, #289), the session's path still naming its folder; Neovim
+	// then opens and writes the file by its path itself.
+	target, _, err := s.folderFor(req.Path).resolve(req.Path, newDenySet(s.fileDeny()))
 	if err != nil {
 		return ErrFileDenied
 	}

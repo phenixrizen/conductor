@@ -165,6 +165,11 @@ export interface Attention {
    * on the screen: no page offers it (`liveAttention`, #258).
    */
   answered?: 'terminal'
+  /**
+   * The path of the plan the question asks approval for (Claude Code's ExitPlanMode, #289), which the session reads and saves as the
+   * folder's files: a page offers to open it. Absent from any other question, and from an older owner.
+   */
+  plan?: string
 }
 export type TransportKind = 'ws' | 'webrtc' | 'relay'
 
@@ -254,7 +259,7 @@ export type ControlMessage =
   /** `by` names the viewer that sizes the session now (absent: nobody holds the size) when the welcome said `sizer` (round 14). */
   | { t: 'resize'; cols: number; rows: number; by?: string }
   | { t: 'status'; status: string; exitCode?: number }
-  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal' }
+  | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string }
   /** The owner took the answer `requestId`: its keys are written, or its line accepted. */
   | { t: 'answer_ok'; requestId: string }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
@@ -297,10 +302,11 @@ export interface CommitInfo {
 
 /**
  * What a file request may ask for beyond a read: git `status` against `base` (HEAD when empty), `show` of the path at `rev`, `log` (the
- * commits on HEAD after `base`, or since the session started) or `commit` (commit `rev`'s files against its first parent).
+ * commits on HEAD after `base`, or since the session started), `commit` (commit `rev`'s files against its first parent), `find`,
+ * `touched`, or `plans` (the agent's plans outside the working directory, #289: the path ignored, answered with kind `plans`).
  */
 export interface FileGetExtra {
-  op?: 'status' | 'show' | 'log' | 'commit' | 'find' | 'touched'
+  op?: 'status' | 'show' | 'log' | 'commit' | 'find' | 'touched' | 'plans'
   base?: string
   rev?: string
 }
@@ -311,7 +317,7 @@ export type FileRequester = (path: string, stat?: boolean, extra?: FileGetExtra)
 export interface FileHeader {
   reqId: string
   path: string
-  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit' | 'written' | 'find' | 'touched'
+  kind: 'file' | 'dir' | 'error' | 'status' | 'show' | 'log' | 'commit' | 'written' | 'find' | 'touched' | 'plans'
   /** A `find` reply: the files under `path` whose name holds the words, as paths from it (at most 200). */
   matches?: string[]
   /** A `touched` reply: the files the agent touched since the session started, one per file, the most recently touched first. */

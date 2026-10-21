@@ -86,3 +86,17 @@ func Inject(sessionID, notifyURL, token, bin string) map[string]string {
 
 // ParentEnv returns the current process environment.
 func ParentEnv() []string { return os.Environ() }
+
+// Lookup is a getenv over env, a process's environment as BuildEnv builds
+// it: the value of the last entry named key, "" for none.
+func Lookup(env []string) func(string) string {
+	return func(key string) string {
+		val := ""
+		for _, kv := range env {
+			if k, v, ok := strings.Cut(kv, "="); ok && k == key {
+				val = v
+			}
+		}
+		return val
+	}
+}

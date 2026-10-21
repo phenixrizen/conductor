@@ -365,7 +365,10 @@ closes, the strip's × closes all; closing the last takes the editor away).
 **T** (Alt+T while typing in the terminal) folds the editor to its tab strip
 and brings it back. The header shows the breadcrumb, the position, copy
 path and open raw; for a Markdown file, **Preview** (Alt+P) shows it
-rendered, Mermaid diagrams drawn, and **Source** brings the text back. An
+rendered, Mermaid diagrams drawn, and **Source** brings the text back. A plan
+Claude Code saves outside the folder (`~/.claude/plans`) opens too, from the
+approval's **Open plan**, the Files tab's **Plans** entry or the path the
+dialog prints, and saves back to its file. An
 image shows on a checker with its size, a binary
 file says so with Open raw, a URL the agent printed previews in a
 sandboxed frame, a refused read says why, and a hosted session whose

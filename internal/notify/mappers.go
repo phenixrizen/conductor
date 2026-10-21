@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // claudeAsks is what a Claude Code PermissionRequest asks, in words: its
@@ -41,6 +43,24 @@ func claudeAsks(h ClaudeHook) string {
 		return "Claude Code asks you a question"
 	}
 	return "Allow " + h.ToolName + "?"
+}
+
+// claudePlan is the plan a Claude Code PermissionRequest for ExitPlanMode
+// asks approval for: its tool input's planFilePath (2.1.304 carries the
+// plan's text as plan beside it), which the session opens in the editor
+// (#289). "" for any other hook, or a path past MaxPlanPath bytes, which
+// names no file a session keeps.
+func claudePlan(h ClaudeHook) string {
+	if h.ToolName != "ExitPlanMode" || len(h.ToolInput) == 0 {
+		return ""
+	}
+	var in struct {
+		PlanFilePath string `json:"planFilePath"`
+	}
+	if json.Unmarshal(h.ToolInput, &in) != nil || len(in.PlanFilePath) > proto.MaxPlanPath {
+		return ""
+	}
+	return strings.TrimSpace(in.PlanFilePath)
 }
 
 // ClaudeHook is the subset of the Claude Code hook stdin payload we use.
@@ -259,7 +279,7 @@ func MapClaudeHook(raw []byte) (req Request, ok bool) {
 func mapClaudeHook(h ClaudeHook) (req Request, ok bool) {
 	switch h.HookEventName {
 	case "PermissionRequest":
-		return Request{State: "needs_input", Message: truncate(claudeAsks(h), 200), Kind: "permission"}, true
+		return Request{State: "needs_input", Message: truncate(claudeAsks(h), 200), Kind: "permission", Plan: claudePlan(h)}, true
 	case "Notification":
 		msg := strings.TrimSpace(h.Message)
 		if msg == "" {

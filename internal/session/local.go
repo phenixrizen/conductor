@@ -153,6 +153,11 @@ type Options struct {
 	// through it, and the session closes it when it is retired. NewLocal
 	// opens Info.Cwd itself when it is nil.
 	Folder *Folder
+	// Plans is the directory the agent keeps its plans in outside the
+	// working directory (agents.PlansDir: Claude Code's ~/.claude/plans),
+	// opened as a second folder for the plans the agent reports (plans.go);
+	// "" for an agent without one.
+	Plans string
 }
 
 // patternQuiet is how long the output must stay silent before the last line is
@@ -181,6 +186,15 @@ type Local struct {
 	// folder is the working directory as opened (Options.Folder); nil when
 	// it could not be opened, which refuses every file request.
 	folder *Folder
+	// plans is the agent's plans directory (Options.Plans) as opened, once
+	// the agent reported a plan (openPlansLocked), plansReal its path with
+	// its links resolved, and planFiles the session's plans by their real
+	// paths (planKey); askedPlan is the plan the agent last named for its
+	// approval (NotePlan), which the next question shown carries. All under mu.
+	plans     *Folder
+	plansReal string
+	planFiles map[string]bool
+	askedPlan string
 
 	mu   sync.Mutex // guards info, events and lastOutput, and orders ring writes against attaches
 	info Info
@@ -710,6 +724,7 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 	// newest's time moves, nothing is appended or broadcast again.
 	if e.Type == ActivityFile && s.activity.CoalesceFile(CleanEntry(e)) {
 		s.noteTouched(CleanEntry(e), true)
+		s.notePlanLocked(CleanEntry(e))
 		s.mu.Unlock()
 		s.gitSeenReported(e)
 		return true
@@ -720,6 +735,7 @@ func (s *Local) record(e ActivityEntry, limited bool, state AttentionState) bool
 	e = s.activity.Add(e)
 	if e.Type == ActivityFile {
 		s.noteTouched(e, false)
+		s.notePlanLocked(e)
 	}
 	s.hub.Broadcast(proto.MustControl(EntryToProto(e)))
 	id := s.info.ID
@@ -1087,6 +1103,11 @@ func (s *Local) fireAsked(text string) {
 	s.mu.Unlock()
 	if whole != "" {
 		words += "\n" + listMark + "\n" + whole
+	}
+	// The plan's approval prints the plan's path on its last row (#289):
+	// the question carries it once the path is seen to be a plan.
+	if p := planFooter(text); p != "" {
+		s.NotePlan(p)
 	}
 	s.setAttention(AttentionNeedsInput, words, SourceQuestion, KindPermission, CleanOptions(answers), unlessStartup|sameDialog)
 }
@@ -1941,6 +1962,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.lastBell = time.Now()
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list}
+	// The plan the agent named for its approval (NotePlan) rides the
+	// question shown next, and goes as the agent moves on (#289).
+	if state == AttentionNeedsInput {
+		att.Plan = s.askedPlan
+	} else {
+		s.askedPlan = ""
+	}
 	if source == SourceSubmit {
 		// The hold of the turn shows (holdTyped): the question it takes the
 		// place of, one the agent asked and not a question on the screen
@@ -2034,7 +2062,7 @@ func sameOptions(a, b []Option) bool {
 
 // attentionMessage encodes an Attention as the wire control message.
 func attentionMessage(att Attention) proto.Attention {
-	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered}
+	m := proto.Attention{T: proto.CtlAttention, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Answered: att.Answered, Plan: att.Plan}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -4751,6 +4779,9 @@ func (s *Local) Retire() {
 	if s.folder != nil {
 		// A file request under way finishes or fails; none comes after.
 		s.folder.Close()
+	}
+	if s.plans != nil {
+		s.plans.Close()
 	}
 }
 

@@ -71,6 +71,11 @@ type Request struct {
 	// hook's: a program's wait reported as needs_input (a permission
 	// prompt) gives way to done as before.
 	Ask bool `json:"ask,omitempty"`
+	// Plan, with the state needs_input, is the path of the plan the
+	// question asks approval for (Claude Code's ExitPlanMode hook names it
+	// as planFilePath, #289): the session opens it in the editor from the
+	// question. Goes with an attention state only.
+	Plan string `json:"plan,omitempty"`
 }
 
 // eventBody is what the events route reads: the same report under its own
@@ -178,10 +183,11 @@ func send(ctx context.Context, url, token string, req Request, body []byte) erro
 		if status < 300 {
 			return nil
 		}
-		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn || req.Ask) && req.Event == "" {
-			// A server older than the agent-session fields, or than ask:
-			// the state alone (an older server's question shows as any).
-			req.AgentSession, req.Turn, req.Ask = "", false, false
+		if status == http.StatusBadRequest && strings.Contains(msg, "unknown field") && (req.AgentSession != "" || req.Turn || req.Ask || req.Plan != "") && req.Event == "" {
+			// A server older than the agent-session fields, than ask or
+			// than plan: the state alone (an older server's question shows
+			// as any).
+			req.AgentSession, req.Turn, req.Ask, req.Plan = "", false, false, ""
 			if body, err = json.Marshal(req); err != nil {
 				return err
 			}

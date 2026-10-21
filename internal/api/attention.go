@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/signal"
 )
@@ -22,6 +23,12 @@ type attentionRequest struct {
 	// its turn's done (session.Local.Ask); with another state it changes
 	// nothing.
 	Ask bool `json:"ask"`
+	// Plan, with needs_input, is the path of the plan the question asks
+	// approval for (Claude Code's ExitPlanMode hook, #289): the session
+	// keeps it as one of its plans when it is a file in the agent's plans
+	// directory, and the question carries it (Attention.Plan). At most
+	// proto.MaxPlanPath bytes. A server session's alone.
+	Plan string `json:"plan"`
 }
 
 // eventRequest is the body of POST /api/sessions/{id}/events. Type is one of
@@ -211,6 +218,17 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 	if len(req.AgentSession) > session.MaxAgentSessionID {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agentSession is longer than 128 bytes")
 		return
+	}
+	if len(req.Plan) > proto.MaxPlanPath {
+		writeError(w, http.StatusBadRequest, "invalid_request", "plan is longer than 1024 bytes")
+		return
+	}
+	// The plan the question is about, named before the question is set,
+	// so that the question carries it: a server session learns it as one
+	// of its plans (session.Local.NotePlan), a hosted one sends it on to
+	// its host with the question (signal.HostedSession.NotePlan).
+	if n, ok := d.(interface{ NotePlan(string) }); ok && req.Plan != "" && state == session.AttentionNeedsInput {
+		n.NotePlan(req.Plan)
 	}
 	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
 		return

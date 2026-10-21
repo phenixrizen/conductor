@@ -233,7 +233,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
-	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: hostEnv(env), Cols: cols, Rows: rows})
+	procEnv := hostEnv(env)
+	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: procEnv, Cols: cols, Rows: rows})
 	dirFile.Close()
 	if err != nil {
 		folder.Close()
@@ -263,13 +264,16 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		FileEdit:        opts.FileEdit,
 		FileDenyFunc:    opts.FileDeny,
 		Folder:          folder,
-		Transport:       proto.TransportWebRTC,
-		Log:             opts.Log,
-		OnChange:        a.noteChange,
-		OnActivity:      a.onLocalActivity,
-		OnChat:          a.onLocalChat,
-		Pattern:         opts.Pattern,
-		WatchGit:        true,
+		// Where the agent keeps its plans outside the folder (#289), from
+		// its adapter and the environment the process was given.
+		Plans:      agents.PlansDir(opts.Adapter, pty.Lookup(procEnv), dir),
+		Transport:  proto.TransportWebRTC,
+		Log:        opts.Log,
+		OnChange:   a.noteChange,
+		OnActivity: a.onLocalActivity,
+		OnChat:     a.onLocalChat,
+		Pattern:    opts.Pattern,
+		WatchGit:   true,
 	})
 	a.mu.Lock()
 	a.local, a.proc = local, proc
@@ -874,7 +878,7 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 // with its mark as the agent's own question, which the server's copy keeps
 // through a done it forwards (signal.HostedSession.Ask).
 func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered}
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -1316,6 +1320,11 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		a.mu.Lock()
 		a.attentionUntold = true
 		a.mu.Unlock()
+		// The plan the question is about (#289), named before the question
+		// is set, so that the session's question carries it.
+		if m.Plan != "" && session.AttentionState(m.State) == session.AttentionNeedsInput {
+			a.local.NotePlan(m.Plan)
+		}
 		if m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput {
 			// The agent's own question (the server's Ask): the session
 			// keeps it through its turn's done.

@@ -426,7 +426,7 @@ watch(id, () => {
           />
           <div v-if="typingLine" class="pointer-events-none absolute bottom-2 left-3 flex items-center gap-2 rounded bg-default/80 px-2 py-0.5 text-xs text-muted backdrop-blur-sm"><span class="inline-block h-3.5 w-1.5 bg-muted/70" />{{ typingLine }}</div>
           <template #bar>
-            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" />
+            <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" />
           </template>
         </EditorColumn>
         <div v-if="inspector" class="hidden xl:flex w-[332px] flex-none">

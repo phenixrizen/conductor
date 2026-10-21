@@ -812,15 +812,15 @@ func TestAHostedQuestionKeepsItsHostsID(t *testing.T) {
 	hub := NewHub(session.NewRegistry(4), nil)
 	hs, conn := register(t, hub)
 	opts := []session.Option{{Label: "Yes", Input: "y"}}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "", "")
 	if a := hs.Info().Attention; a.ID != "0123456789abcdef" || a.State != session.AttentionNeedsInput {
 		t.Fatalf("the host's question: %+v", a)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "has space", false, "")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "has space", false, "", "")
 	if a := hs.Info().Attention; a.ID != "" {
 		t.Fatalf("an id that is no question's: %q", a.ID)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, "fedcba9876543210", false, "")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, "fedcba9876543210", false, "", "")
 	if err := hs.SetAttentionFull(session.AttentionNeedsInput, "Allow?", session.SourceAPI, "", nil, true); err != nil {
 		t.Fatal(err)
 	}
@@ -939,19 +939,19 @@ func TestAHostedQuestionKeepsItsHostsAnsweredMark(t *testing.T) {
 	hub := NewHub(session.NewRegistry(4), nil)
 	hs, _ := register(t, hub)
 	opts := []session.Option{{Label: "Yes", Input: "y"}}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "", "")
 	if a := hs.Info().Attention; a.Answered != "" {
 		t.Fatalf("asked, not answered: %+v", a)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, session.AnsweredTerminal)
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, session.AnsweredTerminal, "")
 	if a := hs.Info().Attention; a.Answered != session.AnsweredTerminal || a.ID != "0123456789abcdef" || a.State != session.AttentionNeedsInput {
 		t.Fatalf("answered in the host's terminal: %+v", a)
 	}
-	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "later")
+	hs.HostAttention(session.AttentionNeedsInput, "Allow?", session.SourceQuestion, session.KindPermission, opts, "0123456789abcdef", false, "later", "")
 	if a := hs.Info().Attention; a.Answered != "" {
 		t.Fatalf("a mark that is not the terminal's: %+v", a)
 	}
-	hs.HostAttention(session.AttentionDone, "", session.SourceAPI, "", nil, "", false, session.AnsweredTerminal)
+	hs.HostAttention(session.AttentionDone, "", session.SourceAPI, "", nil, "", false, session.AnsweredTerminal, "")
 	if a := hs.Info().Attention; a.Answered != "" || a.State != session.AttentionDone {
 		t.Fatalf("a mark on no question: %+v", a)
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/proto"
@@ -121,7 +122,10 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	}
 	// The deny list as looked up once, for the check and the use (read).
 	ds := newDenySet(s.fileDeny())
-	target, rel, err := s.folder.resolve(h.Path, ds)
+	// The session's folder, or the plans folder for one of the agent's
+	// plans outside it (folderFor, #289): the save goes where the check went.
+	folder := s.folderFor(h.Path)
+	target, rel, err := folder.resolve(h.Path, ds)
 	if err != nil {
 		return errh("denied", err.Error())
 	}
@@ -131,7 +135,7 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	}
 	// The .git check looked by path: the session's path must still name
 	// the folder the save goes to.
-	if err := s.folder.check(); err != nil {
+	if err := folder.check(); err != nil {
 		return errh("denied", err.Error())
 	}
 	afterCheck()
@@ -146,7 +150,7 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	}
 	// Each directory on the way, and the file replaced, is held to the .git
 	// rule again as opened.
-	dir, dirID, err := s.folder.openDirChecked(filepath.Dir(rel), ds, refuseGit(gitSnap))
+	dir, dirID, err := folder.openDirChecked(filepath.Dir(rel), ds, refuseGit(gitSnap))
 	switch {
 	case errors.Is(err, errGitDir):
 		return errh("read_only", "a repository's .git is read only here")
@@ -226,8 +230,10 @@ func (s *Local) saveFile(sub *Subscription, h proto.FileWrite, body []byte) prot
 	if fi, err := dir.Lstat(name); err == nil {
 		out.Mtime = fi.ModTime().UTC().Format(time.RFC3339Nano)
 	}
+	// Recorded from the working directory, as the agent names its files;
+	// a plan outside it by its whole path.
 	recorded := target
-	if r, err := filepath.Rel(s.info.Cwd, target); err == nil {
+	if r, err := filepath.Rel(s.info.Cwd, target); err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) {
 		recorded = r
 	}
 	s.Record(ActivityEntry{Type: ActivityFile, Op: FileOpWrite, Path: recorded, Tool: "editor", By: sub.ID, ByName: sub.Name})

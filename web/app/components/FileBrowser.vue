@@ -2,6 +2,7 @@
 import type { ActivityEntry, FileEntry, FileHeader, FileRequester, TouchedFile } from '~/utils/protocol'
 import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
 import { commitAgo, commitChangeRows, commitRows, commitsHead, type CommitChangeRow, type CommitRow } from '~/utils/commits'
+import { planRows, type PlanRow } from '~/utils/plans'
 import { opIcon, touchedPaths, touchedRows, touchedWords } from '~/utils/touched'
 import { crumbsOf, findNode, foldCrumbs, foundRows, looksLikePath, pathQuery, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
 import { parseLocation } from '~/utils/links'
@@ -58,6 +59,27 @@ watch(
 )
 const touched = computed(() => (props.activity && props.cwd ? touchedRows(props.activity, props.cwd, touchedIndex.value) : []))
 const dots = computed(() => touchedPaths(touched.value))
+// Plans (#289): the agent's plans outside the working directory, as the session lists them (the files its agent reported in its plans
+// directory), at the top of the Explorer; asked for when the pane shows, when the working directory changes and whenever the activity
+// gains an entry (the agent writing a plan is one). An older session, or an agent without a plans directory: none.
+const plans = ref<PlanRow[]>([])
+async function loadPlans() {
+  if (!props.cwd) return
+  try {
+    const res = await props.request(props.cwd, false, { op: 'plans' })
+    if (res.header.kind === 'plans') plans.value = planRows(res.header)
+  } catch {
+    // Nothing listed.
+  }
+}
+watch(
+  () => props.cwd,
+  () => void loadPlans(),
+)
+watch(
+  () => props.activity?.length,
+  () => void loadPlans(),
+)
 const status = ref<FileHeader | null>(null)
 const statusError = ref('')
 const statusLoading = ref(false)
@@ -149,6 +171,7 @@ onMounted(() => {
   // The marks beside changed files: one status read when the tree is up, then as the Changes section refreshes.
   setTimeout(() => loadStatus(), 1500)
   void loadTouched()
+  void loadPlans()
 })
 onBeforeUnmount(() => {
   window.clearInterval(logTimer)
@@ -724,6 +747,18 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
           <UButton label="Retry" size="xs" color="neutral" variant="soft" @click="loadRoot" />
         </div>
         <ul v-else class="py-1" data-files-tree>
+          <!-- The agent's plans outside the working directory (#289), found here without the terminal; each opens as a file. -->
+          <template v-if="plans.length && !query">
+            <li class="px-3 pb-0.5 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted" data-files-plans-head>Plans</li>
+            <li v-for="p in plans" :key="p.abs" data-files-plans>
+              <button type="button" class="flex w-full items-center gap-1.5 px-3 py-1 text-left text-sm hover:bg-elevated" :data-plan="p.abs" :title="p.abs" @click="openFile({ path: p.abs })">
+                <UIcon name="i-lucide-file-text" class="size-4 flex-none text-primary" />
+                <span class="min-w-0 flex-1 truncate font-mono">{{ p.name }}</span>
+                <span class="text-[11px] text-muted">{{ fmtSize(p.size) }}</span>
+              </button>
+            </li>
+            <li class="mx-3 mb-1 mt-1 border-t border-default" aria-hidden="true" />
+          </template>
           <li v-if="root && !rows.length && !foundBelow.length" class="px-4 py-3 text-sm text-muted">{{ query ? 'Nothing matches' : 'Empty directory' }}</li>
           <template v-for="n in rows" :key="n.path">
             <li>
