@@ -1,6 +1,7 @@
 package hostagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -491,4 +492,36 @@ func TestKeysOfAViewerThatLeftAreDropped(t *testing.T) {
 		t.Fatalf("typed %q, want the begun write", got)
 	}
 	other.quiet(300 * time.Millisecond)
+}
+
+// A save part that cannot be read, through a host, is a protocol error: the
+// viewer is let go with bad_frame (a viewer_error to the server, which
+// closes the viewer), as one whose hello cannot be read is, and nothing is
+// written. (Before this the error came with no save id and the viewer
+// stayed.)
+func TestAMalformedSavePartLetsTheViewerGo(t *testing.T) {
+	a, s, _, viewer := relayCredHost(t)
+	file := fileIn(t, a, "notes.txt", "alpha\n")
+	guest := viewer("guest01234567890", "l1")
+	// A header said to be 5 KiB long, past proto.MaxWriteHeader, in a part of 20 bytes.
+	part := make([]byte, 20)
+	copy(part[8:12], []byte{0, 0, 0x14, 0}) // the header's length, 5 KiB, big-endian
+	guest.handleFrame(proto.Frame{Type: proto.TypeFileWrite, Payload: part})
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case data := <-s.got:
+			if !bytes.Contains(data, []byte(`"t":"viewer_error"`)) {
+				continue
+			}
+			var m proto.ViewerError
+			if json.Unmarshal(data, &m) != nil || m.ViewerID != guest.id || m.Code != proto.ErrCodeBadFrame || m.Message != "malformed file write" {
+				t.Fatalf("the viewer was let go with %s", data)
+			}
+			hasBody(t, file, "alpha\n")
+			return
+		case <-deadline:
+			t.Fatal("the host did not let the viewer go")
+		}
+	}
 }

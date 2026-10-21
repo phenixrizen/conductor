@@ -2,6 +2,8 @@ package hostagent
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +19,12 @@ import (
 // A viewer's offer with every candidate gathered gets an answer with every
 // candidate gathered; the viewer pastes it and the data channel opens, with
 // the hello and the welcome over it as with a host's peer.
-func TestAnswerPasteConnectsAViewerWithNoSignaling(t *testing.T) {
+// connectPaste answers a viewer's pasted offer for a cat session in a
+// directory of the test's, with role, and returns the pasted peer once it
+// sees the viewer's data channel, the channel, what the viewer receives on
+// it, and the session's directory.
+func connectPaste(t *testing.T, role session.Role) (*PastePeer, *webrtc.DataChannel, chan []byte, string) {
+	t.Helper()
 	dir := t.TempDir()
 	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
 	if err != nil {
@@ -54,7 +61,7 @@ func TestAnswerPasteConnectsAViewerWithNoSignaling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pp, answerSDP, err := AnswerPaste(t.Context(), local, offerSDP, PasteOptions{Role: session.RoleControl, Name: "guest"})
+	pp, answerSDP, err := AnswerPaste(t.Context(), local, offerSDP, PasteOptions{Role: role, Name: "guest"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +89,11 @@ func TestAnswerPasteConnectsAViewerWithNoSignaling(t *testing.T) {
 			t.Fatal("the peer does not see the channel")
 		}
 	}
+	return pp, dc, frames, dir
+}
+
+func TestAnswerPasteConnectsAViewerWithNoSignaling(t *testing.T) {
+	pp, dc, frames, _ := connectPaste(t, session.RoleControl)
 	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 100, Rows: 40, Name: "guest"}))
 	deadline := time.After(10 * time.Second)
 	for {
@@ -123,5 +135,92 @@ func TestAnswerPasteRefusesWhatItCannotAnswer(t *testing.T) {
 	}
 	if _, _, err := AnswerPaste(t.Context(), local, "v=0", PasteOptions{Role: "admin"}); err == nil || !strings.Contains(err.Error(), "role") {
 		t.Fatalf("a bad role: %v", err)
+	}
+}
+
+// A save part a paste invite's viewer sends that no reader would take, one
+// that cannot be read or one past its type's limit, is a protocol error
+// there too, with no server to let the viewer go: it is told bad_frame on
+// its data channel, which reaches it however much output the channel held
+// before (the channel is drained before the connection is closed), the
+// channel is closed, and a save under way is dropped with it, nothing
+// written.
+func TestAMalformedSavePartClosesAPastedViewer(t *testing.T) {
+	over := make([]byte, 40<<10) // a FILE_WRITE payload past its 36 KiB
+	copy(over[8:12], []byte{0, 0, 0, 16})
+	for _, c := range []struct {
+		name  string
+		part  []byte
+		want  string
+		flood bool
+	}{
+		{"a part that cannot be read", append(make([]byte, 8), 0, 0, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0), "malformed file write", false},
+		{"a part that cannot be read, behind output", append(make([]byte, 8), 0, 0, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0), "malformed file write", true},
+		{"a part past the limit", over, "unreadable frame: proto: payload exceeds limit: type 0x08 has 40960 bytes", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pp, dc, frames, dir := connectPaste(t, session.RoleControl)
+			file := filepath.Join(dir, "notes.txt")
+			if err := os.WriteFile(file, []byte("alpha\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			closed := make(chan struct{})
+			dc.OnClose(func() { close(closed) })
+			dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 100, Rows: 40, Name: "guest"}))
+			control := func(want string) map[string]any {
+				t.Helper()
+				deadline := time.After(15 * time.Second)
+				for {
+					select {
+					case raw := <-frames:
+						f, err := proto.Decode(raw)
+						if err != nil {
+							continue
+						}
+						if f.Type != proto.TypeControl {
+							continue
+						}
+						var m map[string]any
+						if json.Unmarshal(f.Payload, &m) == nil && m["t"] == want {
+							return m
+						}
+					case <-deadline:
+						t.Fatalf("no %s", want)
+					}
+				}
+			}
+			if w := control(proto.CtlWelcome); w["fileEdit"] != true {
+				t.Fatalf("welcome %v", w)
+			}
+			// A save under way: the first of two parts.
+			first, err := proto.EncodeFileWrite(proto.FileWrite{ReqID: "w1", Path: "notes.txt", Total: 12, Force: true}, []byte("alpha\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			dc.Send(first)
+			if c.flood {
+				// 480 KiB of output queued for the viewer just before the
+				// bad part: the channel holds plenty as the error is written
+				// and the connection closed; the error still arrives.
+				flood(t, pp.p.a, pp.p)
+			}
+			dc.Send(proto.Encode(proto.TypeFileWrite, c.part))
+			m := control(proto.CtlError)
+			if msg, _ := m["message"].(string); m["code"] != proto.ErrCodeBadFrame || !strings.HasPrefix(msg, c.want) {
+				t.Fatalf("the viewer was told %v", m)
+			}
+			select {
+			case <-closed:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the data channel stayed open")
+			}
+			// The peer lets go of the channel as its own close of it lands.
+			for held := time.Now().Add(5 * time.Second); pp.Connected(); time.Sleep(5 * time.Millisecond) {
+				if time.Now().After(held) {
+					t.Fatal("the peer still holds the channel")
+				}
+			}
+			hasBody(t, file, "alpha\n")
+		})
 	}
 }

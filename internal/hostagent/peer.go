@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -140,6 +141,12 @@ func (p *peer) startWebRTC(ice []proto.ICEServer) error {
 			}
 			f, err := proto.Decode(msg.Data)
 			if err != nil {
+				// A frame no reader would take (a type the protocol has
+				// not, a payload past its type's limit: a save part over
+				// its 36 KiB) is a protocol error, as a malformed save
+				// part is, not a frame to pass over: the save under way
+				// would wait for its next part for good.
+				p.refuse(sink, "unreadable frame: "+err.Error())
 				return
 			}
 			p.handle(f, sink)
@@ -295,7 +302,9 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 	sub := p.sub
 	closed := p.closed
 	p.mu.Unlock()
-	if closed {
+	// A viewer being let go for a protocol error (refuse) is acted on no
+	// more while the close reaches it.
+	if closed || p.erred.Load() {
 		return
 	}
 	if sub != nil {
@@ -450,7 +459,10 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 		}
 		h, part, err := proto.DecodeFileWrite(f.Payload)
 		if err != nil {
-			p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "malformed file write"))
+			// A part that cannot be read names no save to answer: a protocol
+			// error, and the viewer is let go with it. No client of
+			// Conductor's sends such a part.
+			p.refuse(via, "malformed file write")
 			return
 		}
 		p.saveIn(sub, h, part)
@@ -938,6 +950,30 @@ func (p *peer) detachDataChannel() {
 
 // close lets the viewer go, for no reason of its link's (it left).
 func (p *peer) close() { p.closeFor(nil) }
+
+// refuse lets the viewer go for a protocol error (bad_frame, msg), once:
+// through the server where there is one (sendViewerError: the server
+// closes the viewer with the error and tells this host it left); for a
+// peer no server serves (a paste invite's) the error is written on its
+// data channel via, the channel drained of what it holds within
+// dcDrainWait, so that the error is sent before the close aborts the
+// connection, and the peer closed here, a save under way dropped with it.
+// Frames of the viewer's from now on are passed over (handle), whichever
+// way the close reaches it.
+func (p *peer) refuse(via *dcSink, msg string) {
+	if p.a.sendViewerError(p.id, proto.ErrCodeBadFrame, msg) {
+		return
+	}
+	if !p.erred.CompareAndSwap(false, true) {
+		return
+	}
+	if via != nil {
+		if via.WriteFrame(proto.NewError(proto.ErrCodeBadFrame, msg)) == nil {
+			via.drain(time.Now().Add(dcDrainWait))
+		}
+	}
+	p.close()
+}
 
 // closeFor lets the viewer go: for why, its link no longer opening the
 // session (session.ErrRevoked, session.ErrExpired), or nil for any other

@@ -141,5 +141,38 @@ class Steps(unittest.TestCase):
             self.assertFalse(p.receipt_passes(p.load_receipt(d, HEAD, "windows"), HEAD, "windows"))
 
 
+    def test_a_partial_run_checks_the_head_out_on_the_remote_machines(self):
+        # --only names checks; getting the revision onto a remote machine is
+        # not one: the Mac's and Windows's rows check the head out before the
+        # steps named, so a partial run tests the head, never the machine's
+        # last checkout (#295). The receipt stays a partial one.
+        step = [{"name": "desktop-test", "argv": ["npm", "test"], "cwd": "desktop"}]
+        for machine, run, steps in (("mac", p.run_mac, "MAC_STEPS"), ("windows", p.run_windows, "WINDOWS_STEPS")):
+            with self.subTest(machine), tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as repo:
+                Path(repo, ".git").mkdir()
+                calls = []
+
+                def runner(argv, cwd, env, logfile):
+                    calls.append(" ".join(argv))
+                    Path(logfile).write_text("ran\n")
+                    return 0
+
+                with unittest.mock.patch.multiple(
+                    p,
+                    push_revision=lambda dest, head: None,
+                    ssh_runner=lambda host, repo: runner,
+                    windows_repo_paths=lambda: ("C:\\Users\\x\\conductor-preflight", repo),
+                    windows_tool=lambda name: "x",
+                    windows_runner=lambda winpath, tools=None: runner,
+                    **{steps: step},
+                ):
+                    receipt = run(Path("."), HEAD, "b" * 40, d, ["desktop-test"], lambda *_: None)
+                self.assertEqual([s["name"] for s in receipt["steps"]], ["checkout", "desktop-test"], calls)
+                self.assertIn("checkout", calls[0])
+                self.assertEqual(calls[1], "npm test")
+                self.assertTrue(receipt["partial"])
+                self.assertFalse(p.receipt_passes(p.load_receipt(d, HEAD, machine), HEAD, machine))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/phenixrizen/conductor/internal/crew"
 	"github.com/phenixrizen/conductor/internal/hostagent"
 	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
@@ -1203,4 +1204,319 @@ func TestARunSyncThatFailedIsMadeAgain(t *testing.T) {
 		t.Fatalf("records after not_found: %v", rl)
 	}
 	quiet("after not_found", time.Second)
+}
+
+// A run the engine forgets while a member is still published takes its
+// links at the rendezvous with it: the revoke goes over the member's
+// publication, and the rendezvous refuses the join at once, not at the
+// link's expiry or its sweep of a gone host's links (#148).
+func TestAForgottenRunRevokesItsLinksAtTheRendezvous(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "for the team"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	if resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the rendezvous does not resolve the link: %d %v", resp.StatusCode, out)
+	}
+	local.srv.runs.ForgetForTest(runID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		if resp.StatusCode == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous still resolves the forgotten run's link: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if links := local.srv.remoteRunLinksOf(runID); len(links) != 0 {
+		t.Fatalf("records kept of the forgotten run's links: %v", links)
+	}
+}
+
+// heldMintPublisher publishes every session as a publication whose run link
+// mints wait for a gate, and which records the links it is asked to revoke.
+type heldMintPublisher struct{ h *heldMint }
+
+type heldMint struct {
+	minting chan struct{} // closed as the first mint begins
+	gate    chan struct{} // the mint returns once closed
+	once    sync.Once
+	mu      sync.Mutex
+	revoked []string
+}
+
+func (p heldMintPublisher) Publish(_ context.Context, local *session.Local) (PublishedSession, error) {
+	return &heldMintPublication{gatedPublication: gatedPublication{id: "there-" + local.Info().ID, done: make(chan struct{})}, h: p.h}, nil
+}
+
+func (p heldMintPublisher) Server() string { return "https://rendezvous.example.net" }
+
+type heldMintPublication struct {
+	gatedPublication
+	h *heldMint
+}
+
+func (p *heldMintPublication) RunLink(ctx context.Context, role string, _ time.Duration, label string, g proto.RunGroup) (proto.LinkCreated, error) {
+	p.h.once.Do(func() { close(p.h.minting) })
+	select {
+	case <-p.h.gate:
+	case <-ctx.Done():
+		return proto.LinkCreated{}, ctx.Err()
+	}
+	return proto.LinkCreated{LinkID: "late-link", Role: role, Label: label, RunID: g.ID, URL: p.Base() + "/join/token"}, nil
+}
+
+func (p *heldMintPublication) Revoke(_ context.Context, linkID string) error {
+	p.h.mu.Lock()
+	defer p.h.mu.Unlock()
+	p.h.revoked = append(p.h.revoked, linkID)
+	return nil
+}
+
+// A run link minted at the rendezvous while the engine forgets the run (the
+// forget between the run's check and the mint's answer) is not left there
+// unmanaged: it is recorded only while the engine keeps the run, else
+// revoked there at once, and the request is answered as a forgotten run's
+// (Codex's review of #148's change).
+func TestALinkMintedAsTheRunIsForgottenIsRevokedAtOnce(t *testing.T) {
+	local := newTestEnv(t, nil)
+	h := &heldMint{minting: make(chan struct{}), gate: make(chan struct{})}
+	local.srv.SetPublisher(heldMintPublisher{h})
+	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	type reply struct {
+		status int
+		out    map[string]any
+	}
+	answered := make(chan reply, 1)
+	go func() {
+		resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view"})
+		answered <- reply{resp.StatusCode, out}
+	}()
+	select {
+	case <-h.minting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the mint never began")
+	}
+	local.srv.runs.ForgetForTest(runID)
+	close(h.gate)
+	var got reply
+	select {
+	case got = <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request was never answered")
+	}
+	if got.status != http.StatusNotFound || !strings.Contains(fmt.Sprint(got.out), "not_found") {
+		t.Fatalf("the link request after the run was forgotten: %d %v", got.status, got.out)
+	}
+	h.mu.Lock()
+	revoked := append([]string(nil), h.revoked...)
+	h.mu.Unlock()
+	if fmt.Sprint(revoked) != "[late-link]" {
+		t.Fatalf("revoked at the rendezvous: %v", revoked)
+	}
+	if links := local.srv.remoteRunLinksOf(runID); len(links) != 0 {
+		t.Fatalf("records kept of the forgotten run's links: %v", links)
+	}
+}
+
+// A forgotten run's revokes go over a member's publication that is still
+// up: one whose session ended (its publication over once it lingered) stays
+// in the published map until the session leaves the server and would carry
+// nothing, so it is passed over for the next member's (Codex's review of
+// #148's change). Member one ends first; the revoke goes over member two's.
+func TestAForgottenRunRevokesItsLinksOverALivePublication(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "for the team"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	// The first member's session ends; its publication ends once it has
+	// lingered, and stays in the map as a dead carrier.
+	run, _ := local.srv.runs.Get(runID)
+	first := run.Members[0].SessionID
+	d, ok := local.srv.registry.Get(first)
+	if !ok {
+		t.Fatal("the first member's session is not on the server")
+	}
+	if err := d.(*session.Local).Stop(t.Context()); err != nil {
+		t.Fatalf("stop the first member: %v", err)
+	}
+	pub := local.srv.publishedOf(first)
+	if pub == nil {
+		t.Fatal("the first member is not published")
+	}
+	select {
+	case <-pub.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first member's publication never ended")
+	}
+	if local.srv.publishedOf(first) != pub {
+		t.Fatal("the ended publication left the map: the case is another")
+	}
+	local.srv.runs.ForgetForTest(runID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		if resp.StatusCode == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous still resolves the forgotten run's link: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A run the engine evicts has no member running, so its members'
+// publications have all ended by then: its revokes go over another
+// publication of this server's, since the switchyard holds the run's links
+// under the publisher, whichever session minted them (Codex's review of
+// #148's change). The member's session ends and its publication with it;
+// an unrelated session stays published; the forgotten run's link is
+// refused at the rendezvous.
+func TestAnEvictedRunsLinksAreRevokedOverAnotherSessionsPublication(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Solo", catMember("lead", "immediately"))
+	waitMembersPublished(t, local, runID, 1)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "for the team"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	other := local.createSession("cat")
+	deadline := time.Now().Add(10 * time.Second)
+	for local.srv.publishedOf(other) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the unrelated session is not published")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	run, _ := local.srv.runs.Get(runID)
+	member := run.Members[0].SessionID
+	d, ok := local.srv.registry.Get(member)
+	if !ok {
+		t.Fatal("the member's session is not on the server")
+	}
+	if err := d.(*session.Local).Stop(t.Context()); err != nil {
+		t.Fatalf("stop the member: %v", err)
+	}
+	pub := local.srv.publishedOf(member)
+	if pub == nil {
+		t.Fatal("the member is not published")
+	}
+	select {
+	case <-pub.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("the member's publication never ended")
+	}
+	local.srv.runs.ForgetForTest(runID)
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		if resp.StatusCode == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous still resolves the evicted run's link: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// scriptedRevokes is a publication whose revokes answer as scripted, in
+// order, and are recorded.
+type scriptedRevokes struct {
+	gatedPublication
+	answers []error
+	mu      *sync.Mutex
+	asked   *[]string
+}
+
+func (p *scriptedRevokes) Revoke(_ context.Context, linkID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	*p.asked = append(*p.asked, p.id+":"+linkID)
+	if len(p.answers) == 0 {
+		return nil
+	}
+	err := p.answers[0]
+	p.answers = p.answers[1:]
+	return err
+}
+
+// A forgotten run's revoke goes on past a carrier that holds no such link
+// (a publication of another publisher, which holds none of the link's
+// owner's) to the next, and stops at the first that revokes it; a link
+// every carrier answers not_found for is gone, and any other answer from
+// every carrier is what is logged (Codex's review of #148's change).
+func TestARevokeGoesOnPastACarrierThatHoldsNoSuchLink(t *testing.T) {
+	e := newTestEnv(t, nil)
+	var mu sync.Mutex
+	var asked []string
+	carrier := func(id string, answers ...error) *scriptedRevokes {
+		return &scriptedRevokes{gatedPublication: gatedPublication{id: id, done: make(chan struct{})}, answers: answers, mu: &mu, asked: &asked}
+	}
+	notFound := errors.New("not_found: no such link")
+	e.srv.revokeRemoteRunLinks("run", []PublishedSession{carrier("other", notFound), carrier("owner"), carrier("spare")}, []remoteLink{{ID: "l1"}})
+	mu.Lock()
+	got := fmt.Sprint(asked)
+	asked = nil
+	mu.Unlock()
+	if got != "[other:l1 owner:l1]" {
+		t.Fatalf("asked %s, want the other publisher's carrier passed and the owner's revoke to end it", got)
+	}
+	// Every carrier holding none: the link is gone, and no carrier is asked twice.
+	e.srv.revokeRemoteRunLinks("run", []PublishedSession{carrier("a", notFound, notFound), carrier("b", notFound, notFound)}, []remoteLink{{ID: "l2"}, {ID: "l3"}})
+	mu.Lock()
+	got = fmt.Sprint(asked)
+	mu.Unlock()
+	if got != "[a:l2 b:l2 a:l3 b:l3]" {
+		t.Fatalf("asked %s", got)
+	}
+}
+
+// The carriers of a forgotten run's requests are its members' publications
+// still up, first, then every other publication of this server's still up;
+// one that ended, a member's or not, is left out. So a member's publication
+// ending as the revokes go (its linger running out) leaves the rest of them
+// to the next carrier (Codex's review of #148's change).
+func TestLiveCarriersListTheMembersFirstThenTheRest(t *testing.T) {
+	e := newTestEnv(t, nil)
+	pub := func(id string, live bool) *gatedPublication {
+		p := &gatedPublication{id: id, done: make(chan struct{})}
+		if !live {
+			close(p.done)
+		}
+		return p
+	}
+	e.srv.pubMu.Lock()
+	e.srv.published = map[string]PublishedSession{
+		"m1": pub("m1", false), "m2": pub("m2", true),
+		"other": pub("other", true), "gone": pub("gone", false),
+	}
+	e.srv.pubMu.Unlock()
+	run := crew.Run{ID: "run", Members: []crew.MemberState{{Name: "a", SessionID: "m1"}, {Name: "b", SessionID: "m2"}, {Name: "c"}}}
+	var ids []string
+	for _, c := range e.srv.liveCarriers(run) {
+		ids = append(ids, c.ID())
+	}
+	if fmt.Sprint(ids) != "[m2 other]" {
+		t.Fatalf("carriers %v, want the live member's publication then the unrelated live one", ids)
+	}
 }

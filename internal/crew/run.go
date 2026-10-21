@@ -203,10 +203,11 @@ type Engine struct {
 	runs  map[string]*run
 	order []*run // oldest first
 
-	// OnForget is called with the ID of each run the engine forgets: past
-	// maxRuns, or after a launch that failed. It runs under mu, so it must
-	// not call the engine or wait. Set it before the first launch.
-	OnForget func(runID string)
+	// OnForget is called with each run the engine forgets, as it last was
+	// (its members and their sessions, no diffs or chat): past maxRuns, or
+	// after a launch that failed. It runs under mu, so it must not call the
+	// engine or wait. Set it before the first launch.
+	OnForget func(run Run)
 
 	// OnRunChange is called with the ID of a run each time something a read
 	// of it shows changes that no session change carries: a member reserved,
@@ -1279,7 +1280,7 @@ func (e *Engine) forget(r *run) {
 	}
 	r.cancel()
 	if e.OnForget != nil {
-		e.OnForget(r.id)
+		e.OnForget(r.snapshot(false, false))
 	}
 }
 

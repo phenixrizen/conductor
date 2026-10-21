@@ -274,7 +274,16 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadGateway, "rendezvous_unavailable", "the rendezvous did not mint the link: "+err.Error())
 				return
 			}
-			s.recordRemoteRunLink(id, res)
+			// Recorded while the engine keeps the run: one forgotten meanwhile
+			// took its links there with it (OnForget), this one not among
+			// them, so it is revoked here and the request answered as a
+			// forgotten run's.
+			if !s.runs.IfKept(id, func() { s.recordRemoteRunLink(id, res) }) {
+				unlock()
+				s.revokeRemoteRunLinks(id, []PublishedSession{carrier}, []remoteLink{{ID: res.LinkID}})
+				writeError(w, http.StatusNotFound, "not_found", "no such run")
+				return
+			}
 			// The new link names the members as they are now; the run's other
 			// links there may not (a member published again just now, for one):
 			// with others, the members are sent again so all of them follow.

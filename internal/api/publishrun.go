@@ -155,6 +155,77 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 	delete(s.remoteRunLinks[runID], linkID)
 }
 
+// liveCarriers are the publications that can carry a request about run to
+// the switchyard now: its members' still up, first, then every other of
+// this server's still up (the run's links there are the publisher's, which
+// any of its publications may revoke: a run the engine evicts has no member
+// running, so their publications have ended or are about to, and one that
+// ends as the requests go leaves the rest to the next carrier). A
+// publication that ended (its session's end, and the while it lingers
+// after, or its connection's) stays in the published map until its session
+// leaves the server, and would answer nothing but the wait; it is left out.
+// None when nothing of this server's is published.
+func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
+	live := func(pub PublishedSession) bool {
+		select {
+		case <-pub.Done():
+			return false
+		default:
+			return pub != nil
+		}
+	}
+	var out []PublishedSession
+	members := map[string]bool{}
+	for _, m := range run.Members {
+		if m.SessionID == "" {
+			continue
+		}
+		members[m.SessionID] = true
+		if pub := s.publishedOf(m.SessionID); pub != nil && live(pub) {
+			out = append(out, pub)
+		}
+	}
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	for id, pub := range s.published {
+		if !members[id] && live(pub) {
+			out = append(out, pub)
+		}
+	}
+	return out
+}
+
+// revokeRemoteRunLinks revokes at the switchyard the links of a run the
+// engine forgot that were minted there (their records already dropped,
+// forgetRemoteRunLinks), and one minted as it was forgotten (links.go): each
+// over the carriers in turn, within runSyncWait each, as a revoke of one of
+// them from the Share dialog goes, until one revokes it. A carrier that
+// holds no such link (not_found) is passed: the link is the publisher's
+// there, and a publication of another publisher (SetPublisher changed
+// while sessions were published) holds none of its links; a link every
+// carrier answers so is gone. A link no carrier revoked otherwise is logged
+// and left to its expiry there or to the switchyard's sweep.
+func (s *Server) revokeRemoteRunLinks(runID string, carriers []PublishedSession, links []remoteLink) {
+	for _, rl := range links {
+		var last error
+		for _, carrier := range carriers {
+			ctx, cancel := context.WithTimeout(context.Background(), runSyncWait)
+			err := carrier.Revoke(ctx, rl.ID)
+			cancel()
+			if err == nil {
+				last = nil
+				break
+			}
+			if last == nil || !refusedAs(err, "not_found") {
+				last = err
+			}
+		}
+		if last != nil && !refusedAs(last, "not_found") {
+			s.log.Warn("a forgotten run's link was not revoked at the rendezvous", "run", runID, "link", rl.ID, "err", last)
+		}
+	}
+}
+
 // scheduleRunSync tells the switchyard a run's members after runSyncDelay,
 // once for the changes in between; nothing for a run without remote links.
 func (s *Server) scheduleRunSync(runID string) { s.scheduleRunSyncAfter(runID, false) }

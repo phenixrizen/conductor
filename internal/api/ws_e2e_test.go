@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -1734,4 +1735,25 @@ func TestHostedViewerRelaysFileWrite(t *testing.T) {
 		t.Fatalf("host relay write: %v", err)
 	}
 	v.expectOutput("alive")
+}
+
+// A save part that cannot be read (its header said to be longer than the
+// part, or past 4 KiB) names no save to answer: it is a protocol error, and
+// the connection is closed with bad_frame as an unexpected frame type closes
+// it. No client of Conductor's sends one. (Before this the error came with
+// no save id and the connection stayed.)
+func TestAMalformedSavePartClosesTheConnection(t *testing.T) {
+	e := newTestEnv(t, nil)
+	id := e.createSession("cat")
+	owner := dialViewer(t, e, id, adminToken)
+	owner.hello(0, 0)
+	owner.expectControl(proto.CtlReady)
+	// A header said to be 5 KiB long, past proto.MaxWriteHeader, in a part of 20 bytes.
+	part := make([]byte, 20)
+	binary.BigEndian.PutUint32(part[8:12], 5<<10)
+	owner.send(proto.Encode(proto.TypeFileWrite, part))
+	if m := owner.expectControl(proto.CtlError); m["code"] != proto.ErrCodeBadFrame || m["message"] != "malformed file write" {
+		t.Fatalf("the viewer was told %v", m)
+	}
+	owner.expectClose(proto.CloseProtocolError)
 }
