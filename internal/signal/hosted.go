@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -1730,17 +1731,44 @@ func hostActivityMsg(e session.ActivityEntry) proto.HostActivityMsg {
 // AnswerFrame is the SIGNAL frame HostAnswer queues for a viewer, and
 // ICEFrame the one HostICE does: the host's message encoded anew, which can
 // be larger than the host sent it (json.Marshal writes a '<' as six bytes).
-// A bound on what the host sends charges it before it is queued (HostSignal).
+// One past what a SIGNAL frame holds (proto.MaxSignal), which no reader
+// would take (proto.Decode), is never made: proto.ErrTooLarge, for the
+// caller to tell the viewer (RefusedFrame). A bound on what the host sends
+// charges it before it is queued (HostSignal).
 func AnswerFrame(sdp string) ([]byte, error) {
-	return proto.EncodeJSON(proto.TypeSignal, proto.SDP{T: proto.SigAnswer, SDP: sdp})
+	return signalFrame(proto.SDP{T: proto.SigAnswer, SDP: sdp})
 }
 
 // ICEFrame: see AnswerFrame.
 func ICEFrame(c proto.ICECandidate) ([]byte, error) {
-	return proto.EncodeJSON(proto.TypeSignal, proto.ICE{T: proto.SigICE, Candidate: c})
+	return signalFrame(proto.ICE{T: proto.SigICE, Candidate: c})
 }
 
-// HostSignal queues a SIGNAL frame AnswerFrame or ICEFrame made for a viewer.
+// signalFrame encodes a signaling message as a SIGNAL frame a reader would
+// take: within proto.MaxSignal, else proto.ErrTooLarge.
+func signalFrame(v any) ([]byte, error) {
+	f, err := proto.EncodeJSON(proto.TypeSignal, v)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := proto.Decode(f); err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// RefusedFrame is what a viewer is sent in place of a SIGNAL frame the
+// server could not make for it (AnswerFrame, ICEFrame: proto.ErrTooLarge):
+// a CONTROL error naming what the host sent (`answer`, `ice`) and why it
+// was not sent. The connection is kept, as a switchyard without a relay
+// keeps it (relay_off): the viewer's WebRTC attempt cannot succeed without
+// the answer, and its timer sends it to the relay.
+func RefusedFrame(what string, err error) []byte {
+	return proto.NewError(proto.ErrCodeBadFrame, fmt.Sprintf("the host's %s was not sent: %v", what, err))
+}
+
+// HostSignal queues a SIGNAL frame AnswerFrame or ICEFrame made for a
+// viewer, or the error RefusedFrame makes in place of one.
 func (h *HostedSession) HostSignal(viewerID string, f []byte) {
 	if v := h.viewer(viewerID); v != nil {
 		v.push(f)

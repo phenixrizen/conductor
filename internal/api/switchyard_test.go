@@ -272,7 +272,7 @@ func TestSwitchyardRelayBoundCountsWhatAViewerIsSent(t *testing.T) {
 	noBurstFloor(t)
 	e := newTestEnv(t, func(c *config.Config) {
 		c.Switchyard.Enabled = true
-		c.Switchyard.RelayKBps = 256
+		c.Switchyard.RelayKBps = 64
 	})
 	host := dialFakeHost(t, e, "hosted-agent-token")
 	v := dialViewer(t, e, host.sessionID, host.link("view", ""))
@@ -282,36 +282,72 @@ func TestSwitchyardRelayBoundCountsWhatAViewerIsSent(t *testing.T) {
 		// By hand: json.Marshal would escape the '<'.
 		return []byte(`{"t":"` + proto.HostAnswer + `","viewerId":"` + viewerID + `","sdp":"` + sdp + `"}`)
 	}
-	// The burst of 512 KiB spent on eight plain answers, then one of 60 KiB
-	// of '<': about 360 KiB to the viewer, which waits for all of it, about
-	// 1.4 s at 256 KiB/s (its 60 KiB alone would be a quarter of a second).
-	plain := answer(strings.Repeat("a", 64<<10))
+	// The burst of 128 KiB all but spent on two plain answers of 60 KiB,
+	// then one of 10 KiB of '<': 60 KiB to the viewer (within a SIGNAL
+	// frame's 64 KiB), which waits for all of it, close to a second at
+	// 64 KiB/s (its 10 KiB alone would be under a tenth of that).
+	plain := answer(strings.Repeat("a", 60<<10))
 	sent := make(chan time.Time, 1)
 	go func() {
-		for range 8 {
+		for range 2 {
 			if host.c.Write(t.Context(), websocket.MessageText, plain) != nil {
 				return
 			}
 		}
-		if host.c.Write(t.Context(), websocket.MessageText, answer(strings.Repeat("<", 60<<10))) == nil {
+		if host.c.Write(t.Context(), websocket.MessageText, answer(strings.Repeat("<", 10<<10))) == nil {
 			sent <- time.Now()
 		}
 	}()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	for got := 0; got < 9; {
-		_, data, err := v.c.Read(ctx)
+	for got := 0; got < 3; {
+		f, err := v.read()
 		if err != nil {
 			t.Fatalf("after %d answers: %v", got, err)
 		}
-		if len(data) > 1 && data[0] == proto.TypeSignal {
-			if tt, _ := proto.ParseHeader(data[1:]); tt == proto.SigAnswer {
-				got++
-			}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigAnswer {
+			got++
 		}
 	}
-	if took := time.Since(<-sent); took < time.Second {
-		t.Fatalf("an answer of 360 KiB reached the viewer %v after the host sent it, past a spent bound of 256 KiB/s", took)
+	if took := time.Since(<-sent); took < 500*time.Millisecond {
+		t.Fatalf("an answer of 60 KiB reached the viewer %v after the host sent it, past a spent bound of 64 KiB/s", took)
+	}
+}
+
+// No SIGNAL frame over its 64 KiB leaves the server: an answer that encodes
+// anew past it (eleven KiB of '<', six bytes each as the server writes
+// them) is never sent. The viewer is told why in a CONTROL error
+// (bad_frame) and keeps its connection, and the host keeps its: the next
+// answer reaches the viewer. (Before the fix the frame of 66 KiB arrived,
+// which the viewer's reader refuses as any reader does.)
+func TestSwitchyardNeverSendsAViewerASignalFrameOverItsLimit(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.Switchyard.Enabled = true })
+	host := dialFakeHost(t, e, "hosted-agent-token")
+	v := dialViewer(t, e, host.sessionID, host.link("view", ""))
+	v.expectControl(proto.CtlWelcome)
+	viewerID, _ := host.expect(proto.HostViewerJoin)["viewerId"].(string)
+	answer := func(sdp string) []byte {
+		return []byte(`{"t":"` + proto.HostAnswer + `","viewerId":"` + viewerID + `","sdp":"` + sdp + `"}`)
+	}
+	if err := host.c.Write(t.Context(), websocket.MessageText, answer(strings.Repeat("<", 11<<10))); err != nil {
+		t.Fatal(err)
+	}
+	m := v.expectControl(proto.CtlError)
+	if msg, _ := m["message"].(string); m["code"] != proto.ErrCodeBadFrame || !strings.Contains(msg, "answer") || !strings.Contains(msg, "not sent") {
+		t.Fatalf("the viewer was told %v", m)
+	}
+	if err := host.c.Write(t.Context(), websocket.MessageText, answer("v=0 plain")); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		f, err := v.read()
+		if err != nil {
+			t.Fatalf("after the refused answer: %v", err)
+		}
+		if tt, _ := proto.ParseHeader(f.Payload); f.Type == proto.TypeSignal && tt == proto.SigAnswer {
+			if !strings.Contains(string(f.Payload), "v=0 plain") {
+				t.Fatalf("the answer after the refused one: %s", f.Payload)
+			}
+			return
+		}
 	}
 }
 

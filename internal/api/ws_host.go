@@ -267,6 +267,22 @@ func (hc *hostConnState) chargeForward(n, read int) bool {
 	return hc.relay.take(hc.ctx, n-read) == nil
 }
 
+// forwardSignal queues for a viewer the SIGNAL frame made of a host's
+// message of read bytes (f and err from signal.AnswerFrame or ICEFrame),
+// charged first (chargeForward). One the server could not make within what
+// a SIGNAL frame holds (proto.ErrTooLarge: the host's message encoded anew
+// passed the limit a reader checks) is never sent; the viewer is sent
+// signal.RefusedFrame in its place. The host's connection stays: its
+// message was within its own bound.
+func (hc *hostConnState) forwardSignal(hs *signal.HostedSession, viewerID, what string, read int, f []byte, err error) {
+	if errors.Is(err, proto.ErrTooLarge) {
+		f, err = signal.RefusedFrame(what, err), nil
+	}
+	if err == nil && hc.chargeForward(len(f), read) {
+		hs.HostSignal(viewerID, f)
+	}
+}
+
 // byteBucket is a token bucket of bytes: rate a second, burst at most (a
 // relay bound's is Server.relayBurst).
 // take charges n bytes at once, all of them, and then waits, as long as ctx
@@ -359,17 +375,15 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil || m.SDP == "" {
 			return false
 		}
-		if f, err := signal.AnswerFrame(m.SDP); err == nil && hc.chargeForward(len(f), len(data)) {
-			hs.HostSignal(m.ViewerID, f)
-		}
+		f, err := signal.AnswerFrame(m.SDP)
+		hc.forwardSignal(hs, m.ViewerID, "answer", len(data), f, err)
 	case proto.HostICE:
 		var m proto.ViewerICE
 		if json.Unmarshal(data, &m) != nil || len(m.Candidate.Candidate) > proto.MaxICECandidate {
 			return false
 		}
-		if f, err := signal.ICEFrame(m.Candidate); err == nil && hc.chargeForward(len(f), len(data)) {
-			hs.HostSignal(m.ViewerID, f)
-		}
+		f, err := signal.ICEFrame(m.Candidate)
+		hc.forwardSignal(hs, m.ViewerID, "ice", len(data), f, err)
 	case proto.HostStatus:
 		var m proto.HostStatusMsg
 		if json.Unmarshal(data, &m) != nil {

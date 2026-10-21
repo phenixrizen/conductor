@@ -228,6 +228,11 @@ in both directions.
 
 Viewer → server (SIGNAL): `offer{sdp}`, `ice{candidate}`, `relay{reason}`.
 Server → viewer (SIGNAL): `answer{sdp}`, `ice{candidate}`, `relay_ok`, `error`.
+No SIGNAL frame leaves the server past the 64 KiB the type holds: the
+server encodes the host's answer or candidate anew, which can grow it (`<`
+as six bytes), and one that would pass the limit is never sent; the viewer
+gets a CONTROL `error{code:"bad_frame"}` saying what was not sent and why,
+keeps its connection, and goes to the relay as `relayTimeoutMs` runs out.
 
 When the data channel opens the viewer sends `hello` over it and the host replies
 with the normal welcome/scrollback/ready sequence (`transport:"webrtc"`).
