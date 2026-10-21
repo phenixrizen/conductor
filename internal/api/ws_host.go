@@ -85,7 +85,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := hs.Info()
-	hc := &hostConnState{base: s.publicBase(r), ctx: ctx}
+	hc := &hostConnState{base: s.publicBase(r), ctx: ctx, relays: !s.cfg.Switchyard.Enabled || s.cfg.SwitchyardRelay()}
 	if open {
 		hc.addr = addr
 	}
@@ -254,6 +254,10 @@ type hostConnState struct {
 	relay       *byteBucket
 	// ctx is the connection's: a wait on relay ends with it.
 	ctx context.Context
+	// relays says the server relays a viewer whose WebRTC attempt fails
+	// (every server but a switchyard with switchyard.relay false), for what
+	// a viewer is left with when a frame for it is refused (forwardSignal).
+	relays bool
 }
 
 // chargeForward charges, before a viewer is sent it, what a host's message
@@ -265,6 +269,33 @@ func (hc *hostConnState) chargeForward(n, read int) bool {
 		return true
 	}
 	return hc.relay.take(hc.ctx, n-read) == nil
+}
+
+// forwardSignal queues for a viewer the SIGNAL frame made of a host's
+// message of read bytes (f and err from signal.AnswerFrame or ICEFrame),
+// charged first (chargeForward). One the server could not make within what
+// a SIGNAL frame holds (proto.ErrTooLarge: the host's message encoded anew
+// passed the limit a reader checks) is never sent; the viewer is sent a
+// CONTROL error in its place (signal.RefusedMessage), charged the same.
+// Its WebRTC attempt cannot succeed without the answer: where the viewer
+// can fall back to the relay it is kept, its timer sending it there; on a
+// switchyard that does not relay it is closed with the error, since the
+// attempt has nowhere to go. The host's connection stays either way: its
+// message was within its own bound.
+func (hc *hostConnState) forwardSignal(hs *signal.HostedSession, viewerID, what string, read int, f []byte, err error) {
+	if errors.Is(err, proto.ErrTooLarge) {
+		msg := signal.RefusedMessage(what, err)
+		f, err = proto.NewError(proto.ErrCodeBadFrame, msg), nil
+		if !hc.relays {
+			if hc.chargeForward(len(f), read) {
+				hs.HostViewerError(viewerID, proto.ErrCodeBadFrame, msg)
+			}
+			return
+		}
+	}
+	if err == nil && hc.chargeForward(len(f), read) {
+		hs.HostSignal(viewerID, f)
+	}
 }
 
 // byteBucket is a token bucket of bytes: rate a second, burst at most (a
@@ -359,17 +390,15 @@ func (s *Server) handleHostMessage(hs *signal.HostedSession, hc *hostConnState, 
 		if json.Unmarshal(data, &m) != nil || m.SDP == "" {
 			return false
 		}
-		if f, err := signal.AnswerFrame(m.SDP); err == nil && hc.chargeForward(len(f), len(data)) {
-			hs.HostSignal(m.ViewerID, f)
-		}
+		f, err := signal.AnswerFrame(m.SDP)
+		hc.forwardSignal(hs, m.ViewerID, "answer", len(data), f, err)
 	case proto.HostICE:
 		var m proto.ViewerICE
 		if json.Unmarshal(data, &m) != nil || len(m.Candidate.Candidate) > proto.MaxICECandidate {
 			return false
 		}
-		if f, err := signal.ICEFrame(m.Candidate); err == nil && hc.chargeForward(len(f), len(data)) {
-			hs.HostSignal(m.ViewerID, f)
-		}
+		f, err := signal.ICEFrame(m.Candidate)
+		hc.forwardSignal(hs, m.ViewerID, "ice", len(data), f, err)
 	case proto.HostStatus:
 		var m proto.HostStatusMsg
 		if json.Unmarshal(data, &m) != nil {
