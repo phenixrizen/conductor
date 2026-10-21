@@ -17,7 +17,8 @@ the Windows host is the one this WSL runs on.
 
 A step that fails, a machine that cannot be reached, or a run of a subset of
 the steps (--only) is a failed or partial receipt: nothing is skipped
-silently.
+silently. A run of a subset still checks the revision out on each remote
+machine: the steps named test the head, never the machine's last checkout.
 """
 
 import argparse
@@ -150,9 +151,13 @@ class Run:
         self.started = now()
         self.say = log
 
-    def step(self, name, argv, runner, cwd=None, env=None):
-        """Run one step through runner(argv, cwd, env, logfile) -> exit code."""
-        if self.only and name not in self.only:
+    def step(self, name, argv, runner, cwd=None, env=None, always=False):
+        """Run one step through runner(argv, cwd, env, logfile) -> exit code.
+        A step not named by --only is skipped, unless always: a remote
+        machine's checkout, which is no check but getting the revision there
+        (a partial run tests the head it names, never the machine's last
+        checkout)."""
+        if self.only and name not in self.only and not always:
             return True
         logfile = self.logdir / f"{name}.log"
         self.say(f"[{self.machine}] {name}: {' '.join(argv)}")
@@ -274,7 +279,7 @@ def run_mac(root, head, base, directory, only, say):
     except Error as e:
         r.steps.append({"name": "sync", "command": "git push", "cwd": None, "exit": -1, "seconds": 0, "log": str(e)})
         return r.write({"unreachable": True})
-    if not r.step("checkout", ["sh", "-c", 'test -z "$(git status --porcelain --untracked-files=no)" && git checkout --quiet --detach preflight && git rev-parse HEAD'], runner):
+    if not r.step("checkout", ["sh", "-c", 'test -z "$(git status --porcelain --untracked-files=no)" && git checkout --quiet --detach preflight && git rev-parse HEAD'], runner, always=True):
         return r.write()
     for s in MAC_STEPS:
         r.step(s["name"], s["argv"], runner, s.get("cwd"), s.get("env"))
@@ -402,7 +407,7 @@ def run_windows(root, head, base, directory, only, say):
     except Error as e:
         r.steps.append({"name": "sync", "command": "git push", "cwd": None, "exit": -1, "seconds": 0, "log": str(e)})
         return r.write()
-    if not r.step("checkout", ["git", "checkout", "--quiet", "--force", "--detach", "preflight"], runner):
+    if not r.step("checkout", ["git", "checkout", "--quiet", "--force", "--detach", "preflight"], runner, always=True):
         return r.write()
     for s in WINDOWS_STEPS:
         r.step(s["name"], s["argv"], runner, s.get("cwd"), s.get("env"))
@@ -415,7 +420,7 @@ RUNNERS = {"linux": run_linux, "mac": run_mac, "windows": run_windows}
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--machines", default="linux", help="comma-separated subset of linux,mac,windows (default: linux)")
-    ap.add_argument("--only", action="append", default=[], help="run only this step (repeatable): a partial run, no passing receipt")
+    ap.add_argument("--only", action="append", default=[], help="run only this step (repeatable): a partial run, no passing receipt; a remote machine's checkout runs regardless")
     ap.add_argument("--list", action="store_true", help="list the steps and exit")
     a = ap.parse_args(argv)
     if a.list:
