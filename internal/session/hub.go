@@ -106,6 +106,14 @@ type Subscription struct {
 	// hello's, then its last resize), for a hand-over of the size; under the
 	// session's mu.
 	want [2]uint16
+	// leftSize says the connection's leave handed the size on (Detach while
+	// it sized the session), and takesThen how often the size had been
+	// taken by asking by then (Local.takes): the connection that takes it
+	// over under the same id (AttachOptions.Replaces, a viewer moving to the
+	// relay) takes the size back, unless someone took it by asking
+	// meanwhile. Under the session's mu.
+	leftSize  bool
+	takesThen uint64
 	// reportCarry is a terminal or mouse report the connection's last
 	// write began and did not finish (typesSomething), for its next; under
 	// carryMu.

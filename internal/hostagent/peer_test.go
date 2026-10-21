@@ -550,6 +550,74 @@ func TestPeerTakesTheSizeOnlyByAsking(t *testing.T) {
 	}
 }
 
+// A control link that took the size (Fit to my window) and then falls back
+// to the relay, its data channel's end seen before its hello over the relay
+// (startRelay detaches first), sizes the session still: the relay's attach
+// takes the size back, and the window's resize after the move sizes the
+// session as before it.
+func TestAViewerMovingToTheRelayKeepsTheSize(t *testing.T) {
+	gate := newJoinGate()
+	close(gate.release)
+	a := relayAgent(t, gate, 0)
+	// The host's own terminal: a controller with no link, the sizer.
+	own, err := a.local.AttachWith(session.AttachOptions{Role: session.RoleControl, Name: "host terminal", Cols: 120, Rows: 40}, nopSink{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.local.Detach(own)
+	out := make(chan any, 64)
+	a.sendHook = func(v any) { out <- v }
+	const id = "0123456789abcdef"
+	p := newPeer(a, id, session.RoleControl, "link1", "laptop", false)
+	a.peers[id] = p
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	dc, frames := loopbackViewer(t, p, out)
+	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 90, Rows: 30, Name: "Jane"}))
+	control := func(want func(m map[string]any) bool) map[string]any {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for {
+			select {
+			case raw := <-frames:
+				f, err := proto.Decode(raw)
+				if err != nil || f.Type != proto.TypeControl {
+					continue
+				}
+				var m map[string]any
+				if json.Unmarshal(f.Payload, &m) == nil && want(m) {
+					return m
+				}
+			case <-deadline:
+				t.Fatal("no such control frame")
+			}
+		}
+	}
+	w := control(func(m map[string]any) bool { return m["t"] == proto.CtlWelcome })
+	dc.Send(proto.MustControl(proto.Resize{T: proto.CtlResize, Cols: 90, Rows: 30, Take: true}))
+	if m := control(func(m map[string]any) bool { return m["t"] == proto.CtlResize && m["cols"] == float64(90) }); m["by"] != w["subscriberId"] {
+		t.Fatalf("the take's resize %v (welcome %v)", m, w)
+	}
+	// The connection fails: the viewer moves to the relay and says hello
+	// there, at its size.
+	p.startRelay()
+	p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 90, Rows: 30, Name: "Jane"})})
+	if !holdsSub(p) {
+		t.Fatal("the viewer holds no subscription on the relay")
+	}
+	// Its window's resize sizes the session, as before the move.
+	p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: mustJSON(proto.Resize{T: proto.CtlResize, Cols: 100, Rows: 32})})
+	deadline := time.Now().Add(5 * time.Second)
+	for i := a.local.Info(); i.Cols != 100 || i.Rows != 32; i = a.local.Info() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the move lost the size: the session is %dx%d after the window's resize to 100x32", i.Cols, i.Rows)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 type nopSink struct{}
 
 func (nopSink) WriteFrame([]byte) error { return nil }
