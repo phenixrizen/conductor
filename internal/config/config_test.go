@@ -995,6 +995,7 @@ func TestRendezvousDefaultsToThePublicSwitchyard(t *testing.T) {
 // publicUrl is not compared (serve moves it to the bound port), nor a
 // listener on port 0.
 func TestPublishesToItself(t *testing.T) {
+	resolveLocalhostTo(t, "127.0.0.1", "::1")
 	for _, tc := range []struct {
 		name              string
 		listen, tlsListen string // a tlsListen turns TLS on, by certificate files
@@ -1070,14 +1071,64 @@ func TestPublishesToItself(t *testing.T) {
 	}
 }
 
+// resolveLocalhostTo makes localhost resolve to addrs, in that order, for
+// the rest of the test.
+func resolveLocalhostTo(t *testing.T, addrs ...string) {
+	t.Helper()
+	was := localhostAddrs
+	t.Cleanup(func() { localhostAddrs = was })
+	localhostAddrs = func() []netip.Addr {
+		var out []netip.Addr
+		for _, a := range addrs {
+			out = append(out, netip.MustParseAddr(a))
+		}
+		return out
+	}
+}
+
+// localhost is what this machine's resolver makes it: where it is ::1
+// alone, a listener on localhost is on ::1, and a dial of localhost reaches
+// ::1 alone; where it is 127.0.0.1 alone, the same for 127.0.0.1.
+func TestPublishesToItselfFollowsWhatLocalhostResolvesTo(t *testing.T) {
+	for _, tc := range []struct {
+		localhost      string
+		listen, server string
+		want           bool
+	}{
+		{"::1", "localhost:9000", "http://[::1]:9000", true},
+		{"::1", "localhost:9000", "http://127.0.0.1:9000", false},
+		{"::1", "localhost:9000", "http://localhost:9000", true},
+		{"::1", "127.0.0.1:9000", "http://localhost:9000", false},
+		{"::1", "[::1]:9000", "http://localhost:9000", true},
+		{"127.0.0.1", "[::1]:9000", "http://localhost:9000", false},
+		{"127.0.0.1", "127.0.0.1:9000", "http://localhost:9000", true},
+		{"127.0.0.1", "localhost:9000", "http://[::1]:9000", false},
+	} {
+		resolveLocalhostTo(t, tc.localhost)
+		c := Defaults()
+		c.Listen = tc.listen
+		c.Rendezvous.Server = tc.server
+		if got := c.PublishesToItself(); got != tc.want {
+			t.Errorf("localhost %s, listen %s, switchyard %s: %v, want %v", tc.localhost, tc.listen, tc.server, got, tc.want)
+		}
+	}
+}
+
 // dialedAddrs agrees with the standard library's dial on this machine: a
 // listener on 127.0.0.1, and on ::1 where the machine has it, answers a
 // dial of each host at its port exactly when dialedAddrs names its address.
 // The answer counts only from that listener's own address, whatever else
-// may hold the port on the other family. localhost may reach fewer: it is
-// taken as both its usual addresses, and a hosts file may give it one (on
-// Linux often 127.0.0.1 alone; macOS gives both).
+// may hold the port on the other family. And a listener on localhost is
+// bound to localhostListenAddr.
 func TestDialedAddrsAgreesWithTheDial(t *testing.T) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound, _ := netip.ParseAddrPort(ln.Addr().String()); bound.Addr().Unmap() != localhostListenAddr() {
+		t.Errorf("a listener on localhost is bound to %s, not %s (localhost is %v)", ln.Addr(), localhostListenAddr(), localhostAddrs())
+	}
+	ln.Close()
 	for _, lhost := range []string{"127.0.0.1", "::1"} {
 		ln, err := net.Listen("tcp", net.JoinHostPort(lhost, "0"))
 		if err != nil {
@@ -1105,7 +1156,7 @@ func TestDialedAddrsAgreesWithTheDial(t *testing.T) {
 				reached = peer.Addr().Unmap() == l
 				c.Close()
 			}
-			if want := slices.Contains(dialedAddrs(host), l); reached && !want || !reached && want && host != "localhost" {
+			if want := slices.Contains(dialedAddrs(host), l); reached != want {
 				t.Errorf("a dial of %q at a listener on %s: reached %v, dialedAddrs %v", host, lhost, reached, dialedAddrs(host))
 			}
 		}

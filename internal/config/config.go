@@ -3,6 +3,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -339,7 +340,8 @@ var ErrPublishesToItself = errors.New("rendezvous.server must be another server"
 // compared: serve moves it to the port the listener gets (--listen :0, the
 // desktop app), and the listener is compared instead. A listener on port 0
 // takes no part, its port unknown before the bind, and a switchyard named
-// by this machine's LAN address or host name is not recognized.
+// by this machine's LAN address or host name is not recognized. localhost
+// is resolved, as listen and dial resolve it (localhostAddrs).
 func (c *Config) PublishesToItself() bool {
 	server := c.RendezvousServer()
 	if server == "" {
@@ -398,9 +400,9 @@ func urlPort(u *url.URL) int {
 // standard library reads it), and an address the dial may reach
 // (dialedAddrs) that the listener has. A listener on all addresses (no
 // host, 0.0.0.0, ::) has every loopback address; one on localhost has
-// 127.0.0.1, since net.Listen takes a name's first IPv4 address; one on an
-// address has that address, and one on another name that name alone. A
-// listener on port 0 takes nothing: its port is the kernel's choice.
+// localhostListenAddr; one on an address has that address, and one on
+// another name that name alone. A listener on port 0 takes nothing: its
+// port is the kernel's choice.
 func listenerTakes(addr, host string, port int) bool {
 	lhost, lport, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -410,32 +412,60 @@ func listenerTakes(addr, host string, port int) bool {
 		return false
 	}
 	dests := dialedAddrs(host)
-	if strings.EqualFold(lhost, "localhost") {
-		lhost = "127.0.0.1"
-	}
-	if lhost == "" {
+	var l netip.Addr
+	switch {
+	case lhost == "":
 		return slices.ContainsFunc(dests, netip.Addr.IsLoopback)
-	}
-	l, err := netip.ParseAddr(lhost)
-	if err != nil {
-		return strings.EqualFold(lhost, host)
-	}
-	if l = l.Unmap(); l.IsUnspecified() {
-		return slices.ContainsFunc(dests, netip.Addr.IsLoopback)
+	case strings.EqualFold(lhost, "localhost"):
+		l = localhostListenAddr()
+	default:
+		a, err := netip.ParseAddr(lhost)
+		if err != nil {
+			return strings.EqualFold(lhost, host)
+		}
+		if l = a.Unmap(); l.IsUnspecified() {
+			return slices.ContainsFunc(dests, netip.Addr.IsLoopback)
+		}
 	}
 	return slices.Contains(dests, l)
 }
 
+// localhostAddrs is what localhost resolves to on this machine, in order,
+// by the resolver the standard library's listen and dial use: a hosts file
+// may give it 127.0.0.1 and ::1, or one alone. When it does not resolve,
+// both. The tests replace it.
+var localhostAddrs = func() []netip.Addr {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", "localhost")
+	if err != nil || len(addrs) == 0 {
+		return []netip.Addr{netip.AddrFrom4([4]byte{127, 0, 0, 1}), netip.IPv6Loopback()}
+	}
+	for i, a := range addrs {
+		addrs[i] = a.Unmap()
+	}
+	return addrs
+}
+
+// localhostListenAddr is the address net.Listen binds for localhost: its
+// first IPv4 address, else its first.
+func localhostListenAddr() netip.Addr {
+	addrs := localhostAddrs()
+	if i := slices.IndexFunc(addrs, netip.Addr.Is4); i >= 0 {
+		return addrs[i]
+	}
+	return addrs[0]
+}
+
 // dialedAddrs is where on this machine the standard library's dial of host
-// may land: for localhost, its usual addresses 127.0.0.1 and ::1 (a hosts
-// file may give it one alone; both is the cautious answer); for no host
+// may land: for localhost, its addresses (localhostAddrs); for no host
 // (dialed over IPv4) and 0.0.0.0, 127.0.0.1; for ::, ::1 and then, as the
 // dial falls back to 0.0.0.0, 127.0.0.1; for any other address that
 // address; for any other name nothing known.
 func dialedAddrs(host string) []netip.Addr {
 	v4, v6 := netip.AddrFrom4([4]byte{127, 0, 0, 1}), netip.IPv6Loopback()
 	if strings.EqualFold(host, "localhost") {
-		return []netip.Addr{v4, v6}
+		return localhostAddrs()
 	}
 	if host == "" {
 		return []netip.Addr{v4}
