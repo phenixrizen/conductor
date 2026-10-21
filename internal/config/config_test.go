@@ -1129,14 +1129,37 @@ func TestDialedAddrsAgreesWithTheDial(t *testing.T) {
 		t.Errorf("a listener on localhost is bound to %s, not %s (localhost is %v)", ln.Addr(), localhostListenAddr(), localhostAddrs())
 	}
 	ln.Close()
+	hosts := []string{"localhost", "", "0.0.0.0", "::", "127.0.0.1", "::1", "::ffff:127.0.0.1"}
 	for _, lhost := range []string{"127.0.0.1", "::1"} {
-		ln, err := net.Listen("tcp", net.JoinHostPort(lhost, "0"))
-		if err != nil {
-			if lhost == "::1" {
-				t.Logf("no listener on ::1 here: %v", err)
-				continue
+		l := netip.MustParseAddr(lhost)
+		reached, ok := dialsReaching(t, hosts, l)
+		if !ok {
+			continue
+		}
+		for _, host := range hosts {
+			if want := slices.Contains(dialedAddrs(host), l); reached[host] != want {
+				t.Errorf("a dial of %q at a listener on %s: reached %v, dialedAddrs %v", host, lhost, reached[host], dialedAddrs(host))
 			}
-			t.Fatal(err)
+		}
+	}
+}
+
+// dialsReaching listens on l at a free port and dials each of hosts there,
+// reporting which reached the listener, the answer counted from its own
+// address. A port taken on 127.0.0.1 is free on ::1, and the other way
+// round: another program holding it there would answer a dial first, so
+// such a port is given up and another tried. Not ok on a machine without
+// ::1, or when five ports in a row had another program on the other side.
+func dialsReaching(t *testing.T, hosts []string, l netip.Addr) (reached map[string]bool, ok bool) {
+	t.Helper()
+	for try := 1; try <= 5; try++ {
+		ln, err := net.Listen("tcp", net.JoinHostPort(l.String(), "0"))
+		if err != nil {
+			if l.Is4() {
+				t.Fatal(err)
+			}
+			t.Logf("no listener on %s here: %v", l, err)
+			return nil, false
 		}
 		go func() {
 			for {
@@ -1148,20 +1171,29 @@ func TestDialedAddrsAgreesWithTheDial(t *testing.T) {
 			}
 		}()
 		_, port, _ := net.SplitHostPort(ln.Addr().String())
-		l := netip.MustParseAddr(lhost)
-		for _, host := range []string{"localhost", "", "0.0.0.0", "::", "127.0.0.1", "::1", "::ffff:127.0.0.1"} {
-			reached := false
-			if c, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 5*time.Second); err == nil {
-				peer, _ := netip.ParseAddrPort(c.RemoteAddr().String())
-				reached = peer.Addr().Unmap() == l
-				c.Close()
+		reached = map[string]bool{}
+		var other netip.AddrPort
+		for _, host := range hosts {
+			c, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 5*time.Second)
+			if err != nil {
+				continue
 			}
-			if want := slices.Contains(dialedAddrs(host), l); reached != want {
-				t.Errorf("a dial of %q at a listener on %s: reached %v, dialedAddrs %v", host, lhost, reached, dialedAddrs(host))
+			peer, _ := netip.ParseAddrPort(c.RemoteAddr().String())
+			c.Close()
+			if peer.Addr().Unmap() != l {
+				other = peer
+				break
 			}
+			reached[host] = true
 		}
 		ln.Close()
+		if !other.IsValid() {
+			return reached, true
+		}
+		t.Logf("another program answered at %s; trying another port", other)
 	}
+	t.Skipf("a listener on %s: five ports in a row had another program on the other loopback address", l)
+	return nil, false
 }
 
 // The TLS listener counts as Load leaves it: its default :8443 filled in,
