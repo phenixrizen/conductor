@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
@@ -322,6 +323,110 @@ func (c *Config) RendezvousServer() string {
 		return c.Rendezvous.Server
 	}
 	return DefaultRendezvousServer
+}
+
+// ErrPublishesToItself is why conductor serve stops when the switchyard it
+// would publish to is itself (PublishesToItself).
+var ErrPublishesToItself = errors.New("rendezvous.server must be another server")
+
+// PublishesToItself reports whether the switchyard this server publishes to
+// (RendezvousServer) is this server: a publicUrl that names another machine
+// names the same server (scheme, host in any case, port and path), or a
+// listener of this server takes the switchyard's address (listen, and
+// tls.listen when TLS is on; listenerTakes). conductor serve asks once its
+// flags are applied, before it starts anything. A local publicUrl is not
+// compared: serve moves it to the port the listener gets (--listen :0, the
+// desktop app), and the listener is compared instead. A listener on port 0
+// takes no part, its port unknown before the bind, and a switchyard named
+// by this machine's LAN address or host name is not recognized.
+func (c *Config) PublishesToItself() bool {
+	server := c.RendezvousServer()
+	if server == "" {
+		return false
+	}
+	u, err := url.Parse(server)
+	if err != nil {
+		return false
+	}
+	if !c.PublicURLIsLocal() {
+		if p, err := url.Parse(c.PublicURL); err == nil && sameServer(p, u) {
+			return true
+		}
+	}
+	listeners := []string{c.Listen}
+	if c.TLSEnabled() {
+		listeners = append(listeners, c.TLS.Listen)
+	}
+	for _, l := range listeners {
+		if listenerTakes(l, u.Hostname(), urlPort(u)) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameServer reports whether a and b name the same server: the same scheme,
+// host (in any case), port (the scheme's when none is written) and path (a
+// trailing slash aside).
+func sameServer(a, b *url.URL) bool {
+	return a.Scheme == b.Scheme && strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		urlPort(a) == urlPort(b) && strings.TrimRight(a.Path, "/") == strings.TrimRight(b.Path, "/")
+}
+
+// urlPort is the port a dial of u reaches: the one written (url.Parse admits
+// digits only), else the scheme's; 0 when neither is known.
+func urlPort(u *url.URL) int {
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	switch u.Scheme {
+	case "http":
+		return 80
+	case "https":
+		return 443
+	}
+	return 0
+}
+
+// listenerTakes reports whether a dial of host:port lands on a listener at
+// addr (as net.Listen takes it): the same port (a service name read as the
+// standard library reads it), at a host the listener accepts. A listener on
+// all addresses (no host, 0.0.0.0, ::) accepts localhost and the loopback
+// addresses; one on localhost or a loopback address accepts that address
+// and localhost; these accept an unspecified host too (none, 0.0.0.0, ::),
+// which dials this machine. One on any other address or name accepts that
+// alone. A listener on port 0 accepts nothing: its port is the kernel's
+// choice.
+func listenerTakes(addr, host string, port int) bool {
+	lhost, lport, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if p, err := net.LookupPort("tcp", lport); err != nil || p == 0 || p != port {
+		return false
+	}
+	dest, derr := netip.ParseAddr(host)
+	dest = dest.Unmap()
+	unspecified := host == "" || derr == nil && dest.IsUnspecified()
+	l, lerr := netip.ParseAddr(lhost)
+	l = l.Unmap()
+	switch {
+	case lhost == "" || lerr == nil && l.IsUnspecified():
+		return unspecified || LoopbackHost(host)
+	case strings.EqualFold(lhost, "localhost"):
+		// localhost is 127.0.0.1 or ::1, whichever the listener got.
+		return unspecified || strings.EqualFold(host, "localhost") ||
+			derr == nil && (dest == netip.AddrFrom4([4]byte{127, 0, 0, 1}) || dest == netip.IPv6Loopback())
+	case lerr == nil && l.IsLoopback():
+		return unspecified || strings.EqualFold(host, "localhost") || derr == nil && dest == l
+	case lerr == nil:
+		return derr == nil && dest == l
+	}
+	return strings.EqualFold(lhost, host)
 }
 
 // ACME challenges.
@@ -934,9 +1039,8 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("rendezvous.server %s is plain http and not localhost or a loopback address: what this server publishes there would travel in the clear and unverified; use https, or set rendezvous.insecure (CONDUCTOR_RENDEZVOUS_INSECURE=1) to allow it", u.Host))
 		}
 	}
-	if server := c.RendezvousServer(); server != "" && server == strings.TrimRight(c.PublicURL, "/") {
-		errs = append(errs, errors.New("rendezvous.server must be another server, not this one's publicUrl"))
-	}
+	// Whether the switchyard is this server waits for conductor serve's
+	// flags (PublishesToItself): --listen and --switchyard change the answer.
 	hookErrs, warnings := c.validateWebhooks()
 	errs = append(errs, hookErrs...)
 	c.warnings = warnings

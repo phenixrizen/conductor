@@ -919,18 +919,18 @@ func TestRendezvousConfig(t *testing.T) {
 	if r := cfg.Rendezvous; r.Server != "https://team.example.net" || r.Token != "tok" || r.HostName != "office" || !r.RelayOnly || cfg.RendezvousServer() != "https://team.example.net" {
 		t.Fatalf("%+v", r)
 	}
-	for name, mutate := range map[string]func(*Config){
-		"bad url": func(c *Config) { c.Rendezvous = Rendezvous{Server: "team.example.net", Token: "t"} },
-		"itself": func(c *Config) {
-			c.PublicURL = "https://me.example.net"
-			c.Rendezvous = Rendezvous{Server: "https://me.example.net/"}
-		},
-	} {
-		c := Defaults()
-		mutate(c)
-		if err := c.Validate(); err == nil {
-			t.Errorf("%s: want an error", name)
-		}
+	bad := Defaults()
+	bad.Rendezvous = Rendezvous{Server: "team.example.net", Token: "t"}
+	if err := bad.Validate(); err == nil {
+		t.Error("bad url: want an error")
+	}
+	// Itself is no config error: conductor serve refuses it once its flags
+	// are applied (TestPublishesToItself).
+	self := Defaults()
+	self.PublicURL = "https://me.example.net"
+	self.Rendezvous = Rendezvous{Server: "https://me.example.net/"}
+	if err := self.Validate(); err != nil || !self.PublishesToItself() {
+		t.Errorf("itself: %v, publishes to itself %v", err, self.PublishesToItself())
 	}
 	for name, mutate := range map[string]func(*Config){
 		"no token":   func(c *Config) { c.Rendezvous.Server = "https://team.example.net" },
@@ -973,11 +973,108 @@ func TestRendezvousDefaultsToThePublicSwitchyard(t *testing.T) {
 	if sy.RendezvousServer() != "" {
 		t.Fatal("a switchyard publishes to no switchyard")
 	}
-	// A server whose own public URL is the public switchyard must not publish to itself.
+	// A server whose own public URL is the public switchyard must not publish
+	// to itself; as a switchyard it publishes nowhere.
 	self := Defaults()
 	self.PublicURL = DefaultRendezvousServer + "/"
-	if err := self.Validate(); err == nil || !strings.Contains(err.Error(), "not this one's publicUrl") {
-		t.Fatalf("itself by default: %v", err)
+	if err := self.Validate(); err != nil || !self.PublishesToItself() {
+		t.Fatalf("itself by default: %v, publishes to itself %v", err, self.PublishesToItself())
+	}
+	self.Switchyard.Enabled = true
+	if self.PublishesToItself() {
+		t.Fatal("a switchyard whose public URL is the public switchyard publishes to itself")
+	}
+}
+
+// The switchyard is this server when publicUrl, naming another machine,
+// names the same server, or when a listener of this server takes the
+// switchyard's address: its port, at a host that listener accepts. A local
+// publicUrl is not compared (serve moves it to the bound port), nor a
+// listener on port 0.
+func TestPublishesToItself(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		listen, tlsListen string // a tlsListen turns TLS on, by certificate files
+		publicURL, server string // "" keeps the default
+		want              bool
+	}{
+		{"the desktop app: a free port, the switchyard on 8080", "127.0.0.1:0", "", "", "http://localhost:8080", false},
+		{"a free port, publicUrl the switchyard's, both local", "127.0.0.1:0", "", "http://localhost:9000", "http://localhost:9000", false},
+		{"the default listen, the switchyard on its port", ":8080", "", "", "http://localhost:8080", true},
+		{"its own port by localhost", "127.0.0.1:9000", "", "", "http://localhost:9000/", true},
+		{"its own port at another path", "127.0.0.1:9000", "", "", "http://localhost:9000/yard", true},
+		{"in capitals", "127.0.0.1:9000", "", "HTTP://LOCALHOST:9000", "HTTP://LocalHost:9000", true},
+		{"a leading zero", "127.0.0.1:9000", "", "", "http://localhost:09000", true},
+		{"a service name for the listener's port", ":http", "", "", "http://localhost", true},
+		{"port 80 by the scheme", ":80", "", "", "http://127.0.0.1/", true},
+		{"port 443 by the scheme", "127.0.0.1:8080", "127.0.0.1:443", "", "https://localhost", true},
+		{"the TLS listener", ":8080", ":8443", "", "https://localhost:8443", true},
+		{"the TLS listener, by an unspecified address", ":8080", "[::]:8443", "", "https://127.0.0.1:8443", true},
+		{"TLS off: its listen is not a listener", ":8080", "", "", "https://localhost:8443", false},
+		{"another port", ":8080", "", "", "http://localhost:8081", false},
+		{"another loopback address", "127.0.0.1:9000", "", "", "http://127.0.0.2:9000", false},
+		{"::1, the listener on 127.0.0.1", "127.0.0.1:9000", "", "", "http://[::1]:9000", false},
+		{"a mapped 127.0.0.1", "127.0.0.1:9000", "", "", "http://[::ffff:127.0.0.1]:9000", true},
+		{"::1, the listener on all addresses", ":9000", "", "", "http://[::1]:9000", true},
+		{"127.8.9.10, the listener on 0.0.0.0", "0.0.0.0:9000", "", "", "http://127.8.9.10:9000", true},
+		{"0.0.0.0, the listener on ::", "[::]:9000", "", "", "http://0.0.0.0:9000", true},
+		{":: , the listener on ::1", "[::1]:9000", "", "", "http://[::]:9000", true},
+		{"localhost, the listener on localhost", "localhost:9000", "", "", "http://LOCALHOST:9000", true},
+		{"127.0.0.1, the listener on localhost", "localhost:9000", "", "", "http://127.0.0.1:9000", true},
+		{"127.0.0.2, the listener on localhost", "localhost:9000", "", "", "http://127.0.0.2:9000", false},
+		{"localhost, the listener on a LAN address", "192.0.2.5:8080", "", "", "http://localhost:8080", false},
+		{"0.0.0.0, the listener on a LAN address", "192.0.2.5:8080", "", "", "http://0.0.0.0:8080", false},
+		{"the same LAN address", "192.0.2.5:8080", "", "", "http://192.0.2.5:8080", true},
+		{"the same name", "conductor.lan:8080", "", "", "http://Conductor.LAN:8080", true},
+		{"another machine, the same port", ":8080", "", "", "https://yard.example:8080", false},
+		{"publicUrl the same server", "127.0.0.1:0", "", "https://c.example", "https://C.example:443/", true},
+		{"publicUrl the same server, a path", "127.0.0.1:0", "", "https://c.example/team", "https://c.example/team/", true},
+		{"publicUrl the public switchyard", "127.0.0.1:0", "", DefaultRendezvousServer, "", true},
+		{"publicUrl, the switchyard at another path", "127.0.0.1:0", "", "https://c.example", "https://c.example/yard", false},
+		{"publicUrl, the switchyard at another port", "127.0.0.1:0", "", "https://c.example", "https://c.example:8443", false},
+		{"publicUrl over http, the switchyard over https", "127.0.0.1:0", "", "http://c.example", "https://c.example", false},
+	} {
+		c := Defaults()
+		c.Listen = tc.listen
+		if tc.tlsListen != "" {
+			c.TLS.CertFile, c.TLS.KeyFile, c.TLS.Listen = "cert.pem", "key.pem", tc.tlsListen
+		}
+		if tc.publicURL != "" {
+			c.PublicURL = tc.publicURL
+		}
+		c.Rendezvous.Server = tc.server
+		if got := c.PublishesToItself(); got != tc.want {
+			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	no := false
+	for name, c := range map[string]*Config{"publishing off": {Rendezvous: Rendezvous{Enabled: &no}}, "a switchyard": {Switchyard: Switchyard{Enabled: true}}} {
+		c.Listen = ":8080"
+		c.Rendezvous.Server = "http://localhost:8080"
+		if c.PublishesToItself() {
+			t.Errorf("%s publishes to itself", name)
+		}
+	}
+}
+
+// The TLS listener counts as Load leaves it: its default :8443 filled in,
+// or the environment's, with TLS on by certificate files or ACME alone.
+func TestPublishesToItselfThroughTheTLSListenerAsLoaded(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"certificate files, the default port": {"CONDUCTOR_TLS_CERT_FILE": "cert.pem", "CONDUCTOR_TLS_KEY_FILE": "key.pem", "CONDUCTOR_RENDEZVOUS_SERVER": "https://localhost:8443"},
+		"CONDUCTOR_TLS_LISTEN":                {"CONDUCTOR_TLS_CERT_FILE": "cert.pem", "CONDUCTOR_TLS_KEY_FILE": "key.pem", "CONDUCTOR_TLS_LISTEN": "127.0.0.1:9443", "CONDUCTOR_RENDEZVOUS_SERVER": "https://127.0.0.1:9443"},
+		"ACME alone":                          {"CONDUCTOR_TLS_ACME": "1", "CONDUCTOR_RENDEZVOUS_SERVER": "https://[::1]:8443"},
+	} {
+		c := Defaults()
+		if err := applyEnv(c, func(k string) string { return env[k] }); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !c.PublishesToItself() {
+			t.Errorf("%s: the switchyard at %s is not this server's TLS listener %q", name, c.Rendezvous.Server, c.TLS.Listen)
+		}
 	}
 }
 
