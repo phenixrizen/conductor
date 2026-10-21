@@ -1963,9 +1963,15 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	}
 	att := Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, rows: rows, list: list}
 	// The plan the agent named for its approval (NotePlan) rides the
-	// question shown next, and goes as the agent moves on (#289).
+	// question shown next, once; the dialog read off the screen that takes
+	// the place of the hook's report of that approval keeps it; any other
+	// question carries none, and the plan named goes as the agent moves on
+	// (#289).
 	if state == AttentionNeedsInput {
-		att.Plan = s.askedPlan
+		att.Plan, s.askedPlan = s.askedPlan, ""
+		if att.Plan == "" && source == SourceQuestion && cur.State == AttentionNeedsInput && cur.Source == SourceAPI {
+			att.Plan = cur.Plan
+		}
 	} else {
 		s.askedPlan = ""
 	}

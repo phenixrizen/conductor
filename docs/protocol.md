@@ -1643,7 +1643,11 @@ events (a delete forgets one), the `plan` its approval names (the attention
 route) or the path its dialog prints, are the session's plans, and a
 `file_get`, a `file_write` or an `nvim_open` of one goes through that root
 under every check above (the deny list, a link out of the directory refused
-once resolved, a view link held to a controller's files). Any other path in
+once resolved, a view link held to a controller's files): a request whose
+path leads into the directory is routed to that root, which allows the file
+the path resolves to only when it is one of the plans, and then opens that
+file element by element with no link followed, so a link made to lead
+elsewhere between the two reaches nothing it was not allowed. Any other path in
 the directory (another session's plan), and the rest of the agent's config
 directory (its credentials, every project's history), are refused as any
 outside path is. Only an admin or the holder of the session's agent token

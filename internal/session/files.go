@@ -419,7 +419,7 @@ func resolvePath(root, raw string, deny denySet) (real, rootReal string, err err
 		return "", "", errors.New("path unavailable")
 	}
 	if real != rootReal && !strings.HasPrefix(real, rootReal+string(filepath.Separator)) {
-		return "", "", errors.New("path is outside the session directory")
+		return "", "", errOutside
 	}
 	rel, _ := filepath.Rel(rootReal, real)
 	parts := strings.Split(rel, string(filepath.Separator))

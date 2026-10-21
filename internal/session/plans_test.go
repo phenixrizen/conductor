@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -150,8 +151,12 @@ func TestPlanOpensAndSavesThroughThePlansRoot(t *testing.T) {
 
 // The plan the agent asks approval for (its hook's planFilePath, or the
 // path its dialog prints: NotePlan) is learnt as a file event's is, and the
-// question shown next carries it until the agent moves on; a path that is
-// not a plan's (the credentials) is neither learnt nor carried.
+// approval carries it: the hook's report, then the dialog read off the
+// screen in its place; a question asked after the approval was answered,
+// with no state between (Claude Code's next permission dialog), carries
+// none; named while the approval already shows, the plan is set on it and
+// told; a path that is not a plan's (the credentials) is neither learnt nor
+// carried.
 func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	s, home, _, plan := plansLocal(t)
 	sink := newChanSink(false)
@@ -172,13 +177,47 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != plan {
 		t.Fatalf("the dialog carries it too: %+v", att)
 	}
+	// Answered, and the next dialog drawn straight after (no state between): not about the plan.
+	s.SetAttentionFull(AttentionNeedsInput, "Do you want to proceed?\nBash command: ls", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	if att := s.Info().Attention; att.Plan != "" {
+		t.Fatalf("the next dialog carries none: %+v", att)
+	}
+	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, nil)
+	if att := s.Info().Attention; att.Plan != "" {
+		t.Fatalf("the next report carries none: %+v", att)
+	}
 	s.SetAttentionFull(AttentionWorking, "", SourceAPI, "", nil)
 	if att := s.Info().Attention; att.Plan != "" {
 		t.Fatalf("working carries no plan: %+v", att)
 	}
+	// The dialog first, the hook's report after it (the screen settled quickly): the plan is set on the dialog showing, and told.
+	s.SetAttentionFull(AttentionNeedsInput, "Would you like to proceed?", SourceQuestion, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	if att := s.Info().Attention; att.Plan != "" {
+		t.Fatalf("nothing named yet: %+v", att)
+	}
+	s.NotePlan(plan)
+	if att := s.Info().Attention; att.Source != SourceQuestion || att.Plan != plan {
+		t.Fatalf("set on the question showing: %+v", att)
+	}
+	var told bool
+	sink.mu.Lock()
+	for _, fr := range sink.frames {
+		f, err := proto.Decode(fr)
+		if err != nil || f.Type != proto.TypeControl {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal(f.Payload, &m) == nil && m["t"] == proto.CtlAttention && m["plan"] == plan {
+			told = true
+		}
+	}
+	sink.mu.Unlock()
+	if !told {
+		t.Fatal("the plan set on the question showing was not told to the client")
+	}
 	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, nil)
 	if att := s.Info().Attention; att.Plan != "" {
-		t.Fatalf("the next question is not about the plan: %+v", att)
+		t.Fatalf("named once: %+v", att)
 	}
 	s.SetAttentionFull(AttentionDone, "", SourceAPI, KindDone, nil)
 	s.NotePlan(filepath.Join(home, ".claude", ".credentials.json"))
@@ -188,6 +227,41 @@ func TestPlanFromTheApprovalRidesTheQuestion(t *testing.T) {
 	}
 	if h, _ := get(t, s, sub, sink, "r2", proto.FileGet{Path: filepath.Join(home, ".claude", ".credentials.json")}); h.Kind != "error" || h.Error.Code != "denied" {
 		t.Fatalf("the credentials: %+v", h)
+	}
+}
+
+// A request's path is allowed by what it resolves to, the file then opened
+// from the plans folder with no link followed: a link to a plan reads the
+// plan; the same link made to lead to another file of the directory, one
+// the agent did not name, is refused, however the request spells it.
+func TestPlanAllowedByWhatThePathResolvesTo(t *testing.T) {
+	s, home, plans, plan := plansLocal(t)
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Record(ActivityEntry{Type: ActivityFile, Op: FileOpWrite, Path: plan, Tool: "Write", ByName: "claude"})
+	other := filepath.Join(plans, "another-session.md")
+	os.WriteFile(other, []byte("# Another\n"), 0o644)
+	alias := filepath.Join(home, "alias.md")
+	if err := os.Symlink(plan, alias); err != nil {
+		t.Skip("no symlinks here")
+	}
+	if h, body := get(t, s, sub, sink, "r1", proto.FileGet{Path: alias}); h.Kind != "file" || h.Path != plan || len(body) == 0 {
+		t.Fatalf("through a link: %+v", h)
+	}
+	os.Remove(alias)
+	os.Symlink(other, alias)
+	if h, _ := get(t, s, sub, sink, "r2", proto.FileGet{Path: alias}); h.Kind != "error" || h.Error.Code != "denied" || h.Error.Message != errOutside.Error() {
+		t.Fatalf("the link made to lead elsewhere: %+v %+v", h, h.Error)
+	}
+	save(s, sub, "w1", alias, []byte("over\n"), 512, "", true)
+	if h := fileReply(t, sink, "w1"); h.Kind != "error" || h.Error.Code != "denied" {
+		t.Fatalf("a save through it: %+v", h)
+	}
+	if b, _ := os.ReadFile(other); string(b) != "# Another\n" {
+		t.Fatal("the other plan was written")
 	}
 }
 

@@ -33,9 +33,17 @@ type Folder struct {
 	path string
 	root *os.Root
 	id   os.FileInfo
+	// allow, when set, says which files of the folder a request may reach
+	// (the agent's plans directory, #289: the plans the agent reported),
+	// asked of the path a request resolves to (resolve), the one then
+	// opened from the folder element by element with no link followed: so
+	// what is opened is what was allowed, whatever a link is made to lead
+	// to meanwhile. A file it refuses is refused as one outside the folder.
+	allow func(real string) bool
 }
 
 var (
+	errOutside     = errors.New("path is outside the session directory")
 	errFolderGone  = errors.New("session root unavailable")
 	errFolderMoved = errors.New("the session's folder is no longer at its path")
 	errPathChanged = errors.New("the path changed while it was opened; try again")
@@ -171,6 +179,9 @@ func (f *Folder) resolve(raw string, deny denySet) (real, rel string, err error)
 	real, rootReal, err := resolvePath(f.path, raw, deny)
 	if err != nil {
 		return "", "", err
+	}
+	if f.allow != nil && !f.allow(real) {
+		return "", "", errOutside
 	}
 	if err := f.at(rootReal); err != nil {
 		return "", "", err

@@ -101,3 +101,40 @@ test('a plan outside the folder opens from the approval, the Files tab and the p
     await api.stopSession(s.id)
   }
 })
+
+test('Open plan works on the Yard and on a shared session page too', async ({ page, api, state, browser }) => {
+  const cwd = join(state.root, 'plans-elsewhere')
+  mkdirSync(cwd, { recursive: true })
+  const plan = join(state.home, '.claude', 'plans', 'plan.md')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e plan elsewhere', cwd })
+  try {
+    await typeLine(page, s.id, 'stub plan')
+    await expect.poll(async () => (await api.session(s.id)).attention?.plan, { timeout: 30_000, message: 'the approval names the plan' }).toBe(plan)
+    // The Yard, focused on the session: its reply bar's Open plan opens the plan in the Yard's editor.
+    await page.goto(`/yard?focus=${s.id}`)
+    await page.locator('[data-quick-reply] [data-quick-reply-plan]').click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area).toHaveAttribute('data-editor-area', 'open')
+    await expect(area.locator('[data-editor-crumbs]')).toContainText('plan.md')
+    await expect(area.locator('.monaco-editor .view-lines')).toContainText('Create hello.txt containing hi.', { timeout: 30_000 })
+    // A guest with a control link, on the bare join page, in a browser with no workbench token.
+    const { token } = await api.ok<{ token: string }>('POST', `/api/sessions/${s.id}/links`, { role: 'control' })
+    const guestCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    try {
+      await guestCtx.addInitScript(() => localStorage.setItem('conductor.displayName', 'Priya'))
+      const guest = await guestCtx.newPage()
+      await guest.goto(`/join/${token}`)
+      await guest.getByRole('button', { name: 'Join session' }).click()
+      await expect(guest.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 30_000 })
+      await guest.locator('[data-quick-reply] [data-quick-reply-plan]').click()
+      const guestArea = guest.locator('[data-editor-area]')
+      await expect(guestArea).toHaveAttribute('data-editor-area', 'open')
+      await expect(guestArea.locator('[data-editor-crumbs]')).toContainText('plan.md')
+      await expect(guestArea.locator('.monaco-editor .view-lines')).toContainText('Create hello.txt containing hi.', { timeout: 30_000 })
+    } finally {
+      await guestCtx.close()
+    }
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

@@ -43,9 +43,19 @@ in. This is the design as built, in plain terms.
   holder of the session's agent token can report either, so a viewer
   cannot name a plan into the session.
 - **Reads, saves and Neovim** go through `folderFor(path)`: the plans
-  folder for one of the session's plans, else the working directory's,
-  which refuses anything outside it as before. No request names a root;
-  a plan is addressed by its path, absolute or through `~`.
+  folder for a path that leads into the plans directory, else the working
+  directory's, which refuses anything outside it as before. The plans
+  folder allows the file a request resolves to only when it is one of the
+  session's plans (`Folder.allow`, asked of the resolved path), and then
+  opens that file element by element with no link followed, so a link
+  retargeted between the check and the open reaches nothing that was not
+  allowed (Codex's first-round finding). No request names a root; a plan
+  is addressed by its path, absolute or through `~`.
+- **The plan on the question** is consumed by the one question it is
+  for: the hook's report that names it, with the dialog read off the
+  screen in its place keeping it; named while the approval already shows,
+  it is set on that question and told to every client; a question asked
+  after the approval was answered carries none.
 - **The listing** is the file request `op: plans`: kind `plans`, `path`
   the plans directory, `entries` the session's plans that are files there
   now. The Files tab shows them as a Plans group at the top of the

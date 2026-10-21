@@ -21,13 +21,18 @@ import (
 // file in it, and the files the agent reports there are the session's
 // plans: its hooks' file events, the plan its approval names (NotePlan,
 // from the hook's planFilePath), and the path its dialog prints, once that
-// is seen to be a file there. A read, a save or a Neovim open of a plan
-// goes through that folder (folderFor); any other path in the directory,
-// another session's plan among them, or anywhere else outside the working
-// directory, is refused as before. The rest of the config directory (the
-// agent's credentials, every project's history) is never opened. Only an
-// admin or the holder of the session's agent token reports file events and
-// plans, so a viewer cannot name a plan into the session.
+// is seen to be a file there. A request's path is routed to the plans
+// folder when it leads into the directory (folderFor), and the folder
+// allows the file it resolves to only when it is one of the plans
+// (Folder.allow, asked of the resolved path, which the folder then opens
+// element by element with no link followed: so a link made to lead
+// elsewhere between the two cannot reach what was not allowed). Any other
+// path in the directory, another session's plan among them, or anywhere
+// else outside the working directory, is refused as before. The rest of
+// the config directory (the agent's credentials, every project's history)
+// is never opened. Only an admin or the holder of the session's agent token
+// reports file events and plans, so a viewer cannot name a plan into the
+// session.
 
 // planPath is raw as a request or a report names a plan: absolute (a
 // leading ~ the process's home, as ResolvePath takes it), cleaned; "" for a
@@ -60,10 +65,9 @@ func underDir(abs, dir string) bool {
 }
 
 // planKey is the key a plan is kept under: its path with its links
-// resolved as far as it exists (evalExisting), so that a path spelt through
-// a link (/var for /private/var) names the same plan, and a link in the
-// plans directory to a file outside it is kept by where it leads, which
-// the directory's check then refuses.
+// resolved as far as it exists (evalExisting, as a request's path is
+// resolved), so that a path spelt through a link (/var for /private/var)
+// names the same plan.
 func planKey(abs string) string {
 	if real, err := evalExisting(abs); err == nil {
 		return real
@@ -71,9 +75,10 @@ func planKey(abs string) string {
 	return abs
 }
 
-// openPlansLocked opens the plans directory as a folder, once, and keeps
-// its path with its links resolved: false when it cannot be opened (not
-// there yet, or not a directory). s.mu held.
+// openPlansLocked opens the plans directory as a folder, once, allowing
+// the session's plans alone (planAllowed), and keeps its path with its
+// links resolved: false when it cannot be opened (not there yet, or not a
+// directory). s.mu held.
 func (s *Local) openPlansLocked() bool {
 	if s.plans != nil {
 		return true
@@ -86,29 +91,38 @@ func (s *Local) openPlansLocked() bool {
 	if err != nil {
 		return false
 	}
+	f.allow = s.planAllowed
 	s.plans, s.plansReal = f, real
 	return true
 }
 
+// planAllowed is the plans folder's allow: whether real, the path a request
+// resolved to, is one of the session's plans.
+func (s *Local) planAllowed(real string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.planFiles[real]
+}
+
 // learnPlanLocked keeps abs (planPath's) as one of the session's plans when
-// it is a file in the plans directory now, under the directory's own
-// checks (a link out of it, a denied file, nothing there: not kept), and
-// reports whether it is. s.mu held.
+// it is a regular file in the plans directory now, by its path with its
+// links resolved (a link out of the directory is not kept, nor a denied
+// file, nor nothing there), and reports whether it is. s.mu held.
 func (s *Local) learnPlanLocked(abs string) bool {
 	if s.opts.Plans == "" || !underDir(abs, s.opts.Plans) || !s.openPlansLocked() {
 		return false
 	}
-	key := planKey(abs)
-	if !underDir(key, s.plansReal) {
+	real, _, err := resolvePath(s.opts.Plans, abs, newDenySet(s.fileDeny()))
+	if err != nil || !underDir(real, s.plansReal) {
 		return false
 	}
-	if h, _ := s.plans.read(abs, true, s.fileDeny(), RoleControl); h.Kind != "file" {
+	if fi, err := os.Lstat(real); err != nil || !fi.Mode().IsRegular() {
 		return false
 	}
 	if s.planFiles == nil {
 		s.planFiles = map[string]bool{}
 	}
-	s.planFiles[key] = true
+	s.planFiles[real] = true
 	return true
 }
 
@@ -130,24 +144,40 @@ func (s *Local) notePlanLocked(e ActivityEntry) {
 	s.learnPlanLocked(abs)
 }
 
-// NotePlan takes the path of a plan the agent names outside a file event:
-// the one its approval asks for (its hook's planFilePath), or the one its
-// dialog prints. Learnt as a file event's path is, and the question shown
-// next carries it (Attention.Plan) until the agent moves on. A path that
-// is not a plan's changes nothing.
+// NotePlan takes the path of a plan the agent names for its approval,
+// outside a file event: its hook's planFilePath, or the path its dialog
+// prints. Learnt as a file event's path is; then the question showing, if
+// one is, is the approval and carries it from now (Attention.Plan, told to
+// every client), else the next question shown carries it, once
+// (askedPlan). A path that is not a plan's changes nothing.
 func (s *Local) NotePlan(path string) {
 	abs := planPath(path)
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.learnPlanLocked(abs) {
-		s.askedPlan = abs
+	if !s.learnPlanLocked(abs) {
+		s.mu.Unlock()
+		return
 	}
+	if cur := s.info.Attention; cur.State == AttentionNeedsInput && cur.ID != "" {
+		if cur.Plan == abs {
+			s.mu.Unlock()
+			return
+		}
+		s.info.Attention.Plan = abs
+		s.askedPlan = ""
+		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
+		s.mu.Unlock()
+		s.notifyChange()
+		return
+	}
+	s.askedPlan = abs
+	s.mu.Unlock()
 }
 
 // folderFor is the folder a request's path raw is read from, saved to or
-// opened in: the plans folder for one of the session's plans (as the agent
-// reported it, or spelt through a link to it), else the session's folder,
-// which refuses what is outside it.
+// opened in: the plans folder for a path that leads into the plans
+// directory (as the agent reported it, or spelt through a link), which
+// allows the session's plans alone; else the session's folder, which
+// refuses what is outside it.
 func (s *Local) folderFor(raw string) *Folder {
 	abs := planPath(raw)
 	if abs == "" {
@@ -156,7 +186,7 @@ func (s *Local) folderFor(raw string) *Folder {
 	key := planKey(abs)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.plans == nil || !s.planFiles[key] {
+	if s.plans == nil || !underDir(key, s.plansReal) {
 		return s.folder
 	}
 	return s.plans

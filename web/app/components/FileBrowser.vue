@@ -61,7 +61,8 @@ const touched = computed(() => (props.activity && props.cwd ? touchedRows(props.
 const dots = computed(() => touchedPaths(touched.value))
 // Plans (#289): the agent's plans outside the working directory, as the session lists them (the files its agent reported in its plans
 // directory), at the top of the Explorer; asked for when the pane shows, when the working directory changes and whenever the activity
-// gains an entry (the agent writing a plan is one). An older session, or an agent without a plans directory: none.
+// gains a file entry (the agent writing or deleting a plan is one): the newest entry, since the page keeps a bounded list whose length
+// stops changing once it is full. An older session, or an agent without a plans directory: none.
 const plans = ref<PlanRow[]>([])
 async function loadPlans() {
   if (!props.cwd) return
@@ -77,8 +78,10 @@ watch(
   () => void loadPlans(),
 )
 watch(
-  () => props.activity?.length,
-  () => void loadPlans(),
+  () => props.activity?.at(-1),
+  (e) => {
+    if (e?.type === 'file') void loadPlans()
+  },
 )
 const status = ref<FileHeader | null>(null)
 const statusError = ref('')

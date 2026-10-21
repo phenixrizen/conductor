@@ -253,7 +253,7 @@ onMounted(() => {
             @open-url="openUrl"
           />
           <template #bar>
-            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" />
+            <QuickReplyBar :attention="focused.attention" :agent-name="focused.agentId" role="control" :busy="quick.sending.value.has(focused.id)" @reply="(text, q) => reply(focused!, text, q)" @option="(i, q) => option(focused!, i, q)" @open-plan="openFile({ path: $event })" />
           </template>
         </EditorColumn>
         <div v-else class="flex flex-1 flex-col items-center justify-center gap-3 text-muted">
