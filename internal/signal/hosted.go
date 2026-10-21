@@ -1757,18 +1757,19 @@ func signalFrame(v any) ([]byte, error) {
 	return f, nil
 }
 
-// RefusedFrame is what a viewer is sent in place of a SIGNAL frame the
-// server could not make for it (AnswerFrame, ICEFrame: proto.ErrTooLarge):
-// a CONTROL error naming what the host sent (`answer`, `ice`) and why it
-// was not sent. The connection is kept, as a switchyard without a relay
-// keeps it (relay_off): the viewer's WebRTC attempt cannot succeed without
-// the answer, and its timer sends it to the relay.
-func RefusedFrame(what string, err error) []byte {
-	return proto.NewError(proto.ErrCodeBadFrame, fmt.Sprintf("the host's %s was not sent: %v", what, err))
+// RefusedMessage is what a viewer is told in place of a SIGNAL frame the
+// server could not make for it (AnswerFrame, ICEFrame: proto.ErrTooLarge),
+// in a CONTROL error of code proto.ErrCodeBadFrame: what the host sent
+// (`answer`, `ice`) was not sent, and why. The viewer's WebRTC attempt
+// cannot succeed without the answer: with a relay to fall back to it is
+// kept, its timer sending it there (HostSignal); without one it is closed
+// with the error (HostViewerError).
+func RefusedMessage(what string, err error) string {
+	return fmt.Sprintf("the host's %s was not sent: %v", what, err)
 }
 
 // HostSignal queues a SIGNAL frame AnswerFrame or ICEFrame made for a
-// viewer, or the error RefusedFrame makes in place of one.
+// viewer, or the CONTROL error sent in place of one (RefusedMessage).
 func (h *HostedSession) HostSignal(viewerID string, f []byte) {
 	if v := h.viewer(viewerID); v != nil {
 		v.push(f)

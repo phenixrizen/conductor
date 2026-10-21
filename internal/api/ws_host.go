@@ -85,7 +85,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := hs.Info()
-	hc := &hostConnState{base: s.publicBase(r), ctx: ctx}
+	hc := &hostConnState{base: s.publicBase(r), ctx: ctx, relays: !s.cfg.Switchyard.Enabled || s.cfg.SwitchyardRelay()}
 	if open {
 		hc.addr = addr
 	}
@@ -254,6 +254,10 @@ type hostConnState struct {
 	relay       *byteBucket
 	// ctx is the connection's: a wait on relay ends with it.
 	ctx context.Context
+	// relays says the server relays a viewer whose WebRTC attempt fails
+	// (every server but a switchyard with switchyard.relay false), for what
+	// a viewer is left with when a frame for it is refused (forwardSignal).
+	relays bool
 }
 
 // chargeForward charges, before a viewer is sent it, what a host's message
@@ -271,12 +275,23 @@ func (hc *hostConnState) chargeForward(n, read int) bool {
 // message of read bytes (f and err from signal.AnswerFrame or ICEFrame),
 // charged first (chargeForward). One the server could not make within what
 // a SIGNAL frame holds (proto.ErrTooLarge: the host's message encoded anew
-// passed the limit a reader checks) is never sent; the viewer is sent
-// signal.RefusedFrame in its place. The host's connection stays: its
+// passed the limit a reader checks) is never sent; the viewer is sent a
+// CONTROL error in its place (signal.RefusedMessage), charged the same.
+// Its WebRTC attempt cannot succeed without the answer: where the viewer
+// can fall back to the relay it is kept, its timer sending it there; on a
+// switchyard that does not relay it is closed with the error, since the
+// attempt has nowhere to go. The host's connection stays either way: its
 // message was within its own bound.
 func (hc *hostConnState) forwardSignal(hs *signal.HostedSession, viewerID, what string, read int, f []byte, err error) {
 	if errors.Is(err, proto.ErrTooLarge) {
-		f, err = signal.RefusedFrame(what, err), nil
+		msg := signal.RefusedMessage(what, err)
+		f, err = proto.NewError(proto.ErrCodeBadFrame, msg), nil
+		if !hc.relays {
+			if hc.chargeForward(len(f), read) {
+				hs.HostViewerError(viewerID, proto.ErrCodeBadFrame, msg)
+			}
+			return
+		}
 	}
 	if err == nil && hc.chargeForward(len(f), read) {
 		hs.HostSignal(viewerID, f)
