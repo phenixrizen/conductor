@@ -280,7 +280,7 @@ func (s *Server) handleCreateRunLink(w http.ResponseWriter, r *http.Request) {
 			// forgotten run's.
 			if !s.runs.IfKept(id, func() { s.recordRemoteRunLink(id, res) }) {
 				unlock()
-				s.revokeRemoteRunLinks(id, carrier, []remoteLink{{ID: res.LinkID}})
+				s.revokeRemoteRunLinks(id, []PublishedSession{carrier}, []remoteLink{{ID: res.LinkID}})
 				writeError(w, http.StatusNotFound, "not_found", "no such run")
 				return
 			}

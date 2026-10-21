@@ -155,18 +155,51 @@ func (s *Server) forgetRemoteRunLinks(runID, linkID string) {
 	delete(s.remoteRunLinks[runID], linkID)
 }
 
-// revokeRemoteRunLinks revokes at the switchyard, over carrier, the links of
-// a run the engine forgot that were minted there (their records already
-// dropped, forgetRemoteRunLinks): each in its turn, within runSyncWait, as a
-// revoke of one of them from the Share dialog goes. One the switchyard no
-// longer holds is done; any other failure is logged, the link left to its
-// expiry there or to the switchyard's sweep.
-func (s *Server) revokeRemoteRunLinks(runID string, carrier PublishedSession, links []remoteLink) {
+// liveCarriers are the publications of run's members that can carry a
+// request to the switchyard now: those still up. One that ended (its
+// session's end, and the while it lingers after, or its connection's) stays
+// in the published map until its session leaves the server, and would
+// answer nothing but the wait; it is left out.
+func (s *Server) liveCarriers(run crew.Run) []PublishedSession {
+	var out []PublishedSession
+	for _, m := range run.Members {
+		if m.SessionID == "" {
+			continue
+		}
+		pub := s.publishedOf(m.SessionID)
+		if pub == nil {
+			continue
+		}
+		select {
+		case <-pub.Done():
+			continue
+		default:
+		}
+		out = append(out, pub)
+	}
+	return out
+}
+
+// revokeRemoteRunLinks revokes at the switchyard the links of a run the
+// engine forgot that were minted there (their records already dropped,
+// forgetRemoteRunLinks), and one minted as it was forgotten (links.go): each
+// over the first of carriers to answer, in turn, within runSyncWait each, as
+// a revoke of one of them from the Share dialog goes. One the switchyard no
+// longer holds is done; a link no carrier could revoke is logged and left
+// to its expiry there or to the switchyard's sweep.
+func (s *Server) revokeRemoteRunLinks(runID string, carriers []PublishedSession, links []remoteLink) {
 	for _, rl := range links {
-		ctx, cancel := context.WithTimeout(context.Background(), runSyncWait)
-		err := carrier.Revoke(ctx, rl.ID)
-		cancel()
-		if err != nil && !refusedAs(err, "not_found") {
+		var err error
+		for _, carrier := range carriers {
+			ctx, cancel := context.WithTimeout(context.Background(), runSyncWait)
+			err = carrier.Revoke(ctx, rl.ID)
+			cancel()
+			if err == nil || refusedAs(err, "not_found") {
+				err = nil
+				break
+			}
+		}
+		if err != nil {
 			s.log.Warn("a forgotten run's link was not revoked at the rendezvous", "run", runID, "link", rl.ID, "err", err)
 		}
 	}

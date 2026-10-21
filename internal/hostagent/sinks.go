@@ -18,6 +18,10 @@ const (
 	dcHighWater    = 1 << 20
 	dcHardLimit    = 4 << 20
 	dcSendTimeout  = 30 * time.Second
+	// dcDrainWait bounds the wait for a channel to send what it holds
+	// before its peer connection is closed (dcSink.drain): long enough for
+	// a backlog under the high-water mark on any path a viewer is on.
+	dcDrainWait = 3 * time.Second
 )
 
 // dcSink writes frames to a WebRTC data channel with backpressure. Frames
@@ -45,6 +49,23 @@ func newDCSink(dc *webrtc.DataChannel, log *slog.Logger) *dcSink {
 
 // Transport labels welcome messages sent through this sink.
 func (s *dcSink) Transport() string { return proto.TransportWebRTC }
+
+// drain waits until the channel holds nothing unsent, it is no longer
+// open, or until: closing the peer connection aborts the association, and
+// what the channel still holds then (an error the viewer is owed, the
+// output before it) would be lost with it.
+func (s *dcSink) drain(until time.Time) {
+	for s.dc.BufferedAmount() > 0 && !s.closed.Load() && s.dc.ReadyState() == webrtc.DataChannelStateOpen {
+		left := time.Until(until)
+		if left <= 0 {
+			return
+		}
+		select {
+		case <-s.low:
+		case <-time.After(min(left, 10*time.Millisecond)):
+		}
+	}
+}
 
 func (s *dcSink) WriteFrame(frame []byte) error {
 	if s.closed.Load() {

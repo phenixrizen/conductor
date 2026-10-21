@@ -1326,3 +1326,56 @@ func TestALinkMintedAsTheRunIsForgottenIsRevokedAtOnce(t *testing.T) {
 		t.Fatalf("records kept of the forgotten run's links: %v", links)
 	}
 }
+
+// A forgotten run's revokes go over a member's publication that is still
+// up: one whose session ended (its publication over once it lingered) stays
+// in the published map until the session leaves the server and would carry
+// nothing, so it is passed over for the next member's (Codex's review of
+// #148's change). Member one ends first; the revoke goes over member two's.
+func TestAForgottenRunRevokesItsLinksOverALivePublication(t *testing.T) {
+	rendezvous := newTestEnv(t, func(c *config.Config) { c.PublicURL = "https://rendezvous.example.net" })
+	local := newTestEnv(t, nil)
+	local.srv.SetPublisher(uplinkPublisher{&hostagent.Uplink{ServerURL: rendezvous.http.URL, Token: "test-host-token", HostName: "office-server", RelayOnly: true}})
+	runID := local.launchCrew(t, "Pair", catMember("lead", "immediately"), catMember("core", "immediately"))
+	waitMembersPublished(t, local, runID, 2)
+	resp, out := local.do("POST", "/api/runs/"+runID+"/links", adminToken, map[string]any{"role": "view", "label": "for the team"})
+	if resp.StatusCode != http.StatusCreated || out["remote"] != true {
+		t.Fatalf("run link: %d %v", resp.StatusCode, out)
+	}
+	token := strings.TrimPrefix(out["url"].(string), "https://rendezvous.example.net/join/")
+	// The first member's session ends; its publication ends once it has
+	// lingered, and stays in the map as a dead carrier.
+	run, _ := local.srv.runs.Get(runID)
+	first := run.Members[0].SessionID
+	d, ok := local.srv.registry.Get(first)
+	if !ok {
+		t.Fatal("the first member's session is not on the server")
+	}
+	if err := d.(*session.Local).Stop(t.Context()); err != nil {
+		t.Fatalf("stop the first member: %v", err)
+	}
+	pub := local.srv.publishedOf(first)
+	if pub == nil {
+		t.Fatal("the first member is not published")
+	}
+	select {
+	case <-pub.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first member's publication never ended")
+	}
+	if local.srv.publishedOf(first) != pub {
+		t.Fatal("the ended publication left the map: the case is another")
+	}
+	local.srv.runs.ForgetForTest(runID)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, out := rendezvous.do("GET", "/api/join/"+token, token, nil)
+		if resp.StatusCode == http.StatusNotFound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the rendezvous still resolves the forgotten run's link: %d %v", resp.StatusCode, out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

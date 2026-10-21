@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -646,5 +647,61 @@ func TestAViewerWithNoLinkIsTheOwnersOnlyFromTheOwnersServer(t *testing.T) {
 			t.Fatalf("%s: owner %v, want %v", tc.name, p != nil && p.owner, tc.owner)
 		}
 		a.removePeer("0123456789abcdef")
+	}
+}
+
+// A save part past its type's limit (a FILE_WRITE payload over 36 KiB,
+// within a data channel message) is no frame a reader takes: through a
+// host, over the data channel, the viewer is let go with bad_frame as for a
+// part that cannot be read, rather than the frame being passed over and a
+// save under way left waiting for good.
+func TestAnOversizedSavePartOverTheDataChannelLetsTheViewerGo(t *testing.T) {
+	dir := t.TempDir()
+	proc, err := pty.Start(pty.Spec{Argv: []string{"/bin/cat"}, Dir: dir, Env: hostEnv(nil)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := session.NewLocal(session.Info{ID: "s", Cwd: dir, Cols: 80, Rows: 24}, proc, session.Options{})
+	t.Cleanup(func() { proc.Stop(t.Context(), time.Second) })
+	out := make(chan any, 64)
+	errs := make(chan proto.ViewerError, 4)
+	a := &agent{opts: Options{}, local: local, proc: proc, peers: map[string]*peer{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a.sendHook = func(v any) {
+		if e, ok := v.(proto.ViewerError); ok {
+			errs <- e
+			return
+		}
+		out <- v
+	}
+	const id = "0123456789abcdef"
+	p := newPeer(a, id, session.RoleControl, "link1", "laptop", false)
+	a.peers[id] = p
+	if err := p.startWebRTC(nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	dc, frames := loopbackViewer(t, p, out)
+	dc.Send(proto.MustControl(proto.Hello{T: proto.CtlHello, Proto: 1, Cols: 90, Rows: 30, Name: "Jane"}))
+	deadline := time.After(10 * time.Second)
+	for welcomed := false; !welcomed; {
+		select {
+		case raw := <-frames:
+			if f, err := proto.Decode(raw); err == nil && f.Type == proto.TypeControl && strings.Contains(string(f.Payload), `"welcome"`) {
+				welcomed = true
+			}
+		case <-deadline:
+			t.Fatal("no welcome")
+		}
+	}
+	over := make([]byte, 40<<10)
+	copy(over[8:12], []byte{0, 0, 0, 16})
+	dc.Send(proto.Encode(proto.TypeFileWrite, over))
+	select {
+	case e := <-errs:
+		if e.ViewerID != id || e.Code != proto.ErrCodeBadFrame || !strings.HasPrefix(e.Message, "unreadable frame: proto: payload exceeds limit: type 0x08") {
+			t.Fatalf("the viewer was let go with %+v", e)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the host did not let the viewer go")
 	}
 }
