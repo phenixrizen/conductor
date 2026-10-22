@@ -50,6 +50,23 @@ test('Alt+Q (and Alt+Esc here) leave the terminal on the Yard and the Roundhouse
     await expect(modal.locator('[data-shortcuts-notes] h3')).toContainText('On Linux, in a browser')
     await expect(modal.locator('[data-shortcut-note="Ctrl+B"]')).toContainText('Firefox')
     await expect(modal.locator('[data-shortcut-note="Alt+Esc"]')).toHaveCount(0)
+    // The table's shape (#328): the column names once, no lone dot for a missing chord, the caps of each column on one axis down
+    // the table, and the close button clear of the description.
+    await expect(modal.locator('[data-shortcuts-group-columns]')).toHaveCount(0)
+    await expect(modal.locator('[data-shortcuts-columns]')).toHaveCount(1)
+    expect(await modal.locator('[data-shortcut-terminal], [data-shortcut-outside]').evaluateAll((els) => els.filter((e) => (e.textContent || '').trim() === '·').length)).toBe(0)
+    const shape = await modal.evaluate((root) => {
+      const centres = (q: string) => Array.from(root.querySelectorAll(q)).map((e) => { const r = e.getBoundingClientRect(); return r.left + r.width / 2 })
+      const spread = (xs: number[]) => Math.max(...xs) - Math.min(...xs)
+      const dialog = root.closest('[role="dialog"]')!
+      const close = dialog.querySelector('button[aria-label="Close"]')?.getBoundingClientRect()
+      const description = dialog.querySelector('p')?.getBoundingClientRect()
+      const overlap = close && description ? description.right > close.left && description.top < close.bottom && description.bottom > close.top : false
+      return { terminal: spread(centres('[data-shortcut-terminal]')), outside: spread(centres('[data-shortcut-outside]')), overlap }
+    })
+    expect(shape.terminal, 'the terminal column\'s cells on one axis').toBeLessThanOrEqual(1)
+    expect(shape.outside, 'the outside column\'s cells on one axis').toBeLessThanOrEqual(1)
+    expect(shape.overlap, 'the close button over the description').toBe(false)
     await page.keyboard.press('Escape')
     await expect(modal).toBeHidden()
     // The sidebar: Ctrl+B outside a terminal, Alt+B inside one.

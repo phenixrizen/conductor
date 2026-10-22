@@ -2669,6 +2669,19 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The Keyboard shortcuts modal, a design pass (#328, 2026-10-22).**
+  `ShortcutsModal.vue`: the box follows the window (`xl:max-w-5xl`, the
+  key columns `12rem` at `xl`); the description is one line that stays
+  clear of the close button; the key cells lose their tints and both
+  columns centre their caps in cells of equal width, every cap `size="md"`,
+  so the chords sit on one axis down the table; a column with no chord
+  shows nothing (an empty cell labelled "none"), not a dot; the column
+  names once in the header row, sticky over the scroll, the per-group
+  repeats gone; Enter shows as the word and "then" between a chord's caps
+  at the caps' text size. `chords.spec.ts` asserts the column names
+  appear once, no cell holds a dot, each column's cells share one axis
+  within a pixel, and the close button and the description do not
+  overlap.
 - **An exited row's arrow and its `…` in line (#331, 2026-10-22).** In
   `SidebarSessionRow.vue` the resume/relaunch arrow is a column beside the
   link, centred in the row, while the hover bar (`[data-row-actions]`:
