@@ -8,7 +8,7 @@ import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeAllTabs, closeTab, closeTabs, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, tabsToClose, toggleFold, togglePreview, writeKeymap, type CloseScope, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, tabsToClose, toggleFold, togglePreview, writeKeymap, type CloseScope, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { dirOf, isMarkdownPath } from '~/utils/markdown'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
@@ -559,14 +559,14 @@ function requestClose(id: string) {
 function requestCloseAll() {
   requestCloseIds(tabs.value.tabs.map((t) => t.id))
 }
-/** Closes several tabs at once (#330): unsaved among them ask first (the one unsaved brought to the front), else they close now. */
+/**
+ * Closes several tabs at once (#330): unsaved among them ask first (the one unsaved brought to the front), else they close now,
+ * through closeNow (Codex's round: a clean tab's conflict and compare state goes with it, or a reopened tab would save the stale text).
+ */
 function requestCloseIds(ids: string[]) {
   if (!ids.length) return
   const unsaved = ids.filter((id) => dirty.has(id))
-  if (!unsaved.length) {
-    tabs.value = ids.length === tabs.value.tabs.length ? closeAllTabs() : closeTabs(tabs.value, ids)
-    return
-  }
+  if (!unsaved.length) return closeNow(ids)
   if (unsaved.length === 1) tabs.value = activateTab(tabs.value, unsaved[0]!)
   closing.value = { ids }
 }

@@ -209,10 +209,3 @@ export function tabsToClose(state: TabsState, id: string, scope: CloseScope): st
       return state.tabs.slice(0, i).map((t) => t.id)
   }
 }
-
-/** The state with `ids` closed, one after the other: the active tab moves to the nearest kept one as closeTab moves it for one. */
-export function closeTabs(state: TabsState, ids: readonly string[]): TabsState {
-  let s = state
-  for (const id of ids) s = closeTab(s, id)
-  return s
-}

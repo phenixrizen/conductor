@@ -70,3 +70,48 @@ test('the tab menu closes to the right, others and all, asking about an unsaved 
     await api.stopSession(s.id)
   }
 })
+
+// Codex's round on #330: a clean tab the menu closes takes its conflict and compare state with it, as its X does; a tab that
+// kept them would open again into the old compare and save its stale text over the disk's.
+test('a clean tab closed from the menu drops its compare state, so the file opens again as it is on disk', async ({ page, api, state }) => {
+  const cwd = join(state.root, 'tabs-compare')
+  mkdirSync(cwd, { recursive: true })
+  for (const n of ['a', 'b']) writeFileSync(join(cwd, `${n}.txt`), `${n} one\n`)
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e tabs compare', cwd })
+  const area = page.locator('[data-editor-area]')
+  const tab = (n: string) => area.locator(`[data-editor-tab="file:${join(cwd, `${n}.txt`)}"]`)
+  const open = async (n: string) => {
+    await page.locator(`[data-files-mode] [data-file-node="${join(cwd, `${n}.txt`)}"]`).click()
+    await expect(tab(n)).toHaveAttribute('data-editor-tab-active', '', { timeout: 30_000 })
+  }
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
+    await showView(page, 'explorer')
+    await open('a')
+    await open('b')
+    await open('a')
+    const lines = area.locator('.monaco-editor .view-lines')
+    await expect(lines).toContainText('a one', { timeout: 30_000 })
+    // The file changes on disk; a save of the unchanged tab is refused; Compare opens the compare view.
+    writeFileSync(join(cwd, 'a.txt'), 'a one\nfrom the agent\n')
+    await lines.click()
+    await page.keyboard.press('Control+s')
+    const conflict = area.locator('[data-editor-conflict]')
+    await expect(conflict).toBeVisible({ timeout: 15_000 })
+    await conflict.locator('[data-editor-compare]').click()
+    await expect(area.locator('[data-editor-comparing]')).toBeVisible()
+    // Close others from b closes a without asking (nothing unsaved); a opens again from disk, no compare, no conflict.
+    await tab('b').click({ button: 'right' })
+    await page.getByRole('menuitem', { name: 'Close others' }).click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
+    await expect(area.locator('[data-editor-comparing]')).toHaveCount(0)
+    await open('a')
+    await expect(lines).toContainText('from the agent', { timeout: 30_000 })
+    await expect(area.locator('[data-editor-comparing]')).toHaveCount(0)
+    await expect(conflict).toHaveCount(0)
+    await expect(area.locator('[data-editor-dirty]')).toHaveCount(0)
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
