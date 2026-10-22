@@ -5,9 +5,10 @@ import { expect, showView, test, type Session } from './fixtures'
 // The session page never scrolls sideways (#325): the rail's count pill
 // stuck out past the rail by two pixels and the panel's body, which scrolls
 // on its own, grew a horizontal scrollbar for them, at every width, with
-// the panel open or collapsed. The pill sits inside the rail now, the
-// inspector clips sideways, and the body hides what would overflow; the
-// row's own width is measured so a new overhang still fails here.
+// the panel open or collapsed. The pill sits inside the rail now and the
+// inspector clips sideways; the body keeps its own scroll (hiding it would
+// put a phone's quick-reply choices out of reach), so the row's and the
+// body's own widths are measured here and a new overhang fails.
 test('the session page is never wider than its box: with the panel open or collapsed, a file open, at a wide and a narrow window', async ({ page, api, state }) => {
   const cwd = join(state.root, 'hscroll')
   mkdirSync(cwd, { recursive: true })

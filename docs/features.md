@@ -2675,12 +2675,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   The rail's count pill (`InspectorRail.vue`, `absolute -right-1.5`) stuck
   out past the rail by two pixels, nothing on the path clipped it, and the
   panel's body, which scrolls on its own, grew a scrollbar for them. The
-  pill sits inside the rail now (`-right-0.5`), the inspector's `aside`
-  clips sideways (`overflow-x-clip`) and the page's body hides what would
-  overflow (`overflow-x-hidden`). `hscroll.spec.ts` measures the row's own
-  width (so a new overhang still fails), the body's, the document's and
-  every pill against the rail's edge, at a wide and a narrow window, with
-  the panel open and collapsed and a file open.
+  pill sits inside the rail now (`-right-0.5`) and the inspector's
+  `aside` clips sideways (`overflow-x-clip`). The page's body keeps its
+  own scroll: hiding its overflow would have put a phone's quick-reply
+  choices out of reach, which run past the window there today (Codex's
+  round; their wrapping is its own issue). `hscroll.spec.ts` measures the
+  row's own width (so a new overhang still fails), the body's, the
+  document's and every pill against the rail's edge, at a wide and a
+  narrow window, with the panel open and collapsed and a file open.
 - **A line typed from the palette is acknowledged, with an unless-waiting
   guard (#322, 2026-10-22).** A protocol change, in `internal/proto`,
   `web/app/utils/protocol.ts` and `docs/protocol.md` together: `submit`
