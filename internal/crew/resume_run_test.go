@@ -134,7 +134,11 @@ func TestResumeRunResumesEveryConversationInItsWorktree(t *testing.T) {
 	if old.ResumedBy != next.ID || old.State != RunStopped || !logged(old, "resumed as "+next.ID) {
 		t.Fatalf("old %+v", old)
 	}
-	// lead continues in its kept worktree and branch, without a prompt.
+	// lead continues in its kept worktree and branch, without a prompt. Its
+	// launch runs on its own goroutine: the state is read once it runs, as
+	// the first launch's was (read at once, a loaded machine found it still
+	// starting: the PR #320 checks, twice).
+	waitStatus(t, e, next.ID, "lead", MemberRunning, 5*time.Second)
 	nl := memberState(t, e, next.ID, "lead")
 	if nl.Status != MemberRunning || nl.Worktree != leadWorktree || nl.Branch != "crew/"+run.ID+"/lead" || nl.SessionID == "" {
 		t.Fatalf("lead %+v", nl)
