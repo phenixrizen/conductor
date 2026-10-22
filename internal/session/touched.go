@@ -26,7 +26,7 @@ type touchedEntry struct {
 	first, last  time.Time
 }
 
-type touchedIndex struct {
+type TouchedIndex struct {
 	m map[string]*touchedEntry
 }
 
@@ -42,7 +42,7 @@ func touchedAbs(cwd, p string) string {
 // note records one file event. coalesced says the activity log merged it
 // into its newest entry (the same path and op within FileCoalesce): the
 // time moves, the count does not.
-func (x *touchedIndex) note(abs, op, tool, by string, at time.Time, coalesced bool) {
+func (x *TouchedIndex) note(abs, op, tool, by string, at time.Time, coalesced bool) {
 	if abs == "" || op == "" {
 		return
 	}
@@ -71,7 +71,7 @@ func (x *touchedIndex) note(abs, op, tool, by string, at time.Time, coalesced bo
 }
 
 // evictOldest drops the least recently touched file.
-func (x *touchedIndex) evictOldest() {
+func (x *TouchedIndex) evictOldest() {
 	var oldest string
 	var at time.Time
 	for p, t := range x.m {
@@ -83,7 +83,7 @@ func (x *touchedIndex) evictOldest() {
 }
 
 // snapshot is every file, the most recently touched first (ties by path).
-func (x *touchedIndex) snapshot() []proto.TouchedFile {
+func (x *TouchedIndex) snapshot() []proto.TouchedFile {
 	out := make([]proto.TouchedFile, 0, len(x.m))
 	for p, t := range x.m {
 		out = append(out, proto.TouchedFile{
@@ -137,4 +137,39 @@ func (s *Local) TouchedPath(deny []string) proto.FileHeader {
 		h.Touched = append(h.Touched, t)
 	}
 	return h
+}
+
+// TouchedAbs is the path a file event names, made absolute under cwd when
+// relative, cleaned: the key the index and the browser agree on.
+func TouchedAbs(cwd, p string) string { return touchedAbs(cwd, p) }
+
+// Note records one touch of abs (an absolute path, TouchedAbs) at `at`,
+// counted as a touch of its own: what a hosted session's index takes from
+// the file entries its host reports (#304).
+func (x *TouchedIndex) Note(abs, op, tool, by string, at time.Time) {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	x.note(abs, op, tool, by, at, false)
+}
+
+// Snapshot is every file, the most recently touched first (ties by path).
+func (x *TouchedIndex) Snapshot() []proto.TouchedFile { return x.snapshot() }
+
+// TouchedFiles is the session's index as GET /api/touched lists it (#304):
+// every file the agent touched, the most recently touched first, those the
+// deny list refuses left out. A snapshot under the session's lock; the deny
+// list is read outside it, as a file request reads it.
+func (s *Local) TouchedFiles() []proto.TouchedFile {
+	deny := s.fileDeny()
+	s.mu.Lock()
+	list := s.touched.snapshot()
+	s.mu.Unlock()
+	out := list[:0]
+	for _, t := range list {
+		if !insideAny(t.Path, deny) {
+			out = append(out, t)
+		}
+	}
+	return out
 }

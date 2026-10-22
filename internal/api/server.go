@@ -513,6 +513,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
+	mux.HandleFunc("GET /api/touched", s.requireAdmin(s.handleTouched))
 	mux.HandleFunc("POST /api/sessions", s.launching(s.handleCreateSession))
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	// What an agent may do with its own session's token (selfservice.go).

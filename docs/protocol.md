@@ -57,7 +57,7 @@ Owner → client:
 | `status` | `status, exitCode?` |
 | `attention` | `state, message?, source?, kind?, options?[{label, input}], id?, answered?` (see Attention; `id` names the question, absent with the empty state and from an older owner; `answered:"terminal"` marks a question keys typed in the terminal have answered) |
 | `answer_ok` | `requestId` — the owner took the `answer` of that `reqId`: its keys are written, or its line accepted |
-| `activity` | `at, type, by?, byName?, message?, url?, to?, tool?, op?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the six event types (see Events). An `input` entry carries `op` `typed` when the line was typed by Conductor (a crew's prompt, a broadcast) rather than a reply to a question. The last 50 entries replay right after `ready`; new ones follow live. |
+| `activity` | `at, type, by?, byName?, message?, url?, to?, tool?, op?` — one activity-log entry: `attention`, `input`, `join`, `leave`, `link`, `status` or one of the seven event types (see Events). An `input` entry carries `op` `typed` when the line was typed by Conductor (a crew's prompt, a broadcast) rather than a reply to a question. The last 50 entries replay right after `ready`; new ones follow live. |
 | `viewers` | `count, list[{id, name, role, link?, since, lastInputAt?}]` — the full roster, sent on every join and leave and at most every 2 s per viewer while they type, a quiet connection (`hello.chatOnly`, a run chat's) left out. `link` is the share link's label. |
 | `error` | `code, message, requestId?` — `requestId` names the chat post (its nonce), send (its ref) or answer (its `reqId`) the error answers |
 | `pong` | `ts` |
@@ -1422,8 +1422,8 @@ screen's look to withdraw it.
 
 An event is an activity entry that an agent reports about its work, next to
 the entries the session records itself (`attention`, `input`, `join`, `leave`,
-`link`, `status`). All twelve types travel as `activity` control messages,
-live and in the replay after `ready`. The six event types:
+`link`, `status`). All thirteen types travel as `activity` control messages,
+live and in the replay after `ready`. The seven event types:
 
 | `type` | Meaning | Fields |
 |---|---|---|
@@ -1463,7 +1463,7 @@ set, so no one sees the state before the time its entry gives.
 
 Reporting: `POST /api/sessions/{id}/events` with `Authorization: Bearer
 <agent token>` (or the workbench token) and the body `{type, message?, url?, to?,
-tool?, kind?, options?, ask?}`. `type` is one of the six event types or an
+tool?, kind?, options?, ask?}`. `type` is one of the seven event types or an
 attention word: `needs_input`, `working`, `done` or `clear`. An attention word
 is applied exactly as `POST /api/sessions/{id}/attention` applies it, with the
 same checks, `kind`, `options`, `ask` and effect, and the same `source` (`api` for the
@@ -1772,6 +1772,7 @@ its run, and on no other.
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installable, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installable` is true for an adapter with a file to install into (`POST …/install` can do something); `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `changed` (files already written) and `snippet`, which is present only when what is left by hand is the agent's hooks, not a skill file (the message says what to do about a `SKILL.md` of the user's own); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
+| `GET /api/touched` | admin | the files every listed session's agent touched (#304), from the index each session keeps (`op: touched` above): `{sessions[{id, name, agentId, kind, status, cwd, touched[{path, op, ops, count, tool?, by?, first, last}], truncated?}], truncated?}`, the sessions in the list's order (the newest first), each session's files the most recently touched first, a server session's deny list applied; a session with nothing touched is left out; a hosted session's index holds the `file` entries its host reported since it connected (the host's own index, which the Files tab reads, begins with the session). `?limit=` is the files per session (default 500, at most 2,000, `400 invalid_request` otherwise), a session cut to it marked `truncated`; the whole reply is held to about 2 MiB of JSON, the session that would pass it cut short and marked, and the reply marked too |
 | `POST /api/sessions` | admin | launch a server session: `{agentId, name?, cwd?, args?, cols?, rows?, yolo?}`, reply `201` with the session `Info`; `yolo` overrides the server's `yolo` for this launch: with it on, the agent's yolo recipe is applied (its `args` after the command and `args`, its `env` over the agent's own, through the filtered environment; for Codex also `-c projects={"<dir>"={trust_level="trusted"}}` naming the launch directory's repository and, for a worktree, its main repository), and `Info.yolo` says so; an agent with no recipe is launched without one and its activity says so; an agent with a `session` recipe and `startArgs` gets a fresh id there, right after its command (`Info.agentSession`, `source:"set"`); `400 not_the_agent` when the identity probe's cached answer names the agent's program a known other one (`identity.impostor`; nothing is run at launch, so an answer not yet cached refuses nothing), the message naming the program, the agent and what it printed; `probe: false` on the agent launches it anyway; a verified probe that matched nothing does not refuse (the launch goes ahead, with an `error` entry in the activity) |
 | `GET /api/sessions/{id}` | admin or share token | one session with the caller's `role`; admins also get its `links`; on a switchyard the workbench token's `role` is `""` |
 | `DELETE /api/sessions/{id}` | admin | stop a running session; on an ended session, remove it from the list; on a switchyard, a session a Conductor published there ends its publication, its process running on at home |

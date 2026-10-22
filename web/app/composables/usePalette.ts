@@ -2,6 +2,7 @@ import type { AgentInfo, CrewSummary, SessionInfo } from '~/composables/useSessi
 import type { Action } from '~/utils/actions'
 import { MODE_PREFIX, type PaletteMode, type PaletteRow } from '~/utils/palette'
 import type { RowPrompt } from '~/utils/sidebarActions'
+import type { TouchedSession } from '~/utils/touchedIndex'
 
 /**
  * A row of the command palette (#302): what the pure ranking sees (key,
@@ -73,6 +74,9 @@ export function usePalette() {
   const crews = useState<CrewSummary[]>('paletteCrews', () => [])
   const catalog = useState<AgentInfo[]>('paletteCatalog', () => [])
   const listsAt = useState<number>('paletteListsAt', () => 0)
+  /** The Touched index across sessions (#304): the server's reply, read after the first paint and cached as the lists are. */
+  const touched = useState<TouchedSession[]>('paletteTouched', () => [])
+  const touchedAt = useState<number>('paletteTouchedAt', () => 0)
   /** A row to open on and ask (X on a session page: its Stop row), taken as the palette opens. */
   const pendingAsk = useState<string | null>('paletteAsk', () => null)
   const api = useSessions()
@@ -110,6 +114,30 @@ export function usePalette() {
     return loading
   }
 
+  /**
+   * The Touched index (#304), read as the lists are: after the first paint,
+   * again when it is a minute old at an open, and (the component's doing)
+   * when a `file` event arrives while the palette is open. A read that
+   * fails keeps what is cached: the feed's own entries lay over it.
+   */
+  let loadingTouched: Promise<void> | null = null
+  function loadTouched(force = false): Promise<void> {
+    if (!admin.hasToken.value) return Promise.resolve()
+    if (loadingTouched) return loadingTouched
+    if (!force && touchedAt.value && Date.now() - touchedAt.value < LISTS_STALE_MS) return Promise.resolve()
+    loadingTouched = (async () => {
+      try {
+        touched.value = (await api.touched()).sessions
+        touchedAt.value = Date.now()
+      } catch {
+        /* the cache stands */
+      } finally {
+        loadingTouched = null
+      }
+    })()
+    return loadingTouched
+  }
+
   function show(mode: PaletteMode = 'search') {
     query.value = mode === 'search' ? '' : MODE_PREFIX[mode]
     open.value = true
@@ -128,5 +156,5 @@ export function usePalette() {
     open.value = true
   }
 
-  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists }
+  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched }
 }

@@ -11,8 +11,9 @@ import { parsePrefix, parseVerb, rank, readRecent, type Named, type PaletteGroup
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
-import { fileOpWords } from '~/utils/events'
+import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
+import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -531,7 +532,29 @@ export function usePaletteRows(ctx: PaletteContext) {
     ]
   }
 
-  /** `:`: a path opens; then the page's tabs, changes and commits; then Touched lately across sessions; then Artifacts. */
+  /**
+   * Touched across sessions (#304): the server's index (usePalette.touched, read after the first paint) with the feed's live
+   * `file` entries over it; a row of this page's session opens the file in its editor, another session's opens that page
+   * with the file (`?open=`).
+   */
+  function touchedItems(): PaletteItem[] {
+    const page = palette.page.value
+    const cwdOf = (id: string) => attention.sessions.value.find((s) => s.id === id)?.cwd
+    const feed: FeedFile[] = events.entries.value
+      .filter((e): e is FeedEntry => e.event === 'file' && !!e.path)
+      .map((e) => ({ sessionId: e.sessionId, sessionName: e.sessionName, cwd: cwdOf(e.sessionId), path: e.path!, op: e.op ?? '', tool: e.tool, by: e.byName, at: e.at }))
+    return mergeTouched(palette.touched.value, feed).map((h) => ({
+      key: `touched:${h.sessionId}:${h.path}`,
+      label: h.rel,
+      detail: `${h.sessionName} · ${fileOpWords(h.op)}${h.tool ? ` with ${h.tool}` : ''} · ${feedTime(h.at)}${h.count > 1 ? ` · ${h.count} times` : ''}`,
+      words: [h.sessionName, h.tool, h.path],
+      icon: 'i-lucide-file-clock',
+      run: () => (page?.sessionId === h.sessionId ? openFile(h.path) : go(`/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`)),
+      href: page?.sessionId === h.sessionId ? undefined : `/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`,
+    }))
+  }
+
+  /** `:`: a path opens; then the page's tabs, changes and commits; then Touched across sessions (#304); then Artifacts. */
   function fileModeGroups(rest: string): PaletteGroup<PaletteItem>[] {
     const groups: PaletteGroup<PaletteItem>[] = []
     const m = /^(\S.*?)(?::(\d+))?$/.exec(rest.trim())
@@ -547,19 +570,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       })
     }
     if (page?.files?.length) groups.push({ id: 'page-files', label: page.label, rows: page.files })
-    const touched: PaletteItem[] = [...events.entries.value]
-      .reverse()
-      .filter((e): e is FeedEntry => e.event === 'file' && !!e.path)
-      .slice(0, 200)
-      .map((e) => ({
-        key: `touched:${e.sessionId}:${e.path}`,
-        label: e.path!,
-        detail: `${e.sessionName} · ${fileOpWords(e.op)}${e.tool ? ` with ${e.tool}` : ''} · ${e.time}`,
-        words: [e.sessionName, e.tool ?? ''],
-        icon: 'i-lucide-file-clock',
-        run: () => (page?.sessionId === e.sessionId ? openFile(e.path!) : go(`/sessions/${e.sessionId}`)),
-      }))
-    groups.push({ id: 'touched', label: 'Touched lately', rows: touched })
+    groups.push({ id: 'touched', label: 'Touched', rows: touchedItems() })
     groups.push({ id: 'artifacts', label: 'Artifacts', rows: artifactItems() })
     return groups
   }

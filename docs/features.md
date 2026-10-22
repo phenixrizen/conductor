@@ -2669,6 +2669,41 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **Touched across every session, from the server's index (#304,
+  2026-10-22).** `GET /api/touched` (admin, `internal/api/touched.go`)
+  lists every listed session's touched files from the index each session
+  keeps (`op: touched`): `{sessions[{id, name, agentId, kind, status, cwd,
+  touched[…], truncated?}], truncated?}`, the sessions in the list's order,
+  a session with nothing touched left out, a server session's deny list
+  applied; `?limit=` per session (default 500, at most 2,000) and about
+  2 MiB for the reply, a cut session marked and the reply too. A hosted
+  session keeps no activity log on the server; `signal.HostedSession` now
+  keeps a `session.TouchedIndex` (exported for it) fed by the `file`
+  entries its host reports since it connected, the paths made absolute as
+  the host's OS writes them (`hostAbs`: a drive letter or UNC prefix is
+  absolute, a relative path under a Windows directory joins it with `\`).
+  On the way: `session.ValidEventType` predated file events and left
+  `file` out, so a host's file entries were dropped on the server and the
+  server's on the host; it takes them now (the protocol says seven event
+  types, thirteen in all). The palette's `:` group "Touched lately" (the
+  tab's feed) becomes "Touched" (`usePaletteRows.touchedItems`): the
+  server's index, read after the palette's first paint and cached a minute
+  (`usePalette.loadTouched`), read again on a `file` event while the
+  palette is open (one read in two seconds), with the feed's live entries
+  laid over it (`utils/touchedIndex.ts`, pure: `mergeTouched`, one row per
+  session and file, the most recently touched first, at most 2,000 rows;
+  `absUnder`/`relUnder` keep a Windows directory's separator). A row's
+  label is the path from its session's working directory, its detail the
+  session, the op with its tool, the time and the count; a row of this
+  page's session opens the file in its editor, another session's opens
+  that page with `?open=<path[:line]>`, new on the session page and read
+  as `?tab=` is (never written back). Tests: `internal/api/touched_test.go`
+  (admin only, the order, the limit and its refusals, the deny list, the
+  reply's budget, a hosted session's reported entries),
+  `internal/signal/touched_test.go`, `utils/touchedIndex.test.ts`,
+  `palette-touched.spec.ts` (a file touched before the tab opened found
+  from the index, its row opening the other session's page with the file,
+  the row on the file's own page). The plan: `docs/plans/touched-index.md`.
 - **The breadcrumb strip scrolls to its end (#315, 2026-10-22).** In
   `FileBrowser.vue` the watch that scrolls the breadcrumb strip to its end
   read `crumbs` above the line declaring it; a watch's source runs as the

@@ -122,7 +122,11 @@ func bucketed(t string) bool {
 func ValidEventType(t string) bool {
 	switch t {
 	case ActivityAttention, ActivityInput, ActivityJoin, ActivityLeave, ActivityLink, ActivityStatus,
-		ActivityProgress, ActivityArtifact, ActivityHandoff, ActivityToolUse, ActivityToolDenied, ActivityError:
+		ActivityProgress, ActivityArtifact, ActivityHandoff, ActivityToolUse, ActivityToolDenied, ActivityError,
+		// A file entry is an agent's report too (design 4e), left out when
+		// it was written: a host's file entries were dropped on the server,
+		// and the server's on the host (#304).
+		ActivityFile:
 		return true
 	}
 	return false

@@ -215,7 +215,7 @@ type Local struct {
 
 	activity activityRing
 	// touched is the Touched section's index of the files the agent touched (touched.go), under mu.
-	touched touchedIndex
+	touched TouchedIndex
 	// gitSeen watches the working tree for files no hook named (gitseen.go); its own lock.
 	gitSeen gitSeen
 	// sizer is the viewer whose window sizes the PTY, "" while none holds it

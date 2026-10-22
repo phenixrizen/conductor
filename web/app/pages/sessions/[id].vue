@@ -10,6 +10,7 @@ import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { activateTab, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
+import { resolveTyped } from '~/utils/fileTree'
 import type { ChangeRow } from '~/utils/changes'
 import type { CommitRow } from '~/utils/commits'
 import type { FileHeader } from '~/utils/protocol'
@@ -371,6 +372,22 @@ watch(
     }
     tab.value = v
     inspector.value = true
+  },
+  { immediate: true },
+)
+
+// ?open= (#304): a file the palette's Touched row names on another session's page, opened in this page's editor as a typed
+// path is (`path` or `path:line`, relative to the working directory or absolute), once the session's directory is known.
+// Read as the page opens and as the query changes, never written back.
+let opened = ''
+watch(
+  [() => route.query.open, () => current.value?.cwd],
+  ([q, cwd]) => {
+    if (typeof q !== 'string' || !q || !cwd || q === opened) return
+    opened = q
+    const m = /^(.*?)(?::(\d+))?$/.exec(q)
+    if (!m?.[1]) return
+    openFile({ path: resolveTyped(cwd, m[1]), line: m[2] ? Number(m[2]) : undefined })
   },
   { immediate: true },
 )

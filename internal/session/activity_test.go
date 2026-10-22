@@ -51,7 +51,7 @@ func TestCleanEntryCapsFields(t *testing.T) {
 func TestValidEventType(t *testing.T) {
 	for _, typ := range []string{
 		ActivityAttention, ActivityInput, ActivityJoin, ActivityLeave, ActivityLink, ActivityStatus,
-		ActivityProgress, ActivityArtifact, ActivityHandoff, ActivityToolUse, ActivityToolDenied, ActivityError,
+		ActivityProgress, ActivityArtifact, ActivityHandoff, ActivityToolUse, ActivityToolDenied, ActivityError, ActivityFile,
 	} {
 		if !ValidEventType(typ) {
 			t.Errorf("%q must be a valid type", typ)
