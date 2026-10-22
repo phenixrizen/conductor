@@ -2669,6 +2669,20 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The open session told apart on the rail, two squares never alike
+  (#314, 2026-10-21).** The square of the session open on the page carries
+  the selection mark: a 2 px primary bar down its outer (left) edge
+  (`data-rail-current`), with the elevated background it had; the state dot
+  stays top right and the news count bottom right, so the mark is another
+  shape in another place and never reads as a state. Two squares of one
+  agent never look the same: `railGlyphs` (`utils/sidebar.ts`, run by
+  `railModel` over every square, a capsule's members included) gives a
+  square whose agent's initials another square shares its folder's letters
+  instead (`folderLetters`: the last element of its working directory,
+  upper case; a link shared with you, which names no folder, keeps the
+  initials), and an ordinal top left (the free corner) when the letters
+  still match, in the rail's order. The tooltip stays the full label. The
+  inspector rail (4h) uses the same bar for its active item.
 - **The rail** (3d, S6): `railModel` (`utils/sidebar.ts`) draws the rail
   from the list's model, the links shared with you and the Events page's
   marks: `RailShape`s in the list's order, a square a session, a capsule a

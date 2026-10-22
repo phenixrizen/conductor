@@ -607,7 +607,11 @@ with its sessions inside (the play icon amber while one needs you), and the
 corners say the rest: top right the state (amber needs you, green running,
 grey idle), bottom right new events on it (the badges the Events page routes
 to the sidebar), bottom left where it comes from (a laptop for another
-machine, a globe for a link shared with you). Two counts sit on top: how many
+machine, a globe for a link shared with you). The session open on the page
+carries a primary bar down its square's outer edge, and two squares of one
+agent never look the same: they show their folders' letters instead of the
+agent's initials, with an ordinal top left when the folders match too. Two
+counts sit on top: how many
 need you, then how many have new events. The order is the list's: needs you,
 running, shared, exited; loose exited sessions fold into **+N**, which opens
 the full sidebar on Exited. Every shape has a tooltip naming it in words

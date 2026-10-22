@@ -4,7 +4,7 @@ import { joinedPath, type JoinedEntry } from './joined'
 import type { AttentionKind, AttentionOption } from './protocol'
 import { isEnded } from './attention'
 import { questionOf } from './reply'
-import { relativeTime } from './sessions'
+import { agentInitials, relativeTime } from './sessions'
 
 /** The desktop sidebar's two modes: everything, or an icon rail. */
 export type SidebarMode = 'full' | 'rail'
@@ -376,6 +376,8 @@ export interface RailShape {
   /** A square's agent (its initials); a run link shared with you shows a crew instead. */
   agentId: string
   kind: 'session' | 'run' | 'shared'
+  /** A session square's working directory (its folder's letters when squares would match, railGlyphs); none for a share. */
+  cwd?: string
   /** Bottom left: where it comes from. */
   tile?: 'machine' | 'share'
   /** Bottom right: new events on it (the badges the Events page routes here). */
@@ -386,6 +388,13 @@ export interface RailShape {
   chat?: number
   /** A capsule: the play icon amber while one of its sessions needs you. */
   amber?: boolean
+  /**
+   * A square's two letters (#314): the agent's initials, unless another square shares them, then its folder's letters
+   * (railGlyphs); absent for a capsule.
+   */
+  glyph?: string
+  /** A square's ordinal, top left, when its letters would still match another square's (railGlyphs). */
+  ordinal?: number
 }
 
 export interface RailModel {
@@ -414,7 +423,7 @@ function railSquare(row: SessionRow, marks: Readonly<Record<string, EventMark>>,
   if (mark) parts.push(mark.label)
   const chat = unread[`session:${s.id}`] ?? 0
   if (chat) parts.push(unreadWords(chat))
-  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat }
+  return { id: s.id, shape: 'square', to: `/sessions/${s.id}`, label: parts.join(' · '), state: row.state, dashed: row.state === 'exited', agentId: s.agentId, kind: 'session', tile: row.machine ? 'machine' : undefined, news: (mark ? 1 : 0) + chat, cwd: s.cwd }
 }
 
 /** "users api · run started 08:31 · review needs you · core running · lead exited", then "3 unread in chat" when the run's chat has them. */
@@ -494,5 +503,48 @@ export function railModel(model: SidebarModel, shared: readonly JoinedEntry[], m
       exitedFolded++
     }
   }
+  railGlyphs(items)
   return { needs: model.counts.needs, news, items, exitedFolded }
+}
+
+/** The first two letters of the last element of a path (`conductor` → `CO`), `?` for none. */
+export function folderLetters(cwd: string): string {
+  const name = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? ''
+  return name ? name.slice(0, 2).toUpperCase() : '?'
+}
+
+/**
+ * Two squares never look the same (#314). Every square of the rail (a
+ * capsule's members included), in the rail's order: its letters are its
+ * agent's initials, unless another square shares them, when each of those
+ * shows its folder's letters instead (`folderLetters` of the session's
+ * working directory; a link shared with you, which names no folder, keeps
+ * the agent's); squares whose letters still match get an ordinal, 1 up, in
+ * that order. The tooltip is not the answer: this is what reads at a glance.
+ */
+export function railGlyphs(items: RailShape[]): void {
+  const squares: RailShape[] = []
+  for (const it of items) {
+    if (it.shape === 'square') squares.push(it)
+    for (const m of it.members ?? []) squares.push(m)
+  }
+  const initials = (sq: RailShape) => (sq.kind === 'run' ? '' : agentInitials(sq.agentId))
+  const byInitials = new Map<string, RailShape[]>()
+  for (const sq of squares) {
+    const key = initials(sq)
+    if (!key) continue
+    byInitials.set(key, [...(byInitials.get(key) ?? []), sq])
+  }
+  for (const [key, group] of byInitials) {
+    if (group.length === 1) {
+      group[0]!.glyph = key
+      continue
+    }
+    for (const sq of group) sq.glyph = sq.cwd ? folderLetters(sq.cwd) : key
+    const byGlyph = new Map<string, RailShape[]>()
+    for (const sq of group) byGlyph.set(sq.glyph!, [...(byGlyph.get(sq.glyph!) ?? []), sq])
+    for (const same of byGlyph.values()) {
+      if (same.length > 1) same.forEach((sq, i) => (sq.ordinal = i + 1))
+    }
+  }
 }

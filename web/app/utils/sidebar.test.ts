@@ -13,6 +13,8 @@ import {
   moveFocus,
   needsDotShown,
   railModel,
+  railGlyphs,
+  folderLetters,
   readFolds,
   readSidebarMode,
   readSidebarSize,
@@ -362,5 +364,45 @@ describe('railModel', () => {
     expect(withChat.items[1]!.chat).toBe(2)
     expect(withChat.items[1]!.label).toMatch(/· core running · 2 unread in chat$/)
     expect(withChat.items[1]!.members![1]!.news).toBe(1)
+  })
+})
+
+describe('railGlyphs', () => {
+  it("shows the agent's initials when no other square shares them", () => {
+    const rail = railModel(sidebarModel([session({ id: 'a', agentId: 'claude', cwd: '/home/dev/conductor' }), session({ id: 'x', agentId: 'codex', cwd: '/home/dev/conductor' })]), [], {})
+    expect(rail.items.map((i) => `${i.id}:${i.glyph}${i.ordinal ? ':' + i.ordinal : ''}`)).toEqual(['a:CC', 'x:CX'])
+  })
+
+  it("shows the folders' letters when two squares share an agent, and ordinals when the folders match too", () => {
+    const list = [
+      session({ id: 'a', agentId: 'claude', cwd: '/home/dev/conductor' }),
+      session({ id: 'b', agentId: 'claude', cwd: '/home/dev/boxcar/' }),
+      session({ id: 'c', agentId: 'claude', cwd: 'C:\\Users\\dev\\conductor' }),
+      session({ id: 'd', agentId: 'claude', cwd: '/home/dev/conductor', crew: { runId: 'r1', crewId: 'api-sweep', member: 'lead' } }),
+      session({ id: 'x', agentId: 'codex', cwd: '/home/dev/conductor' }),
+    ]
+    const rail = railModel(sidebarModel(list, (id) => (id === 'r1' ? run({ members: [member('lead')] }) : undefined)), [], {})
+    const flat = rail.items.flatMap((i) => (i.shape === 'capsule' ? i.members! : [i]))
+    // The rail's order: the loose running sessions, then the run's capsule with its member; the ordinals follow it.
+    expect(flat.map((i) => `${i.id}:${i.glyph}${i.ordinal ? ':' + i.ordinal : ''}`)).toEqual(['a:CO:1', 'b:BO', 'c:CO:2', 'x:CX', 'd:CO:3'])
+    // A capsule carries no letters of its own.
+    expect(rail.items.find((i) => i.shape === 'capsule')!.glyph).toBeUndefined()
+  })
+
+  it('keeps the agent initials for a link shared with you, which names no folder, and gives it an ordinal against a session of the same agent', () => {
+    const shared = [{ id: 'j1', token: 't', server: '', kind: 'session' as const, name: 'api-review', role: 'view' as const, host: 'switchyard.example.net', agentId: 'claude', addedAt: '2026-10-01T09:00:00Z' }]
+    const rail = railModel(sidebarModel([session({ id: 'a', agentId: 'claude', cwd: '/home/dev/conductor' })]), shared, {})
+    expect(rail.items.map((i) => `${i.id}:${i.glyph}${i.ordinal ? ':' + i.ordinal : ''}`)).toEqual(['a:CO', 'j:j1:CC'])
+    const items = [...rail.items]
+    railGlyphs(items)
+    expect(items.map((i) => i.ordinal)).toEqual([undefined, undefined])
+  })
+
+  it('folderLetters takes the last element of a path, either slash, upper case', () => {
+    expect(folderLetters('/home/dev/conductor')).toBe('CO')
+    expect(folderLetters('/home/dev/conductor/')).toBe('CO')
+    expect(folderLetters('C:\\Users\\dev\\boxcar')).toBe('BO')
+    expect(folderLetters('/x')).toBe('X')
+    expect(folderLetters('')).toBe('?')
   })
 })

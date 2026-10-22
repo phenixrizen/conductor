@@ -37,8 +37,10 @@ preflight at the end and after any rebase; one push, then the PR ready.
   `utils/sidebar.ts` gives each live square its two letters: the agent's
   initials unless another live square shares them, then the first two
   letters of the session's folder name (`basename(cwd)`, upper case), and
-  when those match too, a one-character ordinal in the square's lower
-  left by the sidebar's order. The tooltip stays the full label. vitest
+  when those match too, a one-character ordinal in the square's top left
+  (the free corner: the state dot is top right, the news count bottom
+  right, the machine or share tile bottom left) by the sidebar's order.
+  The tooltip stays the full label. vitest
   for the rule, Playwright: two sessions of one agent, collapse, the open
   one's bar and the two squares' letters differ, light and dark.
 
