@@ -515,36 +515,32 @@ export function folderLetters(cwd: string): string {
 
 /**
  * Two squares never look the same (#314). Every square of the rail (a
- * capsule's members included), in the rail's order: its letters are its
- * agent's initials, unless another square shares them, when each of those
- * shows its folder's letters instead (`folderLetters` of the session's
- * working directory; a link shared with you, which names no folder, keeps
- * the agent's); squares whose letters still match get an ordinal, 1 up, in
- * that order. The tooltip is not the answer: this is what reads at a glance.
+ * capsule's members included, exited ones too), in the rail's order: its
+ * letters are its agent's initials, unless another square shares them, when
+ * each of those shows its folder's letters instead (`folderLetters` of the
+ * session's working directory; a link shared with you, which names no
+ * folder, keeps the agent's); then, across every square whatever its agent
+ * (Claude Code and Codex both in `conductor` read `CO`), squares whose
+ * letters still match get an ordinal, 1 up, in that order. The tooltip is
+ * not the answer: this is what reads at a glance.
  */
 export function railGlyphs(items: RailShape[]): void {
   const squares: RailShape[] = []
   for (const it of items) {
-    if (it.shape === 'square') squares.push(it)
+    if (it.shape === 'square' && it.kind !== 'run') squares.push(it)
     for (const m of it.members ?? []) squares.push(m)
   }
-  const initials = (sq: RailShape) => (sq.kind === 'run' ? '' : agentInitials(sq.agentId))
   const byInitials = new Map<string, RailShape[]>()
   for (const sq of squares) {
-    const key = initials(sq)
-    if (!key) continue
+    const key = agentInitials(sq.agentId)
     byInitials.set(key, [...(byInitials.get(key) ?? []), sq])
   }
   for (const [key, group] of byInitials) {
-    if (group.length === 1) {
-      group[0]!.glyph = key
-      continue
-    }
-    for (const sq of group) sq.glyph = sq.cwd ? folderLetters(sq.cwd) : key
-    const byGlyph = new Map<string, RailShape[]>()
-    for (const sq of group) byGlyph.set(sq.glyph!, [...(byGlyph.get(sq.glyph!) ?? []), sq])
-    for (const same of byGlyph.values()) {
-      if (same.length > 1) same.forEach((sq, i) => (sq.ordinal = i + 1))
-    }
+    for (const sq of group) sq.glyph = group.length > 1 && sq.cwd ? folderLetters(sq.cwd) : key
+  }
+  const byGlyph = new Map<string, RailShape[]>()
+  for (const sq of squares) byGlyph.set(sq.glyph!, [...(byGlyph.get(sq.glyph!) ?? []), sq])
+  for (const same of byGlyph.values()) {
+    if (same.length > 1) same.forEach((sq, i) => (sq.ordinal = i + 1))
   }
 }

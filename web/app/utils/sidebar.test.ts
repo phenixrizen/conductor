@@ -389,10 +389,34 @@ describe('railGlyphs', () => {
     expect(rail.items.find((i) => i.shape === 'capsule')!.glyph).toBeUndefined()
   })
 
+  it('resolves letters that match across agents: Claude Code and Codex both in conductor and boxcar', () => {
+    const list = [
+      session({ id: 'a', agentId: 'claude', cwd: '/home/dev/conductor' }),
+      session({ id: 'b', agentId: 'claude', cwd: '/home/dev/boxcar' }),
+      session({ id: 'c', agentId: 'codex', cwd: '/home/dev/conductor' }),
+      session({ id: 'd', agentId: 'codex', cwd: '/home/dev/boxcar' }),
+    ]
+    const rail = railModel(sidebarModel(list), [], {})
+    expect(rail.items.map((i) => `${i.id}:${i.glyph}${i.ordinal ? ':' + i.ordinal : ''}`)).toEqual(['a:CO:1', 'b:BO:1', 'c:CO:2', 'd:BO:2'])
+  })
+
+  it('counts an exited run member as a square that could match', () => {
+    const list = [
+      session({ id: 'a', agentId: 'codex', cwd: '/home/dev/conductor' }),
+      session({ id: 'm', agentId: 'codex', cwd: '/home/dev/review', crew: { runId: 'r1', crewId: 'api-sweep', member: 'review' }, status: 'exited', endedAt: '2026-10-01T09:07:00Z' }),
+    ]
+    const rail = railModel(sidebarModel(list, (id) => (id === 'r1' ? run({ members: [member('review', 'codex')] }) : undefined)), [], {})
+    const flat = rail.items.flatMap((i) => (i.shape === 'capsule' ? i.members! : [i]))
+    expect(flat.map((i) => `${i.id}:${i.glyph}${i.ordinal ? ':' + i.ordinal : ''}`)).toEqual(['a:CO', 'm:RE'])
+  })
+
   it('keeps the agent initials for a link shared with you, which names no folder, and gives it an ordinal against a session of the same agent', () => {
     const shared = [{ id: 'j1', token: 't', server: '', kind: 'session' as const, name: 'api-review', role: 'view' as const, host: 'switchyard.example.net', agentId: 'claude', addedAt: '2026-10-01T09:00:00Z' }]
     const rail = railModel(sidebarModel([session({ id: 'a', agentId: 'claude', cwd: '/home/dev/conductor' })]), shared, {})
     expect(rail.items.map((i) => `${i.id}:${i.glyph}${i.ordinal ? ':' + i.ordinal : ''}`)).toEqual(['a:CO', 'j:j1:CC'])
+    // Two shared links of one agent, neither naming a folder: ordinals.
+    const twice = railModel(sidebarModel([]), [shared[0]!, { ...shared[0]!, id: 'j2', name: 'docs-review' }], {})
+    expect(twice.items.map((i) => `${i.id}:${i.glyph}${i.ordinal ? ':' + i.ordinal : ''}`)).toEqual(['j:j1:CC:1', 'j:j2:CC:2'])
     const items = [...rail.items]
     railGlyphs(items)
     expect(items.map((i) => i.ordinal)).toEqual([undefined, undefined])

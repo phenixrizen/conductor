@@ -9,11 +9,14 @@ import type { RailShape } from '~/utils/sidebar'
  * link shared with you shows a crew. Every square has a tooltip.
  *
  * The one open on the page carries the selection mark (#314): a 2 px
- * primary bar down the square's outer (left) edge, another shape in another
- * place than the state dot and the news count, so it never reads as a
- * state. Two squares never look the same: the rail gives a square whose
- * agent's initials another square shares its folder's letters instead, and
- * an ordinal top left when those match too (railModel's glyphs).
+ * primary bar down the rail's edge beside the square, clear of the corner
+ * badges (the ordinal top left, the origin tile bottom left reach 4 px out
+ * of the square; the bar stands 8 px out, in the rail's margin), another
+ * shape in another place than the state dot and the news count, so it
+ * never reads as a state. Two squares never look the same: the rail gives
+ * a square whose agent's initials another square shares its folder's
+ * letters instead, and an ordinal top left when those match too
+ * (railModel's glyphs).
  */
 const props = withDefaults(defineProps<{ shape: RailShape; member?: boolean; needsDot?: boolean }>(), { member: false, needsDot: true })
 const route = useRoute()
@@ -40,7 +43,7 @@ const dot = computed(() => {
       :data-rail-dashed="shape.dashed ? '' : undefined"
       :data-rail-tile="shape.tile"
     >
-      <span v-if="current" class="absolute bottom-1 left-0 top-1 w-0.5 rounded-full bg-primary" data-rail-current aria-hidden="true" />
+      <span v-if="current" class="absolute -left-2 bottom-1 top-1 w-0.5 rounded-full bg-primary" data-rail-current aria-hidden="true" />
       <span v-if="shape.kind === 'run'" class="grid size-6 place-items-center rounded-md bg-elevated text-primary"><UIcon name="i-lucide-users" class="size-3.5" /></span>
       <SessionAvatar v-else :agent-id="shape.agentId" :label="shape.glyph" :solid="shape.state === 'needs'" :dashed="shape.dashed" />
       <span v-if="shape.ordinal" class="absolute -left-1 -top-1 grid size-3.5 place-items-center rounded-sm bg-elevated font-mono text-[8px] font-semibold leading-3.5 text-muted ring-2 ring-default" :data-rail-ordinal="shape.ordinal" aria-hidden="true">{{ shape.ordinal }}</span>

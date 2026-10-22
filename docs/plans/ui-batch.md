@@ -29,18 +29,21 @@ preflight at the end and after any rebase; one push, then the PR ready.
 
 ### 1. #314 — `utils/sidebar.ts`, `SidebarRailSquare.vue`, `SidebarRail.vue`, `SessionAvatar.vue`
 
-- The current square gets the selection idiom: a 2 px primary bar on the
-  rail's outer (left) edge, the elevated background it has, `aria-current`
+- The current square gets the selection idiom: a 2 px primary bar down
+  the rail's edge beside the square (8 px out, in the rail's margin, clear
+  of the corner badges), the elevated background it has, `aria-current`
   as today. The state dot (top right) and the news count (bottom right)
   stay where they are, so the mark is another shape in another place.
 - Two squares never look the same: a pure `railGlyphs(shapes)` in
-  `utils/sidebar.ts` gives each live square its two letters: the agent's
-  initials unless another live square shares them, then the first two
-  letters of the session's folder name (`basename(cwd)`, upper case), and
-  when those match too, a one-character ordinal in the square's top left
-  (the free corner: the state dot is top right, the news count bottom
-  right, the machine or share tile bottom left) by the sidebar's order.
-  The tooltip stays the full label. vitest
+  `utils/sidebar.ts` gives each square (exited run members included) its
+  two letters: the agent's initials unless another square shares them,
+  then the first two letters of the session's folder name
+  (`basename(cwd)`, upper case), and then, across every square whatever
+  its agent (Codex's round: Claude Code and Codex both in `conductor`
+  read `CO`), a one-character ordinal in the square's top left (the free
+  corner: the state dot is top right, the news count bottom right, the
+  machine or share tile bottom left) by the sidebar's order when the
+  letters still match. The tooltip stays the full label. vitest
   for the rule, Playwright: two sessions of one agent, collapse, the open
   one's bar and the two squares' letters differ, light and dark.
 

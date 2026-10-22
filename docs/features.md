@@ -2671,17 +2671,19 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
 - **The open session told apart on the rail, two squares never alike
   (#314, 2026-10-21).** The square of the session open on the page carries
-  the selection mark: a 2 px primary bar down its outer (left) edge
-  (`data-rail-current`), with the elevated background it had; the state dot
-  stays top right and the news count bottom right, so the mark is another
-  shape in another place and never reads as a state. Two squares of one
-  agent never look the same: `railGlyphs` (`utils/sidebar.ts`, run by
-  `railModel` over every square, a capsule's members included) gives a
-  square whose agent's initials another square shares its folder's letters
-  instead (`folderLetters`: the last element of its working directory,
-  upper case; a link shared with you, which names no folder, keeps the
-  initials), and an ordinal top left (the free corner) when the letters
-  still match, in the rail's order. The tooltip stays the full label. The
+  the selection mark: a 2 px primary bar down the rail's edge beside its
+  outer (left) side (`data-rail-current`, 8 px out in the rail's margin,
+  clear of the corner badges), with the elevated background it had; the
+  state dot stays top right and the news count bottom right, so the mark
+  is another shape in another place and never reads as a state. Two
+  squares never look the same: `railGlyphs` (`utils/sidebar.ts`, run by
+  `railModel` over every square, a capsule's members included, exited
+  ones too) gives a square whose agent's initials another square shares
+  its folder's letters instead (`folderLetters`: the last element of its
+  working directory, upper case; a link shared with you, which names no
+  folder, keeps the initials), and then, across every square whatever its
+  agent, an ordinal top left (the free corner) when the letters still
+  match, in the rail's order. The tooltip stays the full label. The
   inspector rail (4h) uses the same bar for its active item.
 - **The rail** (3d, S6): `railModel` (`utils/sidebar.ts`) draws the rail
   from the list's model, the links shared with you and the Events page's
