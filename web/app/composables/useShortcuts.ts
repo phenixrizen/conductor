@@ -16,12 +16,13 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'Slash', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   title: 'Everywhere',
   rows: [
+    { keys: ['meta', 'K'], label: 'The command palette: find a session, run, crew, file or action and act on it (/ too)', terminal: ['alt', '/'] },
     { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it', terminal: ['alt', 'B'] },
     { keys: ['?'], label: 'Keyboard shortcuts', terminal: ['alt', 'H'] },
     { keys: ['N'], label: 'Launch an agent', terminal: ['alt', 'N'] },
@@ -34,11 +35,29 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   ],
 }
 
+/** The command palette's keys (#302): in its input, then on the focused row, where the sidebar's letters work the same. */
+export const PALETTE_SHORTCUTS: ShortcutGroup = {
+  title: 'The command palette',
+  rows: [
+    { keys: ['arrowdown'], label: 'From the input, into the list (↑ from the first row goes back)' },
+    { keys: ['enter'], label: 'In the input: the first row. On a row: open it, run it, or ask first (Stop, Restart)' },
+    { keys: ['1'], label: "1–9 answer the focused row's prompt; only while a row has the focus" },
+    { keys: ['J'], label: 'Next row (or ↓); K the one before (or ↑)' },
+    { keys: ['arrowright'], label: "The row's actions; ← folds them" },
+    { keys: ['S'], label: 'Share the focused session or run; Shift+S copies a view link at once' },
+    { keys: ['X'], label: 'Stop it: the row asks; Enter stops, Escape cancels' },
+    { keys: ['R'], label: "Open a member's run, or focus a free-text prompt's reply field" },
+    { keys: ['meta', 'enter'], label: 'Open in a new tab; Shift+Enter shows it in the Yard' },
+    { keys: ['escape'], label: 'From a row, back to the input; from the input, close' },
+    { keys: ['>'], label: '> actions · # runs and crews · : files · @ people · ! events · ? shortcuts, typed first' },
+  ],
+}
+
 /** The sidebar's keys (design 3c): in the filter, then on the focused row. Registered by the default layout, after Everywhere. */
 export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
   title: 'The sidebar',
   rows: [
-    { keys: ['/'], label: 'Filter sessions, runs, people', terminal: ['alt', 'S'] },
+    { keys: ['/'], label: 'Open the command palette (the filter box above the list is a plain filter)', terminal: ['alt', 'S'] },
     { keys: ['arrowdown'], label: 'From the filter, into the list' },
     { keys: ['J'], label: 'Next row (or ↓)' },
     { keys: ['K'], label: 'Previous row (or ↑)' },
@@ -115,7 +134,7 @@ export function useShortcutsModal() {
     })
   }
 
-  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, SIDEBAR_SHORTCUTS]))
+  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS]))
 
   return { open, groups, registerPage, show: () => (open.value = true) }
 }

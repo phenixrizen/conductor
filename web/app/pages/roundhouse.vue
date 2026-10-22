@@ -342,6 +342,18 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onEscape)
 })
 
+// This page's group in the command palette (#302): the rotation, follow mode, the interval.
+usePalette().registerPage(() => ({
+  label: 'Roundhouse',
+  sessionId: current.value?.id,
+  cwd: current.value?.cwd,
+  rows: [
+    { key: 'page:rotation', label: holding.value ? 'Release the hold and keep rotating' : paused.value ? 'Resume rotation' : 'Pause rotation', detail: stateLabel.value, icon: rotating.value ? 'i-lucide-pause' : 'i-lucide-play', kbds: ['space'], run: togglePlay },
+    { key: 'page:autoplay', label: 'Auto-rotate', icon: 'i-lucide-rotate-cw', on: settings.value.autoplay, run: () => (settings.value.autoplay = !settings.value.autoplay) },
+    { key: 'page:follow', label: 'Follow routed events', icon: 'i-lucide-hand', on: settings.value.follow, run: () => (settings.value.follow = !settings.value.follow) },
+    ...intervalItems.map((it) => ({ key: `page:interval:${it.value}`, label: `Every ${it.label}`, icon: 'i-lucide-timer', on: settings.value.intervalMs === it.value, run: () => (settings.value.intervalMs = it.value) })),
+  ],
+}))
 </script>
 
 <template>

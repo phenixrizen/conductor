@@ -185,6 +185,27 @@ onMounted(() => {
   if (!admin.hasToken.value) admin.needsToken.value = true
   attention.start()
 })
+
+// This page's group in the command palette (#302): the chips, the queue's selected session expanded, the grid.
+usePalette().registerPage(() => {
+  const chips: Array<[Filter, string, number]> = [
+    ['all', 'All', active.value.length],
+    ['needs', 'Needs you', waiting.value.length],
+    ['running', 'Running', running.value.length],
+  ]
+  const sel = waiting.value[queueSel.value]
+  return {
+    label: focused.value ? focused.value.name : 'Yard',
+    sessionId: focused.value?.id,
+    cwd: focused.value?.cwd,
+    openFile: focused.value ? openFile : undefined,
+    rows: [
+      ...chips.map(([f, label, n]) => ({ key: `page:filter:${f}`, label: `${label} · ${n}`, icon: 'i-lucide-filter', on: filter.value === f, run: () => (filter.value = f) })),
+      ...(sel && !focused.value ? [{ key: 'page:expand', label: `Expand ${sel.name}`, detail: 'The queue’s selected session, in place', icon: 'i-lucide-maximize-2', agentId: sel.agentId, run: () => focusSession(sel) }] : []),
+      ...(focused.value ? [{ key: 'page:grid', label: 'Back to the grid', icon: 'i-lucide-layout-grid', kbds: ['escape'], run: backToGrid }] : []),
+    ],
+  }
+})
 </script>
 
 <template>

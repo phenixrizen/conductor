@@ -86,7 +86,8 @@ sessions do (see the Files tab).
 ## The workbench
 
 The sidebar is the session list, grouped into **Needs you**, **Running** and
-**Exited**, with a filter box (**/**) and a **Launch agent** button (**N**).
+**Exited**, with a filter box and a **Launch agent** button (**N**); **/** or
+**Ctrl+K** opens the command palette (see Sidebar and keyboard shortcuts).
 When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your
@@ -614,6 +615,36 @@ as the Yard's does, and the row moves on as the prompt clears. A hosted
 session whose host is away keeps its prompt, disabled, with "The host is
 away".
 
+**The command palette** is the sidebar's row actions and the Yard's queue
+from anywhere: **Ctrl+K** (**⌘K** on a Mac) or **/** on any page, **Alt+/**
+while typing into an agent (⌘K too on a Mac; Ctrl+K stays the shell's
+kill-line), and the rail's search button. It opens over the page on what
+needs you first: each waiting session with its question and its choices as
+numbered buttons, then the page's own actions (Share, Stop, the marks, the
+inspector's views and the open tabs on a session page; the broadcast, the
+view, the chat and the members on a run page; the chips on the Yard, the
+rotation on the Roundhouse, Launch on Crews, the hooks on Events, Save on
+Settings), then Running, Exited (folded to a line), Runs, Shared with you,
+Artifacts, Go to and every other action. Typing filters the rows, the match
+marked; **↓** moves into the list, where the sidebar's keys work on the
+focused row: **J K** move, **Enter** opens or runs, **1–9** answer its
+prompt (a digit typed into the box is a search), **R** opens a member's run,
+**S** shares, **Shift+S** copies a view link at once, **X** asks to stop
+(Enter stops, Escape cancels), **→** reveals the row's actions and **←**
+folds them, **Ctrl+Enter** opens in a new tab, **Shift+Enter** shows it in
+the Yard, **Escape** goes back to the box and, from there, closes. A first
+character picks a kind: **>** actions, **#** runs and crews (Enter launches
+a saved crew, Launch named under → takes a name), **:** files (`path` or
+`path:line` opens in the page's editor, then the open tabs, the changes,
+the commits, the files touched lately across sessions, the artifacts),
+**@** people, **!** events, **?** the shortcuts. A line that starts with a
+verb and names one session, run or crew reads as one row that nothing runs
+before Enter: `stop docs`, `share docs view`, `answer review 2`, `reply
+review looks good`, `broadcast nightly ship it`, `run docs-crew as
+tonight`, `resume docs`, `open src/main.go:12`, `mark docs working`, `go
+yard`. Nothing is fetched when it opens; what was used lately ranks first
+within its group (`conductor.palette.recent`).
+
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
 initials, solid while it needs you, dashed once exited), a capsule is a run
@@ -632,10 +663,9 @@ running, shared, exited; loose exited sessions fold into **+N**, which opens
 the full sidebar on Exited. Every shape has a tooltip naming it in words
 ("users api · run started 08:31 · review needs you · core running · lead
 exited"). The rail keeps the mark, Launch, a search button that opens the
-full sidebar on its filter, the pages (the Yard's count as an amber chip) and
+command palette, the pages (the Yard's count as an amber chip) and
 the header's two menus. The panel button at the bottom of the rail brings the
-full sidebar back, as do **Ctrl+B** and, on a desktop-width window, **/**,
-which then focuses the filter. The mode and the full sidebar's
+full sidebar back, as does **Ctrl+B**. The mode and the full sidebar's
 width are remembered per browser (localStorage keys `conductor.sidebar.mode`
 and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
 the rail). On a phone the list is the home screen, not a drawer (`/sessions`):

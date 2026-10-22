@@ -124,6 +124,16 @@ function signalBadge(a: AgentInfo): { label: string; title: string } {
       return { label: 'bell / OSC', title: 'Terminal bell or notification escape' }
   }
 }
+
+// This page's group in the command palette (#302): a new agent, Edit for each, the Launch dialog.
+usePalette().registerPage(() => ({
+  label: 'Agents',
+  rows: [
+    { key: 'page:add', label: 'Add agent', icon: 'i-lucide-plus', run: addAgent },
+    { key: 'page:launch', label: 'Launch an agent', icon: 'i-lucide-play', kbds: ['N'], run: () => launch.show() },
+    ...agents.value.map((a) => ({ key: `page:edit:${a.id}`, label: `Edit ${a.name}`, detail: a.description || a.command.join(' '), agentId: a.id, run: () => editAgent(a) })),
+  ],
+}))
 </script>
 
 <template>

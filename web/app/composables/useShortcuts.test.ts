@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, EDITOR_SHORTCUTS, GLOBAL_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
+import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, EDITOR_SHORTCUTS, GLOBAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
 
 const fRows = (g: ShortcutGroup) => g.rows.filter((r) => r.keys.length === 1 && r.keys[0] === 'F')
 
@@ -64,5 +64,21 @@ describe('the terminal group', () => {
     const { TERMINAL_SHORTCUTS } = await import('./useShortcuts')
     expect(TERMINAL_SHORTCUTS.rows.map((r) => r.terminal?.join('+') ?? '')).toEqual(['ctrl+shift+C', 'ctrl+C', 'ctrl+shift+V', ''])
     expect(TERMINAL_SHORTCUTS.rows.every((r) => r.keys.length === 0)).toBe(true)
+  })
+})
+
+describe("the command palette's keys (#302)", () => {
+  it('open it with meta+K everywhere and Alt+/ from a terminal, which hands the slash back', () => {
+    const open = GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join('+') === 'meta+K')
+    expect(open?.terminal).toEqual(['alt', '/'])
+    expect(open?.label).toMatch(/command palette/)
+    expect(ALT_PASSTHROUGH_CODES.has('Slash')).toBe(true)
+  })
+  it("list the palette's own keys as a group, and say what / does now", () => {
+    expect(PALETTE_SHORTCUTS.title).toBe('The command palette')
+    expect(PALETTE_SHORTCUTS.rows.map((r) => r.keys.join('+'))).toEqual(['arrowdown', 'enter', '1', 'J', 'arrowright', 'S', 'X', 'R', 'meta+enter', 'escape', '>'])
+    for (const r of PALETTE_SHORTCUTS.rows) expect(r.terminal).toBeUndefined()
+    expect(SIDEBAR_SHORTCUTS.rows.find((r) => r.keys[0] === '/')?.label).toMatch(/command palette/)
+    expect(SIDEBAR_SHORTCUTS.rows.find((r) => r.keys[0] === '/')?.terminal).toEqual(['alt', 'S'])
   })
 })

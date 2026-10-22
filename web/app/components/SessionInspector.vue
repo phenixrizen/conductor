@@ -76,6 +76,8 @@ watch(
     if (explorer && touched.index.value === null) void touched.load()
   },
 )
+// What the page's command palette lists under `:` (#302): the status's changes and the commits the inspector polls.
+defineExpose({ changes: repo.changes, commits: repo.commits, status: repo.status })
 
 const now = ref(Date.now())
 let tick: number | undefined

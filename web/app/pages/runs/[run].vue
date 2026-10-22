@@ -2,7 +2,11 @@
 import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ChatMessage } from '~/utils/protocol'
 import { scopeItems } from '~/utils/chat'
-import { broadcastSelection, crewFeed, memberStatus, runCounts, skipWords, takeViewLink } from '~/utils/crews'
+import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, runCounts, skipWords, takeViewLink } from '~/utils/crews'
+import { stopQuestion } from '~/utils/actions'
+import { rowPrompt } from '~/utils/sidebarActions'
+import { sessionRow } from '~/utils/sidebar'
+import type { PaletteItem } from '~/composables/usePalette'
 import { memberWords, runTitle, startedClock } from '~/utils/crewWords'
 import { handoffsOf } from '~/utils/crewGraph'
 import { bestGrid, lastItemSpan } from '~/utils/wall'
@@ -258,12 +262,88 @@ onBeforeUnmount(() => {
   window.clearInterval(tick)
 })
 watch(() => admin.token.value, load)
+
+// This page's group in the command palette (#302): the header's buttons, the view, the chat, then the members as rows, the one
+// asking first. The broadcast takes its line in the row and says who gets it and who is skipped, as the bar does.
+const palette = usePalette()
+const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void> }>('header')
+const identity = useIdentity()
+async function paletteBroadcast(text: string) {
+  const line = text.trim()
+  if (!line) return
+  try {
+    const byName = await broadcastByName(identity.name.value, api.whoami)
+    const r = await api.broadcastRun(runId.value, { text: line, members: [...selection.value.selected], byName })
+    toast.add({ ...broadcastSummary(r), icon: 'i-lucide-megaphone' })
+  } catch (e) {
+    toast.add({ title: 'Broadcast failed', description: (e as Error).message, color: 'error' })
+  }
+}
+palette.registerPage(() => {
+  const r = run.value
+  if (!r) return null
+  const stopped = !!r.stoppedAt
+  const title = r.label || r.name
+  const sel = selection.value
+  const views: Array<[RunView, string, string]> = [
+    ['grid', 'View as a grid', 'i-lucide-layout-grid'],
+    ['graph', 'View as a graph', 'i-lucide-git-fork'],
+    ['timeline', 'View as a timeline', 'i-lucide-chart-gantt'],
+  ]
+  const members: PaletteItem[] = [...tiles.value]
+    .sort((a, b) => Number(b.session?.attention?.state === 'needs_input') - Number(a.session?.attention?.state === 'needs_input'))
+    .map((t) => {
+      const s = t.session
+      const m = t.member
+      const pending = m?.status === 'pending'
+      const ended = m?.status === 'ended' || (s && (s.status === 'exited' || s.status === 'stopped'))
+      const state = s?.attention?.state === 'needs_input' ? ('needs' as const) : ended ? ('exited' as const) : s ? ('running' as const) : ('idle' as const)
+      return {
+        key: `page:member:${t.name}`,
+        label: t.name,
+        detail: s ? s.attention?.message || `${s.agentId} · ${s.status}` : pending ? (m.start.when === 'manual' ? 'waiting for a hand · Enter starts it' : 'waiting to start') : (m?.error ?? m?.status ?? ''),
+        agentId: m?.agentId ?? s?.agentId,
+        state,
+        session: s,
+        prompt: s ? rowPrompt(sessionRow(s)) : null,
+        run: () => {
+          if (s && !ended) openMember(t.name)
+          else if (pending && m.start.when === 'manual' && !stopped) void startMember(t.name)
+          else if (ended && !stopped) void api.resumeRunMember(runId.value, t.name).then((res) => router.push(`/sessions/${res.session.id}`)).catch((e) => toast.add({ title: 'It did not start', description: (e as Error).message, color: 'error' }))
+          else if (s) openMember(t.name)
+        },
+        href: s ? `/sessions/${s.id}` : undefined,
+      }
+    })
+  const rows: PaletteItem[] = [
+      {
+        key: 'page:broadcast',
+        label: 'Broadcast…',
+        detail: sel.sending.length ? `Send to ${sel.sending.length}${sel.waiting.length ? ` · skipped, waiting on a prompt: ${sel.waiting.join(', ')}` : ''}` : 'No member is running',
+        icon: 'i-lucide-megaphone',
+        disabled: stopped || !sel.sending.length,
+        // Enter opens the field; the line is sent from it. Nothing runs without a line.
+        run: () => {},
+        fieldOnEnter: true,
+        field: { placeholder: 'A line for every selected member…', button: `Send to ${sel.sending.length}`, submit: paletteBroadcast },
+      },
+      { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: stopped || !!r.record, run: () => header.value?.openAdd() },
+      ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
+      { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
+      { key: 'page:chat', label: `Open the run's chat${runChatUnread.value ? ` · ${runChatUnread.value} unread` : ''}`, icon: 'i-lucide-message-circle', run: () => (runChatOpen.value = true) },
+      ...(stopped
+        ? [{ key: 'page:resume', label: 'Resume as new run', icon: 'i-lucide-history', run: () => header.value?.resume() }]
+        : [{ key: 'page:stop', label: 'Stop run…', icon: 'i-lucide-square', kbds: ['X'], disabled: !!r.record, ask: stopQuestion({ kind: 'run', name: title }), run: () => header.value?.stopNow() }]),
+      ...members,
+  ]
+  return { label: title, rows }
+})
 </script>
 
 <template>
   <UDashboardPanel id="run" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-hidden' }">
     <template #header>
-      <CrewRunHeader :record="!!run?.record" :run="run" :run-id="runId" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
+      <CrewRunHeader ref="header" :record="!!run?.record" :run="run" :run-id="runId" :counts="counts" :now="now" :chat-unread="runChatUnread" :chat-open="runChatOpen" :chat-offline="runChat.offline.value" @changed="changed" @chat="runChatOpen = true" />
     </template>
 
     <template #body>

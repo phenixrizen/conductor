@@ -1,0 +1,100 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { expect, test, type Session } from './fixtures'
+
+// The palette's keys against a focused terminal (#302, principle 6): Alt+/
+// opens it from the terminal and the terminal never sees the key; Ctrl+K
+// stays the shell's (kill-line) and the palette stays closed; inside the
+// palette ↓ enters the list, J K move, Escape goes back to the input and a
+// second Escape closes; → reveals a row's actions and ← folds them.
+function transcript(home: string, s: Session): string {
+  const file = join(home, '.stub-sessions', `${s.agentSession?.id ?? ''}.txt`)
+  return existsSync(file) ? readFileSync(file, 'utf8') : ''
+}
+
+test('Alt+/ opens the palette from the terminal without the terminal seeing it; Ctrl+K reaches the shell and opens nothing', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e palette terminal' })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    const terminal = page.locator('.terminal-host .xterm-helper-textarea').first()
+    await expect(terminal).toBeFocused({ timeout: 30_000 })
+    const palette = page.locator('[data-palette]')
+    await page.keyboard.press('Alt+/')
+    await expect(palette).toBeVisible()
+    await expect(palette.locator('input[data-palette-input]')).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(palette).toBeHidden()
+    // Back in the terminal: a line typed now carries no slash from the chord.
+    await terminal.focus()
+    await page.keyboard.type('alt slash check')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('alt slash check\n')
+    expect(transcript(state.home, s)).not.toContain('/')
+    // Ctrl+K: the shell's. The stub reads the line as typed, the control byte inside it, and the palette stays closed.
+    await terminal.focus()
+    await page.keyboard.type('abc')
+    await page.keyboard.press('Control+k')
+    await expect(palette).toBeHidden()
+    await page.keyboard.type('def')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line with the control byte was typed' }).toContain('abc\u000bdef\n')
+    await expect(palette).toBeHidden()
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+test('↓ enters the list, J and K move, → and ← reveal and fold a row’s actions, Escape returns to the input and then closes', async ({ page, api }) => {
+  const a = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e palette keys a' })
+  const b = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e palette keys b' })
+  try {
+    await page.goto('/agents')
+    await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+    await page.keyboard.press('Control+k')
+    const palette = page.locator('[data-palette]')
+    const input = palette.locator('input[data-palette-input]')
+    await input.fill('e2e palette keys')
+    const focused = palette.locator('[data-palette-row][data-palette-focused]')
+    // Running lists the two; other groups may match the name too (Copy a view link to…), below them.
+    await expect(palette.locator('[data-palette-group="running"] [data-palette-row]')).toHaveCount(2)
+    await expect(palette.locator('[data-palette-group]').first()).toHaveAttribute('data-palette-group', 'running')
+    await expect(focused).toHaveCount(0)
+    await page.keyboard.press('ArrowDown')
+    await expect(focused).toHaveCount(1)
+    const first = await focused.getAttribute('data-palette-row')
+    await page.keyboard.press('j')
+    expect(await focused.getAttribute('data-palette-row')).not.toBe(first)
+    await page.keyboard.press('k')
+    expect(await focused.getAttribute('data-palette-row')).toBe(first)
+    // The row's actions: Share, Show in the Yard, Stop, Copy a view link now…
+    await page.keyboard.press('ArrowRight')
+    await expect(focused.locator('[data-palette-actions] [data-palette-action="stop"]')).toBeVisible()
+    await expect(focused.locator('[data-palette-actions] [data-palette-action="copy-link"]')).toBeVisible()
+    await page.keyboard.press('ArrowLeft')
+    await expect(focused.locator('[data-palette-actions]')).toHaveCount(0)
+    // X asks to stop in the row; Escape cancels and the row keeps the focus.
+    await page.keyboard.press('x')
+    await expect(focused.locator('[data-palette-ask]')).toContainText('Stop e2e palette keys')
+    await page.keyboard.press('Escape')
+    await expect(focused.locator('[data-palette-ask]')).toHaveCount(0)
+    await expect(focused).toHaveCount(1)
+    // ↑ from the first row goes back to the input; Escape from a row too; Escape from the input closes.
+    await page.keyboard.press('ArrowUp')
+    await expect(input).toBeFocused()
+    await page.keyboard.press('ArrowDown')
+    await expect(focused).toHaveCount(1)
+    await page.keyboard.press('Escape')
+    await expect(input).toBeFocused()
+    await expect(palette).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(palette).toBeHidden()
+    // The match is marked in the label.
+    await page.keyboard.press('Control+k')
+    await input.fill('keys b')
+    await expect(palette.locator(`[data-palette-row="session:${b.id}"] [data-palette-label] mark`)).toHaveText('keys b')
+    await expect(palette.locator(`[data-palette-row="session:${a.id}"]`)).toHaveCount(0)
+  } finally {
+    await api.stopSession(a.id)
+    await api.stopSession(b.id)
+  }
+})

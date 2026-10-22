@@ -125,6 +125,9 @@ async function stopAll() {
     stopping.value = false
   }
 }
+
+// The run page's command palette (#302) runs the header's buttons: Add agent, Share, Stop (asked in the palette's row), Resume.
+defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun })
 </script>
 
 <template>

@@ -11,6 +11,7 @@ const desktop = useDesktop()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
 const launch = useLaunchModal()
+const palette = usePalette()
 // Fullscreen: one listener and one F shortcut for every page under this layout.
 const fs = useFullscreenToggle()
 fs.listen()
@@ -39,17 +40,26 @@ function sidebarRoot() {
 const DESKTOP_SIDEBAR = '(min-width: 64rem)'
 
 /**
- * The filter box. On the rail the full sidebar opens first. Below lg the rail
- * is not shown and the mode is left alone: the key reaches the filter of an
- * open slideover, as before the rail, and does nothing otherwise.
+ * `/`, Alt+S and the rail's search button open the command palette (#302);
+ * the sidebar's filter box stays a plain filter of the list, reached by a
+ * click, and `list` keeps `focusFilter` for it.
  */
-async function focusFilter() {
-  if (sidebar.rail.value && window.matchMedia(DESKTOP_SIDEBAR).matches) {
-    sidebar.expand()
-    await nextTick()
-  }
-  list.value?.focusFilter()
+function openPalette() {
+  palette.show()
 }
+void list
+// Alt chords on keys defineShortcuts cannot name (it matches an Alt chord by its code, and knows no name for the slash): one
+// listener, from a terminal or not, as the Alt twins are. The terminal hands these codes back (ALT_PASSTHROUGH_CODES).
+const ALT_CHORDS: Record<string, () => void> = { Slash: openPalette }
+function onAltChord(e: KeyboardEvent) {
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+  const run = ALT_CHORDS[e.code]
+  if (!run) return
+  e.preventDefault()
+  run()
+}
+onMounted(() => document.addEventListener('keydown', onAltChord))
+onBeforeUnmount(() => document.removeEventListener('keydown', onAltChord))
 
 /** The collapse and expand buttons go away with their mode: focus moves to the other one rather than falling to the page. */
 async function collapseByButton() {
@@ -178,10 +188,11 @@ const railNav = computed<NavigationMenuItem[]>(() =>
 // work inside a terminal (see ALT_PASSTHROUGH_CODES in useShortcuts).
 const inTerminal = { usingInput: true }
 defineShortcuts({
+  meta_k: () => palette.toggle(),
   meta_b: () => sidebar.toggle(),
   '?': () => shortcuts.show(),
   n: () => launch.show(),
-  '/': focusFilter,
+  '/': openPalette,
   'g-y': () => router.push('/yard'),
   'g-r': () => router.push('/roundhouse'),
   'g-a': () => router.push('/agents'),
@@ -190,7 +201,7 @@ defineShortcuts({
   alt_b: { ...inTerminal, handler: () => sidebar.toggle() },
   alt_h: { ...inTerminal, handler: () => shortcuts.show() },
   alt_n: { ...inTerminal, handler: () => launch.show() },
-  alt_s: { ...inTerminal, handler: focusFilter },
+  alt_s: { ...inTerminal, handler: openPalette },
   alt_y: { ...inTerminal, handler: () => router.push('/yard') },
   alt_r: { ...inTerminal, handler: () => router.push('/roundhouse') },
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
@@ -235,7 +246,7 @@ defineShortcuts({
       </template>
 
       <template #default="{ collapsed }">
-        <SidebarRail v-if="collapsed && desktopWide" @search="focusFilter" />
+        <SidebarRail v-if="collapsed && desktopWide" @search="openPalette" />
         <SessionSidebar v-else-if="desktopWide" ref="list" />
       </template>
 
@@ -270,6 +281,7 @@ defineShortcuts({
     <WorkbenchTokenGate v-model:open="showToken" />
     <UpdateRestartModal />
     <ShortcutsModal />
+    <CommandPalette @token="showToken = true" />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
   </UDashboardGroup>
 </template>

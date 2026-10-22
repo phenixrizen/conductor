@@ -678,7 +678,7 @@ function chatSend(send: ChatSend): boolean {
   return true
 }
 
-defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom() })
+defineExpose({ connect, disconnect, requestFile, writeFile, nvimOpen, nvimInput, nvimClose, nvimSwap, sendInput, submit, answer, chat, chatSend, focus: () => term?.focus(), scrollToBottom: () => term?.scrollToBottom(), takeSize, sizerShown: () => !!sizerChip.value })
 
 onMounted(() => {
   term = new Terminal({
@@ -730,6 +730,8 @@ onMounted(() => {
       if (e.type === 'keydown') sendInput(NEWLINE_IN_PROMPT)
       return false
     }
+    // The Alt chords the page owns go back to it; so does ⌘K on a Mac (#302), a chord no PTY takes. Ctrl+K stays the shell's.
+    if (e.type === 'keydown' && isMac && e.metaKey && !e.ctrlKey && !e.altKey && e.code === 'KeyK') return false
     return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && ALT_PASSTHROUGH_CODES.has(e.code))
   })
   term.open(host.value!)

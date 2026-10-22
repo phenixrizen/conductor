@@ -2669,6 +2669,56 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The command palette (#302, 2026-10-21).** `CommandPalette.vue` in the
+  default layout, opened by `meta_k`, `/`, `alt_/` and `alt_s` (the two
+  Alt chords from a terminal; `Slash` joined `ALT_PASSTHROUGH_CODES`, and
+  `TerminalView` lets ⌘K through on a Mac) and the rail's search button:
+  the sidebar's filter box is a plain filter now. A modal of 680 px at the
+  top of the viewport with its own list (not `UCommandPalette`, which
+  keeps the focus in its input and has no list focus, so the brief's rule
+  that digits answer only while a row has the focus could not hold): the
+  input, a mode chip, the groups, the rows in the sidebar's grammar (agent
+  chip with the state dot, name, `agent · where · how long`, the prompt's
+  message, its choices as numbered buttons or a reply field, held and away
+  as the sidebar says them), the keys of the brief on the focused row
+  (`J K ↵ 1–9 R S ⇧S X → ← ⌘↵ ⇧↵ Esc`; `I` waits for #303), a row's
+  question asked in the row (`stopQuestion`'s words; Restart server names
+  how many sessions end), a row's field in the row (a broadcast, a run's
+  name). The pure parts in `utils/palette.ts` (vitest): `parsePrefix`,
+  `parseVerb` (the twelve verbs; a name that matches more than one thing
+  of the kinds the verb takes is a search), `rank` (Needs you first, the
+  page next, matches, frecency within a group, the group's order),
+  frecency in `conductor.palette.recent` (200 entries, decayed by the day,
+  every read and write in try/catch). `utils/actions.ts` holds the one
+  action system: `rowActions`, `accountActions`, `stopQuestion`,
+  `toMenuItems`; `sidebarActions.ts`'s `rowMenuItems` and `accountItems`
+  are views over them (vitest proves them item for item), and the palette
+  renders the same descriptors under →. `usePalette` (open, query, show
+  with a mode, `registerPage`, the crews and the catalog read after the
+  first paint and cached, read again when a minute old) and
+  `usePaletteRows` (every group and prefix from the live stores, the
+  verbs, the handlers the sidebar and the pages have). Every page
+  registers its group: the session page (Share…, Copy a view link now,
+  Stop…, the three marks, Fit to my window when the sizer chip shows, Fold
+  the editor, Open Files / Chat / Activity / People, the open tabs; under
+  `:` the tabs, the changes and the commits the inspector polls, exposed
+  by `SessionInspector`; under `@` the people and the links with Revoke),
+  the run page (Broadcast… with "Send to N" and who is skipped, Add an
+  agent…, the three views, Share run, the chat with its count, Stop run…
+  or Resume as new run, the members with the one asking first, Start now
+  and Resume where they apply; `CrewRunHeader` exposes its buttons), the
+  Yard, the Roundhouse, Crews (Launch, Launch named…), Events (the tabs,
+  Refresh, Install hooks for each adapter), Agents, Settings. The `?`
+  modal lists the palette's keys as a group of its own. Playwright:
+  `palette.spec.ts` and `palette-keys.spec.ts`; `sidebar.spec.ts` reaches
+  the filter box by a click now. Decisions beyond the brief: a path under
+  `:` or `open` needs a page with an editor (the session page, the Yard's
+  focus, a join page), elsewhere the row says so; Open Files / Chat /
+  Activity / People from another page open the session page alone until
+  #303's `?tab=`; Shared with you offers Open and Forget (no Leave exists);
+  `⌘P` and `⌘⇧P` are not taken (Ctrl+P is the browser's print); the
+  Install hooks rows read the integrations when the palette opens, the one
+  request besides the two cached lists, since nothing else knows them.
 - **The Roundhouse's strip rearranged, and shown as thumbnails (#310,
   2026-10-21).** The chips in the strip at the foot (`CarouselStrip.vue`)
   can be rearranged by drag (HTML5 drag, no library) and by keyboard: a
@@ -2687,7 +2737,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Roundhouse connects anyway, and the idle mark with the initials and the
   state for every other session, never a connection, so the Roundhouse's
   cost stays the current slide's and its neighbours' (each near slide
-  holds two connections in that view, its own and its thumbnail's).; a
+  holds two connections in that view, its own and its thumbnail's); a
   thumbnail is inert, and a read-only view types nothing. The picked chip
   is known by its session id, so a session ending mid-move moves nothing
   else. The
@@ -2703,7 +2753,7 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   its axis move it a step of 2 %, Home and End take it to its ends. The
   terminal keeps a minimum width side by side (320 px, about forty
   columns) as it keeps its minimum height stacked, and its size reaches
-  the agent as any resize does.; a column too narrow for both (its own
+  the agent as any resize does; a column too narrow for both (its own
   width, measured, not the window's) stays stacked and offers no switch,
   and the reply bar shrinks with the terminal's pane. The layout (`conductor.editor.layout`)
   and each layout's split (`conductor.editor.split`,

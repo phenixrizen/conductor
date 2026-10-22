@@ -263,3 +263,50 @@ dependency, the Windows and WSL rule, or how `useQuickReply` closes its
 connection. A key that collides with a plain key the terminal needs is
 #312's pass to catch; the only new plain keys outside a terminal are
 `]`, `[`, `G S`, `S` and `X` on a session page.
+
+## Built (2026-10-21), and the decisions taken on the way
+
+- **Not `UCommandPalette`.** It keeps the focus in its input and moves a
+  highlight; the list never has the focus, so principle 3 (digits answer
+  only while a row has the focus) could not hold on it. The palette is a
+  `UModal` with its own input, groups and rows (`role="listbox"`,
+  rows `role="option"` with `tabindex="-1"` that take the real focus), on
+  Nuxt UI's input, kbd, badge and button. Nothing else in the brief
+  needed the component.
+- The one action system is `utils/actions.ts`; `sidebarActions.ts` keeps
+  its names as views over it; the palette renders the same descriptors
+  under `→` and runs them by their `kbds`. A row's own `ask` and a
+  descriptor's `ask` both ask in the row; `restart` names how many
+  sessions end.
+- A row that takes a line has a `field`: Enter opens it on the broadcast
+  row (`fieldOnEnter`), the action `field` opens it on a crew row (Enter
+  launches; "Launch named…" is under `→`, key `L`).
+- `:path` and the `open` verb open in the page's editor through the
+  `openFile` the page registers with its group (`useEditorTabs` is one
+  per page, not shared: the session page's and the Yard's focus), the
+  typed path resolved against the page's `cwd` as the Files box does;
+  elsewhere the row is disabled and says "Open a session page first". The feed's touched rows of another
+  session open that session's page; #303's `?open=`/`?tab=` can carry
+  the file. Open Files / Chat / Activity / People from another page open
+  the session page alone for the same reason.
+- Shared with you: Open and Forget. There is no Leave: a joined link is
+  forgotten, not left.
+- `⌘P` / `⌘⇧P` are not taken: Ctrl+P is the browser's print on Linux and
+  Windows, so the alias would cost what the brief said it must not.
+- The Install hooks rows need the integrations list, which no store
+  holds: it is read when the palette opens (one request, cached for the
+  open), beside the two lists the brief allows. Said here; the brief's
+  principle 1 is bent for those rows alone.
+- The crews list is read again when the palette opens and it is a minute
+  old, or after a crew is duplicated or the examples loaded from the
+  palette; the `run` event the brief names is the `RunInfo` the attention
+  store already carries, so a run started elsewhere shows under `#` at
+  once (Runs reads the store), and a crew saved on another page shows
+  within the minute.
+- `I` (type a line) is #303's; the key does nothing in PR 1.
+- The Exited group folds to one row with the count; Enter on it unfolds
+  the exited sessions for the open; a query lists them straight away.
+- The `?` modal lists the palette's keys as `PALETTE_SHORTCUTS`; the
+  sidebar's `/` row says what `/` does now.
+- The verb row under `>` reads as under no prefix (`> stop docs`), so the
+  brief's test passes as written.
