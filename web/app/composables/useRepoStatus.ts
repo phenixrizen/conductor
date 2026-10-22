@@ -74,21 +74,26 @@ export function useRepoStatus(request: FileRequester, cwd: () => string | undefi
     }
   }
 
-  // Each kind on its own timer, re-armed at the cadence the view shown asks for.
+  // Each kind on its own timer, re-armed at the cadence the view shown asks for. Once the owner is unmounted nothing re-arms: a
+  // request in flight at that moment settles and arms no timer (Codex's round on #301).
   let statusTimer: number | undefined
   let logTimer: number | undefined
+  let firstTimer: number | undefined
+  let disposed = false
   const visible = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
   function armStatus() {
     window.clearTimeout(statusTimer)
+    if (disposed) return
     statusTimer = window.setTimeout(async () => {
-      if (visible()) await loadStatus()
+      if (visible() && !disposed) await loadStatus()
       armStatus()
     }, pollInterval('changes', shown()))
   }
   function armLog() {
     window.clearTimeout(logTimer)
+    if (disposed) return
     logTimer = window.setTimeout(async () => {
-      if (visible()) await loadLog()
+      if (visible() && !disposed) await loadLog()
       armLog()
     }, pollInterval('commits', shown()))
   }
@@ -107,7 +112,8 @@ export function useRepoStatus(request: FileRequester, cwd: () => string | undefi
   })
   onMounted(() => {
     // The pills, and the Explorer's marks: one read of each when the pane is up.
-    window.setTimeout(() => {
+    firstTimer = window.setTimeout(() => {
+      if (disposed) return
       void loadStatus()
       void loadLog()
     }, 1500)
@@ -115,6 +121,8 @@ export function useRepoStatus(request: FileRequester, cwd: () => string | undefi
     armLog()
   })
   onBeforeUnmount(() => {
+    disposed = true
+    window.clearTimeout(firstTimer)
     window.clearTimeout(statusTimer)
     window.clearTimeout(logTimer)
   })

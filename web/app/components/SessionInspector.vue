@@ -69,6 +69,13 @@ watch(
     if (files) void touched.load()
   },
 )
+// The Explorer's dots: an index the first read could not get (the terminal still connecting) is asked for again as the Explorer opens.
+watch(
+  () => shown.value === 'explorer',
+  (explorer) => {
+    if (explorer && touched.index.value === null) void touched.load()
+  },
+)
 
 const now = ref(Date.now())
 let tick: number | undefined

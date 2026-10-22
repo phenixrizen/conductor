@@ -38,6 +38,13 @@ const touched = useTouched(
   () => props.cwd,
   () => props.activity,
 )
+// The Explorer's dots: an index the first read could not get is asked for again as the Explorer shows.
+watch(
+  () => section.value === 'explorer',
+  (explorer) => {
+    if (explorer && touched.index.value === null) void touched.load()
+  },
+)
 const items = computed(() =>
   filesItems({
     changes: repo.changes.value.length,
@@ -52,7 +59,7 @@ const items = computed(() =>
 
 <template>
   <div class="flex h-full min-h-0 w-full" data-files-pane>
-    <FileBrowser v-model:section="section" :request="request" :cwd="cwd" :raw-url="rawUrl" :base="base" :repo="repo" :touched="touched.rows.value" external class="flex-1 min-h-0 min-w-0" @open="emit('open', $event)" @open-diff="(c, a) => emit('openDiff', c, a)" @open-commit-diff="(c, k) => emit('openCommitDiff', c, k)" />
+    <FileBrowser v-model:section="section" :request="request" :cwd="cwd" :raw-url="rawUrl" :base="base" :repo="repo" :touched="touched.rows.value" :activity="activity" external class="flex-1 min-h-0 min-w-0" @open="emit('open', $event)" @open-diff="(c, a) => emit('openDiff', c, a)" @open-commit-diff="(c, k) => emit('openCommitDiff', c, k)" />
     <InspectorRail v-model:view="view" v-model:open="open" :items="items" :collapsible="false" />
   </div>
 </template>
