@@ -30,8 +30,9 @@ describe('the chords per system', () => {
   })
   it('shows the terminal’s copy and paste as the native pair on a Mac and Ctrl+Shift elsewhere', () => {
     const mac = rowsFor(TERMINAL_SHORTCUTS, 'mac').rows
-    expect(mac.find((r) => r.chord === 'copy')?.terminal).toEqual(['meta', 'C'])
-    expect(mac.find((r) => r.chord === 'paste')?.terminal).toEqual(['meta', 'V'])
+    // `command`, which UKbd shows as ⌘ on every user agent (an iPhone's lacks the `Macintosh;` UKbd reads `meta` by).
+    expect(mac.find((r) => r.chord === 'copy')?.terminal).toEqual(['command', 'C'])
+    expect(mac.find((r) => r.chord === 'paste')?.terminal).toEqual(['command', 'V'])
     for (const system of ['linux', 'windows'] as const) {
       const rows = rowsFor(TERMINAL_SHORTCUTS, system).rows
       expect(rows.find((r) => r.chord === 'copy')?.terminal).toEqual(['ctrl', 'shift', 'C'])
@@ -43,6 +44,7 @@ describe('the chords per system', () => {
   it('names what each system takes, the browser-only notes on the browser alone', () => {
     expect(systemNotes('windows', 'app').map((n) => n.chord)).toEqual(['Alt+Esc', 'Win+B'])
     expect(systemNotes('windows', 'browser').map((n) => n.chord)).toEqual(['Alt+Esc', 'Win+B', 'Ctrl+B', 'Ctrl+Tab, Ctrl+W'])
+    expect(systemNotes('mac', 'browser').map((n) => n.chord)).toEqual(['Option+letter', '⌘W, ⌃Tab', '⌃⌘F'])
     expect(systemNotes('mac', 'app').map((n) => n.chord)).toEqual(['Option+letter', '⌃⌘F'])
     expect(systemNotes('linux', 'browser').some((n) => n.browser === 'firefox')).toBe(true)
     expect(systemNotes('linux', 'app').some((n) => n.browser === 'firefox')).toBe(false)
@@ -52,5 +54,6 @@ describe('the chords per system', () => {
     expect(chordLabel(['meta', 'K'], 'linux')).toBe('Ctrl+K')
     expect(chordLabel(['alt', 'escape'], 'windows')).toBe('Alt+Esc')
     expect(chordLabel(['G', 'Y'], 'mac')).toBe('GY')
+    expect(chordLabel(['command', 'C'], 'mac')).toBe('⌘C')
   })
 })

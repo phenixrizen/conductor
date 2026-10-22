@@ -20,6 +20,7 @@ const quick = useQuickReply()
 const { create } = useTerminalTransport()
 const { httpBase } = useApiBase()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
+usePageAltCodes().register(['KeyQ'])
 
 type Filter = 'all' | 'needs' | 'running'
 function isFilter(v: unknown): v is Filter {

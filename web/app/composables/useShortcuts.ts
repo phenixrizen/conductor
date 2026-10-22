@@ -20,7 +20,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'KeyQ', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -131,6 +131,21 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
     { keys: ['escape'], label: 'Leave the terminal (Alt+Esc too, where the system leaves it)', terminal: ['alt', 'Q'], chord: 'leaveTerminal' },
     { keys: ['space'], label: 'On a chip of the strip: pick it up or drop it; the arrows move it, Escape puts it back' },
   ],
+}
+
+/**
+ * The Alt chords a page takes beside the global ones (#312, Codex's round): the Yard and the Roundhouse take Alt+Q to leave the
+ * terminal, and a terminal hands it back there alone, so a session page's terminal keeps it (zsh's push-line, for one).
+ */
+export function usePageAltCodes() {
+  const codes = useState<string[]>('pageAltCodes', () => [])
+  function register(list: string[]) {
+    codes.value = [...codes.value.filter((c) => !list.includes(c)), ...list]
+    onBeforeUnmount(() => {
+      codes.value = codes.value.filter((c) => !list.includes(c))
+    })
+  }
+  return { codes, register }
 }
 
 /**

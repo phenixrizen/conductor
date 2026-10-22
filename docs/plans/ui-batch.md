@@ -203,7 +203,13 @@ that is done, Clear the new-event badges, `]` / `[` and the pill, `G S`,
   were never ours. The desktop app's menu binds no Ctrl+W/Ctrl+Tab (its
   View menu: reload, zoom, fullscreen; Settings on ⌘,/Ctrl+,), so the
   editor keeps them in the app, as `EditorArea.vue` handles them; a
-  browser tab keeps them, said in the notes. The table below is the
+  browser tab keeps them, said in the notes. Codex's round: Electron's
+  `windowMenu` role did bind Close to Ctrl+W on Windows and Linux (⌘W on
+  a Mac), so the Window menu is built by hand without Close; Alt+Q is
+  handed back by a terminal only on the Yard and the Roundhouse
+  (`usePageAltCodes`), a session page's terminal keeping it; the Mac's
+  clipboard rows say `command`, which UKbd shows as ⌘ on an iPhone's or
+  iPad's user agent too. The table below is the
   pass as run here: Linux Chromium rows are the specs' (every row green
   in the batch's runs); the Windows and macOS rows, in the desktop app
   and in a browser, are NOT RUN in this PR and need the owner's hand at
@@ -222,7 +228,7 @@ that is done, Clear the new-event badges, `]` / `[` and the pill, `G S`,
 | S and X on a session page, Alt+X inside | reached (palette-reach.spec) | not run | not run |
 | Alt+Q from a terminal → leave the terminal (Yard, Roundhouse) | reached (chords.spec) | not run (Alt+Esc known taken by Windows) | not run |
 | Alt+Esc from a terminal → leave the terminal | reached (chords.spec) | taken by the system (not delivered) | not run |
-| Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+W in the editor | the browser's tabs (reserved by Chromium); the editor's strip stands in | not run (the app: free, no menu accelerator) | not run |
+| Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+W in the editor | the browser's tabs (reserved by Chromium); the editor's strip stands in | not run (the app's Window menu bound Close to Ctrl+W through Electron's `windowMenu` role; Codex's round replaced the role with Minimize and Zoom, so the editor keeps it there: to be checked in the app) | not run (⌘W: the same) |
 | Ctrl+Shift+C / V in a terminal; ⌘C / ⌘V on a Mac | reached (TerminalView's own handler; terminal specs) | not run | not run |
 | F outside a terminal, Alt+F inside → fullscreen | reached (shortcuts.spec) | not run | not run |
 | G S / Alt+, → Settings (desktop app only) | n/a in a browser | not run | not run |

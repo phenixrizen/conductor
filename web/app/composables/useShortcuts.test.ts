@@ -92,6 +92,8 @@ describe("the palette's reach (#303)", () => {
     expect(next?.label).toMatch(/needs you/)
     expect(GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join('+') === 'G+S')?.terminal).toEqual(['alt', ','])
     for (const code of ['BracketRight', 'BracketLeft', 'Comma', 'KeyX']) expect(ALT_PASSTHROUGH_CODES.has(code)).toBe(true)
+    // Alt+Q is the Yard's and the Roundhouse's alone (usePageAltCodes): a session page's terminal keeps it.
+    expect(ALT_PASSTHROUGH_CODES.has('KeyQ')).toBe(false)
   })
   it("lists S and X on the session page's group, with Alt+X in its terminal, ahead of the editor's keys", () => {
     expect(SESSION_SHORTCUTS.rows[0]).toEqual({ keys: ['S'], label: 'Share this session' })

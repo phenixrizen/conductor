@@ -2685,9 +2685,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   system leaves it. The sidebar's chord stays `meta+B` (⌘B on a Mac,
   Ctrl+B elsewhere, as shown): Win+B and Super+B are the system's and
   were never bound; Firefox's Ctrl+B (its bookmarks sidebar) is a note.
-  The desktop app's menu binds no Ctrl+W, Ctrl+Tab or Ctrl+Shift+Tab
-  (checked in `desktop/src/menu.ts`): the editor takes them in the app,
-  a browser tab keeps them, said in the notes. The validation pass is
+  The desktop app's Window menu is built without Close (Electron's
+  `windowMenu` role bound it to Ctrl+W on Windows and Linux): the editor
+  takes Ctrl+W, Ctrl+Tab and Ctrl+Shift+Tab in the app, a browser tab
+  keeps them, said in the notes. A terminal hands Alt+Q back only on the
+  Yard and the Roundhouse (`usePageAltCodes`), so a session page's
+  terminal keeps it; the Mac's clipboard rows say `command`, shown as ⌘
+  on every Apple user agent. The validation pass is
   the table in `docs/plans/ui-batch.md`: Linux Chromium driven by the
   specs (`chords.spec.ts`, `shortcuts.spec.ts`, `palette-keys.spec.ts`,
   `palette-reach.spec.ts`, `sidebar.spec.ts`); the Windows and Mac rows

@@ -36,8 +36,9 @@ const CHORDS: Record<Chord, Partial<Record<System, Pick<ShortcutRow, 'keys' | 't
     windows: { keys: ['escape'], terminal: ['alt', 'Q'] },
   },
   // The terminal's copy and paste: the native pair on a Mac.
-  copy: { mac: { keys: [], terminal: ['meta', 'C'] } },
-  paste: { mac: { keys: [], terminal: ['meta', 'V'] } },
+  // `command`, not `meta`: UKbd shows `meta` as ⌘ by the user agent's `Macintosh;` alone, which an iPhone's or iPad's lacks.
+  copy: { mac: { keys: [], terminal: ['command', 'C'] } },
+  paste: { mac: { keys: [], terminal: ['command', 'V'] } },
   // The sidebar: ⌘B on a Mac, Ctrl+B elsewhere (UKbd shows `meta` so); Win+B and Super+B are the system's and are not bound.
   sidebar: {},
 }
@@ -71,9 +72,9 @@ export const SYSTEM_NOTES: readonly SystemNote[] = [
   { system: 'windows', surface: 'browser', browser: 'firefox', chord: 'Ctrl+B', note: 'Firefox opens its bookmarks sidebar: collapse the sidebar with its button, or Alt+B from a terminal.' },
   { system: 'linux', surface: 'browser', browser: 'firefox', chord: 'Alt+letter', note: 'Firefox may open its menu bar on a plain Alt: the chords from a terminal are read first, so they reach the app.' },
   { system: 'mac', surface: 'both', chord: 'Option+letter', note: 'types a special character unless the page takes the chord first: the chords from a terminal are taken.' },
-  { system: 'mac', surface: 'browser', chord: 'Ctrl+Tab, Ctrl+W', note: 'the browser’s tabs: in the editor use its tab strip; the desktop app leaves them to the editor.' },
-  { system: 'linux', surface: 'browser', chord: 'Ctrl+Tab, Ctrl+W', note: 'the browser’s tabs: in the editor use its tab strip; the desktop app leaves them to the editor.' },
-  { system: 'windows', surface: 'browser', chord: 'Ctrl+Tab, Ctrl+W', note: 'the browser’s tabs: in the editor use its tab strip; the desktop app leaves them to the editor.' },
+  { system: 'mac', surface: 'browser', chord: '⌘W, ⌃Tab', note: 'the browser’s tabs: in the editor use its tab strip; the desktop app’s Window menu binds no Close, so the editor keeps them there.' },
+  { system: 'linux', surface: 'browser', chord: 'Ctrl+Tab, Ctrl+W', note: 'the browser’s tabs: in the editor use its tab strip; the desktop app’s Window menu binds no Close, so the editor keeps them there.' },
+  { system: 'windows', surface: 'browser', chord: 'Ctrl+Tab, Ctrl+W', note: 'the browser’s tabs: in the editor use its tab strip; the desktop app’s Window menu binds no Close, so the editor keeps them there.' },
   { system: 'mac', surface: 'both', chord: '⌃⌘F', note: 'the Mac’s fullscreen: F toggles the app’s.' },
 ]
 
@@ -84,6 +85,6 @@ export function systemNotes(system: System, surface: 'browser' | 'app'): SystemN
 
 /** The chord as the system shows it, for a table or a label: `⌘` `⌥` `⌃` on a Mac, `Ctrl` `Alt` elsewhere. */
 export function chordLabel(keys: readonly string[], system: System): string {
-  const names: Record<string, string> = system === 'mac' ? { meta: '⌘', ctrl: '⌃', alt: '⌥', shift: '⇧', enter: '↵', escape: 'Esc' } : { meta: 'Ctrl', ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', enter: 'Enter', escape: 'Esc' }
+  const names: Record<string, string> = system === 'mac' ? { meta: '⌘', command: '⌘', ctrl: '⌃', alt: '⌥', shift: '⇧', enter: '↵', escape: 'Esc' } : { meta: 'Ctrl', command: 'Cmd', ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', enter: 'Enter', escape: 'Esc' }
   return keys.map((k) => names[k] ?? (k.length === 1 ? k.toUpperCase() : k)).join(system === 'mac' ? '' : '+')
 }

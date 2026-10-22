@@ -1,11 +1,18 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
+
+function transcript(home: string, s: Session): string {
+  const file = join(home, '.stub-sessions', `${s.agentSession?.id ?? ''}.txt`)
+  return existsSync(file) ? readFileSync(file, 'utf8') : ''
+}
 
 // The chords per system (#312), on the one system the suite runs on
 // (Linux, Chromium): Alt+Q leaves a terminal's focus on the Yard's focus and
 // the Roundhouse, Alt+Esc too where the system leaves it; the shortcuts
 // modal shows Alt+Q for that row and says what this system takes; Ctrl+B
 // collapses the sidebar outside a terminal and Alt+B inside one.
-test('Alt+Q (and Alt+Esc here) leave the terminal on the Yard and the Roundhouse; the modal shows the system’s chords and notes', async ({ page, api }) => {
+test('Alt+Q (and Alt+Esc here) leave the terminal on the Yard and the Roundhouse, and reaches the shell on a session page; the modal shows the system’s chords and notes', async ({ page, api, state }) => {
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e chords' })
   try {
     const inTerminal = () => page.evaluate(() => !!document.activeElement?.closest('.terminal-host'))
@@ -55,6 +62,13 @@ test('Alt+Q (and Alt+Esc here) leave the terminal on the Yard and the Roundhouse
     await expect(rail).toBeVisible()
     await page.keyboard.press('Control+b')
     await expect(rail).toBeHidden()
+    // On a session page, which takes no Alt+Q, the chord is the shell's: it lands in the line as Escape then q (Codex's round).
+    await session.focus()
+    await page.keyboard.type('a')
+    await page.keyboard.press('Alt+q')
+    await page.keyboard.type('b')
+    await page.keyboard.press('Enter')
+    await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line with the chord was typed' }).toContain('a\u001bqb\n')
   } finally {
     await api.stopSession(s.id)
   }

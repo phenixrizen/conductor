@@ -13,6 +13,7 @@ const events = useEvents()
 const admin = useWorkbenchToken()
 const { create } = useTerminalTransport()
 useShortcutsModal().registerPage(CAROUSEL_SHORTCUTS)
+usePageAltCodes().register(['KeyQ'])
 
 // The settings kept per browser (#310 added the strip's order and view): each field checked on the way in.
 const SETTINGS_KEY = 'conductor.carousel.settings'
