@@ -251,22 +251,49 @@ test("the editor's own rows (#321): Save writes from the palette, Close file ask
   await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
   await expect(area.locator('[data-editor-dirty]')).toHaveCount(0)
   expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
-  // Dirty again: Close file asks, as Ctrl+W does; Cancel keeps the tab.
+  // Dirty again and folded: the editor's text is not at hand, so Save waits for it (a save then would have written the text as
+  // loaded and lost the edit: Codex's round); brought back, Save from the palette writes the edit. After a row runs, the next
+  // chord waits for the palette to be gone: pressed while it fades out, the chord is swallowed (#323).
   await lines.click()
   await page.keyboard.press('Control+End')
   await page.keyboard.type('delta\n')
   await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
   await page.keyboard.press('Alt+/')
+  await row('page:fold').click()
+  await expect(palette).toBeHidden()
+  await expect(area).toHaveAttribute('data-editor-area', 'folded')
+  await page.keyboard.press('Alt+/')
+  await expect(row('page:save')).toHaveAttribute('aria-disabled', 'true')
+  await expect(row('page:save')).toContainText('Bring the editor back first')
+  await row('page:fold').click()
+  await expect(palette).toBeHidden()
+  await expect(area).toHaveAttribute('data-editor-area', 'open')
+  await expect(lines).toContainText('delta', { timeout: 15_000 })
+  await page.keyboard.press('Alt+/')
+  await expect(row('page:save')).not.toHaveAttribute('aria-disabled', 'true')
+  await row('page:save').click()
+  await expect(palette).toBeHidden()
+  await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
+  await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
+  expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\ndelta\n')
+  // Dirty once more: Close file asks, as Ctrl+W does; Cancel keeps the tab.
+  await lines.click()
+  await page.keyboard.press('Control+End')
+  await page.keyboard.type('epsilon\n')
+  await expect(area.locator('[data-editor-dirty]')).toHaveCount(1)
+  await page.keyboard.press('Alt+/')
   await row('page:close-file').click()
+  await expect(palette).toBeHidden()
   const prompt = page.locator('[role="dialog"]', { hasText: 'Save notes.txt?' })
   await expect(prompt).toBeVisible()
   await prompt.getByRole('button', { name: 'Cancel' }).click()
   await expect(prompt).toBeHidden()
   await expect(area.locator('[data-editor-crumbs]')).toContainText('notes.txt')
-  // Saved, the keymap row is live again; where Neovim is offered, Enter switches the keymap.
+  // Saved (Ctrl+S from the editor), the keymap row is live again; where Neovim is offered, Enter switches the keymap and back.
   await lines.click()
   await page.keyboard.press('Control+s')
   await expect(area.locator('[data-editor-dirty]')).toHaveCount(0, { timeout: 15_000 })
+  expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\ndelta\nepsilon\n')
   await page.keyboard.press('Alt+/')
   const offered = (await row('page:keys').getAttribute('aria-disabled')) !== 'true'
   if (offered) {

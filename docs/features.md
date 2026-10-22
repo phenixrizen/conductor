@@ -2717,15 +2717,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   With a file open, the session page's group (and the Yard's focused
   tile's) gains **Keys → Neovim** / **Keys → default** (disabled while a
   tab is unsaved or Neovim is not offered, the detail saying why),
-  **Save** (`Ctrl+S`; disabled when nothing is dirty or the connection
-  may not edit), **Close file** (`Ctrl+W`; through `requestClose`, so an
+  **Save** (`Ctrl+S`; disabled when nothing is dirty, the connection
+  may not edit, or the editor is folded: its text is not at hand then,
+  and a save would have written the text as loaded and lost the edit the
+  kept model holds, Codex's round), **Close file** (`Ctrl+W`; through `requestClose`, so an
   unsaved file asks) and **Ask the agent about the selection**
   (`Ctrl+Shift+A`; disabled without a selection or when the agent cannot
   be asked). A guest's join page has no palette (its own layout), so it
   gets none. `palette.spec.ts`: a file open on a session page lists the
-  four rows; Save from the palette writes the file; Close file on a
-  dirty tab asks; Keys → Neovim is disabled while a tab is dirty and,
-  where Neovim is offered, switches the keymap.
+  four rows; Save from the palette writes the file, waits while the
+  editor is folded and writes once it is back; Close file on a dirty tab
+  asks; Keys → Neovim is disabled while a tab is dirty and, where Neovim
+  is offered, switches the keymap and back.
 - **Touched across every session, from the server's index (#304,
   2026-10-22).** `GET /api/touched` (admin, `internal/api/touched.go`)
   lists every listed session's touched files from the index each session

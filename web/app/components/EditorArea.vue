@@ -636,20 +636,24 @@ function onKeydown(e: KeyboardEvent) {
 
 // The palette's rows (#321): the editor's state as one reactive snapshot, read by the page's group (through the column) into
 // Keys → Neovim, Save, Close file and Ask the agent about the selection, and the acts behind them.
+// Folded, the editor is not mounted and its text is not at hand: a save then would write the text as loaded and forget the
+// edits the kept model holds (Codex's round on #321), so Save waits for the editor to be back.
 const paletteState = computed<EditorPaletteState>(() => {
   const t = active.value
+  const folded = tabs.value.folded
   const saveWhy = !t
     ? 'No file is open'
     : nvimOn.value
       ? 'Neovim holds the file: :w writes it'
-      : fileReadOnly.value || (!props.write || !props.canEdit ? 'This connection may not edit' : !editable.value ? 'Not a file that can be saved here' : dirty.has(t.id) ? '' : 'Nothing to save')
+      : fileReadOnly.value ||
+        (!props.write || !props.canEdit ? 'This connection may not edit' : !editable.value ? 'Not a file that can be saved here' : !dirty.has(t.id) ? 'Nothing to save' : folded ? 'Bring the editor back first (T)' : '')
   return {
     activeId: t?.id ?? null,
     keymap: keymap.value,
     nvimOffered: !!props.nvim && nvimWhy.value === '',
     nvimWhy: nvimWhy.value,
     switchBlocked: dirty.size ? 'Save or discard the changes first: the other keymap would not have them' : keymapBusy.value ? 'Neovim is still taking keys: a moment' : '',
-    saveable: !!t && editable.value && dirty.has(t.id),
+    saveable: !!t && editable.value && dirty.has(t.id) && !folded,
     saveWhy,
     canAsk: commentable.value && !!props.canAsk,
     hasSelection: !!selection.value,
@@ -658,7 +662,10 @@ const paletteState = computed<EditorPaletteState>(() => {
 function askAgent() {
   openComposer(true)
 }
-defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, palette: paletteState, setKeymap, save: () => void save(), askAgent })
+function saveFromPalette() {
+  if (!tabs.value.folded) void save()
+}
+defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, palette: paletteState, setKeymap, save: saveFromPalette, askAgent })
 </script>
 
 <template>
