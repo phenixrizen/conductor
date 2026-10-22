@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/signal"
 )
@@ -22,6 +23,12 @@ type attentionRequest struct {
 	// its turn's done (session.Local.Ask); with another state it changes
 	// nothing.
 	Ask bool `json:"ask"`
+	// Plan, with needs_input, is the path of the plan the question asks
+	// approval for (Claude Code's ExitPlanMode hook, #289): the session
+	// keeps it as one of its plans when it is a file in the agent's plans
+	// directory, and the question carries it (Attention.Plan). At most
+	// proto.MaxPlanPath bytes. A server session's alone.
+	Plan string `json:"plan"`
 }
 
 // eventRequest is the body of POST /api/sessions/{id}/events. Type is one of
@@ -129,7 +136,7 @@ func eventType(t string) bool {
 // share it, so they cannot drift apart. It writes the response and returns
 // false when the report is refused. ask, with needs_input, reports the
 // agent's own question (session.Local.Ask).
-func reportAttention(w http.ResponseWriter, d session.Driver, source string, state session.AttentionState, message, kind string, options []session.Option, ask bool) bool {
+func reportAttention(w http.ResponseWriter, d session.Driver, source string, state session.AttentionState, message, kind string, options []session.Option, ask bool, plan string) bool {
 	if len(message) > 4096 {
 		writeError(w, http.StatusBadRequest, "invalid_request", "message too long")
 		return false
@@ -147,12 +154,22 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 		return false
 	}
 	ask = ask && state == session.AttentionNeedsInput
+	// The plan the question is about (#289) goes with the change itself:
+	// a server session learns it as one of its plans as the question is
+	// set, a hosted one sends it to its host with the question. A report
+	// refused above, or by the bucket, names nothing.
+	if state != session.AttentionNeedsInput || ask {
+		plan = ""
+	}
 	switch drv := d.(type) {
 	case *session.Local:
 		var err error
-		if ask {
+		switch {
+		case ask:
 			err = drv.TryAsk(message, source, kind, options)
-		} else {
+		case plan != "":
+			err = drv.TrySetAttentionPlan(state, message, source, kind, options, plan)
+		default:
 			err = drv.TrySetAttentionFull(state, message, source, kind, options)
 		}
 		if err != nil {
@@ -169,7 +186,7 @@ func reportAttention(w http.ResponseWriter, d session.Driver, source string, sta
 		if ask {
 			err = drv.Ask(message, source, kind, options)
 		} else {
-			err = drv.SetAttentionFull(state, message, source, kind, options, true)
+			err = drv.SetAttentionPlan(state, message, source, kind, options, true, plan)
 		}
 		if err != nil {
 			writeSessionLimited(w)
@@ -212,7 +229,11 @@ func (s *Server) handleAttention(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "agentSession is longer than 128 bytes")
 		return
 	}
-	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
+	if len(req.Plan) > proto.MaxPlanPath {
+		writeError(w, http.StatusBadRequest, "invalid_request", "plan is longer than 1024 bytes")
+		return
+	}
+	if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask, req.Plan) {
 		return
 	}
 	if local, ok := d.(*session.Local); ok && req.AgentSession != "" {
@@ -248,7 +269,7 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if state, isAttention := attentionState(req.Type); isAttention {
-		if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask) {
+		if !reportAttention(w, d, source, state, req.Message, req.Kind, req.Options, req.Ask, "") {
 			return
 		}
 	} else if eventType(req.Type) {

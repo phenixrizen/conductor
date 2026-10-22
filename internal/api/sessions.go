@@ -271,11 +271,12 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	if err != nil {
 		return nil, newAPIError(http.StatusBadRequest, "invalid_cwd", "working directory does not exist")
 	}
+	procEnv := pty.BuildEnv(pty.ParentEnv(), passthrough, env, inject)
 	proc, err := pty.Start(pty.Spec{
 		Argv:    argv,
 		Dir:     cwd,
 		DirFile: dirFile,
-		Env:     pty.BuildEnv(pty.ParentEnv(), passthrough, env, inject),
+		Env:     procEnv,
 		Cols:    cols,
 		Rows:    rows,
 	})
@@ -325,6 +326,10 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		WatchGit:        true,
 		Launched:        session.Launched{AgentID: agent.ID, Name: name, Cwd: cwd, Args: slices.Clone(req.Args), Env: maps.Clone(req.Env), Yolo: yolo},
 		Folder:          folder,
+		// Where the agent keeps its plans outside the folder (#289), from
+		// its adapter and the environment the process was given: the
+		// directory the agent itself writes to.
+		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
 	})
 	local.SetAgentToken(agentToken)
 	if err := s.registry.Add(local); err != nil {

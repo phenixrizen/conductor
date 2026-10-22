@@ -149,6 +149,12 @@ type Attention struct {
 	// gone, and no page offers it (#258). Set as the session reports its
 	// attention (Local.attentionLocked), never stored.
 	Answered string `json:"answered,omitempty"`
+	// Plan is the path of the plan a question asks approval for (Claude
+	// Code's ExitPlanMode, #289), as the agent named it, once the session
+	// has seen it to be one of its plans (NotePlan): a page opens it in
+	// the editor. Set on the question shown after the agent names it, and
+	// gone with the next state.
+	Plan string `json:"plan,omitempty"`
 	// rows are the words of a question asked from the screen as its rows
 	// (StartupQuestion.words), whole, which tell it from the next
 	// (sameWords); Message is cut from them. Kept by the session, never
@@ -163,6 +169,11 @@ type Attention struct {
 	// so: Local.Ask), which the session keeps through its turn's done
 	// (Local.own). Kept by the session, never sent to a browser.
 	ask bool
+	// approval marks a dialog read off the screen as a plan's approval (its
+	// footer says so: planApprovalShown, #289): the one a late report of
+	// that approval names the plan for, and the one that keeps the plan of
+	// the report it takes the place of. Kept by the session, never sent.
+	approval bool
 }
 
 // Asked reports whether a is the agent's own question (Local.Ask): what a

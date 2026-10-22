@@ -2141,6 +2141,29 @@ waiting on monaco-neovim-wasm's missing license.
 
 ### Decisions
 
+- **A plan saved outside the folder opens in the editor (#289,
+  2026-10-21).** Claude Code writes its plans under its config directory
+  (`~/.claude/plans/<slug>.md`, or `plans` under `CLAUDE_CONFIG_DIR`;
+  checked against 2.1.306), where the session's folder does not reach.
+  The session opens that one directory as a second root (an `os.Root`
+  held to the same checks as the working directory: links refused once
+  resolved, the deny list by identity) the first time the agent reports a
+  file in it, and the files the agent reports there are the session's
+  plans: its hooks' file events (a delete forgets one), the plan its
+  approval names (the ExitPlanMode hook's `planFilePath`, carried by the
+  attention route's `plan`) and the path its dialog prints, once seen to
+  be a file there. A plan opens in the editor from the approval's **Open
+  plan** in the reply bar, from the Files tab's **Plans** group at the top
+  of the Explorer (`op: plans`) and from the path the dialog prints in the
+  terminal; it previews as Markdown, saves back through the same root,
+  and Touched lists it by its whole path. Another session's plan in the
+  directory, the credentials beside it and the rest of the config
+  directory stay refused as any outside path; a viewer cannot name a plan
+  into the session, since only the agent's token or an admin reports
+  events. The directory comes from the agent's adapter and the environment
+  its process was given (`agents.PlansDir`), never from a page; a host
+  does the same for its agent, and a hosted session's plan travels to the
+  host with the forwarded question. Design: `docs/plans/issue-289.md`.
 - **F1, the Explorer (4a).** The Files tab opens on the working directory
   as a tree (`utils/fileTree.ts`: the root, folders listed on their first
   expansion through the same `file` request a directory took before, files

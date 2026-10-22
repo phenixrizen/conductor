@@ -1080,7 +1080,7 @@ func (h *HostedSession) SetAttention(state session.AttentionState, message, sour
 // is told, so its viewers see the change too; without one the change is held
 // on the server. A change from the host (forward false) never spends one.
 func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, source, kind string, options []session.Option, forward bool) error {
-	return h.setAttention(state, message, source, kind, options, forward, "", false, "")
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", "")
 }
 
 // Ask is SetAttentionFull, forwarded, for the agent's own question
@@ -1091,7 +1091,7 @@ func (h *HostedSession) SetAttentionFull(state session.AttentionState, message, 
 // every report forwarded. A question the host has set aside shows here as
 // the host tells it.
 func (h *HostedSession) Ask(message, source, kind string, options []session.Option) error {
-	return h.setAttention(session.AttentionNeedsInput, message, source, kind, options, true, "", true, "")
+	return h.setAttention(session.AttentionNeedsInput, message, source, kind, options, true, "", true, "", "")
 }
 
 // HostAttention records an attention change the host reports (forward
@@ -1100,11 +1100,20 @@ func (h *HostedSession) Ask(message, source, kind string, options []session.Opti
 // from the server's listings names the question the host holds; ask says
 // it is the agent's own question (Attention.Asked); answered is its mark as
 // one keys typed in the host's terminal have answered (Attention.Answered).
-func (h *HostedSession) HostAttention(state session.AttentionState, message, source, kind string, options []session.Option, id string, ask bool, answered string) {
+func (h *HostedSession) HostAttention(state session.AttentionState, message, source, kind string, options []session.Option, id string, ask bool, answered, plan string) {
 	if !proto.ValidQuestionID(id) {
 		id = ""
 	}
-	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered)
+	_ = h.setAttention(state, message, source, kind, options, false, id, ask, answered, plan)
+}
+
+// SetAttentionPlan is SetAttentionFull for a report that names the plan
+// its question asks approval for (the attention route's plan, #289): it
+// goes to the host with the question, whose session learns it as one of
+// its plans and tells its attention back with it (HostAttention's plan);
+// the server's copy carries it meanwhile.
+func (h *HostedSession) SetAttentionPlan(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, plan string) error {
+	return h.setAttention(state, message, source, kind, options, forward, "", false, "", plan)
 }
 
 // setAttention is SetAttentionFull with the change's id: the host's, or,
@@ -1116,13 +1125,16 @@ func (h *HostedSession) HostAttention(state session.AttentionState, message, sou
 // answered: AnsweredTerminal). ask marks a needs_input change as the agent's own
 // question (Ask); a done forwarded while one shows is sent on to the host
 // and changes nothing here.
-func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool, answered string) error {
+func (h *HostedSession) setAttention(state session.AttentionState, message, source, kind string, options []session.Option, forward bool, id string, ask bool, answered, plan string) error {
 	if !state.Valid() {
 		return nil
 	}
 	ask = ask && state == session.AttentionNeedsInput
 	if state != session.AttentionNeedsInput || answered != session.AnsweredTerminal {
 		answered = ""
+	}
+	if state != session.AttentionNeedsInput || len(plan) > proto.MaxPlanPath {
+		plan = ""
 	}
 	message = session.CleanMessage(message)
 	if !session.ValidKind(kind) {
@@ -1138,7 +1150,7 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 		h.mu.Unlock()
 		return ErrRateLimited
 	}
-	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, Answered: answered}
+	att := session.Attention{State: state, Message: message, Source: source, Kind: kind, Options: options, Answered: answered, Plan: plan}
 	if forward && state == session.AttentionDone && h.asked && h.info.Attention.State == session.AttentionNeedsInput {
 		// The agent's own question outlasts its turn's done, here as on the
 		// host, which is told the done and tells its attention back.
@@ -1173,7 +1185,7 @@ func (h *HostedSession) setAttention(state session.AttentionState, message, sour
 // sameAttention says whether a and b show the same, as a session takes a
 // change (state, words, source, kind and choices), whatever their stamps.
 func sameAttention(a, b session.Attention) bool {
-	if a.State != b.State || a.Message != b.Message || a.Source != b.Source || a.Kind != b.Kind || a.Answered != b.Answered || len(a.Options) != len(b.Options) {
+	if a.State != b.State || a.Message != b.Message || a.Source != b.Source || a.Kind != b.Kind || a.Answered != b.Answered || a.Plan != b.Plan || len(a.Options) != len(b.Options) {
 		return false
 	}
 	for i := range a.Options {
@@ -1187,7 +1199,7 @@ func sameAttention(a, b session.Attention) bool {
 // hostAttentionMsg encodes an attention change for the host control link,
 // ask its mark as the agent's own question.
 func hostAttentionMsg(sessionID string, att session.Attention, ask bool) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, Ask: ask, Answered: att.Answered}
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, Ask: ask, Answered: att.Answered, Plan: att.Plan}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}

@@ -95,15 +95,23 @@ func TestMapClaudeHookPermissionPromptNotification(t *testing.T) {
 // (seen with Claude Code 2.1.304): their words say what they ask, the
 // plan's approval and the question, never "Allow ExitPlanMode?".
 func TestMapClaudeHookPlanAndQuestionSayWhatTheyAsk(t *testing.T) {
-	for _, c := range []struct{ payload, want string }{
-		{`{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"Create hello.txt containing hi.\n","planFilePath":"/home/dev/.claude/plans/plan-creating-a-file.md"}}`, "Claude Code has a plan for you to approve"},
-		{`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Do you prefer red or blue?","header":"Color","options":[{"label":"Red","description":"Prefer red"},{"label":"Blue","description":"Prefer blue"}],"multiSelect":false}]}}`, "Do you prefer red or blue?"},
-		{`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{}}`, "Claude Code asks you a question"},
+	for _, c := range []struct{ payload, want, plan string }{
+		// The plan's approval names the plan's file (#289), which the question carries.
+		{`{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"Create hello.txt containing hi.\n","planFilePath":"/home/dev/.claude/plans/plan-creating-a-file.md"}}`, "Claude Code has a plan for you to approve", "/home/dev/.claude/plans/plan-creating-a-file.md"},
+		{`{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"plan":"Create hello.txt containing hi.\n"}}`, "Claude Code has a plan for you to approve", ""},
+		{`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Do you prefer red or blue?","header":"Color","options":[{"label":"Red","description":"Prefer red"},{"label":"Blue","description":"Prefer blue"}],"multiSelect":false}]}}`, "Do you prefer red or blue?", ""},
+		{`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{}}`, "Claude Code asks you a question", ""},
+		{`{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls","planFilePath":"/home/dev/.claude/plans/x.md"}}`, "Allow Bash?", ""},
 	} {
 		req, ok := MapClaudeHook([]byte(c.payload))
-		if !ok || req.State != "needs_input" || req.Kind != "permission" || req.Message != c.want || req.Options != nil {
+		if !ok || req.State != "needs_input" || req.Kind != "permission" || req.Message != c.want || req.Options != nil || req.Plan != c.plan {
 			t.Fatalf("%s: %+v %v", c.payload, req, ok)
 		}
+	}
+	// A path past the bound names no file a session keeps.
+	long := `{"hook_event_name":"PermissionRequest","tool_name":"ExitPlanMode","tool_input":{"planFilePath":"/` + strings.Repeat("p", 1100) + `.md"}}`
+	if req, ok := MapClaudeHook([]byte(long)); !ok || req.Plan != "" {
+		t.Fatalf("a long plan path: %+v", req)
 	}
 }
 

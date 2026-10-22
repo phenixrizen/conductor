@@ -233,7 +233,8 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		firstConn.Close(websocket.StatusNormalClosure, "start failed")
 		return Result{}, err
 	}
-	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: hostEnv(env), Cols: cols, Rows: rows})
+	procEnv := hostEnv(env)
+	proc, err := pty.Start(pty.Spec{Argv: opts.Argv, Dir: dir, DirFile: dirFile, Env: procEnv, Cols: cols, Rows: rows})
 	dirFile.Close()
 	if err != nil {
 		folder.Close()
@@ -263,13 +264,16 @@ func Run(ctx context.Context, opts Options) (Result, error) {
 		FileEdit:        opts.FileEdit,
 		FileDenyFunc:    opts.FileDeny,
 		Folder:          folder,
-		Transport:       proto.TransportWebRTC,
-		Log:             opts.Log,
-		OnChange:        a.noteChange,
-		OnActivity:      a.onLocalActivity,
-		OnChat:          a.onLocalChat,
-		Pattern:         opts.Pattern,
-		WatchGit:        true,
+		// Where the agent keeps its plans outside the folder (#289), from
+		// its adapter and the environment the process was given.
+		Plans:      agents.PlansDir(opts.Adapter, pty.Lookup(procEnv), dir),
+		Transport:  proto.TransportWebRTC,
+		Log:        opts.Log,
+		OnChange:   a.noteChange,
+		OnActivity: a.onLocalActivity,
+		OnChat:     a.onLocalChat,
+		Pattern:    opts.Pattern,
+		WatchGit:   true,
 	})
 	a.mu.Lock()
 	a.local, a.proc = local, proc
@@ -855,7 +859,9 @@ func (a *agent) retryAttention() {
 func sameAttention(x, y session.Attention) bool {
 	// The source too: a switchyard is told no words, and a held turn
 	// (source submit) differs from a bell's wait by its source alone there.
-	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked()
+	// The plan too (#289): a plan set on the question showing (the dialog's
+	// footer read after the hook's report) changes nothing else of it.
+	return x.State == y.State && x.Message == y.Message && x.Source == y.Source && x.Kind == y.Kind && len(x.Options) == len(y.Options) && x.ID == y.ID && x.Asked() == y.Asked() && x.Plan == y.Plan
 }
 
 // toServer is an attention change as the server is told it: in full to the
@@ -874,7 +880,7 @@ func (a *agent) toServer(att session.Attention) session.Attention {
 // with its mark as the agent's own question, which the server's copy keeps
 // through a done it forwards (signal.HostedSession.Ask).
 func hostAttentionMsg(sessionID string, att session.Attention) proto.HostAttentionMsg {
-	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered}
+	m := proto.HostAttentionMsg{T: proto.HostAttention, SessionID: sessionID, State: string(att.State), Message: att.Message, Source: att.Source, Kind: att.Kind, ID: att.ID, Ask: att.Asked(), Answered: att.Answered, Plan: att.Plan}
 	for _, o := range att.Options {
 		m.Options = append(m.Options, proto.AttentionOption{Label: o.Label, Input: o.Input, Mode: o.Mode})
 	}
@@ -1316,11 +1322,15 @@ func (a *agent) handleControl(ctx context.Context, data []byte) error {
 		a.mu.Lock()
 		a.attentionUntold = true
 		a.mu.Unlock()
-		if m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput {
+		switch {
+		case m.Ask && session.AttentionState(m.State) == session.AttentionNeedsInput:
 			// The agent's own question (the server's Ask): the session
 			// keeps it through its turn's done.
 			a.local.Ask(m.Message, source, m.Kind, opts)
-		} else {
+		case m.Plan != "":
+			// The plan the question is about (#289), set with it.
+			a.local.SetAttentionPlan(session.AttentionState(m.State), m.Message, source, m.Kind, opts, m.Plan)
+		default:
 			a.local.SetAttentionFull(session.AttentionState(m.State), m.Message, source, m.Kind, opts)
 		}
 		a.noteChange(a.local.Info())

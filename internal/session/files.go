@@ -91,7 +91,9 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 		deny := s.fileDeny()
 		switch req.Op {
 		case "":
-			h, body = s.folder.read(req.Path, req.Stat, deny, sub.Role)
+			// One of the agent's plans outside the folder is read through
+			// the plans folder (folderFor, #289).
+			h, body = s.folderFor(req.Path).read(req.Path, req.Stat, deny, sub.Role)
 		case proto.FileOpStatus, proto.FileOpShow, proto.FileOpLog, proto.FileOpCommit:
 			// Git reads the files itself, by path: the session's path
 			// must still name its folder for them too.
@@ -113,6 +115,8 @@ func (s *Local) FileGet(sub *Subscription, req proto.FileGet) error {
 			h = s.folder.find(req.Path, deny)
 		case proto.FileOpTouched:
 			h = s.TouchedPath(deny)
+		case proto.FileOpPlans:
+			h = s.PlansPath(deny, sub.Role)
 		default:
 			h = proto.FileHeader{Path: req.Path, Kind: "error", Error: &proto.ErrorInfo{Code: "bad_request", Message: "unknown file operation"}}
 		}
@@ -169,7 +173,7 @@ func ReadPath(root, raw string, statOnly bool, deny []string) (proto.FileHeader,
 // a viewer of role: one that is not a controller is not given git's
 // settings and credentials (forControllers).
 func (s *Local) ReadPath(raw string, statOnly bool, deny []string, role Role) (proto.FileHeader, []byte) {
-	return s.folder.read(raw, statOnly, deny, role)
+	return s.folderFor(raw).read(raw, statOnly, deny, role)
 }
 
 // read is ReadPath in the folder for a viewer of role: raw checked
@@ -388,8 +392,8 @@ func resolvePath(root, raw string, deny denySet) (real, rootReal string, err err
 		return "", "", errors.New("path contains NUL")
 	}
 	if raw == "~" || strings.HasPrefix(raw, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
+		home := homeDir()
+		if home == "" {
 			return "", "", errors.New("home directory unavailable")
 		}
 		raw = filepath.Join(home, strings.TrimPrefix(raw, "~"))
@@ -415,7 +419,7 @@ func resolvePath(root, raw string, deny denySet) (real, rootReal string, err err
 		return "", "", errors.New("path unavailable")
 	}
 	if real != rootReal && !strings.HasPrefix(real, rootReal+string(filepath.Separator)) {
-		return "", "", errors.New("path is outside the session directory")
+		return "", "", errOutside
 	}
 	rel, _ := filepath.Rel(rootReal, real)
 	parts := strings.Split(rel, string(filepath.Separator))

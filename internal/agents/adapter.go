@@ -66,6 +66,13 @@ type Adapter struct {
 	// (conductor mcp) with the agent for one launch, given the hooks dir;
 	// nil for an agent Conductor cannot register it with at launch.
 	MCP func(hooksDir string) []string
+	// PlansDir, when set, is where the agent keeps the plans it writes
+	// outside a project (#289), given the environment its process runs with
+	// (getenv): Claude Code's `plans` under CLAUDE_CONFIG_DIR, else under
+	// ~/.claude. "" when no home is known; a relative directory is taken
+	// from the session's working directory (PlansDir). nil for an agent
+	// that keeps none Conductor knows of.
+	PlansDir func(getenv func(string) string) string
 }
 
 // InstallsSkill reports whether the agent reads skills: its Install, and a

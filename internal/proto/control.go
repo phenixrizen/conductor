@@ -378,11 +378,21 @@ const (
 	// started, from the session's own index (no walk, no git), answered
 	// with kind `touched`.
 	FileOpTouched = "touched"
+	// FileOpPlans lists the agent's plans outside the working directory
+	// (#289: the files it reported in its plans directory, which it may
+	// read and save as the folder's files), answered with kind `plans`:
+	// Path the plans directory, Entries the plans by their paths from it.
+	FileOpPlans = "plans"
 )
 
 // MaxCwd bounds a session's working directory where the protocol carries
 // it: HostSession.Cwd and Welcome.Cwd.
 const MaxCwd = 4096
+
+// MaxPlanPath bounds a plan's path where the protocol carries it
+// (Attention.Plan, HostAttentionMsg.Plan, and the attention route's
+// `plan`): a path, as the agent names its files (session.MaxEventPath).
+const MaxPlanPath = 1024
 
 // Welcome is the owner's first message after hello (or before signaling for hosted sessions).
 type Welcome struct {
@@ -519,6 +529,12 @@ type Attention struct {
 	// dialog stays on the screen: no client offers it (docs/protocol.md,
 	// Attention).
 	Answered string `json:"answered,omitempty"`
+	// Plan is the path of the plan the question asks approval for (Claude
+	// Code's ExitPlanMode, #289), at most MaxPlanPath bytes, which the
+	// session reads and saves as the folder's files (a `file_get` of it):
+	// a page offers to open it. Absent from any other question, and from
+	// an older owner.
+	Plan string `json:"plan,omitempty"`
 }
 
 // Activity is one entry of the session activity log (owner -> client). The

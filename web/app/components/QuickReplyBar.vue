@@ -4,8 +4,11 @@ import type { Attention, Role } from '~/utils/protocol'
 import { draftQuestion, questionOf } from '~/utils/reply'
 
 const props = defineProps<{ attention?: Attention; agentName: string; role: Role; busy?: boolean }>()
-/** Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). */
-const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined] }>()
+/**
+ * Each reply names the question the bar showed as it was clicked, typed or keyed (its id; none from an older owner). `openPlan` is
+ * the plan a plan approval is about (#289), to open in the editor.
+ */
+const emit = defineEmits<{ reply: [text: string, question: string | undefined]; option: [index: number, question: string | undefined]; openPlan: [path: string] }>()
 
 const text = ref('')
 const show = computed(() => props.attention?.state === 'needs_input')
@@ -76,6 +79,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
            token breaks rather than overflows. -->
       <span class="break-words text-xs text-muted" data-quick-reply-message>{{ attention?.message || 'Answer here or in the terminal. First reply wins; everyone sees who answered.' }}</span>
     </div>
+    <!-- The plan the approval is about (#289), read in the editor before answering. -->
+    <UButton v-if="attention?.plan" label="Open plan" icon="i-lucide-file-text" size="sm" color="neutral" variant="soft" class="flex-none" :title="attention.plan" data-quick-reply-plan @click="emit('openPlan', attention!.plan!)" />
     <div v-if="options.length" class="ml-auto flex flex-wrap items-center gap-2 flex-none">
       <UButton
         v-for="(o, i) in options"

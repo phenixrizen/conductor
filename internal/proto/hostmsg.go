@@ -266,6 +266,9 @@ type HostAttentionMsg struct {
 	// Answered is the host's Attention.Answered: "terminal" for a question
 	// answered by keys typed in its terminal (Attention).
 	Answered string `json:"answered,omitempty"`
+	// Plan is the host's Attention.Plan: the plan a question asks approval
+	// for, at most MaxPlanPath bytes (#289).
+	Plan string `json:"plan,omitempty"`
 }
 
 // HostActivityMsg carries one activity-log entry between host and server.

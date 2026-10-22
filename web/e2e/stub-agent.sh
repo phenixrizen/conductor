@@ -343,20 +343,26 @@ approval() {
 	fi
 }
 
-# claude_plan sends the hooks Claude Code 2.1.304 sends for its plan's
-# approval (PreToolUse, then PermissionRequest, of ExitPlanMode) and draws
-# the dialog as it drew it in a PTY on 2026-10-19 (#288), its rules cut to
-# fit and its question on two rows: "❯ 1. Yes, and use auto mode", "2. Yes,
-# manually approve edits", "3. Tell Claude what to change", its hint, then
-# "ctrl+g to edit in Vim · <plan>" as the last row. It waits for one key:
-# 1 or 2 picks at once, Escape declines; any other key, a paste included,
-# is ignored (3 only takes Claude Code's highlight into its feedback
-# field). The key goes into the transcript as "plan: 1", "plan: 2" or
-# "plan: esc".
+# claude_plan writes the plan where Claude Code 2.1.304 writes it, under
+# the home's .claude/plans (#289), with the PostToolUse hook of that Write,
+# then sends the hooks Claude Code sends for its plan's approval
+# (PreToolUse, then PermissionRequest, of ExitPlanMode, the plan's path as
+# planFilePath) and draws the dialog as it drew it in a PTY on 2026-10-19
+# (#288), its rules cut to fit and its question on two rows: "❯ 1. Yes,
+# and use auto mode", "2. Yes, manually approve edits", "3. Tell Claude
+# what to change", its hint, then "ctrl+g to edit in Vim · <plan>" as the
+# last row. It waits for one key: 1 or 2 picks at once, Escape declines;
+# any other key, a paste included, is ignored (3 only takes Claude Code's
+# highlight into its feedback field). The key goes into the transcript as
+# "plan: 1", "plan: 2" or "plan: esc".
 claude_plan() {
-	local key seq rule dash pasted
+	local key seq rule dash pasted plan
+	plan="$HOME/.claude/plans/plan.md"
+	mkdir -p "$HOME/.claude/plans"
+	printf '# Plan\n\nCreate hello.txt containing hi.\n' >"$plan"
+	claude_hook "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"session_id\":\"$id\",\"tool_input\":{\"file_path\":$(json_str "$plan"),\"content\":\"# Plan\\n\\nCreate hello.txt containing hi.\\n\"},\"cwd\":$(json_str "$PWD")}"
 	claude_hook "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"ExitPlanMode\",\"session_id\":\"$id\"}"
-	claude_hook "{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"ExitPlanMode\",\"session_id\":\"$id\",\"tool_input\":{\"plan\":\"Create hello.txt containing hi.\"}}"
+	claude_hook "{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"ExitPlanMode\",\"session_id\":\"$id\",\"tool_input\":{\"plan\":\"Create hello.txt containing hi.\",\"planFilePath\":$(json_str "$plan")}}"
 	rule=$(printf '─%.0s' {1..40})
 	dash=$(printf '╌%.0s' {1..40})
 	printf '\e[2J\e[H  %s\n   Ready to code?\n\n   Here is Claude'"'"'s plan:\n  %s\n   Create hello.txt containing hi.\n  %s\n\n  %s\n   Claude has written up a plan and is ready to execute.\n   Would you like to proceed?\n\n   ❯ 1. Yes, and use auto mode\n     2. Yes, manually approve edits\n     3. Tell Claude what to change\n        shift+tab to approve with this feedback\n\n   ctrl+g to edit in Vim · ~/.claude/plans/plan.md' "$rule" "$dash" "$dash" "$rule"

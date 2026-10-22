@@ -485,7 +485,7 @@ function requestFile(path: string, stat?: boolean, extra?: FileGetExtra) {
           @open-url="openUrl"
         />
         <template #bar>
-          <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" />
+          <QuickReplyBar :attention="attention" :agent-name="agentLabel" :role="info.role" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" />
         </template>
       </EditorColumn>
       <aside v-if="filesPanel" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-lg border border-default bg-default" data-files-aside>

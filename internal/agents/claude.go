@@ -103,6 +103,7 @@ func claudeAdapter() Adapter {
 		MCP: func(hooksDir string) []string {
 			return []string{"--mcp-config", filepath.Join(hooksDir, "claude-mcp.json")}
 		},
+		PlansDir: claudePlansDir,
 		Status: func(home string) (bool, string) {
 			return statusOf(home, claudeSettings, claudeSteps("")...)
 		},
