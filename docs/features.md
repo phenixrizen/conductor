@@ -2669,6 +2669,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **An exited row's arrow and its `…` in line (#331, 2026-10-22).** In
+  `SidebarSessionRow.vue` the resume/relaunch arrow is a column beside the
+  link, centred in the row, while the hover bar (`[data-row-actions]`:
+  Share, Stop, More) sat at the row's top, so on an exited row the `…`
+  came in a few pixels above the arrow, in a box of its own. On a
+  resumable row the bar is centred vertically now (`top-1/2
+  -translate-y-1/2`), so the `…` and the arrow share one centre and sit
+  side by side at the row's edge; running rows keep the bar at the top
+  beside their first line. `sidebar.spec.ts` measures the two boxes on a
+  hovered exited row: one centre within a pixel, the `…` just left of the
+  arrow, both inside the row.
 - **The bar's Files and Chat only below `xl` (#329, 2026-10-22).** At `xl`
   the inspector rail (#301) has Explorer and Chat, with the chat's unread
   count on the rail, so the session page's header said both twice and
