@@ -23,7 +23,8 @@ test('the tab menu closes to the right, others and all, asking about an unsaved 
   }
   const choose = async (n: string, item: string) => {
     await tab(n).click({ button: 'right' })
-    await page.getByRole('menuitem', { name: item }).click()
+    // The Close item's accessible name carries its keys ("Close Ctrl W"); the others are their words alone.
+    await page.getByRole('menuitem', { name: item === 'Close' ? /^Close(\s+Ctrl\s*W)?$/ : item, exact: true }).click()
   }
   try {
     await page.goto(`/sessions/${s.id}`)
@@ -97,6 +98,24 @@ test('the tab menu closes to the right, others and all, asking about an unsaved 
     await expect(menu).toBeHidden()
     await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
     await expect(tab('b')).toHaveAttribute('data-editor-tab-active', '')
+    // A clean tab closed from its own menu takes its menu away before the menu says it closed (Codex's third round): the
+    // sidebar row's menu, and the next tab menu, still close on Escape afterwards.
+    await showView(page, 'explorer')
+    await page.locator(`[data-files-mode] [data-file-node="${join(cwd, 'a.txt')}"]`).click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
+    await choose('a', 'Close')
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
+    await expect(menu).toBeHidden()
+    await page.locator('[data-sidebar-row]').first().click({ button: 'right' })
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await tab('b').locator('button').first().focus()
+    await page.keyboard.press('Shift+F10')
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
   } finally {
     await api.stopSession(s.id)
   }

@@ -595,22 +595,28 @@ function onTabKey(e: KeyboardEvent) {
  * through the closer in the tab, since Reka's own Escape listens on the window too.
  */
 const tabMenuOpen = ref<string | null>(null)
-const menuClosers = new Map<string, { close: () => void }>()
+const menuClosers = new Map<string, { close: () => void; open: () => boolean }>()
 function onTabMenu(id: string, open: boolean) {
   if (open) tabMenuOpen.value = id
   else if (tabMenuOpen.value === id) tabMenuOpen.value = null
 }
+// The closer goes with its tab: a tab closed from its own menu unmounts the menu before Reka says it closed (Codex's third
+// round), so the mark clears here too, and a key is only ever taken for a menu whose closer says it is open now.
 function setMenuCloser(id: string, el: unknown) {
-  if (el) menuClosers.set(id, el as { close: () => void })
-  else menuClosers.delete(id)
+  if (el) menuClosers.set(id, el as { close: () => void; open: () => boolean })
+  else {
+    menuClosers.delete(id)
+    if (tabMenuOpen.value === id) tabMenuOpen.value = null
+  }
 }
 function onMenuKey(e: KeyboardEvent) {
   const id = tabMenuOpen.value
-  if (!id || !(e.target as HTMLElement | null)?.closest('[role="menu"]')) return
+  const closer = id ? menuClosers.get(id) : undefined
+  if (!closer?.open() || !(e.target as HTMLElement | null)?.closest('[role="menu"]')) return
   e.stopPropagation()
   if (e.key === 'Escape') {
     e.preventDefault()
-    menuClosers.get(id)?.close()
+    closer.close()
   }
 }
 onMounted(() => document.addEventListener('keydown', onMenuKey))
