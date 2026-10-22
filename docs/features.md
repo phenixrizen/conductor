@@ -2669,6 +2669,72 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **Every palette row does what it says (#332, 2026-10-22).** On the
+  session page `showView('chat')` handed to `showChat()`, the header
+  button's toggle, so **Open Chat** from the palette (and a session row's
+  Open Chat on this page) collapsed an open chat. `showView` shows: the
+  inspector on the view (the sheet below `xl`) and nothing when it is
+  shown already; the header buttons keep their toggles. Then a sweep,
+  `palette-rows.spec.ts`, running each row from Enter or a click and
+  asserting its visible effect: the session page's Share, Copy a view
+  link, the marks, Fold, the views (Open Chat twice stays open), the tab
+  rows and Stop; the run page's broadcast field, views, chat, share and
+  stop; the Yard's chips, the Roundhouse's switches and rotation, Crews'
+  New crew, Events' refresh and tabs, Agents' Launch, Settings' Save; the
+  session rows' → actions (the copies by their toasts, Open Files/Chat/
+  Activity/People by `?tab=`, the line's field, Resume); the verbs `go`,
+  `mark`, `share`, `answer`; the theme, sidebar and notification
+  switches; the name, shortcuts and launch dialogs; the prefixes. What
+  the sweep found is fixed here and named in the PR: the browser's
+  Settings page (the server's file and a notice) offered a Save row that
+  could never act; the group is the desktop app's alone now.
+- **Close tabs to the left, to the right, others, all (#330, 2026-10-22).**
+  As VS Code's tab menu: a context menu on an editor tab (right-click, or
+  Shift+F10 or the Menu key on the focused tab: the tab fires the event
+  itself, since Chromium on macOS fires none for them) with Close,
+  Close others, Close to the right, Close to the left and Close all, each
+  through the close that asks about unsaved changes (`requestCloseIds`,
+  today's close-all generalised: unsaved among them ask through
+  `closing.ids`, else close now); the same five as → actions on the
+  palette's tab rows beside Close. `utils/editorTabs.ts`: `tabsToClose
+  (state, id, scope)` names the ids in strip order and `closeTabs` closes
+  them one after the other, the active tab moving to the nearest kept one
+  (vitest). The Yard's and the join page's editors get it with the area.
+  `tabs.spec.ts`: three files open, the menu on the middle one, Close to
+  the right leaves two with the middle active; Close others leaves one;
+  Close all with one unsaved file asks and Don't save closes them all.
+- **The Keyboard shortcuts modal, a design pass (#328, 2026-10-22).**
+  `ShortcutsModal.vue`: the box follows the window (`xl:max-w-5xl`, the
+  key columns `12rem` at `xl`); the description is one line that stays
+  clear of the close button; the key cells lose their tints and both
+  columns centre their caps in cells of equal width, every cap `size="md"`,
+  so the chords sit on one axis down the table; a column with no chord
+  shows nothing (an empty cell labelled "none"), not a dot; the column
+  names once in the header row, sticky over the scroll, the per-group
+  repeats gone; Enter shows as the word and "then" between a chord's caps
+  at the caps' text size. `chords.spec.ts` asserts the column names
+  appear once, no cell holds a dot, each column's cells share one axis
+  within a pixel, and the close button and the description do not
+  overlap.
+- **An exited row's arrow and its `…` in line (#331, 2026-10-22).** In
+  `SidebarSessionRow.vue` the resume/relaunch arrow is a column beside the
+  link, centred in the row, while the hover bar (`[data-row-actions]`:
+  Share, Stop, More) sat at the row's top, so on an exited row the `…`
+  came in a few pixels above the arrow, in a box of its own. On a
+  resumable row the bar is centred vertically now (`top-1/2
+  -translate-y-1/2`), so the `…` and the arrow share one centre and sit
+  side by side at the row's edge; running rows keep the bar at the top
+  beside their first line. `sidebar.spec.ts` measures the two boxes on a
+  hovered exited row: one centre within a pixel, the `…` just left of the
+  arrow, both inside the row.
+- **The bar's Files and Chat only below `xl` (#329, 2026-10-22).** At `xl`
+  the inspector rail (#301) has Explorer and Chat, with the chat's unread
+  count on the rail, so the session page's header said both twice and
+  crowded the bar. The two buttons are `xl:hidden`; below `xl`, where the
+  rail is not on the page, they stay (the phone's chat sheet opens from
+  the header as before, `chat.spec.ts`). `?tab=`, the palette's rows and
+  the chords are unchanged. `inspector-rail.spec.ts` asserts the bar has
+  neither at the suite's width and selects through the rail.
 - **The session page never scrolls sideways (#325, 2026-10-22).** In the
   desktop app on rc.13 a horizontal scrollbar ran along the bottom of the
   session page at every width, with the inspector panel open or collapsed.

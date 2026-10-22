@@ -414,8 +414,15 @@ defineShortcuts({
 const palette = usePalette()
 const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
 const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
+/**
+ * Shows a view (#332): the inspector on it, or the chat sheet below xl; one already shown stays shown. The header's Files and
+ * Chat buttons toggle (showFiles, showChat); a palette row or a session row's Open … says "open" and never hides.
+ */
 function showView(v: InspectorView) {
-  if (v === 'chat') return showChat()
+  if (v === 'chat' && !xl.value) {
+    chatSheet.value = true
+    return
+  }
   tab.value = v
   inspector.value = true
 }
@@ -452,6 +459,11 @@ palette.registerPage(() => {
     actions: [
       // Through the area's own close: an unsaved file asks before it goes (whole-batch round).
       { id: 'close', kind: 'page' as const, target: tb.id, label: 'Close', icon: 'i-lucide-x', kbds: ['X'], run: () => columnRef.value?.requestClose(tb.id) },
+      // The tab's menu (#330), as actions: each through the close that asks about unsaved changes.
+      { id: 'close-others', kind: 'page' as const, target: tb.id, label: 'Close others', icon: 'i-lucide-copy-x', run: () => columnRef.value?.closeScope(tb.id, 'others') },
+      { id: 'close-right', kind: 'page' as const, target: tb.id, label: 'Close to the right', icon: 'i-lucide-arrow-right-to-line', run: () => columnRef.value?.closeScope(tb.id, 'right') },
+      { id: 'close-left', kind: 'page' as const, target: tb.id, label: 'Close to the left', icon: 'i-lucide-arrow-left-to-line', run: () => columnRef.value?.closeScope(tb.id, 'left') },
+      { id: 'close-all', kind: 'page' as const, target: tb.id, label: 'Close all', icon: 'i-lucide-x', run: () => columnRef.value?.closeScope(tb.id, 'all') },
       { id: 'copy-path', kind: 'page' as const, target: tb.id, label: 'Copy path', icon: 'i-lucide-copy', run: () => void copy(tb.path, 'Path copied') },
       ...(tb.kind === 'file' && rawUrl(tb.path) ? [{ id: 'raw', kind: 'page' as const, target: tb.id, label: 'Open raw', icon: 'i-lucide-external-link', run: () => window.open(rawUrl(tb.path)!, '_blank', 'noopener,noreferrer') }] : []),
     ],
@@ -539,10 +551,11 @@ palette.registerPage(() => {
           <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
           <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
           <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
-          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
+          <!-- Files and Chat only below xl (#329): at xl the inspector rail has both, with the chat's count; here they said it twice. -->
+          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
           <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
           <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
-          <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+          <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
             <span class="hidden sm:inline">Chat</span>
             <ChatUnreadPill :count="chatUnread" />
           </UButton>

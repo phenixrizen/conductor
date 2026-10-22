@@ -8,7 +8,7 @@ import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, toggleFold, togglePreview, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, tabsToClose, toggleFold, togglePreview, writeKeymap, type CloseScope, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { dirOf, isMarkdownPath } from '~/utils/markdown'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
@@ -557,14 +557,101 @@ function requestClose(id: string) {
   closing.value = { ids: [id] }
 }
 function requestCloseAll() {
-  const ids = tabs.value.tabs.map((t) => t.id)
+  requestCloseIds(tabs.value.tabs.map((t) => t.id))
+}
+/**
+ * Closes several tabs at once (#330): unsaved among them ask first (the one unsaved brought to the front), else they close now,
+ * through closeNow (Codex's round: a clean tab's conflict and compare state goes with it, or a reopened tab would save the stale text).
+ */
+function requestCloseIds(ids: string[]) {
+  if (!ids.length) return
   const unsaved = ids.filter((id) => dirty.has(id))
-  if (!unsaved.length) {
-    tabs.value = closeAllTabs()
-    return
-  }
+  if (!unsaved.length) return closeNow(ids)
   if (unsaved.length === 1) tabs.value = activateTab(tabs.value, unsaved[0]!)
   closing.value = { ids }
+}
+/** A tab's menu (#330), as VS Code's: Close, and the others, those to the right or the left, or all, each through the close that asks. */
+function closeScope(id: string, scope: CloseScope) {
+  requestCloseIds(tabsToClose(tabs.value, id, scope))
+}
+/**
+ * Shift+F10 or the Menu key on a focused tab opens its menu (Codex's batch rounds): Chromium fires no contextmenu event for them
+ * on macOS, so the tab fires its own at its foot. It takes the key on both edges, so the browsers that do fire one fire no
+ * second, and opens on the release: Windows opens its own menu on the Menu key's release, and a menu opened on the press would
+ * have the focus by then, the tab never seeing the release to take it. The press is remembered and its release matched by the
+ * key alone: Shift let go before F10 leaves the release without it. The press belongs to its tab: released on another tab, or
+ * anywhere else, it opens nothing and is forgotten (Codex's fifth round).
+ */
+let tabKeyPressed: { key: string; el: HTMLElement } | null = null
+function onTabKey(e: KeyboardEvent) {
+  if (e.type === 'keydown') {
+    if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return
+    e.preventDefault()
+    tabKeyPressed = { key: e.key, el: e.currentTarget as HTMLElement }
+    return
+  }
+  if (e.key !== tabKeyPressed?.key) return
+  const el = tabKeyPressed.el
+  tabKeyPressed = null
+  e.preventDefault()
+  if (el !== e.currentTarget) return
+  const r = el.getBoundingClientRect()
+  el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.bottom - 2 }))
+}
+function forgetTabKey(e: KeyboardEvent) {
+  // The chord's own key released elsewhere; Shift let go first is no release of it.
+  if (e.key === tabKeyPressed?.key) tabKeyPressed = null
+}
+/**
+ * Keys inside an open tab menu are the menu's (Codex's second round): a letter typed to find an item, or Escape, must not reach
+ * the page's shortcuts (S shares a session; Escape leaves the Yard's focus), which listen on the window. The document hears a
+ * key first and stops it there; Reka's navigation and typeahead, on the menu itself, still run, and Escape closes the menu
+ * through the closer in the tab, since Reka's own Escape listens on the window too.
+ */
+const tabMenuOpen = ref<string | null>(null)
+const menuClosers = new Map<string, { close: () => void; open: () => boolean }>()
+function onTabMenu(id: string, open: boolean) {
+  if (open) tabMenuOpen.value = id
+  else if (tabMenuOpen.value === id) tabMenuOpen.value = null
+}
+// The closer goes with its tab: a tab closed from its own menu unmounts the menu before Reka says it closed (Codex's third
+// round), so the mark clears here too, and a key is only ever taken for a menu whose closer says it is open now.
+function setMenuCloser(id: string, el: unknown) {
+  if (el) menuClosers.set(id, el as { close: () => void; open: () => boolean })
+  else {
+    menuClosers.delete(id)
+    if (tabMenuOpen.value === id) tabMenuOpen.value = null
+  }
+}
+function onMenuKey(e: KeyboardEvent) {
+  const id = tabMenuOpen.value
+  const closer = id ? menuClosers.get(id) : undefined
+  if (!closer?.open() || !(e.target as HTMLElement | null)?.closest('[role="menu"]')) return
+  e.stopPropagation()
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    closer.close()
+  }
+}
+onMounted(() => {
+  document.addEventListener('keydown', onMenuKey)
+  // After the tab's own keyup handler, so a release that reached the tab opened the menu first; a release anywhere else forgets.
+  document.addEventListener('keyup', forgetTabKey)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onMenuKey)
+  document.removeEventListener('keyup', forgetTabKey)
+})
+function tabMenu(id: string) {
+  return [
+    [{ label: 'Close', icon: 'i-lucide-x', kbds: ['ctrl', 'W'], onSelect: () => requestClose(id) }],
+    [
+      { label: 'Close others', icon: 'i-lucide-copy-x', onSelect: () => closeScope(id, 'others') },
+      { label: 'Close to the right', icon: 'i-lucide-arrow-right-to-line', onSelect: () => closeScope(id, 'right') },
+      { label: 'Close to the left', icon: 'i-lucide-arrow-left-to-line', onSelect: () => closeScope(id, 'left') },
+    ],
+    [{ label: 'Close all', icon: 'i-lucide-x', onSelect: () => closeScope(id, 'all') }],
+  ]
 }
 const closingWords = computed(() => {
   const ids = closing.value?.ids.filter((id) => dirty.has(id)) ?? []
@@ -665,7 +752,7 @@ function askAgent() {
 function saveFromPalette() {
   if (!tabs.value.folded) void save()
 }
-defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, palette: paletteState, setKeymap, save: saveFromPalette, askAgent })
+defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, closeScope, palette: paletteState, setKeymap, save: saveFromPalette, askAgent })
 </script>
 
 <template>
@@ -688,21 +775,25 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       <!-- The tab strip. -->
       <div class="flex h-9 flex-none items-stretch border-b border-default bg-elevated/40" data-editor-tabs>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto">
-          <div
-            v-for="t in tabs.tabs"
-            :key="t.id"
-            class="group flex max-w-56 flex-none items-center gap-1.5 border-r border-default pl-3 pr-1.5 text-xs"
-            :class="t.id === tabs.active ? 'bg-default text-highlighted' : 'text-muted hover:text-default'"
-            :data-editor-tab="t.id"
-            :data-editor-tab-active="t.id === tabs.active ? '' : undefined"
-          >
-            <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
-              <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />
-              <span class="truncate font-mono">{{ t.title }}</span>
-              <span v-if="dirty.has(t.id)" class="size-1.5 flex-none rounded-full bg-primary" aria-label="unsaved" data-editor-dirty />
-            </button>
-            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="requestClose(t.id)" />
-          </div>
+          <!-- A tab's menu (#330): right-click, or Shift+F10 or the Menu key on the focused tab (the tab fires the event itself: Chromium on macOS fires none for them). -->
+          <UContextMenu v-for="t in tabs.tabs" :key="t.id" :items="tabMenu(t.id)" @update:open="(v: boolean) => onTabMenu(t.id, v)">
+            <div
+              class="group flex max-w-56 flex-none items-center gap-1.5 border-r border-default pl-3 pr-1.5 text-xs"
+              :class="t.id === tabs.active ? 'bg-default text-highlighted' : 'text-muted hover:text-default'"
+              :data-editor-tab="t.id"
+              :data-editor-tab-active="t.id === tabs.active ? '' : undefined"
+              @keydown="onTabKey"
+              @keyup="onTabKey"
+            >
+              <ContextMenuCloser :ref="(el: unknown) => setMenuCloser(t.id, el)" />
+              <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
+                <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />
+                <span class="truncate font-mono">{{ t.title }}</span>
+                <span v-if="dirty.has(t.id)" class="size-1.5 flex-none rounded-full bg-primary" aria-label="unsaved" data-editor-dirty />
+              </button>
+              <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="requestClose(t.id)" />
+            </div>
+          </UContextMenu>
         </div>
         <div class="flex flex-none items-center gap-0.5 px-1">
           <UTooltip v-if="nvim" :text="keymapTip">

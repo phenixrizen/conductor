@@ -46,8 +46,12 @@ test('G then Y, R and C go to the Yard, the Roundhouse and Crews; the modal show
   const yard = modal.locator('[data-shortcut="Go to the Yard"]')
   await expect(yard.locator('[data-shortcut-terminal]')).toHaveText(/Alt.*Y/i)
   await expect(yard.locator('[data-shortcut-outside]')).toHaveText(/G\s*then\s*Y/)
-  // What needs the list focused has no key in a terminal.
-  await expect(modal.locator('[data-shortcut="Next row (or ↓)"] [data-shortcut-terminal]')).toHaveText('·')
+  // What needs the list focused has no key in a terminal: the cell shows nothing and reads "none" (#328: no dot; the
+  // word is visually hidden text, since an empty span's aria-label is not announced).
+  const none = modal.locator('[data-shortcut="Next row (or ↓)"] [data-shortcut-terminal]')
+  await expect(none).toHaveText('none')
+  await expect(none.locator('.sr-only')).toHaveText('none')
+  expect(await none.evaluate((el) => Array.from(el.querySelectorAll('.sr-only')).every((n) => n.getBoundingClientRect().width <= 1))).toBe(true)
 })
 
 // The table reads as columns (round 14: each row sized its own key columns,
@@ -63,8 +67,9 @@ test('the shortcuts table lines its columns up at 1440 and fits a phone at 390',
   const modal = page.locator('[data-shortcuts]')
   await expect(modal).toBeVisible()
   expect((await modal.boundingBox())!.width).toBeGreaterThan(650)
-  // Every group past the first names the columns again.
-  await expect(modal.locator('[data-shortcuts-group-columns]')).toHaveCount((await modal.locator('[data-shortcuts-group]').count()) - 1)
+  // The column names stand once, in the header over the scroll (#328): no group repeats them.
+  await expect(modal.locator('[data-shortcuts-columns]')).toHaveCount(1)
+  await expect(modal.locator('[data-shortcuts-group-columns]')).toHaveCount(0)
   const cells = await modal.locator('[data-shortcut]').evaluateAll((rows) =>
     rows.map((r) => {
       const label = r.children[0]!.getBoundingClientRect()

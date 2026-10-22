@@ -128,6 +128,19 @@ test('Exited starts folded with its count; opened, its session has Resume; a fol
   const resume = row.locator('[data-resume]')
   await resume.hover()
   await expect(row.locator('[data-row-actions]')).toBeVisible()
+  // The arrow and the … line up (#331): one vertical centre within a pixel, the … just left of the arrow, both inside the row.
+  const boxes = await row.evaluate((el) => {
+    const r = (q: string) => (el.querySelector(q) as HTMLElement).getBoundingClientRect()
+    const row = el.getBoundingClientRect()
+    const a = r('[data-resume]')
+    const m = r('[data-row-more]')
+    return { centres: Math.abs(a.top + a.height / 2 - (m.top + m.height / 2)), gap: a.left - m.right, arrowInset: row.right - a.right, moreInside: m.left > row.left }
+  })
+  expect(boxes.centres).toBeLessThanOrEqual(1)
+  expect(boxes.gap).toBeGreaterThanOrEqual(0)
+  expect(boxes.gap).toBeLessThanOrEqual(8)
+  expect(boxes.arrowInset).toBeGreaterThanOrEqual(4)
+  expect(boxes.moreInside).toBe(true)
   const target = await resume.evaluate((el) => {
     const r = el.getBoundingClientRect()
     const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)

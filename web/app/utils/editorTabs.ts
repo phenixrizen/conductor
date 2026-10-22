@@ -191,3 +191,21 @@ export function refusedWords(message: string): { title: string; words: string; i
   if (/credentials/i.test(message)) return { icon: 'i-lucide-key-round', title: "Git's files are for controllers", words: "A repository's .git and git's own settings can hold the tokens git signs in with, so a view-only link does not open them. Ask for control, or for a controller to open it." }
   return { icon: 'i-lucide-lock', title: 'Files are for controllers on this session', words: 'This link is view only. Ask for control, or for a controller to open it.' }
 }
+
+/** What a tab's menu closes (#330), as VS Code's: the others, those to the right, those to the left, or all. */
+export type CloseScope = 'others' | 'right' | 'left' | 'all'
+
+/** The ids `scope` closes from the tab `id`, in strip order; a tab the strip does not hold closes nothing but `all`. */
+export function tabsToClose(state: TabsState, id: string, scope: CloseScope): string[] {
+  if (scope === 'all') return state.tabs.map((t) => t.id)
+  const i = state.tabs.findIndex((t) => t.id === id)
+  if (i < 0) return []
+  switch (scope) {
+    case 'others':
+      return state.tabs.filter((t) => t.id !== id).map((t) => t.id)
+    case 'right':
+      return state.tabs.slice(i + 1).map((t) => t.id)
+    case 'left':
+      return state.tabs.slice(0, i).map((t) => t.id)
+  }
+}

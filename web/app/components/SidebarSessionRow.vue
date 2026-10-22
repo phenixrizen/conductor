@@ -129,10 +129,12 @@ function confirmStop() {
         <UButton label="Cancel" size="xs" color="neutral" variant="ghost" @click="confirming = false" />
         <UButton label="Stop" icon="i-lucide-square" size="xs" color="error" :loading="busy" data-confirm-stop @click="confirmStop" />
       </span>
+      <!-- On a resumable row the bar is centred vertically, as the arrow beside the link is, so the … and the arrow share one centre
+           and sit side by side at the edge (#331); a running row's bar sits at the top beside its first line. -->
       <span
         v-else
-        class="absolute top-1.5 flex items-center gap-0.5 rounded-md bg-default/95 p-0.5 opacity-0 shadow-xs ring ring-default transition-opacity focus-within:opacity-100 group-hover:opacity-100"
-        :class="resumable ? 'right-9' : 'right-1.5'"
+        class="absolute flex items-center gap-0.5 rounded-md bg-default/95 p-0.5 opacity-0 shadow-xs ring ring-default transition-opacity focus-within:opacity-100 group-hover:opacity-100"
+        :class="resumable ? 'right-9 top-1/2 -translate-y-1/2' : 'right-1.5 top-1.5'"
         data-row-actions
       >
         <UTooltip v-if="live" text="Share" :open="shareTip && !shareTipMuted" @update:open="(o: boolean) => (shareTip = o)">
