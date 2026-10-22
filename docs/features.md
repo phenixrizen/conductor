@@ -2669,6 +2669,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The breadcrumb strip scrolls to its end (#315, 2026-10-22).** In
+  `FileBrowser.vue` the watch that scrolls the breadcrumb strip to its end
+  read `crumbs` above the line declaring it; a watch's source runs as the
+  watch is made, so it threw at every mount (a console `ReferenceError`,
+  caught by Vue and logged) and a long path never showed its last folders.
+  The watch sits below the computed now. `crumbs.spec.ts` opens a file
+  under a deep path and reads the strip's scroll, and asserts no error of
+  that kind reaches the console while the Files pane mounts.
 - **The chords per system (#312, 2026-10-22).** `utils/chords.ts`
   (vitest): `detectSystem` from the user agent and the platform (as
   Nuxt UI's kbd reads `Macintosh;`), a per-system table for the rows

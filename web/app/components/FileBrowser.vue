@@ -197,11 +197,6 @@ const fullPath = computed(() => crumbs.value.map((c) => c.label).join('/'))
 const hiddenItems = computed(() =>
   folded.value.hidden.map((c) => ({ label: c.label, icon: 'i-lucide-folder', onSelect: () => copy(c.path, 'Path copied') })),
 )
-watch(
-  () => crumbs.value.map((c) => c.path).join('\n'),
-  () => nextTick(() => crumbsNav.value?.scrollTo({ left: crumbsNav.value.scrollWidth })),
-)
-
 /** The breadcrumb: the working directory from the top; in file mode, on down to the file. */
 const crumbs = computed(() => {
   const base = crumbsOf(props.cwd || '/')
@@ -226,6 +221,14 @@ const crumbs = computed(() => {
   }
   return out
 })
+// Below the computed it reads: a watch's source runs as the watch is made, and read above its declaration the computed threw
+// (#315), so the strip never scrolled to its end.
+watch(
+  () => crumbs.value.map((c) => c.path).join('\n'),
+  () => nextTick(() => crumbsNav.value?.scrollTo({ left: crumbsNav.value.scrollWidth })),
+  // At mount too: a working directory whose own folder's name overflows the strip shows its end from the first paint.
+  { immediate: true },
+)
 
 const lines = computed(() => (html.value ? [] : text.value.split('\n')))
 
