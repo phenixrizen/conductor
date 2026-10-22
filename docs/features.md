@@ -2845,7 +2845,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Changes shows and the log every 10 s while Commits shows, each every
   30 s otherwise so the pills stay right while the panel shows another
   view or is collapsed, nothing while the document is hidden, one request
-  at a time per kind. The Yard's focused aside and the join page's Files
+  at a time per kind. The pane's reads at mount keep under the owner's
+  four in-flight file requests (the touched index two seconds after the
+  pane is up, the log after the status), and the tree's listing retries a
+  `too_many_requests` as it retries a connection not open yet: CI's run
+  on a slow relay found the pane empty otherwise. The Yard's focused aside and the join page's Files
   aside carry the three Files items on a rail of their own
   (`FilesPane.vue`), which does not collapse. Below `xl` nothing changes.
   No protocol change.

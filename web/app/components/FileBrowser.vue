@@ -305,8 +305,10 @@ async function loadRoot() {
   treeLoading.value = false
   if (!ok) {
     treeError.value = r.error || 'cannot read'
-    // The connection is not open yet (the page's terminal mounts and connects after the pane): try again in a moment.
-    if (/not connected|not ready/i.test(treeError.value) && retries < 10) {
+    // The connection is not open yet (the page's terminal mounts and connects after the pane), or the owner's in-flight cap on file
+    // requests was full for a moment (the pane's own reads of the status, the log, the touched index and the plans, on a slow
+    // relay: CI's run of the switchyard spec): try again in a moment.
+    if (/not connected|not ready|in-flight|too many/i.test(treeError.value) && retries < 10) {
       retries += 1
       setTimeout(() => {
         if (root.value === r && !r.loaded) loadRoot()

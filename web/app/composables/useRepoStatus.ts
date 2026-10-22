@@ -111,11 +111,12 @@ export function useRepoStatus(request: FileRequester, cwd: () => string | undefi
     void loadLog()
   })
   onMounted(() => {
-    // The pills, and the Explorer's marks: one read of each when the pane is up.
-    firstTimer = window.setTimeout(() => {
+    // The pills, and the Explorer's marks: one read of each once the pane is up, the log after the status, so that with the
+    // tree's and the plans' reads they never fill the owner's four in-flight file requests on a slow relay.
+    firstTimer = window.setTimeout(async () => {
       if (disposed) return
-      void loadStatus()
-      void loadLog()
+      await loadStatus()
+      if (!disposed) void loadLog()
     }, 1500)
     armStatus()
     armLog()

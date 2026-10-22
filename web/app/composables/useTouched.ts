@@ -43,9 +43,13 @@ export function useTouched(request: FileRequester, cwd: () => string | undefined
     index.value = null
     void load()
   })
-  onMounted(() => void load())
+  // After the pane's own tree and plans reads, not beside them: the owner takes four file requests in flight per connection
+  // (MaxInflightFiles), and on a slow relay the tree's listing lost its place to these (CI's run of the switchyard spec).
+  let firstTimer: number | undefined
+  onMounted(() => (firstTimer = window.setTimeout(() => void load(), 2000)))
   onBeforeUnmount(() => {
     disposed = true
+    window.clearTimeout(firstTimer)
     window.clearTimeout(retryTimer)
   })
   return { index, rows, paths, load }
