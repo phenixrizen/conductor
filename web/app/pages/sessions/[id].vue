@@ -505,7 +505,8 @@ palette.registerPage(() => {
 </script>
 
 <template>
-  <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0' }">
+  <!-- overflow-x-hidden on the body (#325): the terminal and the editor fit their boxes; the page never scrolls sideways. -->
+  <UDashboardPanel :id="`session-${id}`" :ui="{ body: 'p-0 sm:p-0 flex flex-col min-h-0 gap-0 overflow-x-hidden' }">
     <template #header>
       <UDashboardNavbar :toggle="false" :ui="{ root: 'h-14 bg-default', title: 'min-w-0' }">
         <template #leading>
