@@ -178,13 +178,11 @@ export function usePaletteRows(ctx: PaletteContext) {
       said({ refused: skipWords(reason) })
       return
     }
-    try {
-      // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line;
-      // the owner's own guard (unlessWaiting) holds what comes after that look.
-      said({ typed: await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' }) })
-    } catch (e) {
-      said({ refused: (e as Error).message })
-    }
+    // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line; the
+    // owner's own guard (unlessWaiting) holds what comes after that look. The outcome comes back typed, sent, refused (nothing
+    // typed: the line kept for the field) or not confirmed (not offered again); null while a line is already on its way.
+    const outcome = await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' })
+    if (outcome) said(outcome)
   }
   async function signal(s: SessionInfo, state: 'needs_input' | 'working' | 'clear') {
     try {

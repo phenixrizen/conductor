@@ -2693,8 +2693,15 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (a plain `submit`); `useQuickReply().say` uses it and returns whether
   the line was typed, `not_sent` said in the broadcast's words; the
   palette's `say` (the `I` field and the `say` verb) then says **Typed
-  into** (or **Sent to** for an older owner), and a refused line waits in
-  the row's field (`field.draft`, `sayDrafts`), opened with it again.
+  into** (or **Sent to** for an older owner); a refused line (nothing
+  typed: the session asks, a view link, the session ended, too many
+  lines, past the bounds) waits in the row's field (`field.draft`,
+  `sayDrafts`), opened with it again; an outcome not known (no word in
+  time, the connection gone, a line typed and not entered) is said **not
+  confirmed**, to look at the terminal before typing it again, the line
+  not offered (Codex's round: the owner finishes a submission after its
+  client goes, so a second try could type it twice). `useQuickReply().
+  say` returns the outcome (`SayOutcome`) instead of throwing.
   Tests: `internal/proto/submit_test.go`, `internal/session/
   submitword_test.go`, `internal/api/submitack_test.go` (the welcome,
   submit_ok, the guard against an API-flagged prompt and the same line
