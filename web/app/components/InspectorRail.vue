@@ -38,7 +38,9 @@ function pick(id: InspectorView) {
         @click="pick(it.id)"
       >
         <UIcon :name="it.icon" class="size-[18px]" aria-hidden="true" />
-        <span v-if="pillText(it.count)" class="absolute -right-1.5 -top-1 min-w-4 rounded-full bg-elevated px-1 text-[10px] font-semibold leading-4 text-highlighted ring-2 ring-default" :data-rail-count="it.id" aria-hidden="true">{{ pillText(it.count) }}</span>
+        <!-- The pill sits inside the rail (#325): at -right-1.5 it stuck out past the rail's edge by two pixels, and the session page's body, which
+             scrolls on its own, grew a horizontal scrollbar for them. -->
+        <span v-if="pillText(it.count)" class="absolute -right-0.5 -top-1 min-w-4 rounded-full bg-elevated px-1 text-[10px] font-semibold leading-4 text-highlighted ring-2 ring-default" :data-rail-count="it.id" aria-hidden="true">{{ pillText(it.count) }}</span>
         <span v-if="open && view === it.id" class="absolute -right-1 bottom-2 top-2 w-0.5 rounded-full bg-primary" data-rail-active aria-hidden="true" />
       </button>
     </UTooltip>

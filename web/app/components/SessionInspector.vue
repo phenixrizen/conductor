@@ -179,7 +179,8 @@ const items = computed(() =>
 </script>
 
 <template>
-  <aside class="flex h-full min-h-0 flex-none border-l border-default bg-default" data-inspector :data-inspector-open="open ? 'true' : 'false'">
+  <!-- overflow-x-clip (#325): nothing of the rail or the panel widens the page, whatever a badge or a long name does. -->
+  <aside class="flex h-full min-h-0 flex-none overflow-x-clip border-l border-default bg-default" data-inspector :data-inspector-open="open ? 'true' : 'false'">
     <div v-if="open" class="flex h-full min-h-0 w-[332px] flex-col" data-inspector-panel>
       <ChatPanel v-if="view === 'chat' && chat" :thread="chat" :role="role" :ended="ended" :offline="chatOffline" :viewers="viewers" @send="(text, to) => emit('chatSend', text, to)" @send-to-agent="emit('chatSendToAgent', $event)" @retry="emit('chatRetry', $event)" @answer="(m, i) => emit('chatAnswer', m, i)" />
 
