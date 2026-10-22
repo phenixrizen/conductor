@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activateTab, closeAllTabs, closeTab, cycleTab, editorHeight, emptyTabs, openTab, readSplit, SPLIT_DEFAULT, SPLIT_KEY, tabTitle, takeLine, toggleFold, togglePreview, writeSplit } from './editorTabs'
+import { activateTab, closeAllTabs, closeTab, closeTabs, cycleTab, editorHeight, emptyTabs, openTab, readSplit, SPLIT_DEFAULT, SPLIT_KEY, tabsToClose, tabTitle, takeLine, toggleFold, togglePreview, writeSplit } from './editorTabs'
 
 describe('the editor tabs', () => {
   it('opens one tab per file, brings an open one to the front at the line asked for, and unfolds', () => {
@@ -128,5 +128,41 @@ describe('the Markdown preview toggle', () => {
     s = togglePreview(s, 'file:/r/README.md')
     expect(s.tabs.map((t) => !!t.preview)).toEqual([false, false])
     expect(togglePreview(s, 'file:/nope').tabs.map((t) => !!t.preview)).toEqual([false, false])
+  })
+})
+
+describe("a tab's close menu (#330)", () => {
+  const three = (): TabsState => openTab(openTab(openTab(emptyTabs(), 'file', '/r/a.go'), 'file', '/r/b.go'), 'file', '/r/c.go')
+  const ids = (s: TabsState) => s.tabs.map((t) => t.id)
+
+  it('names what each choice closes, in strip order', () => {
+    const s = three()
+    const [a, b, c] = ids(s) as [string, string, string]
+    expect(tabsToClose(s, b, 'right')).toEqual([c])
+    expect(tabsToClose(s, b, 'left')).toEqual([a])
+    expect(tabsToClose(s, b, 'others')).toEqual([a, c])
+    expect(tabsToClose(s, b, 'all')).toEqual([a, b, c])
+    expect(tabsToClose(s, a, 'left')).toEqual([])
+    expect(tabsToClose(s, c, 'right')).toEqual([])
+    expect(tabsToClose(s, 'gone', 'others')).toEqual([])
+    expect(tabsToClose(s, 'gone', 'all')).toEqual([a, b, c])
+  })
+
+  it('closes them one after the other, the active tab moving to the nearest kept one', () => {
+    const s = three() // the active is c, the last opened
+    const [a, b, c] = ids(s) as [string, string, string]
+    const right = closeTabs(s, tabsToClose(s, b, 'right'))
+    expect(ids(right)).toEqual([a, b])
+    expect(right.active).toBe(b)
+    const others = closeTabs(s, tabsToClose(s, b, 'others'))
+    expect(ids(others)).toEqual([b])
+    expect(others.active).toBe(b)
+    const left = closeTabs(s, tabsToClose(s, c, 'left'))
+    expect(ids(left)).toEqual([c])
+    expect(left.active).toBe(c)
+    const all = closeTabs(s, tabsToClose(s, b, 'all'))
+    expect(all.tabs).toEqual([])
+    expect(all.active).toBeNull()
+    expect(all.folded).toBe(false)
   })
 })

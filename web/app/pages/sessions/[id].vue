@@ -452,6 +452,11 @@ palette.registerPage(() => {
     actions: [
       // Through the area's own close: an unsaved file asks before it goes (whole-batch round).
       { id: 'close', kind: 'page' as const, target: tb.id, label: 'Close', icon: 'i-lucide-x', kbds: ['X'], run: () => columnRef.value?.requestClose(tb.id) },
+      // The tab's menu (#330), as actions: each through the close that asks about unsaved changes.
+      { id: 'close-others', kind: 'page' as const, target: tb.id, label: 'Close others', icon: 'i-lucide-copy-x', run: () => columnRef.value?.closeScope(tb.id, 'others') },
+      { id: 'close-right', kind: 'page' as const, target: tb.id, label: 'Close to the right', icon: 'i-lucide-arrow-right-to-line', run: () => columnRef.value?.closeScope(tb.id, 'right') },
+      { id: 'close-left', kind: 'page' as const, target: tb.id, label: 'Close to the left', icon: 'i-lucide-arrow-left-to-line', run: () => columnRef.value?.closeScope(tb.id, 'left') },
+      { id: 'close-all', kind: 'page' as const, target: tb.id, label: 'Close all', icon: 'i-lucide-x', run: () => columnRef.value?.closeScope(tb.id, 'all') },
       { id: 'copy-path', kind: 'page' as const, target: tb.id, label: 'Copy path', icon: 'i-lucide-copy', run: () => void copy(tb.path, 'Path copied') },
       ...(tb.kind === 'file' && rawUrl(tb.path) ? [{ id: 'raw', kind: 'page' as const, target: tb.id, label: 'Open raw', icon: 'i-lucide-external-link', run: () => window.open(rawUrl(tb.path)!, '_blank', 'noopener,noreferrer') }] : []),
     ],

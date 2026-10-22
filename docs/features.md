@@ -2669,6 +2669,37 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **Every palette row does what it says (#332, 2026-10-22).** On the
+  session page `showView('chat')` handed to `showChat()`, the header
+  button's toggle, so **Open Chat** from the palette (and a session row's
+  Open Chat on this page) collapsed an open chat. `showView` shows: the
+  inspector on the view (the sheet below `xl`) and nothing when it is
+  shown already; the header buttons keep their toggles. Then a sweep,
+  `palette-rows.spec.ts`, running each row from Enter or a click and
+  asserting its visible effect: the session page's Share, Copy a view
+  link, the marks, Fold, the views (Open Chat twice stays open), the tab
+  rows and Stop; the run page's broadcast field, views, chat, share and
+  stop; the Yard's chips, the Roundhouse's switches and rotation, Crews'
+  New crew, Events' refresh and tabs, Agents' Launch, Settings' Save; the
+  session rows' → actions (the copies by their toasts, Open Files/Chat/
+  Activity/People by `?tab=`, the line's field, Resume, Stop); the verbs
+  `go`, `mark`, `share … view`, `answer`, `resume`, `broadcast`; the
+  switches and the prefixes. What the sweep found is fixed here and named
+  in the PR.
+- **Close tabs to the left, to the right, others, all (#330, 2026-10-22).**
+  As VS Code's tab menu: a context menu on an editor tab (right-click, or
+  Shift+F10 on the focused tab, which fires the same event) with Close,
+  Close others, Close to the right, Close to the left and Close all, each
+  through the close that asks about unsaved changes (`requestCloseIds`,
+  today's close-all generalised: unsaved among them ask through
+  `closing.ids`, else close now); the same five as → actions on the
+  palette's tab rows beside Close. `utils/editorTabs.ts`: `tabsToClose
+  (state, id, scope)` names the ids in strip order and `closeTabs` closes
+  them one after the other, the active tab moving to the nearest kept one
+  (vitest). The Yard's and the join page's editors get it with the area.
+  `tabs.spec.ts`: three files open, the menu on the middle one, Close to
+  the right leaves two with the middle active; Close others leaves one;
+  Close all with one unsaved file asks and Don't save closes them all.
 - **The Keyboard shortcuts modal, a design pass (#328, 2026-10-22).**
   `ShortcutsModal.vue`: the box follows the window (`xl:max-w-5xl`, the
   key columns `12rem` at `xl`); the description is one line that stays

@@ -8,7 +8,7 @@ import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
 import { statusLetter, statusTone } from '~/utils/changes'
-import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, toggleFold, togglePreview, writeKeymap, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
+import { activateTab, closeAllTabs, closeTab, closeTabs, cycleTab, fileReadOnlyWords, nvimUnavailableWords, openTab, readKeymap, refusedWords, takeLine, tabsToClose, toggleFold, togglePreview, writeKeymap, type CloseScope, type EditorTab, type Keymap, type TabsState } from '~/utils/editorTabs'
 import { dirOf, isMarkdownPath } from '~/utils/markdown'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
@@ -557,14 +557,33 @@ function requestClose(id: string) {
   closing.value = { ids: [id] }
 }
 function requestCloseAll() {
-  const ids = tabs.value.tabs.map((t) => t.id)
+  requestCloseIds(tabs.value.tabs.map((t) => t.id))
+}
+/** Closes several tabs at once (#330): unsaved among them ask first (the one unsaved brought to the front), else they close now. */
+function requestCloseIds(ids: string[]) {
+  if (!ids.length) return
   const unsaved = ids.filter((id) => dirty.has(id))
   if (!unsaved.length) {
-    tabs.value = closeAllTabs()
+    tabs.value = ids.length === tabs.value.tabs.length ? closeAllTabs() : closeTabs(tabs.value, ids)
     return
   }
   if (unsaved.length === 1) tabs.value = activateTab(tabs.value, unsaved[0]!)
   closing.value = { ids }
+}
+/** A tab's menu (#330), as VS Code's: Close, and the others, those to the right or the left, or all, each through the close that asks. */
+function closeScope(id: string, scope: CloseScope) {
+  requestCloseIds(tabsToClose(tabs.value, id, scope))
+}
+function tabMenu(id: string) {
+  return [
+    [{ label: 'Close', icon: 'i-lucide-x', kbds: ['ctrl', 'W'], onSelect: () => requestClose(id) }],
+    [
+      { label: 'Close others', icon: 'i-lucide-copy-x', onSelect: () => closeScope(id, 'others') },
+      { label: 'Close to the right', icon: 'i-lucide-arrow-right-to-line', onSelect: () => closeScope(id, 'right') },
+      { label: 'Close to the left', icon: 'i-lucide-arrow-left-to-line', onSelect: () => closeScope(id, 'left') },
+    ],
+    [{ label: 'Close all', icon: 'i-lucide-x', onSelect: () => closeScope(id, 'all') }],
+  ]
 }
 const closingWords = computed(() => {
   const ids = closing.value?.ids.filter((id) => dirty.has(id)) ?? []
@@ -665,7 +684,7 @@ function askAgent() {
 function saveFromPalette() {
   if (!tabs.value.folded) void save()
 }
-defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, palette: paletteState, setKeymap, save: saveFromPalette, askAgent })
+defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, closeScope, palette: paletteState, setKeymap, save: saveFromPalette, askAgent })
 </script>
 
 <template>
@@ -688,21 +707,22 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       <!-- The tab strip. -->
       <div class="flex h-9 flex-none items-stretch border-b border-default bg-elevated/40" data-editor-tabs>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto">
-          <div
-            v-for="t in tabs.tabs"
-            :key="t.id"
-            class="group flex max-w-56 flex-none items-center gap-1.5 border-r border-default pl-3 pr-1.5 text-xs"
-            :class="t.id === tabs.active ? 'bg-default text-highlighted' : 'text-muted hover:text-default'"
-            :data-editor-tab="t.id"
-            :data-editor-tab-active="t.id === tabs.active ? '' : undefined"
-          >
-            <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
-              <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />
-              <span class="truncate font-mono">{{ t.title }}</span>
-              <span v-if="dirty.has(t.id)" class="size-1.5 flex-none rounded-full bg-primary" aria-label="unsaved" data-editor-dirty />
-            </button>
-            <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="requestClose(t.id)" />
-          </div>
+          <!-- A tab's menu (#330): right-click, or Shift+F10 on the focused tab, which fires the same event. -->
+          <UContextMenu v-for="t in tabs.tabs" :key="t.id" :items="tabMenu(t.id)">
+            <div
+              class="group flex max-w-56 flex-none items-center gap-1.5 border-r border-default pl-3 pr-1.5 text-xs"
+              :class="t.id === tabs.active ? 'bg-default text-highlighted' : 'text-muted hover:text-default'"
+              :data-editor-tab="t.id"
+              :data-editor-tab-active="t.id === tabs.active ? '' : undefined"
+            >
+              <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
+                <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />
+                <span class="truncate font-mono">{{ t.title }}</span>
+                <span v-if="dirty.has(t.id)" class="size-1.5 flex-none rounded-full bg-primary" aria-label="unsaved" data-editor-dirty />
+              </button>
+              <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="opacity-0 group-hover:opacity-100 data-[active]:opacity-100" :aria-label="`Close ${t.title}`" :data-editor-close="t.id" @click="requestClose(t.id)" />
+            </div>
+          </UContextMenu>
         </div>
         <div class="flex flex-none items-center gap-0.5 px-1">
           <UTooltip v-if="nvim" :text="keymapTip">
