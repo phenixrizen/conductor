@@ -138,9 +138,11 @@ onMounted(async () => {
   if ((await owed) === 'restarted') savedToast('restarted')
 })
 
-// This page's group in the command palette (#302): Save, and the desktop app's buttons.
+// This page's group in the command palette (#302): Save, and the desktop app's buttons. Only in the desktop app (#332): the
+// browser's page is the server's file and a notice, with nothing to save, so it offers no row.
 const live = useAttention()
 usePalette().registerPage(() => {
+  if (!desktop.isDesktop.value) return null
   const n = live.sessions.value.filter((s) => s.kind === 'server' && (s.status === 'running' || s.status === 'starting')).length
   return {
     label: 'Settings',

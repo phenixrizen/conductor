@@ -2682,10 +2682,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   stop; the Yard's chips, the Roundhouse's switches and rotation, Crews'
   New crew, Events' refresh and tabs, Agents' Launch, Settings' Save; the
   session rows' → actions (the copies by their toasts, Open Files/Chat/
-  Activity/People by `?tab=`, the line's field, Resume, Stop); the verbs
-  `go`, `mark`, `share … view`, `answer`, `resume`, `broadcast`; the
-  switches and the prefixes. What the sweep found is fixed here and named
-  in the PR.
+  Activity/People by `?tab=`, the line's field, Resume); the verbs `go`,
+  `mark`, `share`, `answer`; the theme, sidebar and notification
+  switches; the name, shortcuts and launch dialogs; the prefixes. What
+  the sweep found is fixed here and named in the PR: the browser's
+  Settings page (the server's file and a notice) offered a Save row that
+  could never act; the group is the desktop app's alone now.
 - **Close tabs to the left, to the right, others, all (#330, 2026-10-22).**
   As VS Code's tab menu: a context menu on an editor tab (right-click, or
   Shift+F10 on the focused tab, which fires the same event) with Close,

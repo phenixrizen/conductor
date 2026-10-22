@@ -414,8 +414,15 @@ defineShortcuts({
 const palette = usePalette()
 const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
 const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
+/**
+ * Shows a view (#332): the inspector on it, or the chat sheet below xl; one already shown stays shown. The header's Files and
+ * Chat buttons toggle (showFiles, showChat); a palette row or a session row's Open … says "open" and never hides.
+ */
 function showView(v: InspectorView) {
-  if (v === 'chat') return showChat()
+  if (v === 'chat' && !xl.value) {
+    chatSheet.value = true
+    return
+  }
   tab.value = v
   inspector.value = true
 }
