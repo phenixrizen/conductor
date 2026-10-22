@@ -40,8 +40,8 @@ test('the Touched group finds a file touched before the tab opened, and its row 
     await expect(area.locator('[data-editor-crumbs]')).toContainText('report:2026')
     // The file itself, read once the terminal connected (opened before that, the read failed: Codex's round).
     await expect(area.locator('.monaco-editor .view-lines')).toContainText('a colon in the name', { timeout: 30_000 })
-    // On the file's own page the row opens the file here: the palette closes and the editor shows it.
-    await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
+    // On the file's own page the row opens the file here: the palette closes and the editor shows it. The chord is pressed
+    // from wherever the focus is (the editor just opened has it; CI's run waited on the terminal's focus in vain).
     await page.keyboard.press('Alt+/')
     await palette.locator('input[data-palette-input]').fill(':alpha-index')
     const own = palette.locator('[data-palette-group="touched"] [data-palette-row]').first()
