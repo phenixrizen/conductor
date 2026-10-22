@@ -35,6 +35,8 @@ test('the Touched group finds a file touched before the tab opened, and its row 
     const area = page.locator('[data-editor-area]')
     await expect(area).toHaveAttribute('data-editor-area', 'open', { timeout: 30_000 })
     await expect(area.locator('[data-editor-crumbs]')).toContainText('alpha-index.go')
+    // The file itself, read once the terminal connected (opened before that, the read failed: Codex's round).
+    await expect(area.locator('.monaco-editor .view-lines')).toContainText('package alpha', { timeout: 30_000 })
     // On the file's own page the row opens the file here: the palette closes and the editor stays on it.
     await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
     await page.keyboard.press('Alt+/')

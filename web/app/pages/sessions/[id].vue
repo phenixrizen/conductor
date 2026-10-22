@@ -377,13 +377,14 @@ watch(
 )
 
 // ?open= (#304): a file the palette's Touched row names on another session's page, opened in this page's editor as a typed
-// path is (`path` or `path:line`, relative to the working directory or absolute), once the session's directory is known.
-// Read as the page opens and as the query changes, never written back.
+// path is (`path` or `path:line`, relative to the working directory or absolute), once the session's directory is known and
+// the terminal is connected (the editor reads the file over it; opened before, the read fails and the tab keeps the failure:
+// Codex's round). Read as the page opens and as the query changes, never written back.
 let opened = ''
 watch(
-  [() => route.query.open, () => current.value?.cwd],
-  ([q, cwd]) => {
-    if (typeof q !== 'string' || !q || !cwd || q === opened) return
+  [() => route.query.open, () => current.value?.cwd, () => transport.value.state === 'open'],
+  ([q, cwd, connected]) => {
+    if (typeof q !== 'string' || !q || !cwd || !connected || q === opened) return
     opened = q
     const m = /^(.*?)(?::(\d+))?$/.exec(q)
     if (!m?.[1]) return

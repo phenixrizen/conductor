@@ -2703,7 +2703,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `internal/signal/touched_test.go`, `utils/touchedIndex.test.ts`,
   `palette-touched.spec.ts` (a file touched before the tab opened found
   from the index, its row opening the other session's page with the file,
-  the row on the file's own page). The plan: `docs/plans/touched-index.md`.
+  the row on the file's own page). Codex's round: `?open=` is taken only
+  once the terminal is connected (taken before, the editor's read failed
+  and the tab kept the failure; the spec now reads the file's text), and
+  `resolveTyped` keeps a Windows absolute path (a drive letter, a UNC
+  prefix) and joins a relative one under a Windows directory with `\`
+  (`fileTree.test.ts`). The plan: `docs/plans/touched-index.md`.
 - **The breadcrumb strip scrolls to its end (#315, 2026-10-22).** In
   `FileBrowser.vue` the watch that scrolls the breadcrumb strip to its end
   read `crumbs` above the line declaring it; a watch's source runs as the
