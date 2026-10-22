@@ -2687,7 +2687,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Roundhouse connects anyway, and the idle mark with the initials and the
   state for every other session, never a connection, so the Roundhouse's
   cost stays the current slide's and its neighbours' (each near slide
-  holds two connections in that view, its own and its thumbnail's). The
+  holds two connections in that view, its own and its thumbnail's).; a
+  thumbnail is inert, and a read-only view types nothing. The picked chip
+  is known by its session id, so a session ending mid-move moves nothing
+  else. The
   Yard's tile order is a separate thing and unchanged.
 - **The editor beside the terminal (#309, 2026-10-21).** The column the
   editor shares with the terminal (`EditorColumn.vue`) lays the two out

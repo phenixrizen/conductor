@@ -145,8 +145,14 @@ preflight at the end and after any rebase; one push, then the PR ready.
   the button's own click, Enter selects; a chip's keys stop at the chip
   while it is picked up, so the page's arrows do not step the carousel
   under a move. The order is written back whenever the active list
-  changes, so what the strip shows is what is kept. The low-window
+  changes, the first list included, so what the strip shows is what is
+  kept and a session started afterwards goes at the end. The low-window
   terminal-height spec addresses the chips by `[data-strip-chip]`.
+- Codex's round: a thumbnail's subtree is `inert` and a read-only
+  `TerminalView` sends nothing on its chords; the picked chip is tracked
+  by its session id (keyboard and drag) and let go when its session
+  ends, and Escape keeps the focus on it; the drop marker shows the
+  boundary in the list as shown, apart from the index the move uses.
 - vitest for the kept order and the switch; Playwright for a drag in the
   strip surviving a reload, the keyboard move, the thumbnails toggle.
 

@@ -641,14 +641,15 @@ function requestFile(path: string, stat = false, extra: FileGetExtra = {}): Prom
 
 /** Sends text to the PTY as if typed; false when the transport is not open. */
 function sendInput(text: string): boolean {
-  if (!transport || transport.state.value !== 'open') return false
+  // A read-only view (a thumbnail, a view link's) types nothing, whatever asks: a chord's newline or a page's call.
+  if (props.readOnly || !transport || transport.state.value !== 'open') return false
   transport.sendInput(encodeText(text))
   return true
 }
 
 /** Submits a line through the session's owner (a paste, then Enter); false when the transport is not open. */
 function submit(text: string): boolean {
-  if (!transport || transport.state.value !== 'open') return false
+  if (props.readOnly || !transport || transport.state.value !== 'open') return false
   transport.submit(text)
   return true
 }

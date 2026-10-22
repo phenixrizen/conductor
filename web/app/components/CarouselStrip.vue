@@ -8,9 +8,13 @@ import { dropIndex, keyMove, moveInOrder, type StripView } from '~/utils/carouse
  * order, the current one marked, the rotation's progress under it. The
  * chips are rearranged by drag or by keyboard (#310): Space picks the
  * focused chip up, the arrows move it, Space or Enter drops it, Escape
- * puts it back. As thumbnails the chips carry a small live view of the
- * current session and its neighbours (the ones the Roundhouse connects
- * anyway) and the idle mark for the rest.
+ * puts it back. The chip picked up, by key or by drag, is known by its
+ * session id and found again at each move, so a session that ends
+ * meanwhile moves nothing else (Codex's round on #310). As thumbnails
+ * the chips carry a small live view of the current session and its
+ * neighbours (the ones the Roundhouse connects anyway) and the idle mark
+ * for the rest; a thumbnail is inert: nothing in it takes the focus or a
+ * key.
  */
 const props = defineProps<{
   sessions: SessionInfo[]
@@ -41,36 +45,42 @@ function bar(s: SessionInfo, i: number): { width: string; cls: string } {
   return { width: '0%', cls: 'bg-primary' }
 }
 
-// Drag: the chip picked up, the place it would land, as HTML5 drag and drop reports them.
-const dragFrom = ref<number | null>(null)
+// Drag: the chip picked up (by id), the place it would land (the index in the list once it is taken out), and the boundary the
+// marker shows (the index in the list as shown, 0..n), as HTML5 drag and drop reports them.
+const dragFromId = ref<string | null>(null)
 const dropAt = ref<number | null>(null)
-function onDragStart(i: number, e: DragEvent) {
-  dragFrom.value = i
+const markerAt = ref<number | null>(null)
+function onDragStart(s: SessionInfo, e: DragEvent) {
+  dragFromId.value = s.id
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', ids.value[i] ?? '')
+    e.dataTransfer.setData('text/plain', s.id)
   }
 }
 function onDragOver(i: number, e: DragEvent) {
-  if (dragFrom.value === null) return
+  const from = dragFromId.value ? ids.value.indexOf(dragFromId.value) : -1
+  if (from < 0) return
   e.preventDefault()
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
   const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  dropAt.value = dropIndex(i, r.width > 0 ? (e.clientX - r.left) / r.width : 0, dragFrom.value)
+  const ratio = r.width > 0 ? (e.clientX - r.left) / r.width : 0
+  markerAt.value = ratio > 0.5 ? i + 1 : i
+  dropAt.value = dropIndex(i, ratio, from)
 }
 function onDrop(e: DragEvent) {
   e.preventDefault()
-  if (dragFrom.value !== null && dropAt.value !== null && dropAt.value !== dragFrom.value) emit('reorder', moveInOrder(ids.value, dragFrom.value, dropAt.value))
-  dragFrom.value = null
-  dropAt.value = null
+  const from = dragFromId.value ? ids.value.indexOf(dragFromId.value) : -1
+  if (from >= 0 && dropAt.value !== null && dropAt.value !== from) emit('reorder', moveInOrder(ids.value, from, dropAt.value))
+  onDragEnd()
 }
 function onDragEnd() {
-  dragFrom.value = null
+  dragFromId.value = null
   dropAt.value = null
+  markerAt.value = null
 }
 
-// Keyboard: the chip picked up with Space and the order it was picked from, for Escape.
-const grabbed = ref<number | null>(null)
+// Keyboard: the chip picked up with Space, by id, and the order it was picked from, for Escape.
+const grabbedId = ref<string | null>(null)
 let pickedFrom: string[] = []
 const announce = ref('')
 const chips = new Map<string, HTMLElement>()
@@ -80,49 +90,65 @@ function chipRef(id: string) {
     else chips.delete(id)
   }
 }
-async function focusChip(id: string | undefined) {
+async function focusChip(id: string | null) {
   if (!id) return
   await nextTick()
   chips.get(id)?.focus()
 }
-function onKeyDown(i: number, e: KeyboardEvent) {
+function onKeyDown(s: SessionInfo, i: number, e: KeyboardEvent) {
   if (e.altKey || e.ctrlKey || e.metaKey) return
-  if (e.key === 'Enter' && grabbed.value === null) {
+  const grabbed = grabbedId.value ? ids.value.indexOf(grabbedId.value) : -1
+  if (e.key === 'Enter' && grabbed < 0) {
     e.preventDefault()
     emit('select', i)
     return
   }
   if (!(e.key === ' ' || e.key === 'Enter' || e.key === 'Escape' || e.key.startsWith('Arrow'))) return
-  if (grabbed.value === null && e.key !== ' ') return
+  if (grabbed < 0 && e.key !== ' ') return
   // While a chip is picked up, the arrows move it and the page's own arrow keys (stepping) stay out of it.
   e.preventDefault()
   e.stopPropagation()
   const before = ids.value
-  const r = keyMove(before, i, grabbed.value, e.key)
-  const name = (idx: number) => props.sessions[idx]?.name ?? ''
+  const r = keyMove(before, i, grabbed >= 0 ? grabbed : null, e.key)
+  const picked = grabbedId.value ?? s.id
+  const name = props.sessions.find((x) => x.id === picked)?.name ?? ''
   if (r.done === 'cancelled') {
     if (pickedFrom.join('\n') !== before.join('\n')) emit('reorder', pickedFrom)
-    announce.value = `${name(i)} put back`
-    void focusChip(pickedFrom[r.focused])
-  } else if (r.done === 'dropped') {
-    announce.value = `${name(i)} dropped at place ${r.focused + 1} of ${before.length}`
-    void focusChip(before[r.focused])
-  } else if (grabbed.value === null && r.grabbed !== null) {
-    pickedFrom = [...before]
-    announce.value = `${name(i)} picked up. The arrows move it, Space drops it, Escape puts it back`
-  } else if (r.ids.join('\n') !== before.join('\n')) {
-    emit('reorder', r.ids)
-    announce.value = `${name(i)} moved to place ${r.focused + 1} of ${before.length}`
-    void focusChip(r.ids[r.focused])
+    announce.value = `${name} put back`
+    grabbedId.value = null
+    pickedFrom = []
+    void focusChip(picked)
+    return
   }
-  grabbed.value = r.grabbed
+  if (r.done === 'dropped') {
+    announce.value = `${name} dropped at place ${r.focused + 1} of ${before.length}`
+    grabbedId.value = null
+    pickedFrom = []
+    void focusChip(picked)
+    return
+  }
+  if (grabbed < 0 && r.grabbed !== null) {
+    pickedFrom = [...before]
+    grabbedId.value = s.id
+    announce.value = `${name} picked up. The arrows move it, Space drops it, Escape puts it back`
+    return
+  }
+  if (r.ids.join('\n') !== before.join('\n')) {
+    emit('reorder', r.ids)
+    announce.value = `${name} moved to place ${r.focused + 1} of ${before.length}`
+    void focusChip(picked)
+  }
 }
 function onKeyUp(e: KeyboardEvent) {
   if (e.key === ' ') e.preventDefault()
 }
-/** A chip the keyboard moved keeps its grab across the re-render; one that left the list drops it. */
+/** A picked chip whose session ends is let go: nothing else is moved in its name. */
 watch(ids, (now) => {
-  if (grabbed.value !== null && grabbed.value >= now.length) grabbed.value = null
+  if (grabbedId.value && !now.includes(grabbedId.value)) {
+    grabbedId.value = null
+    pickedFrom = []
+  }
+  if (dragFromId.value && !now.includes(dragFromId.value)) onDragEnd()
 })
 </script>
 
@@ -139,31 +165,33 @@ watch(ids, (now) => {
         class="relative flex cursor-grab flex-col overflow-hidden rounded-md border bg-default text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary"
         :class="[
           i === selected ? 'border-primary ring-1 ring-primary' : 'border-default hover:border-accented',
-          grabbed === i ? 'cursor-grabbing opacity-80 ring-2 ring-primary' : '',
-          dragFrom === i ? 'opacity-50' : '',
+          grabbedId === s.id ? 'cursor-grabbing opacity-80 ring-2 ring-primary' : '',
+          dragFromId === s.id ? 'opacity-50' : '',
         ]"
         :aria-current="i === selected ? 'true' : undefined"
-        :aria-grabbed="grabbed === i ? 'true' : 'false'"
+        :aria-grabbed="grabbedId === s.id ? 'true' : 'false'"
         :aria-label="`${s.name}, place ${i + 1} of ${sessions.length}`"
         :data-strip-chip="s.id"
-        :data-strip-grabbed="grabbed === i ? '' : undefined"
+        :data-strip-grabbed="grabbedId === s.id ? '' : undefined"
         @click="emit('select', i)"
-        @keydown="onKeyDown(i, $event)"
+        @keydown="onKeyDown(s, i, $event)"
         @keyup="onKeyUp"
-        @dragstart="onDragStart(i, $event)"
+        @dragstart="onDragStart(s, $event)"
         @dragover="onDragOver(i, $event)"
         @drop="onDrop"
         @dragend="onDragEnd"
       >
-        <!-- Where a dragged chip would land: a bar at this chip's start, or at the last chip's end. -->
-        <span v-if="dragFrom !== null && dropAt !== null && (dropAt === i || (dropAt === sessions.length && i === sessions.length - 1))" class="pointer-events-none absolute inset-y-0 w-0.5 bg-primary" :class="dropAt === i && !(dropAt === sessions.length) ? 'left-0' : 'right-0'" aria-hidden="true" />
+        <!-- Where a dragged chip would land: the boundary before this chip, or after the last. -->
+        <span v-if="dragFromId !== null && markerAt === i" class="pointer-events-none absolute inset-y-0 left-0 w-0.5 bg-primary" aria-hidden="true" data-strip-marker />
+        <span v-else-if="dragFromId !== null && markerAt === sessions.length && i === sessions.length - 1" class="pointer-events-none absolute inset-y-0 right-0 w-0.5 bg-primary" aria-hidden="true" data-strip-marker />
         <div class="flex items-center gap-1.5 px-2 py-1.5">
           <SessionAvatar :agent-id="s.agentId" :solid="i === selected" />
           <span class="truncate text-xs font-semibold">{{ s.name }}</span>
           <span class="ml-auto size-1.5 flex-none rounded-full" :class="dot(s)" aria-hidden="true" />
         </div>
-        <!-- A thumbnail: a live view for a slide the Roundhouse connects, the idle mark for the rest; never a connection of its own. -->
-        <div v-if="view === 'thumbs'" class="pointer-events-none relative h-20 overflow-hidden border-t border-default bg-default" data-strip-thumb>
+        <!-- A thumbnail: a live view for a slide the Roundhouse connects, the idle mark for the rest; never a connection of its own,
+             and inert: no focus, no key, no pointer reaches it. -->
+        <div v-if="view === 'thumbs'" class="pointer-events-none relative h-20 overflow-hidden border-t border-default bg-default" inert data-strip-thumb>
           <TerminalView v-if="transportFor && near?.(i)" :key="s.id" :create-transport="transportFor(s)" fit="scale" read-only :auto-focus="false" compact class="absolute inset-0" />
           <div v-else class="flex h-full items-center justify-center gap-1.5 text-[11px] text-muted" data-strip-idle>
             <SessionAvatar :agent-id="s.agentId" />

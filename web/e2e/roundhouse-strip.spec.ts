@@ -36,13 +36,16 @@ test('the strip is rearranged by drag and keyboard, the order outlives a reload,
     await page.keyboard.press('Space')
     await expect(chip(one)).toHaveAttribute('aria-grabbed', 'false')
     expect(await rank(one)).toBe(before + 1)
-    // Escape puts a picked chip back where it was.
+    // Escape puts a picked chip back where it was, and keeps the focus on it (Codex's round on #310).
     const kept = await order()
     await chip(two).focus()
     await page.keyboard.press('Space')
     await page.keyboard.press('ArrowLeft')
+    await expect(chip(two)).toBeFocused()
     await page.keyboard.press('Escape')
     expect(await order()).toEqual(kept)
+    await expect(chip(two)).toBeFocused()
+    await expect(chip(two)).toHaveAttribute('aria-grabbed', 'false')
     // Stepping goes in the kept order: → from the first chip shows the second.
     await strip.locator(`[data-strip-chip="${kept[0]}"]`).click()
     await page.keyboard.press('ArrowRight')
@@ -52,6 +55,11 @@ test('the strip is rearranged by drag and keyboard, the order outlives a reload,
     await expect(strip.locator('[data-strip-thumb]').first()).toBeVisible()
     await expect(strip.locator('[data-strip-thumb] .terminal-host')).toHaveCount(3, { timeout: 30_000 })
     await expect(strip.locator('[data-strip-idle]').first()).toBeVisible()
+    // A thumbnail is inert: nothing in it takes the focus or a key, so Tab from a chip never lands in a neighbour's terminal.
+    await expect(strip.locator('[data-strip-thumb]').first()).toHaveAttribute('inert', '')
+    await strip.locator(`[data-strip-chip="${kept[0]}"]`).focus()
+    await page.keyboard.press('Tab')
+    expect(await page.evaluate(() => !!document.activeElement?.closest('[data-strip-thumb]'))).toBe(false)
     await page.reload()
     await expect(page.locator('[data-carousel-strip] [data-strip-thumb]').first()).toBeVisible({ timeout: 30_000 })
     await page.locator('[data-strip-view]').click()

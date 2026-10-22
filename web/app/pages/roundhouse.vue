@@ -47,10 +47,17 @@ const intervalItems = [
 // The active sessions in the strip's kept order (#310): the slides, stepping, "Next up" and follow mode all go by it. A session
 // started since goes at the end, one that ended leaves it; what shows is what is kept.
 const active = computed(() => orderSessions(attention.sessions.value.filter(isActive), settings.value.order))
-watch(active, (list) => {
-  const kept = keptOrder(list)
-  if (kept.join('\n') !== settings.value.order.join('\n')) settings.value.order = kept
-})
+// Written back at once too: the first list shown is the order a session started afterwards is appended to (Codex's round on #310).
+watch(
+  active,
+  (list) => {
+    // An empty list (the store not filled yet, as the page loads) keeps the order: it is what the sessions are put back into.
+    if (!list.length) return
+    const kept = keptOrder(list)
+    if (kept.join('\n') !== settings.value.order.join('\n')) settings.value.order = kept
+  },
+  { immediate: true },
+)
 /** The strip rearranged: the current session keeps the screen, at its new place. */
 async function reorder(ids: string[]) {
   const cur = current.value?.id
