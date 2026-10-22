@@ -579,26 +579,28 @@ function closeScope(id: string, scope: CloseScope) {
  * on macOS, so the tab fires its own at its foot. It takes the key on both edges, so the browsers that do fire one fire no
  * second, and opens on the release: Windows opens its own menu on the Menu key's release, and a menu opened on the press would
  * have the focus by then, the tab never seeing the release to take it. The press is remembered and its release matched by the
- * key alone: Shift let go before F10 leaves the release without it. The key's release anywhere else forgets the press.
+ * key alone: Shift let go before F10 leaves the release without it. The press belongs to its tab: released on another tab, or
+ * anywhere else, it opens nothing and is forgotten (Codex's fifth round).
  */
-let tabKeyPressed: string | null = null
+let tabKeyPressed: { key: string; el: HTMLElement } | null = null
 function onTabKey(e: KeyboardEvent) {
   if (e.type === 'keydown') {
     if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return
     e.preventDefault()
-    tabKeyPressed = e.key
+    tabKeyPressed = { key: e.key, el: e.currentTarget as HTMLElement }
     return
   }
-  if (e.key !== tabKeyPressed) return
+  if (e.key !== tabKeyPressed?.key) return
+  const el = tabKeyPressed.el
   tabKeyPressed = null
   e.preventDefault()
-  const el = e.currentTarget as HTMLElement
+  if (el !== e.currentTarget) return
   const r = el.getBoundingClientRect()
   el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.bottom - 2 }))
 }
 function forgetTabKey(e: KeyboardEvent) {
   // The chord's own key released elsewhere; Shift let go first is no release of it.
-  if (e.key === tabKeyPressed) tabKeyPressed = null
+  if (e.key === tabKeyPressed?.key) tabKeyPressed = null
 }
 /**
  * Keys inside an open tab menu are the menu's (Codex's second round): a letter typed to find an item, or Escape, must not reach

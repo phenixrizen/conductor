@@ -129,6 +129,24 @@ test('the tab menu closes to the right, others and all, asking about an unsaved 
     await page.keyboard.press('F10')
     await page.waitForTimeout(300)
     await expect(menu).toHaveCount(0)
+    // A chord pressed on one tab and released on another opens nothing (Codex's fifth round); the next chord on the tab that
+    // has the focus opens its own menu.
+    await showView(page, 'explorer')
+    await page.locator(`[data-files-mode] [data-file-node="${join(cwd, 'a.txt')}"]`).click()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
+    await tab('a').locator('button').first().focus()
+    await page.keyboard.down('Shift')
+    await page.keyboard.down('F10')
+    await page.keyboard.up('Shift')
+    await tab('b').locator('button').first().focus()
+    await page.keyboard.up('F10')
+    await page.waitForTimeout(300)
+    await expect(menu).toHaveCount(0)
+    await page.keyboard.press('Shift+F10')
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(2)
   } finally {
     await api.stopSession(s.id)
   }
