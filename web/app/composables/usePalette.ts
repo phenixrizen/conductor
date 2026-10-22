@@ -64,6 +64,8 @@ export interface PageGroup {
 }
 
 const pageGetter = shallowRef<(() => PageGroup | null) | null>(null)
+/** The Touched cache's generation: bumped as the token is forgotten, so a reply on its way is dropped (#304, whole-batch round). */
+let touchedGen = 0
 
 /** How old the cached crews may be when the palette opens before they are read again. */
 const LISTS_STALE_MS = 60_000
@@ -125,9 +127,13 @@ export function usePalette() {
     if (!admin.hasToken.value) return Promise.resolve()
     if (loadingTouched) return loadingTouched
     if (!force && touchedAt.value && Date.now() - touchedAt.value < LISTS_STALE_MS) return Promise.resolve()
+    const gen = touchedGen
     loadingTouched = (async () => {
       try {
-        touched.value = (await api.touched()).sessions
+        const r = await api.touched()
+        // A reply for a token since forgotten is dropped with it.
+        if (gen !== touchedGen) return
+        touched.value = r.sessions
         touchedAt.value = Date.now()
       } catch {
         /* the cache stands */
@@ -136,6 +142,15 @@ export function usePalette() {
       }
     })()
     return loadingTouched
+  }
+  /**
+   * The cache goes with the token (whole-batch round): another token, or none, must not see the last one's sessions and
+   * files, and a reply on its way for the old token is dropped. The component watches the token and calls this.
+   */
+  function forgetTouched() {
+    touchedGen++
+    touched.value = []
+    touchedAt.value = 0
   }
 
   function show(mode: PaletteMode = 'search') {
@@ -156,5 +171,5 @@ export function usePalette() {
     open.value = true
   }
 
-  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched }
+  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists, touched, loadTouched, forgetTouched }
 }

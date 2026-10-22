@@ -15,6 +15,7 @@ import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
 import { sayWords, type SayOutcome } from '~/utils/sayWords'
+import { SayDrafts } from '~/utils/sayDrafts'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -157,7 +158,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     return quick.reply(s, text, { question }).catch((e) => toast.add({ title: `${s.name}: not sent`, description: (e as Error).message, color: 'error' }))
   }
   /** A line a session refused (#322), by session: the row's field opens with it again, to send as it is or change. */
-  const sayDrafts = reactive(new Map<string, string>())
+  const sayDrafts = reactive(new SayDrafts())
   /**
    * Types a line into a session that is not asking (#303); one waiting on a prompt, or not running, is refused with the
    * broadcast's words. The owner's word says it was typed (#322: submit_ok, or its refusal, the line kept for the field); an
@@ -166,10 +167,11 @@ export function usePaletteRows(ctx: PaletteContext) {
   async function say(s: SessionInfo, text: string) {
     const line = text.trim()
     if (!line) return
+    // This send's generation: its outcome settles the draft unless a newer send began since (whole-batch round).
+    const gen = sayDrafts.begin(s.id)
     const said = (outcome: SayOutcome) => {
       const r = sayWords(s.name, line, outcome)
-      if (r.keepDraft) sayDrafts.set(s.id, line)
-      else sayDrafts.delete(s.id)
+      sayDrafts.settle(s.id, gen, r.keepDraft, line)
       toast.add({ ...r.toast, icon: r.keepDraft ? 'i-lucide-triangle-alert' : 'i-lucide-keyboard' })
     }
     const live = attention.sessions.value.find((x) => x.id === s.id) ?? s
@@ -548,6 +550,8 @@ export function usePaletteRows(ctx: PaletteContext) {
    * with the file (`?open=`).
    */
   function touchedItems(): PaletteItem[] {
+    // Nothing without the token: the index is the admin's (whole-batch round).
+    if (!admin.hasToken.value) return []
     const page = palette.page.value
     const cwdOf = (id: string) => attention.sessions.value.find((s) => s.id === id)?.cwd
     const feed: FeedFile[] = events.entries.value

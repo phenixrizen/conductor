@@ -2701,7 +2701,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   confirmed**, to look at the terminal before typing it again, the line
   not offered (Codex's round: the owner finishes a submission after its
   client goes, so a second try could type it twice). `useQuickReply().
-  say` returns the outcome (`SayOutcome`) instead of throwing.
+  say` returns the outcome (`SayOutcome`) instead of throwing. The drafts
+  (`utils/sayDrafts.ts`, vitest) settle by generation: an earlier send's
+  late word never erases a newer refused line (whole-batch round).
   Tests: `internal/proto/submit_test.go`, `internal/session/
   submitword_test.go`, `internal/api/submitack_test.go` (the welcome,
   submit_ok, the guard against an API-flagged prompt and the same line
@@ -2763,8 +2765,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   label is the path from its session's working directory, its detail the
   session, the op with its tool, the time and the count; a row of this
   page's session opens the file in its editor, another session's opens
-  that page with `?open=<path[:line]>`, new on the session page and read
-  as `?tab=` is (never written back). Tests: `internal/api/touched_test.go`
+  that page with `?open=<path>` (a line in `?line=<n>`: the path is taken
+  whole, a name may end in `:digits`; whole-batch round), new on the
+  session page and read as `?tab=` is (never written back). The cache goes
+  with the workbench token (`forgetTouched`, the component watching the
+  token; a reply on its way for the old token dropped; no rows without the
+  token: whole-batch round). Tests: `internal/api/touched_test.go`
   (admin only, the order, the limit and its refusals, the deny list, the
   reply's budget, a hosted session's reported entries),
   `internal/signal/touched_test.go`, `utils/touchedIndex.test.ts`,

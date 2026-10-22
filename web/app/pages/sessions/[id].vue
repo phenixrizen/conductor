@@ -379,18 +379,19 @@ watch(
 )
 
 // ?open= (#304): a file the palette's Touched row names on another session's page, opened in this page's editor as a typed
-// path is (`path` or `path:line`, relative to the working directory or absolute), once the session's directory is known and
-// the terminal is connected (the editor reads the file over it; opened before, the read fails and the tab keeps the failure:
-// Codex's round). Read as the page opens and as the query changes, never written back.
+// path is (relative to the working directory or absolute), the path taken whole (a name may end in `:digits`: the line goes
+// in `?line=` instead, whole-batch round), once the session's directory is known and the terminal is connected (the editor
+// reads the file over it; opened before, the read fails and the tab keeps the failure: Codex's round). Read as the page opens
+// and as the query changes, never written back.
 let opened = ''
 watch(
-  [() => route.query.open, () => current.value?.cwd, () => transport.value.state === 'open'],
-  ([q, cwd, connected]) => {
-    if (typeof q !== 'string' || !q || !cwd || !connected || q === opened) return
-    opened = q
-    const m = /^(.*?)(?::(\d+))?$/.exec(q)
-    if (!m?.[1]) return
-    openFile({ path: resolveTyped(cwd, m[1]), line: m[2] ? Number(m[2]) : undefined })
+  [() => route.query.open, () => route.query.line, () => current.value?.cwd, () => transport.value.state === 'open'],
+  ([q, l, cwd, connected]) => {
+    if (typeof q !== 'string' || !q || !cwd || !connected) return
+    const key = `${q}\n${typeof l === 'string' ? l : ''}`
+    if (key === opened) return
+    opened = key
+    openFile({ path: resolveTyped(cwd, q), line: typeof l === 'string' && /^\d+$/.test(l) ? Number(l) : undefined })
   },
   { immediate: true },
 )

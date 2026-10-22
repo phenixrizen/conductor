@@ -141,8 +141,14 @@ watch(
 onBeforeUnmount(() => window.clearInterval(tick))
 
 // The Touched index (#304) is read again when a `file` event arrives while the palette is open, one read in two seconds at
-// most; closed, the feed's own entries lay over the cache until the next open reads it.
+// most; closed, the feed's own entries lay over the cache until the next open reads it. The cache goes with the workbench
+// token (whole-batch round): forgotten or replaced, the last token's sessions and files are not searchable any more.
 const events = useEvents()
+const admin = useWorkbenchToken()
+watch(
+  () => admin.token.value,
+  () => palette.forgetTouched(),
+)
 let touchedTimer: number | undefined
 const stopTouched = events.onEvent((e) => {
   if (e.type !== 'file' || !palette.open.value) return
