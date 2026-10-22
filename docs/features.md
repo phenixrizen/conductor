@@ -2669,6 +2669,39 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The palette's reach (#303, 2026-10-22).** `]` and `[` (`Alt+]` /
+  `Alt+[` from a terminal: `BracketRight` and `BracketLeft` joined the
+  passthrough codes, taken by the layout's chord listener) step a cursor
+  through `needingInput` in the sidebar's order, from the page's own
+  session when it is one (`utils/needsCursor.ts`, `useNeedsCursor`), and
+  show `NeedsYouPill.vue` at the top of the viewport for four seconds:
+  the agent chip, the name, the question, "n of m", the choices as
+  numbered buttons; `1–9` answer over `useQuickReply` without leaving the
+  page, `Enter` opens, `Escape` dismisses, the pill goes by itself and
+  with the question; its keys are read on the document while it shows,
+  never from a text field or a terminal, and the Alt twins give the pill
+  the focus so the next digits are its. `?tab=files|chat|activity|people`
+  on the session page (read, not written: the rail item selected, the
+  chat sheet below `xl`), `?view=` on the run page, `?filter=` on the
+  Yard (`data-yard-filter` chips). `useLaunchModal().show({ agentId,
+  cwd, args, yolo })` prefills the Launch dialog once its catalog is in:
+  Launch <agent> here (each agent, in the page's directory), Launch
+  another like this (the session's agent, directory, yolo and the
+  arguments after the agent's own command), the `launch <agent> [in
+  <dir>]` verb. `useQuickReply().say` types a line into a running session
+  over `submit` on a short control connection (closed once the line is
+  typed; the owner's Enter follows on its own), refused with the
+  broadcast's words while the session waits on a prompt: `I` on a row
+  opens the field, the `say <name> <text>` verb reads as a row. Answer
+  all (`utils/needsCursor.ts` `sameQuestions`): the same question
+  (message and choices) asked by several live sessions is one row at the
+  top of Needs you, its choices answering every one, one send each, the
+  toast counting them. `Stop every session that is done` asks with their
+  names; `Clear the new-event badges` clears every mark. `G S` opens
+  Settings in the desktop app (`Alt+,`, `Comma`); on a session page `S`
+  shares and `X` opens the palette on its Stop row asking (`Alt+X` in
+  its terminal, `KeyX`), listed with the editor's keys as the page's
+  group (`SESSION_SHORTCUTS`). Playwright: `palette-reach.spec.ts`.
 - **The command palette (#302, 2026-10-21).** `CommandPalette.vue` in the
   default layout, opened by `meta_k`, `/`, `alt_/` and `alt_s` (the two
   Alt chords from a terminal; `Slash` joined `ALT_PASSTHROUGH_CODES`, and

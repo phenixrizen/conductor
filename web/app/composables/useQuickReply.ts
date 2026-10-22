@@ -63,5 +63,26 @@ export function useQuickReply() {
     return over(session, opts.token, { question: opts.question, text }, opts.server)
   }
 
-  return { send, reply, sending }
+  /**
+   * Types a line into a session that is not asking (#303, `I` and the `say` verb): the same short control connection, `submit`
+   * for the line, closed once it is typed; the owner writes it and its Enter 250 ms later and goes on if the client has left by
+   * then (docs/protocol.md, `submit`). The palette refuses a session waiting on a prompt before calling this, with the
+   * broadcast's words.
+   */
+  async function say(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string } = {}): Promise<void> {
+    if (sending.value.has(session.id)) return
+    mark(session.id, true)
+    const t: TerminalTransport = create({ sessionId: session.id, token: opts.token ?? admin.token.value, kind: session.kind, forceRelay: true, server: opts.server })
+    try {
+      const welcome = await t.connect(FOLLOW_SIZE)
+      if (welcome.role !== 'control') throw new Error('This link is view-only')
+      t.submit(text)
+      await new Promise((r) => setTimeout(r, 400))
+    } finally {
+      t.close()
+      mark(session.id, false)
+    }
+  }
+
+  return { send, reply, say, sending }
 }

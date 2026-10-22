@@ -22,7 +22,17 @@ const { httpBase } = useApiBase()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
 
 type Filter = 'all' | 'needs' | 'running'
-const filter = ref<Filter>('all')
+function isFilter(v: unknown): v is Filter {
+  return v === 'all' || v === 'needs' || v === 'running'
+}
+// ?filter= (#303) names the chip a link opens on, read as the page opens and as the query changes.
+const filter = ref<Filter>(isFilter(route.query.filter) ? route.query.filter : 'all')
+watch(
+  () => route.query.filter,
+  (q) => {
+    if (isFilter(q)) filter.value = q
+  },
+)
 const active = computed(() => attention.sessions.value.filter(isActive))
 const waiting = computed(() => attention.needsInput.value.filter(isActive))
 const running = computed(() => active.value.filter((s) => s.attention?.state !== 'needs_input'))
@@ -228,9 +238,9 @@ usePalette().registerPage(() => {
               <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
             </template>
             <div v-else class="flex items-center gap-1.5 text-xs">
-              <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" @click="filter = 'all'" />
-              <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" @click="filter = 'needs'" />
-              <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" @click="filter = 'running'" />
+              <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" data-yard-filter="all" :data-active="filter === 'all' ? '' : undefined" @click="filter = 'all'" />
+              <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" data-yard-filter="needs" :data-active="filter === 'needs' ? '' : undefined" @click="filter = 'needs'" />
+              <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" data-yard-filter="running" :data-active="filter === 'running' ? '' : undefined" @click="filter = 'running'" />
               <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
               <AttentionBar :sessions="attention.sessions.value" />
             </div>

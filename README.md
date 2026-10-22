@@ -642,8 +642,22 @@ verb and names one session, run or crew reads as one row that nothing runs
 before Enter: `stop docs`, `share docs view`, `answer review 2`, `reply
 review looks good`, `broadcast nightly ship it`, `run docs-crew as
 tonight`, `resume docs`, `open src/main.go:12`, `mark docs working`, `go
-yard`. Nothing is fetched when it opens; what was used lately ranks first
-within its group (`conductor.palette.recent`).
+yard`, `say docs looks good` (a line typed into a session that is not
+asking), `launch claude in ~/work`. Nothing is fetched when it opens; what
+was used lately ranks first within its group (`conductor.palette.recent`).
+**]** and **[** (**Alt+]** / **Alt+[** in a terminal) step through the
+sessions that need you without opening the palette: a pill at the top of
+the window shows the agent, the name, the question, "n of m" and the
+choices as numbered buttons for four seconds; **1–9** answer it there,
+**Enter** opens the session, **Escape** dismisses it. In the list **I**
+types a line into a running session; **Answer all** at the top of Needs
+you answers the same question asked by several sessions in one go; **Stop
+every session that is done** and **Clear the new-event badges** sit under
+**>**. On a session page **S** shares it and **X** asks to stop it
+(**Alt+X** in its terminal); **G S** opens Settings in the desktop app
+(**Alt+,**). A link can name a view: `?tab=files|chat|activity|people`
+on a session page, `?view=grid|graph|timeline` on a run page,
+`?filter=all|needs|running` on the Yard.
 
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's

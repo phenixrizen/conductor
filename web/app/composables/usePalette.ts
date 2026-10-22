@@ -37,6 +37,8 @@ export interface PaletteItem extends PaletteRow {
   on?: boolean
   /** Enter runs it and the palette stays open (a switch does too). */
   keepOpen?: boolean
+  /** Answer all (#303): choice `i` answers every session of the row's group, one send each. */
+  answerAll?: (i: number) => void
   /** A line under the detail saying why the row will not act (a crew on another machine). */
   note?: string
   /** A run's member: `R` opens its run. */
@@ -69,6 +71,8 @@ export function usePalette() {
   const crews = useState<CrewSummary[]>('paletteCrews', () => [])
   const catalog = useState<AgentInfo[]>('paletteCatalog', () => [])
   const listsAt = useState<number>('paletteListsAt', () => 0)
+  /** A row to open on and ask (X on a session page: its Stop row), taken as the palette opens. */
+  const pendingAsk = useState<string | null>('paletteAsk', () => null)
   const api = useSessions()
   const admin = useWorkbenchToken()
 
@@ -115,6 +119,12 @@ export function usePalette() {
     if (open.value) close()
     else show()
   }
+  /** Opens on the row `key`, asking its question (a Stop): Enter stops, Escape cancels. */
+  function askRow(key: string) {
+    pendingAsk.value = key
+    query.value = ''
+    open.value = true
+  }
 
-  return { open, query, show, close, toggle, registerPage, page, crews, catalog, loadLists }
+  return { open, query, show, close, toggle, askRow, pendingAsk, registerPage, page, crews, catalog, loadLists }
 }

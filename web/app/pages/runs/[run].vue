@@ -128,15 +128,26 @@ const feed = computed(() => crewFeed(events.entries.value, run.value?.log ?? [],
 // The view: the tile grid, or the graph of the members and their handoffs. The choice is this browser's.
 const VIEW_KEY = 'conductor.runView'
 type RunView = 'grid' | 'graph' | 'timeline'
+function isView(v: unknown): v is RunView {
+  return v === 'grid' || v === 'graph' || v === 'timeline'
+}
 function readView(): RunView {
+  // ?view= (#303) names the view a link opens on; else this browser's last choice.
+  if (isView(route.query.view)) return route.query.view
   try {
     const v = localStorage.getItem(VIEW_KEY)
-    return v === 'graph' || v === 'timeline' ? v : 'grid'
+    return isView(v) ? v : 'grid'
   } catch {
     return 'grid'
   }
 }
 const view = ref<RunView>(readView())
+watch(
+  () => route.query.view,
+  (q) => {
+    if (isView(q)) view.value = q
+  },
+)
 watch(view, (v) => {
   try {
     localStorage.setItem(VIEW_KEY, v)

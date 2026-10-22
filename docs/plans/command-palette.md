@@ -322,3 +322,40 @@ connection. A key that collides with a plain key the terminal needs is
   alone, so Ctrl+K in a terminal stays the shell's; the Exited expander
   keeps the palette open (`keepOpen`); sessions are partitioned by their
   own state whatever section their run sits in.
+
+## PR 2 built (2026-10-22), and its decisions
+
+- `?tab=`, `?view=` and `?filter=` are read, never written back: a link
+  names a view; what the person clicks afterwards stays out of the URL.
+  `?tab=files` means the Explorer (`changes` and `commits` are taken
+  too); below `xl` `?tab=chat` opens the chat sheet.
+- `]` and `[`: `useNeedsCursor` (one cursor, in `useState`) and
+  `NeedsYouPill.vue` mounted in the default layout; the pill's keys are a
+  document listener (capture) that leaves a text field or a terminal
+  alone unless the pill itself has the focus, which the Alt twins give
+  it; the pill goes with its question (answered elsewhere too) and on
+  its own after four seconds. `BracketRight`, `BracketLeft` and `Comma`
+  go through the layout's chord listener (defineShortcuts names none).
+- Type a line: `useQuickReply().say` over `submit` on a short control
+  connection, closed 400 ms after the line is written (the owner's Enter
+  follows at 250 ms and goes on without the client); the palette refuses
+  a session waiting on a prompt, or not running, with the broadcast's
+  words before connecting. `I` opens the session row's field; the `say`
+  verb reads as a row.
+- Answer all: `sameQuestions` groups by message and choices across live
+  sessions (a free-text question is never grouped); the row sits first
+  in Needs you with the choices as its buttons; each choice sends to
+  every session, one `send` each naming that session's question id.
+- Launch <agent> here needs a page with a directory (a session page, the
+  Yard's focus, the Roundhouse); Launch another like this takes the
+  session's agent, directory, yolo and the arguments after the agent's
+  own command (none when the command does not start with it).
+- `X` on a session page opens the palette on its Stop row asking
+  (`usePalette().askRow`), so the question is asked once, in one place;
+  `S` opens the Share dialog; both only while the session runs. The
+  session page's `?` group is `SESSION_SHORTCUTS` (S, X, then the
+  editor's rows).
+- `G S` and `Alt+,` do nothing outside the desktop app (Settings is its
+  page).
+- Stop every session that is done takes `attention.state === 'done'` on
+  a running session; Clear the new-event badges keeps the palette open.

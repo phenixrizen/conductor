@@ -8,6 +8,7 @@ import { plainOffMachine, showsRunsOn } from '~/utils/launch'
 import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
 const open = defineModel<boolean>('open', { default: false })
+const launchModal = useLaunchModal()
 const emit = defineEmits<{ launched: [session: SessionInfo] }>()
 
 const api = useSessions()
@@ -55,10 +56,20 @@ watch(open, async (v) => {
   error.value = ''
   knownHosted.value = new Set(live.sessions.value.filter((s) => s.kind === 'hosted').map((s) => s.id))
   state.yolo = undefined
+  // A prefill (#303: Launch <agent> here, Launch another like this, the launch verb), taken once; its agent once the catalog offers it.
+  const p = launchModal.prefill.value
+  launchModal.prefill.value = null
+  if (p?.cwd !== undefined) state.cwd = p.cwd
+  if (p?.args !== undefined) state.args = p.args
+  if (p?.yolo !== undefined) state.yolo = p.yolo
+  const wanted = () => {
+    if (p?.agentId && offered.value.some((a) => a.id === p.agentId)) state.agentId = p.agentId
+    else if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
+  }
   if (cachedCatalog.value) {
     agents.value = cachedCatalog.value.agents
     yoloDefault.value = cachedCatalog.value.yoloDefault
-    if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
+    wanted()
   }
   loading.value = true
   try {
@@ -66,7 +77,7 @@ watch(open, async (v) => {
     cachedCatalog.value = info
     agents.value = info.agents
     yoloDefault.value = info.yoloDefault
-    if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
+    wanted()
   } catch (e) {
     error.value = (e as Error).message
   } finally {

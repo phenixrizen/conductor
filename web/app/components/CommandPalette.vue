@@ -38,9 +38,9 @@ async function openShare(target: NonNullable<typeof shareTarget.value>) {
 const now = ref(Date.now())
 const rows = usePaletteRows({
   share: openShare,
-  launch: () => {
+  launch: (prefill) => {
     palette.close()
-    launch.show()
+    launch.show(prefill)
   },
   name: () => {
     palette.close()
@@ -125,6 +125,13 @@ watch(
       input.value?.inputRef?.focus()
       void palette.loadLists()
       void rows.loadIntegrations()
+      // Opened on a row to ask (X on a session page): the row takes the focus and asks.
+      const key = palette.pendingAsk.value
+      if (key) {
+        palette.pendingAsk.value = null
+        const row = flat.value.find((r) => r.key === key)
+        if (row) void focusRow(key).then(() => runRow(row))
+      }
     })
   },
 )
@@ -201,6 +208,11 @@ async function submitField(row: PaletteItem) {
   await row.field.submit(text)
 }
 function answerChoice(row: PaletteItem, i: number) {
+  if (row.answerAll) {
+    noteRow(row)
+    row.answerAll(i)
+    return
+  }
   const s = row.session
   const p = row.prompt
   if (!s || !p || p.held || p.away) return

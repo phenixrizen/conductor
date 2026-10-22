@@ -5,7 +5,7 @@ import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, Chat
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
 import type { InspectorView } from '~/utils/inspector'
-import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
+import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { activateTab, closeTab, toggleFold } from '~/utils/editorTabs'
@@ -36,7 +36,7 @@ const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
 const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
-useShortcutsModal().registerPage(EDITOR_SHORTCUTS)
+useShortcutsModal().registerPage(SESSION_SHORTCUTS)
 // The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail.
 const tab = ref<InspectorView>('people')
 const attention = ref<Attention>({ state: '' })
@@ -356,6 +356,34 @@ watch(id, () => {
   fileTarget.value = null
   previewUrl.value = null
   load()
+})
+
+// ?tab= (#303): the rail's item a link names, read as the page opens and as the query changes (never written back).
+const TAB_QUERY: Record<string, InspectorView> = { files: 'explorer', explorer: 'explorer', changes: 'changes', commits: 'commits', chat: 'chat', activity: 'activity', people: 'people' }
+watch(
+  () => route.query.tab,
+  (q) => {
+    const v = typeof q === 'string' ? TAB_QUERY[q] : undefined
+    if (!v) return
+    if (v === 'chat' && !xl.value) {
+      chatSheet.value = true
+      return
+    }
+    tab.value = v
+    inspector.value = true
+  },
+  { immediate: true },
+)
+
+// S shares and X asks to stop the session this page is on (#303): X opens the palette on the page's Stop row, asking.
+const liveNow = computed(() => !!current.value && (current.value.status === 'running' || current.value.status === 'starting'))
+function askStop() {
+  if (liveNow.value) palette.askRow('page:stop')
+}
+defineShortcuts({
+  s: () => liveNow.value && (share.value = true),
+  x: askStop,
+  alt_x: { usingInput: true, handler: askStop },
 })
 
 // This page's group in the command palette (#302): what the header and the menu offer, the inspector's views, the open tabs; under

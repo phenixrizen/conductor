@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, EDITOR_SHORTCUTS, GLOBAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
+import { ALT_PASSTHROUGH_CODES, CAROUSEL_SHORTCUTS, EDITOR_SHORTCUTS, GLOBAL_SHORTCUTS, PALETTE_SHORTCUTS, SESSION_SHORTCUTS, SIDEBAR_SHORTCUTS, WALL_SHORTCUTS, type ShortcutGroup } from './useShortcuts'
 
 const fRows = (g: ShortcutGroup) => g.rows.filter((r) => r.keys.length === 1 && r.keys[0] === 'F')
 
@@ -80,5 +80,22 @@ describe("the command palette's keys (#302)", () => {
     for (const r of PALETTE_SHORTCUTS.rows) expect(r.terminal).toBeUndefined()
     expect(SIDEBAR_SHORTCUTS.rows.find((r) => r.keys[0] === '/')?.label).toMatch(/command palette/)
     expect(SIDEBAR_SHORTCUTS.rows.find((r) => r.keys[0] === '/')?.terminal).toEqual(['alt', 'S'])
+  })
+})
+
+describe("the palette's reach (#303)", () => {
+  it('lists ] and [ with their Alt twins, G S for the desktop app, and hands the codes back from a terminal', () => {
+    const next = GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join('') === ']')
+    const prev = GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join('') === '[')
+    expect(next?.terminal).toEqual(['alt', ']'])
+    expect(prev?.terminal).toEqual(['alt', '['])
+    expect(next?.label).toMatch(/needs you/)
+    expect(GLOBAL_SHORTCUTS.rows.find((r) => r.keys.join('+') === 'G+S')?.terminal).toEqual(['alt', ','])
+    for (const code of ['BracketRight', 'BracketLeft', 'Comma', 'KeyX']) expect(ALT_PASSTHROUGH_CODES.has(code)).toBe(true)
+  })
+  it("lists S and X on the session page's group, with Alt+X in its terminal, ahead of the editor's keys", () => {
+    expect(SESSION_SHORTCUTS.rows[0]).toEqual({ keys: ['S'], label: 'Share this session' })
+    expect(SESSION_SHORTCUTS.rows[1]).toEqual({ keys: ['X'], label: 'Stop this session: the palette asks; Enter stops, Escape cancels', terminal: ['alt', 'X'] })
+    expect(SESSION_SHORTCUTS.rows.slice(2)).toEqual(EDITOR_SHORTCUTS.rows)
   })
 })

@@ -1,5 +1,8 @@
 import type { CrewSummary, RunInfo, SessionInfo } from '~/composables/useSessions'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
+import type { LaunchPrefill } from '~/composables/useLaunchModal'
+import { joinArgv } from '~/utils/argv'
+import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, type Action } from '~/utils/actions'
 import { answersInTerminal, isActive, isEnded, needingInput, waitsForTerminal } from '~/utils/attention'
 import type { FeedEntry } from '~/utils/events'
@@ -21,8 +24,8 @@ import { skipWords } from '~/utils/crews'
 export interface PaletteContext {
   /** What the row's Share… opens (the Share dialog on a session or a run). */
   share: (target: { sessionId: string; sessionName?: string } | { runId: string; sessionName?: string }) => void
-  /** The Launch agent dialog. */
-  launch: () => void
+  /** The Launch agent dialog, prefilled when asked (#303). */
+  launch: (prefill?: LaunchPrefill) => void
   /** Your name… */
   name: () => void
   /** The workbench token dialog. */
@@ -151,6 +154,23 @@ export function usePaletteRows(ctx: PaletteContext) {
   function reply(s: SessionInfo, text: string, question: string | undefined) {
     return quick.reply(s, text, { question }).catch((e) => toast.add({ title: `${s.name}: not sent`, description: (e as Error).message, color: 'error' }))
   }
+  /** Types a line into a session that is not asking (#303); one waiting on a prompt, or not running, is refused with the broadcast's words. */
+  async function say(s: SessionInfo, text: string) {
+    const line = text.trim()
+    if (!line) return
+    const live = attention.sessions.value.find((x) => x.id === s.id) ?? s
+    const reason = live.attention?.state === 'needs_input' ? 'needs_input' : sessionLive(live.status) ? null : 'not_running'
+    if (reason) {
+      toast.add({ title: `${s.name}: not sent`, description: skipWords(reason), icon: 'i-lucide-triangle-alert', color: 'warning' })
+      return
+    }
+    try {
+      await quick.say(s, line)
+      toast.add({ title: `Typed into ${s.name}`, description: line.length > 80 ? `${line.slice(0, 80)}…` : line, icon: 'i-lucide-keyboard', color: 'success' })
+    } catch (e) {
+      fail(`Type into ${s.name}`)(e)
+    }
+  }
   async function signal(s: SessionInfo, state: 'needs_input' | 'working' | 'clear') {
     try {
       await api.setAttention(s.id, state, state === 'needs_input' ? 'flagged from the workbench' : undefined)
@@ -234,6 +254,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       { id: 'open-chat', kind: 'session', target: s.id, label: 'Open Chat', icon: 'i-lucide-message-circle', run: () => go(`/sessions/${s.id}`) },
       { id: 'open-activity', kind: 'session', target: s.id, label: 'Open Activity', icon: 'i-lucide-activity', run: () => go(`/sessions/${s.id}`) },
       { id: 'open-people', kind: 'session', target: s.id, label: 'Open People', icon: 'i-lucide-users', run: () => go(`/sessions/${s.id}`) },
+      { id: 'field', kind: 'session', target: s.id, label: 'Type a line into it', icon: 'i-lucide-keyboard', kbds: ['I'], disabled: !live || s.attention?.state === 'needs_input', run: () => {} },
     ]
     if (isEnded(s.status)) more.unshift({ id: 'resume', kind: 'session', target: s.id, label: s.agentSession?.resumable ? 'Resume' : 'Relaunch', icon: s.agentSession?.resumable ? 'i-lucide-history' : 'i-lucide-rotate-ccw', run: () => void resumeSession(s) })
     const state = rowState(s)
@@ -248,11 +269,52 @@ export function usePaletteRows(ctx: PaletteContext) {
       prompt: rowPrompt(row),
       run: () => go(`/sessions/${s.id}`),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
+      field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text) } : undefined,
       href: `/sessions/${s.id}`,
       yardId: s.id,
       runId: s.crew?.runId,
       ...extra,
     }
+  }
+
+  /** Answer all (#303): the same question asked by several live sessions, one row whose choices answer every one. */
+  function answerAllItems(): PaletteItem[] {
+    return sameQuestions(attention.sessions.value.filter((s) => sessionLive(s.status))).map((g) => {
+      const names = g.sessions.map((s) => s.name).join(', ')
+      return {
+        key: `answer-all:${g.sessions.map((s) => s.id).join(',')}`,
+        label: `Answer all ${g.sessions.length}: ${names}`,
+        detail: g.message,
+        words: [g.message, ...g.sessions.map((s) => s.name)],
+        icon: 'i-lucide-reply-all',
+        state: 'needs',
+        prompt: { message: g.message, choices: g.choices, away: false, held: false, placeholder: '', question: undefined },
+        answerAll: (i: number) => {
+          const o = g.choices[i]
+          if (!o) return
+          for (const s of g.sessions) quick.send(s, o.input, { question: s.attention?.id }).catch((e) => toast.add({ title: `${s.name}: not answered`, description: (e as Error).message, color: 'error' }))
+          toast.add({ title: `Answered ${g.sessions.length}: ${o.label}`, description: names, icon: 'i-lucide-reply-all', color: 'success' })
+        },
+        run: () => go(`/sessions/${g.sessions[0]!.id}`),
+      }
+    })
+  }
+
+  /** Launch <agent> here (each agent, in the page's directory) and Launch another like this (#303), when the page has a directory or a session. */
+  function launchItems(): PaletteItem[] {
+    const page = palette.page.value
+    const out: PaletteItem[] = []
+    if (page?.cwd) {
+      for (const a of palette.catalog.value) out.push({ key: `action:launch-here:${a.id}`, label: `Launch ${a.name} here`, detail: shortCwd(page.cwd), agentId: a.id, run: () => ctx.launch({ agentId: a.id, cwd: page.cwd }) })
+    }
+    const s = page?.sessionId ? attention.sessions.value.find((x) => x.id === page.sessionId) : undefined
+    if (s) {
+      const base = palette.catalog.value.find((a) => a.id === s.agentId)?.command ?? []
+      const same = base.length > 0 && base.every((w, i) => s.command[i] === w)
+      const args = same ? joinArgv(s.command.slice(base.length)) : ''
+      out.push({ key: `action:launch-like:${s.id}`, label: `Launch another like ${s.name}`, detail: `${s.agentId} · ${shortCwd(s.cwd)}${args ? ` · ${args}` : ''}${s.yolo ? ' · yolo' : ''}`, agentId: s.agentId, run: () => ctx.launch({ agentId: s.agentId, cwd: s.cwd, args, yolo: s.yolo }) })
+    }
+    return out
   }
 
   function runItem(block: RunBlock, r: RunInfo | undefined): PaletteItem {
@@ -304,6 +366,21 @@ export function usePaletteRows(ctx: PaletteContext) {
   function actionItems(): PaletteItem[] {
     const out: PaletteItem[] = []
     out.push({ key: 'action:launch', label: 'Launch an agent', icon: 'i-lucide-play', kbds: ['N'], run: () => ctx.launch() })
+    out.push(...launchItems())
+    const done = attention.sessions.value.filter((s) => sessionLive(s.status) && s.attention?.state === 'done')
+    out.push({
+      key: 'action:stop-done',
+      label: `Stop every session that is done${done.length ? ` · ${done.length}` : ''}`,
+      detail: done.length ? done.map((s) => s.name).join(', ') : 'None is done',
+      icon: 'i-lucide-square',
+      disabled: !done.length,
+      ask: { title: `Stop ${done.length} ${done.length === 1 ? 'session' : 'sessions'} that ${done.length === 1 ? 'is' : 'are'} done?`, detail: done.map((s) => s.name).join(', ') },
+      run: () => {
+        for (const s of done) void stopSession(s)
+      },
+    })
+    const marked = Object.keys(events.marks.value)
+    out.push({ key: 'action:clear-marks', label: `Clear the new-event badges${marked.length ? ` · ${marked.length}` : ''}`, icon: 'i-lucide-bell-off', disabled: !marked.length, keepOpen: true, run: () => marked.forEach((id) => events.clearMark(id)) })
     out.push({ key: 'action:notifications', label: 'Browser notifications', icon: 'i-lucide-bell', on: settings.settings.value.notifications, run: () => settings.setNotifications(!settings.settings.value.notifications) })
     out.push({ key: 'action:chime', label: 'Chime when a session needs you', icon: 'i-lucide-bell-ring', on: settings.settings.value.chime, run: () => settings.setChime(!settings.settings.value.chime) })
     const needs = events.routes.value.needs_input
@@ -538,8 +615,12 @@ export function usePaletteRows(ctx: PaletteContext) {
         const asking = s.attention?.state === 'needs_input' && !waitsForTerminal(s.attention) && !answersInTerminal(s.attention)
         return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : 'It is not asking a question a reply can answer', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking, run: () => reply(s, v.text, s.attention?.id) }
       }
-      case 'say':
-        return { key: `verb:say:${v.target.id}`, label: `Say to ${v.target.name}: “${v.text}”`, detail: 'Typing a line into a session comes with the palette’s next round (#303)', icon: 'i-lucide-keyboard', disabled: true, run: () => {} }
+      case 'say': {
+        const s = session(v.target.id)
+        if (!s) return null
+        const waiting = s.attention?.state === 'needs_input'
+        return { key: `verb:say:${s.id}`, label: `Say to ${s.name}: “${v.text}”`, detail: waiting ? skipWords('needs_input') : sessionLive(s.status) ? 'Typed as a line, Enter a quarter of a second later' : skipWords('not_running'), icon: 'i-lucide-keyboard', agentId: s.agentId, disabled: waiting || !sessionLive(s.status), run: () => say(s, v.text) }
+      }
       case 'broadcast': {
         const r = run(v.target.id)
         if (!r) return null
@@ -548,7 +629,7 @@ export function usePaletteRows(ctx: PaletteContext) {
         return { key: `verb:broadcast:${r.id}`, label: `Broadcast to ${v.target.name}: “${v.text}”`, detail: `Send to ${typed.length}${skipped.length ? ` · skipped: ${skipped.map((m) => m.name).join(', ')}` : ''}`, icon: 'i-lucide-megaphone', disabled: !typed.length, run: () => broadcast(r, v.text) }
       }
       case 'launch':
-        return { key: `verb:launch:${v.target.id}`, label: `Launch ${v.target.name}${v.dir ? ` in ${v.dir}` : ''}`, detail: v.dir ? 'A prefilled Launch dialog comes with the palette’s next round (#303)' : 'Opens the Launch dialog', icon: 'i-lucide-play', disabled: !!v.dir, run: () => ctx.launch() }
+        return { key: `verb:launch:${v.target.id}`, label: `Launch ${v.target.name}${v.dir ? ` in ${v.dir}` : ''}`, detail: 'Opens the Launch dialog, filled in', icon: 'i-lucide-play', agentId: v.target.id, run: () => ctx.launch({ agentId: v.target.id, cwd: v.dir }) }
       case 'run': {
         const c = palette.crews.value.find((c) => c.id === v.target.id)
         if (!c) return null
@@ -593,7 +674,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     const exited = everyRow.filter((r) => isEnded(r.session.status))
     const blocks = [...model.needs, ...model.running].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
     const groups: PaletteGroup<PaletteItem>[] = [
-      { id: 'needs', label: 'Needs you', pinned: true, rows: needs.map((s) => sessionItem(s, now)) },
+      { id: 'needs', label: 'Needs you', pinned: true, rows: [...answerAllItems(), ...needs.map((s) => sessionItem(s, now))] },
       ...(page ? [{ id: 'page', label: page.label, pinned: true, rows: page.rows }] : []),
       { id: 'running', label: 'Running', rows: running.map((r) => sessionItem(r.session, now)) },
     ]

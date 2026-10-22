@@ -16,7 +16,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'Slash', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -32,6 +32,9 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
     { keys: ['G', 'E'], label: 'Go to Events', terminal: ['alt', 'E'] },
     { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },
+    { keys: [']'], label: 'The next session that needs you, in a pill with its choices: 1–9 answer, Enter opens, Escape dismisses', terminal: ['alt', ']'] },
+    { keys: ['['], label: 'The one before', terminal: ['alt', '['] },
+    { keys: ['G', 'S'], label: 'Go to Settings (the desktop app)', terminal: ['alt', ','] },
   ],
 }
 
@@ -91,6 +94,16 @@ export const EDITOR_SHORTCUTS: ShortcutGroup = {
     { keys: ['ctrl', 'W'], label: 'Close the file' },
     { keys: ['ctrl', 'F'], label: 'Find in the file (Ctrl+H replace)' },
     { keys: ['ctrl', 'G'], label: 'Go to a line' },
+  ],
+}
+
+/** The session page's keys (#303): its own, then the editor's; registered by the session page. */
+export const SESSION_SHORTCUTS: ShortcutGroup = {
+  title: 'The session page',
+  rows: [
+    { keys: ['S'], label: 'Share this session' },
+    { keys: ['X'], label: 'Stop this session: the palette asks; Enter stops, Escape cancels', terminal: ['alt', 'X'] },
+    ...EDITOR_SHORTCUTS.rows,
   ],
 }
 
