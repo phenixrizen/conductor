@@ -2385,6 +2385,7 @@ func (s *Local) AttachWith(o AttachOptions, sink Sink) (*Subscription, error) {
 		Chat:            true,
 		RunChat:         room != nil,
 		Answer:          true,
+		SubmitAck:       true,
 		Cwd:             welcomeCwd(s.info.Cwd, s.fileAllowed(role)),
 	}))
 	if !sub.quiet {
@@ -4681,7 +4682,7 @@ func AnswerResult(reqID string, err error) []byte {
 		code, msg = proto.ErrCodeSessionEnded, "the session has ended"
 	case errors.Is(err, ErrTooManyRequests):
 		code, msg = proto.ErrCodeTooManyRequests, "too many requests at once"
-	case errors.Is(err, ErrTextTooLong), errors.Is(err, ErrBadAnswer):
+	case errors.Is(err, ErrTextTooLong), errors.Is(err, ErrBadAnswer), errors.Is(err, ErrBadSubmit):
 		code, msg = proto.ErrCodeBadFrame, err.Error()
 	case errors.Is(err, ErrInputStalled), errors.Is(err, context.DeadlineExceeded):
 		msg = ErrInputStalled.Error()

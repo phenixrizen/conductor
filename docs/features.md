@@ -2669,6 +2669,44 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **A line typed from the palette is acknowledged, with an unless-waiting
+  guard (#322, 2026-10-22).** A protocol change, in `internal/proto`,
+  `web/app/utils/protocol.ts` and `docs/protocol.md` together: `submit`
+  takes `reqId` (at most 32 bytes of printable ASCII, as `answer`'s;
+  `Submit.Valid`) and `unlessWaiting`; with a `reqId` the owner answers
+  `submit_ok{requestId}` once the line is entered, or `error{code,
+  requestId}` (`not_sent` with the question's words when the guard held
+  it back from a session that asks, nothing typed; `input_failed` when
+  typed and not entered; `too_many_requests`, `session_ended`,
+  `read_only`, `bad_frame`); without one nothing is answered, as before.
+  The `welcome` says `submitAck: true`. `session.SubmitWord(reqID, res,
+  err)` maps a submission's outcome to the word as `AnswerResult` does
+  for an answer (`SubmitResult{}` with no error is the guard's hold:
+  `not_sent`); the server's viewer connection (`ws_viewer.go`) and the
+  host agent's peer (`peer.go`) both take the message, the guard looked
+  at as the owner holds the session's turn (`Submission.UnlessWaiting`,
+  the broadcast's), a line the program takes slowly told through
+  `Submission.Finished`; the hosted owner on the server relays the frame
+  to the host as it relays `answer`. Web: `TerminalTransport.submitAcked
+  (text, { unlessWaiting })` settles true on `submit_ok`, a `ReplyError`
+  with the owner's code on its refusal, false at once to an older owner
+  (a plain `submit`); `useQuickReply().say` uses it and returns whether
+  the line was typed, `not_sent` said in the broadcast's words; the
+  palette's `say` (the `I` field and the `say` verb) then says **Typed
+  into** (or **Sent to** for an older owner), and a refused line waits in
+  the row's field (`field.draft`, `sayDrafts`), opened with it again.
+  Tests: `internal/proto/submit_test.go`, `internal/session/
+  submitword_test.go`, `internal/api/submitack_test.go` (the welcome,
+  submit_ok, the guard against an API-flagged prompt and the same line
+  without it, an unnamed submit, the bounds, a view link),
+  `internal/hostagent/submitack_test.go`; `transport/base.test.ts`;
+  `palette-reach.spec.ts` (the typed word); `utils/sayWords.ts` (vitest)
+  for the words of each outcome and the draft kept on a refusal. No
+  Playwright drives the refusal: the palette offers no line to a session
+  that asks (its row answers instead), and once the page hears a session
+  came to ask, the row's field is gone with the line; the refusal reaches
+  the page only when the owner hears before it does, which the Go tests
+  of the guard cover.
 - **The editor's own rows in the palette (#321, 2026-10-22).**
   `EditorArea.vue` exposes, beside `find`, `gotoLine` and `requestClose`,
   a reactive `palette` snapshot (`keymap`, `nvimOffered`, `nvimWhy`,

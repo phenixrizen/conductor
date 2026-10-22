@@ -221,3 +221,60 @@ describe('BaseTransport.answer', () => {
     expect((late.error as ReplyError).code).toBe('no_word')
   })
 })
+
+describe('BaseTransport.submitAcked (#322)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', globalThis)
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+  function welcomedBy(submitAck: boolean): TestTransport {
+    const t = new TestTransport()
+    t.receive(encodeControl({ t: 'welcome', proto: 1, sessionId: 's', role: 'control', cols: 80, rows: 24, status: 'running', scrollbackBytes: 0, transport: 'ws', fileView: true, answer: true, ...(submitAck ? { submitAck: true } : {}) }))
+    return t
+  }
+  function control(t: TestTransport, n: number): Record<string, unknown> {
+    const f = t.sent[n]!
+    expect(f[0]).toBe(FrameType.Control)
+    return parseJSON<Record<string, unknown>>(f.subarray(1))!
+  }
+
+  it('names its request and the guard to an owner that acknowledges, and settles true on submit_ok, which the page never sees', async () => {
+    const t = welcomedBy(true)
+    const seen = vi.fn()
+    t.onControl(seen)
+    const sent = track(t.submitAcked('looks good', { unlessWaiting: true }))
+    const msg = control(t, 0)
+    expect(msg).toMatchObject({ t: 'submit', text: 'looks good', unlessWaiting: true })
+    expect(typeof msg.reqId).toBe('string')
+    t.receive(encodeControl({ t: 'submit_ok', requestId: msg.reqId as string }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.value).toBe(true)
+    expect(seen).not.toHaveBeenCalled()
+  })
+
+  it('a refusal naming the request is a ReplyError with the owner’s code; no word in time is no_word', async () => {
+    const t = welcomedBy(true)
+    const held = track(t.submitAcked('x', { unlessWaiting: true }))
+    const msg = control(t, 0)
+    t.receive(encodeControl({ t: 'error', code: 'not_sent', message: 'the agent asks a question on its screen', requestId: msg.reqId as string }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(held.error).toBeInstanceOf(ReplyError)
+    expect((held.error as ReplyError).code).toBe('not_sent')
+    const late = track(t.submitAcked('y'))
+    expect(control(t, 1).unlessWaiting).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(ANSWER_TIMEOUT_MS + 1)
+    expect((late.error as ReplyError).code).toBe('no_word')
+  })
+
+  it('to an older owner goes as a plain submit and settles false at once', async () => {
+    const old = welcomedBy(false)
+    const sent = track(old.submitAcked('plain', { unlessWaiting: true }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.value).toBe(false)
+    expect(control(old, 0)).toEqual({ t: 'submit', text: 'plain' })
+  })
+})

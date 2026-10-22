@@ -189,7 +189,8 @@ async function runRow(row: PaletteItem) {
 /** The row's field, opened by its `field` action or by Enter on a row that takes a line first. */
 async function openField(row: PaletteItem) {
   fielding.value = row.key
-  fieldText.value = ''
+  // A line the session refused last time opens the field again (#322), to send as it is or change.
+  fieldText.value = row.field?.draft ?? ''
   await nextTick()
   rowEl(row.key, '[data-palette-field] input')?.focus()
 }

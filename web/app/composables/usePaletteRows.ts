@@ -14,6 +14,7 @@ import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
 import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
 import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
+import { sayWords, type SayOutcome } from '~/utils/sayWords'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -155,23 +156,34 @@ export function usePaletteRows(ctx: PaletteContext) {
   function reply(s: SessionInfo, text: string, question: string | undefined) {
     return quick.reply(s, text, { question }).catch((e) => toast.add({ title: `${s.name}: not sent`, description: (e as Error).message, color: 'error' }))
   }
-  /** Types a line into a session that is not asking (#303); one waiting on a prompt, or not running, is refused with the broadcast's words. */
+  /** A line a session refused (#322), by session: the row's field opens with it again, to send as it is or change. */
+  const sayDrafts = reactive(new Map<string, string>())
+  /**
+   * Types a line into a session that is not asking (#303); one waiting on a prompt, or not running, is refused with the
+   * broadcast's words. The owner's word says it was typed (#322: submit_ok, or its refusal, the line kept for the field); an
+   * older owner says nothing, and the line is said sent.
+   */
   async function say(s: SessionInfo, text: string) {
     const line = text.trim()
     if (!line) return
+    const said = (outcome: SayOutcome) => {
+      const r = sayWords(s.name, line, outcome)
+      if (r.keepDraft) sayDrafts.set(s.id, line)
+      else sayDrafts.delete(s.id)
+      toast.add({ ...r.toast, icon: r.keepDraft ? 'i-lucide-triangle-alert' : 'i-lucide-keyboard' })
+    }
     const live = attention.sessions.value.find((x) => x.id === s.id) ?? s
     const reason = live.attention?.state === 'needs_input' ? 'needs_input' : sessionLive(live.status) ? null : 'not_running'
     if (reason) {
-      toast.add({ title: `${s.name}: not sent`, description: skipWords(reason), icon: 'i-lucide-triangle-alert', color: 'warning' })
+      said({ refused: skipWords(reason) })
       return
     }
     try {
-      // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line.
-      await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' })
-      // Nothing confirms a line landed (the owner's submit has no answer): said as sent, not as typed.
-      toast.add({ title: `Sent to ${s.name}`, description: `${line.length > 80 ? `${line.slice(0, 80)}…` : line} · the session's owner types it and its Enter; a refusal shows here, nothing confirms it landed`, icon: 'i-lucide-keyboard', color: 'neutral' })
+      // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line;
+      // the owner's own guard (unlessWaiting) holds what comes after that look.
+      said({ typed: await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' }) })
     } catch (e) {
-      fail(`Type into ${s.name}`)(e)
+      said({ refused: (e as Error).message })
     }
   }
   async function signal(s: SessionInfo, state: 'needs_input' | 'working' | 'clear') {
@@ -294,7 +306,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       prompt: rowPrompt(row),
       run: () => go(`/sessions/${s.id}`),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
-      field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text) } : undefined,
+      field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text), draft: sayDrafts.get(s.id) } : undefined,
       href: `/sessions/${s.id}`,
       yardId: s.id,
       runId: s.crew?.runId,

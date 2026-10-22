@@ -1236,7 +1236,7 @@ func (w *wsClient) verdict(reqID string) map[string]any {
 		}
 		var m map[string]any
 		json.Unmarshal(f.Payload, &m)
-		if (m["t"] == proto.CtlAnswerOK || m["t"] == proto.CtlError) && m["requestId"] == reqID {
+		if (m["t"] == proto.CtlAnswerOK || m["t"] == proto.CtlSubmitOK || m["t"] == proto.CtlError) && m["requestId"] == reqID {
 			return m
 		}
 	}

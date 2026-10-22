@@ -1,5 +1,5 @@
 import { FOLLOW_SIZE, MAX_SUBMIT } from '~/utils/protocol'
-import { clearAnswered, repliedQuestions, type QuestionReply } from '~/utils/reply'
+import { clearAnswered, repliedQuestions, ReplyError, type QuestionReply } from '~/utils/reply'
 import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
 import { skipWords } from '~/utils/crews'
 import type { SessionInfo } from './useSessions'
@@ -70,8 +70,8 @@ export function useQuickReply() {
    * then (docs/protocol.md, `submit`). The palette refuses a session waiting on a prompt before calling this, with the
    * broadcast's words.
    */
-  async function say(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; waiting?: () => boolean } = {}): Promise<void> {
-    if (sending.value.has(session.id)) return
+  async function say(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; waiting?: () => boolean } = {}): Promise<boolean> {
+    if (sending.value.has(session.id)) return false
     // The owner takes MAX_SUBMIT bytes of a line (bad_frame past it): said here, nothing sent (whole-batch round).
     if (new TextEncoder().encode(text).length > MAX_SUBMIT) throw new Error(`a line is at most ${MAX_SUBMIT} bytes`)
     mark(session.id, true)
@@ -87,15 +87,25 @@ export function useQuickReply() {
       const welcome = await t.connect(FOLLOW_SIZE)
       if (welcome.role !== 'control') throw new Error('This link is view-only')
       // Looked at once more with the connection up (the page's latest word): a prompt that came meanwhile refuses the line
-      // (Codex's round on #303). The owner's `submit` has no guard of its own: that would be a protocol change, said in the plan.
+      // (Codex's round on #303); the owner's own guard (`unlessWaiting`, #322) holds what comes after this look, as the owner
+      // claims the session's turn.
       if (opts.waiting?.()) throw new Error(skipWords('needs_input'))
-      t.submit(text)
+      let typed: boolean
+      try {
+        typed = await t.submitAcked(text, { unlessWaiting: true })
+      } catch (e) {
+        // The owner's word: not_sent (the session asks: the broadcast's words), input_failed (typed and not entered), the rest as it says.
+        if (e instanceof ReplyError && e.code === 'not_sent') throw new Error(skipWords('needs_input'))
+        throw e instanceof ReplyError ? new Error(e.message || e.code) : e
+      }
+      if (typed) return true
+      // An older owner says nothing for a line it took; for one it did not, an error frame, or a close that carries one.
       await new Promise((r) => setTimeout(r, 400))
-      // The owner says nothing for a line it took; for one it did not, an error frame, or a close that carries one.
       const r = refused as { code: string; message: string } | null
       if (r) throw new Error(r.message || r.code)
       const c = closed as CloseInfo | null
       if (c) throw new Error(c.error?.message || 'the connection closed before the line was typed')
+      return false
     } finally {
       t.close()
       mark(session.id, false)

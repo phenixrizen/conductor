@@ -645,7 +645,8 @@ before Enter: `stop docs`, `share docs view`, `answer review 2`, `reply
 review looks good`, `broadcast nightly ship it`, `run docs-crew as
 tonight`, `resume docs`, `open src/main.go:12`, `mark docs working`, `go
 yard`, `say docs looks good` (a line typed into a session that is not
-asking), `launch claude in ~/work`. Nothing is fetched when it opens; what
+asking; its owner says when the line was entered, refuses one into a
+session that asks meanwhile, and the refused line waits in the row's field), `launch claude in ~/work`. Nothing is fetched when it opens; what
 was used lately ranks first within its group (`conductor.palette.recent`).
 **]** and **[** (**Alt+]** / **Alt+[** in a terminal) step through the
 sessions that need you without opening the palette: a pill at the top of

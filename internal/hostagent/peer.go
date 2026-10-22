@@ -349,20 +349,35 @@ func (p *peer) handle(f proto.Frame, via *dcSink) {
 			p.a.local.Send(sub, proto.MustControl(proto.Ping{T: proto.CtlPong, TS: m.TS}))
 		case proto.CtlSubmit:
 			var m proto.Submit
-			if json.Unmarshal(f.Payload, &m) != nil || len(m.Text) > proto.MaxSubmit {
-				p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad submit message"))
+			if json.Unmarshal(f.Payload, &m) != nil || !m.Valid() {
+				if w := session.SubmitWord(m.ReqID, session.SubmitResult{}, session.ErrBadSubmit); w != nil {
+					p.a.local.Send(sub, w)
+				} else {
+					p.a.local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "bad submit message"))
+				}
 				return
+			}
+			// The owner's word (#322), as the server's viewer connection gives
+			// it: submit_ok or an error naming the request, once the outcome
+			// is known; a submit naming no request is told an unnamed error.
+			word := func(res session.SubmitResult, err error) {
+				if w := session.SubmitWord(m.ReqID, res, err); w != nil {
+					p.a.local.Send(sub, w)
+				} else if err != nil && m.ReqID == "" {
+					p.a.local.Send(sub, submitError(err))
+				}
 			}
 			// Off the frame loop, which also carries the relay's other
 			// viewers: the submission pauses before its Enter.
-			p.typeIn(sub, "", func(ctx context.Context) error {
-				_, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
-				if errors.Is(err, session.ErrSubmitPending) {
-					// Accepted: entered as the program reads.
-					return nil
+			p.typeIn(sub, m.ReqID, func(ctx context.Context) error {
+				res, err := p.a.local.Submit(ctx, session.Submission{Text: m.Text, By: sub, UnlessWaiting: m.UnlessWaiting, Finished: word})
+				if !errors.Is(err, session.ErrSubmitPending) {
+					// Accepted while the program takes it slowly: entered as
+					// it reads, its word then.
+					word(res, err)
 				}
-				return err
-			}, func(err error) { p.a.local.Send(sub, submitError(err)) })
+				return nil
+			}, func(err error) { word(session.SubmitResult{}, err) })
 		case proto.CtlAnswer:
 			var m proto.Answer
 			if json.Unmarshal(f.Payload, &m) != nil || !m.Valid() {

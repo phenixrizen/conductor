@@ -64,6 +64,10 @@ const QuestionWords = "the agent asks a question on its screen: answer with the 
 // during the work shows.
 var ErrQuestion = errors.New(QuestionWords)
 
+// ErrBadSubmit is a submit past its bounds (proto.Submit.Valid): refused
+// with bad_frame, the request named when its id is within its own.
+var ErrBadSubmit = errors.New("submit: text past 4096 bytes, or a request id past 32 bytes of printable ASCII")
+
 // HeldWords say why the session needs input while its turn is held for a
 // submission's text typed without its Enter, its link no longer opening the
 // session (holdTyped, source SourceSubmit): the text waits in the program's
@@ -1283,3 +1287,31 @@ func (s *Local) BracketedPaste() (seen, on bool) {
 // program is seen to be quiet. A title sequence cut between two reads is
 // output like any other.
 var titleOnly = regexp.MustCompile(`^(?:\x1b\][02];[^\x07\x1b]*(?:\x07|\x1b\\))+$`)
+
+// SubmitWord is the owner's word on a submit that named a request id
+// (#322, proto.Submit.ReqID): nil for one that named none (nothing is
+// said, as before) and for one accepted while the program takes it slowly
+// (ErrSubmitPending: the word comes from Submission.Finished, through
+// submit_ok once the line was entered; else the error
+// naming the request, as AnswerResult names an answer's: not_sent with the
+// question's words when the unless-waiting guard held the line back (typed
+// nothing, no error), input_failed when the line was typed and not entered
+// (the session's turn is held), too_many_requests, session_ended,
+// read_only, bad_frame.
+func SubmitWord(reqID string, res SubmitResult, err error) []byte {
+	if reqID == "" || errors.Is(err, ErrSubmitPending) {
+		return nil
+	}
+	if err == nil && !res.Typed && !res.Entered {
+		// The guard held it: the session was asking.
+		err = ErrQuestion
+	}
+	if err == nil {
+		if !res.Entered {
+			err = ErrLineStranded
+		} else {
+			return proto.MustControl(proto.SubmitOK{T: proto.CtlSubmitOK, RequestID: reqID})
+		}
+	}
+	return AnswerResult(reqID, err)
+}

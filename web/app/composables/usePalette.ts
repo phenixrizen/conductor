@@ -27,7 +27,7 @@ export interface PaletteItem extends PaletteRow {
   /** The row asks before it runs. */
   ask?: { title: string; detail: string }
   /** The row takes a line (a broadcast, a run's name): the action `field` among its actions opens it, or Enter when `fieldOnEnter`; Enter in it submits. */
-  field?: { placeholder: string; maxLength?: number; button?: string; note?: string; submit: (text: string) => unknown }
+  field?: { placeholder: string; maxLength?: number; button?: string; note?: string; submit: (text: string) => unknown; /** What the field opens with: a line refused last time (#322). */ draft?: string }
   fieldOnEnter?: boolean
   /** ⌘↵ opens it in a new tab. */
   href?: string

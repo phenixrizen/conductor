@@ -25,6 +25,13 @@ export interface TerminalTransport {
    */
   submit(text: string): void
   /**
+   * Types a line as `submit` does and settles with the owner's word (#322), to an owner whose welcome said `submitAck`: true once
+   * the line was entered; a ReplyError with the owner's code when it was not (`not_sent`: the session was asking and `unlessWaiting`
+   * held the line back, nothing typed; `input_failed`: typed and not entered), the connection's end, or no word in time. To an
+   * older owner it goes as a plain `submit` and settles false at once: nothing will say whether it landed.
+   */
+  submitAcked(text: string, opts?: { unlessWaiting?: boolean }): Promise<boolean>
+  /**
    * Replies to an agent's question, naming it (the attention's `id`) to an owner whose welcome said `answer`: true once the owner
    * took it, a ReplyError when it did not (`question_answered`: the question no longer waits, nothing was sent). To an older owner,
    * or without a question's id, it goes as keys or a submit and settles false at once.
