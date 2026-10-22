@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { emptyTabs, toggleFold } from '~/utils/editorTabs'
+import { editorRows } from '~/utils/editorRows'
+import type { EditorColumnHandle } from '~/components/EditorColumn.vue'
 import type { SessionInfo } from '~/composables/useSessions'
 import type { TransportKind, ActivityEntry, Welcome } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
@@ -199,7 +201,11 @@ onMounted(() => {
   attention.start()
 })
 
-// This page's group in the command palette (#302): the chips, the queue's selected session expanded, the grid.
+// The focused tile's editor column: its rows in the palette (#321) read its state through this.
+const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
+
+// This page's group in the command palette (#302): the chips, the queue's selected session expanded, the grid; the focused
+// tile's editor rows (#321).
 usePalette().registerPage(() => {
   const chips: Array<[Filter, string, number]> = [
     ['all', 'All', active.value.length],
@@ -216,6 +222,7 @@ usePalette().registerPage(() => {
       ...chips.map(([f, label, n]) => ({ key: `page:filter:${f}`, label: `${label} · ${n}`, icon: 'i-lucide-filter', on: filter.value === f, run: () => (filter.value = f) })),
       ...(sel && !focused.value ? [{ key: 'page:expand', label: `Expand ${sel.name}`, detail: 'The queue’s selected session, in place', icon: 'i-lucide-maximize-2', agentId: sel.agentId, run: () => focusSession(sel) }] : []),
       ...(focused.value ? [{ key: 'page:grid', label: 'Back to the grid', icon: 'i-lucide-layout-grid', kbds: ['escape'], run: backToGrid }] : []),
+      ...(focused.value ? editorRows(columnRef.value?.palette, { setKeymap: (k) => columnRef.value?.setKeymap(k), save: () => columnRef.value?.save(), close: (id) => columnRef.value?.requestClose(id), askAgent: () => columnRef.value?.askAgent() }) : []),
     ],
   }
 })
@@ -272,7 +279,7 @@ usePalette().registerPage(() => {
       <!-- Scrolls when the terminal's least height and the reply bar's question (#187: whole, up to 500 bytes) outgrow a short
            viewport, a landscape phone's, so that the choices stay reachable; the session page's body scrolls the same way. -->
       <div v-if="focusId" class="flex flex-1 min-h-0 gap-3 overflow-y-auto p-2 sm:p-3" data-yard-focus>
-        <EditorColumn v-if="focused" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="focused.cwd" :raw-url="rawUrl" :host-away="focused.status === 'host_disconnected' ? focused.hostName || 'The host' : undefined" :bar-text="focused.attention?.message || focused.agentId">
+        <EditorColumn v-if="focused" ref="columnRef" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" :cwd="focused.cwd" :raw-url="rawUrl" :host-away="focused.status === 'host_disconnected' ? focused.hostName || 'The host' : undefined" :bar-text="focused.attention?.message || focused.agentId">
           <TerminalView
             :key="focused.id"
             ref="focusTerminal"

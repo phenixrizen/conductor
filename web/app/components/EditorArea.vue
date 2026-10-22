@@ -3,6 +3,7 @@ import type { ChatQuote, FileHeader, FileRequester, FileWriter, NvimBridge, Nvim
 import { swapChoices, swapWords, type NvimViewState } from '~/utils/nvimSwap'
 import { confirmChoices, confirmQuestion } from '~/utils/nvimConfirm'
 import { lostWords } from '~/utils/nvimLost'
+import type { EditorPaletteState } from '~/utils/editorRows'
 import { heldChanges } from '~/utils/nvimHold'
 import { copyText, makeQuote, quoteLocation, quotePath, rangeWords } from '~/utils/quote'
 import { closeWords, conflictWords, forgetModel, savedAt } from '~/utils/editorModels'
@@ -633,7 +634,31 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose })
+// The palette's rows (#321): the editor's state as one reactive snapshot, read by the page's group (through the column) into
+// Keys → Neovim, Save, Close file and Ask the agent about the selection, and the acts behind them.
+const paletteState = computed<EditorPaletteState>(() => {
+  const t = active.value
+  const saveWhy = !t
+    ? 'No file is open'
+    : nvimOn.value
+      ? 'Neovim holds the file: :w writes it'
+      : fileReadOnly.value || (!props.write || !props.canEdit ? 'This connection may not edit' : !editable.value ? 'Not a file that can be saved here' : dirty.has(t.id) ? '' : 'Nothing to save')
+  return {
+    activeId: t?.id ?? null,
+    keymap: keymap.value,
+    nvimOffered: !!props.nvim && nvimWhy.value === '',
+    nvimWhy: nvimWhy.value,
+    switchBlocked: dirty.size ? 'Save or discard the changes first: the other keymap would not have them' : keymapBusy.value ? 'Neovim is still taking keys: a moment' : '',
+    saveable: !!t && editable.value && dirty.has(t.id),
+    saveWhy,
+    canAsk: commentable.value && !!props.canAsk,
+    hasSelection: !!selection.value,
+  }
+})
+function askAgent() {
+  openComposer(true)
+}
+defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose, palette: paletteState, setKeymap, save: () => void save(), askAgent })
 </script>
 
 <template>

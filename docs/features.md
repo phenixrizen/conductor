@@ -2669,6 +2669,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The editor's own rows in the palette (#321, 2026-10-22).**
+  `EditorArea.vue` exposes, beside `find`, `gotoLine` and `requestClose`,
+  a reactive `palette` snapshot (`keymap`, `nvimOffered`, `nvimWhy`,
+  `switchBlocked` with the keymap button's own words, `saveable`,
+  `saveWhy`, `canAsk`, `hasSelection`, `activeId`) and `setKeymap`,
+  `save` and `askAgent` (the comment composer on the selection, asking);
+  `EditorColumn.vue` passes them through as it passes `requestClose`.
+  With a file open, the session page's group (and the Yard's focused
+  tile's) gains **Keys → Neovim** / **Keys → default** (disabled while a
+  tab is unsaved or Neovim is not offered, the detail saying why),
+  **Save** (`Ctrl+S`; disabled when nothing is dirty or the connection
+  may not edit), **Close file** (`Ctrl+W`; through `requestClose`, so an
+  unsaved file asks) and **Ask the agent about the selection**
+  (`Ctrl+Shift+A`; disabled without a selection or when the agent cannot
+  be asked). A guest's join page has no palette (its own layout), so it
+  gets none. `palette.spec.ts`: a file open on a session page lists the
+  four rows; Save from the palette writes the file; Close file on a
+  dirty tab asks; Keys → Neovim is disabled while a tab is dirty and,
+  where Neovim is offered, switches the keymap.
 - **Touched across every session, from the server's index (#304,
   2026-10-22).** `GET /api/touched` (admin, `internal/api/touched.go`)
   lists every listed session's touched files from the index each session

@@ -11,6 +11,8 @@ import { listedAttention, repliedQuestions, ReplyError, replyFailure, type Quest
 import { activateTab, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
 import { resolveTyped } from '~/utils/fileTree'
+import { editorRows } from '~/utils/editorRows'
+import type { EditorColumnHandle } from '~/components/EditorColumn.vue'
 import type { ChangeRow } from '~/utils/changes'
 import type { CommitRow } from '~/utils/commits'
 import type { FileHeader } from '~/utils/protocol'
@@ -410,7 +412,7 @@ defineShortcuts({
 // `:` the tabs, the changes and the commits; under `@` the people here and the links. Read when the palette opens, never before.
 const palette = usePalette()
 const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
-const columnRef = useTemplateRef<{ requestClose: (id: string) => void }>('columnRef')
+const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
 function showView(v: InspectorView) {
   if (v === 'chat') return showChat()
   tab.value = v
@@ -490,6 +492,8 @@ palette.registerPage(() => {
       { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
       ...(terminal.value?.sizerShown() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
       ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
+      // The editor's own rows (#321), with a file in front: its state read live through the column.
+      ...editorRows(columnRef.value?.palette, { setKeymap: (k) => columnRef.value?.setKeymap(k), save: () => columnRef.value?.save(), close: (id) => columnRef.value?.requestClose(id), askAgent: () => columnRef.value?.askAgent() }),
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, run: () => showView(v) })),
       ...tabRows,
     ],

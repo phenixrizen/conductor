@@ -621,7 +621,9 @@ while typing into an agent (⌘K too on a Mac; Ctrl+K stays the shell's
 kill-line), and the rail's search button. It opens over the page on what
 needs you first: each waiting session with its question and its choices as
 numbered buttons, then the page's own actions (Share, Stop, the marks, the
-inspector's views and the open tabs on a session page; the broadcast, the
+inspector's views and the open tabs on a session page, and with a file open
+the editor's Keys → Neovim, Save, Close file and Ask the agent about the
+selection; the broadcast, the
 view, the chat and the members on a run page; the chips on the Yard, the
 rotation on the Roundhouse, Launch on Crews, the hooks on Events, Save on
 Settings), then Running, Exited (folded to a line), Runs, Shared with you,
