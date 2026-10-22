@@ -136,8 +136,11 @@ test('a key inside the palette never reaches the page behind it: a digit on a ro
     await palette.locator('input[data-palette-input]').fill('yard')
     const row = palette.locator('[data-palette-row="go:yard"]')
     await expect(row).toBeVisible()
+    // Stepped to by its key: in the whole suite other specs' sessions match "yard" too and list above Go to.
     await page.keyboard.press('ArrowDown')
-    await expect(row).toHaveAttribute('data-palette-focused', '')
+    const focusedKey = () => palette.locator('[data-palette-row][data-palette-focused]').getAttribute('data-palette-row')
+    for (let i = 0; i < 12 && (await focusedKey()) !== 'go:yard'; i++) await page.keyboard.press('j')
+    await expect(palette.locator('[data-palette-row][data-palette-focused]')).toHaveAttribute('data-palette-row', 'go:yard')
     // 1 on a row that asks nothing: the page's reply bar, which answers digits, never sees it (whole-batch round).
     await page.keyboard.press('1')
     await page.waitForTimeout(800)
