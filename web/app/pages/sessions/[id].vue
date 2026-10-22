@@ -4,7 +4,7 @@ import { liveAttention } from '~/utils/attention'
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
-import type { InspectorTab } from '~/components/SessionInspector.vue'
+import type { InspectorView } from '~/utils/inspector'
 import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
@@ -32,7 +32,8 @@ const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
 const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
 useShortcutsModal().registerPage(EDITOR_SHORTCUTS)
-const tab = ref<InspectorTab>('people')
+// The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail.
+const tab = ref<InspectorView>('people')
 const attention = ref<Attention>({ state: '' })
 
 // The chat beside the terminal (design 2a, 2b): one thread per session, fed by the terminal's connection.
@@ -307,10 +308,11 @@ function option(index: number, question?: string) {
 }
 
 
+/** The header's Files button selects the rail's Explorer item, and collapses the panel when that already shows (4h). */
 function showFiles() {
-  if (inspector.value && tab.value === 'files') inspector.value = false
+  if (inspector.value && tab.value === 'explorer') inspector.value = false
   else {
-    tab.value = 'files'
+    tab.value = 'explorer'
     inspector.value = true
   }
 }
@@ -387,14 +389,13 @@ watch(id, () => {
           <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
           <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
           <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
-          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
+          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
           <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
           <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
           <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
             <span class="hidden sm:inline">Chat</span>
             <ChatUnreadPill :count="chatUnread" />
           </UButton>
-          <UButton icon="i-lucide-panel-right" color="neutral" variant="outline" :aria-label="inspector ? 'Hide inspector' : 'Show inspector'" class="hidden xl:inline-flex" @click="inspector = !inspector" />
           <UDropdownMenu :items="menu">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
           </UDropdownMenu>
@@ -429,9 +430,11 @@ watch(id, () => {
             <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" />
           </template>
         </EditorColumn>
-        <div v-if="inspector" class="hidden xl:flex w-[332px] flex-none">
+        <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->
+        <div class="hidden xl:flex flex-none">
           <SessionInspector
-            v-model:tab="tab"
+            v-model:view="tab"
+            v-model:open="inspector"
             v-model:target="fileTarget"
             v-model:url="previewUrl"
             :session="session"

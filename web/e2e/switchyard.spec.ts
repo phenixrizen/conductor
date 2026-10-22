@@ -390,7 +390,7 @@ test('a session a Conductor publishes is listed there by little, a guest\'s File
     await expect.poll(() => page.locator('[data-transport-state]').first().getAttribute('data-transport-state'), { timeout: 30_000 }).not.toBe('open')
     const home = await pub<{ session: { status: string } }>('GET', `/api/sessions/${made.body.id}`)
     expect(home.body.session.status).toBe('running')
-    await owner.locator('[data-inspector] button', { hasText: 'Activity' }).click()
+    await owner.locator('[data-inspector] [data-rail-item="activity"]').click()
     await expect(owner.locator('[data-inspector]')).toContainText('no longer shared through the switchyard', { timeout: 30_000 })
     // Share again, in the same page: a new link, which publishes it again there as a new session.
     await owner.getByRole('button', { name: 'Share', exact: true }).first().click()

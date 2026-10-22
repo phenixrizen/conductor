@@ -19,7 +19,7 @@ test('a comment on lines lands in the chat as a quote card; asked of the agent i
   const editorLine = (text: string) => area.locator('.monaco-editor .view-line', { hasText: text })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await page.locator(`[data-files-mode] [data-file-node="${file}"]`).click()
     await expect(editorLine('func A()')).toBeVisible({ timeout: 30_000 })
     // Select lines 3 and 4: the bar shows over them.
@@ -68,7 +68,7 @@ test('a comment on lines lands in the chat as a quote card; asked of the agent i
     // The agent adds two lines above: the first card's lines moved, and Open goes to where they are now.
     writeFileSync(file, ['package api', '', '// Users.', '// The handlers.', 'func A() {}', 'func B() {}', 'func C() {}', 'func D() {}', ''].join('\n'))
     await page.reload()
-    await page.locator('[data-inspector] button', { hasText: 'Chat' }).click()
+    await page.locator('[data-inspector] [data-rail-item="chat"]').click()
     const moved = page.locator('[data-chat-thread] [data-chat-quote="users.go:3–4"]').first()
     await expect(moved.locator('[data-chat-quote-moved]')).toHaveText('Lines moved since · now 5–6', { timeout: 15_000 })
     await moved.locator('[data-chat-quote-open]').click()
@@ -96,7 +96,7 @@ test('the editor\'s comment box is as wide as the editor, its heading whole and 
   try {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await page.locator(`[data-files-mode] [data-file-node="${file}"]`).click()
     await expect(editorLine('func (s *Store) Put')).toBeVisible({ timeout: 30_000 })
     // Select lines 3 to 5 and ask the agent.

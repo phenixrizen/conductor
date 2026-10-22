@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
-import { expect, test, type Session } from './fixtures'
+import { expect, showView, test, type Session } from './fixtures'
 
 function git(dir: string, ...args: string[]) {
   execFileSync('git', ['-c', 'user.name=e2e', '-c', 'user.email=e2e@conductor.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, stdio: 'ignore' })
@@ -32,7 +32,7 @@ test('a controller edits and saves; a file changed on disk is caught; an unsaved
   const lines = area.locator('.monaco-editor .view-lines')
   const openNotes = async () => {
     const pane = page.locator('[data-files-mode]')
-    await pane.locator('[data-files-section="explorer"]').click()
+    await showView(page, 'explorer')
     await pane.locator(`[data-file-node="${file}"]`).click()
     await expect(lines).toBeVisible({ timeout: 30_000 })
     return pane
@@ -44,7 +44,7 @@ test('a controller edits and saves; a file changed on disk is caught; an unsaved
   }
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await showView(page, 'explorer')
     await expect(page.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     const pane = await openNotes()
     // Editable: Save shows, disabled until something changes; no Read only.
@@ -59,8 +59,9 @@ test('a controller edits and saves; a file changed on disk is caught; an unsaved
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     await expect(area.locator('[data-editor-dirty]')).toHaveCount(0)
     expect(readFileSync(file, 'utf8')).toBe('alpha\nbeta\ngamma\n')
-    await pane.locator('[data-files-section="touched"]').click()
-    await expect(pane.locator('[data-files-touched] [data-touched-op="write"]').first()).toContainText('editor', { timeout: 15_000 })
+    await page.locator('[data-inspector] [data-rail-item="activity"]').click()
+    await page.locator('[data-inspector] [data-activity-filter="files"]').click()
+    await expect(page.locator('[data-inspector] [data-files-touched] [data-touched-op="write"]').first()).toContainText('editor', { timeout: 15_000 })
     // The agent changes the file; a save from the old read is refused with the words, then Compare, Reload.
     writeFileSync(file, 'alpha\nbeta\ngamma\nfrom the agent\n')
     await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'file', op: 'edit', path: 'notes.txt', tool: 'Edit' })
@@ -140,11 +141,12 @@ test("a file in a repository's .git opens read only; the working tree beside it 
     await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'file', op: 'read', path: '.git/config', tool: 'Read' })
     await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'file', op: 'edit', path: 'notes.txt', tool: 'Edit' })
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
-    await pane.locator('[data-files-section="touched"]').click()
-    await pane.locator(`[data-files-touched] [data-touched="${config}"]`).click()
+    await page.locator('[data-inspector] [data-rail-item="activity"]').click()
+    await page.locator('[data-inspector] [data-activity-filter="files"]').click()
+    await page.locator(`[data-inspector] [data-files-touched] [data-touched="${config}"]`).click()
     await expect(lines).toContainText('[core]', { timeout: 30_000 })
     const readOnly = area.locator('[data-editor-readonly]')
     await expect(readOnly).toBeVisible()
@@ -168,7 +170,7 @@ test("a file in a repository's .git opens read only; the working tree beside it 
       await expect(area.locator('[data-editor-keymap]')).toHaveAttribute('data-editor-keymap', 'default')
     }
     // The working tree's file beside it: Save, no Read only, and it saves.
-    await pane.locator(`[data-files-touched] [data-touched="${join(cwd, 'notes.txt')}"]`).click()
+    await page.locator(`[data-inspector] [data-files-touched] [data-touched="${join(cwd, 'notes.txt')}"]`).click()
     await expect(lines).toContainText('alpha', { timeout: 30_000 })
     await expect(area.locator('[data-editor-readonly]')).toHaveCount(0)
     await lines.click()
@@ -197,9 +199,9 @@ test('Enter after a word the editor suggests breaks the line', async ({ page, ap
   const lines = area.locator('.monaco-editor .view-lines')
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
-    await pane.locator('[data-files-section="explorer"]').click()
+    await showView(page, 'explorer')
     await pane.locator(`[data-file-node="${file}"]`).click()
     await expect(lines).toBeVisible({ timeout: 30_000 })
     await lines.click()
@@ -293,9 +295,9 @@ test('a save that answers late is still on its way, then saved', async ({ page, 
   }
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
-    await pane.locator('[data-files-section="explorer"]').click()
+    await showView(page, 'explorer')
     await pane.locator(`[data-file-node="${file}"]`).click()
     await expect(lines).toBeVisible({ timeout: 30_000 })
     await written.hold()
@@ -417,9 +419,9 @@ test('a save asked for while another is on its way says so, and the next one sav
   }
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await showView(page, 'explorer')
     const pane = page.locator('[data-files-mode]')
-    await pane.locator('[data-files-section="explorer"]').click()
+    await showView(page, 'explorer')
     await pane.locator(`[data-file-node="${file}"]`).click()
     await expect(lines).toBeVisible({ timeout: 30_000 })
     await written.hold()

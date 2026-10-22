@@ -99,9 +99,13 @@ computer's own address, there is one answer and the question is not asked. The w
 sidebar switches to light and remembers it. The session page shows the
 terminal, a reply bar whenever the agent
 is waiting (type an answer, or press the numbered buttons a Claude Code
-dialog offers, read off the dialog itself), and an inspector with **People** (who is attached,
-their role and link, who is typing), **Files** (the file browser) and
-**Activity** (joins, answers, signals and link changes). The header names the
+dialog offers, read off the dialog itself), and an inspector whose rail on
+its outer edge holds **People** (who is attached, their role and link, who is
+typing), **Explorer**, **Changes** and **Commits** (the file browser, the git
+status and the commits since the session started), **Activity** (joins,
+answers, signals and link changes, with the files the agent touched as a
+filter) and **Chat**; each item opens its view, the open one collapses the
+panel to the rail, whose count pills still read. The header names the
 agent, where it runs, the working directory and the git branch, shows a
 **yolo** badge for a session launched with its agent's yolo recipe (see
 [Yolo](#yolo)) and the agent's own session id when Conductor knows it (click
@@ -293,7 +297,7 @@ error); the account key and the certificates live under `dataDir/tls`, mode
 
 ## Chat beside the terminal
 
-The inspector's **Chat** tab is for the people watching a session together:
+The inspector's **Chat** view is for the people watching a session together:
 everyone on it, the owner and anyone who joined by a link, view or control.
 It goes over the terminal's own connection, so it works wherever a link
 works, on a `conductor host` session and through a switchyard too, and
@@ -348,12 +352,12 @@ lines or what you sent.
 
 ## Files, clickable links and the file viewer
 
-The inspector's **Files** tab opens on the session's working directory as a
+The inspector's **Explorer** opens on the session's working directory as a
 tree: folders expand in place, files show their size, the breadcrumb runs
 from the top of the path, and the box above the tree filters it as you type
 or, given a path (or `path:line`) and Enter, opens that file at that line.
 A crumb brings the tree back, opened down to that folder. Paths the agent
-prints in the terminal are clickable too, as the tab's last line says.
+prints in the terminal are clickable too, as the view's last line says.
 
 A file chosen in the tree, typed in the box or clicked in the terminal opens
 in an **editor above the terminal**: Monaco, the VS Code editor core, with

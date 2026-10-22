@@ -263,7 +263,7 @@ onMounted(() => {
         </div>
         <aside v-if="focused" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-md border border-default bg-default" data-files-aside>
           <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted"><UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files</div>
-          <FileBrowser :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :activity="focusActivity" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
+          <FilesPane :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :activity="focusActivity" class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
         </aside>
       </div>
       <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">

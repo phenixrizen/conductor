@@ -27,13 +27,13 @@ test('Changes lists the status with lines, opens a diff, marks the Explorer; no 
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'changes', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     // The Explorer marks the modified file once the status is read; the section's count says three.
     await expect(pane.locator(`[data-file-node="${cwd}/README.md"] [data-file-mark]`)).toHaveText('M', { timeout: 15_000 })
-    await expect(pane.locator('[data-files-changes-count]')).toHaveText('3')
-    await pane.locator('[data-files-section="changes"]').click()
+    await expect(page.locator('[data-inspector] [data-rail-count="changes"]')).toHaveText('3')
+    await page.locator('[data-inspector] [data-rail-item="changes"]').click()
     const rows = pane.locator('[data-files-changes] [data-change]')
     await expect(rows).toHaveCount(3)
     const readme = pane.locator(`[data-change="${cwd}/README.md"]`)
@@ -69,10 +69,10 @@ test('Changes lists the status with lines, opens a diff, marks the Explorer; no 
   const p = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'plain', cwd: plain })
   try {
     await page.goto(`/sessions/${p.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
-    await pane.locator('[data-files-section="changes"]').click()
+    await page.locator('[data-inspector] [data-rail-item="changes"]').click()
     await expect(pane.locator('[data-files-not-repo]')).toContainText('Not a git repository', { timeout: 15_000 })
   } finally {
     await api.stopSession(p.id)

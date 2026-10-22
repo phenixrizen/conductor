@@ -2669,6 +2669,34 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The inspector rail (4h, #301, 2026-10-21).** One vertical rail of 44 px
+  on the inspector's outer edge (`InspectorRail.vue`, its items, pills
+  and tooltips pure in `utils/inspector.ts`) replaces the two tab rows:
+  People, Explorer, Changes, Commits, Activity, Chat (when the owner takes
+  chat), icon buttons with a tooltip to the left naming the view and its
+  count, neutral count pills capped at `99+` (viewers, changed files,
+  commits, unread chat; none on Explorer and Activity), the active item
+  elevated with the 2 px primary bar of #314. Clicking the active item
+  collapses the panel to the rail, whose pills still read; any item opens
+  the panel on its view; the toggle at the rail's foot does the same and
+  replaces the header's panel button (`conductor.inspector` keeps
+  open/closed); the header's Files and Chat buttons select rail items with
+  their toggle-if-shown behaviour. Each view opens with a two-line title,
+  the bold name then the mono sub-line it computes. Touched is no longer
+  a view: Activity carries the chips All · Files · Tools, Files listing
+  the touched rows (`useTouched`, the `op: touched` index merged with the
+  live `file` entries, its count on the chip), Tools the tool uses and
+  refusals. `FileBrowser` lost its section row and takes `section` as a
+  controlled model (`explorer | changes | commits`); its git polling moved
+  into `useRepoStatus`, owned by the inspector (or a Files aside), which
+  is the one behaviour change beyond layout: the status every 5 s while
+  Changes shows and the log every 10 s while Commits shows, each every
+  30 s otherwise so the pills stay right while the panel shows another
+  view or is collapsed, nothing while the document is hidden, one request
+  at a time per kind. The Yard's focused aside and the join page's Files
+  aside carry the three Files items on a rail of their own
+  (`FilesPane.vue`), which does not collapse. Below `xl` nothing changes.
+  No protocol change.
 - **The open session told apart on the rail, two squares never alike
   (#314, 2026-10-21).** The square of the session open on the page carries
   the selection mark: a 2 px primary bar down the rail's edge beside its

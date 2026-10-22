@@ -104,7 +104,7 @@ test('a Markdown file previews rendered with its diagram drawn and nothing fetch
     // A mark on the window: a navigation of the page would lose it.
     await page.evaluate(() => ((window as unknown as { __alive: boolean }).__alive = true))
     const alive = () => page.evaluate(() => (window as unknown as { __alive?: boolean }).__alive === true)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     const box = pane.locator('[data-files-box] input, input[data-files-box]').first()
     await box.fill('README.md')

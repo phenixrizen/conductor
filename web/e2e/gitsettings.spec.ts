@@ -21,7 +21,7 @@ test("git's files are for controllers; a working tree elsewhere lists no changes
   try {
     // The owner reads the file.
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await expect(page.locator(`[data-file-node="${cwd}/notes.md"]`)).toBeVisible({ timeout: 30_000 })
     const box = page.locator('[data-files-box] input, input[data-files-box]').first()
     await box.fill('.git/config')
@@ -69,10 +69,10 @@ test("git's files are for controllers; a working tree elsewhere lists no changes
   const e = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'elsewhere', cwd: folder })
   try {
     await page.goto(`/sessions/${e.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator(`[data-file-node="${folder}/here.txt"]`)).toBeVisible({ timeout: 30_000 })
-    await pane.locator('[data-files-section="changes"]').click()
+    await page.locator('[data-inspector] [data-rail-item="changes"]').click()
     await expect(pane.locator('[data-files-changes-error]')).toContainText('outside the folder', { timeout: 15_000 })
     await expect(pane.locator('[data-files-changes] [data-change]')).toHaveCount(0)
     await expect(page.locator('body')).not.toContainText('outside-name.txt')

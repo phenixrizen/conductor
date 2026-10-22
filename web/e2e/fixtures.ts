@@ -124,6 +124,15 @@ export function member(run: Run, name: string): RunMember {
   return m
 }
 
+/**
+ * Opens the inspector on a rail item (#301) when that item is not already shown: clicking the shown item collapses the panel,
+ * which a check that merely wants the view up never means.
+ */
+export async function showView(page: Page, item: 'people' | 'explorer' | 'changes' | 'commits' | 'activity' | 'chat'): Promise<void> {
+  const button = page.locator(`[data-inspector] [data-rail-item="${item}"]`)
+  if ((await button.getAttribute('aria-pressed')) !== 'true') await button.click()
+}
+
 /** The hrefs of the session and run links of the full sidebar's list, in the order they show. */
 export function sidebarLinks(page: Page): Promise<string[]> {
   return page
