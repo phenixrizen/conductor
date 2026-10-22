@@ -2703,7 +2703,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   client goes, so a second try could type it twice). `useQuickReply().
   say` returns the outcome (`SayOutcome`) instead of throwing. The drafts
   (`utils/sayDrafts.ts`, vitest) settle by generation: an earlier send's
-  late word never erases a newer refused line (whole-batch round).
+  late word never erases a newer refused line (whole-batch round); a line
+  typed while one is already on its way to the session is not sent and
+  said so, the generation untouched, so the one on its way still settles
+  its own draft (second whole-batch round).
   Tests: `internal/proto/submit_test.go`, `internal/session/
   submitword_test.go`, `internal/api/submitack_test.go` (the welcome,
   submit_ok, the guard against an API-flagged prompt and the same line

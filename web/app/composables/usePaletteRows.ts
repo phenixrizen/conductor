@@ -167,6 +167,12 @@ export function usePaletteRows(ctx: PaletteContext) {
   async function say(s: SessionInfo, text: string) {
     const line = text.trim()
     if (!line) return
+    // A line already on its way to this session: this one is not sent, said so, and the one on its way keeps its generation,
+    // so its own word still settles its draft (second whole-batch round).
+    if (quick.sending.value.has(s.id)) {
+      toast.add({ title: `${s.name}: a line is already on its way`, description: 'Its word comes first; type this one again after it.', icon: 'i-lucide-hourglass', color: 'neutral' })
+      return
+    }
     // This send's generation: its outcome settles the draft unless a newer send began since (whole-batch round).
     const gen = sayDrafts.begin(s.id)
     const said = (outcome: SayOutcome) => {
