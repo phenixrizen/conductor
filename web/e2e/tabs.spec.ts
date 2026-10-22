@@ -116,6 +116,19 @@ test('the tab menu closes to the right, others and all, asking about an unsaved 
     await page.keyboard.press('Escape')
     await expect(menu).toBeHidden()
     await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
+    // Shift let go before F10 (Codex's fourth round): the release still opens the menu; F10 alone, no Shift, opens nothing.
+    await tab('b').locator('button').first().focus()
+    await page.keyboard.down('Shift')
+    await page.keyboard.down('F10')
+    await page.keyboard.up('Shift')
+    await page.keyboard.up('F10')
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await tab('b').locator('button').first().focus()
+    await page.keyboard.press('F10')
+    await page.waitForTimeout(300)
+    await expect(menu).toHaveCount(0)
   } finally {
     await api.stopSession(s.id)
   }

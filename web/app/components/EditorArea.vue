@@ -578,15 +578,27 @@ function closeScope(id: string, scope: CloseScope) {
  * Shift+F10 or the Menu key on a focused tab opens its menu (Codex's batch rounds): Chromium fires no contextmenu event for them
  * on macOS, so the tab fires its own at its foot. It takes the key on both edges, so the browsers that do fire one fire no
  * second, and opens on the release: Windows opens its own menu on the Menu key's release, and a menu opened on the press would
- * have the focus by then, the tab never seeing the release to take it.
+ * have the focus by then, the tab never seeing the release to take it. The press is remembered and its release matched by the
+ * key alone: Shift let go before F10 leaves the release without it. The key's release anywhere else forgets the press.
  */
+let tabKeyPressed: string | null = null
 function onTabKey(e: KeyboardEvent) {
-  if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return
+  if (e.type === 'keydown') {
+    if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return
+    e.preventDefault()
+    tabKeyPressed = e.key
+    return
+  }
+  if (e.key !== tabKeyPressed) return
+  tabKeyPressed = null
   e.preventDefault()
-  if (e.type !== 'keyup') return
   const el = e.currentTarget as HTMLElement
   const r = el.getBoundingClientRect()
   el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.bottom - 2 }))
+}
+function forgetTabKey(e: KeyboardEvent) {
+  // The chord's own key released elsewhere; Shift let go first is no release of it.
+  if (e.key === tabKeyPressed) tabKeyPressed = null
 }
 /**
  * Keys inside an open tab menu are the menu's (Codex's second round): a letter typed to find an item, or Escape, must not reach
@@ -619,8 +631,15 @@ function onMenuKey(e: KeyboardEvent) {
     closer.close()
   }
 }
-onMounted(() => document.addEventListener('keydown', onMenuKey))
-onBeforeUnmount(() => document.removeEventListener('keydown', onMenuKey))
+onMounted(() => {
+  document.addEventListener('keydown', onMenuKey)
+  // After the tab's own keyup handler, so a release that reached the tab opened the menu first; a release anywhere else forgets.
+  document.addEventListener('keyup', forgetTabKey)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onMenuKey)
+  document.removeEventListener('keyup', forgetTabKey)
+})
 function tabMenu(id: string) {
   return [
     [{ label: 'Close', icon: 'i-lucide-x', kbds: ['ctrl', 'W'], onSelect: () => requestClose(id) }],
