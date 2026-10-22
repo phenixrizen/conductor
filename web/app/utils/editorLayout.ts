@@ -14,6 +14,13 @@ export const SIDE_SPLIT_MIN = 0.25
 export const SIDE_SPLIT_MAX = 0.75
 /** The terminal keeps at least this width side by side: about forty columns at the default font. */
 export const MIN_TERMINAL_WIDTH = 320
+/** The editor keeps at least this width side by side (its `min-w-32`). */
+export const MIN_EDITOR_WIDTH = 128
+
+/** Whether a column `width` pixels wide can hold both panes side by side with `reserved` pixels between them (Codex's round on #309). */
+export function fitsSide(width: number, reserved: number): boolean {
+  return width >= MIN_EDITOR_WIDTH + MIN_TERMINAL_WIDTH + reserved
+}
 /** What one arrow press moves the split by. */
 export const SPLIT_STEP = 0.02
 
@@ -105,7 +112,7 @@ export function editorWidth(total: number, split: number, reserved: number): num
   return Math.max(0, Math.min(most, Math.round(total * clampSideSplit(split))))
 }
 
-/** The layout the column can show: side by side needs a wide column (`lg` and up); narrower, it is stacked whatever is kept. */
-export function layoutFor(kept: EditorLayout, wide: boolean): EditorLayout {
-  return kept === 'side' && wide ? 'side' : 'stacked'
+/** The layout the column can show: side by side needs a wide window (`lg` and up) and a column both panes fit in; otherwise it is stacked whatever is kept. */
+export function layoutFor(kept: EditorLayout, wide: boolean, fits = true): EditorLayout {
+  return kept === 'side' && wide && fits ? 'side' : 'stacked'
 }

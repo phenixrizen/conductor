@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SPLIT_DEFAULT, SPLIT_KEY } from './editorTabs'
-import { clampSideSplit, editorWidth, LAYOUT_KEY, layoutFor, readLayout, readSideSplit, readSplitFor, SIDE_SPLIT_DEFAULT, SIDE_SPLIT_KEY, stepSplit, writeLayout, writeSideSplit, writeSplitFor } from './editorLayout'
+import { clampSideSplit, editorWidth, fitsSide, LAYOUT_KEY, layoutFor, readLayout, readSideSplit, readSplitFor, SIDE_SPLIT_DEFAULT, SIDE_SPLIT_KEY, stepSplit, writeLayout, writeSideSplit, writeSplitFor } from './editorLayout'
 
 function memory(init: Record<string, string> = {}) {
   const m = new Map(Object.entries(init))
@@ -55,9 +55,14 @@ describe('the editor layout', () => {
     expect(editorWidth(300, 0.5, 8)).toBe(0)
   })
 
-  it('shows side by side only on a wide column', () => {
+  it('shows side by side only on a wide window whose column holds both panes', () => {
     expect(layoutFor('side', true)).toBe('side')
     expect(layoutFor('side', false)).toBe('stacked')
     expect(layoutFor('stacked', true)).toBe('stacked')
+    expect(layoutFor('side', true, false)).toBe('stacked')
+    expect(fitsSide(464, 16)).toBe(true)
+    expect(fitsSide(463, 16)).toBe(false)
+    expect(fitsSide(312, 16)).toBe(false)
+    expect(fitsSide(0, 16)).toBe(false)
   })
 })

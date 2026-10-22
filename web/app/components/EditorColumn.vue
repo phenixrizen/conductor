@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatQuote, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
 import { clampSplit, SPLIT_DEFAULT, toggleFold, type TabsState } from '~/utils/editorTabs'
-import { clampSideSplit, editorWidth, layoutFor, MIN_TERMINAL_WIDTH, readLayout, readSplitFor, SIDE_SPLIT_DEFAULT, stepSplit, writeLayout, writeSplitFor, type EditorLayout } from '~/utils/editorLayout'
+import { clampSideSplit, editorWidth, fitsSide, layoutFor, MIN_TERMINAL_WIDTH, readLayout, readSplitFor, SIDE_SPLIT_DEFAULT, stepSplit, writeLayout, writeSplitFor, type EditorLayout } from '~/utils/editorLayout'
 
 /**
  * The column a terminal shares with the editor area (design 4b, 4g): the
@@ -47,8 +47,13 @@ const editorOpen = computed(() => tabs.value.tabs.length > 0 && !tabs.value.fold
 const terminalFolded = computed(() => phone.value && editorOpen.value)
 /** Whether the two share the column at all: the editor open, the terminal not folded away under it. */
 const shared = computed(() => editorOpen.value && !terminalFolded.value)
-/** The layout the column shows: the kept one on a wide window with the editor open, stacked otherwise. */
-const layout = computed<EditorLayout>(() => (shared.value ? layoutFor(kept.value, wide.value) : 'stacked'))
+/** The column's own width: a wide window whose column sits beside wide panels (a join page's Files and Chat) may still be too narrow for two panes. */
+const colWidth = ref(0)
+const fits = computed(() => fitsSide(colWidth.value, GAP))
+/** Side by side can be chosen: a wide window and a column both panes fit in. */
+const canSide = computed(() => shared.value && wide.value && fits.value)
+/** The layout the column shows: the kept one where it can be chosen, stacked otherwise. */
+const layout = computed<EditorLayout>(() => (shared.value ? layoutFor(kept.value, wide.value, fits.value) : 'stacked'))
 const side = computed(() => layout.value === 'side')
 const split = computed(() => splits[layout.value])
 
@@ -99,12 +104,24 @@ function splitKey(e: KeyboardEvent) {
   setSplit(v)
   writeSplitFor(layout.value, storage(), split.value)
 }
+let observer: ResizeObserver | undefined
 onMounted(() => {
   const s = storage()
   kept.value = readLayout(s)
   splits.stacked = readSplitFor('stacked', s)
   splits.side = readSplitFor('side', s)
+  if (column.value) {
+    colWidth.value = column.value.getBoundingClientRect().width
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver((entries) => {
+        const w = entries[0]?.contentRect.width
+        if (w !== undefined) colWidth.value = w
+      })
+      observer.observe(column.value)
+    }
+  }
 })
+onBeforeUnmount(() => observer?.disconnect())
 
 function bringTerminalUp() {
   tabs.value = toggleFold(tabs.value)
@@ -126,7 +143,7 @@ function bringTerminalUp() {
       :raw-url="rawUrl"
       :host-away="hostAway"
       :read-only-badge="readOnlyBadge"
-      :layout="shared && wide ? layout : undefined"
+      :layout="canSide ? layout : undefined"
       :class="editorOpen ? (terminalFolded ? 'min-h-0 flex-1' : side ? 'min-w-32 shrink' : 'min-h-32 shrink') : 'flex-none'"
       :style="shared ? { flexBasis: `${Math.round(split * 100)}%` } : undefined"
       @switch-layout="switchLayout"

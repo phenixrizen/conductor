@@ -2700,7 +2700,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   its axis move it a step of 2 %, Home and End take it to its ends. The
   terminal keeps a minimum width side by side (320 px, about forty
   columns) as it keeps its minimum height stacked, and its size reaches
-  the agent as any resize does. The layout (`conductor.editor.layout`)
+  the agent as any resize does.; a column too narrow for both (its own
+  width, measured, not the window's) stays stacked and offers no switch,
+  and the reply bar shrinks with the terminal's pane. The layout (`conductor.editor.layout`)
   and each layout's split (`conductor.editor.split`,
   `conductor.editor.split.side`) are kept per browser; the pure parts are
   `utils/editorLayout.ts` with vitest. The default stays stacked until the

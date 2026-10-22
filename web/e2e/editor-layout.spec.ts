@@ -80,6 +80,13 @@ test('the editor goes beside the terminal and back, the split drags and steps, a
     await expect(area.locator('[data-editor-layout-switch]')).toHaveCount(0)
     await page.setViewportSize({ width: 1440, height: 900 })
     await expect(column).toHaveAttribute('data-editor-layout', 'side')
+    // A wide window whose column is too narrow for both panes (beside wide panels, as a join page's Files and Chat leave it)
+    // stacks too, and offers no switch: the column's own width decides, not the viewport's (Codex's round on #309).
+    await column.evaluate((el) => ((el as HTMLElement).style.maxWidth = '400px'))
+    await expect(column).toHaveAttribute('data-editor-layout', 'stacked')
+    await expect(area.locator('[data-editor-layout-switch]')).toHaveCount(0)
+    await column.evaluate((el) => ((el as HTMLElement).style.maxWidth = ''))
+    await expect(column).toHaveAttribute('data-editor-layout', 'side')
   } finally {
     await api.stopSession(s.id)
   }

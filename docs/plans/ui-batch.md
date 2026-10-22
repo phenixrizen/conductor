@@ -111,6 +111,11 @@ preflight at the end and after any rebase; one push, then the PR ready.
   reload brings back what the person saw, and the arrow keys move from
   there. A switch moves no DOM node of the terminal (the terminal's side
   is `display: contents` stacked), so it is not remounted.
+- Codex's round: the column's own width (a ResizeObserver), not the
+  viewport's, decides whether both panes fit (`fitsSide`: 128 + 320 px
+  and the gap); a column beside wide panels (a join page's Files and
+  Chat at 1024 px) stays stacked and offers no switch. The reply bar's
+  form shrinks with the terminal's pane.
 - Playwright: a drag in each direction, the switch, the split surviving
   a reload, the terminal's minimum width.
 
