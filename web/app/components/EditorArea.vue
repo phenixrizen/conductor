@@ -574,6 +574,18 @@ function requestCloseIds(ids: string[]) {
 function closeScope(id: string, scope: CloseScope) {
   requestCloseIds(tabsToClose(tabs.value, id, scope))
 }
+/**
+ * Shift+F10 or the Menu key on a focused tab opens its menu (Codex's batch round): Chromium fires no contextmenu event for them
+ * on macOS, so the tab fires its own at its foot, and takes the keys on both edges so the browsers that do fire one fire no second.
+ */
+function onTabKey(e: KeyboardEvent) {
+  if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return
+  e.preventDefault()
+  if (e.type !== 'keydown') return
+  const el = e.currentTarget as HTMLElement
+  const r = el.getBoundingClientRect()
+  el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.bottom - 2 }))
+}
 function tabMenu(id: string) {
   return [
     [{ label: 'Close', icon: 'i-lucide-x', kbds: ['ctrl', 'W'], onSelect: () => requestClose(id) }],
@@ -707,13 +719,15 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       <!-- The tab strip. -->
       <div class="flex h-9 flex-none items-stretch border-b border-default bg-elevated/40" data-editor-tabs>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto">
-          <!-- A tab's menu (#330): right-click, or Shift+F10 on the focused tab, which fires the same event. -->
+          <!-- A tab's menu (#330): right-click, or Shift+F10 or the Menu key on the focused tab (the tab fires the event itself: Chromium on macOS fires none for them). -->
           <UContextMenu v-for="t in tabs.tabs" :key="t.id" :items="tabMenu(t.id)">
             <div
               class="group flex max-w-56 flex-none items-center gap-1.5 border-r border-default pl-3 pr-1.5 text-xs"
               :class="t.id === tabs.active ? 'bg-default text-highlighted' : 'text-muted hover:text-default'"
               :data-editor-tab="t.id"
               :data-editor-tab-active="t.id === tabs.active ? '' : undefined"
+              @keydown="onTabKey"
+              @keyup="onTabKey"
             >
               <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
                 <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />

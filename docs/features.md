@@ -2690,7 +2690,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   could never act; the group is the desktop app's alone now.
 - **Close tabs to the left, to the right, others, all (#330, 2026-10-22).**
   As VS Code's tab menu: a context menu on an editor tab (right-click, or
-  Shift+F10 on the focused tab, which fires the same event) with Close,
+  Shift+F10 or the Menu key on the focused tab: the tab fires the event
+  itself, since Chromium on macOS fires none for them) with Close,
   Close others, Close to the right, Close to the left and Close all, each
   through the close that asks about unsaved changes (`requestCloseIds`,
   today's close-all generalised: unsaved among them ask through

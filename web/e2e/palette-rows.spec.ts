@@ -165,13 +165,25 @@ test("the other pages: the Yard's chips, the Roundhouse's switches and rotation,
   await expect(page.locator('[data-palette]')).toBeHidden()
   await runRow(page, 'page:new')
   await expect(page).toHaveURL(/\/crews\/new/)
-  // Events: a tab row shows its tab and reads as on; Refresh runs.
+  // Events: a tab row shows its tab and reads as on; Refresh asks the server again and shows its answer (the answer rewritten
+  // on the way, so the words on the page prove the request: Codex's batch round, a no-op Refresh passed before).
   await page.goto('/events')
   await expect(page.locator('[data-events-tabs]')).toBeVisible({ timeout: 30_000 })
   await runRow(page, 'page:tab:routing')
   expect(await switchOf(page, 'page:tab:routing')).toBe('on')
+  await runRow(page, 'page:tab:integrations')
+  await expect(page.locator('[data-events-integrations-tab]')).toBeVisible()
+  await page.route('**/api/integrations', async (route) => {
+    const res = await route.fetch()
+    const body = (await res.json()) as { integrations: Array<{ name: string }> }
+    for (const i of body.integrations) i.name = `${i.name} (refreshed)`
+    await route.fulfill({ response: res, json: body })
+  })
+  const asked = page.waitForResponse((r) => r.url().includes('/api/integrations'))
   await runRow(page, 'page:refresh')
-  await expect(page.locator('[data-events-tabs]')).toBeVisible()
+  await asked
+  await expect(page.locator('[data-events-integrations-tab]').getByText('(refreshed)').first()).toBeVisible()
+  await page.unroute('**/api/integrations')
   // Agents: Launch opens the dialog.
   await page.goto('/agents')
   await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })

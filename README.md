@@ -371,7 +371,7 @@ readable width beside; the layout and each layout's split are kept per
 browser.
 Several files are tabs (Ctrl+Tab and Ctrl+Shift+Tab switch, Ctrl+W or ×
 closes, the strip's × closes all, and a tab's menu (right-click, or Shift+F10
-on the tab) closes the others, those to the right or the left, or all, as
+or the Menu key on the tab) closes the others, those to the right or the left, or all, as
 VS Code's does; closing the last takes the editor away).
 **T** (Alt+T while typing in the terminal) folds the editor to its tab strip
 and brings it back. The header shows the breadcrumb, the position, copy
