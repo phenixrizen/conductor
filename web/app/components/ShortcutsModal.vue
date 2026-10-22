@@ -40,13 +40,13 @@ const COLUMNS = 'grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_10.5rem_10.5rem] x
                       <UKbd v-else :value="key" size="md" />
                     </template>
                   </template>
-                  <span v-else aria-label="none" />
+                  <span v-else class="sr-only">none</span>
                 </span>
               </span>
               <span class="flex items-center gap-1 sm:justify-center sm:px-3">
                 <span class="me-1 w-16 text-[11px] text-muted sm:hidden">Outside</span>
                 <span class="flex items-center gap-1" data-shortcut-outside>
-                  <span v-if="!row.keys.length" aria-label="none" />
+                  <span v-if="!row.keys.length" class="sr-only">none</span>
                   <template v-for="(key, i) in row.keys" :key="i">
                     <span v-if="i > 0 && row.keys[0] === 'G' && group.title === 'Everywhere'" class="text-sm text-muted">then</span>
                     <UKbd v-if="key === 'enter'" size="md">Enter</UKbd>
