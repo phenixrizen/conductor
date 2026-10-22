@@ -2669,6 +2669,26 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The Roundhouse's strip rearranged, and shown as thumbnails (#310,
+  2026-10-21).** The chips in the strip at the foot (`CarouselStrip.vue`)
+  can be rearranged by drag (HTML5 drag, no library) and by keyboard: a
+  chip picked up with Space, moved with the arrows, dropped with Space or
+  Enter, put back with Escape (`aria-grabbed`, a live region saying the
+  move). The order is kept per browser with the Roundhouse's settings
+  (`conductor.carousel.settings`, `order` by session id; the pure parts in
+  `utils/carousel.ts`: `orderSessions`, `moveInOrder`, `dropIndex`,
+  `keyMove`, `normalizeSettings`): the carousel's slides, stepping,
+  autoplay and "Next up" follow it; follow mode still jumps to a waiting
+  session first and goes on in the kept order; a session started since
+  goes at the end, one that ended leaves it. A button in the strip's
+  corner (`data-strip-view`) switches chips and thumbnails (`strip` in the
+  same settings): a thumbnail is a small live view (`TerminalView
+  fit="scale"`) for the current slide and its neighbours, which the
+  Roundhouse connects anyway, and the idle mark with the initials and the
+  state for every other session, never a connection, so the Roundhouse's
+  cost stays the current slide's and its neighbours' (each near slide
+  holds two connections in that view, its own and its thumbnail's). The
+  Yard's tile order is a separate thing and unchanged.
 - **The editor beside the terminal (#309, 2026-10-21).** The column the
   editor shares with the terminal (`EditorColumn.vue`) lays the two out
   stacked, as before, or side by side, the editor on the left and the

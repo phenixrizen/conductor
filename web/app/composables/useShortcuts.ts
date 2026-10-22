@@ -93,6 +93,7 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
     { keys: ['enter'], label: 'Type into the current session' },
     { keys: ['space'], label: 'Pause or resume rotation', terminal: ['alt', 'P'] },
     { keys: ['escape'], label: 'Leave the terminal', terminal: ['alt', 'escape'] },
+    { keys: ['space'], label: 'On a chip of the strip: pick it up or drop it; the arrows move it, Escape puts it back' },
   ],
 }
 

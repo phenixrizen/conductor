@@ -285,7 +285,7 @@ test("the Roundhouse, a low window: the terminal's last row and the cursor's row
   await page.addInitScript(() => localStorage.setItem('conductor.carousel.settings', JSON.stringify({ intervalMs: 60000, autoplay: false, follow: false })))
   await page.setViewportSize(LOW)
   await page.goto('/roundhouse')
-  await page.locator('[data-carousel-strip] button').filter({ has: page.getByText(s.name, { exact: true }) }).click()
+  await page.locator('[data-carousel-strip] [data-strip-chip]').filter({ has: page.getByText(s.name, { exact: true }) }).click()
   const slide = page.locator('[aria-roledescription="slide"]').filter({ has: page.getByText(s.name, { exact: true }) })
   await expectRowsInPane(page, api, s.id, cwd, 'the Roundhouse', slide)
 })

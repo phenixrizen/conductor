@@ -575,7 +575,13 @@ rotating on; click **Holding** to release it sooner. Any other routed event
 moves it to its session once, without holding, and never while it holds on a
 session that needs input. It never jumps away while you are typing. A film
 strip under the terminal shows every session with the rotation progress, and
-the footer says which session is next.
+the footer says which session is next. Drag the strip's chips into the order
+you want (or pick one up with Space, move it with the arrows and drop it
+with Space); the order is kept per browser, and stepping, rotation and
+"Next up" follow it, a session started since going at the end. The button
+in the strip's corner shows the strip as thumbnails instead: a small live
+view of the current session and its neighbours, the idle mark for the
+rest.
 
 ## Sidebar and keyboard shortcuts
 

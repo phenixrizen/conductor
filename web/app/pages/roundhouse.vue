@@ -2,6 +2,7 @@
 import type { SessionInfo } from '~/composables/useSessions'
 import { CAROUSEL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
+import { keptOrder, normalizeSettings, orderSessions, type CarouselSettings } from '~/utils/carousel'
 import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
@@ -13,17 +14,13 @@ const admin = useWorkbenchToken()
 const { create } = useTerminalTransport()
 useShortcutsModal().registerPage(CAROUSEL_SHORTCUTS)
 
+// The settings kept per browser (#310 added the strip's order and view): each field checked on the way in.
 const SETTINGS_KEY = 'conductor.carousel.settings'
 const LEGACY_KEY = 'conductor.wall.settings'
-interface CarouselSettings {
-  intervalMs: number
-  autoplay: boolean
-  follow: boolean
-}
-const settings = ref<CarouselSettings>({ intervalMs: 10000, autoplay: true, follow: true })
+const settings = ref<CarouselSettings>(normalizeSettings(null))
 try {
   const raw = localStorage.getItem(SETTINGS_KEY) ?? localStorage.getItem(LEGACY_KEY)
-  if (raw) settings.value = { ...settings.value, ...JSON.parse(raw) }
+  if (raw) settings.value = normalizeSettings(JSON.parse(raw))
 } catch {
   /* ignore */
 }
@@ -47,7 +44,24 @@ const intervalItems = [
   { label: '60s', value: 60000 },
 ]
 
-const active = computed(() => attention.sessions.value.filter(isActive))
+// The active sessions in the strip's kept order (#310): the slides, stepping, "Next up" and follow mode all go by it. A session
+// started since goes at the end, one that ended leaves it; what shows is what is kept.
+const active = computed(() => orderSessions(attention.sessions.value.filter(isActive), settings.value.order))
+watch(active, (list) => {
+  const kept = keptOrder(list)
+  if (kept.join('\n') !== settings.value.order.join('\n')) settings.value.order = kept
+})
+/** The strip rearranged: the current session keeps the screen, at its new place. */
+async function reorder(ids: string[]) {
+  const cur = current.value?.id
+  settings.value.order = ids
+  await nextTick()
+  const i = active.value.findIndex((s) => s.id === cur)
+  if (i >= 0 && i !== selected.value) {
+    selected.value = i
+    carousel.value?.emblaApi?.scrollTo(i, true)
+  }
+}
 const waiting = computed(() => attention.needsInput.value.filter(isActive))
 // Follow mode follows input requests while the Events page routes needs_input
 // to Roundhouse jump; other events routed there jump too (followEvent below).
@@ -320,6 +334,7 @@ onBeforeUnmount(() => {
   window.clearInterval(progressTimer)
   window.removeEventListener('keydown', onEscape)
 })
+
 </script>
 
 <template>
@@ -394,13 +409,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="flex flex-col gap-2.5 px-4 pb-4 pt-3">
-          <CarouselStrip :sessions="active" :selected="selected" :progress="progress" :holding-id="holdingId" :rotating="rotating" @select="scrollTo" />
+          <CarouselStrip v-model:view="settings.strip" :sessions="active" :selected="selected" :progress="progress" :holding-id="holdingId" :rotating="rotating" :transport-for="transportFor" :near="near" @select="scrollTo" @reorder="reorder" />
           <div class="flex items-center gap-3 text-xs text-muted">
             <span v-if="nextUp">
               Next up: <b class="text-default">{{ nextUp.session.name }}</b><template v-if="nextUp.waiting">. It also needs input, so it goes before running sessions</template>
             </span>
             <span class="ml-auto hidden md:flex items-center gap-3 font-mono text-[11px]">
-              <span>← → step</span><span>Space pause</span><span>Enter type</span><span>Esc leave terminal</span>
+              <span>← → step</span><span>Space pause</span><span>Enter type</span><span>Esc leave terminal</span><span>drag the strip to reorder</span>
             </span>
           </div>
         </div>

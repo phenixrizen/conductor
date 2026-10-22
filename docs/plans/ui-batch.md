@@ -127,13 +127,21 @@ preflight at the end and after any rebase; one push, then the PR ready.
   it; stepping, autoplay and "Next up" follow the kept order; follow mode
   still jumps to a waiting session first and goes on in the kept order.
 - A button in the strip's corner switches chips and thumbnails
-  (`view: 'chips' | 'thumbs'` kept with the order). A thumbnail is the
-  run tiles' scaled rendering (`SessionTile`'s `TerminalView fit="tile"`)
-  for the current slide and its neighbours, which are connected anyway;
-  any other session shows the idle mark with its initials and state,
-  never a connection: the Roundhouse's cost stays the current slide's and
-  its neighbours'. (A "last frame" for a disconnected session would need
-  a snapshot kept at disconnect; not built, said here.)
+  (`strip: 'chips' | 'thumbs'` kept with the order). A thumbnail is a
+  scaled, read-only `TerminalView fit="scale"` (the join grid's view-only
+  rendering; `tile` would size the session to the thumbnail) for the
+  current slide and its neighbours, which are connected anyway; any
+  other session shows the idle mark with its initials and state, never a
+  connection: the Roundhouse's cost stays the current slide's and its
+  neighbours'. (A "last frame" for a disconnected session would need a
+  snapshot kept at disconnect; not built, said here.)
+- Built: a chip is a `div[role=button]` (a `button` cannot hold the
+  thumbnail's terminal), so Space is the pick-up and drop key without
+  the button's own click, Enter selects; a chip's keys stop at the chip
+  while it is picked up, so the page's arrows do not step the carousel
+  under a move. The order is written back whenever the active list
+  changes, so what the strip shows is what is kept. The low-window
+  terminal-height spec addresses the chips by `[data-strip-chip]`.
 - vitest for the kept order and the switch; Playwright for a drag in the
   strip surviving a reload, the keyboard move, the thumbnails toggle.
 
