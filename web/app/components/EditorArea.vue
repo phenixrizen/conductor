@@ -11,6 +11,7 @@ import { activateTab, closeAllTabs, closeTab, cycleTab, fileReadOnlyWords, nvimU
 import { dirOf, isMarkdownPath } from '~/utils/markdown'
 import { modeWords } from '~/utils/nvimKeys'
 import { crumbsOf } from '~/utils/fileTree'
+import type { EditorLayout } from '~/utils/editorLayout'
 
 /**
  * The editor area (design 4b, 4c, 4f): a tab per file or URL open, the
@@ -37,8 +38,10 @@ const props = defineProps<{
   /** Comments on lines (design round 12, F7): the page has a chat to post them to; `canAsk`, and the person may ask the agent. */
   commenting?: boolean
   canAsk?: boolean
+  /** How the column lays the editor and the terminal out (#309), when the window is wide enough to choose: the switch shows then. */
+  layout?: EditorLayout
 }>()
-const emit = defineEmits<{ comment: [c: { quote: ChatQuote; text: string; toAgent: boolean }] }>()
+const emit = defineEmits<{ comment: [c: { quote: ChatQuote; text: string; toAgent: boolean }]; switchLayout: [] }>()
 const tabs = defineModel<TabsState>('tabs', { required: true })
 
 interface Loaded {
@@ -672,6 +675,9 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
         <div class="flex flex-none items-center gap-0.5 px-1">
           <UTooltip v-if="nvim" :text="keymapTip">
             <UButton :disabled="dirty.size > 0 || keymapBusy" :label="keymap === 'nvim' ? 'Neovim' : 'Keys'" icon="i-lucide-keyboard" size="xs" :color="keymap === 'nvim' ? 'primary' : 'neutral'" :variant="keymap === 'nvim' ? 'soft' : 'ghost'" :aria-label="keymap === 'nvim' ? 'Keymap: Neovim' : 'Keymap: default'" :data-editor-keymap="keymap" @click="setKeymap(keymap === 'nvim' ? 'default' : 'nvim')" />
+          </UTooltip>
+          <UTooltip v-if="layout" :text="layout === 'side' ? 'Editor above the terminal' : 'Editor beside the terminal'">
+            <UButton :icon="layout === 'side' ? 'i-lucide-rows-2' : 'i-lucide-columns-2'" size="xs" color="neutral" variant="ghost" :aria-label="layout === 'side' ? 'Editor above the terminal' : 'Editor beside the terminal'" :data-editor-layout-switch="layout" @click="emit('switchLayout')" />
           </UTooltip>
           <UTooltip text="Terminal only (T · Alt+T in the terminal)">
             <UButton icon="i-lucide-panel-bottom" size="xs" color="neutral" variant="ghost" aria-label="Terminal only" data-editor-fold @click="tabs = toggleFold(tabs)" />

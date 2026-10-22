@@ -363,7 +363,11 @@ A file chosen in the tree, typed in the box or clicked in the terminal opens
 in an **editor above the terminal**: Monaco, the VS Code editor core, with
 the gutter and folding, the minimap, find and replace (Ctrl+F, Ctrl+H), go
 to line (Ctrl+G); read-only for now. The editor and the terminal share the
-column, split by a bar you drag, the terminal keeping at least six lines.
+column, stacked or side by side (a button in the editor's tab strip
+switches, on a wide window), split by a bar you drag or move with the
+arrow keys, the terminal keeping at least six lines stacked and a
+readable width beside; the layout and each layout's split are kept per
+browser.
 Several files are tabs (Ctrl+Tab and Ctrl+Shift+Tab switch, Ctrl+W or ×
 closes, the strip's × closes all; closing the last takes the editor away).
 **T** (Alt+T while typing in the terminal) folds the editor to its tab strip

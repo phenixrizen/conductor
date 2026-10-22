@@ -99,11 +99,18 @@ preflight at the end and after any rebase; one push, then the PR ready.
   by side (320 px, about forty columns at the default font) as it keeps
   a minimum height stacked; its size reaches the agent as any resize
   does (the sizer rules are untouched: `TerminalView` fits its box).
-- The switch is a button in the editor's tab strip (`data-editor-layout`,
-  a tooltip naming the other layout), shown only at `lg` and up; below
-  `lg` the column is stacked whatever is kept; the phone stays as it is.
-  The default stays stacked until the person switches (least surprise;
-  the brief allows a width-based default, not taken).
+- The switch is a button in the editor's tab strip
+  (`data-editor-layout-switch`, a tooltip naming the other layout), shown
+  only at `lg` and up; below `lg` the column is stacked whatever is kept;
+  the phone stays as it is. The default stays stacked until the person
+  switches (least surprise; the brief allows a width-based default, not
+  taken). The column says which layout shows (`data-editor-layout`).
+- Built: the terminal's minimum width is the CSS of the column (its
+  side holds `min-width`), and the split kept side by side is the one
+  that shows once the terminal keeps its width (`editorWidth`), so a
+  reload brings back what the person saw, and the arrow keys move from
+  there. A switch moves no DOM node of the terminal (the terminal's side
+  is `display: contents` stacked), so it is not remounted.
 - Playwright: a drag in each direction, the switch, the split surviving
   a reload, the terminal's minimum width.
 

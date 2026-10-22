@@ -2669,6 +2669,22 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The editor beside the terminal (#309, 2026-10-21).** The column the
+  editor shares with the terminal (`EditorColumn.vue`) lays the two out
+  stacked, as before, or side by side, the editor on the left and the
+  terminal on the right, chosen with a button in the editor's tab strip
+  (`data-editor-layout-switch`, shown at `lg` and up; below it the column
+  is stacked whatever is kept, and the phone stays as it is). The bar
+  between them drags either way and is a real separator
+  (`role="separator"`, `aria-orientation`, focusable): the arrow keys along
+  its axis move it a step of 2 %, Home and End take it to its ends. The
+  terminal keeps a minimum width side by side (320 px, about forty
+  columns) as it keeps its minimum height stacked, and its size reaches
+  the agent as any resize does. The layout (`conductor.editor.layout`)
+  and each layout's split (`conductor.editor.split`,
+  `conductor.editor.split.side`) are kept per browser; the pure parts are
+  `utils/editorLayout.ts` with vitest. The default stays stacked until the
+  person switches.
 - **The inspector rail (4h, #301, 2026-10-21).** One vertical rail of 44 px
   on the inspector's outer edge (`InspectorRail.vue`, its items, pills
   and tooltips pure in `utils/inspector.ts`) replaces the two tab rows:
