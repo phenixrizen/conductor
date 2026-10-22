@@ -2674,9 +2674,16 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   read `crumbs` above the line declaring it; a watch's source runs as the
   watch is made, so it threw at every mount (a console `ReferenceError`,
   caught by Vue and logged) and a long path never showed its last folders.
-  The watch sits below the computed now. `crumbs.spec.ts` opens a file
-  under a deep path and reads the strip's scroll, and asserts no error of
-  that kind reaches the console while the Files pane mounts.
+  The watch sits below the computed now, and the nav scrolls itself as
+  it mounts (`@vue:mounted` on it): the header holding the strip is
+  conditional, so a view switch (Changes, then Explorer again) makes a
+  new nav for the same path, and a pane opened on Changes has none at
+  mount (Codex's round; a watch on the template ref did not fire for the
+  remade nav). `crumbs.spec.ts` opens a working
+  directory whose own folder's name overflows the strip and reads the
+  strip's scroll at mount, after a switch to Changes and back, and on a
+  pane opened on Changes first, and asserts no error of that kind reaches
+  the console while the Files pane mounts.
 - **The chords per system (#312, 2026-10-22).** `utils/chords.ts`
   (vitest): `detectSystem` from the user agent and the platform (as
   Nuxt UI's kbd reads `Macintosh;`), a per-system table for the rows

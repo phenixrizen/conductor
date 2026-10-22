@@ -221,14 +221,14 @@ const crumbs = computed(() => {
   }
   return out
 })
-// Below the computed it reads: a watch's source runs as the watch is made, and read above its declaration the computed threw
-// (#315), so the strip never scrolled to its end.
-watch(
-  () => crumbs.value.map((c) => c.path).join('\n'),
-  () => nextTick(() => crumbsNav.value?.scrollTo({ left: crumbsNav.value.scrollWidth })),
-  // At mount too: a working directory whose own folder's name overflows the strip shows its end from the first paint.
-  { immediate: true },
-)
+// The strip shows its end: scrolled there when the path changes, and as the nav itself mounts (`@vue:mounted` on it): the header
+// holding it is conditional, so a view switch (Changes, then Explorer again) makes a new nav for the same path, and a pane
+// opened on Changes has none at mount (Codex's round on #315). Below the computed it reads: a watch's source runs as the watch
+// is made, and read above its declaration the computed threw (#315), so the strip never scrolled to its end.
+function scrollCrumbsToEnd() {
+  void nextTick(() => crumbsNav.value?.scrollTo({ left: crumbsNav.value.scrollWidth }))
+}
+watch(() => crumbs.value.map((c) => c.path).join('\n'), scrollCrumbsToEnd)
 
 const lines = computed(() => (html.value ? [] : text.value.split('\n')))
 
@@ -534,7 +534,7 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <template v-else>
         <UButton v-if="mode !== 'tree'" icon="i-lucide-arrow-left" size="xs" color="neutral" variant="ghost" aria-label="Back to the files" data-files-back @click="backToTree" />
         <!-- The end of the path reads whole (#169): the folders above fold into "…", which lists them; nothing is cut to a letter. -->
-        <nav ref="crumbsNav" class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap [scrollbar-width:none]" aria-label="path" :title="fullPath" data-files-crumbs>
+        <nav ref="crumbsNav" class="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto whitespace-nowrap [scrollbar-width:none]" aria-label="path" :title="fullPath" data-files-crumbs @vue:mounted="scrollCrumbsToEnd">
           <template v-if="folded.hidden.length">
             <UDropdownMenu :items="hiddenItems" :content="{ align: 'start' }">
               <button type="button" class="flex-none font-mono text-muted hover:underline" :aria-label="`${folded.hidden.length} folders above: ${folded.hidden.map((c) => c.label).join('/')}`" data-files-crumbs-more>…</button>
