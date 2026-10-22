@@ -308,25 +308,40 @@ func (s *Server) handleLocalControl(sub *session.Subscription, local *session.Lo
 		if json.Unmarshal(payload, &m) != nil {
 			return false
 		}
-		if len(m.Text) > proto.MaxSubmit {
-			local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "submit text too long"))
+		if !m.Valid() {
+			if f := session.SubmitWord(m.ReqID, session.SubmitResult{}, session.ErrBadSubmit); f != nil {
+				local.Send(sub, f)
+			} else {
+				local.Send(sub, proto.NewError(proto.ErrCodeBadFrame, "submit text too long"))
+			}
 			return true
+		}
+		// The owner's word (#322): one naming its request gets submit_ok or
+		// an error naming it, once the outcome is known (a line the program
+		// takes slowly is told through Finished); one naming none is told
+		// nothing it was not told before (an unnamed error).
+		word := func(res session.SubmitResult, err error) {
+			if f := session.SubmitWord(m.ReqID, res, err); f != nil {
+				local.Send(sub, f)
+			} else if err != nil && m.ReqID == "" {
+				s.sendInputError(sub, local, err)
+			}
 		}
 		// The submission goes on when the client goes: a reply box closes its
 		// connection once it has sent, and a line cut in its pause would wait
 		// without its Enter. The read loop waits for it, so what the client
 		// sends next comes after it (but while the turn is held: typeIn).
-		held.typeIn(sub, local, "", func() error {
+		held.typeIn(sub, local, m.ReqID, func() error {
 			ctx, cancel := context.WithTimeout(context.Background(), submitTimeout)
 			defer cancel()
-			_, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub})
+			res, err := local.Submit(ctx, session.Submission{Text: m.Text, By: sub, UnlessWaiting: m.UnlessWaiting, Finished: word})
 			// A line the program takes slowly is accepted, and entered as it
-			// reads (ErrSubmitPending).
-			if errors.Is(err, session.ErrSubmitPending) {
-				return nil
+			// reads (ErrSubmitPending); its word comes then.
+			if !errors.Is(err, session.ErrSubmitPending) {
+				word(res, err)
 			}
-			return err
-		}, func(err error) { s.sendInputError(sub, local, err) })
+			return nil
+		}, func(err error) { word(session.SubmitResult{}, err) })
 	case proto.CtlAnswer:
 		var m proto.Answer
 		if json.Unmarshal(payload, &m) != nil {

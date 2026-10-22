@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ChatQuote, FileRequester, FileWriter, NvimBridge } from '~/utils/protocol'
-import { clampSplit, SPLIT_DEFAULT, toggleFold, type TabsState } from '~/utils/editorTabs'
+import { clampSplit, SPLIT_DEFAULT, toggleFold, type Keymap, type TabsState } from '~/utils/editorTabs'
+import type { EditorPaletteState } from '~/utils/editorRows'
 import { clampSideSplit, editorWidth, fitsSide, layoutFor, MIN_TERMINAL_WIDTH, readLayout, readSplitFor, SIDE_SPLIT_DEFAULT, stepSplit, writeLayout, writeSplitFor, type EditorLayout } from '~/utils/editorLayout'
 
 /**
@@ -127,9 +128,25 @@ function bringTerminalUp() {
   tabs.value = toggleFold(tabs.value)
 }
 
-/** The area's close, with its unsaved-changes guard: what the palette's Close on a tab calls (whole-batch round). */
-const area = useTemplateRef<{ requestClose: (id: string) => void }>('area')
-defineExpose({ requestClose: (id: string) => area.value?.requestClose(id) })
+/** What a page reaches of the area through the column (#321): the palette's snapshot of the editor and the acts its rows run. */
+export interface EditorColumnHandle {
+  /** The area's close, with its unsaved-changes guard: what the palette's Close on a tab calls (whole-batch round). */
+  requestClose: (id: string) => void
+  /** The editor's state for the palette's rows, live; null with no area. */
+  palette: EditorPaletteState | null
+  setKeymap: (k: Keymap) => void
+  save: () => void
+  askAgent: () => void
+}
+const area = useTemplateRef<{ requestClose: (id: string) => void; palette: EditorPaletteState; setKeymap: (k: Keymap) => void; save: () => void; askAgent: () => void }>('area')
+const palette = computed<EditorPaletteState | null>(() => area.value?.palette ?? null)
+defineExpose({
+  requestClose: (id: string) => area.value?.requestClose(id),
+  palette,
+  setKeymap: (k: Keymap) => area.value?.setKeymap(k),
+  save: () => area.value?.save(),
+  askAgent: () => area.value?.askAgent(),
+})
 </script>
 
 <template>

@@ -36,6 +36,8 @@ const (
 	CtlChatHistory = "chat_history"
 	// CtlAnswerOK says the owner took an answer (AnswerOK).
 	CtlAnswerOK = "answer_ok"
+	// CtlSubmitOK says the owner entered a submit that named a request id (SubmitOK, #322).
+	CtlSubmitOK = "submit_ok"
 )
 
 // Error codes carried by CtlError.
@@ -123,13 +125,40 @@ type Resize struct {
 // text, as a paste when the program asks for one, then Enter on its own after
 // a pause (session.Local.Submit). Controllers only; Text is at most MaxSubmit
 // bytes.
+//
+// With ReqID (#322; at most MaxAnswerReqID bytes of printable ASCII, as an
+// answer's), the owner answers it: SubmitOK once the line is entered, or an
+// ErrorMsg naming it (ErrCodeNotSent when UnlessWaiting held it back and
+// the session was asking; input_failed when the line was typed and not
+// entered; too_many_requests, session_ended, bad_frame). Without ReqID
+// nothing is answered, as before. UnlessWaiting writes nothing while the
+// session waits on a prompt, looked at as the owner holds the session's
+// turn, so no prompt slips between the look and the write: what a line
+// typed from the palette asks for (session.Submission.UnlessWaiting, the
+// broadcast's guard). Sent only to an owner whose welcome says SubmitAck;
+// an older one takes the line and answers nothing.
 type Submit struct {
-	T    string `json:"t"`
-	Text string `json:"text"`
+	T             string `json:"t"`
+	Text          string `json:"text"`
+	ReqID         string `json:"reqId,omitempty"`
+	UnlessWaiting bool   `json:"unlessWaiting,omitempty"`
 }
 
 // MaxSubmit bounds the text of a submit message, in bytes: a reply box's line.
 const MaxSubmit = 4096
+
+// Valid reports whether m is within its bounds: Text at most MaxSubmit
+// bytes and ReqID none or at most MaxAnswerReqID of printable ASCII.
+func (m Submit) Valid() bool {
+	return len(m.Text) <= MaxSubmit && ValidAnswerReqID(m.ReqID)
+}
+
+// SubmitOK says the owner entered the line of the submit RequestID (owner
+// -> client, #322): its text was typed and its Enter written.
+type SubmitOK struct {
+	T         string `json:"t"`
+	RequestID string `json:"requestId"`
+}
 
 // Answer replies to the question the client was shown (client -> owner,
 // controllers only), sent only to an owner whose welcome says Answer (an
@@ -436,6 +465,10 @@ type Welcome struct {
 	// is no longer the one waiting: a client sends none to an owner whose
 	// welcome lacks it, and replies with INPUT and `submit` as before.
 	Answer bool `json:"answer,omitempty"`
+	// SubmitAck says the owner answers a submit that names a reqId with
+	// submit_ok or an error naming it, and takes unlessWaiting (#322):
+	// absent from an older owner, which types the line and says nothing.
+	SubmitAck bool `json:"submitAck,omitempty"`
 	// Cwd is the session's working directory on the machine that runs it,
 	// from the owner itself, to a viewer whose role may read files: the root
 	// of a guest's Files pane. A switchyard lists a published session with

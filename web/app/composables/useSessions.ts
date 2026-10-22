@@ -1,5 +1,6 @@
 import type { ChatMessage, ActivityEntry, Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
+import type { TouchedReply } from '~/utils/touchedIndex'
 
 export type SessionKind = 'server' | 'hosted'
 export type SessionStatus = 'starting' | 'running' | 'exited' | 'stopped' | 'host_disconnected'
@@ -481,6 +482,8 @@ export function useSessions() {
 
   return {
     list: () => request<{ sessions: SessionInfo[] }>('/api/sessions').then((r) => r.sessions ?? []),
+    /** The files every session's agent touched (#304): the palette's Touched group; `limit` files per session (the server's 500 when left out). */
+    touched: (limit?: number) => request<TouchedReply>('/api/touched', limit ? { query: { limit: String(limit) } } : {}).then((r) => ({ sessions: r.sessions ?? [], truncated: !!r.truncated })),
     get: (id: string, token?: string) => request<{ session: SessionInfo; role: Role; links?: ShareLink[] }>(`/api/sessions/${encodeURIComponent(id)}`, { token }),
     /** `yolo` overrides the server's default for this launch; left out, the default holds. */
     create: (body: { agentId: string; name?: string; cwd?: string; args?: string[]; cols?: number; rows?: number; yolo?: boolean }) =>

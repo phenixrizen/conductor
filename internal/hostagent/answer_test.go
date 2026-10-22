@@ -25,11 +25,17 @@ func (v *answerViewer) answer(reqID, question, input, text string) {
 	v.p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: f[1:]})
 }
 
-// verdict waits for the session's word on the answer reqID.
+// submit hands the viewer's submit to the frame loop, as a page sends it (#322).
+func (v *answerViewer) submit(reqID, text string, unlessWaiting bool) {
+	f := proto.MustControl(proto.Submit{T: proto.CtlSubmit, ReqID: reqID, Text: text, UnlessWaiting: unlessWaiting})
+	v.p.handleFrame(proto.Frame{Type: proto.TypeControl, Payload: f[1:]})
+}
+
+// verdict waits for the session's word on the answer or submit reqID.
 func (v *answerViewer) verdict(reqID string) map[string]any {
 	v.t.Helper()
 	return untilControl(v.t, v.frames, func(m map[string]any) bool {
-		return (m["t"] == proto.CtlAnswerOK || m["t"] == proto.CtlError) && m["requestId"] == reqID
+		return (m["t"] == proto.CtlAnswerOK || m["t"] == proto.CtlSubmitOK || m["t"] == proto.CtlError) && m["requestId"] == reqID
 	})
 }
 

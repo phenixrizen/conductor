@@ -144,10 +144,20 @@ export function looksLikePath(input: string): boolean {
   return s.includes('/') || /^[.~]/.test(s) || /:\d+(?::\d+)?$/.test(s)
 }
 
-/** A typed path made absolute against the working directory. */
+/** A Windows path: a drive letter or a UNC prefix (a hosted session on a Windows machine names its files so). */
+function windowsPath(p: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\')
+}
+
+/**
+ * A typed path made absolute against the working directory. An absolute path stays as it is: one from the root, or a Windows
+ * one (a drive letter, a UNC prefix: the Touched index names another machine's files so, #304); a relative one under a Windows
+ * directory joins it with the directory's own separator.
+ */
 export function resolveTyped(cwd: string, input: string): string {
   const s = input.trim()
-  if (s.startsWith('/')) return s
+  if (s.startsWith('/') || windowsPath(s)) return s
+  if (windowsPath(cwd)) return `${cwd.replace(/[\\/]+$/, '')}\\${s.replace(/^\.[\\/]/, '').replace(/\//g, '\\')}`
   const base = cwd.replace(/\/+$/, '')
   return `${base}/${s.replace(/^\.\//, '')}`
 }

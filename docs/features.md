@@ -2669,6 +2669,137 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **A line typed from the palette is acknowledged, with an unless-waiting
+  guard (#322, 2026-10-22).** A protocol change, in `internal/proto`,
+  `web/app/utils/protocol.ts` and `docs/protocol.md` together: `submit`
+  takes `reqId` (at most 32 bytes of printable ASCII, as `answer`'s;
+  `Submit.Valid`) and `unlessWaiting`; with a `reqId` the owner answers
+  `submit_ok{requestId}` once the line is entered, or `error{code,
+  requestId}` (`not_sent` with the question's words when the guard held
+  it back from a session that asks, nothing typed; `input_failed` when
+  typed and not entered; `too_many_requests`, `session_ended`,
+  `read_only`, `bad_frame`); without one nothing is answered, as before.
+  The `welcome` says `submitAck: true`. `session.SubmitWord(reqID, res,
+  err)` maps a submission's outcome to the word as `AnswerResult` does
+  for an answer (`SubmitResult{}` with no error is the guard's hold:
+  `not_sent`); the server's viewer connection (`ws_viewer.go`) and the
+  host agent's peer (`peer.go`) both take the message, the guard looked
+  at as the owner holds the session's turn (`Submission.UnlessWaiting`,
+  the broadcast's), a line the program takes slowly told through
+  `Submission.Finished`; the hosted owner on the server relays the frame
+  to the host as it relays `answer`. Web: `TerminalTransport.submitAcked
+  (text, { unlessWaiting })` settles true on `submit_ok`, a `ReplyError`
+  with the owner's code on its refusal, false at once to an older owner
+  (a plain `submit`); `useQuickReply().say` uses it and returns whether
+  the line was typed, `not_sent` said in the broadcast's words; the
+  palette's `say` (the `I` field and the `say` verb) then says **Typed
+  into** (or **Sent to** for an older owner); a refused line (nothing
+  typed: the session asks, a view link, the session ended, too many
+  lines, past the bounds) waits in the row's field (`field.draft`,
+  `sayDrafts`), opened with it again; an outcome not known (no word in
+  time, the connection gone, a line typed and not entered) is said **not
+  confirmed**, to look at the terminal before typing it again, the line
+  not offered (Codex's round: the owner finishes a submission after its
+  client goes, so a second try could type it twice). `useQuickReply().
+  say` returns the outcome (`SayOutcome`) instead of throwing. The drafts
+  (`utils/sayDrafts.ts`, vitest) settle by generation: an earlier send's
+  late word never erases a newer refused line (whole-batch round); a line
+  typed while one is already on its way to the session is not sent and
+  said so, the generation untouched, so the one on its way still settles
+  its own draft (second whole-batch round).
+  Tests: `internal/proto/submit_test.go`, `internal/session/
+  submitword_test.go`, `internal/api/submitack_test.go` (the welcome,
+  submit_ok, the guard against an API-flagged prompt and the same line
+  without it, an unnamed submit, the bounds, a view link),
+  `internal/hostagent/submitack_test.go`; `transport/base.test.ts`;
+  `palette-reach.spec.ts` (the typed word); `utils/sayWords.ts` (vitest)
+  for the words of each outcome and the draft kept on a refusal. No
+  Playwright drives the refusal: the palette offers no line to a session
+  that asks (its row answers instead), and once the page hears a session
+  came to ask, the row's field is gone with the line; the refusal reaches
+  the page only when the owner hears before it does, which the Go tests
+  of the guard cover.
+- **The editor's own rows in the palette (#321, 2026-10-22).**
+  `EditorArea.vue` exposes, beside `find`, `gotoLine` and `requestClose`,
+  a reactive `palette` snapshot (`keymap`, `nvimOffered`, `nvimWhy`,
+  `switchBlocked` with the keymap button's own words, `saveable`,
+  `saveWhy`, `canAsk`, `hasSelection`, `activeId`) and `setKeymap`,
+  `save` and `askAgent` (the comment composer on the selection, asking);
+  `EditorColumn.vue` passes them through as it passes `requestClose`.
+  With a file open, the session page's group (and the Yard's focused
+  tile's) gains **Keys → Neovim** / **Keys → default** (disabled while a
+  tab is unsaved or Neovim is not offered, the detail saying why),
+  **Save** (`Ctrl+S`; disabled when nothing is dirty, the connection
+  may not edit, or the editor is folded: its text is not at hand then,
+  and a save would have written the text as loaded and lost the edit the
+  kept model holds, Codex's round), **Close file** (`Ctrl+W`; through `requestClose`, so an
+  unsaved file asks) and **Ask the agent about the selection**
+  (`Ctrl+Shift+A`; disabled without a selection or when the agent cannot
+  be asked). A guest's join page has no palette (its own layout), so it
+  gets none. `palette.spec.ts`: a file open on a session page lists the
+  four rows; Save from the palette writes the file, waits while the
+  editor is folded and writes once it is back; Close file on a dirty tab
+  asks; Keys → Neovim is disabled while a tab is dirty and, where Neovim
+  is offered, switches the keymap and back.
+- **Touched across every session, from the server's index (#304,
+  2026-10-22).** `GET /api/touched` (admin, `internal/api/touched.go`)
+  lists every listed session's touched files from the index each session
+  keeps (`op: touched`): `{sessions[{id, name, agentId, kind, status, cwd,
+  touched[…], truncated?}], truncated?}`, the sessions in the list's order,
+  a session with nothing touched left out, a server session's deny list
+  applied; `?limit=` per session (default 500, at most 2,000) and about
+  2 MiB for the reply, a cut session marked and the reply too. A hosted
+  session keeps no activity log on the server; `signal.HostedSession` now
+  keeps a `session.TouchedIndex` (exported for it) fed by the `file`
+  entries its host reports since it connected, the paths made absolute as
+  the host's OS writes them (`hostAbs`: a drive letter or UNC prefix is
+  absolute, a relative path under a Windows directory joins it with `\`).
+  On the way: `session.ValidEventType` predated file events and left
+  `file` out, so a host's file entries were dropped on the server and the
+  server's on the host; it takes them now (the protocol says seven event
+  types, thirteen in all). The palette's `:` group "Touched lately" (the
+  tab's feed) becomes "Touched" (`usePaletteRows.touchedItems`): the
+  server's index, read after the palette's first paint and cached a minute
+  (`usePalette.loadTouched`), read again on a `file` event while the
+  palette is open (one read in two seconds), with the feed's live entries
+  laid over it (`utils/touchedIndex.ts`, pure: `mergeTouched`, one row per
+  session and file, the most recently touched first, at most 2,000 rows;
+  `absUnder`/`relUnder` keep a Windows directory's separator). A row's
+  label is the path from its session's working directory, its detail the
+  session, the op with its tool, the time and the count; a row of this
+  page's session opens the file in its editor, another session's opens
+  that page with `?open=<path>` (a line in `?line=<n>`: the path is taken
+  whole, a name may end in `:digits`; whole-batch round), new on the
+  session page and read as `?tab=` is (never written back). The cache goes
+  with the workbench token (`forgetTouched`, the component watching the
+  token; a reply on its way for the old token dropped; no rows without the
+  token: whole-batch round). Tests: `internal/api/touched_test.go`
+  (admin only, the order, the limit and its refusals, the deny list, the
+  reply's budget, a hosted session's reported entries),
+  `internal/signal/touched_test.go`, `utils/touchedIndex.test.ts`,
+  `palette-touched.spec.ts` (a file touched before the tab opened found
+  from the index, its row opening the other session's page with the file,
+  the row on the file's own page). Codex's round: `?open=` is taken only
+  once the terminal is connected (taken before, the editor's read failed
+  and the tab kept the failure; the spec now reads the file's text), and
+  `resolveTyped` keeps a Windows absolute path (a drive letter, a UNC
+  prefix) and joins a relative one under a Windows directory with `\`
+  (`fileTree.test.ts`). The plan: `docs/plans/touched-index.md`.
+- **The breadcrumb strip scrolls to its end (#315, 2026-10-22).** In
+  `FileBrowser.vue` the watch that scrolls the breadcrumb strip to its end
+  read `crumbs` above the line declaring it; a watch's source runs as the
+  watch is made, so it threw at every mount (a console `ReferenceError`,
+  caught by Vue and logged) and a long path never showed its last folders.
+  The watch sits below the computed now, and the nav scrolls itself as
+  it mounts (`@vue:mounted` on it): the header holding the strip is
+  conditional, so a view switch (Changes, then Explorer again) makes a
+  new nav for the same path, and a pane opened on Changes has none at
+  mount (Codex's round; a watch on the template ref did not fire for the
+  remade nav). `crumbs.spec.ts` opens a working
+  directory whose own folder's name overflows the strip and reads the
+  strip's scroll at mount, after a switch to Changes and back, and on a
+  pane opened on Changes first, and asserts no error of that kind reaches
+  the console while the Files pane mounts.
 - **The chords per system (#312, 2026-10-22).** `utils/chords.ts`
   (vitest): `detectSystem` from the user agent and the platform (as
   Nuxt UI's kbd reads `Macintosh;`), a per-system table for the rows

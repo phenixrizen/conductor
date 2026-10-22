@@ -804,8 +804,13 @@ type HostedSession struct {
 	// together, for links over several of its sessions.
 	owner string
 
-	mu             sync.Mutex
-	info           session.Info
+	mu   sync.Mutex
+	info session.Info
+	// touched is the files the host's agent touched since the host
+	// connected, from the `file` entries it reports (HostActivity): what
+	// GET /api/touched lists for the session (#304). The host keeps the
+	// session's own index; this one begins with the connection.
+	touched        session.TouchedIndex
 	relayOnly      bool
 	agentTokenHash [32]byte
 	hasAgentToken  bool
@@ -856,6 +861,43 @@ func (h *HostedSession) Info() session.Info {
 	info := h.info
 	info.Viewers = len(h.viewers)
 	return info
+}
+
+// hostAbs is session.TouchedAbs for a path a host named: the host's OS may
+// not be this server's, so a Windows path (a drive letter or a UNC prefix)
+// is absolute here too, and a relative one under a Windows working
+// directory joins it with the directory's own separator.
+func hostAbs(cwd, p string) string {
+	if windowsPath(p) {
+		return p
+	}
+	if windowsPath(cwd) {
+		if strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
+			return p
+		}
+		return strings.TrimRight(cwd, `\/`) + `\` + strings.ReplaceAll(p, "/", `\`)
+	}
+	return session.TouchedAbs(cwd, p)
+}
+
+// windowsPath says p is a Windows path: a drive letter or a UNC prefix.
+func windowsPath(p string) bool {
+	if strings.HasPrefix(p, `\\`) {
+		return true
+	}
+	return len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') && (p[0] >= 'a' && p[0] <= 'z' || p[0] >= 'A' && p[0] <= 'Z')
+}
+
+// TouchedFiles is the files the host reported touched since it connected,
+// the most recently touched first: the session's entry in GET /api/touched
+// (#304). The paths are the host's, named as its agent reported them and
+// made absolute under the session's working directory; no deny list of
+// this server applies to another machine's files, and every path here was
+// already on the events stream as a `file` entry.
+func (h *HostedSession) TouchedFiles() []proto.TouchedFile {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.touched.Snapshot()
 }
 
 // Stop asks the host to terminate its process. Completion is reported
@@ -1675,6 +1717,11 @@ func (h *HostedSession) HostActivity(a proto.Activity, state string) {
 	}
 	h.mu.Lock()
 	id := h.info.ID
+	// A file entry (its op and path kept by the cleaning) feeds the
+	// session's touched index on the server (#304).
+	if e.Type == session.ActivityFile && e.Op != "" && e.Path != "" {
+		h.touched.Note(hostAbs(h.info.Cwd, e.Path), e.Op, e.Tool, e.ByName, e.At)
+	}
 	h.mu.Unlock()
 	if h.hub != nil && h.hub.OnActivity != nil {
 		h.hub.OnActivity(id, e, recorded)

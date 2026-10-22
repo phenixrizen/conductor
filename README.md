@@ -621,7 +621,9 @@ while typing into an agent (⌘K too on a Mac; Ctrl+K stays the shell's
 kill-line), and the rail's search button. It opens over the page on what
 needs you first: each waiting session with its question and its choices as
 numbered buttons, then the page's own actions (Share, Stop, the marks, the
-inspector's views and the open tabs on a session page; the broadcast, the
+inspector's views and the open tabs on a session page, and with a file open
+the editor's Keys → Neovim, Save, Close file and Ask the agent about the
+selection; the broadcast, the
 view, the chat and the members on a run page; the chips on the Yard, the
 rotation on the Roundhouse, Launch on Crews, the hooks on Events, Save on
 Settings), then Running, Exited (folded to a line), Runs, Shared with you,
@@ -643,7 +645,8 @@ before Enter: `stop docs`, `share docs view`, `answer review 2`, `reply
 review looks good`, `broadcast nightly ship it`, `run docs-crew as
 tonight`, `resume docs`, `open src/main.go:12`, `mark docs working`, `go
 yard`, `say docs looks good` (a line typed into a session that is not
-asking), `launch claude in ~/work`. Nothing is fetched when it opens; what
+asking; its owner says when the line was entered, refuses one into a
+session that asks meanwhile, and the refused line waits in the row's field), `launch claude in ~/work`. Nothing is fetched when it opens; what
 was used lately ranks first within its group (`conductor.palette.recent`).
 **]** and **[** (**Alt+]** / **Alt+[** in a terminal) step through the
 sessions that need you without opening the palette: a pill at the top of

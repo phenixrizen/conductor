@@ -126,6 +126,7 @@ watch(
     requestAnimationFrame(() => {
       input.value?.inputRef?.focus()
       void palette.loadLists()
+      void palette.loadTouched()
       void rows.loadIntegrations()
       // Opened on a row to ask (X on a session page): the row takes the focus and asks.
       const key = palette.pendingAsk.value
@@ -138,6 +139,26 @@ watch(
   },
 )
 onBeforeUnmount(() => window.clearInterval(tick))
+
+// The Touched index (#304) is read again when a `file` event arrives while the palette is open, one read in two seconds at
+// most; closed, the feed's own entries lay over the cache until the next open reads it. The cache goes with the workbench
+// token (whole-batch round): forgotten or replaced, the last token's sessions and files are not searchable any more.
+const events = useEvents()
+const admin = useWorkbenchToken()
+watch(
+  () => admin.token.value,
+  () => palette.forgetTouched(),
+)
+let touchedTimer: number | undefined
+const stopTouched = events.onEvent((e) => {
+  if (e.type !== 'file' || !palette.open.value) return
+  window.clearTimeout(touchedTimer)
+  touchedTimer = window.setTimeout(() => void palette.loadTouched(true), 2000)
+})
+onBeforeUnmount(() => {
+  stopTouched()
+  window.clearTimeout(touchedTimer)
+})
 // A row that goes (the session answered and moved on) hands the focus to the input, as the sidebar does; a row that re-renders
 // under the focus gets it back, only while the focus was in the list (the input, focused by a click, keeps it).
 watch(flat, async (items) => {
@@ -174,7 +195,8 @@ async function runRow(row: PaletteItem) {
 /** The row's field, opened by its `field` action or by Enter on a row that takes a line first. */
 async function openField(row: PaletteItem) {
   fielding.value = row.key
-  fieldText.value = ''
+  // A line the session refused last time opens the field again (#322), to send as it is or change.
+  fieldText.value = row.field?.draft ?? ''
   await nextTick()
   rowEl(row.key, '[data-palette-field] input')?.focus()
 }

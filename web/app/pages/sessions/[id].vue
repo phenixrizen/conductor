@@ -10,6 +10,9 @@ import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
 import { activateTab, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
+import { resolveTyped } from '~/utils/fileTree'
+import { editorRows } from '~/utils/editorRows'
+import type { EditorColumnHandle } from '~/components/EditorColumn.vue'
 import type { ChangeRow } from '~/utils/changes'
 import type { CommitRow } from '~/utils/commits'
 import type { FileHeader } from '~/utils/protocol'
@@ -375,6 +378,24 @@ watch(
   { immediate: true },
 )
 
+// ?open= (#304): a file the palette's Touched row names on another session's page, opened in this page's editor as a typed
+// path is (relative to the working directory or absolute), the path taken whole (a name may end in `:digits`: the line goes
+// in `?line=` instead, whole-batch round), once the session's directory is known and the terminal is connected (the editor
+// reads the file over it; opened before, the read fails and the tab keeps the failure: Codex's round). Read as the page opens
+// and as the query changes, never written back.
+let opened = ''
+watch(
+  [() => route.query.open, () => route.query.line, () => current.value?.cwd, () => transport.value.state === 'open'],
+  ([q, l, cwd, connected]) => {
+    if (typeof q !== 'string' || !q || !cwd || !connected) return
+    const key = `${q}\n${typeof l === 'string' ? l : ''}`
+    if (key === opened) return
+    opened = key
+    openFile({ path: resolveTyped(cwd, q), line: typeof l === 'string' && /^\d+$/.test(l) ? Number(l) : undefined })
+  },
+  { immediate: true },
+)
+
 // S shares and X asks to stop the session this page is on (#303): X opens the palette on the page's Stop row, asking.
 const liveNow = computed(() => !!current.value && (current.value.status === 'running' || current.value.status === 'starting'))
 function askStop() {
@@ -392,7 +413,7 @@ defineShortcuts({
 // `:` the tabs, the changes and the commits; under `@` the people here and the links. Read when the palette opens, never before.
 const palette = usePalette()
 const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
-const columnRef = useTemplateRef<{ requestClose: (id: string) => void }>('columnRef')
+const columnRef = useTemplateRef<EditorColumnHandle>('columnRef')
 function showView(v: InspectorView) {
   if (v === 'chat') return showChat()
   tab.value = v
@@ -472,6 +493,8 @@ palette.registerPage(() => {
       { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
       ...(terminal.value?.sizerShown() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
       ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
+      // The editor's own rows (#321), with a file in front: its state read live through the column.
+      ...editorRows(columnRef.value?.palette, { setKeymap: (k) => columnRef.value?.setKeymap(k), save: () => columnRef.value?.save(), close: (id) => columnRef.value?.requestClose(id), askAgent: () => columnRef.value?.askAgent() }),
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, run: () => showView(v) })),
       ...tabRows,
     ],

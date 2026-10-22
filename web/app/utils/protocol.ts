@@ -48,6 +48,19 @@ export interface AnswerMsg {
   text?: string
 }
 
+/**
+ * A line to type (`submit`, client → owner, controllers only), as a reply box does. With `reqId` (at most 32 bytes of printable
+ * ASCII, to an owner whose welcome said `submitAck`, #322) the owner answers it with `submit_ok` once the line is entered, or an
+ * `error` naming it (`not_sent` when `unlessWaiting` held it back from a session that asks, nothing typed; `input_failed` when the
+ * line was typed and not entered). Without `reqId` nothing is answered.
+ */
+export interface SubmitMsg {
+  t: 'submit'
+  text: string
+  reqId?: string
+  unlessWaiting?: boolean
+}
+
 /** A chat message's text, in bytes after cleaning (proto.MaxChatText); the composer counts from CHAT_COUNTER_FROM. */
 export const MAX_CHAT_TEXT = 2048
 export const CHAT_COUNTER_FROM = 1536
@@ -246,6 +259,8 @@ export interface Welcome {
   runChat?: boolean
   /** The owner takes `answer` and refuses one whose question no longer waits; absent from an older owner, which is sent none (replies go as INPUT and `submit`). */
   answer?: boolean
+  /** The owner answers a `submit` naming a `reqId` with `submit_ok` or an `error` naming it, and takes `unlessWaiting` (#322); absent from an older owner, which types the line and says nothing. */
+  submitAck?: boolean
   /** The session's working directory, from the owner itself, to a role that may read files (at most 4096 bytes; absent from an older owner): a guest's Files root. */
   cwd?: string
   iceServers?: ICEServer[]
@@ -262,6 +277,8 @@ export type ControlMessage =
   | { t: 'attention'; state: AttentionState; message?: string; source?: string; kind?: AttentionKind; options?: AttentionOption[]; id?: string; answered?: 'terminal'; plan?: string }
   /** The owner took the answer `requestId`: its keys are written, or its line accepted. */
   | { t: 'answer_ok'; requestId: string }
+  /** The owner entered the line of the submit `requestId` (#322): its text typed and its Enter written. */
+  | { t: 'submit_ok'; requestId: string }
   | { t: 'viewers'; count: number; list?: ViewerInfo[] }
   | { t: 'activity'; at: string; type: ActivityEntry['type']; by?: string; byName?: string; message?: string; url?: string; to?: string; tool?: string; op?: ActivityEntry['op']; path?: string }
   | { t: 'error'; code: string; message: string; requestId?: string }

@@ -117,3 +117,15 @@ describe('the breadcrumb folded from the left (#169)', () => {
     expect(foldCrumbs(crumbsOf('/a/b/c/d'), 2).hidden.map((c) => c.label)).toEqual(['a', 'b'])
   })
 })
+
+describe('resolveTyped on Windows paths (#304)', () => {
+  it('keeps a drive-letter or UNC path as it is, and joins a relative one under a Windows directory with its own separator', () => {
+    expect(resolveTyped('C:\\repo', 'C:\\repo\\a.go')).toBe('C:\\repo\\a.go')
+    expect(resolveTyped('/home/me/proj', 'D:/other/b.go')).toBe('D:/other/b.go')
+    expect(resolveTyped('C:\\repo', '\\\\share\\x\\c.go')).toBe('\\\\share\\x\\c.go')
+    expect(resolveTyped('C:\\repo\\', 'src/a.go')).toBe('C:\\repo\\src\\a.go')
+    expect(resolveTyped('C:\\repo', '.\\src\\a.go')).toBe('C:\\repo\\src\\a.go')
+    expect(resolveTyped('/home/me/proj/', './src/a.go')).toBe('/home/me/proj/src/a.go')
+    expect(resolveTyped('/home/me/proj', '/etc/hosts')).toBe('/etc/hosts')
+  })
+})

@@ -11,8 +11,11 @@ import { parsePrefix, parseVerb, rank, readRecent, type Named, type PaletteGroup
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
-import { fileOpWords } from '~/utils/events'
+import { feedTime, fileOpWords } from '~/utils/events'
 import { skipWords } from '~/utils/crews'
+import { mergeTouched, type FeedFile } from '~/utils/touchedIndex'
+import { sayWords, type SayOutcome } from '~/utils/sayWords'
+import { SayDrafts } from '~/utils/sayDrafts'
 
 /**
  * The palette's groups for a query (#302): every row read from the live
@@ -154,24 +157,40 @@ export function usePaletteRows(ctx: PaletteContext) {
   function reply(s: SessionInfo, text: string, question: string | undefined) {
     return quick.reply(s, text, { question }).catch((e) => toast.add({ title: `${s.name}: not sent`, description: (e as Error).message, color: 'error' }))
   }
-  /** Types a line into a session that is not asking (#303); one waiting on a prompt, or not running, is refused with the broadcast's words. */
+  /** A line a session refused (#322), by session: the row's field opens with it again, to send as it is or change. */
+  const sayDrafts = reactive(new SayDrafts())
+  /**
+   * Types a line into a session that is not asking (#303); one waiting on a prompt, or not running, is refused with the
+   * broadcast's words. The owner's word says it was typed (#322: submit_ok, or its refusal, the line kept for the field); an
+   * older owner says nothing, and the line is said sent.
+   */
   async function say(s: SessionInfo, text: string) {
     const line = text.trim()
     if (!line) return
+    // A line already on its way to this session: this one is not sent, said so, and the one on its way keeps its generation,
+    // so its own word still settles its draft (second whole-batch round).
+    if (quick.sending.value.has(s.id)) {
+      toast.add({ title: `${s.name}: a line is already on its way`, description: 'Its word comes first; type this one again after it.', icon: 'i-lucide-hourglass', color: 'neutral' })
+      return
+    }
+    // This send's generation: its outcome settles the draft unless a newer send began since (whole-batch round).
+    const gen = sayDrafts.begin(s.id)
+    const said = (outcome: SayOutcome) => {
+      const r = sayWords(s.name, line, outcome)
+      sayDrafts.settle(s.id, gen, r.keepDraft, line)
+      toast.add({ ...r.toast, icon: r.keepDraft ? 'i-lucide-triangle-alert' : 'i-lucide-keyboard' })
+    }
     const live = attention.sessions.value.find((x) => x.id === s.id) ?? s
     const reason = live.attention?.state === 'needs_input' ? 'needs_input' : sessionLive(live.status) ? null : 'not_running'
     if (reason) {
-      toast.add({ title: `${s.name}: not sent`, description: skipWords(reason), icon: 'i-lucide-triangle-alert', color: 'warning' })
+      said({ refused: skipWords(reason) })
       return
     }
-    try {
-      // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line.
-      await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' })
-      // Nothing confirms a line landed (the owner's submit has no answer): said as sent, not as typed.
-      toast.add({ title: `Sent to ${s.name}`, description: `${line.length > 80 ? `${line.slice(0, 80)}…` : line} · the session's owner types it and its Enter; a refusal shows here, nothing confirms it landed`, icon: 'i-lucide-keyboard', color: 'neutral' })
-    } catch (e) {
-      fail(`Type into ${s.name}`)(e)
-    }
+    // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line; the
+    // owner's own guard (unlessWaiting) holds what comes after that look. The outcome comes back typed, sent, refused (nothing
+    // typed: the line kept for the field) or not confirmed (not offered again); null while a line is already on its way.
+    const outcome = await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' })
+    if (outcome) said(outcome)
   }
   async function signal(s: SessionInfo, state: 'needs_input' | 'working' | 'clear') {
     try {
@@ -293,7 +312,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       prompt: rowPrompt(row),
       run: () => go(`/sessions/${s.id}`),
       actions: [...own.filter((a) => a.id !== 'open'), ...more],
-      field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text) } : undefined,
+      field: live ? { placeholder: `A line for ${s.name}…`, button: 'Type', submit: (text: string) => say(s, text), draft: sayDrafts.get(s.id) } : undefined,
       href: `/sessions/${s.id}`,
       yardId: s.id,
       runId: s.crew?.runId,
@@ -531,7 +550,31 @@ export function usePaletteRows(ctx: PaletteContext) {
     ]
   }
 
-  /** `:`: a path opens; then the page's tabs, changes and commits; then Touched lately across sessions; then Artifacts. */
+  /**
+   * Touched across sessions (#304): the server's index (usePalette.touched, read after the first paint) with the feed's live
+   * `file` entries over it; a row of this page's session opens the file in its editor, another session's opens that page
+   * with the file (`?open=`).
+   */
+  function touchedItems(): PaletteItem[] {
+    // Nothing without the token: the index is the admin's (whole-batch round).
+    if (!admin.hasToken.value) return []
+    const page = palette.page.value
+    const cwdOf = (id: string) => attention.sessions.value.find((s) => s.id === id)?.cwd
+    const feed: FeedFile[] = events.entries.value
+      .filter((e): e is FeedEntry => e.event === 'file' && !!e.path)
+      .map((e) => ({ sessionId: e.sessionId, sessionName: e.sessionName, cwd: cwdOf(e.sessionId), path: e.path!, op: e.op ?? '', tool: e.tool, by: e.byName, at: e.at }))
+    return mergeTouched(palette.touched.value, feed).map((h) => ({
+      key: `touched:${h.sessionId}:${h.path}`,
+      label: h.rel,
+      detail: `${h.sessionName} · ${fileOpWords(h.op)}${h.tool ? ` with ${h.tool}` : ''} · ${feedTime(h.at)}${h.count > 1 ? ` · ${h.count} times` : ''}`,
+      words: [h.sessionName, h.tool, h.path],
+      icon: 'i-lucide-file-clock',
+      run: () => (page?.sessionId === h.sessionId ? openFile(h.path) : go(`/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`)),
+      href: page?.sessionId === h.sessionId ? undefined : `/sessions/${encodeURIComponent(h.sessionId)}?open=${encodeURIComponent(h.path)}`,
+    }))
+  }
+
+  /** `:`: a path opens; then the page's tabs, changes and commits; then Touched across sessions (#304); then Artifacts. */
   function fileModeGroups(rest: string): PaletteGroup<PaletteItem>[] {
     const groups: PaletteGroup<PaletteItem>[] = []
     const m = /^(\S.*?)(?::(\d+))?$/.exec(rest.trim())
@@ -547,19 +590,7 @@ export function usePaletteRows(ctx: PaletteContext) {
       })
     }
     if (page?.files?.length) groups.push({ id: 'page-files', label: page.label, rows: page.files })
-    const touched: PaletteItem[] = [...events.entries.value]
-      .reverse()
-      .filter((e): e is FeedEntry => e.event === 'file' && !!e.path)
-      .slice(0, 200)
-      .map((e) => ({
-        key: `touched:${e.sessionId}:${e.path}`,
-        label: e.path!,
-        detail: `${e.sessionName} · ${fileOpWords(e.op)}${e.tool ? ` with ${e.tool}` : ''} · ${e.time}`,
-        words: [e.sessionName, e.tool ?? ''],
-        icon: 'i-lucide-file-clock',
-        run: () => (page?.sessionId === e.sessionId ? openFile(e.path!) : go(`/sessions/${e.sessionId}`)),
-      }))
-    groups.push({ id: 'touched', label: 'Touched lately', rows: touched })
+    groups.push({ id: 'touched', label: 'Touched', rows: touchedItems() })
     groups.push({ id: 'artifacts', label: 'Artifacts', rows: artifactItems() })
     return groups
   }

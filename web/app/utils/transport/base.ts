@@ -56,6 +56,8 @@ export abstract class BaseTransport implements TerminalTransport {
   protected answers = new Map<string, { resolve: (taken: boolean) => void; reject: (e: Error) => void; timer: number }>()
   /** The owner's welcome said `answer`: it takes replies that name their question. */
   protected takesAnswers = false
+  /** The owner's welcome said `submitAck`: it answers a submit that names its request (#322). */
+  protected acksSubmits = false
   protected chunks = new ChunkAssembler()
   protected lastError?: { code: string; message: string }
   protected welcomeResolve?: (w: Welcome) => void
@@ -86,6 +88,29 @@ export abstract class BaseTransport implements TerminalTransport {
   submit(text: string): void {
     if (this.state.value !== 'open') return
     this.send(encodeControl({ t: 'submit', text }))
+  }
+
+  /**
+   * A line typed with the owner's word on it (#322): to an owner whose welcome said `submitAck`, a `submit` naming a request,
+   * settled true on its `submit_ok`, or with a ReplyError carrying the owner's code (`not_sent`: `unlessWaiting` held it back from
+   * a session that asks, nothing typed; `input_failed`: typed and not entered), the connection's end, or no word in
+   * ANSWER_TIMEOUT_MS. To an older owner it goes as a plain `submit` and settles false at once.
+   */
+  submitAcked(text: string, opts: { unlessWaiting?: boolean } = {}): Promise<boolean> {
+    if (this.state.value !== 'open') return Promise.reject(new ReplyError('not_connected', 'not connected'))
+    if (!this.acksSubmits) {
+      this.submit(text)
+      return Promise.resolve(false)
+    }
+    const reqId = `s${(++this.reqCounter).toString(36)}`
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        this.answers.delete(reqId)
+        reject(new ReplyError('no_word', 'the session did not say whether it typed the line'))
+      }, ANSWER_TIMEOUT_MS)
+      this.answers.set(reqId, { resolve, reject, timer })
+      this.send(encodeControl({ t: 'submit', text, reqId, ...(opts.unlessWaiting ? { unlessWaiting: true } : {}) }))
+    })
   }
 
   /**
@@ -247,13 +272,13 @@ export abstract class BaseTransport implements TerminalTransport {
   }
 
   protected handleControl(msg: ControlMessage): void {
-    // The owner's word on an answer is the answer's own, not the page's: it settles the reply and goes no further.
-    if ((msg.t === 'answer_ok' || msg.t === 'error') && msg.requestId) {
+    // The owner's word on an answer or a submit is that request's own, not the page's: it settles the reply and goes no further.
+    if ((msg.t === 'answer_ok' || msg.t === 'submit_ok' || msg.t === 'error') && msg.requestId) {
       const waiting = this.answers.get(msg.requestId)
       if (waiting) {
         this.answers.delete(msg.requestId)
         window.clearTimeout(waiting.timer)
-        if (msg.t === 'answer_ok') waiting.resolve(true)
+        if (msg.t === 'answer_ok' || msg.t === 'submit_ok') waiting.resolve(true)
         else waiting.reject(new ReplyError(msg.code, msg.message))
         return
       }
@@ -261,6 +286,7 @@ export abstract class BaseTransport implements TerminalTransport {
     if (msg.t === 'welcome') {
       this.state.value = 'open'
       this.takesAnswers = !!msg.answer
+      this.acksSubmits = !!msg.submitAck
       this.welcomeResolve?.(msg)
       this.welcomeResolve = undefined
       this.welcomeReject = undefined

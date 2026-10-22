@@ -154,6 +154,8 @@ test('on a session page S shares and X asks to stop it in the palette; I types a
   await page.keyboard.press('Enter')
   await expect(palette).toBeHidden()
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the line was typed' }).toContain('typed from the palette\n')
+  // The owner's word (#322): the line was entered, said as typed.
+  await expect(page.locator('li').filter({ hasText: 'Typed into e2e reach keys' }).last()).toBeVisible({ timeout: 15_000 })
   // The stub answers and reports done: Stop every session that is done names it and asks; Enter stops it.
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('done')
   await page.keyboard.press('Control+k')
