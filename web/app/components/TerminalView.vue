@@ -90,7 +90,7 @@ function sizerView(): SizerView {
 // Copy and paste (round 15, utils/terminalClipboard.ts): the keys, right-click and the terminal's menu.
 const isMac = import.meta.client && /Mac|iPhone|iPad/.test(navigator.platform)
 /** The Alt chords the page this terminal is on takes beside the global ones (the Yard's and the Roundhouse's Alt+Q, #312). */
-const pageAltCodes = usePageAltCodes().codes
+const pageAltCodes = usePageAltCodes()
 const hasSelection = ref(false)
 const rightClickPastes = ref(true)
 /** Whether this connection may type, and so paste. */
@@ -735,7 +735,7 @@ onMounted(() => {
     // The Alt chords the page owns go back to it; so does ⌘K on a Mac (#302), a chord no PTY takes. Ctrl+K stays the shell's.
     if (e.type === 'keydown' && isMac && e.metaKey && !e.ctrlKey && !e.altKey && e.code === 'KeyK') return false
     // Shift is not one of the page's chords: Alt+Shift+anything stays the terminal's (Codex's round on #303).
-    return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (ALT_PASSTHROUGH_CODES.has(e.code) || pageAltCodes.value.includes(e.code)))
+    return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (ALT_PASSTHROUGH_CODES.has(e.code) || pageAltCodes.has(e.code)))
   })
   term.open(host.value!)
   grid.value = { cols: term.cols, rows: term.rows }

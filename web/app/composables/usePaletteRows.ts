@@ -78,6 +78,7 @@ export function usePaletteRows(ctx: PaletteContext) {
   const recent = ref<Recent>({})
   function readRecentNow() {
     recent.value = readRecent(typeof localStorage === 'undefined' ? null : localStorage)
+    verbDrafts.clear()
   }
 
   /** The hooks not installed yet: read once with the lists (a request, so not on open). */
@@ -231,6 +232,27 @@ export function usePaletteRows(ctx: PaletteContext) {
   // ---------------------------------------------------------------------------
   // Rows.
 
+  /** Open Files / Chat / Activity / People: the page's own inspector when the row is this page's session, else its page by ?tab= (whole-batch round). */
+  function openView(s: SessionInfo, view: 'explorer' | 'chat' | 'activity' | 'people', tab: string) {
+    const page = palette.page.value
+    if (page?.sessionId === s.id && page.showView) {
+      ctx.close()
+      page.showView(view)
+      return
+    }
+    go(`/sessions/${s.id}?tab=${tab}`)
+  }
+
+  /**
+   * A reply or answer verb is bound to the question its row first showed in this open (as a row's draft is): another question
+   * meanwhile leaves the row disabled, saying so, rather than sending the old line to the new question (whole-batch round).
+   */
+  const verbDrafts = new Map<string, string | undefined>()
+  function boundQuestion(key: string, current: string | undefined): string | undefined {
+    if (!verbDrafts.has(key)) verbDrafts.set(key, current)
+    return verbDrafts.get(key)
+  }
+
   /** A session's row: the sidebar's grammar, its actions under →, Enter opens it. */
   function sessionItem(s: SessionInfo, now: number, extra: Partial<PaletteItem> = {}): PaletteItem {
     const row = sessionRow(s)
@@ -250,10 +272,10 @@ export function usePaletteRows(ctx: PaletteContext) {
       { id: 'copy-path', kind: 'session', target: s.id, label: 'Copy path', icon: 'i-lucide-folder', run: () => void copy(s.cwd, 'Path copied') },
       ...(s.branch ? [{ id: 'copy-branch', kind: 'session' as const, target: s.id, label: 'Copy branch', icon: 'i-lucide-git-branch', run: () => void copy(s.branch!, 'Branch copied') }] : []),
       ...(s.agentSession?.id ? [{ id: 'copy-agent-session', kind: 'session' as const, target: s.id, label: "Copy the agent's session id", icon: 'i-lucide-hash', run: () => void copy(s.agentSession!.id, 'Session id copied') }] : []),
-      { id: 'open-files', kind: 'session', target: s.id, label: 'Open Files', icon: 'i-lucide-folder-open', run: () => go(`/sessions/${s.id}`) },
-      { id: 'open-chat', kind: 'session', target: s.id, label: 'Open Chat', icon: 'i-lucide-message-circle', run: () => go(`/sessions/${s.id}`) },
-      { id: 'open-activity', kind: 'session', target: s.id, label: 'Open Activity', icon: 'i-lucide-activity', run: () => go(`/sessions/${s.id}`) },
-      { id: 'open-people', kind: 'session', target: s.id, label: 'Open People', icon: 'i-lucide-users', run: () => go(`/sessions/${s.id}`) },
+      { id: 'open-files', kind: 'session', target: s.id, label: 'Open Files', icon: 'i-lucide-folder-open', run: () => openView(s, 'explorer', 'files') },
+      { id: 'open-chat', kind: 'session', target: s.id, label: 'Open Chat', icon: 'i-lucide-message-circle', run: () => openView(s, 'chat', 'chat') },
+      { id: 'open-activity', kind: 'session', target: s.id, label: 'Open Activity', icon: 'i-lucide-activity', run: () => openView(s, 'activity', 'activity') },
+      { id: 'open-people', kind: 'session', target: s.id, label: 'Open People', icon: 'i-lucide-users', run: () => openView(s, 'people', 'people') },
       { id: 'field', kind: 'session', target: s.id, label: 'Type a line into it', icon: 'i-lucide-keyboard', kbds: ['I'], disabled: !live || s.attention?.state === 'needs_input', run: () => {} },
     ]
     if (isEnded(s.status)) more.unshift({ id: 'resume', kind: 'session', target: s.id, label: s.agentSession?.resumable ? 'Resume' : 'Relaunch', icon: s.agentSession?.resumable ? 'i-lucide-history' : 'i-lucide-rotate-ccw', run: () => void resumeSession(s) })
@@ -606,13 +628,17 @@ export function usePaletteRows(ctx: PaletteContext) {
         const s = session(v.target.id)
         const o = s?.attention?.options?.[v.choice - 1]
         if (!s) return null
-        return { key: `verb:answer:${s.id}`, label: `Answer ${s.name}: ${v.choice}${o ? ` · ${o.label}` : ''}`, detail: o ? (s.attention?.message ?? '') : 'It has no such choice now', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !o, run: () => answer(s, v.choice - 1, s.attention?.id) }
+        const bound = boundQuestion(`answer:${s.id}:${v.choice}`, s.attention?.id)
+        const moved = bound !== s.attention?.id
+        return { key: `verb:answer:${s.id}`, label: `Answer ${s.name}: ${v.choice}${o ? ` · ${o.label}` : ''}`, detail: moved ? 'The question moved on: read the row again' : o ? (s.attention?.message ?? '') : 'It has no such choice now', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !o || moved, run: () => answer(s, v.choice - 1, bound) }
       }
       case 'reply': {
         const s = session(v.target.id)
         if (!s) return null
         const asking = s.attention?.state === 'needs_input' && !waitsForTerminal(s.attention) && !answersInTerminal(s.attention)
-        return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : 'It is not asking a question a reply can answer', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking, run: () => reply(s, v.text, s.attention?.id) }
+        const bound = boundQuestion(`reply:${s.id}:${v.text}`, s.attention?.id)
+        const moved = bound !== s.attention?.id
+        return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: moved ? 'The question moved on: read the row again' : asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : 'It is not asking a question a reply can answer', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking || moved, run: () => reply(s, v.text, bound) }
       }
       case 'say': {
         const s = session(v.target.id)

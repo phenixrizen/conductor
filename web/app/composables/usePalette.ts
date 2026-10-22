@@ -58,6 +58,8 @@ export interface PageGroup {
   cwd?: string
   /** The page's editor (its own useEditorTabs: one per page): what `:path` and the `open` verb open a file with. */
   openFile?: (loc: { path: string; line?: number }) => void
+  /** The session page's inspector: a session row's Open Files / Chat / Activity / People on that page's own session. */
+  showView?: (v: 'explorer' | 'chat' | 'activity' | 'people') => void
 }
 
 const pageGetter = shallowRef<(() => PageGroup | null) | null>(null)

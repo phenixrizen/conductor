@@ -126,11 +126,16 @@ onBeforeUnmount(() => observer?.disconnect())
 function bringTerminalUp() {
   tabs.value = toggleFold(tabs.value)
 }
+
+/** The area's close, with its unsaved-changes guard: what the palette's Close on a tab calls (whole-batch round). */
+const area = useTemplateRef<{ requestClose: (id: string) => void }>('area')
+defineExpose({ requestClose: (id: string) => area.value?.requestClose(id) })
 </script>
 
 <template>
   <div ref="column" class="flex flex-1 min-w-0 gap-3" :class="side ? 'flex-row' : 'flex-col'" data-editor-column :data-editor-layout="layout">
     <EditorArea
+      ref="area"
       v-model:tabs="tabs"
       :request="request"
       :nvim="nvim"

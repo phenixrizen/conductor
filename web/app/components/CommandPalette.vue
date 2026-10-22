@@ -243,8 +243,22 @@ function showInYard(row: PaletteItem) {
   void router.push({ path: '/yard', query: { focus: row.yardId } })
 }
 
-/** The input's keys: ↓ into the list, ↵ the first row, Esc closes (the modal's own). */
+/**
+ * No key of the palette reaches the page's handlers (the reply bar's digits, the pages' letters, the layout's chords): every
+ * keydown inside it stops here but Tab, which the modal's focus trap reads on its scope (whole-batch round). A button's own
+ * Enter and Space are its default action, which propagation does not carry.
+ */
+function onRootKey(e: KeyboardEvent) {
+  if (e.key !== 'Tab') e.stopPropagation()
+}
+
+/** The input's keys: ↓ into the list, ↵ the first row, Esc closes (the modal's own Escape listens on the document, which onRootKey keeps the key from). */
 function onInputKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    palette.close()
+    return
+  }
   if (e.key === 'ArrowDown') {
     const first = neighbour(null, 1)
     if (first) {
@@ -377,7 +391,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
 <template>
   <UModal v-model:open="palette.open.value" title="Command palette" description="Find a session, run, crew, file or action and act on it without leaving the page." :ui="{ content: 'sm:max-w-[680px] sm:top-[10vh] sm:translate-y-0 max-h-[80vh] overflow-hidden' }">
     <template #content>
-      <div class="flex max-h-[80vh] min-h-0 flex-col" data-palette :data-palette-mode="mode">
+      <div class="flex max-h-[80vh] min-h-0 flex-col" data-palette :data-palette-mode="mode" @keydown="onRootKey">
         <!-- The input, with the mode's chip while a prefix is typed. -->
         <div class="flex items-center gap-2 border-b border-default px-3 py-2">
           <UBadge v-if="mode !== 'search'" :label="MODE_NAMES[mode]" color="neutral" variant="subtle" size="sm" data-palette-chip />

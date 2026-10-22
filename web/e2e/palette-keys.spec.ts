@@ -122,3 +122,35 @@ test('↓ enters the list, J and K move, → and ← reveal and fold a row’s a
     await api.stopSession(b.id)
   }
 })
+
+test('a key inside the palette never reaches the page behind it: a digit on a row without a prompt answers no session', async ({ page, api, state }) => {
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'asker', name: 'e2e palette behind' })
+  try {
+    await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 30_000 }).toBe('needs_input')
+    await page.goto(`/sessions/${s.id}`)
+    await expect(page.locator('[data-quick-reply]')).toBeVisible({ timeout: 30_000 })
+    await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
+    await page.keyboard.press('Alt+/')
+    const palette = page.locator('[data-palette]')
+    await expect(palette).toBeVisible()
+    await palette.locator('input[data-palette-input]').fill('yard')
+    const row = palette.locator('[data-palette-row="go:yard"]')
+    await expect(row).toBeVisible()
+    await page.keyboard.press('ArrowDown')
+    await expect(row).toHaveAttribute('data-palette-focused', '')
+    // 1 on a row that asks nothing: the page's reply bar, which answers digits, never sees it (whole-batch round).
+    await page.keyboard.press('1')
+    await page.waitForTimeout(800)
+    expect(transcript(state.home, s)).not.toContain('Postgres')
+    expect((await api.session(s.id)).attention?.state).toBe('needs_input')
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Escape')
+    await expect(palette).toBeHidden()
+    // Outside the palette the bar's digit works as before (from the page, not the sidebar's list, which takes digits for its row).
+    await page.locator('[data-quick-reply-message]').click()
+    await page.keyboard.press('1')
+    await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the bar answered' }).toContain('Postgres\n')
+  } finally {
+    await api.stopSession(s.id)
+  }
+})

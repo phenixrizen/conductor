@@ -633,7 +633,7 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine() })
+defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.value?.gotoLine(), requestClose })
 </script>
 
 <template>

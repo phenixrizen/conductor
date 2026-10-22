@@ -138,14 +138,25 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
  * terminal, and a terminal hands it back there alone, so a session page's terminal keeps it (zsh's push-line, for one).
  */
 export function usePageAltCodes() {
-  const codes = useState<string[]>('pageAltCodes', () => [])
+  // Counted, not listed: Nuxt sets the next page up before the last one is unmounted, so a code both take must survive the
+  // last page's cleanup (whole-batch round).
+  const counts = useState<Record<string, number>>('pageAltCodes', () => ({}))
   function register(list: string[]) {
-    codes.value = [...codes.value.filter((c) => !list.includes(c)), ...list]
+    const next = { ...counts.value }
+    for (const c of list) next[c] = (next[c] ?? 0) + 1
+    counts.value = next
     onBeforeUnmount(() => {
-      codes.value = codes.value.filter((c) => !list.includes(c))
+      const after = { ...counts.value }
+      for (const c of list) {
+        const n = (after[c] ?? 0) - 1
+        if (n > 0) after[c] = n
+        else delete after[c]
+      }
+      counts.value = after
     })
   }
-  return { codes, register }
+  const has = (code: string) => (counts.value[code] ?? 0) > 0
+  return { counts, register, has }
 }
 
 /**

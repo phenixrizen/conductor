@@ -266,3 +266,20 @@ stops and asks, as #302's brief says.
    in all, past the standing stop of five per PR. Say which you want.
 4. #291 (clone an agent with its configuration) was next in stream 3; it
    waits behind this batch unless you say otherwise.
+
+## Whole-batch Codex rounds
+
+Round 1 (seven findings, all taken): no key of the palette reaches the
+page's handlers (its root stops every keydown but Tab; Escape in the
+input closes it itself), so a digit on a row without a prompt answers
+nothing on the page behind; a tab closed from the palette goes through
+the editor area's own close and its unsaved-changes guard
+(`EditorArea.requestClose`, exposed through `EditorColumn`); the reply
+and answer verbs are bound to the question their row first showed in
+the open and say so when it moved on; the Alt codes a page takes are
+counted, since Nuxt sets the next page up before the last is unmounted;
+`say` reads an error frame on the open connection as a refusal and
+never sends a line past the owner's 4096 bytes; Open Files / Chat /
+Activity / People open the page's own inspector on its session and
+`?tab=` elsewhere; the Roundhouse's waiting list follows the strip's
+order and follow mode cycles from the current slide.

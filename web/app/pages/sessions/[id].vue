@@ -8,7 +8,7 @@ import type { InspectorView } from '~/utils/inspector'
 import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
-import { activateTab, closeTab, toggleFold } from '~/utils/editorTabs'
+import { activateTab, toggleFold } from '~/utils/editorTabs'
 import { stopQuestion } from '~/utils/actions'
 import type { ChangeRow } from '~/utils/changes'
 import type { CommitRow } from '~/utils/commits'
@@ -392,6 +392,7 @@ defineShortcuts({
 // `:` the tabs, the changes and the commits; under `@` the people here and the links. Read when the palette opens, never before.
 const palette = usePalette()
 const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
+const columnRef = useTemplateRef<{ requestClose: (id: string) => void }>('columnRef')
 function showView(v: InspectorView) {
   if (v === 'chat') return showChat()
   tab.value = v
@@ -428,7 +429,8 @@ palette.registerPage(() => {
     on: t.active === tb.id && !t.folded ? true : undefined,
     run: () => (tabs.value = { ...activateTab(tabs.value, tb.id), folded: false }),
     actions: [
-      { id: 'close', kind: 'page' as const, target: tb.id, label: 'Close', icon: 'i-lucide-x', kbds: ['X'], run: () => (tabs.value = closeTab(tabs.value, tb.id)) },
+      // Through the area's own close: an unsaved file asks before it goes (whole-batch round).
+      { id: 'close', kind: 'page' as const, target: tb.id, label: 'Close', icon: 'i-lucide-x', kbds: ['X'], run: () => columnRef.value?.requestClose(tb.id) },
       { id: 'copy-path', kind: 'page' as const, target: tb.id, label: 'Copy path', icon: 'i-lucide-copy', run: () => void copy(tb.path, 'Path copied') },
       ...(tb.kind === 'file' && rawUrl(tb.path) ? [{ id: 'raw', kind: 'page' as const, target: tb.id, label: 'Open raw', icon: 'i-lucide-external-link', run: () => window.open(rawUrl(tb.path)!, '_blank', 'noopener,noreferrer') }] : []),
     ],
@@ -460,6 +462,7 @@ palette.registerPage(() => {
     sessionId: s.id,
     cwd: s.cwd,
     openFile,
+    showView,
     rows: [
       { key: 'page:share', label: 'Share…', icon: 'i-lucide-share-2', kbds: ['S'], disabled: !live, run: () => (share.value = true) },
       { key: 'page:copy-link', label: 'Copy a view link now', icon: 'i-lucide-link', kbds: ['shift', 'S'], disabled: !live, run: copyViewLink },
@@ -531,7 +534,7 @@ palette.registerPage(() => {
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
-        <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
+        <EditorColumn ref="columnRef" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
           <TerminalView
             ref="terminal"
             :create-transport="createTransport"

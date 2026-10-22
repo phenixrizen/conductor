@@ -70,7 +70,9 @@ async function reorder(ids: string[]) {
     carousel.value?.emblaApi?.scrollTo(i, true)
   }
 }
-const waiting = computed(() => attention.needsInput.value.filter(isActive))
+// The waiting sessions in the strip's order too (whole-batch round): follow mode's cycle and "Next up" go by it.
+const waitingIds = computed(() => new Set(attention.needsInput.value.map((s) => s.id)))
+const waiting = computed(() => active.value.filter((s) => waitingIds.value.has(s.id)))
 // Follow mode follows input requests while the Events page routes needs_input
 // to Roundhouse jump; other events routed there jump too (followEvent below).
 const followInput = computed(() => settings.value.follow && events.routes.value.needs_input.wall)
@@ -245,7 +247,8 @@ watch(
       jumpedAt.value = new Date().toISOString()
     }
     if (list.length > 1) {
-      let i = 0
+      // From the current slide, in the kept order.
+      let i = Math.max(0, list.findIndex((s) => s.id === current.value?.id))
       cycleTimer = window.setInterval(() => {
         if (typing.value || !holding.value) return
         i = (i + 1) % list.length
