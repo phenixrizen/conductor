@@ -585,9 +585,12 @@ export function usePaletteRows(ctx: PaletteContext) {
     const model = sidebarModel(attention.sessions.value, attention.runOf)
     const needs = needingInput(attention.sessions.value).sort((a, b) => (a.attention?.since ?? '').localeCompare(b.attention?.since ?? ''))
     const needsIds = new Set(needs.map((s) => s.id))
+    // Every session in the sidebar's order, its run's section aside (a run sits where its most urgent member is: a working
+    // member of a run that needs you is Running here, an exited member of a live run Exited), then each by its own state.
     const flat = (items: readonly (SessionRow | RunBlock)[]) => items.flatMap((it) => (it.kind === 'run' ? it.members : [it]))
-    const running = flat(model.running).filter((r) => !needsIds.has(r.id) && isActive(r.session))
-    const exited = flat(model.exited).filter((r) => isEnded(r.session.status))
+    const everyRow = flat([...model.needs, ...model.running, ...model.exited])
+    const running = everyRow.filter((r) => !needsIds.has(r.id) && isActive(r.session))
+    const exited = everyRow.filter((r) => isEnded(r.session.status))
     const blocks = [...model.needs, ...model.running].filter((it): it is RunBlock => it.kind === 'run' && !it.stoppedAt && it.state !== 'exited')
     const groups: PaletteGroup<PaletteItem>[] = [
       { id: 'needs', label: 'Needs you', pinned: true, rows: needs.map((s) => sessionItem(s, now)) },
@@ -596,7 +599,7 @@ export function usePaletteRows(ctx: PaletteContext) {
     ]
     if (exited.length) {
       if (query || showExited.value) groups.push({ id: 'exited', label: 'Exited', rows: exited.map((r) => sessionItem(r.session, now)) })
-      else groups.push({ id: 'exited', label: 'Exited', rows: [{ key: 'exited:unfold', label: `${exited.length} exited ${exited.length === 1 ? 'session' : 'sessions'}`, detail: 'Enter unfolds them', icon: 'i-lucide-chevron-right', run: () => (showExited.value = true) }] })
+      else groups.push({ id: 'exited', label: 'Exited', rows: [{ key: 'exited:unfold', label: `${exited.length} exited ${exited.length === 1 ? 'session' : 'sessions'}`, detail: 'Enter unfolds them', icon: 'i-lucide-chevron-right', keepOpen: true, run: () => (showExited.value = true) }] })
     }
     groups.push({ id: 'runs', label: 'Runs', rows: blocks.map((b) => runItem(b, attention.runOf(b.runId))) })
     groups.push({ id: 'shared', label: 'Shared with you', rows: sharedItems() })

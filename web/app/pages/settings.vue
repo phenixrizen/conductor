@@ -145,7 +145,7 @@ usePalette().registerPage(() => {
   return {
     label: 'Settings',
     rows: [
-      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value, run: save },
+      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value, ask: restarts.value ? { title: 'Save and restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' } : undefined, run: save },
       ...(desktop.isDesktop.value
         ? [
             { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: { title: 'Restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' }, run: () => void desktop.bridge.value?.restartServer() },

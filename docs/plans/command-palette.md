@@ -310,3 +310,15 @@ connection. A key that collides with a plain key the terminal needs is
   sidebar's `/` row says what `/` does now.
 - The verb row under `>` reads as under no prefix (`> stop docs`), so the
   brief's test passes as written.
+- Codex's round: a reply drafted in a Needs-you row is bound to the
+  question it was begun for (`bindDraft`), and drafts go with the close;
+  the Settings page's Save asks first when it restarts the server, naming
+  how many sessions end; a button inside a row (a choice, an action,
+  Confirm, Send) keeps its own Enter and Space; a click back into the
+  input leaves no row focused, and a row re-rendered under the focus gets
+  it back only while the focus was in the list; ⌘K on a Mac goes through
+  the layout's document listener (defineShortcuts pauses a plain chord
+  while xterm's text area has the focus), `meta_k` registered off the Mac
+  alone, so Ctrl+K in a terminal stays the shell's; the Exited expander
+  keeps the palette open (`keepOpen`); sessions are partitioned by their
+  own state whatever section their run sits in.

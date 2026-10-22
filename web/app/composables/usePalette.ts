@@ -35,6 +35,8 @@ export interface PaletteItem extends PaletteRow {
   disabled?: boolean
   /** A switch: shown on or off; Enter flips it. */
   on?: boolean
+  /** Enter runs it and the palette stays open (a switch does too). */
+  keepOpen?: boolean
   /** A line under the detail saying why the row will not act (a crew on another machine). */
   note?: string
   /** A run's member: `R` opens its run. */

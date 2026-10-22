@@ -51,7 +51,14 @@ void list
 // Alt chords on keys defineShortcuts cannot name (it matches an Alt chord by its code, and knows no name for the slash): one
 // listener, from a terminal or not, as the Alt twins are. The terminal hands these codes back (ALT_PASSTHROUGH_CODES).
 const ALT_CHORDS: Record<string, () => void> = { Slash: openPalette }
+/** On a Mac ⌘K is the palette's from a terminal too (TerminalView lets it through; defineShortcuts pauses a plain chord while xterm's text area has the focus). */
+const isMac = import.meta.client && /Mac|iPhone|iPad/.test(navigator.platform)
 function onAltChord(e: KeyboardEvent) {
+  if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyK') {
+    e.preventDefault()
+    palette.toggle()
+    return
+  }
   if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
   const run = ALT_CHORDS[e.code]
   if (!run) return
@@ -188,7 +195,8 @@ const railNav = computed<NavigationMenuItem[]>(() =>
 // work inside a terminal (see ALT_PASSTHROUGH_CODES in useShortcuts).
 const inTerminal = { usingInput: true }
 defineShortcuts({
-  meta_k: () => palette.toggle(),
+  // Ctrl+K outside a terminal (inside one it stays the shell's); on a Mac the listener above takes ⌘K everywhere.
+  ...(isMac ? {} : { meta_k: () => palette.toggle() }),
   meta_b: () => sidebar.toggle(),
   '?': () => shortcuts.show(),
   n: () => launch.show(),

@@ -106,6 +106,16 @@ test('a verb typed is one row: stop asks in the row, Escape cancels, Enter stops
   await page.keyboard.press('Enter')
   await expect(palette).toBeHidden()
   await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000 }).toMatch(/stopped|exited/)
+  // Exited folds to one row; Enter on it unfolds the exited sessions and keeps the palette open (Codex's round on #302).
+  await page.keyboard.press('Control+k')
+  const fold = palette.locator('[data-palette-row="exited:unfold"]')
+  await expect(fold).toBeVisible()
+  await fold.click()
+  await expect(palette).toBeVisible()
+  await expect(palette.locator(`[data-palette-group="exited"] [data-palette-row="session:${s.id}"]`)).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await expect(palette).toBeHidden()
 })
 
 test('# lists the saved crews: Enter launches one, Launch named passes the label', async ({ page, api }) => {

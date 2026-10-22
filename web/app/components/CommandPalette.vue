@@ -2,6 +2,7 @@
 import type { PaletteItem } from '~/composables/usePalette'
 import type { Action } from '~/utils/actions'
 import { choiceKey } from '~/utils/attention'
+import { bindDraft } from '~/utils/reply'
 import { matchRange, noteUse, writeRecent, type PaletteMode } from '~/utils/palette'
 
 /**
@@ -73,7 +74,8 @@ const revealed = ref<string | null>(null)
 const asking = ref<{ key: string; action?: Action } | null>(null)
 const fielding = ref<string | null>(null)
 const fieldText = ref('')
-const replyText = ref<Record<string, string>>({})
+/** A reply drafted in a Needs-you row, with the question it was begun for (bindDraft): sent to that one, whatever the row shows by then. */
+const replies = ref<Record<string, { text: string; question?: string }>>({})
 
 function rowEl(key: string, within = ''): HTMLElement | null {
   return list.value?.querySelector<HTMLElement>(`[data-palette-row="${CSS.escape(key)}"]${within ? ` ${within}` : ''}`) ?? null
@@ -110,6 +112,7 @@ watch(
     asking.value = null
     fielding.value = null
     rows.showExited.value = false
+    replies.value = {}
     if (!open) {
       window.clearInterval(tick)
       return
@@ -126,11 +129,13 @@ watch(
   },
 )
 onBeforeUnmount(() => window.clearInterval(tick))
-// A row that goes (the session answered and moved on) hands the focus to the input, as the sidebar does.
-watch(flat, async (list) => {
+// A row that goes (the session answered and moved on) hands the focus to the input, as the sidebar does; a row that re-renders
+// under the focus gets it back, only while the focus was in the list (the input, focused by a click, keeps it).
+watch(flat, async (items) => {
   const key = focused.value
   if (!key) return
-  if (!list.some((r) => r.key === key)) return focusInput()
+  if (!items.some((r) => r.key === key)) return focusInput()
+  if (!list.value?.contains(document.activeElement)) return
   await nextTick()
   const el = rowEl(key)
   if (el && !el.contains(document.activeElement)) el.focus()
@@ -154,7 +159,7 @@ async function runRow(row: PaletteItem) {
   }
   noteRow(row)
   asking.value = null
-  if (row.on === undefined) palette.close()
+  if (row.on === undefined && !row.keepOpen) palette.close()
   await row.run()
 }
 /** The row's field, opened by its `field` action or by Enter on a row that takes a line first. */
@@ -201,13 +206,18 @@ function answerChoice(row: PaletteItem, i: number) {
   if (!s || !p || p.held || p.away) return
   rows.answer(s, i, p.question)
 }
+function draftReply(row: PaletteItem, after: string) {
+  const d = replies.value[row.key]
+  replies.value = { ...replies.value, [row.key]: { text: after, question: bindDraft(d?.text ?? '', after, d?.question, row.prompt?.question) } }
+}
 function sendReply(row: PaletteItem) {
   const s = row.session
   const p = row.prompt
-  const text = (replyText.value[row.key] ?? '').trim()
+  const d = replies.value[row.key]
+  const text = (d?.text ?? '').trim()
   if (!s || !p || p.held || p.away || !text) return
-  replyText.value = { ...replyText.value, [row.key]: '' }
-  void rows.reply(s, text, p.question)
+  replies.value = { ...replies.value, [row.key]: { text: '' } }
+  void rows.reply(s, text, d?.question)
 }
 function openInTab(row: PaletteItem) {
   if (!row.href) return
@@ -255,6 +265,8 @@ function onListKey(e: KeyboardEvent) {
     return
   }
   if (!row) return
+  // A button inside the row (a choice, an action, Confirm, the field's Send) takes its own Enter and Space.
+  if ((e.key === 'Enter' || e.key === ' ') && target.closest('button, a[href]')) return
   if (inField) {
     // A field in a row keeps its keys; Enter in a reply field sends, in the row's own field submits.
     if (e.key === 'Enter' && !e.isComposing) {
@@ -357,7 +369,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
         <!-- The input, with the mode's chip while a prefix is typed. -->
         <div class="flex items-center gap-2 border-b border-default px-3 py-2">
           <UBadge v-if="mode !== 'search'" :label="MODE_NAMES[mode]" color="neutral" variant="subtle" size="sm" data-palette-chip />
-          <UInput ref="input" v-model="palette.query.value" :placeholder="placeholder" icon="i-lucide-search" variant="none" size="lg" class="flex-1" :ui="{ base: 'px-1' }" aria-label="Command palette" data-palette-input @keydown="onInputKey" />
+          <UInput ref="input" v-model="palette.query.value" :placeholder="placeholder" icon="i-lucide-search" variant="none" size="lg" class="flex-1" :ui="{ base: 'px-1' }" aria-label="Command palette" data-palette-input @keydown="onInputKey" @focus="focused = null" />
           <UKbd value="escape" size="sm" />
         </div>
         <!-- The groups; the rows take the focus, their keys are their own. -->
@@ -411,7 +423,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
                       />
                     </div>
                     <div v-else-if="!row.prompt.held && !row.prompt.away" class="flex items-center gap-1.5" data-palette-reply @click.stop>
-                      <UInput :model-value="replyText[row.key] ?? ''" :placeholder="row.prompt.placeholder" size="xs" class="flex-1" :aria-label="`Reply to ${row.label}`" @update:model-value="(v) => (replyText = { ...replyText, [row.key]: String(v) })" />
+                      <UInput :model-value="replies[row.key]?.text ?? ''" :placeholder="row.prompt.placeholder" size="xs" class="flex-1" :aria-label="`Reply to ${row.label}`" @update:model-value="(v) => draftReply(row, String(v))" />
                       <UButton icon="i-lucide-send" size="xs" color="neutral" variant="soft" aria-label="Send" @click="sendReply(row)" />
                     </div>
                     <p v-if="row.prompt.held || row.prompt.away" class="text-xs text-muted" data-palette-held>{{ row.prompt.placeholder }}</p>
