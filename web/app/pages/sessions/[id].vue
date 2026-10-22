@@ -539,10 +539,11 @@ palette.registerPage(() => {
           <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
           <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
           <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
-          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
+          <!-- Files and Chat only below xl (#329): at xl the inspector rail has both, with the chat's count; here they said it twice. -->
+          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" class="xl:hidden" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
           <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
           <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
-          <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
+          <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" class="xl:hidden" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
             <span class="hidden sm:inline">Chat</span>
             <ChatUnreadPill :count="chatUnread" />
           </UButton>

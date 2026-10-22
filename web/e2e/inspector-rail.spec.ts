@@ -49,12 +49,15 @@ test('each rail item opens its view, the active one collapses the panel, the cou
     await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'false')
     await page.locator('[data-inspector] [data-rail-toggle]').click()
     await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'true')
-    // The header's Files button selects Explorer, and collapses when it already shows; Chat selects the chat item.
-    await page.locator('button[aria-label="Files"]').click()
+    // At xl the bar has no Files or Chat button (#329): the rail's items are the way in. Explorer selects, and collapses when it
+    // already shows; Chat selects the chat item.
+    await expect(page.locator('button[aria-label="Files"]')).toBeHidden()
+    await expect(page.locator('[data-chat-button]')).toBeHidden()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await expect(page.locator('[data-inspector] [data-rail-item="explorer"]')).toHaveAttribute('aria-pressed', 'true')
-    await page.locator('button[aria-label="Files"]').click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await expect(page.locator('[data-inspector]')).toHaveAttribute('data-inspector-open', 'false')
-    await page.locator('[data-chat-button]').click()
+    await page.locator('[data-inspector] [data-rail-item="chat"]').click()
     await expect(page.locator('[data-inspector] [data-rail-item="chat"]')).toHaveAttribute('aria-pressed', 'true')
     await expect(page.locator('[data-inspector] [data-chat]')).toBeVisible()
     // Activity: All, then Files with the touched rows and their count on the chip, then Tools.

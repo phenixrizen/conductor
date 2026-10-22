@@ -2669,6 +2669,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The bar's Files and Chat only below `xl` (#329, 2026-10-22).** At `xl`
+  the inspector rail (#301) has Explorer and Chat, with the chat's unread
+  count on the rail, so the session page's header said both twice and
+  crowded the bar. The two buttons are `xl:hidden`; below `xl`, where the
+  rail is not on the page, they stay (the phone's chat sheet opens from
+  the header as before, `chat.spec.ts`). `?tab=`, the palette's rows and
+  the chords are unchanged. `inspector-rail.spec.ts` asserts the bar has
+  neither at the suite's width and selects through the rail.
 - **The session page never scrolls sideways (#325, 2026-10-22).** In the
   desktop app on rc.13 a horizontal scrollbar ran along the bottom of the
   session page at every width, with the inspector panel open or collapsed.
