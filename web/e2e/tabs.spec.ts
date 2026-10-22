@@ -66,6 +66,37 @@ test('the tab menu closes to the right, others and all, asking about an unsaved 
     await choose('c', 'Close to the left')
     await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
     await expect(tab('c')).toHaveAttribute('data-editor-tab-active', '')
+    // From the keyboard alone (Codex's rounds): the Menu key opens the menu and Escape closes it, the tabs untouched; a letter
+    // typed into the open menu is the menu's and not the page's (S would share the session); ↓ and Enter pick Close others.
+    await showView(page, 'explorer')
+    for (const n of ['a', 'b']) {
+      await page.locator(`[data-files-mode] [data-file-node="${join(cwd, `${n}.txt`)}"]`).click()
+      await expect(tab(n)).toBeVisible({ timeout: 30_000 })
+    }
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(3)
+    const menu = page.getByRole('menu')
+    await tab('b').locator('button').first().focus()
+    await page.keyboard.press('ContextMenu')
+    await expect(menu).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(3)
+    await expect(area).toHaveAttribute('data-editor-area', 'open')
+    await tab('b').locator('button').first().focus()
+    await page.keyboard.press('Shift+F10')
+    await expect(menu).toBeVisible()
+    await page.keyboard.type('s')
+    await page.waitForTimeout(300)
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(menu).toBeVisible()
+    // ↓ until Close others has the focus (a menu opened from the keyboard focuses its first item already), then Enter.
+    const others = page.getByRole('menuitem', { name: 'Close others' })
+    for (let i = 0; i < 5 && !(await others.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('ArrowDown')
+    await expect(others).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(menu).toBeHidden()
+    await expect(area.locator('[data-editor-tab]')).toHaveCount(1)
+    await expect(tab('b')).toHaveAttribute('data-editor-tab-active', '')
   } finally {
     await api.stopSession(s.id)
   }

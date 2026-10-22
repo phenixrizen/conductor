@@ -575,17 +575,46 @@ function closeScope(id: string, scope: CloseScope) {
   requestCloseIds(tabsToClose(tabs.value, id, scope))
 }
 /**
- * Shift+F10 or the Menu key on a focused tab opens its menu (Codex's batch round): Chromium fires no contextmenu event for them
- * on macOS, so the tab fires its own at its foot, and takes the keys on both edges so the browsers that do fire one fire no second.
+ * Shift+F10 or the Menu key on a focused tab opens its menu (Codex's batch rounds): Chromium fires no contextmenu event for them
+ * on macOS, so the tab fires its own at its foot. It takes the key on both edges, so the browsers that do fire one fire no
+ * second, and opens on the release: Windows opens its own menu on the Menu key's release, and a menu opened on the press would
+ * have the focus by then, the tab never seeing the release to take it.
  */
 function onTabKey(e: KeyboardEvent) {
   if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return
   e.preventDefault()
-  if (e.type !== 'keydown') return
+  if (e.type !== 'keyup') return
   const el = e.currentTarget as HTMLElement
   const r = el.getBoundingClientRect()
   el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.bottom - 2 }))
 }
+/**
+ * Keys inside an open tab menu are the menu's (Codex's second round): a letter typed to find an item, or Escape, must not reach
+ * the page's shortcuts (S shares a session; Escape leaves the Yard's focus), which listen on the window. The document hears a
+ * key first and stops it there; Reka's navigation and typeahead, on the menu itself, still run, and Escape closes the menu
+ * through the closer in the tab, since Reka's own Escape listens on the window too.
+ */
+const tabMenuOpen = ref<string | null>(null)
+const menuClosers = new Map<string, { close: () => void }>()
+function onTabMenu(id: string, open: boolean) {
+  if (open) tabMenuOpen.value = id
+  else if (tabMenuOpen.value === id) tabMenuOpen.value = null
+}
+function setMenuCloser(id: string, el: unknown) {
+  if (el) menuClosers.set(id, el as { close: () => void })
+  else menuClosers.delete(id)
+}
+function onMenuKey(e: KeyboardEvent) {
+  const id = tabMenuOpen.value
+  if (!id || !(e.target as HTMLElement | null)?.closest('[role="menu"]')) return
+  e.stopPropagation()
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    menuClosers.get(id)?.close()
+  }
+}
+onMounted(() => document.addEventListener('keydown', onMenuKey))
+onBeforeUnmount(() => document.removeEventListener('keydown', onMenuKey))
 function tabMenu(id: string) {
   return [
     [{ label: 'Close', icon: 'i-lucide-x', kbds: ['ctrl', 'W'], onSelect: () => requestClose(id) }],
@@ -720,7 +749,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
       <div class="flex h-9 flex-none items-stretch border-b border-default bg-elevated/40" data-editor-tabs>
         <div class="flex min-w-0 flex-1 items-stretch overflow-x-auto">
           <!-- A tab's menu (#330): right-click, or Shift+F10 or the Menu key on the focused tab (the tab fires the event itself: Chromium on macOS fires none for them). -->
-          <UContextMenu v-for="t in tabs.tabs" :key="t.id" :items="tabMenu(t.id)">
+          <UContextMenu v-for="t in tabs.tabs" :key="t.id" :items="tabMenu(t.id)" @update:open="(v: boolean) => onTabMenu(t.id, v)">
             <div
               class="group flex max-w-56 flex-none items-center gap-1.5 border-r border-default pl-3 pr-1.5 text-xs"
               :class="t.id === tabs.active ? 'bg-default text-highlighted' : 'text-muted hover:text-default'"
@@ -729,6 +758,7 @@ defineExpose({ find: () => editorRef.value?.find(), gotoLine: () => editorRef.va
               @keydown="onTabKey"
               @keyup="onTabKey"
             >
+              <ContextMenuCloser :ref="(el: unknown) => setMenuCloser(t.id, el)" />
               <button type="button" class="flex min-w-0 items-center gap-1.5" :title="t.path" @click="tabs = activateTab(tabs, t.id)">
                 <UIcon :name="t.kind === 'url' ? 'i-lucide-globe' : t.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file'" class="size-3.5 flex-none" />
                 <span class="truncate font-mono">{{ t.title }}</span>

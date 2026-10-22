@@ -17,6 +17,7 @@
 | Neovim (`nvim`, found on PATH at runtime; CI installs it for the bridge's tests) | v0.10.4 in CI; 0.10 or later on a machine |
 | github.com/letsencrypt/pebble/v2 (test CA, `make test-pebble`; not a module dependency) | v2.10.1 |
 | nuxt / @nuxt/ui / vue | 4.5.2 / 4.11.2 / 3.5.43 |
+| reka-ui (declared at the version @nuxt/ui ships: the editor's tab menu closes itself through `injectContextMenuRootContext`, so Escape inside it never reaches the page's shortcuts, #330) | 2.10.4 |
 | @xterm/xterm (+ fit, webgl, web-links) | 6.0.0 (0.11.0, 0.19.0, 0.12.0) |
 | shiki | 4.4.3 |
 | markdown-it (the editor's Markdown preview, #166: raw HTML parsed as text, scripted links refused) | 15.0.3 |
