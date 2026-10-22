@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import type { SessionInfo } from '~/composables/useSessions'
-import type { TerminalTransport } from '~/utils/transport/types'
 import { dropIndex, keyMove, moveInOrder, type StripView } from '~/utils/carousel'
 
 /**
@@ -13,8 +12,10 @@ import { dropIndex, keyMove, moveInOrder, type StripView } from '~/utils/carouse
  * meanwhile moves nothing else (Codex's round on #310). As thumbnails
  * the chips carry a small live view of the current session and its
  * neighbours (the ones the Roundhouse connects anyway) and the idle mark
- * for the rest; a thumbnail is inert: nothing in it takes the focus or a
- * key.
+ * for the rest: a thumbnail is the slide's own screen as text, taken
+ * every second, never a connection of its own (the second whole-batch
+ * round: a view of its own doubled the connections and took a viewer
+ * slot); it is inert, nothing in it takes the focus or a key.
  */
 const props = defineProps<{
   sessions: SessionInfo[]
@@ -24,14 +25,35 @@ const props = defineProps<{
   /** Session id follow mode is holding on, if any. */
   holdingId?: string
   rotating: boolean
-  /** A transport for a session's thumbnail, and whether its slide is one the Roundhouse keeps connected. */
-  transportFor?: (s: SessionInfo) => () => TerminalTransport
-  near?: (index: number) => boolean
+  /** A slide's screen as text (its own view's, so a thumbnail opens no connection), null for a slide not connected. */
+  snapshot?: (id: string) => string[] | null
 }>()
 const emit = defineEmits<{ select: [index: number]; reorder: [ids: string[]] }>()
 const view = defineModel<StripView>('view', { default: 'chips' })
 
 const ids = computed(() => props.sessions.map((s) => s.id))
+
+// The thumbnails: each near slide's screen, read again every second while they show.
+const screens = ref<Record<string, string[] | null>>({})
+let shot: number | undefined
+function takeScreens() {
+  if (!props.snapshot) return
+  const next: Record<string, string[] | null> = {}
+  for (const s of props.sessions) next[s.id] = props.snapshot(s.id)
+  screens.value = next
+}
+watch(
+  () => view.value === 'thumbs',
+  (on) => {
+    window.clearInterval(shot)
+    shot = undefined
+    if (!on) return
+    takeScreens()
+    shot = window.setInterval(takeScreens, 1000)
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => window.clearInterval(shot))
 
 function dot(s: SessionInfo) {
   if (s.attention?.state === 'needs_input') return 'bg-warning'
@@ -192,7 +214,7 @@ watch(ids, (now) => {
         <!-- A thumbnail: a live view for a slide the Roundhouse connects, the idle mark for the rest; never a connection of its own,
              and inert: no focus, no key, no pointer reaches it. -->
         <div v-if="view === 'thumbs'" class="pointer-events-none relative h-20 overflow-hidden border-t border-default bg-default" inert data-strip-thumb>
-          <TerminalView v-if="transportFor && near?.(i)" :key="s.id" :create-transport="transportFor(s)" fit="scale" read-only :auto-focus="false" compact class="absolute inset-0" />
+          <pre v-if="screens[s.id]" class="m-0 h-full overflow-hidden whitespace-pre px-1.5 py-1 font-mono text-[6px] leading-[7px] text-muted" aria-hidden="true" data-strip-screen>{{ screens[s.id]!.join('\n') }}</pre>
           <div v-else class="flex h-full items-center justify-center gap-1.5 text-[11px] text-muted" data-strip-idle>
             <SessionAvatar :agent-id="s.agentId" />
             <span>{{ s.attention?.state === 'needs_input' ? 'needs you' : s.status === 'running' ? 'running' : s.status }}</span>

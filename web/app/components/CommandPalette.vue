@@ -26,11 +26,13 @@ const router = useRouter()
 // What a row opens beside the palette: the Share dialog on its target, Your name, the token gate (the layout's).
 const nameOpen = ref(false)
 const shareTarget = ref<{ sessionId: string; sessionName?: string } | { runId: string; sessionName?: string } | null>(null)
+const shareRole = ref<'view' | 'control' | undefined>()
 const shareOpen = ref(false)
-async function openShare(target: NonNullable<typeof shareTarget.value>) {
+async function openShare(target: NonNullable<typeof shareTarget.value>, role?: 'view' | 'control') {
   palette.close()
   shareOpen.value = false
   shareTarget.value = target
+  shareRole.value = role
   await nextTick()
   shareOpen.value = true
 }
@@ -485,7 +487,7 @@ const dotClass: Record<NonNullable<PaletteItem['state']>, string> = { needs: 'bg
       </div>
     </template>
   </UModal>
-  <ShareLinksModal v-if="shareTarget && 'runId' in shareTarget && shareTarget.runId" v-model:open="shareOpen" :run-id="shareTarget.runId" :session-name="shareTarget.sessionName" />
-  <ShareLinksModal v-else-if="shareTarget && 'sessionId' in shareTarget && shareTarget.sessionId" v-model:open="shareOpen" :session-id="shareTarget.sessionId" :session-name="shareTarget.sessionName" />
+  <ShareLinksModal v-if="shareTarget && 'runId' in shareTarget && shareTarget.runId" v-model:open="shareOpen" :run-id="shareTarget.runId" :session-name="shareTarget.sessionName" :role="shareRole" />
+  <ShareLinksModal v-else-if="shareTarget && 'sessionId' in shareTarget && shareTarget.sessionId" v-model:open="shareOpen" :session-id="shareTarget.sessionId" :session-name="shareTarget.sessionName" :role="shareRole" />
   <NameDialog v-model:open="nameOpen" />
 </template>

@@ -97,6 +97,11 @@ const current = computed<SessionInfo | undefined>(() => active.value[selected.va
 
 interface TerminalHandle {
   focus: () => void
+  snapshot: () => string[] | null
+}
+/** The strip's thumbnail of a slide: its own view's screen, none for a slide that is not connected (#310). */
+function snapshotOf(id: string): string[] | null {
+  return terminals.get(id)?.snapshot() ?? null
 }
 const terminals = new Map<string, TerminalHandle>()
 function terminalRef(id: string) {
@@ -434,7 +439,7 @@ usePalette().registerPage(() => ({
         </div>
 
         <div class="flex flex-col gap-2.5 px-4 pb-4 pt-3">
-          <CarouselStrip v-model:view="settings.strip" :sessions="active" :selected="selected" :progress="progress" :holding-id="holdingId" :rotating="rotating" :transport-for="transportFor" :near="near" @select="scrollTo" @reorder="reorder" />
+          <CarouselStrip v-model:view="settings.strip" :sessions="active" :selected="selected" :progress="progress" :holding-id="holdingId" :rotating="rotating" :snapshot="snapshotOf" @select="scrollTo" @reorder="reorder" />
           <div class="flex items-center gap-3 text-xs text-muted">
             <span v-if="nextUp">
               Next up: <b class="text-default">{{ nextUp.session.name }}</b><template v-if="nextUp.waiting">. It also needs input, so it goes before running sessions</template>

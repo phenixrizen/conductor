@@ -148,6 +148,9 @@ preflight at the end and after any rebase; one push, then the PR ready.
   changes, the first list included, so what the strip shows is what is
   kept and a session started afterwards goes at the end. The low-window
   terminal-height spec addresses the chips by `[data-strip-chip]`.
+- The second whole-batch round: a thumbnail is the slide's own screen as
+  text (`TerminalView.snapshot()`, read every second), not a view of its
+  own, which doubled the connections and took a viewer slot.
 - Codex's round: a thumbnail's subtree is `inert` and a read-only
   `TerminalView` sends nothing on its chords; the picked chip is tracked
   by its session id (keyboard and drag) and let go when its session
@@ -283,3 +286,13 @@ never sends a line past the owner's 4096 bytes; Open Files / Chat /
 Activity / People open the page's own inspector on its session and
 `?tab=` elsewhere; the Roundhouse's waiting list follows the strip's
 order and follow mode cycles from the current slide.
+
+Round 2 (four findings, all taken): `share <run|name> control|view` carries
+the role into the Share dialog, which makes this opening's link with it
+and reuses a held link only of that role; the reply and answer verbs
+are bound by the session alone, whatever the line becomes as it is
+typed; a line typed into a session is reported as sent, not as typed
+(the owner's `submit` has no answer: a `submit_ok` would be the
+owner's to add, a protocol change not made here), a refusal within the
+moment still shown; the Roundhouse's thumbnails are the slides' own
+screens as text, no connection of their own.

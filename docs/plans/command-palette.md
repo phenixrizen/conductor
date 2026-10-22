@@ -372,3 +372,12 @@ connection. A key that collides with a plain key the terminal needs is
   applied once per opening and an earlier opening's catalog read sets
   nothing; Alt+Shift+anything stays the terminal's; the S that completes
   G S is the chord's, not the session page's.
+- The whole-batch rounds: no key of the palette reaches the page's
+  handlers (its root stops every keydown but Tab); a tab closed from the
+  palette goes through the editor's own close; the reply and answer
+  verbs are bound to the question first shown, by the session alone; a
+  line typed into a session is reported as sent, not as typed, since
+  nothing confirms it landed (a `submit_ok` would be the owner's to add);
+  `share … control|view` carries the role into the Share dialog; Open
+  Files / Chat / Activity / People open the page's own inspector on its
+  session and `?tab=` elsewhere.

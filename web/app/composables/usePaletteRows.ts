@@ -21,8 +21,8 @@ import { skipWords } from '~/utils/crews'
  * renders what this returns and runs a row on Enter.
  */
 export interface PaletteContext {
-  /** What the row's Share… opens (the Share dialog on a session or a run). */
-  share: (target: { sessionId: string; sessionName?: string } | { runId: string; sessionName?: string }) => void
+  /** What the row's Share… opens (the Share dialog on a session or a run), with the role asked for when a verb named one. */
+  share: (target: { sessionId: string; sessionName?: string } | { runId: string; sessionName?: string }, role?: 'view' | 'control') => void
   /** The Launch agent dialog, prefilled when asked (#303). */
   launch: (prefill?: LaunchPrefill) => void
   /** Your name… */
@@ -167,7 +167,8 @@ export function usePaletteRows(ctx: PaletteContext) {
     try {
       // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line.
       await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' })
-      toast.add({ title: `Typed into ${s.name}`, description: line.length > 80 ? `${line.slice(0, 80)}…` : line, icon: 'i-lucide-keyboard', color: 'success' })
+      // Nothing confirms a line landed (the owner's submit has no answer): said as sent, not as typed.
+      toast.add({ title: `Sent to ${s.name}`, description: `${line.length > 80 ? `${line.slice(0, 80)}…` : line} · the session's owner types it and its Enter; a refusal shows here, nothing confirms it landed`, icon: 'i-lucide-keyboard', color: 'neutral' })
     } catch (e) {
       fail(`Type into ${s.name}`)(e)
     }
@@ -244,8 +245,9 @@ export function usePaletteRows(ctx: PaletteContext) {
   }
 
   /**
-   * A reply or answer verb is bound to the question its row first showed in this open (as a row's draft is): another question
-   * meanwhile leaves the row disabled, saying so, rather than sending the old line to the new question (whole-batch round).
+   * A reply or answer verb is bound to the question its row first showed in this open (as a row's draft is), by the session
+   * alone, whatever the line becomes as it is typed: another question meanwhile leaves the row disabled, saying so, rather than
+   * sending the line to the new question (whole-batch rounds).
    */
   const verbDrafts = new Map<string, string | undefined>()
   function boundQuestion(key: string, current: string | undefined): string | undefined {
@@ -620,15 +622,15 @@ export function usePaletteRows(ctx: PaletteContext) {
         return s ? { ...sessionItem(s, now), key: `verb:stop:${s.id}`, label: `Stop ${s.name}`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.', ask: { title: `Stop ${s.name}?`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.' }, disabled: !sessionLive(s.status), run: () => stopSession(s), actions: undefined, prompt: null } : null
       }
       case 'share': {
-        if (v.target.kind === 'run') return { key: `verb:share:${v.target.id}`, label: `Share ${v.target.name} (${v.role})`, detail: 'Opens the Share dialog on the run', icon: 'i-lucide-share-2', run: () => ctx.share({ runId: v.target.id, sessionName: v.target.name }) }
+        if (v.target.kind === 'run') return { key: `verb:share:${v.target.id}`, label: `Share ${v.target.name} (${v.role})`, detail: `Opens the Share dialog on the run, a ${v.role} link`, icon: 'i-lucide-share-2', run: () => ctx.share({ runId: v.target.id, sessionName: v.target.name }, v.role) }
         const s = session(v.target.id)
-        return s ? { key: `verb:share:${s.id}`, label: `${v.role === 'view' ? 'Copy a view link to' : 'Share'} ${s.name}`, detail: v.role === 'view' ? 'The link is made and copied at once' : 'Opens the Share dialog on control', icon: 'i-lucide-share-2', agentId: s.agentId, run: () => (v.role === 'view' ? copyViewLink(s) : ctx.share({ sessionId: s.id, sessionName: s.name })) } : null
+        return s ? { key: `verb:share:${s.id}`, label: `${v.role === 'view' ? 'Copy a view link to' : 'Share'} ${s.name}`, detail: v.role === 'view' ? 'The link is made and copied at once' : 'Opens the Share dialog on control', icon: 'i-lucide-share-2', agentId: s.agentId, run: () => (v.role === 'view' ? copyViewLink(s) : ctx.share({ sessionId: s.id, sessionName: s.name }, v.role)) } : null
       }
       case 'answer': {
         const s = session(v.target.id)
         const o = s?.attention?.options?.[v.choice - 1]
         if (!s) return null
-        const bound = boundQuestion(`answer:${s.id}:${v.choice}`, s.attention?.id)
+        const bound = boundQuestion(`answer:${s.id}`, s.attention?.id)
         const moved = bound !== s.attention?.id
         return { key: `verb:answer:${s.id}`, label: `Answer ${s.name}: ${v.choice}${o ? ` · ${o.label}` : ''}`, detail: moved ? 'The question moved on: read the row again' : o ? (s.attention?.message ?? '') : 'It has no such choice now', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !o || moved, run: () => answer(s, v.choice - 1, bound) }
       }
@@ -636,7 +638,7 @@ export function usePaletteRows(ctx: PaletteContext) {
         const s = session(v.target.id)
         if (!s) return null
         const asking = s.attention?.state === 'needs_input' && !waitsForTerminal(s.attention) && !answersInTerminal(s.attention)
-        const bound = boundQuestion(`reply:${s.id}:${v.text}`, s.attention?.id)
+        const bound = boundQuestion(`reply:${s.id}`, s.attention?.id)
         const moved = bound !== s.attention?.id
         return { key: `verb:reply:${s.id}`, label: `Reply to ${s.name}: “${v.text}”`, detail: moved ? 'The question moved on: read the row again' : asking ? (s.attention?.message ?? 'Typed, then Enter a quarter of a second later') : 'It is not asking a question a reply can answer', icon: 'i-lucide-reply', agentId: s.agentId, disabled: !asking || moved, run: () => reply(s, v.text, bound) }
       }

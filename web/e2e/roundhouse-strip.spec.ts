@@ -53,7 +53,9 @@ test('the strip is rearranged by drag and keyboard, the order outlives a reload,
     // Thumbnails: a live view for the current slide and its neighbours, the idle mark for the rest; the choice outlives a reload.
     await page.locator('[data-strip-view]').click()
     await expect(strip.locator('[data-strip-thumb]').first()).toBeVisible()
-    await expect(strip.locator('[data-strip-thumb] .terminal-host')).toHaveCount(3, { timeout: 30_000 })
+    // The connected slides' screens as text (the slide's own view: no connection of the thumbnail's), the idle mark for the rest.
+    await expect(strip.locator('[data-strip-thumb] [data-strip-screen]')).toHaveCount(3, { timeout: 30_000 })
+    await expect(strip.locator('[data-strip-thumb] .terminal-host')).toHaveCount(0)
     await expect(strip.locator('[data-strip-idle]').first()).toBeVisible()
     // A thumbnail is inert: nothing in it takes the focus or a key, so Tab from a chip never lands in a neighbour's terminal.
     await expect(strip.locator('[data-strip-thumb]').first()).toHaveAttribute('inert', '')

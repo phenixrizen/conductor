@@ -2792,13 +2792,14 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   session first and goes on in the kept order; a session started since
   goes at the end, one that ended leaves it. A button in the strip's
   corner (`data-strip-view`) switches chips and thumbnails (`strip` in the
-  same settings): a thumbnail is a small live view (`TerminalView
-  fit="scale"`) for the current slide and its neighbours, which the
-  Roundhouse connects anyway, and the idle mark with the initials and the
-  state for every other session, never a connection, so the Roundhouse's
-  cost stays the current slide's and its neighbours' (each near slide
-  holds two connections in that view, its own and its thumbnail's); a
-  thumbnail is inert, and a read-only view types nothing. The picked chip
+  same settings): a thumbnail is the slide's own screen as text
+  (`TerminalView` exposes `snapshot()`; the strip reads the near slides'
+  every second while thumbnails show), and the idle mark with the
+  initials and the state for every other session, never a connection of
+  its own (the second whole-batch round: a view of its own doubled the
+  connections and took a viewer slot), so the Roundhouse's cost stays the
+  current slide's and its neighbours'; a thumbnail is inert, and a
+  read-only view types nothing. The picked chip
   is known by its session id, so a session ending mid-move moves nothing
   else. The
   Yard's tile order is a separate thing and unchanged.
