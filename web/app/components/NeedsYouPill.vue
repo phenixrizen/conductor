@@ -22,11 +22,23 @@ const root = useTemplateRef<HTMLElement>('root')
 
 const session = computed(() => (cursor.shown.value ? attention.sessions.value.find((s) => s.id === cursor.shown.value!.id) : undefined))
 const prompt = computed(() => (session.value ? rowPrompt(sessionRow(session.value)) : null))
-/** The session answered or gone: the pill goes with it. */
+/** The session answered, gone, or asking another question: the pill goes with the question it showed (Codex's round on #303). */
 watch(
-  () => session.value?.attention?.state,
-  (state) => {
-    if (cursor.shown.value && state !== 'needs_input') cursor.hide()
+  () => [session.value?.attention?.state, session.value?.attention?.id] as const,
+  ([state, id]) => {
+    const shown = cursor.shown.value
+    if (shown && (state !== 'needs_input' || id !== shown.question)) cursor.hide()
+  },
+)
+/** Where the focus was when the Alt twins gave it to the pill: given back when the pill goes while it still holds it. */
+let before: HTMLElement | null = null
+watch(
+  () => cursor.shown.value,
+  (shown) => {
+    if (shown) return
+    const el = before
+    before = null
+    if (el && el.isConnected && (document.activeElement === root.value || document.activeElement === document.body || !document.activeElement)) el.focus()
   },
 )
 
@@ -40,16 +52,22 @@ function answer(i: number) {
   const s = session.value
   const p = prompt.value
   const o = p?.choices[i]
+  const question = cursor.shown.value?.question
   if (!s || !p || !o || p.held || p.away) return
-  quick.send(s, o.input, { question: p.question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
+  // The question the pill showed, not whatever the session asks by now: the owner refuses one that moved on.
+  quick.send(s, o.input, { question: question ?? p.question }).catch((e: unknown) => toast.add(replyFailure(e, s.name)))
   cursor.hide()
 }
+/** What owns its own keys while it has the focus: a field, a terminal, the palette, another dialog, a list's option, a button. */
+const OWNS_KEYS = 'input, textarea, select, [contenteditable], .terminal-host, [data-palette], [role="dialog"], [role="listbox"], [role="option"], [role="menu"], button, a[href]'
 function onKey(e: KeyboardEvent) {
   if (!cursor.shown.value) return
   const target = e.target as HTMLElement | null
   const inPill = !!target?.closest?.('[data-needs-pill]')
-  // A text field or a terminal keeps its keys unless the pill itself has the focus.
-  if (!inPill && target?.closest?.('input, textarea, select, [contenteditable], .terminal-host')) return
+  // A button, the pill's own included, keeps its Enter and Space.
+  if ((e.key === 'Enter' || e.key === ' ') && target?.closest?.('button, a[href]')) return
+  // Another surface that has the focus keeps its keys; the pill reads them only from itself or from nothing in particular.
+  if (!inPill && target?.closest?.(OWNS_KEYS)) return
   if (e.altKey || e.ctrlKey || e.metaKey) return
   if (e.key === 'Escape') {
     e.preventDefault()
@@ -80,6 +98,8 @@ watch(
   () => cursor.shown.value?.seq,
   async () => {
     if (!cursor.shown.value?.focus) return
+    const active = document.activeElement as HTMLElement | null
+    if (active && active !== root.value && !root.value?.contains(active)) before = active
     await nextTick()
     root.value?.focus()
   },

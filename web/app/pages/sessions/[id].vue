@@ -380,8 +380,10 @@ const liveNow = computed(() => !!current.value && (current.value.status === 'run
 function askStop() {
   if (liveNow.value) palette.askRow('page:stop')
 }
+// The S that completes the layout's G S chord is the chord's, not this page's (each defineShortcuts hears the key on its own).
+const lastChord = useState<number>('lastChordAt', () => 0)
 defineShortcuts({
-  s: () => liveNow.value && (share.value = true),
+  s: () => liveNow.value && Date.now() - lastChord.value > 150 && (share.value = true),
   x: askStop,
   alt_x: { usingInput: true, handler: askStop },
 })

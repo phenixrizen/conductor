@@ -54,6 +54,14 @@ void list
 function goSettings() {
   if (desktop.isDesktop.value) void router.push('/settings')
 }
+/** When a G chord last fired: a page's own letter (the session page's S) stands down for the keydown that completed one. */
+const lastChord = useState<number>('lastChordAt', () => 0)
+function chord(run: () => void) {
+  return () => {
+    lastChord.value = Date.now()
+    run()
+  }
+}
 const ALT_CHORDS: Record<string, () => void> = { Slash: openPalette, BracketRight: () => cursor.step(1, true), BracketLeft: () => cursor.step(-1, true), Comma: goSettings }
 /** On a Mac ⌘K is the palette's from a terminal too (TerminalView lets it through; defineShortcuts pauses a plain chord while xterm's text area has the focus). */
 const isMac = import.meta.client && /Mac|iPhone|iPad/.test(navigator.platform)
@@ -205,12 +213,12 @@ defineShortcuts({
   '?': () => shortcuts.show(),
   n: () => launch.show(),
   '/': openPalette,
-  'g-y': () => router.push('/yard'),
-  'g-r': () => router.push('/roundhouse'),
-  'g-a': () => router.push('/agents'),
-  'g-e': () => router.push('/events'),
-  'g-c': () => router.push('/crews'),
-  'g-s': goSettings,
+  'g-y': chord(() => router.push('/yard')),
+  'g-r': chord(() => router.push('/roundhouse')),
+  'g-a': chord(() => router.push('/agents')),
+  'g-e': chord(() => router.push('/events')),
+  'g-c': chord(() => router.push('/crews')),
+  'g-s': chord(goSettings),
   ']': () => cursor.step(1),
   '[': () => cursor.step(-1),
   alt_b: { ...inTerminal, handler: () => sidebar.toggle() },

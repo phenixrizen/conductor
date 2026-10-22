@@ -14,6 +14,8 @@ export interface PillShown {
   /** 1-based, of `of`. */
   n: number
   of: number
+  /** The question the pill showed (the attention's id): a digit answers that one, and the pill goes when it changes. */
+  question?: string
   /** The pill takes the focus (the Alt twins, pressed from a terminal). */
   focus: boolean
   /** A counter the pill restarts its clock on. */
@@ -41,7 +43,8 @@ export function useNeedsCursor() {
     const i = nextNeeding(ids, from, delta)
     if (i < 0) return
     seq.value++
-    shown.value = { id: ids[i]!, n: i + 1, of: ids.length, focus, seq: seq.value }
+    const s = attention.sessions.value.find((x) => x.id === ids[i])
+    shown.value = { id: ids[i]!, n: i + 1, of: ids.length, question: s?.attention?.id, focus, seq: seq.value }
     window.clearTimeout(timer)
     timer = window.setTimeout(hide, PILL_MS)
   }

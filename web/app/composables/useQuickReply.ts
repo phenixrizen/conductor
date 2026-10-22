@@ -1,6 +1,7 @@
 import { FOLLOW_SIZE } from '~/utils/protocol'
 import { clearAnswered, repliedQuestions, type QuestionReply } from '~/utils/reply'
-import type { TerminalTransport } from '~/utils/transport/types'
+import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
+import { skipWords } from '~/utils/crews'
 import type { SessionInfo } from './useSessions'
 
 /** The questions this browser tab has replied to from a row, a card or a chat (the app renders in the browser alone: ssr is off). */
@@ -69,15 +70,23 @@ export function useQuickReply() {
    * then (docs/protocol.md, `submit`). The palette refuses a session waiting on a prompt before calling this, with the
    * broadcast's words.
    */
-  async function say(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string } = {}): Promise<void> {
+  async function say(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; waiting?: () => boolean } = {}): Promise<void> {
     if (sending.value.has(session.id)) return
     mark(session.id, true)
     const t: TerminalTransport = create({ sessionId: session.id, token: opts.token ?? admin.token.value, kind: session.kind, forceRelay: true, server: opts.server })
+    let closed: CloseInfo | null = null
+    t.onClose((info) => (closed = info))
     try {
       const welcome = await t.connect(FOLLOW_SIZE)
       if (welcome.role !== 'control') throw new Error('This link is view-only')
+      // Looked at once more with the connection up (the page's latest word): a prompt that came meanwhile refuses the line
+      // (Codex's round on #303). The owner's `submit` has no guard of its own: that would be a protocol change, said in the plan.
+      if (opts.waiting?.()) throw new Error(skipWords('needs_input'))
       t.submit(text)
       await new Promise((r) => setTimeout(r, 400))
+      // The owner says nothing for a line it took; it closes, or sends an error the close carries, for one it did not.
+      const c = closed as CloseInfo | null
+      if (c) throw new Error(c.error?.message || 'the connection closed before the line was typed')
     } finally {
       t.close()
       mark(session.id, false)

@@ -1,7 +1,6 @@
 import type { CrewSummary, RunInfo, SessionInfo } from '~/composables/useSessions'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
-import { joinArgv } from '~/utils/argv'
 import { sameQuestions } from '~/utils/needsCursor'
 import { rowActions, type Action } from '~/utils/actions'
 import { answersInTerminal, isActive, isEnded, needingInput, waitsForTerminal } from '~/utils/attention'
@@ -165,7 +164,8 @@ export function usePaletteRows(ctx: PaletteContext) {
       return
     }
     try {
-      await quick.say(s, line)
+      // Looked at again once the connection is up, the latest this page knows: a prompt that came meanwhile refuses the line.
+      await quick.say(s, line, { waiting: () => attention.sessions.value.find((x) => x.id === s.id)?.attention?.state === 'needs_input' })
       toast.add({ title: `Typed into ${s.name}`, description: line.length > 80 ? `${line.slice(0, 80)}…` : line, icon: 'i-lucide-keyboard', color: 'success' })
     } catch (e) {
       fail(`Type into ${s.name}`)(e)
@@ -309,10 +309,9 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
     const s = page?.sessionId ? attention.sessions.value.find((x) => x.id === page.sessionId) : undefined
     if (s) {
-      const base = palette.catalog.value.find((a) => a.id === s.agentId)?.command ?? []
-      const same = base.length > 0 && base.every((w, i) => s.command[i] === w)
-      const args = same ? joinArgv(s.command.slice(base.length)) : ''
-      out.push({ key: `action:launch-like:${s.id}`, label: `Launch another like ${s.name}`, detail: `${s.agentId} · ${shortCwd(s.cwd)}${args ? ` · ${args}` : ''}${s.yolo ? ' · yolo' : ''}`, agentId: s.agentId, run: () => ctx.launch({ agentId: s.agentId, cwd: s.cwd, args, yolo: s.yolo }) })
+      // The agent, the directory and yolo: the command a session shows carries the flags a launch generates (its session id, its
+      // adapter's, yolo's), never the arguments typed at launch, so none are cloned (Codex's round on #303).
+      out.push({ key: `action:launch-like:${s.id}`, label: `Launch another like ${s.name}`, detail: `${s.agentId} · ${shortCwd(s.cwd)}${s.yolo ? ' · yolo' : ''} · the arguments typed at its launch are not kept`, agentId: s.agentId, run: () => ctx.launch({ agentId: s.agentId, cwd: s.cwd, yolo: s.yolo }) })
     }
     return out
   }

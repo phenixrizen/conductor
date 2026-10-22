@@ -9,6 +9,8 @@ import { effectiveYolo, yoloSummary } from '~/utils/yolo'
 
 const open = defineModel<boolean>('open', { default: false })
 const launchModal = useLaunchModal()
+/** Counts the openings: a catalog answer of an earlier one applies to nothing. */
+let openings = 0
 const emit = defineEmits<{ launched: [session: SessionInfo] }>()
 
 const api = useSessions()
@@ -56,15 +58,22 @@ watch(open, async (v) => {
   error.value = ''
   knownHosted.value = new Set(live.sessions.value.filter((s) => s.kind === 'hosted').map((s) => s.id))
   state.yolo = undefined
-  // A prefill (#303: Launch <agent> here, Launch another like this, the launch verb), taken once; its agent once the catalog offers it.
+  // A prefill (#303: Launch <agent> here, Launch another like this, the launch verb), taken once per opening: its agent is set
+  // the first time the catalog offers it and never again (a pick made meanwhile stands), and a catalog read of an earlier
+  // opening sets nothing of a later one (Codex's round on #303).
+  const opening = ++openings
   const p = launchModal.prefill.value
   launchModal.prefill.value = null
   if (p?.cwd !== undefined) state.cwd = p.cwd
   if (p?.args !== undefined) state.args = p.args
   if (p?.yolo !== undefined) state.yolo = p.yolo
+  let wantedAgent = p?.agentId
   const wanted = () => {
-    if (p?.agentId && offered.value.some((a) => a.id === p.agentId)) state.agentId = p.agentId
-    else if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
+    if (opening !== openings) return
+    if (wantedAgent && offered.value.some((a) => a.id === wantedAgent)) {
+      state.agentId = wantedAgent
+      wantedAgent = undefined
+    } else if (!state.agentId && offered.value[0]) state.agentId = offered.value[0].id
   }
   if (cachedCatalog.value) {
     agents.value = cachedCatalog.value.agents
@@ -74,6 +83,7 @@ watch(open, async (v) => {
   loading.value = true
   try {
     const info = await api.catalogInfo()
+    if (opening !== openings) return
     cachedCatalog.value = info
     agents.value = info.agents
     yoloDefault.value = info.yoloDefault

@@ -47,6 +47,25 @@ test('] shows the pill for the next session that needs you; 1 answers it from th
   expect(await pill.getAttribute('data-pill-session')).toBe(first)
   const shown = first === a.id ? a : b
   const other = first === a.id ? b : a
+  // While the pill shows, a key typed into another surface that owns its keys is that surface's (Codex's round on #303): a
+  // digit typed into the palette's input is the query, no answer goes anywhere.
+  await page.keyboard.press('Control+k')
+  const palette = page.locator('[data-palette]')
+  await expect(palette).toBeVisible()
+  await page.keyboard.type('2')
+  await expect(palette.locator('input[data-palette-input]')).toHaveValue('2')
+  expect(transcript(state.home, shown)).not.toContain('SQLite')
+  expect(transcript(state.home, other)).not.toContain('SQLite')
+  await page.keyboard.press('Escape')
+  await expect(palette).toBeHidden()
+  await expect(pill).toBeHidden()
+  // The pill gone, the cursor starts over: [ from nothing is the last, [ again the one before it.
+  await page.keyboard.press('[')
+  await expect(pill).toBeVisible()
+  await expect(pill.locator('[data-pill-count]')).toHaveText('2 of 2')
+  await page.keyboard.press('[')
+  await expect(pill.locator('[data-pill-count]')).toHaveText('1 of 2')
+  expect(await pill.getAttribute('data-pill-session')).toBe(first)
   await page.keyboard.press('1')
   await expect.poll(() => transcript(state.home, shown), { timeout: 15_000, message: 'the choice was typed' }).toContain('Postgres\n')
   expect(transcript(state.home, other)).not.toContain('Postgres')

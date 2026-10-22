@@ -732,7 +732,8 @@ onMounted(() => {
     }
     // The Alt chords the page owns go back to it; so does ⌘K on a Mac (#302), a chord no PTY takes. Ctrl+K stays the shell's.
     if (e.type === 'keydown' && isMac && e.metaKey && !e.ctrlKey && !e.altKey && e.code === 'KeyK') return false
-    return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && ALT_PASSTHROUGH_CODES.has(e.code))
+    // Shift is not one of the page's chords: Alt+Shift+anything stays the terminal's (Codex's round on #303).
+    return !(e.type === 'keydown' && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && ALT_PASSTHROUGH_CODES.has(e.code))
   })
   term.open(host.value!)
   grid.value = { cols: term.cols, rows: term.rows }

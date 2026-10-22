@@ -359,3 +359,16 @@ connection. A key that collides with a plain key the terminal needs is
   page).
 - Stop every session that is done takes `attention.state === 'done'` on
   a running session; Clear the new-event badges keeps the palette open.
+- Codex's round on PR 2: Launch another like this clones the agent, the
+  directory and yolo, never the arguments (a session's command carries
+  the flags a launch generates, not what was typed); the pill is bound
+  to the question it showed and goes when the session asks another, its
+  keys stand down while the palette, a dialog, a list, a button, a field
+  or a terminal has the focus (a button keeps its Enter), and the focus
+  the Alt twins took goes back when the pill goes; `say` looks at the
+  page's latest word once the connection is up and reads the close for
+  a refusal (the owner's `submit` has no guard of its own: a protocol
+  change, not made here, named for the owner); the launch prefill is
+  applied once per opening and an earlier opening's catalog read sets
+  nothing; Alt+Shift+anything stays the terminal's; the S that completes
+  G S is the chord's, not the session page's.
