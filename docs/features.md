@@ -2669,6 +2669,206 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The chords per system (#312, 2026-10-22).** `utils/chords.ts`
+  (vitest): `detectSystem` from the user agent and the platform (as
+  Nuxt UI's kbd reads `Macintosh;`), a per-system table for the rows
+  whose chord differs (`chord` on a `ShortcutRow`: `leaveTerminal`,
+  `copy`, `paste`), `rowsFor(group, system)` which `useShortcutsModal`
+  applies to every group it lists (the modal and the palette's `?` rows
+  show the chord of the system the page runs on), and `SYSTEM_NOTES`,
+  what a system or a browser takes before the page sees it, shown under
+  the modal's table for that system and surface (`data-shortcuts-notes`;
+  the desktop app's rows leave the browser-only ones out). The one chord
+  replaced: the terminal's leave-focus on the Yard and the Roundhouse is
+  `Alt+Q` everywhere (`KeyQ` in the passthrough codes; Windows takes
+  Alt+Esc to cycle its windows), with `Alt+Esc` still bound where the
+  system leaves it. The sidebar's chord stays `meta+B` (⌘B on a Mac,
+  Ctrl+B elsewhere, as shown): Win+B and Super+B are the system's and
+  were never bound; Firefox's Ctrl+B (its bookmarks sidebar) is a note.
+  The desktop app's Window menu is built without Close (Electron's
+  `windowMenu` role bound it to Ctrl+W on Windows and Linux): the editor
+  takes Ctrl+W, Ctrl+Tab and Ctrl+Shift+Tab in the app, a browser tab
+  keeps them, said in the notes. A terminal hands Alt+Q back only on the
+  Yard and the Roundhouse (`usePageAltCodes`), so a session page's
+  terminal keeps it; the Mac's clipboard rows say `command`, shown as ⌘
+  on every Apple user agent. The validation pass is
+  the table in `docs/plans/ui-batch.md`: Linux Chromium driven by the
+  specs (`chords.spec.ts`, `shortcuts.spec.ts`, `palette-keys.spec.ts`,
+  `palette-reach.spec.ts`, `sidebar.spec.ts`); the Windows and Mac rows
+  are not run here and say so.
+- **The palette's reach (#303, 2026-10-22).** `]` and `[` (`Alt+]` /
+  `Alt+[` from a terminal: `BracketRight` and `BracketLeft` joined the
+  passthrough codes, taken by the layout's chord listener) step a cursor
+  through `needingInput` in the sidebar's order, from the page's own
+  session when it is one (`utils/needsCursor.ts`, `useNeedsCursor`), and
+  show `NeedsYouPill.vue` at the top of the viewport for four seconds:
+  the agent chip, the name, the question, "n of m", the choices as
+  numbered buttons; `1–9` answer over `useQuickReply` without leaving the
+  page, `Enter` opens, `Escape` dismisses, the pill goes by itself and
+  with the question; its keys are read on the document while it shows,
+  never from a text field or a terminal, and the Alt twins give the pill
+  the focus so the next digits are its. `?tab=files|chat|activity|people`
+  on the session page (read, not written: the rail item selected, the
+  chat sheet below `xl`), `?view=` on the run page, `?filter=` on the
+  Yard (`data-yard-filter` chips). `useLaunchModal().show({ agentId,
+  cwd, args, yolo })` prefills the Launch dialog once its catalog is in:
+  Launch <agent> here (each agent, in the page's directory), Launch
+  another like this (the session's agent, directory, yolo and the
+  arguments after the agent's own command), the `launch <agent> [in
+  <dir>]` verb. `useQuickReply().say` types a line into a running session
+  over `submit` on a short control connection (closed once the line is
+  typed; the owner's Enter follows on its own), refused with the
+  broadcast's words while the session waits on a prompt: `I` on a row
+  opens the field, the `say <name> <text>` verb reads as a row. Answer
+  all (`utils/needsCursor.ts` `sameQuestions`): the same question
+  (message and choices) asked by several live sessions is one row at the
+  top of Needs you, its choices answering every one, one send each, the
+  toast counting them. `Stop every session that is done` asks with their
+  names; `Clear the new-event badges` clears every mark. `G S` opens
+  Settings in the desktop app (`Alt+,`, `Comma`); on a session page `S`
+  shares and `X` opens the palette on its Stop row asking (`Alt+X` in
+  its terminal, `KeyX`), listed with the editor's keys as the page's
+  group (`SESSION_SHORTCUTS`). Playwright: `palette-reach.spec.ts`.
+- **The command palette (#302, 2026-10-21).** `CommandPalette.vue` in the
+  default layout, opened by `meta_k`, `/`, `alt_/` and `alt_s` (the two
+  Alt chords from a terminal; `Slash` joined `ALT_PASSTHROUGH_CODES`, and
+  `TerminalView` lets ⌘K through on a Mac) and the rail's search button:
+  the sidebar's filter box is a plain filter now. A modal of 680 px at the
+  top of the viewport with its own list (not `UCommandPalette`, which
+  keeps the focus in its input and has no list focus, so the brief's rule
+  that digits answer only while a row has the focus could not hold): the
+  input, a mode chip, the groups, the rows in the sidebar's grammar (agent
+  chip with the state dot, name, `agent · where · how long`, the prompt's
+  message, its choices as numbered buttons or a reply field, held and away
+  as the sidebar says them), the keys of the brief on the focused row
+  (`J K ↵ 1–9 R S ⇧S X → ← ⌘↵ ⇧↵ Esc`; `I` waits for #303), a row's
+  question asked in the row (`stopQuestion`'s words; Restart server names
+  how many sessions end), a row's field in the row (a broadcast, a run's
+  name). The pure parts in `utils/palette.ts` (vitest): `parsePrefix`,
+  `parseVerb` (the twelve verbs; a name that matches more than one thing
+  of the kinds the verb takes is a search), `rank` (Needs you first, the
+  page next, matches, frecency within a group, the group's order),
+  frecency in `conductor.palette.recent` (200 entries, decayed by the day,
+  every read and write in try/catch). `utils/actions.ts` holds the one
+  action system: `rowActions`, `accountActions`, `stopQuestion`,
+  `toMenuItems`; `sidebarActions.ts`'s `rowMenuItems` and `accountItems`
+  are views over them (vitest proves them item for item), and the palette
+  renders the same descriptors under →. `usePalette` (open, query, show
+  with a mode, `registerPage`, the crews and the catalog read after the
+  first paint and cached, read again when a minute old) and
+  `usePaletteRows` (every group and prefix from the live stores, the
+  verbs, the handlers the sidebar and the pages have). Every page
+  registers its group: the session page (Share…, Copy a view link now,
+  Stop…, the three marks, Fit to my window when the sizer chip shows, Fold
+  the editor, Open Files / Chat / Activity / People, the open tabs; under
+  `:` the tabs, the changes and the commits the inspector polls, exposed
+  by `SessionInspector`; under `@` the people and the links with Revoke),
+  the run page (Broadcast… with "Send to N" and who is skipped, Add an
+  agent…, the three views, Share run, the chat with its count, Stop run…
+  or Resume as new run, the members with the one asking first, Start now
+  and Resume where they apply; `CrewRunHeader` exposes its buttons), the
+  Yard, the Roundhouse, Crews (Launch, Launch named…), Events (the tabs,
+  Refresh, Install hooks for each adapter), Agents, Settings. The `?`
+  modal lists the palette's keys as a group of its own. Playwright:
+  `palette.spec.ts` and `palette-keys.spec.ts`; `sidebar.spec.ts` reaches
+  the filter box by a click now. Decisions beyond the brief: a path under
+  `:` or `open` needs a page with an editor (the session page, the Yard's
+  focus, a join page), elsewhere the row says so; Open Files / Chat /
+  Activity / People from another page open the session page alone until
+  #303's `?tab=`; Shared with you offers Open and Forget (no Leave exists);
+  `⌘P` and `⌘⇧P` are not taken (Ctrl+P is the browser's print); the
+  Install hooks rows read the integrations when the palette opens, the one
+  request besides the two cached lists, since nothing else knows them.
+- **The Roundhouse's strip rearranged, and shown as thumbnails (#310,
+  2026-10-21).** The chips in the strip at the foot (`CarouselStrip.vue`)
+  can be rearranged by drag (HTML5 drag, no library) and by keyboard: a
+  chip picked up with Space, moved with the arrows, dropped with Space or
+  Enter, put back with Escape (`aria-grabbed`, a live region saying the
+  move). The order is kept per browser with the Roundhouse's settings
+  (`conductor.carousel.settings`, `order` by session id; the pure parts in
+  `utils/carousel.ts`: `orderSessions`, `moveInOrder`, `dropIndex`,
+  `keyMove`, `normalizeSettings`): the carousel's slides, stepping,
+  autoplay and "Next up" follow it; follow mode still jumps to a waiting
+  session first and goes on in the kept order; a session started since
+  goes at the end, one that ended leaves it. A button in the strip's
+  corner (`data-strip-view`) switches chips and thumbnails (`strip` in the
+  same settings): a thumbnail is the slide's own screen as text
+  (`TerminalView` exposes `snapshot()`; the strip reads the near slides'
+  every second while thumbnails show), and the idle mark with the
+  initials and the state for every other session, never a connection of
+  its own (the second whole-batch round: a view of its own doubled the
+  connections and took a viewer slot), so the Roundhouse's cost stays the
+  current slide's and its neighbours'; a thumbnail is inert, and a
+  read-only view types nothing. The picked chip
+  is known by its session id, so a session ending mid-move moves nothing
+  else. The
+  Yard's tile order is a separate thing and unchanged.
+- **The editor beside the terminal (#309, 2026-10-21).** The column the
+  editor shares with the terminal (`EditorColumn.vue`) lays the two out
+  stacked, as before, or side by side, the editor on the left and the
+  terminal on the right, chosen with a button in the editor's tab strip
+  (`data-editor-layout-switch`, shown at `lg` and up; below it the column
+  is stacked whatever is kept, and the phone stays as it is). The bar
+  between them drags either way and is a real separator
+  (`role="separator"`, `aria-orientation`, focusable): the arrow keys along
+  its axis move it a step of 2 %, Home and End take it to its ends. The
+  terminal keeps a minimum width side by side (320 px, about forty
+  columns) as it keeps its minimum height stacked, and its size reaches
+  the agent as any resize does; a column too narrow for both (its own
+  width, measured, not the window's) stays stacked and offers no switch,
+  and the reply bar shrinks with the terminal's pane. The layout (`conductor.editor.layout`)
+  and each layout's split (`conductor.editor.split`,
+  `conductor.editor.split.side`) are kept per browser; the pure parts are
+  `utils/editorLayout.ts` with vitest. The default stays stacked until the
+  person switches.
+- **The inspector rail (4h, #301, 2026-10-21).** One vertical rail of 44 px
+  on the inspector's outer edge (`InspectorRail.vue`, its items, pills
+  and tooltips pure in `utils/inspector.ts`) replaces the two tab rows:
+  People, Explorer, Changes, Commits, Activity, Chat (when the owner takes
+  chat), icon buttons with a tooltip to the left naming the view and its
+  count, neutral count pills capped at `99+` (viewers, changed files,
+  commits, unread chat; none on Explorer and Activity), the active item
+  elevated with the 2 px primary bar of #314. Clicking the active item
+  collapses the panel to the rail, whose pills still read; any item opens
+  the panel on its view; the toggle at the rail's foot does the same and
+  replaces the header's panel button (`conductor.inspector` keeps
+  open/closed); the header's Files and Chat buttons select rail items with
+  their toggle-if-shown behaviour. Each view opens with a two-line title,
+  the bold name then the mono sub-line it computes. Touched is no longer
+  a view: Activity carries the chips All · Files · Tools, Files listing
+  the touched rows (`useTouched`, the `op: touched` index merged with the
+  live `file` entries, its count on the chip), Tools the tool uses and
+  refusals. `FileBrowser` lost its section row and takes `section` as a
+  controlled model (`explorer | changes | commits`); its git polling moved
+  into `useRepoStatus`, owned by the inspector (or a Files aside), which
+  is the one behaviour change beyond layout: the status every 5 s while
+  Changes shows and the log every 10 s while Commits shows, each every
+  30 s otherwise so the pills stay right while the panel shows another
+  view or is collapsed, nothing while the document is hidden, one request
+  at a time per kind. The pane's reads at mount keep under the owner's
+  four in-flight file requests (the touched index two seconds after the
+  pane is up, the log after the status), and the tree's listing retries a
+  `too_many_requests` as it retries a connection not open yet: CI's run
+  on a slow relay found the pane empty otherwise. The Yard's focused aside and the join page's Files
+  aside carry the three Files items on a rail of their own
+  (`FilesPane.vue`), which does not collapse. Below `xl` nothing changes.
+  No protocol change.
+- **The open session told apart on the rail, two squares never alike
+  (#314, 2026-10-21).** The square of the session open on the page carries
+  the selection mark: a 2 px primary bar down the rail's edge beside its
+  outer (left) side (`data-rail-current`, 8 px out in the rail's margin,
+  clear of the corner badges), with the elevated background it had; the
+  state dot stays top right and the news count bottom right, so the mark
+  is another shape in another place and never reads as a state. Two
+  squares never look the same: `railGlyphs` (`utils/sidebar.ts`, run by
+  `railModel` over every square, a capsule's members included, exited
+  ones too) gives a square whose agent's initials another square shares
+  its folder's letters instead (`folderLetters`: the last element of its
+  working directory, upper case; a link shared with you, which names no
+  folder, keeps the initials), and then, across every square whatever its
+  agent, an ordinal top left (the free corner) when the letters still
+  match, in the rail's order. The tooltip stays the full label. The
+  inspector rail (4h) uses the same bar for its active item.
 - **The rail** (3d, S6): `railModel` (`utils/sidebar.ts`) draws the rail
   from the list's model, the links shared with you and the Events page's
   marks: `RailShape`s in the list's order, a square a session, a capsule a

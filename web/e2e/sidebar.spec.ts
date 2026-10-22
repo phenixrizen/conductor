@@ -309,12 +309,12 @@ test('the list takes the keys: ↓ from the filter, J K move, Escape leaves; a d
   const list = page.locator('[data-session-list="sidebar"]')
   const focused = list.locator('[data-row-focused]')
 
-  // Alt+S from the terminal (the page gave it the focus; a plain / would reach the agent), then ↓: the first row has the focus;
-  // J and K move it; Escape leaves the list.
-  // The terminal takes the focus once it connects, which can come after the reply bar shows: wait for it, so Alt+S is pressed
-  // from the terminal as meant (it used to race the connect, which then took the focus back from the filter).
+  // The filter box, then ↓: the first row has the focus; J and K move it; Escape leaves the list. (Alt+S and / open the command
+  // palette since #302, checked in palette-keys.spec.ts; the box is a plain filter of the list, reached by a click.)
+  // The terminal takes the focus once it connects, which can come after the reply bar shows: wait for it, so the click is not
+  // undone by the connect taking the focus back.
   await expect(page.locator('.terminal-host .xterm-helper-textarea').first()).toBeFocused({ timeout: 30_000 })
-  await page.keyboard.press('Alt+s')
+  await page.getByPlaceholder('Filter sessions, runs, people').click()
   await expect(page.getByPlaceholder('Filter sessions, runs, people')).toBeFocused()
   await page.keyboard.press('ArrowDown')
   await expect(focused).toHaveCount(1)

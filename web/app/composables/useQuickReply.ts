@@ -1,6 +1,7 @@
-import { FOLLOW_SIZE } from '~/utils/protocol'
+import { FOLLOW_SIZE, MAX_SUBMIT } from '~/utils/protocol'
 import { clearAnswered, repliedQuestions, type QuestionReply } from '~/utils/reply'
-import type { TerminalTransport } from '~/utils/transport/types'
+import type { CloseInfo, TerminalTransport } from '~/utils/transport/types'
+import { skipWords } from '~/utils/crews'
 import type { SessionInfo } from './useSessions'
 
 /** The questions this browser tab has replied to from a row, a card or a chat (the app renders in the browser alone: ssr is off). */
@@ -63,5 +64,43 @@ export function useQuickReply() {
     return over(session, opts.token, { question: opts.question, text }, opts.server)
   }
 
-  return { send, reply, sending }
+  /**
+   * Types a line into a session that is not asking (#303, `I` and the `say` verb): the same short control connection, `submit`
+   * for the line, closed once it is typed; the owner writes it and its Enter 250 ms later and goes on if the client has left by
+   * then (docs/protocol.md, `submit`). The palette refuses a session waiting on a prompt before calling this, with the
+   * broadcast's words.
+   */
+  async function say(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; waiting?: () => boolean } = {}): Promise<void> {
+    if (sending.value.has(session.id)) return
+    // The owner takes MAX_SUBMIT bytes of a line (bad_frame past it): said here, nothing sent (whole-batch round).
+    if (new TextEncoder().encode(text).length > MAX_SUBMIT) throw new Error(`a line is at most ${MAX_SUBMIT} bytes`)
+    mark(session.id, true)
+    const t: TerminalTransport = create({ sessionId: session.id, token: opts.token ?? admin.token.value, kind: session.kind, forceRelay: true, server: opts.server })
+    let closed: CloseInfo | null = null
+    let refused: { code: string; message: string } | null = null
+    t.onClose((info) => (closed = info))
+    // A refusal is an error frame on the open connection (not_sent, input_failed, too_many_requests, session_ended, bad_frame).
+    t.onControl((m) => {
+      if (m.t === 'error' && !refused) refused = { code: m.code, message: m.message }
+    })
+    try {
+      const welcome = await t.connect(FOLLOW_SIZE)
+      if (welcome.role !== 'control') throw new Error('This link is view-only')
+      // Looked at once more with the connection up (the page's latest word): a prompt that came meanwhile refuses the line
+      // (Codex's round on #303). The owner's `submit` has no guard of its own: that would be a protocol change, said in the plan.
+      if (opts.waiting?.()) throw new Error(skipWords('needs_input'))
+      t.submit(text)
+      await new Promise((r) => setTimeout(r, 400))
+      // The owner says nothing for a line it took; for one it did not, an error frame, or a close that carries one.
+      const r = refused as { code: string; message: string } | null
+      if (r) throw new Error(r.message || r.code)
+      const c = closed as CloseInfo | null
+      if (c) throw new Error(c.error?.message || 'the connection closed before the line was typed')
+    } finally {
+      t.close()
+      mark(session.id, false)
+    }
+  }
+
+  return { send, reply, say, sending }
 }

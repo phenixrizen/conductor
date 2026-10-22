@@ -1,60 +1,18 @@
 import type { DropdownMenuItem } from '@nuxt/ui'
+import { accountActions, rowActions, toMenuItems, type AccountHandlers, type RowActionHandlers, type RowActionTarget } from './actions'
 import { ANSWER_IN_TERMINAL, TERMINAL_FIRST, answersInTerminal, waitsForTerminal } from './attention'
 import type { AttentionOption } from './protocol'
 import type { SessionRow } from './sidebar'
 
+export { stopQuestion, type AccountHandlers, type RowActionHandlers, type RowActionTarget } from './actions'
+
 /**
- * What a row of the sidebar offers without opening it (design 3c): the same
- * list behind More, the right-click menu, a long press on a phone, and the
- * keys. A session: Open, Open the run (a member), Share…, Show in the Yard,
- * Stop…; a run's header: Open run, Share run, Stop run…; a link shared with
- * you: Open, Forget.
+ * The sidebar's menus (design 3c): views over the action descriptors in
+ * `actions.ts`, which the command palette renders too (#302): a row's More,
+ * right-click and long-press menu, and the account menu.
  */
-export interface RowActionTarget {
-  kind: 'session' | 'run' | 'shared'
-  name: string
-  /** Running or starting: it can be stopped, and shared. */
-  live: boolean
-  /** A session that is a run's member: its run can be opened. */
-  inRun?: boolean
-}
-
-export interface RowActionHandlers {
-  open: () => void
-  openRun?: () => void
-  share?: () => void
-  yard?: () => void
-  stop?: () => void
-  forget?: () => void
-}
-
 export function rowMenuItems(t: RowActionTarget, on: RowActionHandlers): DropdownMenuItem[][] {
-  if (t.kind === 'shared') {
-    return [[{ label: 'Open', icon: 'i-lucide-external-link', kbds: ['enter'], onSelect: on.open }], [{ label: 'Forget', icon: 'i-lucide-x', onSelect: on.forget }]]
-  }
-  if (t.kind === 'run') {
-    return [
-      [{ label: 'Open run', icon: 'i-lucide-play', kbds: ['enter'], onSelect: on.open }],
-      [{ label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], disabled: !t.live, onSelect: on.share }],
-      [{ label: 'Stop run…', icon: 'i-lucide-square', kbds: ['X'], color: 'error', disabled: !t.live, onSelect: on.stop }],
-    ]
-  }
-  const first: DropdownMenuItem[] = [{ label: 'Open', icon: 'i-lucide-terminal', kbds: ['enter'], onSelect: on.open }]
-  if (t.inRun) first.push({ label: 'Open the run', icon: 'i-lucide-play', kbds: ['R'], onSelect: on.openRun })
-  return [
-    first,
-    [
-      { label: 'Share…', icon: 'i-lucide-share-2', kbds: ['S'], disabled: !t.live, onSelect: on.share },
-      { label: 'Show in the Yard', icon: 'i-lucide-layout-grid', onSelect: on.yard },
-    ],
-    [{ label: 'Stop…', icon: 'i-lucide-square', kbds: ['X'], color: 'error', disabled: !t.live, onSelect: on.stop }],
-  ]
-}
-
-/** The question a row asks before it stops something, in the row itself. */
-export function stopQuestion(t: Pick<RowActionTarget, 'kind' | 'name'>): { title: string; detail: string } {
-  if (t.kind === 'run') return { title: `Stop ${t.name}?`, detail: "Every member's terminal closes. The run can be resumed as a new run." }
-  return { title: `Stop ${t.name}?`, detail: 'Its terminal closes. Resume brings the conversation back from Exited.' }
+  return toMenuItems(rowActions(t, on))
 }
 
 /** Whether a session in this state can be stopped (and so shared). */
@@ -90,24 +48,6 @@ export function rowPrompt(row: Pick<SessionRow, 'prompt' | 'session'>): RowPromp
   return { message: row.prompt.message, choices: row.prompt.options, away, held: typing || terminal, placeholder, question: row.prompt.question }
 }
 
-/** What the account menu beside the sidebar's name offers (design 3b): your name, the shortcuts, the theme, the workbench token. */
-export interface AccountHandlers {
-  name: () => void
-  shortcuts: () => void
-  theme: () => void
-  token: () => void
-  forget: () => void
-}
-
 export function accountItems(hasToken: boolean, on: AccountHandlers): DropdownMenuItem[][] {
-  const token: DropdownMenuItem[] = [{ label: hasToken ? 'Workbench token…' : 'Set workbench token…', icon: hasToken ? 'i-lucide-key-round' : 'i-lucide-lock', onSelect: on.token }]
-  if (hasToken) token.push({ label: 'Forget token', icon: 'i-lucide-log-out', color: 'error', onSelect: on.forget })
-  return [
-    [{ label: 'Your name…', icon: 'i-lucide-user-round', onSelect: on.name }],
-    [
-      { label: 'Keyboard shortcuts', icon: 'i-lucide-keyboard', kbds: ['?'], onSelect: on.shortcuts },
-      { label: 'Toggle theme', icon: 'i-lucide-sun-moon', onSelect: on.theme },
-    ],
-    token,
-  ]
+  return toMenuItems(accountActions(hasToken, on))
 }

@@ -18,7 +18,7 @@ test('a file opens in the editor above the terminal; tabs, folding, closing, a l
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'editor', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const tree = page.locator('[data-files-tree]')
     await expect(tree.locator(`[data-file-node="${cwd}/internal"]`)).toBeVisible({ timeout: 30_000 })
     await expect(page.locator('[data-editor-area]')).toHaveCount(0)

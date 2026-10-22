@@ -70,7 +70,7 @@ test('a plan outside the folder opens from the approval, the Files tab and the p
     await expect(lines).toBeVisible()
 
     // The Files tab lists it under Plans, this session's plan alone; clicking it is the same tab.
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-plans-head]')).toHaveText('Plans', { timeout: 15_000 })
     await expect(pane.locator('[data-files-plans]')).toHaveCount(1)
@@ -86,8 +86,9 @@ test('a plan outside the folder opens from the approval, the Files tab and the p
     await page.keyboard.press('Control+s')
     await expect(area.locator('[data-editor-saved]')).toBeVisible({ timeout: 15_000 })
     expect(readFileSync(plan, 'utf8')).toContain('Then say so.')
-    await pane.locator('[data-files-section="touched"]').click()
-    await expect(pane.locator(`[data-touched="${plan}"]`).first()).toBeVisible({ timeout: 15_000 })
+    await page.locator('[data-inspector] [data-rail-item="activity"]').click()
+    await page.locator('[data-inspector] [data-activity-filter="files"]').click()
+    await expect(page.locator(`[data-inspector] [data-files-touched] [data-touched="${plan}"]`).first()).toBeVisible({ timeout: 15_000 })
 
     // The path the dialog printed ("ctrl+g to edit in Vim · ~/.claude/plans/plan.md", its last row) is a link: with the tab closed,
     // clicking it opens the plan again.

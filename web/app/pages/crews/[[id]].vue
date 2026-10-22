@@ -450,6 +450,26 @@ watch(
   },
 )
 watch(crewId, loadSelected)
+
+// This page's group in the command palette (#302): a new crew, the examples, and Launch for every crew listed.
+usePalette().registerPage(() => ({
+  label: 'Crews',
+  rows: [
+    { key: 'page:new', label: 'New crew', icon: 'i-lucide-plus', run: newCrew },
+    { key: 'page:examples', label: 'Load the example crews', icon: 'i-lucide-package-open', run: loadExamples },
+    ...crews.value.map((c) => ({
+      key: `page:launch:${c.id}`,
+      label: `Launch ${c.name}`,
+      detail: c.goal || `${c.members.length} ${c.members.length === 1 ? 'member' : 'members'}`,
+      icon: 'i-lucide-play',
+      note: c.where === 'host' ? 'Runs on another machine: open it to launch from there' : undefined,
+      disabled: c.where === 'host',
+      run: () => launch(c.id),
+      field: c.where === 'host' ? undefined : { placeholder: 'Name the run…', maxLength: 60, button: 'Launch named', submit: (label: string) => launch(c.id, label.trim()) },
+      actions: c.where === 'host' ? undefined : [{ id: 'field', kind: 'page' as const, target: c.id, label: 'Launch named…', icon: 'i-lucide-tag', kbds: ['L'], run: () => {} }],
+    })),
+  ],
+}))
 </script>
 
 <template>

@@ -19,7 +19,7 @@ test('the Files tab keeps to the folder the session started in', async ({ page, 
     renameSync(cwd, `${cwd}.moved`)
     symlinkSync(other, cwd)
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     const error = pane.locator('[data-files-error]')
     await expect(error).toContainText('the session\'s folder is no longer at its path', { timeout: 30_000 })

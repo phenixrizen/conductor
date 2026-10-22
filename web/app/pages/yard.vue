@@ -20,9 +20,20 @@ const quick = useQuickReply()
 const { create } = useTerminalTransport()
 const { httpBase } = useApiBase()
 useShortcutsModal().registerPage(WALL_SHORTCUTS)
+usePageAltCodes().register(['KeyQ'])
 
 type Filter = 'all' | 'needs' | 'running'
-const filter = ref<Filter>('all')
+function isFilter(v: unknown): v is Filter {
+  return v === 'all' || v === 'needs' || v === 'running'
+}
+// ?filter= (#303) names the chip a link opens on, read as the page opens and as the query changes.
+const filter = ref<Filter>(isFilter(route.query.filter) ? route.query.filter : 'all')
+watch(
+  () => route.query.filter,
+  (q) => {
+    if (isFilter(q)) filter.value = q
+  },
+)
 const active = computed(() => attention.sessions.value.filter(isActive))
 const waiting = computed(() => attention.needsInput.value.filter(isActive))
 const running = computed(() => active.value.filter((s) => s.attention?.state !== 'needs_input'))
@@ -89,6 +100,8 @@ defineShortcuts({
     if (!focusId.value && waiting.value.length) queue.value?.focusSelected()
   },
   alt_escape: { ...inTerminal, handler: leaveFocus },
+  // Alt+Q leaves too (#312): Windows takes Alt+Esc for its own window cycling.
+  alt_q: { ...inTerminal, handler: leaveFocus },
   alt_j: { ...inTerminal, handler: queueNext },
   alt_k: { ...inTerminal, handler: queuePrev },
 })
@@ -185,6 +198,27 @@ onMounted(() => {
   if (!admin.hasToken.value) admin.needsToken.value = true
   attention.start()
 })
+
+// This page's group in the command palette (#302): the chips, the queue's selected session expanded, the grid.
+usePalette().registerPage(() => {
+  const chips: Array<[Filter, string, number]> = [
+    ['all', 'All', active.value.length],
+    ['needs', 'Needs you', waiting.value.length],
+    ['running', 'Running', running.value.length],
+  ]
+  const sel = waiting.value[queueSel.value]
+  return {
+    label: focused.value ? focused.value.name : 'Yard',
+    sessionId: focused.value?.id,
+    cwd: focused.value?.cwd,
+    openFile: focused.value ? openFile : undefined,
+    rows: [
+      ...chips.map(([f, label, n]) => ({ key: `page:filter:${f}`, label: `${label} · ${n}`, icon: 'i-lucide-filter', on: filter.value === f, run: () => (filter.value = f) })),
+      ...(sel && !focused.value ? [{ key: 'page:expand', label: `Expand ${sel.name}`, detail: 'The queue’s selected session, in place', icon: 'i-lucide-maximize-2', agentId: sel.agentId, run: () => focusSession(sel) }] : []),
+      ...(focused.value ? [{ key: 'page:grid', label: 'Back to the grid', icon: 'i-lucide-layout-grid', kbds: ['escape'], run: backToGrid }] : []),
+    ],
+  }
+})
 </script>
 
 <template>
@@ -207,9 +241,9 @@ onMounted(() => {
               <UBadge :label="`${viewers} here`" icon="i-lucide-users" color="neutral" variant="subtle" size="sm" class="hidden sm:inline-flex" />
             </template>
             <div v-else class="flex items-center gap-1.5 text-xs">
-              <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" @click="filter = 'all'" />
-              <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" @click="filter = 'needs'" />
-              <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" @click="filter = 'running'" />
+              <UButton :label="`All ${active.length}`" size="xs" :variant="filter === 'all' ? 'solid' : 'outline'" color="neutral" data-yard-filter="all" :data-active="filter === 'all' ? '' : undefined" @click="filter = 'all'" />
+              <UButton :label="`Needs you ${waiting.length}`" size="xs" :variant="filter === 'needs' ? 'solid' : 'outline'" color="warning" data-yard-filter="needs" :data-active="filter === 'needs' ? '' : undefined" @click="filter = 'needs'" />
+              <UButton :label="`Running ${running.length}`" size="xs" :variant="filter === 'running' ? 'solid' : 'outline'" color="neutral" data-yard-filter="running" :data-active="filter === 'running' ? '' : undefined" @click="filter = 'running'" />
               <UBadge v-if="!attention.connected.value" label="polling" color="warning" variant="subtle" size="sm" />
               <AttentionBar :sessions="attention.sessions.value" />
             </div>
@@ -263,7 +297,7 @@ onMounted(() => {
         </div>
         <aside v-if="focused" class="hidden md:flex w-[332px] flex-none flex-col overflow-hidden rounded-md border border-default bg-default" data-files-aside>
           <div class="flex h-9 flex-none items-center gap-2 border-b border-default px-3 text-xs font-semibold text-highlighted"><UIcon name="i-lucide-folder-open" class="size-4 text-muted" /> Files</div>
-          <FileBrowser :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :activity="focusActivity" external class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
+          <FilesPane :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :activity="focusActivity" class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
         </aside>
       </div>
       <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">

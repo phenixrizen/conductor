@@ -2,6 +2,7 @@
 import type { SessionInfo } from '~/composables/useSessions'
 import { CAROUSEL_SHORTCUTS } from '~/composables/useShortcuts'
 import { isActive } from '~/utils/attention'
+import { keptOrder, normalizeSettings, orderSessions, type CarouselSettings } from '~/utils/carousel'
 import { followJump, type RoutedEvent } from '~/utils/events'
 import { relativeTime, shortCwd } from '~/utils/sessions'
 
@@ -12,18 +13,15 @@ const events = useEvents()
 const admin = useWorkbenchToken()
 const { create } = useTerminalTransport()
 useShortcutsModal().registerPage(CAROUSEL_SHORTCUTS)
+usePageAltCodes().register(['KeyQ'])
 
+// The settings kept per browser (#310 added the strip's order and view): each field checked on the way in.
 const SETTINGS_KEY = 'conductor.carousel.settings'
 const LEGACY_KEY = 'conductor.wall.settings'
-interface CarouselSettings {
-  intervalMs: number
-  autoplay: boolean
-  follow: boolean
-}
-const settings = ref<CarouselSettings>({ intervalMs: 10000, autoplay: true, follow: true })
+const settings = ref<CarouselSettings>(normalizeSettings(null))
 try {
   const raw = localStorage.getItem(SETTINGS_KEY) ?? localStorage.getItem(LEGACY_KEY)
-  if (raw) settings.value = { ...settings.value, ...JSON.parse(raw) }
+  if (raw) settings.value = normalizeSettings(JSON.parse(raw))
 } catch {
   /* ignore */
 }
@@ -47,8 +45,34 @@ const intervalItems = [
   { label: '60s', value: 60000 },
 ]
 
-const active = computed(() => attention.sessions.value.filter(isActive))
-const waiting = computed(() => attention.needsInput.value.filter(isActive))
+// The active sessions in the strip's kept order (#310): the slides, stepping, "Next up" and follow mode all go by it. A session
+// started since goes at the end, one that ended leaves it; what shows is what is kept.
+const active = computed(() => orderSessions(attention.sessions.value.filter(isActive), settings.value.order))
+// Written back at once too: the first list shown is the order a session started afterwards is appended to (Codex's round on #310).
+watch(
+  active,
+  (list) => {
+    // An empty list (the store not filled yet, as the page loads) keeps the order: it is what the sessions are put back into.
+    if (!list.length) return
+    const kept = keptOrder(list)
+    if (kept.join('\n') !== settings.value.order.join('\n')) settings.value.order = kept
+  },
+  { immediate: true },
+)
+/** The strip rearranged: the current session keeps the screen, at its new place. */
+async function reorder(ids: string[]) {
+  const cur = current.value?.id
+  settings.value.order = ids
+  await nextTick()
+  const i = active.value.findIndex((s) => s.id === cur)
+  if (i >= 0 && i !== selected.value) {
+    selected.value = i
+    carousel.value?.emblaApi?.scrollTo(i, true)
+  }
+}
+// The waiting sessions in the strip's order too (whole-batch round): follow mode's cycle and "Next up" go by it.
+const waitingIds = computed(() => new Set(attention.needsInput.value.map((s) => s.id)))
+const waiting = computed(() => active.value.filter((s) => waitingIds.value.has(s.id)))
 // Follow mode follows input requests while the Events page routes needs_input
 // to Roundhouse jump; other events routed there jump too (followEvent below).
 const followInput = computed(() => settings.value.follow && events.routes.value.needs_input.wall)
@@ -73,6 +97,11 @@ const current = computed<SessionInfo | undefined>(() => active.value[selected.va
 
 interface TerminalHandle {
   focus: () => void
+  snapshot: () => string[] | null
+}
+/** The strip's thumbnail of a slide: its own view's screen, none for a slide that is not connected (#310). */
+function snapshotOf(id: string): string[] | null {
+  return terminals.get(id)?.snapshot() ?? null
 }
 const terminals = new Map<string, TerminalHandle>()
 function terminalRef(id: string) {
@@ -223,7 +252,8 @@ watch(
       jumpedAt.value = new Date().toISOString()
     }
     if (list.length > 1) {
-      let i = 0
+      // From the current slide, in the kept order.
+      let i = Math.max(0, list.findIndex((s) => s.id === current.value?.id))
       cycleTimer = window.setInterval(() => {
         if (typing.value || !holding.value) return
         i = (i + 1) % list.length
@@ -276,6 +306,8 @@ defineShortcuts({
   alt_arrowright: { ...inTerminal, handler: next },
   alt_p: { ...inTerminal, handler: togglePlay },
   alt_escape: { ...inTerminal, handler: leaveTerminal },
+  // Alt+Q leaves too (#312): Windows takes Alt+Esc for its own window cycling.
+  alt_q: { ...inTerminal, handler: leaveTerminal },
 })
 
 function transportFor(s: SessionInfo) {
@@ -320,6 +352,19 @@ onBeforeUnmount(() => {
   window.clearInterval(progressTimer)
   window.removeEventListener('keydown', onEscape)
 })
+
+// This page's group in the command palette (#302): the rotation, follow mode, the interval.
+usePalette().registerPage(() => ({
+  label: 'Roundhouse',
+  sessionId: current.value?.id,
+  cwd: current.value?.cwd,
+  rows: [
+    { key: 'page:rotation', label: holding.value ? 'Release the hold and keep rotating' : paused.value ? 'Resume rotation' : 'Pause rotation', detail: stateLabel.value, icon: rotating.value ? 'i-lucide-pause' : 'i-lucide-play', kbds: ['space'], run: togglePlay },
+    { key: 'page:autoplay', label: 'Auto-rotate', icon: 'i-lucide-rotate-cw', on: settings.value.autoplay, run: () => (settings.value.autoplay = !settings.value.autoplay) },
+    { key: 'page:follow', label: 'Follow routed events', icon: 'i-lucide-hand', on: settings.value.follow, run: () => (settings.value.follow = !settings.value.follow) },
+    ...intervalItems.map((it) => ({ key: `page:interval:${it.value}`, label: `Every ${it.label}`, icon: 'i-lucide-timer', on: settings.value.intervalMs === it.value, run: () => (settings.value.intervalMs = it.value) })),
+  ],
+}))
 </script>
 
 <template>
@@ -394,13 +439,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="flex flex-col gap-2.5 px-4 pb-4 pt-3">
-          <CarouselStrip :sessions="active" :selected="selected" :progress="progress" :holding-id="holdingId" :rotating="rotating" @select="scrollTo" />
+          <CarouselStrip v-model:view="settings.strip" :sessions="active" :selected="selected" :progress="progress" :holding-id="holdingId" :rotating="rotating" :snapshot="snapshotOf" @select="scrollTo" @reorder="reorder" />
           <div class="flex items-center gap-3 text-xs text-muted">
             <span v-if="nextUp">
               Next up: <b class="text-default">{{ nextUp.session.name }}</b><template v-if="nextUp.waiting">. It also needs input, so it goes before running sessions</template>
             </span>
             <span class="ml-auto hidden md:flex items-center gap-3 font-mono text-[11px]">
-              <span>← → step</span><span>Space pause</span><span>Enter type</span><span>Esc leave terminal</span>
+              <span>← → step</span><span>Space pause</span><span>Enter type</span><span>Esc leave terminal</span><span>drag the strip to reorder</span>
             </span>
           </div>
         </div>

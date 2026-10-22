@@ -28,7 +28,9 @@ export function buildMenu(d: MenuDeps): Menu {
     },
     { role: 'editMenu' },
     { label: 'View', submenu: [{ role: 'reload' }, ...(d.dev ? [{ role: 'toggleDevTools' as const }] : []), { type: 'separator' }, { label: 'Actual Size', accelerator: 'CmdOrCtrl+0', click: () => d.zoom('reset') }, { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', click: () => d.zoom('in') }, { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: () => d.zoom('out') }, { type: 'separator' }, { role: 'togglefullscreen' }] },
-    { role: 'windowMenu' },
+    // Minimize and Zoom (and Front on a Mac), never Close: Electron's windowMenu role binds Close to Ctrl+W on Windows and
+    // Linux, which the editor takes for its tab (#312).
+    { role: 'window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(mac ? [{ type: 'separator' as const }, { role: 'front' as const }] : [])] },
     { role: 'help', submenu: [{ label: `Conductor ${app.getVersion()}`, enabled: false }] },
   ]
   return Menu.buildFromTemplate(template)

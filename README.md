@@ -86,7 +86,8 @@ sessions do (see the Files tab).
 ## The workbench
 
 The sidebar is the session list, grouped into **Needs you**, **Running** and
-**Exited**, with a filter box (**/**) and a **Launch agent** button (**N**).
+**Exited**, with a filter box and a **Launch agent** button (**N**); **/** or
+**Ctrl+K** opens the command palette (see Sidebar and keyboard shortcuts).
 When the workbench is served from another machine, Launch asks where the
 agent runs: **On this server**, or **On this computer**, which shows the exact
 `conductor host` command to paste into a terminal here (it carries your
@@ -99,9 +100,13 @@ computer's own address, there is one answer and the question is not asked. The w
 sidebar switches to light and remembers it. The session page shows the
 terminal, a reply bar whenever the agent
 is waiting (type an answer, or press the numbered buttons a Claude Code
-dialog offers, read off the dialog itself), and an inspector with **People** (who is attached,
-their role and link, who is typing), **Files** (the file browser) and
-**Activity** (joins, answers, signals and link changes). The header names the
+dialog offers, read off the dialog itself), and an inspector whose rail on
+its outer edge holds **People** (who is attached, their role and link, who is
+typing), **Explorer**, **Changes** and **Commits** (the file browser, the git
+status and the commits since the session started), **Activity** (joins,
+answers, signals and link changes, with the files the agent touched as a
+filter) and **Chat**; each item opens its view, the open one collapses the
+panel to the rail, whose count pills still read. The header names the
 agent, where it runs, the working directory and the git branch, shows a
 **yolo** badge for a session launched with its agent's yolo recipe (see
 [Yolo](#yolo)) and the agent's own session id when Conductor knows it (click
@@ -293,7 +298,7 @@ error); the account key and the certificates live under `dataDir/tls`, mode
 
 ## Chat beside the terminal
 
-The inspector's **Chat** tab is for the people watching a session together:
+The inspector's **Chat** view is for the people watching a session together:
 everyone on it, the owner and anyone who joined by a link, view or control.
 It goes over the terminal's own connection, so it works wherever a link
 works, on a `conductor host` session and through a switchyard too, and
@@ -348,18 +353,22 @@ lines or what you sent.
 
 ## Files, clickable links and the file viewer
 
-The inspector's **Files** tab opens on the session's working directory as a
+The inspector's **Explorer** opens on the session's working directory as a
 tree: folders expand in place, files show their size, the breadcrumb runs
 from the top of the path, and the box above the tree filters it as you type
 or, given a path (or `path:line`) and Enter, opens that file at that line.
 A crumb brings the tree back, opened down to that folder. Paths the agent
-prints in the terminal are clickable too, as the tab's last line says.
+prints in the terminal are clickable too, as the view's last line says.
 
 A file chosen in the tree, typed in the box or clicked in the terminal opens
 in an **editor above the terminal**: Monaco, the VS Code editor core, with
 the gutter and folding, the minimap, find and replace (Ctrl+F, Ctrl+H), go
 to line (Ctrl+G); read-only for now. The editor and the terminal share the
-column, split by a bar you drag, the terminal keeping at least six lines.
+column, stacked or side by side (a button in the editor's tab strip
+switches, on a wide window), split by a bar you drag or move with the
+arrow keys, the terminal keeping at least six lines stacked and a
+readable width beside; the layout and each layout's split are kept per
+browser.
 Several files are tabs (Ctrl+Tab and Ctrl+Shift+Tab switch, Ctrl+W or ×
 closes, the strip's × closes all; closing the last takes the editor away).
 **T** (Alt+T while typing in the terminal) folds the editor to its tab strip
@@ -567,7 +576,13 @@ rotating on; click **Holding** to release it sooner. Any other routed event
 moves it to its session once, without holding, and never while it holds on a
 session that needs input. It never jumps away while you are typing. A film
 strip under the terminal shows every session with the rotation progress, and
-the footer says which session is next.
+the footer says which session is next. Drag the strip's chips into the order
+you want (or pick one up with Space, move it with the arrows and drop it
+with Space); the order is kept per browser, and stepping, rotation and
+"Next up" follow it, a session started since going at the end. The button
+in the strip's corner shows the strip as thumbnails instead: the screens of
+the current session and its neighbours as text, read every second from the
+views the Roundhouse already has, the idle mark for the rest.
 
 ## Sidebar and keyboard shortcuts
 
@@ -600,6 +615,55 @@ as the Yard's does, and the row moves on as the prompt clears. A hosted
 session whose host is away keeps its prompt, disabled, with "The host is
 away".
 
+**The command palette** is the sidebar's row actions and the Yard's queue
+from anywhere: **Ctrl+K** (**⌘K** on a Mac) or **/** on any page, **Alt+/**
+while typing into an agent (⌘K too on a Mac; Ctrl+K stays the shell's
+kill-line), and the rail's search button. It opens over the page on what
+needs you first: each waiting session with its question and its choices as
+numbered buttons, then the page's own actions (Share, Stop, the marks, the
+inspector's views and the open tabs on a session page; the broadcast, the
+view, the chat and the members on a run page; the chips on the Yard, the
+rotation on the Roundhouse, Launch on Crews, the hooks on Events, Save on
+Settings), then Running, Exited (folded to a line), Runs, Shared with you,
+Artifacts, Go to and every other action. Typing filters the rows, the match
+marked; **↓** moves into the list, where the sidebar's keys work on the
+focused row: **J K** move, **Enter** opens or runs, **1–9** answer its
+prompt (a digit typed into the box is a search), **R** opens a member's run,
+**S** shares, **Shift+S** copies a view link at once, **X** asks to stop
+(Enter stops, Escape cancels), **→** reveals the row's actions and **←**
+folds them, **Ctrl+Enter** opens in a new tab, **Shift+Enter** shows it in
+the Yard, **Escape** goes back to the box and, from there, closes. A first
+character picks a kind: **>** actions, **#** runs and crews (Enter launches
+a saved crew, Launch named under → takes a name), **:** files (`path` or
+`path:line` opens in the page's editor, then the open tabs, the changes,
+the commits, the files touched lately across sessions, the artifacts),
+**@** people, **!** events, **?** the shortcuts. A line that starts with a
+verb and names one session, run or crew reads as one row that nothing runs
+before Enter: `stop docs`, `share docs view`, `answer review 2`, `reply
+review looks good`, `broadcast nightly ship it`, `run docs-crew as
+tonight`, `resume docs`, `open src/main.go:12`, `mark docs working`, `go
+yard`, `say docs looks good` (a line typed into a session that is not
+asking), `launch claude in ~/work`. Nothing is fetched when it opens; what
+was used lately ranks first within its group (`conductor.palette.recent`).
+**]** and **[** (**Alt+]** / **Alt+[** in a terminal) step through the
+sessions that need you without opening the palette: a pill at the top of
+the window shows the agent, the name, the question, "n of m" and the
+choices as numbered buttons for four seconds; **1–9** answer it there,
+**Enter** opens the session, **Escape** dismisses it. In the list **I**
+types a line into a running session; **Answer all** at the top of Needs
+you answers the same question asked by several sessions in one go; **Stop
+every session that is done** and **Clear the new-event badges** sit under
+**>**. On a session page **S** shares it and **X** asks to stop it
+(**Alt+X** in its terminal); **G S** opens Settings in the desktop app
+(**Alt+,**). A link can name a view: `?tab=files|chat|activity|people`
+on a session page, `?view=grid|graph|timeline` on a run page,
+`?filter=all|needs|running` on the Yard. **Alt+Q** leaves a terminal's
+focus on the Yard and the Roundhouse everywhere (Alt+Esc too, except on
+Windows, which keeps that one for its windows); the shortcuts modal
+(**?**) shows the chords of the system you are on and says what that
+system or its browser takes before the app sees it (Firefox's Ctrl+B, the
+browser's Ctrl+Tab and Ctrl+W, the Mac's Option+letter).
+
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
 initials, solid while it needs you, dashed once exited), a capsule is a run
@@ -607,16 +671,20 @@ with its sessions inside (the play icon amber while one needs you), and the
 corners say the rest: top right the state (amber needs you, green running,
 grey idle), bottom right new events on it (the badges the Events page routes
 to the sidebar), bottom left where it comes from (a laptop for another
-machine, a globe for a link shared with you). Two counts sit on top: how many
+machine, a globe for a link shared with you). The session open on the page
+carries a primary bar down the rail's edge beside its square, and two
+squares never look the same: two of one agent show their folders' letters
+instead of the agent's initials, with an ordinal top left when the letters
+still match. Two
+counts sit on top: how many
 need you, then how many have new events. The order is the list's: needs you,
 running, shared, exited; loose exited sessions fold into **+N**, which opens
 the full sidebar on Exited. Every shape has a tooltip naming it in words
 ("users api · run started 08:31 · review needs you · core running · lead
 exited"). The rail keeps the mark, Launch, a search button that opens the
-full sidebar on its filter, the pages (the Yard's count as an amber chip) and
+command palette, the pages (the Yard's count as an amber chip) and
 the header's two menus. The panel button at the bottom of the rail brings the
-full sidebar back, as do **Ctrl+B** and, on a desktop-width window, **/**,
-which then focuses the filter. The mode and the full sidebar's
+full sidebar back, as does **Ctrl+B**. The mode and the full sidebar's
 width are remembered per browser (localStorage keys `conductor.sidebar.mode`
 and `conductor.sidebar.size`; a hidden sidebar from an earlier version becomes
 the rail). On a phone the list is the home screen, not a drawer (`/sessions`):

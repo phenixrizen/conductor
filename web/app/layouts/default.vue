@@ -11,6 +11,8 @@ const desktop = useDesktop()
 const sidebar = useSidebar()
 const shortcuts = useShortcutsModal()
 const launch = useLaunchModal()
+const palette = usePalette()
+const cursor = useNeedsCursor()
 // Fullscreen: one listener and one F shortcut for every page under this layout.
 const fs = useFullscreenToggle()
 fs.listen()
@@ -39,17 +41,44 @@ function sidebarRoot() {
 const DESKTOP_SIDEBAR = '(min-width: 64rem)'
 
 /**
- * The filter box. On the rail the full sidebar opens first. Below lg the rail
- * is not shown and the mode is left alone: the key reaches the filter of an
- * open slideover, as before the rail, and does nothing otherwise.
+ * `/`, Alt+S and the rail's search button open the command palette (#302);
+ * the sidebar's filter box stays a plain filter of the list, reached by a
+ * click, and `list` keeps `focusFilter` for it.
  */
-async function focusFilter() {
-  if (sidebar.rail.value && window.matchMedia(DESKTOP_SIDEBAR).matches) {
-    sidebar.expand()
-    await nextTick()
-  }
-  list.value?.focusFilter()
+function openPalette() {
+  palette.show()
 }
+void list
+// Alt chords on keys defineShortcuts cannot name (it matches an Alt chord by its code, and knows no name for the slash): one
+// listener, from a terminal or not, as the Alt twins are. The terminal hands these codes back (ALT_PASSTHROUGH_CODES).
+function goSettings() {
+  if (desktop.isDesktop.value) void router.push('/settings')
+}
+/** When a G chord last fired: a page's own letter (the session page's S) stands down for the keydown that completed one. */
+const lastChord = useState<number>('lastChordAt', () => 0)
+function chord(run: () => void) {
+  return () => {
+    lastChord.value = Date.now()
+    run()
+  }
+}
+const ALT_CHORDS: Record<string, () => void> = { Slash: openPalette, BracketRight: () => cursor.step(1, true), BracketLeft: () => cursor.step(-1, true), Comma: goSettings }
+/** On a Mac ⌘K is the palette's from a terminal too (TerminalView lets it through; defineShortcuts pauses a plain chord while xterm's text area has the focus). */
+const isMac = import.meta.client && /Mac|iPhone|iPad/.test(navigator.platform)
+function onAltChord(e: KeyboardEvent) {
+  if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyK') {
+    e.preventDefault()
+    palette.toggle()
+    return
+  }
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+  const run = ALT_CHORDS[e.code]
+  if (!run) return
+  e.preventDefault()
+  run()
+}
+onMounted(() => document.addEventListener('keydown', onAltChord))
+onBeforeUnmount(() => document.removeEventListener('keydown', onAltChord))
 
 /** The collapse and expand buttons go away with their mode: focus moves to the other one rather than falling to the page. */
 async function collapseByButton() {
@@ -178,19 +207,24 @@ const railNav = computed<NavigationMenuItem[]>(() =>
 // work inside a terminal (see ALT_PASSTHROUGH_CODES in useShortcuts).
 const inTerminal = { usingInput: true }
 defineShortcuts({
+  // Ctrl+K outside a terminal (inside one it stays the shell's); on a Mac the listener above takes ⌘K everywhere.
+  ...(isMac ? {} : { meta_k: () => palette.toggle() }),
   meta_b: () => sidebar.toggle(),
   '?': () => shortcuts.show(),
   n: () => launch.show(),
-  '/': focusFilter,
-  'g-y': () => router.push('/yard'),
-  'g-r': () => router.push('/roundhouse'),
-  'g-a': () => router.push('/agents'),
-  'g-e': () => router.push('/events'),
-  'g-c': () => router.push('/crews'),
+  '/': openPalette,
+  'g-y': chord(() => router.push('/yard')),
+  'g-r': chord(() => router.push('/roundhouse')),
+  'g-a': chord(() => router.push('/agents')),
+  'g-e': chord(() => router.push('/events')),
+  'g-c': chord(() => router.push('/crews')),
+  'g-s': chord(goSettings),
+  ']': () => cursor.step(1),
+  '[': () => cursor.step(-1),
   alt_b: { ...inTerminal, handler: () => sidebar.toggle() },
   alt_h: { ...inTerminal, handler: () => shortcuts.show() },
   alt_n: { ...inTerminal, handler: () => launch.show() },
-  alt_s: { ...inTerminal, handler: focusFilter },
+  alt_s: { ...inTerminal, handler: openPalette },
   alt_y: { ...inTerminal, handler: () => router.push('/yard') },
   alt_r: { ...inTerminal, handler: () => router.push('/roundhouse') },
   alt_a: { ...inTerminal, handler: () => router.push('/agents') },
@@ -235,7 +269,7 @@ defineShortcuts({
       </template>
 
       <template #default="{ collapsed }">
-        <SidebarRail v-if="collapsed && desktopWide" @search="focusFilter" />
+        <SidebarRail v-if="collapsed && desktopWide" @search="openPalette" />
         <SessionSidebar v-else-if="desktopWide" ref="list" />
       </template>
 
@@ -270,6 +304,8 @@ defineShortcuts({
     <WorkbenchTokenGate v-model:open="showToken" />
     <UpdateRestartModal />
     <ShortcutsModal />
+    <CommandPalette @token="showToken = true" />
+    <NeedsYouPill />
     <LaunchSessionModal v-model:open="launch.open.value" @launched="(s) => navigateTo(`/sessions/${s.id}`)" />
   </UDashboardGroup>
 </template>

@@ -162,7 +162,7 @@ async function open(where: Where, page: Page, browser: Browser, api: Api, s: Ses
 /** Opens the folder's file in the editor above the terminal, from the Files tab of the session page's inspector or the Files pane beside the column. */
 async function openFile(where: Where, p: Page, cwd: string): Promise<void> {
   if (where === 'the session page') {
-    await p.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await p.locator('[data-inspector] [data-rail-item="explorer"]').click()
     await p.locator(`[data-files-tree] [data-file-node="${cwd}/notes.md"]`).click()
   } else {
     await p.locator(`[data-files-aside] [data-file-node="${cwd}/notes.md"]`).click()
@@ -285,7 +285,7 @@ test("the Roundhouse, a low window: the terminal's last row and the cursor's row
   await page.addInitScript(() => localStorage.setItem('conductor.carousel.settings', JSON.stringify({ intervalMs: 60000, autoplay: false, follow: false })))
   await page.setViewportSize(LOW)
   await page.goto('/roundhouse')
-  await page.locator('[data-carousel-strip] button').filter({ has: page.getByText(s.name, { exact: true }) }).click()
+  await page.locator('[data-carousel-strip] [data-strip-chip]').filter({ has: page.getByText(s.name, { exact: true }) }).click()
   const slide = page.locator('[aria-roledescription="slide"]').filter({ has: page.getByText(s.name, { exact: true }) })
   await expectRowsInPane(page, api, s.id, cwd, 'the Roundhouse', slide)
 })

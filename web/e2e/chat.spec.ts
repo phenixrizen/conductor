@@ -83,11 +83,11 @@ test('two people on one session see each other, the closed tab counts, and a lin
   const nateMsg = nateChat.locator('[data-chat-kind="message"]').first()
   await expect(nateMsg).toContainText('hello from Nate')
   await expect(nateMsg).toContainText('Nate')
-  await expect(priyaTab.locator('[data-chat-unread="1"]')).toBeVisible({ timeout: 15_000 })
+  await expect(priyaTab.locator('[data-rail-count="chat"]')).toHaveText('1', { timeout: 15_000 })
 
   // Priya opens it: the count goes, the message is there, and her reply reaches Nate with the view of who she is.
   await priyaTab.click()
-  await expect(priyaTab.locator('[data-chat-unread]')).toHaveCount(0)
+  await expect(priyaTab.locator('[data-rail-count="chat"]')).toHaveCount(0)
   const priyaChat = priya.locator('[data-chat]')
   await expect(priyaChat.locator('[data-chat-kind="message"]').first()).toContainText('hello from Nate')
   const priyaInput = priyaChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first()
@@ -99,7 +99,7 @@ test('two people on one session see each other, the closed tab counts, and a lin
   await expect(reply).toContainText('Priya')
   await expect(reply).toHaveText(/line one\s+line two/)
   // Nate's own thread never counted his own message, nor Priya's while it was open.
-  await expect(nateTab.locator('[data-chat-unread]')).toHaveCount(0)
+  await expect(nateTab.locator('[data-rail-count="chat"]')).toHaveCount(0)
 
   // The counter past 1.5 KiB, and the bound.
   const nateInput = nateChat.locator('[data-chat-input] textarea, textarea[data-chat-input]').first()

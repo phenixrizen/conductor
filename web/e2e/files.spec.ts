@@ -19,7 +19,7 @@ test('the Files tab opens on the working directory as a tree; the box filters it
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'files', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane).toHaveAttribute('data-files-mode', 'tree')
     // The working directory, listed: folders first, then files; the breadcrumb ends with its folder.
@@ -76,7 +76,7 @@ test('the Files tab\'s breadcrumb folds the folders above into one and keeps the
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'crumbs', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]')).toHaveCount(1, { timeout: 30_000 })
     const crumbs = pane.locator('[data-files-crumbs] [data-files-crumb]')

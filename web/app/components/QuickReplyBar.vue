@@ -98,8 +98,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" :class="i === first ? 'opacity-70' : ''" /></template>
       </UButton>
     </div>
-    <form v-else class="ml-auto flex items-center gap-2 flex-none" @submit.prevent="send">
-      <UInput v-model="text" size="sm" class="w-64" :placeholder="placeholder" :disabled="!canReply" />
+    <!-- The form shrinks with its pane (the terminal's, beside the editor: Codex's round on #309) rather than overflowing it. -->
+    <form v-else class="ml-auto flex min-w-0 max-w-full flex-1 basis-64 items-center gap-2 sm:flex-none" @submit.prevent="send">
+      <UInput v-model="text" size="sm" class="w-64 min-w-0 max-w-full flex-1 sm:flex-none" :placeholder="placeholder" :disabled="!canReply" />
       <UButton type="submit" size="sm" label="Send" trailing-icon="i-lucide-corner-down-left" :disabled="!canReply || !text.trim()" />
     </form>
   </div>

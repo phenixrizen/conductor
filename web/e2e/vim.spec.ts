@@ -25,7 +25,7 @@ test('the Neovim keymap is off until its button, then keys reach the real Neovim
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\nbeta\ngamma\n')
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim', cwd })
   const openNotes = async () => {
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -64,8 +64,9 @@ test('the Neovim keymap is off until its button, then keys reach the real Neovim
     await page.keyboard.press('Enter')
     await expect(status.locator('[data-nvim-message]')).toContainText('written', { timeout: 15_000 })
     expect(readFileSync(join(cwd, 'notes.txt'), 'utf8')).toBe('hello beta\ngamma\n')
-    await pane.locator('[data-files-section="touched"]').click()
-    await expect(pane.locator('[data-files-touched] [data-touched-op="write"]').first()).toContainText('nvim', { timeout: 15_000 })
+    await page.locator('[data-inspector] [data-rail-item="activity"]').click()
+    await page.locator('[data-inspector] [data-activity-filter="files"]').click()
+    await expect(page.locator('[data-inspector] [data-files-touched] [data-touched-op="write"]').first()).toContainText('nvim', { timeout: 15_000 })
     // :q closes the tab.
     await lines.click()
     await page.keyboard.type(':q')
@@ -102,7 +103,7 @@ test('the command line takes a substitute: :%s/foo/bar/g lands, Esc on a half-ty
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-subst', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -162,7 +163,7 @@ test('in the Neovim keymap / and ? search, and :s///gc asks on the status line u
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-search', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -228,7 +229,7 @@ test('a Neovim lost keeps its tab and text, says so, and Reopen recovers its cha
   const die = "vim.uv.kill(vim.fn.getpid(), 'sigkill')"
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -348,7 +349,7 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-reconnect', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -437,7 +438,7 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-lost-typed', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -490,7 +491,7 @@ test('a tab left with keys on their way keeps its Neovim until they are done: th
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-waiting', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     const area = page.locator('[data-editor-area]')
@@ -605,7 +606,7 @@ test('a tab left while keys are on their way comes back where Neovim is, in its 
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-follow', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -705,7 +706,7 @@ test("Don't save holds for its own close only: a later close keeps a change stil
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-consent', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     const area = page.locator('[data-editor-area]')
@@ -765,7 +766,7 @@ test('Save writes with an operator waiting; a key a mapping takes leaves no chan
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-pending', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     const area = page.locator('[data-editor-area]')
@@ -838,7 +839,7 @@ test("the keymap waits for keys on their way to Neovim, then Monaco's keys own t
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-keymap', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -880,7 +881,7 @@ test('keys refused on their way are named until dismissed, and Save waits for th
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-refused', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -948,7 +949,7 @@ test('keys refused stay named across a tab switched and the area folded, after N
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-refused-kept', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -1070,7 +1071,7 @@ test('with an owner that never says keys are done, an acknowledgement stands for
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-older', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -1133,7 +1134,7 @@ test('a swap file left by a Vim that died opens read-only with a banner; Recover
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'swap', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -1189,7 +1190,7 @@ test('text with no key press, a dead key\'s character and an input method\'s wor
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'ime', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -1246,7 +1247,7 @@ test('typing in insert mode shows at once and settles as Neovim has it; an autop
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'echo', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
@@ -1301,7 +1302,7 @@ test('a Neovim tab keeps its changes not written while another is in front; clos
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'tabs', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     const area = page.locator('[data-editor-area]')
@@ -1383,7 +1384,7 @@ test('a control-link guest edits in Monaco with Save, but is not offered Neovim'
   try {
     // The owner's own window is offered Neovim.
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
     await pane.locator(`[data-file-node="${file}"]`).click()

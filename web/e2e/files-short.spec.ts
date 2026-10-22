@@ -18,7 +18,7 @@ test('on a very short window a folder row in the Explorer takes its click and ex
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'files-short', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     const tree = pane.locator('[data-files-tree]')
     await expect(tree.locator('[data-file-node]')).toHaveCount(3, { timeout: 30_000 })

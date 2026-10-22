@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import type { ActivityEntry, FileEntry, FileHeader, FileRequester, TouchedFile } from '~/utils/protocol'
-import { agoWords, changeMarks, changeRows, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
-import { commitAgo, commitChangeRows, commitRows, commitsHead, type CommitChangeRow, type CommitRow } from '~/utils/commits'
+import type { ActivityEntry, FileEntry, FileHeader, FileRequester } from '~/utils/protocol'
+import type { RepoStatus } from '~/composables/useRepoStatus'
+import { agoWords, changesTitle, statusLetter, statusTone, type ChangeRow } from '~/utils/changes'
+import { commitAgo, commitChangeRows, commitsHead, type CommitChangeRow, type CommitRow } from '~/utils/commits'
+import type { FilesView } from '~/utils/inspector'
 import { planRows, type PlanRow } from '~/utils/plans'
-import { opIcon, touchedPaths, touchedRows, touchedWords } from '~/utils/touched'
+import { touchedPaths, type TouchedRow } from '~/utils/touched'
 import { crumbsOf, findNode, foldCrumbs, foundRows, looksLikePath, pathQuery, resolveTyped, rootNode, setChildren, visibleRows, type TreeNode } from '~/utils/fileTree'
 import { parseLocation } from '~/utils/links'
 
@@ -31,34 +33,18 @@ const props = defineProps<{
   external?: boolean
   /** What the Changes section counts against (design 4d): HEAD when empty; a crew member's run base. */
   base?: string
-  /** The session's activity, for the Touched section (design 4e): its `file` entries, newest first. Absent, the section is not offered. */
+  /** The session's activity: its newest `file` entry refreshes the Plans list. */
   activity?: ActivityEntry[]
+  /** The working directory's git status and log, polled by whoever owns the pane (useRepoStatus, 4h): the Changes and Commits views read it. */
+  repo: RepoStatus
+  /** The files the agent touched (useTouched, 4h): their dots beside the Explorer's files. */
+  touched?: TouchedRow[]
 }>()
 const emit = defineEmits<{ open: [target: FileTarget]; openDiff: [change: ChangeRow, against: { top: string; branch?: string; base?: string; baseId?: string }]; openCommitDiff: [change: CommitChangeRow, commit: { sha: string; short: string; parent: string }] }>()
 
-// The Changes section (design 4d): git status against the base, refreshed every few seconds while it shows.
-const section = ref<'explorer' | 'changes' | 'touched' | 'commits'>('explorer')
-// Touched (round 13, G1): the session's own index of every file the agent touched, asked for when the pane shows and when the section
-// opens; the activity entries the page sees after it are laid over it. An older session without the index: the entries alone.
-const touchedIndex = ref<TouchedFile[] | null>(null)
-async function loadTouched() {
-  if (!props.activity || !props.cwd) return
-  try {
-    const res = await props.request(props.cwd, false, { op: 'touched' })
-    if (res.header.kind === 'touched') touchedIndex.value = res.header.touched ?? []
-  } catch {
-    // The page's own entries stand in.
-  }
-}
-watch(section, (s) => {
-  if (s === 'touched') void loadTouched()
-})
-watch(
-  () => props.cwd,
-  () => void loadTouched(),
-)
-const touched = computed(() => (props.activity && props.cwd ? touchedRows(props.activity, props.cwd, touchedIndex.value) : []))
-const dots = computed(() => touchedPaths(touched.value))
+// The view (design 4h, #301): chosen on the rail outside the pane (the inspector's, or a Files aside's), never here.
+const section = defineModel<FilesView>('section', { default: 'explorer' })
+const dots = computed(() => touchedPaths(props.touched ?? []))
 // Plans (#289): the agent's plans outside the working directory, as the session lists them (the files its agent reported in its plans
 // directory), at the top of the Explorer; asked for when the pane shows, when the working directory changes and whenever the activity
 // gains a file entry (the agent writing or deleting a plan is one): the newest entry, since the page keeps a bounded list whose length
@@ -83,76 +69,12 @@ watch(
     if (e?.type === 'file') void loadPlans()
   },
 )
-const status = ref<FileHeader | null>(null)
-const statusError = ref('')
-const statusLoading = ref(false)
-const statusAt = ref(0)
+// The Changes view (design 4d) and the Commits view (4e) read the status and the log the owner of the pane polls (props.repo), so
+// the rail's pills count while another view shows; a commit opens to its files, a file to its diff against the commit's parent.
+const { status, statusError, statusLoading, statusAt, log, logError, logLoading, notRepo, logNotRepo, changes, commits, marks, loadStatus, loadLog } = props.repo
 const now = ref(Date.now())
-let statusTimer: number | undefined
 let clock: number | undefined
-const notRepo = computed(() => status.value?.kind === 'error' && status.value.error?.code === 'not_repo')
-const changes = computed(() => (status.value?.kind === 'status' ? changeRows(status.value.path, status.value.changes ?? []) : []))
-const marks = computed(() => (status.value?.kind === 'status' ? changeMarks(status.value.path, status.value.changes ?? []) : new Map()))
-
-async function loadStatus() {
-  if (!props.cwd) return
-  statusLoading.value = true
-  try {
-    const res = await props.request(props.cwd, false, { op: 'status', base: props.base })
-    status.value = res.header
-    statusError.value = res.header.kind === 'error' && res.header.error?.code !== 'not_repo' ? res.header.error?.message || 'cannot read the status' : ''
-    statusAt.value = Date.now()
-  } catch (e) {
-    statusError.value = (e as Error).message
-  } finally {
-    statusLoading.value = false
-  }
-}
-function pollStatus() {
-  window.clearInterval(statusTimer)
-  statusTimer = window.setInterval(() => {
-    if (section.value === 'changes' && document.visibilityState !== 'hidden') loadStatus()
-  }, 5000)
-}
-watch(section, (s) => {
-  if (s === 'changes') {
-    loadStatus()
-    pollStatus()
-  } else window.clearInterval(statusTimer)
-  if (s === 'commits') {
-    loadLog()
-    pollLog()
-  } else window.clearInterval(logTimer)
-})
-
-// The Commits section (design 4e): the commits on the branch since the session started (a crew member's: since the run's base),
-// refreshed while it shows; a commit opens to its files, a file to its diff against the commit's parent.
-const log = ref<FileHeader | null>(null)
-const logError = ref('')
-const logLoading = ref(false)
-let logTimer: number | undefined
-const commits = computed<CommitRow[]>(() => commitRows(log.value))
-const logNotRepo = computed(() => log.value?.kind === 'error' && log.value.error?.code === 'not_repo')
 const opened = reactive(new Map<string, { header: FileHeader | null; error: string }>())
-async function loadLog() {
-  if (!props.cwd) return
-  logLoading.value = true
-  try {
-    const res = await props.request(props.cwd, false, { op: 'log', base: props.base })
-    log.value = res.header
-    logError.value = res.header.kind === 'error' && res.header.error?.code !== 'not_repo' ? res.header.error?.message || 'cannot read the commits' : ''
-  } catch (e) {
-    logError.value = (e as Error).message
-  } finally {
-    logLoading.value = false
-  }
-}
-function pollLog() {
-  window.clearInterval(logTimer)
-  logTimer = window.setInterval(() => {
-    if (section.value === 'commits' && document.visibilityState !== 'hidden') loadLog()
-  }, 10000)
-}
 async function toggleCommit(c: CommitRow) {
   if (opened.has(c.sha)) {
     opened.delete(c.sha)
@@ -171,14 +93,9 @@ function openCommitChange(c: CommitRow, ch: CommitChangeRow) {
 }
 onMounted(() => {
   clock = window.setInterval(() => (now.value = Date.now()), 1000)
-  // The marks beside changed files: one status read when the tree is up, then as the Changes section refreshes.
-  setTimeout(() => loadStatus(), 1500)
-  void loadTouched()
   void loadPlans()
 })
 onBeforeUnmount(() => {
-  window.clearInterval(logTimer)
-  window.clearInterval(statusTimer)
   window.clearInterval(clock)
 })
 function openChange(c: ChangeRow) {
@@ -388,8 +305,10 @@ async function loadRoot() {
   treeLoading.value = false
   if (!ok) {
     treeError.value = r.error || 'cannot read'
-    // The connection is not open yet (the page's terminal mounts and connects after the pane): try again in a moment.
-    if (/not connected|not ready/i.test(treeError.value) && retries < 10) {
+    // The connection is not open yet (the page's terminal mounts and connects after the pane), or the owner's in-flight cap on file
+    // requests was full for a moment (the pane's own reads of the status, the log, the touched index and the plans, on a slow
+    // relay: CI's run of the switchyard spec): try again in a moment.
+    if (/not connected|not ready|in-flight|too many/i.test(treeError.value) && retries < 10) {
       retries += 1
       setTimeout(() => {
         if (root.value === r && !r.loaded) loadRoot()
@@ -576,34 +495,31 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
     very short window the advisory foot of the Explorer gives way too.
   -->
   <div class="flex h-full min-h-0 flex-col overflow-y-auto" :data-files-mode="mode">
-    <div v-if="mode === 'tree' && cwd" class="flex items-center gap-1 border-b border-default px-2 pt-1.5 text-xs" data-files-sections>
-      <button type="button" class="rounded-t px-2.5 py-1.5 font-medium" :class="section === 'explorer' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="explorer" @click="section = 'explorer'">Explorer</button>
-      <button type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'changes' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="changes" @click="section = 'changes'">
-        Changes<UBadge v-if="changes.length" :label="String(changes.length)" color="neutral" variant="subtle" size="xs" data-files-changes-count />
-      </button>
-      <button type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'commits' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="commits" @click="section = 'commits'">
-        Commits<UBadge v-if="commits.length" :label="String(commits.length)" color="neutral" variant="subtle" size="xs" data-files-commits-count />
-      </button>
-      <button v-if="activity" type="button" class="flex items-center gap-1.5 rounded-t px-2.5 py-1.5 font-medium" :class="section === 'touched' ? 'border-b-2 border-primary text-highlighted' : 'text-muted hover:text-default'" data-files-section="touched" @click="section = 'touched'">
-        Touched<UBadge v-if="touched.length" :label="String(touched.length)" color="neutral" variant="subtle" size="xs" data-files-touched-count />
-      </button>
-    </div>
+    <!-- The view's head (design 4h): a two-line title, the bold name then the mono sub-line the view computes, the refresh button kept. -->
     <div v-if="mode === 'tree' && section === 'commits'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-commits-head>
       <UIcon name="i-lucide-git-commit-horizontal" class="size-3.5 flex-none text-muted" />
-      <span class="min-w-0 flex-1 truncate text-muted">{{ logNotRepo ? 'not a repository' : commitsHead(commits.length, log, base) }}</span>
+      <div class="flex min-w-0 flex-1 flex-col">
+        <span class="text-[13px] font-semibold text-highlighted">Commits</span>
+        <span class="truncate font-mono text-[11px] text-muted">{{ logNotRepo ? 'not a repository' : commitsHead(commits.length, log, base) }}</span>
+      </div>
       <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="logLoading" @click="loadLog" />
     </div>
-    <div v-if="mode === 'tree' && section === 'touched'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-touched-head>
-      <UIcon name="i-lucide-history" class="size-3.5 flex-none text-muted" />
-      <span class="min-w-0 flex-1 truncate text-muted">newest first · {{ touched.length }} since the session started</span>
+    <div v-if="mode === 'tree' && section === 'explorer'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-explorer-head>
+      <UIcon name="i-lucide-folder" class="size-3.5 flex-none text-muted" />
+      <div class="flex min-w-0 flex-1 flex-col">
+        <span class="text-[13px] font-semibold text-highlighted">Explorer</span>
+        <span class="truncate font-mono text-[11px] text-muted">{{ cwd }}</span>
+      </div>
     </div>
     <div v-if="mode === 'tree' && section === 'explorer'" class="border-b border-default px-2 py-1.5">
       <UInput v-model="query" placeholder="Filter, or go to path:line" size="xs" class="w-full font-mono" icon="i-lucide-search" data-files-box @keydown.enter.prevent="go" @keydown.escape="query = ''" />
     </div>
     <div v-if="mode === 'tree' && section === 'changes'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs" data-files-changes-head>
       <UIcon name="i-lucide-git-branch" class="size-3.5 flex-none text-muted" />
-      <span class="min-w-0 flex-1 truncate font-mono text-muted">{{ notRepo ? 'not a repository' : `${status?.branch || '…'} · ${base && base !== 'HEAD' ? `vs ${base}` : 'working directory'}` }}</span>
-      <span v-if="!notRepo" class="flex-none text-muted">{{ changesTitle(changes.length) }}</span>
+      <div class="flex min-w-0 flex-1 flex-col">
+        <span class="text-[13px] font-semibold text-highlighted">Changes</span>
+        <span class="truncate font-mono text-[11px] text-muted">{{ notRepo ? 'not a repository' : `${status?.branch || '…'} · ${base && base !== 'HEAD' ? `vs ${base}` : 'working directory'} · ${changesTitle(changes.length)}` }}</span>
+      </div>
       <UButton icon="i-lucide-refresh-cw" size="xs" color="neutral" variant="ghost" aria-label="Refresh" :loading="statusLoading" @click="loadStatus" />
     </div>
     <div v-if="mode !== 'tree' || section === 'explorer'" class="flex items-center gap-2 border-b border-default px-3 py-2 text-xs">
@@ -661,18 +577,6 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
         <pre v-else class="p-3 font-mono"><div v-for="(l, i) in lines" :key="i" class="line" :class="{ target: targetLine === i + 1 }"><span class="line-no">{{ i + 1 }}</span><span class="line-code" v-html="escapeHtml(l) || ' '" /></div></pre>
       </template>
 
-      <template v-else-if="section === 'touched'">
-        <p v-if="!touched.length" class="p-6 text-sm text-muted">Nothing yet. The files the agent reads, edits, writes and deletes list here as its hooks report them.</p>
-        <ul v-else class="py-1" data-files-touched>
-          <li v-for="r in touched" :key="r.abs">
-            <button type="button" class="flex w-full items-center gap-2 px-3 py-1 text-left text-sm hover:bg-elevated" :data-touched="r.abs" :data-touched-op="r.op" @click="openFile({ path: r.abs })">
-              <UIcon :name="opIcon(r.op)" class="size-3.5 flex-none text-muted" />
-              <span class="min-w-0 flex-1 truncate font-mono"><span class="text-muted">{{ r.dir }}</span>{{ r.name }}</span>
-              <span class="flex-none text-[11px] text-muted">{{ touchedWords(r) }}</span>
-            </button>
-          </li>
-        </ul>
-      </template>
       <template v-else-if="section === 'commits'">
         <div v-if="logNotRepo" class="flex flex-col items-center gap-2 p-6 text-center text-sm" data-files-not-repo>
           <UIcon name="i-lucide-git-branch" class="size-6 text-muted" />
@@ -804,7 +708,6 @@ const rawHref = computed(() => (header.value?.kind === 'file' && props.rawUrl ? 
       <UIcon name="i-lucide-mouse-pointer-click" class="size-3.5 flex-none" /> Paths the agent prints in the terminal are clickable.
     </p>
     <p v-if="mode === 'tree' && cwd && section === 'commits' && log?.kind === 'log'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-commits-foot><UIcon name="i-lucide-info" class="size-3 flex-none" />Commits made here. Nothing is pushed from Conductor.</p>
-    <p v-if="mode === 'tree' && cwd && section === 'touched'" class="border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-touched-foot>The same events are in Activity and on the Events page, quiet there by default.</p>
     <p v-if="mode === 'tree' && cwd && section === 'changes' && status?.kind === 'status'" class="flex items-center gap-1.5 border-t border-default px-3 py-1.5 text-[11px] text-muted" data-files-changes-foot>
       <UIcon name="i-lucide-refresh-cw" class="size-3.5 flex-none" /> Refreshed as the agent works · {{ agoWords(now - statusAt) }}
       <span class="ml-auto font-mono"><span class="text-success">+{{ status.added ?? 0 }}</span> <span class="text-error">−{{ status.removed ?? 0 }}</span></span>

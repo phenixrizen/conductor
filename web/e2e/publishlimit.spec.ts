@@ -77,7 +77,7 @@ test('a session the switchyard refuses for now wears no error, says why, and is 
   const owner = await ctx.newPage()
   try {
     await owner.goto(`${publisher.baseURL}/sessions/${second.id}`)
-    await owner.locator('[data-inspector] button', { hasText: 'Activity' }).click()
+    await owner.locator('[data-inspector] [data-rail-item="activity"]').click()
     const inspector = owner.locator('[data-inspector]')
     await expect(inspector).toContainText('not shared through the switchyard yet', { timeout: 30_000 })
     await expect(inspector).toContainText('open_host_limit')

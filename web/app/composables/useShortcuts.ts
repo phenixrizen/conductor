@@ -1,4 +1,8 @@
+import { detectSystem, rowsFor, systemNotes, type Chord, type System } from '../utils/chords'
+
 export interface ShortcutRow {
+  /** The action whose chord differs by system (utils/chords.ts, #312): the modal shows the chord of the system the page runs on. */
+  chord?: Chord
   /** Keys as UKbd values ('meta', 'shift', 'escape', 'arrowleft', single characters…) outside a terminal: when no terminal or text field has the focus. */
   keys: string[]
   label: string
@@ -16,12 +20,13 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
   title: 'Everywhere',
   rows: [
+    { keys: ['meta', 'K'], label: 'The command palette: find a session, run, crew, file or action and act on it (/ too)', terminal: ['alt', '/'] },
     { keys: ['meta', 'B'], label: 'Collapse the sidebar to the rail, or expand it', terminal: ['alt', 'B'] },
     { keys: ['?'], label: 'Keyboard shortcuts', terminal: ['alt', 'H'] },
     { keys: ['N'], label: 'Launch an agent', terminal: ['alt', 'N'] },
@@ -31,6 +36,27 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
     { keys: ['G', 'A'], label: 'Go to Agents', terminal: ['alt', 'A'] },
     { keys: ['G', 'E'], label: 'Go to Events', terminal: ['alt', 'E'] },
     { keys: ['F'], label: 'Toggle fullscreen', terminal: ['alt', 'F'] },
+    { keys: [']'], label: 'The next session that needs you, in a pill with its choices: 1–9 answer, Enter opens, Escape dismisses', terminal: ['alt', ']'] },
+    { keys: ['['], label: 'The one before', terminal: ['alt', '['] },
+    { keys: ['G', 'S'], label: 'Go to Settings (the desktop app)', terminal: ['alt', ','] },
+  ],
+}
+
+/** The command palette's keys (#302): in its input, then on the focused row, where the sidebar's letters work the same. */
+export const PALETTE_SHORTCUTS: ShortcutGroup = {
+  title: 'The command palette',
+  rows: [
+    { keys: ['arrowdown'], label: 'From the input, into the list (↑ from the first row goes back)' },
+    { keys: ['enter'], label: 'In the input: the first row. On a row: open it, run it, or ask first (Stop, Restart)' },
+    { keys: ['1'], label: "1–9 answer the focused row's prompt; only while a row has the focus" },
+    { keys: ['J'], label: 'Next row (or ↓); K the one before (or ↑)' },
+    { keys: ['arrowright'], label: "The row's actions; ← folds them" },
+    { keys: ['S'], label: 'Share the focused session or run; Shift+S copies a view link at once' },
+    { keys: ['X'], label: 'Stop it: the row asks; Enter stops, Escape cancels' },
+    { keys: ['R'], label: "Open a member's run, or focus a free-text prompt's reply field" },
+    { keys: ['meta', 'enter'], label: 'Open in a new tab; Shift+Enter shows it in the Yard' },
+    { keys: ['escape'], label: 'From a row, back to the input; from the input, close' },
+    { keys: ['>'], label: '> actions · # runs and crews · : files · @ people · ! events · ? shortcuts, typed first' },
   ],
 }
 
@@ -38,7 +64,7 @@ export const GLOBAL_SHORTCUTS: ShortcutGroup = {
 export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
   title: 'The sidebar',
   rows: [
-    { keys: ['/'], label: 'Filter sessions, runs, people', terminal: ['alt', 'S'] },
+    { keys: ['/'], label: 'Open the command palette (the filter box above the list is a plain filter)', terminal: ['alt', 'S'] },
     { keys: ['arrowdown'], label: 'From the filter, into the list' },
     { keys: ['J'], label: 'Next row (or ↓)' },
     { keys: ['K'], label: 'Previous row (or ↑)' },
@@ -56,9 +82,9 @@ export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
 export const TERMINAL_SHORTCUTS: ShortcutGroup = {
   title: 'The terminal',
   rows: [
-    { keys: [], label: 'Copy the selection (Ctrl+Insert too)', terminal: ['ctrl', 'shift', 'C'] },
+    { keys: [], label: 'Copy the selection (Ctrl+Insert too)', terminal: ['ctrl', 'shift', 'C'], chord: 'copy' },
     { keys: [], label: 'On a selection: copy it and clear it; with none, the interrupt', terminal: ['ctrl', 'C'] },
-    { keys: [], label: 'Paste (Shift+Insert and Ctrl+V too)', terminal: ['ctrl', 'shift', 'V'] },
+    { keys: [], label: 'Paste (Shift+Insert and Ctrl+V too)', terminal: ['ctrl', 'shift', 'V'], chord: 'paste' },
     { keys: [], label: 'Right-click: copy a selection, else paste (the program\'s, when it uses the mouse); Shift+right-click: the menu' },
   ],
 }
@@ -75,10 +101,20 @@ export const EDITOR_SHORTCUTS: ShortcutGroup = {
   ],
 }
 
+/** The session page's keys (#303): its own, then the editor's; registered by the session page. */
+export const SESSION_SHORTCUTS: ShortcutGroup = {
+  title: 'The session page',
+  rows: [
+    { keys: ['S'], label: 'Share this session' },
+    { keys: ['X'], label: 'Stop this session: the palette asks; Enter stops, Escape cancels', terminal: ['alt', 'X'] },
+    ...EDITOR_SHORTCUTS.rows,
+  ],
+}
+
 export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Yard',
   rows: [
-    { keys: ['escape'], label: 'Back to the grid', terminal: ['alt', 'escape'] },
+    { keys: ['escape'], label: 'Back to the grid (Alt+Esc too, where the system leaves it)', terminal: ['alt', 'Q'], chord: 'leaveTerminal' },
     { keys: ['J'], label: 'Next in the queue', terminal: ['alt', 'J'] },
     { keys: ['K'], label: 'Previous in the queue', terminal: ['alt', 'K'] },
     { keys: ['enter'], label: 'Reply to the selected queue item' },
@@ -92,8 +128,35 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
     { keys: ['arrowright'], label: 'Next session', terminal: ['alt', 'arrowright'] },
     { keys: ['enter'], label: 'Type into the current session' },
     { keys: ['space'], label: 'Pause or resume rotation', terminal: ['alt', 'P'] },
-    { keys: ['escape'], label: 'Leave the terminal', terminal: ['alt', 'escape'] },
+    { keys: ['escape'], label: 'Leave the terminal (Alt+Esc too, where the system leaves it)', terminal: ['alt', 'Q'], chord: 'leaveTerminal' },
+    { keys: ['space'], label: 'On a chip of the strip: pick it up or drop it; the arrows move it, Escape puts it back' },
   ],
+}
+
+/**
+ * The Alt chords a page takes beside the global ones (#312, Codex's round): the Yard and the Roundhouse take Alt+Q to leave the
+ * terminal, and a terminal hands it back there alone, so a session page's terminal keeps it (zsh's push-line, for one).
+ */
+export function usePageAltCodes() {
+  // Counted, not listed: Nuxt sets the next page up before the last one is unmounted, so a code both take must survive the
+  // last page's cleanup (whole-batch round).
+  const counts = useState<Record<string, number>>('pageAltCodes', () => ({}))
+  function register(list: string[]) {
+    const next = { ...counts.value }
+    for (const c of list) next[c] = (next[c] ?? 0) + 1
+    counts.value = next
+    onBeforeUnmount(() => {
+      const after = { ...counts.value }
+      for (const c of list) {
+        const n = (after[c] ?? 0) - 1
+        if (n > 0) after[c] = n
+        else delete after[c]
+      }
+      counts.value = after
+    })
+  }
+  const has = (code: string) => (counts.value[code] ?? 0) > 0
+  return { counts, register, has }
 }
 
 /**
@@ -106,6 +169,10 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
 export function useShortcutsModal() {
   const open = useState<boolean>('shortcutsOpen', () => false)
   const pageGroup = useState<ShortcutGroup | null>('shortcutsPageGroup', () => null)
+  // The system the page runs on (#312): the rows show its chords, and the modal says what it takes.
+  const system = useState<System>('shortcutsSystem', () => (import.meta.client ? detectSystem(navigator.userAgent, navigator.platform) : 'linux'))
+  const desktop = useDesktop()
+  const notes = computed(() => systemNotes(system.value, desktop.isDesktop.value ? 'app' : 'browser'))
 
   function registerPage(group: ShortcutGroup | null) {
     pageGroup.value = group
@@ -114,7 +181,7 @@ export function useShortcutsModal() {
     })
   }
 
-  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, SIDEBAR_SHORTCUTS]))
+  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS]).map((g) => rowsFor(g, system.value)))
 
-  return { open, groups, registerPage, show: () => (open.value = true) }
+  return { open, groups, system, notes, registerPage, show: () => (open.value = true) }
 }

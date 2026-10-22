@@ -92,6 +92,26 @@ const skillCommands = [
   '"${CONDUCTOR_BIN:-conductor}" notify --event handoff --to tests --message "/v1/users done"',
   'conductor skill',
 ]
+
+// This page's group in the command palette (#302): the tabs, a refresh, the hooks not installed yet.
+const toast = useToast()
+async function installHooks(i: Integration) {
+  try {
+    const changed = await api.installIntegration(i.id)
+    toast.add({ title: changed.length ? `Installed ${i.name} hooks` : 'Nothing to change', description: changed.length ? changed.join('\n') : `${i.name} already has Conductor's hooks.`, icon: 'i-lucide-download', color: changed.length ? 'success' : 'neutral' })
+    await refresh()
+  } catch (e) {
+    toast.add({ title: `Installing ${i.name} failed`, description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  }
+}
+usePalette().registerPage(() => ({
+  label: 'Events',
+  rows: [
+    ...tabs.map((t) => ({ key: `page:tab:${t.value}`, label: t.label, icon: t.value === 'feed' ? 'i-lucide-radio-tower' : t.value === 'routing' ? 'i-lucide-route' : 'i-lucide-plug', on: tab.value === t.value, run: () => (tab.value = t.value as EventsTab) })),
+    { key: 'page:refresh', label: 'Refresh', icon: 'i-lucide-refresh-cw', run: refresh },
+    ...integrations.value.filter((i) => i.installable && !i.installed).map((i) => ({ key: `page:install:${i.id}`, label: `Install hooks for ${i.name}`, detail: i.where, icon: 'i-lucide-plug', run: () => installHooks(i) })),
+  ],
+}))
 </script>
 
 <template>

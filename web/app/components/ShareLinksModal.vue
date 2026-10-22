@@ -17,7 +17,8 @@ import { reuseHeld, shareReach, type ShareReach } from '~/utils/share'
  * one added later included. Exactly one of the two is given.
  */
 type Target = { sessionId: string; runId?: undefined } | { runId: string; sessionId?: undefined }
-const props = defineProps<Target & { sessionName?: string }>()
+/** `role`: the role asked for by whoever opened the dialog (the palette's `share <name> control`), used for this opening's link. */
+const props = defineProps<Target & { sessionName?: string; role?: Role }>()
 const open = defineModel<boolean>('open', { default: false })
 
 const api = useSessions()
@@ -180,13 +181,13 @@ watch(open, async (v) => {
     .then((r) => (reach.value = r))
     .catch(() => (reach.value = null))
   await refresh()
-  const held = reuseHeld(created.value, createdFor.value === targetKey.value, links.value, publication.value)
+  const held = reuseHeld(created.value, createdFor.value === targetKey.value && (!props.role || created.value?.role === props.role), links.value, publication.value)
   if (held) {
     await copy(created.value!.url)
     return
   }
   created.value = null
-  await create({ role: quickRole.value, ttlSeconds: 7200 })
+  await create({ role: props.role ?? quickRole.value, ttlSeconds: 7200 })
 })
 
 async function create(body: { role: Role; label?: string; ttlSeconds?: number }) {

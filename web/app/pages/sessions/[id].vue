@@ -4,10 +4,15 @@ import { liveAttention } from '~/utils/attention'
 import type { ActivityEntry, Attention, ChatHistory, ChatMessage, ChatPost, ChatSend, TransportKind, ViewerInfo, Welcome, NvimEvent, NvimBridge, ChatQuote } from '~/utils/protocol'
 import type { TransportState } from '~/utils/transport/types'
 import type { FileTarget } from '~/components/FileBrowser.vue'
-import type { InspectorTab } from '~/components/SessionInspector.vue'
-import { EDITOR_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
+import type { InspectorView } from '~/utils/inspector'
+import { SESSION_SHORTCUTS, useShortcutsModal } from '~/composables/useShortcuts'
 import { shortCwd } from '~/utils/sessions'
 import { listedAttention, repliedQuestions, ReplyError, replyFailure, type QuestionReply } from '~/utils/reply'
+import { activateTab, toggleFold } from '~/utils/editorTabs'
+import { stopQuestion } from '~/utils/actions'
+import type { ChangeRow } from '~/utils/changes'
+import type { CommitRow } from '~/utils/commits'
+import type { FileHeader } from '~/utils/protocol'
 
 const route = useRoute()
 const api = useSessions()
@@ -31,8 +36,9 @@ const fileTarget = ref<FileTarget | null>(null)
 const previewUrl = ref<string | null>(null)
 // The editor area (design 4b): the files open above the terminal (EditorColumn), the tabs this page's.
 const { tabs, openFile, openUrl, openDiff, openCommitDiff } = useEditorTabs()
-useShortcutsModal().registerPage(EDITOR_SHORTCUTS)
-const tab = ref<InspectorTab>('people')
+useShortcutsModal().registerPage(SESSION_SHORTCUTS)
+// The inspector's view (design 4h): the rail's item shown; `inspector` says whether the panel is open beside the rail.
+const tab = ref<InspectorView>('people')
 const attention = ref<Attention>({ state: '' })
 
 // The chat beside the terminal (design 2a, 2b): one thread per session, fed by the terminal's connection.
@@ -177,7 +183,7 @@ const menu = computed(() => [
   [{ label: 'Stop session', icon: 'i-lucide-square', color: 'error' as const, disabled: !(session.value && (session.value.status === 'running' || session.value.status === 'starting')), onSelect: stop }],
 ])
 
-const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile'] } | null>(null)
+const terminal = ref<{ connect: () => void; focus: () => void; sendInput: (t: string) => boolean; submit: (t: string) => boolean; answer: (r: QuestionReply) => Promise<boolean>; chat: (p: ChatPost) => boolean; chatSend: (s: ChatSend) => boolean; requestFile: (p: string, s?: boolean, x?: FileGetExtra) => Promise<any>; nvimOpen: (p: string) => Promise<NvimEvent>; nvimInput: EditorTerminal['nvimInput']; nvimClose: EditorTerminal['nvimClose']; nvimSwap: EditorTerminal['nvimSwap']; writeFile: EditorTerminal['writeFile']; takeSize: () => void; sizerShown: () => boolean } | null>(null)
 
 // The thread counts nothing while it is open in front of this person.
 watch(
@@ -307,10 +313,11 @@ function option(index: number, question?: string) {
 }
 
 
+/** The header's Files button selects the rail's Explorer item, and collapses the panel when that already shows (4h). */
 function showFiles() {
-  if (inspector.value && tab.value === 'files') inspector.value = false
+  if (inspector.value && tab.value === 'explorer') inspector.value = false
   else {
-    tab.value = 'files'
+    tab.value = 'explorer'
     inspector.value = true
   }
 }
@@ -350,6 +357,128 @@ watch(id, () => {
   previewUrl.value = null
   load()
 })
+
+// ?tab= (#303): the rail's item a link names, read as the page opens and as the query changes (never written back).
+const TAB_QUERY: Record<string, InspectorView> = { files: 'explorer', explorer: 'explorer', changes: 'changes', commits: 'commits', chat: 'chat', activity: 'activity', people: 'people' }
+watch(
+  () => route.query.tab,
+  (q) => {
+    const v = typeof q === 'string' ? TAB_QUERY[q] : undefined
+    if (!v) return
+    if (v === 'chat' && !xl.value) {
+      chatSheet.value = true
+      return
+    }
+    tab.value = v
+    inspector.value = true
+  },
+  { immediate: true },
+)
+
+// S shares and X asks to stop the session this page is on (#303): X opens the palette on the page's Stop row, asking.
+const liveNow = computed(() => !!current.value && (current.value.status === 'running' || current.value.status === 'starting'))
+function askStop() {
+  if (liveNow.value) palette.askRow('page:stop')
+}
+// The S that completes the layout's G S chord is the chord's, not this page's (each defineShortcuts hears the key on its own).
+const lastChord = useState<number>('lastChordAt', () => 0)
+defineShortcuts({
+  s: () => liveNow.value && Date.now() - lastChord.value > 150 && (share.value = true),
+  x: askStop,
+  alt_x: { usingInput: true, handler: askStop },
+})
+
+// This page's group in the command palette (#302): what the header and the menu offer, the inspector's views, the open tabs; under
+// `:` the tabs, the changes and the commits; under `@` the people here and the links. Read when the palette opens, never before.
+const palette = usePalette()
+const inspectorRef = useTemplateRef<{ changes: ChangeRow[]; commits: CommitRow[]; status: FileHeader | null }>('inspectorRef')
+const columnRef = useTemplateRef<{ requestClose: (id: string) => void }>('columnRef')
+function showView(v: InspectorView) {
+  if (v === 'chat') return showChat()
+  tab.value = v
+  inspector.value = true
+}
+async function copyViewLink() {
+  const s = current.value
+  if (!s) return
+  try {
+    const made = await api.createLink(s.id, { role: 'view', ttlSeconds: 7200 })
+    const note = made.rendezvous ? `Made here, not on ${made.rendezvous.server}: ${made.rendezvous.error}` : made.remote ? 'Minted by the switchyard: it works from anywhere.' : 'It works where this server is reachable.'
+    await copy(made.url, `View link to ${s.name} copied`, note)
+    await refreshLinks()
+  } catch (e) {
+    toast.add({ title: 'Link failed', description: (e as Error).message, color: 'error' })
+  }
+}
+palette.registerPage(() => {
+  const s = current.value
+  if (!s) return null
+  const live = s.status === 'running' || s.status === 'starting'
+  const views: Array<[InspectorView, string, string]> = [
+    ['explorer', 'Open Files', 'i-lucide-folder'],
+    ['chat', `Open Chat${chatUnread.value ? ` · ${chatUnread.value} unread` : ''}`, 'i-lucide-message-circle'],
+    ['activity', 'Open Activity', 'i-lucide-activity'],
+    ['people', `Open People · ${viewers.value.length || s.viewers} here`, 'i-lucide-users'],
+  ]
+  const t = tabs.value
+  const tabRows = t.tabs.map((tb) => ({
+    key: `page:tab:${tb.id}`,
+    label: tb.title,
+    detail: tb.path,
+    icon: tb.kind === 'url' ? 'i-lucide-globe' : tb.kind === 'diff' ? 'i-lucide-file-diff' : 'i-lucide-file',
+    on: t.active === tb.id && !t.folded ? true : undefined,
+    run: () => (tabs.value = { ...activateTab(tabs.value, tb.id), folded: false }),
+    actions: [
+      // Through the area's own close: an unsaved file asks before it goes (whole-batch round).
+      { id: 'close', kind: 'page' as const, target: tb.id, label: 'Close', icon: 'i-lucide-x', kbds: ['X'], run: () => columnRef.value?.requestClose(tb.id) },
+      { id: 'copy-path', kind: 'page' as const, target: tb.id, label: 'Copy path', icon: 'i-lucide-copy', run: () => void copy(tb.path, 'Path copied') },
+      ...(tb.kind === 'file' && rawUrl(tb.path) ? [{ id: 'raw', kind: 'page' as const, target: tb.id, label: 'Open raw', icon: 'i-lucide-external-link', run: () => window.open(rawUrl(tb.path)!, '_blank', 'noopener,noreferrer') }] : []),
+    ],
+  }))
+  const status = inspectorRef.value?.status
+  const changes = (inspectorRef.value?.changes ?? []).map((c) => ({
+    key: `page:change:${c.path}`,
+    label: c.path.startsWith(s.cwd) ? c.path.slice(s.cwd.length + 1) : c.path,
+    detail: `${c.status} · +${c.added} −${c.removed}`,
+    icon: 'i-lucide-file-diff',
+    run: () => openDiff(c, { top: status?.kind === 'status' ? status.path : s.cwd, branch: status?.kind === 'status' ? status.branch : undefined, baseId: status?.kind === 'status' ? status.base : undefined }),
+  }))
+  const commits = (inspectorRef.value?.commits ?? []).map((c) => ({ key: `page:commit:${c.sha}`, label: c.subject, detail: `${c.short} · ${c.author}`, icon: 'i-lucide-git-commit-horizontal', run: () => showView('commits') }))
+  const people = [
+    ...viewers.value.map((v) => ({ key: `page:viewer:${v.name}:${v.since}`, label: v.name, detail: `${v.link ? `via “${v.link}”` : v.role === 'control' ? 'Owner' : 'Viewer'} · since ${v.since.slice(11, 16)}`, icon: 'i-lucide-user-round', run: () => showView('people') })),
+    ...links.value
+      .filter((l) => !l.revoked)
+      .map((l) => ({
+        key: `page:link:${l.id}`,
+        label: `Link ${l.label || l.id.slice(0, 8)} · ${l.role}`,
+        detail: `${l.active} ${l.active === 1 ? 'viewer' : 'viewers'} on it`,
+        icon: 'i-lucide-link',
+        run: () => showView('people'),
+        actions: [{ id: 'revoke', kind: 'page' as const, target: l.id, label: 'Revoke', icon: 'i-lucide-ban', kbds: ['X'], ask: { title: `Revoke ${l.label || 'the link'}?`, detail: 'Viewers using it are disconnected.' }, run: () => void revoke(l) }],
+      })),
+  ]
+  return {
+    label: s.name,
+    sessionId: s.id,
+    cwd: s.cwd,
+    openFile,
+    showView,
+    rows: [
+      { key: 'page:share', label: 'Share…', icon: 'i-lucide-share-2', kbds: ['S'], disabled: !live, run: () => (share.value = true) },
+      { key: 'page:copy-link', label: 'Copy a view link now', icon: 'i-lucide-link', kbds: ['shift', 'S'], disabled: !live, run: copyViewLink },
+      { key: 'page:stop', label: 'Stop…', icon: 'i-lucide-square', kbds: ['X'], disabled: !live, ask: stopQuestion({ kind: 'session', name: s.name }), run: stop },
+      { key: 'page:mark-needs', label: 'Mark as needs input', icon: 'i-lucide-hand', run: () => signal('needs_input') },
+      { key: 'page:mark-working', label: 'Mark as working', icon: 'i-lucide-loader-circle', run: () => signal('working') },
+      { key: 'page:mark-clear', label: 'Clear signal', icon: 'i-lucide-x', run: () => signal('clear') },
+      ...(terminal.value?.sizerShown() ? [{ key: 'page:fit', label: 'Fit to my window', icon: 'i-lucide-maximize-2', run: () => terminal.value?.takeSize() }] : []),
+      ...(t.tabs.length ? [{ key: 'page:fold', label: t.folded ? 'Bring the editor back' : 'Fold the editor to its tab strip', icon: 'i-lucide-panel-bottom', kbds: ['T'], run: () => (tabs.value = toggleFold(tabs.value)) }] : []),
+      ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, run: () => showView(v) })),
+      ...tabRows,
+    ],
+    files: [...tabRows, ...changes, ...commits],
+    people,
+  }
+})
 </script>
 
 <template>
@@ -387,14 +516,13 @@ watch(id, () => {
           <TransportBadge :kind="transport.kind" :state="transport.state" :rtt="transport.rtt" class="hidden md:inline-flex" />
           <ViewerAvatars :viewers="viewers" class="hidden md:flex" />
           <!-- Icons only on a phone, as on the run page: the labels would push the name off the bar. -->
-          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'files' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
+          <UButton icon="i-lucide-folder-open" color="neutral" variant="outline" aria-label="Files" :class="inspector && tab === 'explorer' && 'ring-2 ring-primary/40'" @click="showFiles"><span class="hidden sm:inline">Files</span></UButton>
           <UButton icon="i-lucide-share-2" aria-label="Share" @click="share = true"><span class="hidden sm:inline">Share</span></UButton>
           <!-- The chat (design 2b, 2c): the count while the thread is closed; the inspector's tab at xl, a sheet below. -->
           <UButton v-if="chat.thread.value.capable" icon="i-lucide-message-circle" color="neutral" variant="outline" aria-label="Chat" :class="chatShown && 'ring-2 ring-primary/40'" data-chat-button @click="showChat">
             <span class="hidden sm:inline">Chat</span>
             <ChatUnreadPill :count="chatUnread" />
           </UButton>
-          <UButton icon="i-lucide-panel-right" color="neutral" variant="outline" :aria-label="inspector ? 'Hide inspector' : 'Show inspector'" class="hidden xl:inline-flex" @click="inspector = !inspector" />
           <UDropdownMenu :items="menu">
             <UButton icon="i-lucide-ellipsis" color="neutral" variant="outline" aria-label="More" />
           </UDropdownMenu>
@@ -406,7 +534,7 @@ watch(id, () => {
     <template #body>
       <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" class="m-4" />
       <div v-else-if="ready && session" class="flex flex-1 min-h-0">
-        <EditorColumn v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
+        <EditorColumn ref="columnRef" v-model:tabs="tabs" :request="requestFile" :nvim="editor.nvim.value" :write="editor.writeFile" :can-edit="editor.canEdit.value" commenting :can-ask="!ended" :cwd="current?.cwd" :raw-url="rawUrl" :host-away="hostAway" :bar-text="attention.message || agentLabel" class="p-3" @comment="onComment">
           <TerminalView
             ref="terminal"
             :create-transport="createTransport"
@@ -429,9 +557,12 @@ watch(id, () => {
             <QuickReplyBar :attention="attention" :agent-name="agentLabel" role="control" @reply="reply" @option="option" @open-plan="openFile({ path: $event })" />
           </template>
         </EditorColumn>
-        <div v-if="inspector" class="hidden xl:flex w-[332px] flex-none">
+        <!-- The inspector (design 4h): its rail stays at xl, the panel beside it open or collapsed. -->
+        <div class="hidden xl:flex flex-none">
           <SessionInspector
-            v-model:tab="tab"
+            ref="inspectorRef"
+            v-model:view="tab"
+            v-model:open="inspector"
             v-model:target="fileTarget"
             v-model:url="previewUrl"
             :session="session"

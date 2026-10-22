@@ -15,7 +15,7 @@ test('the Explorer finds files in folders not opened yet; the Yard\'s focused ti
   const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'more', cwd })
   try {
     await page.goto(`/sessions/${s.id}`)
-    await page.locator('[data-inspector] button', { hasText: 'Files' }).click()
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
     const pane = page.locator('[data-files-mode]')
     await expect(pane.locator(`[data-file-node="${cwd}/internal"]`)).toBeVisible({ timeout: 30_000 })
     // internal is not opened: the tree has nothing named users, the find has the file below.
@@ -33,10 +33,9 @@ test('the Explorer finds files in folders not opened yet; the Yard\'s focused ti
     await expect(aside.locator(`[data-file-node="${cwd}/README.md"]`)).toBeVisible({ timeout: 30_000 })
     await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'file', op: 'edit', path: 'internal/api/users.go', tool: 'Edit' })
     await api.ok('POST', `/api/sessions/${s.id}/events`, { type: 'file', op: 'read', path: 'README.md', tool: 'Read' })
-    await expect(aside.locator('[data-files-touched-count]')).toHaveText('2', { timeout: 15_000 })
-    await aside.locator('[data-files-section="touched"]').click()
-    await expect(aside.locator('[data-files-touched] [data-touched]')).toHaveCount(2)
-    await expect(aside.locator('[data-files-touched] [data-touched]').first()).toHaveAttribute('data-touched', `${cwd}/README.md`)
+    // The aside has the three Files views alone (4h): the touched files show as the Explorer's dots.
+    await expect(aside.locator(`[data-file-node="${cwd}/README.md"] [data-file-touched]`)).toBeVisible({ timeout: 15_000 })
+    await expect(aside.locator('[data-rail-item]')).toHaveCount(3)
   } finally {
     await api.stopSession(s.id)
   }

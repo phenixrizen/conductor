@@ -137,6 +137,25 @@ onMounted(async () => {
   await load()
   if ((await owed) === 'restarted') savedToast('restarted')
 })
+
+// This page's group in the command palette (#302): Save, and the desktop app's buttons.
+const live = useAttention()
+usePalette().registerPage(() => {
+  const n = live.sessions.value.filter((s) => s.kind === 'server' && (s.status === 'running' || s.status === 'starting')).length
+  return {
+    label: 'Settings',
+    rows: [
+      { key: 'page:save', label: restarts.value ? 'Save and restart the server' : 'Save', icon: 'i-lucide-save', disabled: !dirty.value || saving.value, ask: restarts.value ? { title: 'Save and restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' } : undefined, run: save },
+      ...(desktop.isDesktop.value
+        ? [
+            { key: 'page:restart', label: 'Restart server', icon: 'i-lucide-rotate-ccw', ask: { title: 'Restart the server?', detail: n ? `${n} ${n === 1 ? 'session ends' : 'sessions end'} with it.` : 'No session is running.' }, run: () => void desktop.bridge.value?.restartServer() },
+            { key: 'page:browser', label: 'Open in browser', icon: 'i-lucide-external-link', run: () => void desktop.bridge.value?.openInBrowser() },
+            { key: 'page:log', label: 'Server log', icon: 'i-lucide-scroll-text', run: () => void desktop.bridge.value?.showLog() },
+          ]
+        : []),
+    ],
+  }
+})
 </script>
 
 <template>
