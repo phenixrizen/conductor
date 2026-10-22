@@ -1,5 +1,8 @@
 <script setup lang="ts">
 const shortcuts = useShortcutsModal()
+const desktop = useDesktop()
+const systemName = computed(() => ({ mac: 'macOS', windows: 'Windows', linux: 'Linux' })[shortcuts.system.value])
+const surfaceName = computed(() => (desktop.isDesktop.value ? 'the desktop app' : 'a browser'))
 /** Every row's columns: the action, then the two key columns at one fixed width each, so they line up down the table. */
 const COLUMNS = 'grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_10.5rem_10.5rem] sm:gap-x-0'
 </script>
@@ -52,6 +55,13 @@ const COLUMNS = 'grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_10.5rem_10.5rem] s
                 </span>
               </span>
             </li>
+          </ul>
+        </section>
+        <!-- What the system the page runs on takes before the app sees it (#312), and the chord that stands in. -->
+        <section v-if="shortcuts.notes.value.length" data-shortcuts-notes :data-shortcuts-system="shortcuts.system.value">
+          <h3 class="mb-1 border-b border-default pb-1 text-xs font-semibold uppercase tracking-wide text-highlighted">On {{ systemName }}, in {{ surfaceName }}</h3>
+          <ul class="flex flex-col gap-1 text-sm">
+            <li v-for="n in shortcuts.notes.value" :key="`${n.chord}:${n.browser ?? ''}`" class="text-pretty" :data-shortcut-note="n.chord"><b class="font-medium">{{ n.chord }}</b><span v-if="n.browser" class="text-muted"> ({{ n.browser === 'firefox' ? 'Firefox' : n.browser }})</span>: <span class="text-muted">{{ n.note }}</span></li>
           </ul>
         </section>
       </div>

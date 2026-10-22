@@ -2669,6 +2669,29 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The chords per system (#312, 2026-10-22).** `utils/chords.ts`
+  (vitest): `detectSystem` from the user agent and the platform (as
+  Nuxt UI's kbd reads `Macintosh;`), a per-system table for the rows
+  whose chord differs (`chord` on a `ShortcutRow`: `leaveTerminal`,
+  `copy`, `paste`), `rowsFor(group, system)` which `useShortcutsModal`
+  applies to every group it lists (the modal and the palette's `?` rows
+  show the chord of the system the page runs on), and `SYSTEM_NOTES`,
+  what a system or a browser takes before the page sees it, shown under
+  the modal's table for that system and surface (`data-shortcuts-notes`;
+  the desktop app's rows leave the browser-only ones out). The one chord
+  replaced: the terminal's leave-focus on the Yard and the Roundhouse is
+  `Alt+Q` everywhere (`KeyQ` in the passthrough codes; Windows takes
+  Alt+Esc to cycle its windows), with `Alt+Esc` still bound where the
+  system leaves it. The sidebar's chord stays `meta+B` (⌘B on a Mac,
+  Ctrl+B elsewhere, as shown): Win+B and Super+B are the system's and
+  were never bound; Firefox's Ctrl+B (its bookmarks sidebar) is a note.
+  The desktop app's menu binds no Ctrl+W, Ctrl+Tab or Ctrl+Shift+Tab
+  (checked in `desktop/src/menu.ts`): the editor takes them in the app,
+  a browser tab keeps them, said in the notes. The validation pass is
+  the table in `docs/plans/ui-batch.md`: Linux Chromium driven by the
+  specs (`chords.spec.ts`, `shortcuts.spec.ts`, `palette-keys.spec.ts`,
+  `palette-reach.spec.ts`, `sidebar.spec.ts`); the Windows and Mac rows
+  are not run here and say so.
 - **The palette's reach (#303, 2026-10-22).** `]` and `[` (`Alt+]` /
   `Alt+[` from a terminal: `BracketRight` and `BracketLeft` joined the
   passthrough codes, taken by the layout's chord listener) step a cursor

@@ -99,6 +99,8 @@ defineShortcuts({
     if (!focusId.value && waiting.value.length) queue.value?.focusSelected()
   },
   alt_escape: { ...inTerminal, handler: leaveFocus },
+  // Alt+Q leaves too (#312): Windows takes Alt+Esc for its own window cycling.
+  alt_q: { ...inTerminal, handler: leaveFocus },
   alt_j: { ...inTerminal, handler: queueNext },
   alt_k: { ...inTerminal, handler: queuePrev },
 })

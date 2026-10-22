@@ -194,6 +194,38 @@ that is done, Clear the new-event badges, `]` / `[` and the pill, `G S`,
   box and the Windows host in the desktop app and Chrome, driven here
   where that is possible; the Mac's browser rows need a hand at the
   machine (see the questions).
+- Built (2026-10-22): `utils/chords.ts` as above, with `rowsFor`
+  applied in `useShortcutsModal` so the modal and the palette's `?` rows
+  show the system's chords, `SYSTEM_NOTES` under the modal's table.
+  `Alt+Q` leaves the terminal on the Yard and the Roundhouse; `Alt+Esc`
+  stays bound (the system that takes it never delivers it). `meta+B` is
+  kept: it is ⌘B on a Mac and Ctrl+B elsewhere already; Win+B and Super+B
+  were never ours. The desktop app's menu binds no Ctrl+W/Ctrl+Tab (its
+  View menu: reload, zoom, fullscreen; Settings on ⌘,/Ctrl+,), so the
+  editor keeps them in the app, as `EditorArea.vue` handles them; a
+  browser tab keeps them, said in the notes. The table below is the
+  pass as run here: Linux Chromium rows are the specs' (every row green
+  in the batch's runs); the Windows and macOS rows, in the desktop app
+  and in a browser, are NOT RUN in this PR and need the owner's hand at
+  those machines (the Mac rows were asked for in the plan's questions).
+
+| Chord | Linux · Chromium (browser) | Windows | macOS |
+| --- | --- | --- | --- |
+| Ctrl+K / ⌘K outside a terminal → palette | reached (palette-keys.spec) | not run | not run |
+| Ctrl+K inside a terminal → the shell's | reached the shell, palette closed (palette-keys.spec) | not run | not run (⌘K from a terminal: the layout listener, untested here) |
+| Alt+/ from a terminal → palette | reached (palette-keys.spec) | not run | not run |
+| / outside a terminal → palette | reached (palette.spec) | not run | not run |
+| Alt+S from a terminal → palette | bound as before (sidebar's chord); not asserted | not run | not run |
+| Ctrl+B / ⌘B outside, Alt+B inside → sidebar | reached (chords.spec) | not run (Firefox: its bookmarks sidebar, noted) | not run |
+| G then Y/R/C/A/E, Alt+letters → pages | reached (shortcuts.spec) | not run | not run (Option+letter typed glyphs are taken first by the page) |
+| ] and [ outside, Alt+] / Alt+[ inside → the pill | ] [ reached (palette-reach.spec); Alt twins not asserted | not run | not run |
+| S and X on a session page, Alt+X inside | reached (palette-reach.spec) | not run | not run |
+| Alt+Q from a terminal → leave the terminal (Yard, Roundhouse) | reached (chords.spec) | not run (Alt+Esc known taken by Windows) | not run |
+| Alt+Esc from a terminal → leave the terminal | reached (chords.spec) | taken by the system (not delivered) | not run |
+| Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+W in the editor | the browser's tabs (reserved by Chromium); the editor's strip stands in | not run (the app: free, no menu accelerator) | not run |
+| Ctrl+Shift+C / V in a terminal; ⌘C / ⌘V on a Mac | reached (TerminalView's own handler; terminal specs) | not run | not run |
+| F outside a terminal, Alt+F inside → fullscreen | reached (shortcuts.spec) | not run | not run |
+| G S / Alt+, → Settings (desktop app only) | n/a in a browser | not run | not run |
 
 ## Checks
 

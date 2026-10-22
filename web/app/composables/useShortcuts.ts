@@ -1,4 +1,8 @@
+import { detectSystem, rowsFor, systemNotes, type Chord, type System } from '../utils/chords'
+
 export interface ShortcutRow {
+  /** The action whose chord differs by system (utils/chords.ts, #312): the modal shows the chord of the system the page runs on. */
+  chord?: Chord
   /** Keys as UKbd values ('meta', 'shift', 'escape', 'arrowleft', single characters…) outside a terminal: when no terminal or text field has the focus. */
   keys: string[]
   label: string
@@ -16,7 +20,7 @@ export interface ShortcutGroup {
  * so the Alt variants below work while typing into an agent. Plain keys keep
  * going to the agent; xterm ignores only these Alt chords.
  */
-export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
+export const ALT_PASSTHROUGH_CODES = new Set(['KeyN', 'KeyS', 'KeyY', 'KeyR', 'KeyA', 'KeyE', 'KeyC', 'KeyB', 'KeyH', 'KeyF', 'KeyP', 'KeyJ', 'KeyK', 'KeyT', 'KeyX', 'KeyQ', 'Slash', 'BracketRight', 'BracketLeft', 'Comma', 'ArrowLeft', 'ArrowRight', 'Escape'])
 
 /** Shortcuts that work on every page. Registered in the default layout. */
 export const GLOBAL_SHORTCUTS: ShortcutGroup = {
@@ -78,9 +82,9 @@ export const SIDEBAR_SHORTCUTS: ShortcutGroup = {
 export const TERMINAL_SHORTCUTS: ShortcutGroup = {
   title: 'The terminal',
   rows: [
-    { keys: [], label: 'Copy the selection (Ctrl+Insert too)', terminal: ['ctrl', 'shift', 'C'] },
+    { keys: [], label: 'Copy the selection (Ctrl+Insert too)', terminal: ['ctrl', 'shift', 'C'], chord: 'copy' },
     { keys: [], label: 'On a selection: copy it and clear it; with none, the interrupt', terminal: ['ctrl', 'C'] },
-    { keys: [], label: 'Paste (Shift+Insert and Ctrl+V too)', terminal: ['ctrl', 'shift', 'V'] },
+    { keys: [], label: 'Paste (Shift+Insert and Ctrl+V too)', terminal: ['ctrl', 'shift', 'V'], chord: 'paste' },
     { keys: [], label: 'Right-click: copy a selection, else paste (the program\'s, when it uses the mouse); Shift+right-click: the menu' },
   ],
 }
@@ -110,7 +114,7 @@ export const SESSION_SHORTCUTS: ShortcutGroup = {
 export const WALL_SHORTCUTS: ShortcutGroup = {
   title: 'Yard',
   rows: [
-    { keys: ['escape'], label: 'Back to the grid', terminal: ['alt', 'escape'] },
+    { keys: ['escape'], label: 'Back to the grid (Alt+Esc too, where the system leaves it)', terminal: ['alt', 'Q'], chord: 'leaveTerminal' },
     { keys: ['J'], label: 'Next in the queue', terminal: ['alt', 'J'] },
     { keys: ['K'], label: 'Previous in the queue', terminal: ['alt', 'K'] },
     { keys: ['enter'], label: 'Reply to the selected queue item' },
@@ -124,7 +128,7 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
     { keys: ['arrowright'], label: 'Next session', terminal: ['alt', 'arrowright'] },
     { keys: ['enter'], label: 'Type into the current session' },
     { keys: ['space'], label: 'Pause or resume rotation', terminal: ['alt', 'P'] },
-    { keys: ['escape'], label: 'Leave the terminal', terminal: ['alt', 'escape'] },
+    { keys: ['escape'], label: 'Leave the terminal (Alt+Esc too, where the system leaves it)', terminal: ['alt', 'Q'], chord: 'leaveTerminal' },
     { keys: ['space'], label: 'On a chip of the strip: pick it up or drop it; the arrows move it, Escape puts it back' },
   ],
 }
@@ -139,6 +143,10 @@ export const CAROUSEL_SHORTCUTS: ShortcutGroup = {
 export function useShortcutsModal() {
   const open = useState<boolean>('shortcutsOpen', () => false)
   const pageGroup = useState<ShortcutGroup | null>('shortcutsPageGroup', () => null)
+  // The system the page runs on (#312): the rows show its chords, and the modal says what it takes.
+  const system = useState<System>('shortcutsSystem', () => (import.meta.client ? detectSystem(navigator.userAgent, navigator.platform) : 'linux'))
+  const desktop = useDesktop()
+  const notes = computed(() => systemNotes(system.value, desktop.isDesktop.value ? 'app' : 'browser'))
 
   function registerPage(group: ShortcutGroup | null) {
     pageGroup.value = group
@@ -147,7 +155,7 @@ export function useShortcutsModal() {
     })
   }
 
-  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS]))
+  const groups = computed<ShortcutGroup[]>(() => (pageGroup.value ? [pageGroup.value, GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS] : [GLOBAL_SHORTCUTS, TERMINAL_SHORTCUTS, PALETTE_SHORTCUTS, SIDEBAR_SHORTCUTS]).map((g) => rowsFor(g, system.value)))
 
-  return { open, groups, registerPage, show: () => (open.value = true) }
+  return { open, groups, system, notes, registerPage, show: () => (open.value = true) }
 }

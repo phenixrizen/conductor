@@ -297,6 +297,8 @@ defineShortcuts({
   alt_arrowright: { ...inTerminal, handler: next },
   alt_p: { ...inTerminal, handler: togglePlay },
   alt_escape: { ...inTerminal, handler: leaveTerminal },
+  // Alt+Q leaves too (#312): Windows takes Alt+Esc for its own window cycling.
+  alt_q: { ...inTerminal, handler: leaveTerminal },
 })
 
 function transportFor(s: SessionInfo) {

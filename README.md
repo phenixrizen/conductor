@@ -657,7 +657,12 @@ every session that is done** and **Clear the new-event badges** sit under
 (**Alt+X** in its terminal); **G S** opens Settings in the desktop app
 (**Alt+,**). A link can name a view: `?tab=files|chat|activity|people`
 on a session page, `?view=grid|graph|timeline` on a run page,
-`?filter=all|needs|running` on the Yard.
+`?filter=all|needs|running` on the Yard. **Alt+Q** leaves a terminal's
+focus on the Yard and the Roundhouse everywhere (Alt+Esc too, except on
+Windows, which keeps that one for its windows); the shortcuts modal
+(**?**) shows the chords of the system you are on and says what that
+system or its browser takes before the app sees it (Firefox's Ctrl+B, the
+browser's Ctrl+Tab and Ctrl+W, the Mac's Option+letter).
 
 The sidebar collapses to an icon rail with the panel button in its header or
 **Ctrl+B** (**⌘B** on a Mac). On the rail a square is a session (its agent's
