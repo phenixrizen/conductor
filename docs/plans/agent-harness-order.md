@@ -31,7 +31,12 @@ quiet terminal and a `submit_ok` finish nothing.
    refused elsewhere; the editor hides the Starts column. Isolation
    `worktree` is required. A task member's agent has an adapter (no `shell`).
    A config key `crews.managed` (default on) refuses managed launches when
-   off and leaves managed records readable.
+   off and leaves managed records readable. Until the paths exist the server
+   refuses on its own: PR 4 makes `Launchable()` refuse a crew with tasks,
+   and `StartMember`, `AddMember`, `ResumeMember`, `ResumeRun` and
+   `ResumeRecord` refuse a managed run or record (`StartMember` starts any
+   pending member regardless of its rule today); PR 5 lifts the launch
+   refusal, PR 8 the resume refusals.
 2. **A task** is `{id, member, kind, instructions, needs[], checks[{id, argv,
    timeoutSeconds}]}`: ids `^[a-z0-9][a-z0-9_-]{0,39}$` (no dot, so
    `<task>.<n>` is unambiguous and git takes the branch); 128 tasks; 8 checks
@@ -47,7 +52,13 @@ quiet terminal and a `submit_ok` finish nothing.
    session per member: dispatching a member's next attempt stops its previous
    session; a succeeded task's session stays idle for inspection until Stop
    or the member's next attempt. Four attempts in flight per run, three per
-   task; a launch refused at the session cap spends none. Fan-in: the
+   task. A dispatch begins by reserving the attempt's session slot in the
+   registry (`Launcher.Reserve`, released if the launch does not happen):
+   `createLocalSession` starts the PTY before the registry's capacity check,
+   so a refusal at the cap must come before the worktree, `setup` and the
+   process exist; a refusal spends no attempt and makes nothing, and the
+   next dispatch takes the next attempt number, never a branch name already
+   made. Fan-in: the
    worktree roots at the first need's result, the task file names the other
    results' branches to merge, and submit refuses a HEAD that does not
    descend from all of them.
@@ -62,14 +73,20 @@ quiet terminal and a `submit_ok` finish nothing.
    every input (a review's HEAD equal to its candidate); a summary of at most
    4,000 characters, 20 issues, 50 findings `{severity, path?, line?,
    message}`; a repeated call returns the same receipt; stale, dirty or
-   mismatched is a 409 naming the paths. The controller then runs the checks
-   in the attempt's worktree, HEAD and cleanliness compared before and after.
+   mismatched is a 409 naming the paths. The controller then materializes
+   the result commit into a checkout of its own,
+   `<cwd>/.conductor/worktrees/<run>/<task>.<n>.check`, detached, with no
+   agent or editor attached, runs `setup` there and then the checks: a check
+   never reads the worker's live checkout, where the agent or a person at a
+   shared terminal could change files while it runs and restore them after.
+   The receipt names the checkout's HEAD, compared before and after.
    A failing check fails the attempt; the next one starts from that result
    commit with the log tail in its task file. A review that ran succeeds
    whatever its verdict; `needs_changes` reopens its subject (a fresh attempt
    at the reviewed commit, the findings in its task file) and the review runs
    again on the new result. Repairs are fresh sessions, never resumed
-   conversations (every recipe needs its cwd, a resume types no prompt, not
+   conversations (most recipes need their cwd, so a resumed conversation
+   would sit in the old attempt's worktree; a resume types no prompt; not
    every agent can resume); `repair: resume` may come later as an opt-in.
 6. **Done, handoff and ask in a managed run.** `done` is recorded, starts no
    one and completes nothing; one reminder line per attempt on a done without
@@ -94,15 +111,27 @@ quiet terminal and a `submit_ok` finish nothing.
    `PRAGMA quick_check` at open, a failure or a newer schema opens read-only
    and managed launches answer 503 `ledger_unavailable`. The snapshot
    `runs/<id>.json` stays the API answer (`Run.Managed` omitempty, legacy JSON
-   byte-identical, rebuilt from the database when missing); `reconcile`
-   skips managed records; `evict` keeps open managed runs; a pruned run's
-   rows go in one transaction; logs are capped at 64 MiB per run. No
-   terminal output, no secrets, environment names only.
+   byte-identical) and is a cache of the database with a revision: the
+   journal's save is two seconds late and asynchronous, so at start the
+   owner rebuilds every managed snapshot that is missing or older than the
+   database's revision, and a snapshot write never regresses that revision.
+   `reconcile` skips managed records; `evict` keeps open managed runs. A
+   managed run's record and rows are pruned from durable state alone, never
+   from engine membership: only once its database state is terminal and no
+   continuation names it as its source or imports one of its results, and
+   only by the owner, in one transaction after the snapshot; an interrupted
+   run awaiting a person and a finished run a continuation still cites both
+   stay. Logs are capped at 64 MiB per run. No terminal output, no secrets,
+   environment names only.
 8. **One owner.** `runs/owner.lock` (flock, 10 s retry): SQLite serializes
    writers but elects no scheduler, and two servers would each "recover" the
-   other's runs. When another process holds it, or locks are unsupported,
-   managed launches answer 503 and legacy runs work. A network or 9p
-   filesystem is outside the durability claim; the startup log says so.
+   other's runs. Every managed mutation needs the lock: launches, recovery,
+   snapshot rebuilds and pruning. When another process holds it, or locks
+   are unsupported, managed launches answer 503, legacy runs work, and the
+   server's legacy pruning (`Records.Save` on every save) leaves every
+   managed record (`Run.Managed` set) out, since the engine that holds those
+   runs is the other process. A network or 9p filesystem is outside the
+   durability claim; the startup log says so.
 9. **Resume is a continuation**, as `ResumeRun` is today: an interrupted
    managed run shows read-only from its snapshot; Resume makes the
    continuation under the existing lease, imports accepted results by
@@ -148,11 +177,11 @@ quiet terminal and a `submit_ok` finish nothing.
 | 1 | #335 | records: never prune a run the engine holds | The one change a legacy crew can see; the ledger's prune rule needs it |
 | 2 | | `internal/proc`: a bounded argv runner | No callers yet; its own review |
 | 3 | | The managed-run ledger in SQLite: the dependency, schema v1, transactions, the owner lock, receipts, recovery | Inert until managed crews; the storage and dependency review on its own |
-| 4 | | A crew can define tasks: schema, validation, `CrewRef`, env, the editor's Tasks table | A managed crew can be saved; nothing runs yet |
-| 5 | | A managed run dispatches tasks into attempt worktrees and takes their results | The engine core, tested by calling the engine |
+| 4 | | A crew can define tasks: schema, validation, `CrewRef`, env, the editor's Tasks table; the server refuses to launch, start, add to or resume a managed crew or run | A managed crew can be saved; nothing runs yet, and the legacy paths cannot run it |
+| 5 | | A managed run dispatches tasks into attempt worktrees and takes their results; the launch refusal lifted | The engine core, tested by calling the engine and the real registry |
 | 6 | | An agent reads its task and submits its result; a review's findings lead to a bounded repair | Ends slice A's vertical: the stub proves `done` finishes nothing |
 | 7 | | The run page shows tasks, their checks and results, and what to do next | Needs 5 and 6's data and routes |
-| 8 | | A managed run continues after a restart without repeating finished work | Closes slice A |
+| 8 | | A managed run continues after a restart without repeating finished work; the resume refusals lifted | Closes slice A |
 | 9 | | Members of a managed run exchange durable messages | Slice B |
 | 10 | | A member reports a blocker and saves a checkpoint | Slice B |
 | 11 | | The harness by hand on macOS, Linux and WSL with Claude Code and Codex; the docs | Qualification |
@@ -178,38 +207,55 @@ the dependency pinned at its latest release with its reason in the PR,
 `make notices` after `npm ci` in `desktop/`, a `docs/dependencies.md` row,
 `make vuln`, the four cross targets built, binary growth and cold build time
 measured and named in the PR; `Open`, `Transition`, `Recover`, the owner
-lock, receipts and `GET /api/runs/{run}/commands/{id}`, `Run.Managed`, the
-`reconcile` and `evict` exclusions. Tests: open and migrate; a newer schema
-or a failed `quick_check` opens read-only and a managed launch answers 503; a
-transition is committed before `Launch`; an injected commit error undoes the
-intent and keeps later facts; the crash matrix (stop before each side effect,
-reopen, recover, assert the conclusion); recovery concludes once; `events.
-seq` gapless under 50 goroutines; receipts; the owner lock across processes
-and unsupported locks; the log cap; a WAL checkpoint at shutdown.
+lock, receipts and `GET /api/runs/{run}/commands/{id}`, `Run.Managed` with
+its revision, the snapshot rebuild at start, the `reconcile` and `evict`
+exclusions, managed pruning from durable state by the owner alone and the
+non-owner's legacy pruning leaving managed records out. Tests: open and
+migrate; a newer schema or a failed `quick_check` opens read-only and a
+managed launch answers 503; a transition is committed before `Launch`; an
+injected commit error undoes the intent and keeps later facts; the crash
+matrix (stop before each side effect, reopen, recover, assert the
+conclusion); a crash with a stale snapshot on disk is rebuilt at start and a
+later legacy save cannot regress it; recovery concludes once; `events.seq`
+gapless under 50 goroutines; receipts; the owner lock across processes and
+unsupported locks; a second process without the lock saving 501 legacy
+records leaves the owner's managed records alone; an interrupted managed
+record and a finished one a continuation cites survive a prune; the log
+cap; a WAL checkpoint at shutdown.
 
 **4. definitions** (`crew.go`, `store.go`, `session/info.go`,
 `api/sessions.go`, `CrewTasksTable.vue`, `CrewEditor.vue`, `utils/crews.ts`,
 `docs/protocol.md`): `Task`, `Check`, `StartTask`, `checkTasks`;
 `CrewRef.Task` and `Attempt`; `CONDUCTOR_TASK`, `CONDUCTOR_ATTEMPT`,
-`CONDUCTOR_TASK_FILE`; `crews.managed`; the editor's Coordination select and
-tasks table; `taskProblems()`. Tests: the validation table; a legacy crew
-file unchanged through the store; the env set only for an attempt; vitest
-for `taskProblems`; Playwright `tasks-editor.spec.ts`.
+`CONDUCTOR_TASK_FILE`; `crews.managed`; `Launchable()` refusing a crew with
+tasks and the start, add, member-resume, run-resume and record-resume paths
+refusing a managed run or record, until PRs 5 and 8 lift them; the editor's
+Coordination select and tasks table; `taskProblems()`. Tests: the
+validation table; a legacy crew file unchanged through the store; the env
+set only for an attempt; a managed crew refused by launch, `conductor up`,
+the self-service crew route, start, add and every resume route; vitest for
+`taskProblems`; Playwright `tasks-editor.spec.ts`.
 
 **5. engine** (`internal/crew/task.go`, `run.go`, `worktree.go`, `gitcli`):
 decisions 3–6 and 12: `pump` under the engine's lock after every launch,
-close, result, unpause, cancel or retry; `dispatch` in order (the
-`attempt.reserved` row, the member's previous session stopped,
-`AddWorktreeAt`, the task files, `setup`, `Launch`, `attempt.launched`, the
-typed line, `attempt.prompted`); `SubmitResult` with its 409 rules; `verify`
-on a goroutine in a WaitGroup that `stop` waits on; the `OnActivity` guards;
+close, result, unpause, cancel or retry; `dispatch` in order (the registry
+slot reserved through `Launcher.Reserve`, the `attempt.reserved` row, the
+member's previous session stopped, `AddWorktreeAt`, the task files, `setup`,
+`Launch` with the reservation, `attempt.launched`, the typed line,
+`attempt.prompted`; a refusal at the slot spends nothing and makes
+nothing); `SubmitResult` with its 409 rules; `verify` on a goroutine in a
+WaitGroup that `stop` waits on, in the result's own detached checkout, with
+`setup` run there first; the `OnActivity` guards;
 `Run.tasks`, `MemberState.task` and `attempt`; `runState` by mode and its
 web mirror. Tests in `managed_test.go` on a real repository, the fake
-launcher, a fake ledger and a `runCheck` seam: the caps; the worktree at the
-input commit; a dependent seeing the producer's tree; dirty, stale and
-mismatched refusals; `done` completing nothing; handoffs not typed; a session
-end failing its attempt; Stop draining checks; `AddWorktreeAt` in
-`worktree_test.go`.
+launcher, a fake ledger and a `runCheck` seam: the caps; a slot refused
+before anything is made; the worktree at the input commit; a dependent
+seeing the producer's tree; dirty, stale and mismatched refusals; a file
+changed and restored in the worker's checkout during a check leaving the
+receipt true to the result commit; `done` completing nothing; handoffs not
+typed; a session end failing its attempt; Stop draining checks;
+`AddWorktreeAt` in `worktree_test.go`; and in `internal/api`, the
+reservation against the real registry at `MaxSessions`.
 
 **6. agent surface** (`internal/api/tasks.go`, `internal/cli/mcp.go`,
 `task.go`, `internal/agents/skill.go`, `web/e2e/stub-agent.sh`,
@@ -237,8 +283,10 @@ graph, the actions and `runState`; Playwright assertions in `tasks.spec.ts`
 and rows in `crumbs.spec.ts` and `hscroll.spec.ts`.
 
 **8. recovery** (the resume paths in `run.go`, the ledger, the web):
-decision 9. Tests: a succeeded task never relaunched; a matching candidate
-verified with no session; a second resume refused; Playwright
+decision 9, the resume refusals of PR 4 lifted. Tests: a succeeded task
+never relaunched; a matching candidate verified with no session; a second
+resume refused; a predecessor's record and rows kept while a continuation
+cites them; Playwright
 `tasks-resume.spec.ts` on its own server restarted on the same data, token
 and port.
 

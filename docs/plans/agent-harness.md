@@ -797,11 +797,11 @@ The code was read against this document on 2026-10-22 (`main` at 37739bc, after 
 2. §5 and §22, `internal/execution`. `crew.Launcher`, one method, is the seam; the attempt rides in `session.CrewRef`; a session ID is a fresh identity per launch, so no incarnation field is needed.
 3. §10.2, delivery `acknowledged` by hook correlation. No agent's hooks carry one. The acknowledgment is the agent reading its task (`task_context`) or its inbox cursor; the levels are accepted, written (the Enter landed) and read.
 4. §10.3, unknown readiness as a hard blocker. The engine's 60 s cap stays for the first line, since an agent that prints nothing at its start would otherwise stall an unattended run; a task not read within a bound shows as attention.
-5. §9.1, packages. Tasks live in the saved crew's JSON, already versioned and strictly decoded; the task file written at dispatch is the resolved, recorded instruction.
+5. §9.1, packages. Tasks live in the saved crew's JSON, strictly decoded (an older binary refuses a crew with fields it does not know); the task file written at dispatch is the resolved, recorded instruction.
 6. §12.2, dirty snapshots. A result is a commit; the next task's worktree is created at that commit; a dirty tree is refused.
 7. §13, a durable decision history for questions. The claim state machine and first-answer-wins exist; the harness projects a question as "waiting on a person" and spends no attempt on it.
 8. §15 and §20, an event envelope with owner epochs and cursors. The existing `run` event plus a re-read of the run is the bounded snapshot read; the ledger's sequence is the run's revision.
-9. §21, resume. `ResumeRun` makes a new run and relaunches every resumable member at once (`after` and `manual` members wait for their rule); a managed resume is a continuation that imports accepted results by reference and dispatches only what is unfinished.
+9. §21, resume. `ResumeRun` makes a new run and relaunches every member with a resumable conversation at once, whatever its start rule (`run.go:595-621`); only the members without one wait for their rule. A managed resume is a continuation that imports accepted results by reference and dispatches only what is unfinished.
 
 **Statements above that the code contradicts.**
 
@@ -809,9 +809,9 @@ The code was read against this document on 2026-10-22 (`main` at 37739bc, after 
 - §2.2, §2.3 and S15: `docs/dependencies.md` is a pin table; the dependency rules are in `AGENTS.md`. S14: `docs/repository-map.md` has "Adding things", no "extension points" section. There is no ADR directory and no epic convention. The stub agent is `web/e2e/stub-agent.sh`; there is no `internal/agents/stub*`.
 - §2.4: `welcome.submitAck` is announced by every owner, not negotiated (`local.go:2387-2388`); `input_failed` has no proto constant and is missing from protocol.md's error-code list.
 - §9.2: `session.MaxSubmitText` is 32,756 bytes (`proto.MaxInput` minus the paste markers); 4,096 bytes is the browser wire's `submit` limit. `SubmitLine` flattens newlines to spaces, so a task file carries the context, never a typed document.
-- §2.3 and S10: `agents.Adapter` declares no capabilities; MCP is wired for Claude Code and Codex only, on server sessions only; submission confirmation (Claude Code only) is "any attention change within 3 s, else Enter again", not a correlated acknowledgment.
+- §2.3 and S10: `agents.Adapter` is a struct of per-agent fields (`Inject`, `MCP`, `ConfirmsSubmit`, `Probe`, …), not a capability set an engine can query; MCP is wired for Claude Code and Codex only, on server sessions only; submission confirmation (Claude Code only) is "any attention change not from a person's typing within 3 s, else Enter again" (`confirmed()` leaves out `SourceInput`), not an acknowledgment correlated with a delivery.
 - §14: the agent token in the environment (`CONDUCTOR_NOTIFY_TOKEN`) is the authentication the MCP server and the CLI use, not metadata beside it.
 - §24: the check list omits `make preflight` and the Python suite (`docs/checks.md`).
 - §11.4, confirmed: `record.go`'s prune is unconditional and can delete a live run's record (#335).
-- Found on the way: no data-directory ownership lock exists (two servers may share one); the SSE stream has no cursor; every release binary is `CGO_ENABLED=0` and cross-compiled, so a cgo driver would break the build.
+- Found on the way: no data-directory ownership lock exists (two servers may share one, and each prunes the shared `runs/` directory); the SSE stream has no cursor; `createLocalSession` starts the PTY before the registry's capacity check (`sessions.go:275`, `:335`), so a refusal at the cap is not free of side effects; every release binary is `CGO_ENABLED=0` and cross-compiled, so a cgo driver would break the build.
 - "Journal" is taken: `Engine.Journal` is the snapshot save. The new store is the ledger.
