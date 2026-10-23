@@ -29,9 +29,39 @@ type fakeLedger struct {
 	tasks    map[string]ledger.TaskRow
 	attempts map[string]ledger.AttemptRow
 	checks   []ledger.CheckRow
+	// failOn names the events whose transaction fails (comma-separated;
+	// "kind[key=value]" matches a payload field too); failOnce clears it
+	// after one failure. blockOn names events whose transaction waits,
+	// once blocked is told, for release to close.
 	failOn   string
+	failOnce bool
+	blockOn  string
+	blocked  chan struct{}
+	release  chan struct{}
 	// unavailable, when set, is what Available returns.
 	unavailable error
+}
+
+// matches reports whether an event is named by spec.
+func matches(spec string, ev fakeEvent) bool {
+	for _, one := range strings.Split(spec, ",") {
+		one = strings.TrimSpace(one)
+		if one == "" {
+			continue
+		}
+		kind, cond, _ := strings.Cut(one, "[")
+		if kind != ev.kind {
+			continue
+		}
+		if cond == "" {
+			return true
+		}
+		key, value, _ := strings.Cut(strings.TrimSuffix(cond, "]"), "=")
+		if payload, ok := ev.payload.(map[string]any); ok && fmt.Sprint(payload[key]) == value {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeEvent struct {
@@ -65,9 +95,22 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 		return 0, err
 	}
 	l.mu.Lock()
+	blockOn, blocked, release := l.blockOn, l.blocked, l.release
+	l.mu.Unlock()
+	if blockOn != "" && slices.ContainsFunc(tx.events, func(ev fakeEvent) bool { return matches(blockOn, ev) }) {
+		select {
+		case blocked <- struct{}{}:
+		default:
+		}
+		<-release
+	}
+	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, ev := range tx.events {
-		if l.failOn != "" && ev.kind == l.failOn {
+		if l.failOn != "" && matches(l.failOn, ev) {
+			if l.failOnce {
+				l.failOn, l.failOnce = "", false
+			}
 			return 0, errors.New("ledger: disk full (injected)")
 		}
 	}
@@ -1305,4 +1348,247 @@ func TestAReviewsFindingsAreKeptInTheLedger(t *testing.T) {
 		t.Fatalf("build's result in the ledger: %q", row.Result)
 	}
 	stopRun(t, e, run.ID)
+}
+
+func TestEarlierPendingRowsSurviveALaterUndo(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	l.mu.Lock()
+	l.failOn = "task.succeeded,run.paused"
+	l.mu.Unlock()
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	// The acceptance and the pause it leads to both fail: the rows wait.
+	waitLogged(t, e, run.ID, "dispatch paused", 1, 10*time.Second)
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	if err := e.PauseRun(context.Background(), run.ID, false); err == nil {
+		t.Fatal("an unpause the ledger refused was taken")
+	}
+	if r, _ := e.Get(run.ID); !r.Paused {
+		t.Fatal("the undone unpause left the run unpaused")
+	}
+	l.mu.Lock()
+	if row := l.tasks[run.ID+"/build"]; row.State == ledger.TaskSucceeded {
+		l.mu.Unlock()
+		t.Fatal("the task's row landed before any commit")
+	}
+	l.failOn = ""
+	l.mu.Unlock()
+	// The next commit carries everything that waited, and the end.
+	if err := e.PauseRun(context.Background(), run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	trow, rrow := l.tasks[run.ID+"/build"], l.runs[run.ID]
+	l.mu.Unlock()
+	if trow.State != ledger.TaskSucceeded || rrow.Outcome != ledger.OutcomeSucceeded || rrow.State != ledger.RunFinished || rrow.Paused {
+		t.Fatalf("after the commit that carried the rows: task %+v run %+v", trow, rrow)
+	}
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptSucceeded {
+		t.Fatalf("the attempt's row: %+v", row)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestADispatchDecidesOnCommittedState(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("test", "lead", "build")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	ctx := context.Background()
+	if err := e.PauseRun(ctx, run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	// An unpause held in its commit and then refused: while it hangs the
+	// run reads as unpaused, and nothing dispatches on that.
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "run.paused[paused=false]", make(chan struct{}, 1), make(chan struct{})
+	l.failOn, l.failOnce = "run.paused[paused=false]", true
+	l.mu.Unlock()
+	unpaused := make(chan error, 1)
+	go func() { unpaused <- e.PauseRun(ctx, run.ID, false) }()
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the unpause did not reach its commit")
+	}
+	submitted := make(chan error, 1)
+	go func() {
+		_, err := e.SubmitResult(ctx, a.Attempt.SessionID, Result{Summary: "built"})
+		submitted <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	close(l.release)
+	if err := <-unpaused; err == nil {
+		t.Fatal("the refused unpause was taken")
+	}
+	if err := <-submitted; err != nil {
+		t.Fatal(err)
+	}
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	time.Sleep(300 * time.Millisecond)
+	r, _ := e.Get(run.ID)
+	if !r.Paused || taskOf(t, e, run.ID, "test").Attempts != 0 {
+		t.Fatalf("after the refused unpause: paused=%v test=%+v", r.Paused, taskOf(t, e, run.ID, "test"))
+	}
+	if err := e.PauseRun(ctx, run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, run.ID, "test", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+}
+
+func TestASecondSubmitWaitsForTheFirstsCommit(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	ctx := context.Background()
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "result.submitted", make(chan struct{}, 1), make(chan struct{})
+	l.failOn, l.failOnce = "result.submitted", true
+	l.mu.Unlock()
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.SubmitResult(ctx, a.Attempt.SessionID, Result{Summary: "built"})
+		first <- err
+	}()
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first submit did not reach its commit")
+	}
+	second := make(chan error, 1)
+	go func() {
+		_, err := e.SubmitResult(ctx, a.Attempt.SessionID, Result{Summary: "built"})
+		second <- err
+	}()
+	// The second waits: it is not answered on a submission not committed.
+	select {
+	case err := <-second:
+		t.Fatalf("the second submit answered during the first's commit: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(l.release)
+	if err := <-first; err == nil {
+		t.Fatal("the first submit's refused commit was taken")
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("the second submit, after the first's failure: %v", err)
+	}
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptSucceeded || row.Result == "" {
+		t.Fatalf("the attempt's row: %+v", row)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestALaunchNotRecordedEndsItsSession(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	l.mu.Lock()
+	l.failOn, l.failOnce = "attempt.launched", true
+	l.mu.Unlock()
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	// Attempt 1's session is launched and not recorded: it is stopped and
+	// gets no task; attempt 2 is recorded and runs.
+	a2 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if a2.Attempts != 2 {
+		t.Fatalf("attempt 2: %+v", a2)
+	}
+	row := l.attemptRow(t, run.ID, "build", 1)
+	if row.State != ledger.AttemptFailed || row.Stage != "launch" || !strings.Contains(row.Error, "could not record the launch") || row.SessionID == "" {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	fl.mu.Lock()
+	first := fl.byID[row.SessionID]
+	fl.mu.Unlock()
+	select {
+	case <-first.Ended():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the unrecorded session was not stopped")
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestACancelsSessionStopsOnceTheCancelIsDurable(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	_, p := fl.attemptSession(t, a)
+	l.mu.Lock()
+	l.failOn, l.failOnce = "task.cancelled", true
+	l.mu.Unlock()
+	if err := e.CancelTask(context.Background(), run.ID, "build"); err == nil {
+		t.Fatal("a cancel the ledger refused was reported taken")
+	}
+	// The pause's commit carried the cancel: the session goes with it.
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled attempt's session was not stopped")
+	}
+	l.mu.Lock()
+	trow := l.tasks[run.ID+"/build"]
+	l.mu.Unlock()
+	if trow.State != ledger.TaskCancelled {
+		t.Fatalf("the task's row: %+v", trow)
+	}
+	if r, _ := e.Get(run.ID); !r.Paused {
+		t.Fatal("the run is not paused after the refused commit")
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestAStopDuringTheChecksSetupLeavesTheAttemptStopped(t *testing.T) {
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "ok", Argv: []string{"true"}}}
+	c := repoCrew(dir, build)
+	c.Setup = []Check{{ID: "slow", Argv: []string{"sh", "-c", "test -f built.txt && sleep 30 || true"}, TimeoutSeconds: 60}}
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptVerifying)
+	time.Sleep(500 * time.Millisecond) // the checkout made, the setup sleeping
+	began := time.Now()
+	stopRun(t, e, run.ID)
+	if took := time.Since(began); took > 10*time.Second {
+		t.Fatalf("the stop waited %v", took)
+	}
+	ts := taskOf(t, e, run.ID, "build")
+	if ts.Attempt.State != ledger.AttemptStopped || ts.State != ledger.TaskReady {
+		t.Fatalf("after the stop: %+v %+v", ts, ts.Attempt)
+	}
+}
+
+func TestForgettingARunDropsEveryAttemptsSession(t *testing.T) {
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("test", "lead", "build")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	b := waitAttempt(t, e, run.ID, "test", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+	e.mu.Lock()
+	e.forget(e.runs[run.ID])
+	e.mu.Unlock()
+	for _, id := range []string{a.Attempt.SessionID, b.Attempt.SessionID} {
+		if _, ok := e.bySession.Load(id); ok {
+			t.Fatalf("session %s still maps to the forgotten run", id)
+		}
+	}
 }

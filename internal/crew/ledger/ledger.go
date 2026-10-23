@@ -33,8 +33,15 @@ const (
 )
 
 // Version is the schema this binary writes. A database of a later version
-// opens read-only.
-const Version = 1
+// opens read-only; an earlier one is brought to it (migrations).
+const Version = 2
+
+// migrations bring a database from the version keyed to the next, in one
+// transaction with the version's change: 1 to 2 adds the attempts'
+// result column.
+var migrations = map[int][]string{
+	1: {"ALTER TABLE attempts ADD COLUMN result TEXT NOT NULL DEFAULT ''"},
+}
 
 // LockWait is how long a ledger keeps trying for the owner lock held by
 // another process after Open (awaitLock): a desktop restart overlaps the
@@ -330,7 +337,7 @@ func (l *Ledger) prepare(ctx context.Context) error {
 	case err == nil && version == Version:
 		return nil
 	case err == nil:
-		return fmt.Errorf("ledger: the database is version %d, which this Conductor cannot bring to %d", version, Version)
+		return l.migrate(ctx, version)
 	case errors.Is(err, sql.ErrNoRows) || isNoTable(err):
 		// New, or empty: made whole in one transaction.
 	default:
@@ -347,6 +354,31 @@ func (l *Ledger) prepare(ctx context.Context) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (?)", Version); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrate brings the database from version from to Version, one version
+// at a time in one transaction, or refuses one it has no way up from.
+func (l *Ledger) migrate(ctx context.Context, from int) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for v := from; v < Version; v++ {
+		stmts, ok := migrations[v]
+		if !ok {
+			return fmt.Errorf("ledger: the database is version %d, which this Conductor cannot bring to %d", from, Version)
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("ledger: migrating from version %d: %w", v, err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE schema_version SET version = ?", Version); err != nil {
 		return err
 	}
 	return tx.Commit()

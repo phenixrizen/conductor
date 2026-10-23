@@ -2809,8 +2809,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   a run's transactions commit in order, each with the state as it was, a
   change the ledger refuses is undone or pauses the run's dispatch, and the
   end is reported once its commit is in; a submitted result is kept whole in
-  the attempt's row (summary, issues, verdict, findings), and the checks'
-  checkout refuses a crew directory the result turned into a link. A done finishes nothing (one reminder), a handoff is noted
+  the attempt's row (summary, issues, verdict, findings: the ledger's schema
+  is version 2 for it, a version 1 database brought to it as it opens), and
+  the checks' checkout refuses a crew directory the result turned into a
+  link. A done finishes nothing (one reminder), a handoff is noted
   and never typed, a session ending before its result fails its attempt.
   Every transition goes to the ledger before its side effect. The run reports
   `tasks`, `paused` and `outcome` and is finished by the outcome, not by its

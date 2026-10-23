@@ -1591,6 +1591,14 @@ func (e *Engine) forget(r *run) {
 			e.bySession.Delete(m.state.SessionID)
 		}
 	}
+	// A managed run's earlier attempts had sessions of their own.
+	for _, t := range r.tasks {
+		for _, a := range t.attempts {
+			if a.sessionID != "" {
+				e.bySession.Delete(a.sessionID)
+			}
+		}
+	}
 	r.cancel()
 	if e.OnForget != nil {
 		e.OnForget(r.snapshot(false, false))

@@ -817,3 +817,49 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 		t.Fatalf("%d bytes of logs kept, past the budget", total)
 	}
 }
+
+// A database the first Conductor made (version 1, no result column on the
+// attempts) is brought to the version this one writes as it opens.
+func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	if _, err := l.db.Exec("ALTER TABLE attempts DROP COLUMN result"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.db.Exec("UPDATE schema_version SET version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	again := openLedger(t, dir)
+	if ro, why := again.ReadOnly(); ro {
+		t.Fatalf("read-only after the migration: %s", why)
+	}
+	var version int
+	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
+		t.Fatalf("version %d %v", version, err)
+	}
+	ctx := context.Background()
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		if err := tx.PutRun(RunRow{ID: "team-00000001", CrewID: "team", State: RunRunning, CreatedAt: tx.Now()}); err != nil {
+			return err
+		}
+		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
+			return err
+		}
+		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now(), Result: `{"summary":"built"}`}); err != nil {
+			return err
+		}
+		return tx.Event("result.submitted", nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := again.Attempts(ctx, "team-00000001")
+	if err != nil || len(attempts) != 1 || attempts[0].Result != `{"summary":"built"}` {
+		t.Fatalf("attempts after the migration: %+v %v", attempts, err)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		return tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 2, Member: "lead", State: AttemptReserved, ReservedAt: tx.Now(), Result: strings.Repeat("x", MaxResult+1)})
+	}); err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("a result over the bound: %v", err)
+	}
+}

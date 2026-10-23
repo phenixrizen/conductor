@@ -455,12 +455,13 @@ func ev(kind string, payload map[string]any) tx {
 // rows changed are snapshotted there (drain), and the commit follows
 // without e.mu. A run's transactions thus commit in the order their
 // changes were made, each carrying the state as it was then, and no other
-// transaction takes a change's rows. On failure undo, when given, puts the
-// state back under e.mu (the rows then match the ledger again); without
-// one the rows stay marked for the next transaction, and the caller pauses
-// the run's dispatch (afterTransact). A change that sets the run's outcome
-// reports the end once committed. Nothing is written for a change that
-// changed nothing.
+// transaction takes a change's rows. On failure the snapshot's rows are
+// marked again for the next transaction (those of earlier failures among
+// them), undo, when given, puts this change's state back under e.mu, and
+// an end pending stays pending; the caller pauses the run's dispatch where
+// the state stays ahead (afterTransact). A change that sets the run's
+// outcome reports the end once committed. Nothing is written for a change
+// that changed nothing.
 func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo func()) error {
 	if e.ledger == nil {
 		return ErrNoLedger
@@ -493,11 +494,9 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if err != nil {
+		snap.undo(r)
 		if undo != nil {
 			undo()
-			r.endPending = false
-		} else {
-			snap.undo(r)
 		}
 		return err
 	}
@@ -510,18 +509,37 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	return nil
 }
 
-// afterTransact takes a transaction's outcome for the dispatch that rests
-// on it: committed, the ready tasks are dispatched; failed, the run's
-// dispatch pauses until a person looks, and the run log says why. The
-// caller does not hold e.mu.
-func (e *Engine) afterTransact(r *run, err error) {
+// pumpLocked dispatches the ready tasks on the state as committed: under
+// r.txMu, so no transaction is between its change and its commit while
+// the dispatch decides. The caller holds neither lock.
+func (e *Engine) pumpLocked(r *run) {
+	r.txMu.Lock()
+	e.mu.Lock()
+	e.pump(r)
+	e.mu.Unlock()
+	r.txMu.Unlock()
+}
+
+// afterTransact takes a transaction's outcome for what rests on it:
+// committed, the ready tasks are dispatched; failed, the run's dispatch
+// pauses until a person looks, the run log says why, and the pause's own
+// commit carries the change's rows. It reports whether the change is
+// durable now, by the one commit or the other: a side effect that must
+// follow the change (a session stopped) waits for that. The caller holds
+// neither lock.
+func (e *Engine) afterTransact(r *run, err error) (durable bool) {
 	if err == nil {
-		e.mu.Lock()
-		e.pump(r)
-		e.mu.Unlock()
-		return
+		e.pumpLocked(r)
+		return true
 	}
-	_ = e.transact(context.Background(), r, func() tx {
+	return e.pauseFor(r, err) == nil
+}
+
+// pauseFor pauses the run's dispatch after the ledger refused a
+// transaction, in a transaction that carries what the refused one could
+// not. The caller holds neither lock.
+func (e *Engine) pauseFor(r *run, err error) error {
+	return e.transact(context.Background(), r, func() tx {
 		e.pauseDispatch(r, err)
 		return ev("run.paused", map[string]any{"paused": true, "why": session.CleanMessage(err.Error())})
 	}, nil)
@@ -780,9 +798,7 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 	}, nil); err != nil {
 		return err
 	}
-	e.mu.Lock()
-	e.pump(r)
-	e.mu.Unlock()
+	e.pumpLocked(r)
 	return nil
 }
 
@@ -966,9 +982,18 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	e.mu.Unlock()
 	if prev != "" {
 		if l, ok := e.lookup(prev); ok && !l.Info().Status.Ended() {
-			_ = e.transact(ctx, r, func() tx {
+			if err := e.transact(ctx, r, func() tx {
 				return ev("session.released", map[string]any{"member": m.def.Name, "session": prev, "for": t.def.ID})
-			}, nil)
+			}, nil); err != nil {
+				// Not recorded: the session stays, the attempt is not
+				// spent, and the run's dispatch pauses.
+				_ = e.transact(context.Background(), r, func() tx {
+					r.unreserve(a, "the ledger could not record the attempt: "+session.CleanMessage(err.Error()))
+					e.pauseDispatch(r, err)
+					return ev("run.paused", map[string]any{"paused": true, "why": session.CleanMessage(err.Error())})
+				}, nil)
+				return
+			}
 			stopLocal(l)
 			select {
 			case <-l.Ended():
@@ -1076,9 +1101,12 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail("task file", err)
 		return
 	}
-	_ = e.transact(ctx, r, func() tx {
+	if err := e.transact(ctx, r, func() tx {
 		return ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
-	}, nil)
+	}, nil); err != nil {
+		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err))
+		return
+	}
 	// The setup, in the worktree, before the member starts.
 	for _, ch := range r.setup {
 		if err := e.runSetup(ctx, r, a, cwd, ch, "attempt.setup"); err != nil {
@@ -1096,7 +1124,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	id := local.Info().ID
 	started := time.Now().UTC()
 	var stopping bool
-	_ = e.transact(ctx, r, func() tx {
+	lerr := e.transact(ctx, r, func() tx {
 		a.sessionID, a.launchedAt = id, started
 		if a.closedAt.IsZero() {
 			a.state = ledger.AttemptLaunched
@@ -1110,9 +1138,17 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		return ev("attempt.launched", map[string]any{"task": t.def.ID, "attempt": a.n, "session": id})
 	}, nil)
 	go e.watchAttempt(r, a, local)
+	// Closed before its session is stopped, so the stage is the launch's,
+	// not the watcher's "session ended".
 	if stopping {
-		stopLocal(local)
 		fail("launch", ErrRunStopped)
+		stopLocal(local)
+		return
+	}
+	if lerr != nil {
+		// The session is not in the ledger: it does not get its task.
+		fail("launch", fmt.Errorf("the ledger could not record the launch: %w", lerr))
+		stopLocal(local)
 		return
 	}
 	// The line: typed once the session is ready, as a role prompt is.
@@ -1120,27 +1156,33 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		if r.ctx.Err() != nil {
 			err = ErrRunStopped
 		}
-		stopLocal(local)
 		fail("prompt", err)
+		stopLocal(local)
 		return
 	}
-	_ = e.transact(ctx, r, func() tx {
+	if err := e.transact(ctx, r, func() tx {
 		if !a.closedAt.IsZero() || a.state != ledger.AttemptLaunched {
 			return tx{}
 		}
 		a.promptedAt, a.state = time.Now().UTC(), ledger.AttemptRunning
 		r.markAttempt(a)
 		return ev("attempt.prompted", map[string]any{"task": t.def.ID, "attempt": a.n})
-	}, nil)
+	}, nil); err != nil {
+		// The line is typed and the agent at work: the state stays ahead,
+		// marked, and the run's dispatch pauses until a person looks.
+		_ = e.pauseFor(r, err)
+	}
 }
 
 // runSetup runs one setup command in dir (an attempt's working directory,
 // or the checks' checkout) and records how it went under the event kind.
 func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, ch Check, kind string) error {
 	res := e.runCommand(ctx, dir, ch, io.Discard, nil)
-	_ = e.transact(context.Background(), r, func() tx {
+	if err := e.transact(context.Background(), r, func() tx {
 		return ev(kind, map[string]any{"task": a.t.def.ID, "attempt": a.n, "setup": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "error": res.Err, "duration": res.Duration.String()})
-	}, nil)
+	}, nil); err != nil {
+		return fmt.Errorf("the ledger could not record %s: %w", ch.ID, err)
+	}
 	switch {
 	case res.Err != "" && !res.TimedOut:
 		return fmt.Errorf("%s could not run: %s", ch.ID, res.Err)
@@ -1260,9 +1302,13 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 	if err := res.validate(t.def.Kind); err != nil {
 		return TaskState{}, err
 	}
+	// The first look waits for a transaction in flight (a first submit's
+	// commit), so a second submit answers on the committed state.
+	r.txMu.Lock()
 	e.mu.Lock()
 	if e.runs[r.id] != r || t.active() != a {
 		e.mu.Unlock()
+		r.txMu.Unlock()
 		return TaskState{}, ErrStaleAttempt
 	}
 	switch a.state {
@@ -1271,18 +1317,23 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 		if a.submitted != nil && (res.Commit == "" || res.Commit == a.result) {
 			st := r.taskStateOf(t)
 			e.mu.Unlock()
+			r.txMu.Unlock()
 			return st, nil
 		}
 		e.mu.Unlock()
+		r.txMu.Unlock()
 		return TaskState{}, ErrStaleAttempt
 	case ledger.AttemptRunning:
 	default:
+		state := a.state
 		e.mu.Unlock()
-		return TaskState{}, fmt.Errorf("%w: it is %s", ErrNotRunning, a.state)
+		r.txMu.Unlock()
+		return TaskState{}, fmt.Errorf("%w: it is %s", ErrNotRunning, state)
 	}
 	a.state = ledger.AttemptSubmitting
 	worktree, branch, start, inputs := a.worktree, a.branch, a.start, slices.Clone(a.inputs)
 	e.mu.Unlock()
+	r.txMu.Unlock()
 	// back refuses the result: the attempt runs on, unless its session
 	// ended meanwhile, which fails it.
 	back := func(err error) (TaskState, error) {
@@ -1459,6 +1510,11 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 			// Closed meanwhile (cancelled, stopped): what closed it wrote it.
 			return tx{}
 		}
+		if !ok && (r.stopping || r.ctx.Err() != nil) {
+			// Cut short by a stop: the stop closes it as stopped, not
+			// failed, and the task stays ready for a continuation.
+			return tx{}
+		}
 		if ok {
 			res := a.submitted
 			t.result = &taskResult{attempt: a.n, commit: a.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
@@ -1516,9 +1572,7 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 		r.note(session.ActivityError, "the ledger could not record the %s", map[bool]string{true: "pause", false: "unpause"}[paused])
 	})
 	if err == nil && !paused {
-		e.mu.Lock()
-		e.pump(r)
-		e.mu.Unlock()
+		e.pumpLocked(r)
 	}
 	return err
 }
@@ -1566,13 +1620,13 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 		}
 		return out
 	}, nil)
-	// The session goes once the cancel is recorded.
-	if err == nil && sessionID != "" {
+	// The session goes once the cancel is recorded, by its own commit or
+	// by the pause's that carries it.
+	if e.afterTransact(r, err) && sessionID != "" {
 		if l, ok := e.lookup(sessionID); ok {
 			stopLocal(l)
 		}
 	}
-	e.afterTransact(r, err)
 	return err
 }
 
