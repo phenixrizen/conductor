@@ -59,11 +59,11 @@ func (t *Tx) Run() (RunRow, bool, error) {
 // it). fn's error, or the commit's, undoes everything. ErrReadOnly when the
 // ledger takes no writes.
 func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) error) (int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.readOnly {
 		return 0, fmt.Errorf("%w: %s", ErrReadOnly, l.why)
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
 		return 0, ErrClosed
 	}
@@ -479,8 +479,8 @@ type Recovered struct {
 // finished keeps its state. One `recovered` event per run touched says
 // so. A second call finds nothing open and writes nothing.
 func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
-	if l.readOnly {
-		return nil, fmt.Errorf("%w: %s", ErrReadOnly, l.why)
+	if ro, why := l.ReadOnly(); ro {
+		return nil, fmt.Errorf("%w: %s", ErrReadOnly, why)
 	}
 	runs, err := l.runs(ctx, `WHERE state = ?
 		OR EXISTS (SELECT 1 FROM attempts a WHERE a.run_id = runs.id AND a.state IN (?, ?, ?, ?, ?))

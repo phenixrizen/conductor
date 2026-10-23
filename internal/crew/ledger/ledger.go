@@ -36,8 +36,9 @@ const (
 // opens read-only.
 const Version = 1
 
-// LockWait is how long Open waits for the owner lock held by another
-// process: a desktop restart overlaps the old server's shutdown.
+// LockWait is how long a ledger keeps trying for the owner lock held by
+// another process after Open (awaitLock): a desktop restart overlaps the
+// old server's shutdown. The server serves meanwhile.
 var LockWait = 10 * time.Second
 
 // Ledger is the open database. One connection serves it, so every
@@ -57,6 +58,13 @@ type Ledger struct {
 	readOnly bool
 	why      string
 	lock     *ownerLock
+	// done ends awaitLock when the ledger is closed; ownedLate says the
+	// lock was taken after Open, onOwned is what runs then (OnOwned), and
+	// notified that it ran.
+	done      chan struct{}
+	ownedLate bool
+	onOwned   func()
+	notified  bool
 	// beforeCommit, when set, runs before a transition commits: a test
 	// makes the commit fail.
 	beforeCommit func() error
@@ -87,8 +95,13 @@ func Open(dir string) (*Ledger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	l := &Ledger{dir: dir}
-	lock, why, err := takeLock(filepath.Join(dir, Lock), LockWait)
+	l := &Ledger{dir: dir, done: make(chan struct{})}
+	path := filepath.Join(dir, File)
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("ledger: %s is a symbolic link", path)
+	}
+	lockPath := filepath.Join(dir, Lock)
+	lock, why, held, err := takeLock(lockPath)
 	if err != nil {
 		// The lock file itself: the ledger is unavailable, the server not.
 		l.readOnly, l.why = true, err.Error()
@@ -98,41 +111,58 @@ func Open(dir string) (*Ledger, error) {
 	if lock == nil {
 		l.readOnly, l.why = true, why
 	}
-	path := filepath.Join(dir, File)
-	fi, statErr := os.Lstat(path)
-	if statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
-		l.release()
-		return nil, fmt.Errorf("ledger: %s is a symbolic link", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := l.attach(ctx, path); err != nil {
+		return nil, err
 	}
+	if lock == nil && held {
+		// Another server holds the lock, most likely the one this server
+		// replaces, still shutting down: this one serves at once, reads
+		// what there is, and takes the lock as it is let go (awaitLock),
+		// for up to LockWait.
+		l.why = "waiting for the owner lock: " + why
+		go l.awaitLock(lockPath, path)
+	}
+	return l, nil
+}
+
+// attach opens the database at path as the ledger is: the owner's,
+// prepared (the schema, the check) and written, or read-only. A database
+// that will not open as the owner's is kept as it is, read when it can be,
+// never written; one that will not open at all leaves nothing to read.
+// An error is the chmod's alone, the lock let go. The caller holds mu, or
+// is Open.
+func (l *Ledger) attach(ctx context.Context, path string) error {
+	_, statErr := os.Lstat(path)
 	if l.readOnly && statErr != nil {
 		// Nothing to read, and not ours to make.
 		l.why += "; no database to read"
-		return l, nil
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	db, err := l.open(ctx, path, l.readOnly)
 	if err != nil {
 		if l.readOnly {
 			l.why += "; " + err.Error()
-			return l, nil
+			return nil
 		}
 		// The owner, but the database will not open (a damaged header):
 		// kept as it is, read when it can be, never written.
 		l.readOnly, l.why = true, err.Error()
 		if db, err = l.open(ctx, path, true); err != nil {
 			l.why += "; nor read: " + err.Error()
-			return l, nil
+			return nil
 		}
 		l.db = db
-		return l, nil
+		return nil
 	}
 	l.db = db
 	if !l.readOnly {
 		if err := os.Chmod(path, 0o600); err != nil {
 			db.Close()
+			l.db = nil
 			l.release()
-			return nil, err
+			return err
 		}
 		if err := l.prepare(ctx); err != nil {
 			// A damaged database, or one a later binary wrote: kept as it
@@ -142,12 +172,92 @@ func Open(dir string) (*Ledger, error) {
 			if db, err = l.open(ctx, path, true); err != nil {
 				l.why += "; nor read: " + err.Error()
 				l.db = nil
-				return l, nil
+				return nil
 			}
 			l.db = db
 		}
 	}
-	return l, nil
+	return nil
+}
+
+// awaitLock tries for the owner lock every 250 ms for up to LockWait
+// after Open and, once it is taken, opens the database as the owner's in
+// place of the read-only one, under mu, so a reader sees one or the other;
+// then OnOwned's function runs. Past LockWait the ledger stays read-only
+// and says who holds the lock. Close ends the wait.
+func (l *Ledger) awaitLock(lockPath, path string) {
+	deadline := time.Now().Add(LockWait)
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-l.done:
+			return
+		case <-tick.C:
+		}
+		lock, why, held, err := takeLock(lockPath)
+		l.mu.Lock()
+		if l.closed {
+			l.mu.Unlock()
+			if lock != nil {
+				lock.release()
+			}
+			return
+		}
+		switch {
+		case err != nil:
+			l.why = err.Error()
+		case lock != nil:
+			l.lock = lock
+			if l.db != nil {
+				l.db.Close()
+				l.db = nil
+			}
+			l.readOnly, l.why = false, ""
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err := l.attach(ctx, path)
+			cancel()
+			if err != nil {
+				l.readOnly, l.why = true, err.Error()
+			}
+			l.ownedLate = true
+			cb := l.onOwned
+			run := cb != nil && !l.readOnly && !l.notified
+			if run {
+				l.notified = true
+			}
+			l.mu.Unlock()
+			if run {
+				cb()
+			}
+			return
+		case held && time.Now().Before(deadline):
+			l.mu.Unlock()
+			continue
+		default:
+			// Held past the wait, or locks no longer supported: as it is.
+			l.why = why
+		}
+		l.mu.Unlock()
+		return
+	}
+}
+
+// OnOwned sets what runs once the ledger has taken the owner lock after
+// Open (awaitLock): the server concludes what the last owner left open
+// then (Recover). Set after Open; a lock taken before the call runs fn at
+// once. It runs at most once.
+func (l *Ledger) OnOwned(fn func()) {
+	l.mu.Lock()
+	l.onOwned = fn
+	run := fn != nil && l.ownedLate && !l.readOnly && !l.notified
+	if run {
+		l.notified = true
+	}
+	l.mu.Unlock()
+	if run {
+		fn()
+	}
 }
 
 // open opens the database at path and reaches it once.
@@ -247,10 +357,14 @@ func isNoTable(err error) bool {
 }
 
 // ReadOnly reports whether the ledger takes no writes, and why: another
-// server holds the owner lock, locks are not supported where the data
-// directory is, the database failed its check, or a newer Conductor wrote
-// it.
-func (l *Ledger) ReadOnly() (bool, string) { return l.readOnly, l.why }
+// server holds the owner lock (waited for, for a while after Open), locks
+// are not supported where the data directory is, the database failed its
+// check, or a newer Conductor wrote it.
+func (l *Ledger) ReadOnly() (bool, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.readOnly, l.why
+}
 
 // Dir is the runs directory the ledger lives in.
 func (l *Ledger) Dir() string { return l.dir }
@@ -265,6 +379,9 @@ func (l *Ledger) Close() error {
 		return nil
 	}
 	l.closed = true
+	if l.done != nil {
+		close(l.done)
+	}
 	var errs []error
 	if l.db != nil {
 		if !l.readOnly {

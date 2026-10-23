@@ -187,18 +187,77 @@ func TestTheOwnerLockHoldsAcrossProcesses(t *testing.T) {
 	old := LockWait
 	LockWait = 300 * time.Millisecond
 	t.Cleanup(func() { LockWait = old })
+	// Open does not wait: the ledger is read-only at once, waiting for the
+	// lock, and says who holds it; past LockWait it stops waiting.
+	began := time.Now()
 	l, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if took := time.Since(began); took > 200*time.Millisecond {
+		t.Fatalf("Open waited %v for a held lock", took)
+	}
 	ro, why := l.ReadOnly()
-	if !ro || !strings.Contains(why, "another server holds") || !strings.Contains(why, "pid") {
+	if !ro || !strings.HasPrefix(why, "waiting for the owner lock: another server holds") || !strings.Contains(why, "pid") {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
+	if _, err := l.Transition(context.Background(), "team-00000001", func(tx *Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a transition while waiting: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		ro, why = l.ReadOnly()
+		if !strings.HasPrefix(why, "waiting") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still waiting after LockWait: %s", why)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !ro || !strings.HasPrefix(why, "another server holds") {
+		t.Fatalf("after LockWait: %v %s", ro, why)
+	}
 	l.Close()
-	// The helper lets go: the lock is ours.
+	// Let go within the wait, the lock is taken in the background: the
+	// ledger turns the owner's, and OnOwned's function runs once.
+	LockWait = 5 * time.Second
+	l, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ro, why := l.ReadOnly(); !ro || !strings.HasPrefix(why, "waiting") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	owned := make(chan struct{}, 2)
+	l.OnOwned(func() { owned <- struct{}{} })
 	stdin.Close()
 	helper.Wait()
+	select {
+	case <-owned:
+	case <-time.After(4 * time.Second):
+		ro, why := l.ReadOnly()
+		t.Fatalf("the lock was not taken once let go: read-only %v: %s", ro, why)
+	}
+	if ro, why := l.ReadOnly(); ro {
+		t.Fatalf("still read-only: %s", why)
+	}
+	if _, err := l.Transition(context.Background(), "team-00000001", func(tx *Tx) error {
+		if err := tx.PutRun(RunRow{ID: "team-00000001", CrewID: "team", State: RunRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		return tx.Event("run.created", nil)
+	}); err != nil {
+		t.Fatalf("a transition as the late owner: %v", err)
+	}
+	l.OnOwned(func() { owned <- struct{}{} })
+	select {
+	case <-owned:
+		t.Fatal("OnOwned ran twice")
+	case <-time.After(200 * time.Millisecond):
+	}
+	l.Close()
+	// A new Open takes it at once.
 	l = openLedger(t, dir)
 	if ro, why := l.ReadOnly(); ro {
 		t.Fatalf("still read-only: %s", why)
@@ -578,8 +637,8 @@ func TestADamagedHeaderDoesNotFailOpen(t *testing.T) {
 // ledger says so, and Open does not fail.
 func TestUnsupportedLocksWithNoDatabaseDoNotFailOpen(t *testing.T) {
 	old := takeLock
-	takeLock = func(path string, wait time.Duration) (*ownerLock, string, error) {
-		return nil, "the filesystem of " + path + " does not support locks (test)", nil
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		return nil, "the filesystem of " + path + " does not support locks (test)", false, nil
 	}
 	t.Cleanup(func() { takeLock = old })
 	l, err := Open(filepath.Join(t.TempDir(), "runs"))
