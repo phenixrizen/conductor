@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -16,12 +17,25 @@ import (
 // data directory, so the Crews page can chart a crew's last runs after the
 // engine, or the server, has forgotten them: the run as GET /api/runs/{run}
 // answers it (members, their times, states, diffs and agent sessions, the
-// log), never a terminal's contents. At most maxRecords are kept; a save
-// past that drops the oldest by start time.
+// log), never a terminal's contents. At most maxRecords records of runs the
+// engine no longer holds are kept; a save past that drops the oldest of
+// those by start time, never a held run's: its record follows it from its
+// launch on (Engine.Journal), and would otherwise be the oldest, dropped and
+// written again at the run's next change, with no record of the run for a
+// server that ended in between. A managed run's record (Run.Managed) is a
+// cache of the ledger: never counted, never dropped here, nor marked
+// interrupted by reconcile; the ledger's owner prunes it with the run's
+// rows, once the run is closed and nothing cites it.
 type Records struct {
 	st     *store.Store
 	mu     sync.Mutex
 	closed bool
+	// held reports whether the engine still holds the run with the given ID
+	// (RecordEnds sets it): prune leaves its record alone and never counts
+	// it. It is called under mu on the goroutine that saves, which may be the
+	// one forgetting a run under the engine's lock (journalForgotten), so it
+	// must not take that lock.
+	held func(runID string) bool
 }
 
 // Close stops the records: a save after it is dropped (the server is
@@ -81,6 +95,10 @@ func (rs *Records) reconcile() error {
 		if !f.ok {
 			continue
 		}
+		if f.run.Managed != nil {
+			// The ledger says what became of it (ledger.Recover).
+			continue
+		}
 		if f.run.StoppedAt == nil && (f.run.State == RunRunning || f.run.State == RunNeedsInput) {
 			r := &files[i].run
 			r.State, r.NeedsInput = RunInterrupted, 0
@@ -116,7 +134,10 @@ func (rs *Records) reconcile() error {
 
 // Save writes r's record, replacing an earlier one of the same run (a
 // stopped run that was reopened and ended again), and drops the oldest past
-// maxRecords.
+// maxRecords. A managed run's record never goes back: a save with a
+// revision behind the one on disk, or with no revision at all, is dropped,
+// so a late snapshot cannot undo what the ledger has
+// (docs/plans/agent-harness-order.md, decision 7).
 func (rs *Records) Save(r Run) error {
 	if !ValidRunID(r.ID) {
 		return fmt.Errorf("records: bad run id %q", r.ID)
@@ -126,13 +147,43 @@ func (rs *Records) Save(r Run) error {
 	if rs.closed {
 		return nil
 	}
+	// A managed record on disk takes only a newer managed snapshot: an
+	// older one, or a legacy snapshot of the same run (a journal save
+	// queued before the run was known managed), is dropped.
+	var have Run
+	if ok, err := rs.st.LoadLimit(r.ID+".json", &have, maxRecordSize); err == nil && ok && have.Managed != nil {
+		if r.Managed == nil || have.Managed.Revision > r.Managed.Revision {
+			return nil
+		}
+	}
 	if err := rs.st.Save(r.ID+".json", r); err != nil {
 		return err
 	}
 	return rs.prune()
 }
 
-// prune drops the oldest records past maxRecords. The caller holds rs.mu.
+// Delete removes a run's record: the ledger's owner, once the run's rows
+// are gone (ledger.Prune). Nothing when there is none.
+func (rs *Records) Delete(runID string) error {
+	if !ValidRunID(runID) {
+		return fmt.Errorf("records: bad run id %q", runID)
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.closed {
+		return nil
+	}
+	err := rs.st.Delete(runID + ".json")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// prune drops the oldest records past maxRecords among those of runs the
+// engine no longer holds (held) and that are not managed; a held run's
+// record and a managed run's are left alone and not counted. The caller
+// holds rs.mu.
 func (rs *Records) prune() error {
 	entries, err := rs.st.List()
 	if err != nil {
@@ -144,6 +195,12 @@ func (rs *Records) prune() error {
 	all, err := rs.load(entries)
 	if err != nil {
 		return err
+	}
+	all = slices.DeleteFunc(all, func(f recordFile) bool {
+		return (f.ok && f.run.Managed != nil) || (rs.held != nil && rs.held(strings.TrimSuffix(f.name, ".json")))
+	})
+	if len(all) <= maxRecords {
+		return nil
 	}
 	// Oldest first by start time; a record that cannot be read goes first.
 	slices.SortFunc(all, func(a, b recordFile) int {
@@ -280,6 +337,9 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 	if run == nil {
 		run = func(f func()) { go f() }
 	}
+	rs.mu.Lock()
+	rs.held = e.holds
+	rs.mu.Unlock()
 	type pending struct {
 		saved    uint64 // the newest end written
 		inflight int    // ends not yet saved or dropped; the entry goes at zero
