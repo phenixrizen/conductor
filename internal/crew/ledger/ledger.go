@@ -1,0 +1,329 @@
+// Package ledger keeps the managed runs' truth: one SQLite database per
+// data directory, every transition of a run one transaction committed
+// before the side effect it precedes, the events of a run in sequence, the
+// receipts of the commands that caused them, and the evidence of its checks.
+// It is the one package that imports the database driver (modernc.org/
+// sqlite, SQLite translated to Go, so the binaries stay CGO_ENABLED=0).
+// The run records (runs/<id>.json) stay the API's answer: a cache of this
+// database with a revision. See docs/plans/agent-harness-order.md,
+// decisions 7 and 8.
+package ledger
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	_ "modernc.org/sqlite" // the database driver, registered as "sqlite"
+)
+
+// File is the database's name under the runs directory; Lock is the owner
+// lock's.
+const (
+	File = "managed.sqlite"
+	Lock = "owner.lock"
+)
+
+// Version is the schema this binary writes. A database of a later version
+// opens read-only.
+const Version = 1
+
+// LockWait is how long Open waits for the owner lock held by another
+// process: a desktop restart overlaps the old server's shutdown.
+var LockWait = 10 * time.Second
+
+// Ledger is the open database. One connection serves it, so every
+// transaction is one BEGIN IMMEDIATE … COMMIT in turn, and a read never
+// sees a transition half done.
+type Ledger struct {
+	dir string
+	db  *sql.DB
+	// mu orders the writers: the one connection would too, but a
+	// transaction that waited on it would time out as busy instead.
+	mu sync.Mutex
+
+	readOnly bool
+	why      string
+	lock     *ownerLock
+	// beforeCommit, when set, runs before a transition commits: a test
+	// makes the commit fail.
+	beforeCommit func() error
+}
+
+// ErrReadOnly is returned by a write to a ledger that opened read-only;
+// Why says why.
+var ErrReadOnly = errors.New("ledger: read-only")
+
+// Open opens, or creates, the database under dir (the runs directory,
+// 0700) and takes the owner lock. It never fails for want of the lock or
+// of a usable database: the ledger then opens read-only, and ReadOnly
+// says why, so that the server runs its legacy crews while managed launches
+// answer 503. It fails only when the directory cannot be made or the file
+// cannot be opened at all.
+func Open(dir string) (*Ledger, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	l := &Ledger{dir: dir}
+	lock, why, err := takeOwnerLock(filepath.Join(dir, Lock), LockWait)
+	if err != nil {
+		return nil, err
+	}
+	l.lock = lock
+	if lock == nil {
+		l.readOnly, l.why = true, why
+	}
+	path := filepath.Join(dir, File)
+	if _, err := os.Lstat(path); err == nil {
+		if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			l.release()
+			return nil, fmt.Errorf("ledger: %s is a symbolic link", path)
+		}
+	}
+	db, err := sql.Open("sqlite", dsn(path, l.readOnly))
+	if err != nil {
+		l.release()
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	l.db = db
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		l.release()
+		return nil, fmt.Errorf("ledger: %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil && !l.readOnly {
+		db.Close()
+		l.release()
+		return nil, err
+	}
+	if !l.readOnly {
+		if err := l.prepare(ctx); err != nil {
+			// A damaged database, or one a later binary wrote: kept as it
+			// is, read when it can be, never written.
+			l.readOnly, l.why = true, err.Error()
+			db.Close()
+			db, err = sql.Open("sqlite", dsn(path, true))
+			if err != nil {
+				l.release()
+				return nil, err
+			}
+			db.SetMaxOpenConns(1)
+			l.db = db
+		}
+	}
+	return l, nil
+}
+
+// dsn is the connection string: the file, the pragmas every connection
+// needs (a busy timeout, foreign keys on, a full sync, WAL; on darwin a
+// full fsync, since a plain fsync there does not reach the disk), and
+// read-only mode when the ledger is.
+func dsn(path string, readOnly bool) string {
+	q := url.Values{}
+	pragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)", "journal_mode(WAL)"}
+	if runtime.GOOS == "darwin" {
+		pragmas = append(pragmas, "fullfsync(1)", "checkpoint_fullfsync(1)")
+	}
+	for _, p := range pragmas {
+		q.Add("_pragma", p)
+	}
+	q.Set("_time_format", "sqlite")
+	q.Set("_txlock", "immediate")
+	if readOnly {
+		q.Set("mode", "ro")
+	}
+	return "file:" + path + "?" + q.Encode()
+}
+
+// prepare checks the database (quick_check) and brings it to Version, or
+// refuses it: a later version, or one that fails the check.
+func (l *Ledger) prepare(ctx context.Context) error {
+	var check string
+	if err := l.db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&check); err != nil {
+		return fmt.Errorf("ledger: quick_check: %w", err)
+	}
+	if check != "ok" {
+		return fmt.Errorf("ledger: the database fails its check: %s", check)
+	}
+	var version int
+	err := l.db.QueryRowContext(ctx, "SELECT version FROM schema_version").Scan(&version)
+	switch {
+	case err == nil && version > Version:
+		return fmt.Errorf("ledger: the database is version %d, written by a newer Conductor; this one writes version %d", version, Version)
+	case err == nil && version == Version:
+		return nil
+	case err == nil:
+		return fmt.Errorf("ledger: the database is version %d, which this Conductor cannot bring to %d", version, Version)
+	case errors.Is(err, sql.ErrNoRows) || isNoTable(err):
+		// New, or empty: made whole in one transaction.
+	default:
+		return fmt.Errorf("ledger: schema_version: %w", err)
+	}
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, stmt := range schema {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("ledger: schema: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (?)", Version); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func isNoTable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
+// ReadOnly reports whether the ledger takes no writes, and why: another
+// server holds the owner lock, locks are not supported where the data
+// directory is, the database failed its check, or a newer Conductor wrote
+// it.
+func (l *Ledger) ReadOnly() (bool, string) { return l.readOnly, l.why }
+
+// Dir is the runs directory the ledger lives in.
+func (l *Ledger) Dir() string { return l.dir }
+
+// Close checkpoints the write-ahead log into the database, closes it and
+// releases the owner lock.
+func (l *Ledger) Close() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var errs []error
+	if l.db != nil {
+		if !l.readOnly {
+			if _, err := l.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		errs = append(errs, l.db.Close())
+		l.db = nil
+	}
+	l.release()
+	return errors.Join(errs...)
+}
+
+func (l *Ledger) release() {
+	if l.lock != nil {
+		l.lock.release()
+		l.lock = nil
+	}
+}
+
+// schema is version 1. Times are RFC 3339 text in UTC; JSON is text; a
+// run's rows go with it (ON DELETE CASCADE) when the owner prunes it.
+var schema = []string{
+	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
+	`CREATE TABLE runs (
+		id TEXT PRIMARY KEY,
+		crew_id TEXT NOT NULL,
+		crew TEXT NOT NULL,
+		base TEXT NOT NULL,
+		state TEXT NOT NULL,
+		outcome TEXT NOT NULL DEFAULT '',
+		paused INTEGER NOT NULL DEFAULT 0,
+		revision INTEGER NOT NULL DEFAULT 0,
+		continued_from TEXT NOT NULL DEFAULT '',
+		continued_by TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		closed_at TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE tasks (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		id TEXT NOT NULL,
+		member TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		state TEXT NOT NULL,
+		reason TEXT NOT NULL DEFAULT '',
+		attempts INTEGER NOT NULL DEFAULT 0,
+		result_attempt INTEGER NOT NULL DEFAULT 0,
+		result_commit TEXT NOT NULL DEFAULT '',
+		verdict TEXT NOT NULL DEFAULT '',
+		imported_from TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, id)
+	)`,
+	`CREATE TABLE attempts (
+		run_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		n INTEGER NOT NULL,
+		member TEXT NOT NULL,
+		session_id TEXT NOT NULL DEFAULT '',
+		worktree TEXT NOT NULL DEFAULT '',
+		branch TEXT NOT NULL DEFAULT '',
+		start_commit TEXT NOT NULL DEFAULT '',
+		result_commit TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL,
+		stage TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		reserved_at TEXT NOT NULL,
+		launched_at TEXT NOT NULL DEFAULT '',
+		prompted_at TEXT NOT NULL DEFAULT '',
+		closed_at TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, task_id, n),
+		FOREIGN KEY (run_id, task_id) REFERENCES tasks(run_id, id) ON DELETE CASCADE
+	)`,
+	`CREATE TABLE checks (
+		run_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		n INTEGER NOT NULL,
+		id TEXT NOT NULL,
+		k INTEGER NOT NULL,
+		argv TEXT NOT NULL,
+		dir TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL,
+		pid INTEGER NOT NULL DEFAULT 0,
+		pgroup INTEGER NOT NULL DEFAULT 0,
+		process_started_at TEXT NOT NULL DEFAULT '',
+		started_at TEXT NOT NULL,
+		finished_at TEXT NOT NULL DEFAULT '',
+		exit INTEGER NOT NULL DEFAULT -1,
+		signal TEXT NOT NULL DEFAULT '',
+		timed_out INTEGER NOT NULL DEFAULT 0,
+		killed INTEGER NOT NULL DEFAULT 0,
+		stable INTEGER NOT NULL DEFAULT 0,
+		truncated INTEGER NOT NULL DEFAULT 0,
+		total INTEGER NOT NULL DEFAULT 0,
+		log BLOB,
+		log_sha256 TEXT NOT NULL DEFAULT '',
+		tail TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, task_id, n, id, k),
+		FOREIGN KEY (run_id, task_id, n) REFERENCES attempts(run_id, task_id, n) ON DELETE CASCADE
+	)`,
+	`CREATE TABLE commands (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		actor TEXT NOT NULL,
+		id TEXT NOT NULL,
+		intent TEXT NOT NULL,
+		fingerprint TEXT NOT NULL,
+		status TEXT NOT NULL,
+		receipt TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (run_id, actor, id)
+	)`,
+	`CREATE TABLE events (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		seq INTEGER NOT NULL,
+		at TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		payload TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, seq)
+	)`,
+}

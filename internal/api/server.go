@@ -22,6 +22,7 @@ import (
 	"github.com/phenixrizen/conductor/internal/catalog"
 	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/phenixrizen/conductor/internal/crew/ledger"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/share"
 	"github.com/phenixrizen/conductor/internal/signal"
@@ -96,6 +97,9 @@ type Server struct {
 	// records keeps the runs that ended, under runs/ in the data directory
 	// (crew.Records); nil without one.
 	records *crew.Records
+	// ledger is the managed runs' ledger (internal/crew/ledger), opened
+	// beside the records; nil without a store.
+	ledger *ledger.Ledger
 	// pastes are the paste-invite peers of each server session (paste.go).
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
@@ -330,6 +334,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.records = records
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
+		ld, err := openLedger(context.Background(), st, log)
+		if err != nil {
+			return nil, err
+		}
+		s.ledger = ld
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
@@ -472,6 +481,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.records != nil {
 		s.records.Close()
 	}
+	if s.ledger != nil {
+		s.ledger.Close()
+	}
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -507,6 +519,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/resume", s.launching(s.handleResumeRun))
 	mux.HandleFunc("POST /api/runs/{run}/members/{name}/resume", s.launching(s.handleResumeRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/broadcast", s.launching(s.handleBroadcast))
+	mux.HandleFunc("GET /api/runs/{run}/commands/{command}", s.requireAdmin(s.handleGetCommand))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
 	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.launching(s.handleRevokeRunLink))
@@ -875,6 +888,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 		cancel()
 		s.records.Close()
+	}
+	if s.ledger != nil {
+		if err := s.ledger.Close(); err != nil {
+			s.log.Warn("the ledger did not close cleanly", "err", err)
+		}
 	}
 }
 
