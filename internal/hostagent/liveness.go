@@ -380,10 +380,9 @@ func (a *agent) keepHearing(ctx context.Context, c *websocket.Conn, l *connLive,
 			told = false
 			a.log.Info("the server answers the host's pings again")
 		}
-		held := a.creds.held()
-		a.pinging.Store(held)
-		if !held {
+		if !a.creds.held() {
 			pinging = time.Time{}
+			a.ticks.Add(1)
 			continue
 		}
 		if heard := l.heard.Load(); pinging.IsZero() || heard != heardThen {
@@ -395,5 +394,6 @@ func (a *agent) keepHearing(ctx context.Context, c *websocket.Conn, l *connLive,
 			return
 		}
 		a.pingServer(ctx, c, l)
+		a.ticks.Add(1)
 	}
 }

@@ -129,11 +129,13 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		// keepHearing has found no link held (a tick after the link went:
-		// it reserves no ping from then on), and the pings under way have
-		// their pongs, so none completes after the lapse and vouches again;
-		// then the spell passes: the last answered ping ages past the bound.
-		untilNotPinging(t, a)
+		// Two more ticks of keepHearing: the one it may have been in as the
+		// link went (a link held read, its ping reserved late) is done, and
+		// one that began after found no link held and reserved none; then
+		// the pings under way have their pongs, so none completes after the
+		// lapse and vouches again; then the spell passes: the last answered
+		// ping ages past the bound.
+		untilTicks(t, a, a.ticks.Load()+2)
 		untilPingsDone(t, a.live.Load())
 		a.live.Load().lapse()
 		untilVouches(t, a, false)
@@ -148,14 +150,13 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 
 var firstCases = []string{"start", "reconnect", "idle"}
 
-// untilNotPinging waits until keepHearing has found no link held at a
-// tick: it pings no more until one is.
-func untilNotPinging(t *testing.T, a *agent) {
+// untilTicks waits until keepHearing has done n ticks.
+func untilTicks(t *testing.T, a *agent, n int64) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	for a.pinging.Load() {
+	for a.ticks.Load() < n {
 		if time.Now().After(deadline) {
-			t.Fatal("the host still pings with no link held")
+			t.Fatalf("keepHearing did %d ticks, waiting for %d", a.ticks.Load(), n)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
