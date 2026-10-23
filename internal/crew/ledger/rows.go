@@ -127,7 +127,8 @@ type CheckRow struct {
 	Stable           bool
 	Truncated        bool
 	Total            int64
-	Log              []byte // at most MaxLog bytes
+	Log              []byte // at most MaxLog bytes; nil once dropped
+	LogDropped       bool   // the log was not kept: the run's logs were at MaxRunLogs; the hash and the tail stay
 	LogSHA256        string
 	Tail             string
 }
@@ -156,8 +157,11 @@ type EventRow struct {
 
 // Bounds.
 const (
-	// MaxLog bounds a check's log blob.
-	MaxLog = 1 << 20
+	// MaxLog bounds a check's log blob; MaxRunLogs bounds a run's logs in
+	// all: past it a check's log is dropped (LogDropped), its hash and tail
+	// kept, so a run's checks cannot fill the database.
+	MaxLog     = 1 << 20
+	MaxRunLogs = 64 << 20
 	// MaxPayload bounds an event's payload and a command's receipt.
 	MaxPayload = 64 << 10
 	// MaxCrew bounds the crew JSON kept with a run.
@@ -166,8 +170,11 @@ const (
 
 // maxCommands bounds the commands kept per run: past it a new one is
 // refused, since dropping an old receipt would let its resend run twice.
-// A variable for the tests.
-var maxCommands = 4096
+// A variable for the tests, as maxRunLogs (MaxRunLogs) is.
+var (
+	maxCommands = 4096
+	maxRunLogs  = int64(MaxRunLogs)
+)
 
 func stamp(t time.Time) string {
 	if t.IsZero() {

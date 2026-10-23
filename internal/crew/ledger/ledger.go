@@ -360,6 +360,7 @@ var schema = []string{
 		truncated INTEGER NOT NULL DEFAULT 0,
 		total INTEGER NOT NULL DEFAULT 0,
 		log BLOB,
+		log_dropped INTEGER NOT NULL DEFAULT 0,
 		log_sha256 TEXT NOT NULL DEFAULT '',
 		tail TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, task_id, n, id, k),
