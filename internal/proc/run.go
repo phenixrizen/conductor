@@ -1,8 +1,8 @@
 // Package proc runs one command outside a PTY, bounded: an argv array and
 // never a shell line, a directory, a timeout, the output capped at both
-// ends, the process group ended when the command is. The managed-run checks
-// (docs/plans/agent-harness-order.md) are its callers; a probe and git have
-// runners of their own.
+// ends, what the command leaves in its process group ended with it. The
+// managed-run checks (docs/plans/agent-harness-order.md) are its callers; a
+// probe and git have runners of their own.
 package proc
 
 import (
@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -23,10 +24,11 @@ import (
 const (
 	// MaxTimeout bounds Spec.Timeout.
 	MaxTimeout = 2 * time.Hour
-	// WaitDelay is how long Wait waits for the pipes to close after the
-	// process exits, or for the process to exit after its group is killed,
-	// before it gives up on them: what the process left behind is then
-	// killed with the group (Result.Killed).
+	// WaitDelay is how long Run waits, once the process has exited, for
+	// the output pipe to close: a child the process left behind holds it
+	// open, and is killed with the group when the delay runs out
+	// (Result.Killed). It is also how long Run waits for a stalled Log
+	// writer before leaving it behind.
 	WaitDelay = 2 * time.Second
 	// DefaultHead and DefaultTail are the bytes of output kept in memory
 	// when Spec says nothing: the first DefaultHead and the last DefaultTail.
@@ -36,6 +38,10 @@ const (
 	// dropped line, when Spec says nothing; LogTail is how much after it.
 	DefaultLogLimit = 1 << 20
 	LogTail         = 256 << 10
+	// logQueue bounds the chunks of output queued for a Log writer that
+	// does not keep up: past it the log is cut (Result.LogErr), never the
+	// run held up.
+	logQueue = 256
 )
 
 // Spec is one command to run.
@@ -58,13 +64,16 @@ type Spec struct {
 	// Head and Tail are the bytes of output kept in memory, the first and
 	// the last; DefaultHead and DefaultTail when zero.
 	Head, Tail int
-	// Log, when set, gets the output as it comes: the first LogLimit bytes
-	// (DefaultLogLimit when zero), then a line saying how many bytes were
-	// dropped, then the last LogTail bytes; everything, when there is less.
+	// Log, when set, gets the output as it comes, on a goroutine of its
+	// own, so a slow writer never holds the process up: the first LogLimit
+	// bytes (DefaultLogLimit when zero), then a line saying how many bytes
+	// were dropped, then the last LogTail bytes; everything, when there is
+	// less. A writer that falls logQueue chunks behind, or does not return
+	// within WaitDelay at the end, loses the rest (Result.LogErr).
 	Log      io.Writer
 	LogLimit int64
-	// Started, when set, is called once the process exists, before any of
-	// its output is read: a caller records the process before it waits.
+	// Started, when set, is called once the process exists and before any
+	// of its output is read: a caller records the process before it waits.
 	Started func(Process)
 }
 
@@ -92,22 +101,28 @@ type Result struct {
 	Total      int64
 	Truncated  bool
 	// Started and Duration are when the process started and how long the
-	// run took from there, the wait for its pipes included.
+	// run took from there, the wait for its pipe included.
 	Started  time.Time
 	Duration time.Duration
 	// TimedOut says Timeout passed; Canceled, that the caller's context
-	// ended first; Killed, that something in the process group was still
-	// alive after the wait and was killed then.
+	// ended first (cancelled, or its own deadline); Killed, that something
+	// the process left behind still held its output pipe WaitDelay after
+	// it exited, and the process group was killed then.
 	TimedOut, Canceled, Killed bool
 	// Err says why the run did not start, or what went wrong with it beyond
-	// its exit status; "" otherwise. LogErr is the first error writing Log.
+	// its exit status; "" otherwise. LogErr is the first error writing Log,
+	// or why the log was cut.
 	Err, LogErr string
 }
 
+// errTimeout is the cause of the run's own deadline, told apart from the
+// caller's context ending (Canceled).
+var errTimeout = errors.New("proc: timeout")
+
 // Run runs s and reports what became of it. It returns once the process has
-// exited (or was killed at the timeout or the context's end), its pipes are
-// closed or given up on (WaitDelay), and what it left in its process group
-// is killed.
+// exited (or was killed at the timeout or the context's end) and its output
+// pipe is closed, or given up on after WaitDelay with the group killed; a
+// Log writer still stalled then is left behind.
 func Run(ctx context.Context, s Spec) Result {
 	res := Result{Exit: -1}
 	if len(s.Argv) == 0 || s.Argv[0] == "" {
@@ -139,60 +154,99 @@ func Run(ctx context.Context, s Spec) Result {
 	if logLimit <= 0 {
 		logLimit = DefaultLogLimit
 	}
+	if err := ctx.Err(); err != nil {
+		res.Canceled = true
+		res.Err = "proc: " + err.Error()
+		return res
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, s.Timeout)
+	ctx, cancel := context.WithTimeoutCause(ctx, s.Timeout, errTimeout)
 	defer cancel()
+	// The output pipe is ours: the process and what it starts write to it,
+	// Run reads it after Started, and its end of file says the last holder
+	// is gone, which the wait after the exit relies on.
+	r, w, err := os.Pipe()
+	if err != nil {
+		res.Err = err.Error()
+		return res
+	}
 	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
 	cmd.Dir = s.Dir
 	cmd.Stdin = nil
 	cmd.Env = environment(s.Allow, s.Env)
-	cmd.WaitDelay = WaitDelay
-	mem := &capture{headMax: head, tailMax: tail}
-	var w io.Writer = mem
-	var lg *logCapture
-	if s.Log != nil {
-		lg = &logCapture{w: s.Log, limit: logLimit, tail: &capture{tailMax: LogTail}}
-		w = &both{a: mem, b: lg}
-	}
 	cmd.Stdout, cmd.Stderr = w, w
 	attr(cmd)
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
+		w.Close()
+		r.Close()
 		res.Err = err.Error()
+		classify(ctx, &res)
 		return res
 	}
+	w.Close() // the process holds the write end now
 	res.Started = started
 	res.Process = Process{PID: cmd.Process.Pid, Group: group(cmd), StartedAt: started}
 	if s.Started != nil {
 		s.Started(res.Process)
 	}
-	err := cmd.Wait()
-	res.Duration = time.Since(started)
-	switch ctx.Err() {
-	case context.DeadlineExceeded:
-		res.TimedOut = true
-	case context.Canceled:
-		res.Canceled = true
+
+	mem := &capture{headMax: head, tailMax: tail}
+	var sink io.Writer = mem
+	var lg *logSink
+	if s.Log != nil {
+		lg = newLogSink(s.Log, logLimit)
+		sink = io.MultiWriter(mem, lg)
 	}
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		io.Copy(sink, r)
+	}()
+
+	err = cmd.Wait() // the process; the pipe is read on, by the goroutine
+	res.Duration = time.Since(started)
 	if cmd.ProcessState != nil {
 		res.Exit, res.Signal = exitStatus(cmd.ProcessState)
 	}
 	var exit *exec.ExitError
-	if err != nil && !errors.As(err, &exit) && !errors.Is(err, exec.ErrWaitDelay) {
+	if err != nil && !errors.As(err, &exit) {
 		res.Err = err.Error()
 	}
-	if endGroup(cmd) {
+	classify(ctx, &res)
+	// The output pipe closes when its last holder is gone: the process,
+	// and whatever it started that kept it. One that holds it past
+	// WaitDelay is a child left behind, and the group is killed: a holder
+	// of the pipe is a descendant of the process, so the group is still
+	// theirs and no other's.
+	select {
+	case <-drained:
+	case <-time.After(WaitDelay):
+		killGroup(cmd)
 		res.Killed = true
+		r.Close() // ends the read, and the goroutine
+		<-drained
 	}
+	r.Close()
 	res.Head, res.Tail, res.Total, res.Truncated = mem.bytes()
 	if lg != nil {
-		lg.finish()
-		if lg.err != nil {
-			res.LogErr = lg.err.Error()
-		}
+		res.LogErr = lg.finish(WaitDelay)
 	}
 	return res
+}
+
+// classify reads the context's end into TimedOut (the run's own deadline)
+// or Canceled (the caller's context, however it ended).
+func classify(ctx context.Context, res *Result) {
+	if ctx.Err() == nil {
+		return
+	}
+	if errors.Is(context.Cause(ctx), errTimeout) {
+		res.TimedOut = true
+		return
+	}
+	res.Canceled = true
 }
 
 // checkName refuses a variable name Env may not set: Conductor's own, a
@@ -228,9 +282,7 @@ func environment(allow []string, set map[string]string) []string {
 }
 
 // capture keeps the first headMax bytes written and the last tailMax of
-// the rest, and counts them all. Stdout and stderr share one writer, so
-// exec gives them one pipe and one reader; the lock is for a caller that
-// does not.
+// the rest, and counts them all.
 type capture struct {
 	mu               sync.Mutex
 	headMax, tailMax int
@@ -284,38 +336,69 @@ func (c *capture) bytes() (head, tail []byte, total int64, truncated bool) {
 	return head, tail, c.total, c.total > int64(len(head)+len(tail))
 }
 
-// logCapture writes the first limit bytes to w as they come and keeps the
-// last LogTail of the rest for finish, which writes the dropped line and
-// them.
-type logCapture struct {
-	w       io.Writer
-	limit   int64
+// logSink feeds a Log writer on a goroutine of its own, through a bounded
+// queue, so that a writer that blocks never holds the output pipe, the
+// process or Run up: the first limit bytes go to the writer as they come,
+// the rest is kept as a tail for finish. A queue that fills cuts the log.
+type logSink struct {
+	w     io.Writer
+	limit int64
+	ch    chan []byte
+	done  chan struct{}
+
+	mu      sync.Mutex
+	cut     string // why the log was cut, once it was
 	written int64
 	over    int64
 	tail    *capture
 	err     error
 }
 
-func (l *logCapture) Write(p []byte) (int, error) {
-	n := len(p)
-	if room := l.limit - l.written; room > 0 {
-		m := int(min(room, int64(len(p))))
-		if l.err == nil {
-			if _, err := l.w.Write(p[:m]); err != nil {
-				l.err = err
-			}
-		}
-		l.written += int64(m)
-		p = p[m:]
-	}
-	if len(p) > 0 {
-		l.over += int64(len(p))
-		l.tail.Write(p)
-	}
-	return n, nil
+func newLogSink(w io.Writer, limit int64) *logSink {
+	l := &logSink{w: w, limit: limit, ch: make(chan []byte, logQueue), done: make(chan struct{}), tail: &capture{tailMax: LogTail}}
+	go l.run()
+	return l
 }
 
-func (l *logCapture) finish() {
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	cut := l.cut
+	l.mu.Unlock()
+	if cut != "" {
+		return len(p), nil
+	}
+	chunk := append([]byte(nil), p...)
+	select {
+	case l.ch <- chunk:
+	default:
+		l.mu.Lock()
+		l.cut = fmt.Sprintf("the log writer fell %d chunks behind: the log is cut", logQueue)
+		l.mu.Unlock()
+	}
+	return len(p), nil
+}
+
+// run is the sink's goroutine: it writes the chunks within the limit and
+// keeps the rest for the tail, then, once the queue closes, the dropped
+// line and the tail.
+func (l *logSink) run() {
+	defer close(l.done)
+	for p := range l.ch {
+		if room := l.limit - l.written; room > 0 {
+			m := int(min(room, int64(len(p))))
+			if l.err == nil {
+				if _, err := l.w.Write(p[:m]); err != nil {
+					l.err = err
+				}
+			}
+			l.written += int64(m)
+			p = p[m:]
+		}
+		if len(p) > 0 {
+			l.over += int64(len(p))
+			l.tail.Write(p)
+		}
+	}
 	if l.over == 0 || l.err != nil {
 		return
 	}
@@ -331,11 +414,19 @@ func (l *logCapture) finish() {
 	}
 }
 
-// both writes to a and b; a pointer of its own, so exec sees one writer
-// for stdout and stderr and makes one pipe.
-type both struct{ a, b io.Writer }
-
-func (b *both) Write(p []byte) (int, error) {
-	b.a.Write(p)
-	return b.b.Write(p)
+// finish closes the queue and waits up to wait for the sink to write what
+// is left; it reports why the log is short, "" when it is whole.
+func (l *logSink) finish(wait time.Duration) string {
+	close(l.ch)
+	select {
+	case <-l.done:
+	case <-time.After(wait):
+		return fmt.Sprintf("the log writer did not return within %s: the log is cut", wait)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.err != nil {
+		return l.err.Error()
+	}
+	return l.cut
 }

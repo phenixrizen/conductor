@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -183,5 +185,81 @@ func TestRunStartedReportsTheProcess(t *testing.T) {
 	res := sh(t, time.Minute, "echo $$", func(s *Spec) { s.Started = func(p Process) { got = p } })
 	if res.Exit != 0 || got.PID == 0 || got.PID != pidIn(t, res.Head) || got != res.Process || got.StartedAt.IsZero() {
 		t.Fatalf("started %+v result %+v", got, res)
+	}
+}
+
+// A caller's deadline, and a context already ended, read as Canceled, not
+// as the run's own timeout.
+func TestRunTellsTheCallersDeadlineFromItsTimeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	res := Run(ctx, Spec{Argv: []string{"sleep", "30"}, Dir: t.TempDir(), Timeout: time.Minute})
+	if !res.Canceled || res.TimedOut || res.Exit != -1 {
+		t.Fatalf("the caller's deadline: %+v", res)
+	}
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	res = Run(done, Spec{Argv: []string{"sleep", "30"}, Dir: t.TempDir(), Timeout: time.Minute})
+	if !res.Canceled || res.TimedOut || res.Err == "" || !res.Started.IsZero() {
+		t.Fatalf("a context already ended: %+v", res)
+	}
+}
+
+// blockedWriter blocks every Write until released.
+type blockedWriter struct{ release chan struct{} }
+
+func (b *blockedWriter) Write(p []byte) (int, error) {
+	<-b.release
+	return len(p), nil
+}
+
+// A Log writer that blocks holds up neither the process nor Run: the run
+// ends with the log cut and says so.
+func TestRunLeavesAStalledLogWriterBehind(t *testing.T) {
+	bw := &blockedWriter{release: make(chan struct{})}
+	defer close(bw.release)
+	start := time.Now()
+	res := sh(t, time.Minute, "echo one; echo two; echo three", func(s *Spec) { s.Log = bw })
+	if res.Exit != 0 || res.Err != "" || string(res.Head) != "one\ntwo\nthree\n" {
+		t.Fatalf("%+v", res)
+	}
+	if !strings.Contains(res.LogErr, "did not return") || time.Since(start) > WaitDelay+5*time.Second {
+		t.Fatalf("log err %q after %v", res.LogErr, time.Since(start))
+	}
+	// A process that writes far more than the queue holds while the
+	// writer blocks: the process still ends, and the log is cut.
+	bw2 := &blockedWriter{release: make(chan struct{})}
+	defer close(bw2.release)
+	res = sh(t, time.Minute, "head -c 4194304 /dev/zero | tr '\\000' x", func(s *Spec) { s.Log = bw2 })
+	if res.Exit != 0 || res.Total != 4194304 || res.LogErr == "" {
+		t.Fatalf("%+v", res)
+	}
+}
+
+// firstWriteSees records what it saw on its first write.
+type firstWriteSees struct {
+	started *int32
+	seen    int32
+	once    sync.Once
+}
+
+func (f *firstWriteSees) Write(p []byte) (int, error) {
+	f.once.Do(func() { f.seen = atomic.LoadInt32(f.started) })
+	return len(p), nil
+}
+
+// Started has returned before any output is read, however slow it is.
+func TestRunCallsStartedBeforeReadingOutput(t *testing.T) {
+	var started int32
+	w := &firstWriteSees{started: &started}
+	res := sh(t, time.Minute, "echo early", func(s *Spec) {
+		s.Log = w
+		s.Started = func(Process) {
+			time.Sleep(200 * time.Millisecond)
+			atomic.StoreInt32(&started, 1)
+		}
+	})
+	if res.Exit != 0 || string(res.Head) != "early\n" || w.seen != 1 {
+		t.Fatalf("seen %d: %+v", w.seen, res)
 	}
 }

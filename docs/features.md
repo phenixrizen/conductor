@@ -2677,12 +2677,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   caller's `Allow`, `CONDUCTOR_*` and the blocked loaders out, a
   `CONDUCTOR_*` or loader name in `Env` refused before the start), then
   `TERM=dumb` and `NO_COLOR=1`; stdin from nothing; stdout and stderr
-  together, the first 64 KiB and the last 16 KiB kept in memory with the
-  total and `Truncated`, an optional log of the first 1 MiB, a dropped
-  line and the last 256 KiB; `Started` called with the pid, the group and
-  the start time as soon as the process exists; the result's exit code or
-  signal, `TimedOut`, `Canceled`, and `Killed` when something in the group
-  was still alive after the wait (`WaitDelay` 2 s) and was killed then.
+  together through a pipe of Conductor's own, the first 64 KiB and the
+  last 16 KiB kept in memory with the total and `Truncated`, an optional
+  log of the first 1 MiB, a dropped line and the last 256 KiB, written on
+  a goroutine of its own so a writer that blocks holds nothing up (the log
+  is cut, and `LogErr` says so); `Started` called with the pid, the group
+  and the start time once the process exists and before any output is
+  read; the result's exit code or signal, `TimedOut` (the run's own
+  deadline) told from `Canceled` (the caller's context, however it ended),
+  and `Killed` when something the process left behind still held its pipe
+  2 s after it exited and the group was killed then: a holder of the pipe
+  descends from the process, so the group is still its own.
   No callers yet: the managed-run checks (#334, row 5) are the first. Go,
   race: exits and a signal, a bad spec refused, the group killed at the
   timeout, a cancel told from a timeout, a leftover killed after exit 0 and
