@@ -81,7 +81,10 @@ quiet terminal and a `submit_ok` finish nothing.
    tool and the command.
 5. **A result** (`task_result`, the agent token only) needs a clean tree
    apart from `.conductor/`, HEAD on the attempt's branch descending from
-   every input (a review's HEAD equal to its candidate); a summary of at most
+   every input (a review's HEAD equal to its candidate), and no path under
+   `.conductor/` in the result tree (`reserved_path`: a worker that
+   force-added its task file would strand every task that starts from that
+   commit, since dispatch refuses an input tracking it); a summary of at most
    4,000 characters, 20 issues, 50 findings `{severity, path?, line?,
    message}`; a repeated call returns the same receipt; stale, dirty or
    mismatched is a 409 naming the paths. The controller then materializes
@@ -91,11 +94,17 @@ quiet terminal and a `submit_ok` finish nothing.
    never reads the worker's live checkout, where the agent or a person at a
    shared terminal could change files while it runs and restore them after.
    After `setup`, and before and after each check, the checkout's tracked
-   tree must equal the result commit (HEAD unchanged and `git diff --quiet
-   HEAD`): a tracked file changed by `setup` or by a check fails the
-   verification with its paths, since the checks would have read code the
-   receipt does not name; untracked and ignored files are a check's
-   permitted outputs. The receipt records `stable` from those comparisons.
+   content must equal the result tree, compared by content and never
+   through the index or its stat cache (a check could mark a file
+   assume-unchanged or skip-worktree and then edit it, and `git diff` would
+   call the tree clean): HEAD unchanged, and every path of `git ls-tree -r
+   HEAD` hashed from the checkout (`git hash-object --stdin-paths` under the
+   hardened configuration, no filters) with the tree's blob and mode, a
+   missing, changed or re-moded file failing the verification with its
+   paths, since the checks would have read code the receipt does not name.
+   Untracked and ignored files are a check's permitted outputs, listed in
+   the receipt with their hashes, since a later check may read them. The
+   receipt records `stable` from those comparisons.
    A result commit whose tree holds a gitlink (a submodule, mode 160000) is
    refused at submit (`submodules_unsupported`): the hardened git runner
    passes `--ignore-submodules=dirty` to every diff and status, so a tracked
@@ -289,7 +298,10 @@ before anything is made; the worktree at the input commit; a dependent
 seeing the producer's tree; dirty, stale and mismatched refusals; a file
 changed and restored in the worker's checkout during a check leaving the
 receipt true to the result commit; a tracked file changed by a check failing
-the verification with its path while an untracked output does not; a
+the verification with its path while an untracked output does not and is
+listed; a file marked assume-unchanged or skip-worktree and then edited by
+a check failing the verification with its path; a result tree holding a
+`.conductor/` path refused before anything downstream is dispatched; a
 result commit holding a gitlink refused; `done` completing nothing; handoffs not typed; a session end failing its attempt;
 Stop draining checks; `AddWorktreeAt` in `worktree_test.go`; and in
 `internal/api`, against the real registry at `MaxSessions`: a replacement
