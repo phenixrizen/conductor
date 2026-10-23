@@ -2781,6 +2781,34 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   start's words. Playwright `tasks-editor.spec.ts`: a cycle blocks Save
   with its words; a check's quoted argument saves as one element; the
   saved crew's tasks as sent; Launch disabled and refused by the server.
+- **A managed run dispatches tasks into attempt worktrees and takes their
+  results (#344, 2026-10-23).** Row 5 of the agent harness (#334). A crew
+  with tasks launches a managed run: its tasks are dispatched as attempts, in
+  plan order as their needs have results, each a fresh member session in
+  `<cwd>/.conductor/worktrees/<run>/<task>.<n>` on `crew/<run>/<task>.<n>`,
+  made at the commit the task starts from (its first need's result, the run's
+  base, or its own last attempt's result when that failed a check), with the
+  task in `.conductor/task.md` and `task.json`, the crew's setup run first and
+  one line typed that says where the task is and how to submit; four attempts
+  in flight per run, three per task, one per member (its previous session let
+  go first); a place among the server's sessions is reserved before anything
+  is made (`session.Reservation`), and a refusal spends nothing. A result
+  (`Engine.SubmitResult`) needs a clean worktree apart from `.conductor/`,
+  HEAD descending from every input (a review's HEAD the candidate's), no
+  `.conductor/` path and no submodule in the tree; a work task's checks run in
+  a detached checkout of the result commit, one at a time across the server,
+  each recorded before it starts, with its process and with its outcome; a
+  check that exits non-zero, times out or changes tracked files fails the
+  attempt at it. A done finishes nothing (one reminder), a handoff is noted
+  and never typed, a session ending before its result fails its attempt.
+  Every transition goes to the ledger before its side effect. The run reports
+  `tasks`, `paused` and `outcome` and is finished by the outcome, not by its
+  sessions ending; PauseRun, CancelTask and RetryTask drive it; Stop ends the
+  attempts and waits for the checks. The engine's launch gate is lifted with a
+  ledger; the API's stays until row 6 (the routes, tools and CLI). Tests: the
+  engine with a fake ledger and fake sessions (`managed_test.go`), the
+  registry's reservations, the web run-state mirror. Not here: the agent's
+  routes and tools, the run page, recovery (rows 6–8).
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

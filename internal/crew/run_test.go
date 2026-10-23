@@ -59,13 +59,14 @@ type fakeLauncher struct {
 	// inputWait is every session's Options.InputWait; the default when zero.
 	inputWait time.Duration
 
-	mu     sync.Mutex
-	calls  []launchCall
-	fail   map[string]error // member name -> the error its launch returns
-	block  map[string]bool  // member name -> its launch waits for ctx to end
-	procs  map[string]*sessiontest.FakeProc
-	locals map[string]*session.Local // by member name, the latest
-	byID   map[string]*session.Local // by session ID
+	mu           sync.Mutex
+	calls        []launchCall
+	reserveFails error            // when set, every Reserve returns it
+	fail         map[string]error // member name -> the error its launch returns
+	block        map[string]bool  // member name -> its launch waits for ctx to end
+	procs        map[string]*sessiontest.FakeProc
+	locals       map[string]*session.Local // by member name, the latest
+	byID         map[string]*session.Local // by session ID
 }
 
 func newFakeLauncher(t *testing.T) *fakeLauncher {
@@ -79,6 +80,17 @@ func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 	e := NewEngine(fl, fl.lookup)
 	fl.engine = e
 	return e, fl
+}
+
+// Reserve always has a place, unless reserveFails is set.
+func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error) {
+	f.mu.Lock()
+	fail := f.reserveFails
+	f.mu.Unlock()
+	if fail != nil {
+		return nil, fail
+	}
+	return &session.Reservation{}, nil
 }
 
 func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {

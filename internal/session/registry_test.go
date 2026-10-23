@@ -123,3 +123,47 @@ func TestTheRegistryAsksSessionsOutsideItsLock(t *testing.T) {
 		}
 	}
 }
+
+func TestAReservationHoldsAPlaceUntilASessionTakesItOrItIsLetGo(t *testing.T) {
+	r := NewRegistry(2)
+	live := func(id string) *stubDriver { return &stubDriver{info: Info{ID: id, Status: StatusRunning}} }
+	first, err := r.Reserve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := r.Reserve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two places held: a third reservation and a plain Add are refused.
+	if _, err := r.Reserve(); !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("a third reservation: %v", err)
+	}
+	if err := r.Add(live("a")); !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("an Add over held places: %v", err)
+	}
+	// Let go, the place is free; taken, it is the session's, and a later
+	// Release of the same reservation frees nothing.
+	first.Release()
+	if err := r.Add(live("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AddReserved(live("b"), second); err != nil {
+		t.Fatal(err)
+	}
+	second.Release()
+	if _, err := r.Reserve(); !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("the registry is full with two sessions: %v", err)
+	}
+	// A reservation of another registry, or none, is an ordinary Add.
+	other, _ := NewRegistry(1).Reserve()
+	if err := r.AddReserved(live("c"), other); !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("another registry's reservation counted here: %v", err)
+	}
+	var none *Reservation
+	none.Release()
+	(&Reservation{}).Release()
+	if err := r.AddReserved(live("c"), &Reservation{}); !errors.Is(err, ErrTooManySessions) {
+		t.Fatalf("a zero reservation counted: %v", err)
+	}
+}

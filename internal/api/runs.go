@@ -57,7 +57,7 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	ref := spec.Ref
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom, runChat: room}, &ref)
+	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom, runChat: room, reservation: spec.Reservation}, &ref)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -70,6 +70,15 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 		}
 	}
 	return local, nil
+}
+
+// Reserve holds a place for a managed run's attempt among the server's
+// sessions (crew.Launcher): refused at the cap before anything is made.
+func (s *Server) Reserve(ctx context.Context) (*session.Reservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.registry.Reserve()
 }
 
 // lookupLocal finds a server session in the registry, for the run engine.

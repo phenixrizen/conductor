@@ -44,6 +44,18 @@ describe('runState', () => {
     expect(runState(r, [session({ crew, attention: { state: 'done' } })])).toEqual({ state: 'running', needs: 0 })
     expect(runState(r, [session({ crew, status: 'exited' })])).toEqual({ state: 'finished', needs: 0 })
   })
+  it('a managed run is finished by its outcome, not by its sessions ending', () => {
+    const member = (name: string, status: RunMember['status']): RunMember => ({ name, agentId: 'claude', start: { when: 'task' }, status, sessionId: name === 'lead' ? 's1' : undefined })
+    const base: Omit<RunInfo, 'members'> = { id: 'r', crewId: 'c', name: 'c', goal: '', cwd: '/w', isolation: 'worktree', startedAt: '', log: [], state: 'running', needsInput: 0, yolo: false }
+    const running: RunInfo = { ...base, managed: { revision: 3 }, members: [member('lead', 'running')], tasks: [] }
+    expect(runState(running, []).state).toBe('running')
+    const done: RunInfo = { ...running, outcome: 'succeeded' }
+    expect(runState(done, []).state).toBe('finished')
+    const ended: RunInfo = { ...running, members: [member('lead', 'ended')] }
+    expect(runState(ended, []).state).toBe('running')
+    const legacy: RunInfo = { ...base, members: [member('lead', 'ended')] }
+    expect(runState(legacy, []).state).toBe('finished')
+  })
 })
 
 describe('runLive and runBadge', () => {
@@ -159,5 +171,20 @@ describe('RunStore', () => {
     release(run({ id: 'c' }))
     await late
     expect(store.runs.size).toBe(0)
+  })
+})
+
+describe('runState of a managed run', () => {
+  it('is finished by its outcome, not by its sessions ending', () => {
+    const member = (name: string, status: RunMember['status']): RunMember => ({ name, agentId: 'claude', start: { when: 'task' }, status, sessionId: name === 'lead' ? 's1' : undefined })
+    const base: Omit<RunInfo, 'members'> = { id: 'r', crewId: 'c', name: 'c', goal: '', cwd: '/w', isolation: 'worktree', startedAt: '', log: [], state: 'running', needsInput: 0, yolo: false }
+    const running: RunInfo = { ...base, managed: { revision: 3 }, members: [member('lead', 'running')], tasks: [] }
+    expect(runState(running, []).state).toBe('running')
+    const done: RunInfo = { ...running, outcome: 'succeeded' }
+    expect(runState(done, []).state).toBe('finished')
+    const ended: RunInfo = { ...running, members: [member('lead', 'ended')] }
+    expect(runState(ended, []).state).toBe('running')
+    const legacy: RunInfo = { ...base, members: [member('lead', 'ended')] }
+    expect(runState(legacy, []).state).toBe('finished')
   })
 })

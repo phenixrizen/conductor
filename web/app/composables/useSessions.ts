@@ -401,12 +401,59 @@ export interface RunMember {
   needsInput?: boolean
   /** The agent session of its latest session, kept once that session has left the server: what its Resume resumes. */
   agentSession?: AgentSession
+  /** In a managed run: the task and attempt its latest session is (#334). */
+  task?: string
+  attempt?: number
   /**
    * GET /api/runs/{run} only: lines of tracked files its worktree adds and removes against the commit it began from,
    * committed or not (`git diff --shortstat <base>`; untracked files do not count, a branch merged into its own does).
    * Read at most every 10 s; the last value stays when a read fails.
    */
   diff?: { added: number; removed: number }
+}
+
+/** A task of a managed run as the run reports it (#334). */
+export interface RunTask {
+  id: string
+  member: string
+  kind: 'work' | 'review'
+  needs?: string[]
+  /** blocked (its needs have no result yet, or never will: `reason` says), ready, running (an attempt is in flight), verifying (a result is checked), succeeded, failed, cancelled. */
+  state: 'blocked' | 'ready' | 'running' | 'verifying' | 'succeeded' | 'failed' | 'cancelled'
+  reason?: string
+  /** Attempts made so far. */
+  attempts: number
+  /** The latest attempt. */
+  attempt?: RunAttempt
+  /** The result that stands, once an attempt succeeded. */
+  result?: RunTaskResult
+}
+
+/** One attempt at a task: one member session in one worktree. */
+export interface RunAttempt {
+  n: number
+  sessionId?: string
+  worktree?: string
+  branch?: string
+  /** The commit the worktree was made at, and the result commit once submitted. */
+  start?: string
+  result?: string
+  state: 'reserved' | 'launched' | 'running' | 'submitting' | 'verifying' | 'succeeded' | 'failed' | 'cancelled' | 'stopped' | 'interrupted' | 'uncertain'
+  /** What it was doing when it failed or was cut short, and why. */
+  stage?: string
+  error?: string
+  startedAt?: string
+  endedAt?: string
+}
+
+/** A task's accepted result: a work task's commit and summary, or a review's verdict and findings. */
+export interface RunTaskResult {
+  attempt: number
+  commit?: string
+  summary?: string
+  verdict?: 'approved' | 'needs_changes'
+  findings?: Array<{ severity: 'blocker' | 'major' | 'minor' | 'nit'; path?: string; line?: number; message: string }>
+  at: string
 }
 
 /** A launch of a crew. Runs live in the server's memory: a restart forgets them. */
@@ -440,6 +487,14 @@ export interface RunInfo {
   /** The stopped run this one resumed, and the run that resumed this one (Resume as new run). */
   resumedFrom?: string
   resumedBy?: string
+  /** A managed run (a crew with tasks, #334): its revision in the ledger, which every transition bumps. Absent for a legacy run. */
+  managed?: { revision: number }
+  /** A managed run whose dispatch is paused: attempts in flight go on, none starts. */
+  paused?: boolean
+  /** A managed run's outcome once every task is terminal: it is `finished` then, its idle sessions kept for a look. */
+  outcome?: 'succeeded' | 'failed' | 'cancelled'
+  /** A managed run's tasks, in the crew's order. */
+  tasks?: RunTask[]
   /**
    * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
    * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running

@@ -160,6 +160,33 @@ func run(ctx context.Context, loc, args []string) (string, error) {
 // that apply on its branch and in its git directory among it. No hook runs
 // (no post-checkout, no reference-transaction) and no filter; git makes
 // the parent directories of path.
+// AddDetachedWorktree makes a worktree of repo at path with rev checked out
+// and no branch (detached HEAD): a checkout nothing commits to, for the
+// checks of a managed run against a result. Made as AddWorktree makes its,
+// with the checkout inside the new worktree.
+func AddDetachedWorktree(ctx context.Context, repo, path, rev string) error {
+	if strings.HasPrefix(path, "-") || strings.HasPrefix(rev, "-") {
+		return fmt.Errorf("git worktree add: invalid path or revision")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if _, err := Run(ctx, repo, "worktree", "add", "--no-checkout", "--detach", abs, rev); err != nil {
+		return err
+	}
+	out, err := Run(ctx, abs, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return err
+	}
+	gitDir := strings.TrimSpace(out)
+	if !filepath.IsAbs(gitDir) {
+		return fmt.Errorf("git worktree add: the new worktree's git directory is %q", gitDir)
+	}
+	_, err = run(ctx, []string{"-C", abs, "--git-dir=" + gitDir, "--work-tree=" + abs}, []string{"reset", "--hard", "-q", "--no-recurse-submodules", "HEAD"})
+	return err
+}
+
 func AddWorktree(ctx context.Context, repo, path, branch, rev string) error {
 	if strings.HasPrefix(branch, "-") || strings.HasPrefix(path, "-") || strings.HasPrefix(rev, "-") {
 		return fmt.Errorf("git worktree add: invalid branch, path or revision")

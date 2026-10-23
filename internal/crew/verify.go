@@ -1,0 +1,204 @@
+package crew
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/phenixrizen/conductor/internal/crew/ledger"
+	"github.com/phenixrizen/conductor/internal/gitcli"
+	"github.com/phenixrizen/conductor/internal/proc"
+	"github.com/phenixrizen/conductor/internal/session"
+)
+
+// Check capture bounds (proc.Spec).
+const (
+	checkHead = 64 << 10
+	checkTail = 2 << 10
+)
+
+// checkSlots is the bound on checks running at once across the server's
+// managed runs: one, until SetCheckConcurrency says otherwise.
+func (e *Engine) checkSlots() chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.checkSem == nil {
+		e.checkSem = make(chan struct{}, 1)
+	}
+	return e.checkSem
+}
+
+// SetCheckConcurrency bounds the checks running at once across the
+// server's managed runs (config checks.maxConcurrent; a go test beside
+// four agents on a laptop wants one). Set it before the first launch.
+func (e *Engine) SetCheckConcurrency(n int) {
+	n = max(n, 1)
+	e.mu.Lock()
+	e.checkSem = make(chan struct{}, n)
+	e.mu.Unlock()
+}
+
+// runCommand runs one check or setup command in dir through the bounded
+// runner: a process group of its own, no PTY, the environment without
+// Conductor's tokens, the output's head and tail kept, the log to log.
+func (e *Engine) runCommand(ctx context.Context, dir string, ch Check, log io.Writer, started func(proc.Process)) proc.Result {
+	return proc.Run(ctx, proc.Spec{Argv: slices.Clone(ch.Argv), Dir: dir, Timeout: checkTimeout(ch), Head: checkHead, Tail: checkTail, Log: log, LogLimit: ledger.MaxLog, Started: started})
+}
+
+func checkTimeout(ch Check) time.Duration {
+	if ch.TimeoutSeconds > 0 {
+		return time.Duration(ch.TimeoutSeconds) * time.Second
+	}
+	return defaultCheckTimeout * time.Second
+}
+
+// verify decides a's submitted result. A review, or a work task with no
+// checks, succeeds at once. A work task's checks run in a detached
+// checkout of the result commit (<worktree>.check), one check at a time
+// across the server (checkSlots), each recorded before it starts, with its
+// process once started, and with its outcome when it ends; a check that
+// cannot run, exits non-zero, times out or changes tracked content fails
+// the attempt at that check, and the rest do not run. Untracked outputs
+// are listed with the check. It runs on a goroutine the run's stop waits
+// for (r.checks) and ends with the attempt's context.
+func (e *Engine) verify(r *run, a *attempt) {
+	defer r.checks.Done()
+	t := a.t
+	if t.def.Kind == TaskReview || len(t.def.Checks) == 0 {
+		e.accept(r, a, true, "", "")
+		return
+	}
+	ctx := a.ctx
+	dir := a.worktree + ".check"
+	e.gitMu.Lock()
+	err := AddDetachedWorktree(ctx, r.cwd, dir, a.result)
+	e.gitMu.Unlock()
+	if err != nil {
+		e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
+		return
+	}
+	if head, err := headCommit(ctx, dir); err != nil || head != a.result {
+		e.accept(r, a, false, "checkout", fmt.Sprintf("the checkout is at %s, not the result %s", short(head), short(a.result)))
+		return
+	}
+	cwd := filepath.Join(dir, r.prefix)
+	for _, ch := range t.def.Checks {
+		if ctx.Err() != nil {
+			return // closed meanwhile: cancelled or stopped
+		}
+		row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, StartedAt: time.Now().UTC()}
+		if err := e.transition(ctx, r, func(tx LedgerTx) error {
+			if err := tx.PutCheck(row); err != nil {
+				return err
+			}
+			return tx.Event("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "subject": a.result})
+		}); err != nil {
+			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check: "+session.CleanMessage(err.Error()))
+			return
+		}
+		sem := e.checkSlots()
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		var log bytes.Buffer
+		res := e.runCommand(ctx, cwd, ch, &log, func(p proc.Process) {
+			running := row
+			running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
+			_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
+				if err := tx.PutCheck(running); err != nil {
+					return err
+				}
+				return tx.Event("check.running", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "pid": p.PID, "group": p.Group})
+			})
+		})
+		<-sem
+		if ctx.Err() != nil {
+			// Cancelled or stopped under the check: the attempt is closed
+			// by what cancelled it, with the check's end recorded.
+			fin := row
+			fin.State, fin.FinishedAt, fin.Killed, fin.Exit, fin.Signal = ledger.CheckInterrupted, time.Now().UTC(), res.Killed, res.Exit, res.Signal
+			_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
+				if err := tx.PutCheck(fin); err != nil {
+					return err
+				}
+				return tx.Event("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "interrupted": true, "duration": res.Duration.String()})
+			})
+			return
+		}
+		changed, untracked, cerr := treeChanges(ctx, dir)
+		fin := row
+		fin.State, fin.FinishedAt = ledger.CheckFinished, time.Now().UTC()
+		fin.PID, fin.Group, fin.ProcessStartedAt = res.Process.PID, res.Process.Group, res.Process.StartedAt
+		fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = res.Exit, res.Signal, res.TimedOut, res.Killed
+		fin.Stable, fin.Truncated, fin.Total = cerr == nil && len(changed) == 0, res.Truncated, res.Total
+		fin.Log = bytes.Clone(log.Bytes())
+		sum := sha256.Sum256(fin.Log)
+		fin.LogSHA256 = hex.EncodeToString(sum[:])
+		fin.Tail = string(res.Tail)
+		words := checkWords(ch, res, changed, cerr)
+		_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
+			if err := tx.PutCheck(fin); err != nil {
+				return err
+			}
+			return tx.Event("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable, "changed": changed, "untracked": untracked, "duration": res.Duration.String(), "error": words})
+		})
+		if words != "" {
+			e.accept(r, a, false, "check "+ch.ID, words)
+			return
+		}
+	}
+	e.accept(r, a, true, "", "")
+}
+
+// checkWords says why a check failed, "" for a pass.
+func checkWords(ch Check, res proc.Result, changed []string, cerr error) string {
+	switch {
+	case res.Err != "" && !res.TimedOut && !res.Canceled:
+		return "could not run: " + session.CleanMessage(res.Err)
+	case res.TimedOut:
+		return fmt.Sprintf("timed out after %s%s", checkTimeout(ch), tailWords(res.Tail))
+	case res.Canceled:
+		return "cancelled"
+	case res.Exit != 0:
+		return fmt.Sprintf("exited %d%s", res.Exit, tailWords(res.Tail))
+	case cerr != nil:
+		return "the checkout could not be compared after the check: " + session.CleanMessage(cerr.Error())
+	case len(changed) > 0:
+		list := changed
+		if len(list) > 10 {
+			list = append(slices.Clone(list[:10]), "…")
+		}
+		return "changed tracked files: " + strings.Join(list, ", ")
+	}
+	return ""
+}
+
+// treeChanges reports the tracked paths a check changed in the checkout
+// (content, mode or link target, as git sees them) and the untracked paths
+// it left.
+func treeChanges(ctx context.Context, dir string) (changed, untracked []string, err error) {
+	_, changes, truncated, err := gitcli.Porcelain(ctx, dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, c := range changes {
+		if c.Status == "?" {
+			untracked = append(untracked, c.Path)
+		} else {
+			changed = append(changed, c.Path)
+		}
+	}
+	if truncated {
+		changed = append(changed, "…")
+	}
+	return changed, untracked, nil
+}

@@ -27,6 +27,8 @@ type Registry struct {
 	// OnRemove is called after a session leaves the registry (e.g. to delete
 	// links), with the session as it was.
 	OnRemove func(id string, d Driver)
+	// reserved counts the places held (Reserve) and not yet taken.
+	reserved int
 }
 
 // NewRegistry creates a registry holding at most max sessions.
@@ -34,24 +36,78 @@ func NewRegistry(max int) *Registry {
 	return &Registry{max: max, items: map[string]Driver{}}
 }
 
-// Add inserts d, enforcing the capacity limit against non-ended sessions.
-func (r *Registry) Add(d Driver) error {
+// Add inserts d, enforcing the capacity limit against non-ended sessions
+// and the places reserved (Reserve).
+func (r *Registry) Add(d Driver) error { return r.AddReserved(d, nil) }
+
+// AddReserved is Add for a session made with a place reserved for it:
+// the reservation is consumed and no capacity check is made, since the
+// reservation was it.
+func (r *Registry) AddReserved(d Driver, res *Reservation) error {
 	id := d.Info().ID
 	r.addMu.Lock()
 	defer r.addMu.Unlock()
-	active := 0
-	for _, it := range r.snapshot() {
-		if !it.Info().Status.Ended() {
-			active++
-		}
-	}
-	if active >= r.max {
+	if res != nil && res.r == r && res.consume() {
+		r.reserved--
+	} else if r.active()+r.reserved >= r.max {
 		return ErrTooManySessions
 	}
 	r.mu.Lock()
 	r.items[id] = d
 	r.mu.Unlock()
 	return nil
+}
+
+// active counts the sessions not ended. The caller holds addMu.
+func (r *Registry) active() int {
+	n := 0
+	for _, it := range r.snapshot() {
+		if !it.Info().Status.Ended() {
+			n++
+		}
+	}
+	return n
+}
+
+// Reservation is a place held among a registry's sessions (Reserve), for
+// a session made later: consumed by AddReserved, or let go by Release. A
+// zero Reservation (a test's) holds nothing.
+type Reservation struct {
+	r    *Registry
+	once sync.Once
+	done bool
+}
+
+// Reserve holds a place for one session, counted against the capacity
+// as a session is, or refuses with ErrTooManySessions: a managed run's
+// attempt asks before it makes anything (crew.Launcher).
+func (r *Registry) Reserve() (*Reservation, error) {
+	r.addMu.Lock()
+	defer r.addMu.Unlock()
+	if r.active()+r.reserved >= r.max {
+		return nil, ErrTooManySessions
+	}
+	r.reserved++
+	return &Reservation{r: r}, nil
+}
+
+// consume marks the reservation used, once.
+func (res *Reservation) consume() bool {
+	used := false
+	res.once.Do(func() { used = true; res.done = true })
+	return used
+}
+
+// Release lets the place go, unless a session took it (AddReserved).
+func (res *Reservation) Release() {
+	if res == nil || res.r == nil {
+		return
+	}
+	if res.consume() {
+		res.r.addMu.Lock()
+		res.r.reserved--
+		res.r.addMu.Unlock()
+	}
 }
 
 // snapshot copies the index's sessions.

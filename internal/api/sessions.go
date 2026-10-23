@@ -41,6 +41,9 @@ type createSessionRequest struct {
 	resume, resumedFrom string
 	// runChat, set by Launch, is the chat of the run the session is a member of.
 	runChat *session.ChatRoom
+	// reservation is the place reserved for the session among the server's
+	// (Registry.Reserve), for a managed run's attempt; nil otherwise.
+	reservation *session.Reservation
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -347,7 +350,7 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		Plans: agents.PlansDir(agent.Adapter, pty.Lookup(procEnv), cwd),
 	})
 	local.SetAgentToken(agentToken)
-	if err := s.registry.Add(local); err != nil {
+	if err := s.registry.AddReserved(local, req.reservation); err != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = local.Stop(ctx)

@@ -2097,3 +2097,53 @@ when the agent has a `session` recipe and that session had a turn, and gets no
 prompt; otherwise it starts anew and its role prompt is typed again once it is
 ready, and only a `done` after that prompt counts for the members after it. A
 member of a stopped run is not resumed (`409 run_stopped`).
+
+#### Managed runs
+
+A crew with `tasks` launches a managed run (docs/plans/agent-harness-order.md;
+#334): no member starts by a rule, and the run dispatches its tasks as
+attempts, in the crew's order, as their needs have results: at most four
+attempts in flight per run, three per task, one per member, whose previous
+session is stopped first. An attempt is a fresh member session, named
+`<member> · <task> #<n>`, in the worktree
+`<cwd>/.conductor/worktrees/<run>/<task>.<n>` on the branch
+`crew/<run>/<task>.<n>`, made at the commit the task starts from: its first
+need's result commit, the run's base (`HEAD` of `cwd` at launch), or its own
+last attempt's result when that failed a check. The task is written as
+`.conductor/task.md` and `.conductor/task.json` in the attempt's working
+directory (with a `.gitignore` of `*`; refused when the commit tracks
+`.conductor/` there, or `.conductor` is not a directory), the crew's `setup`
+commands run in it first, and the session's process receives `CONDUCTOR_TASK`,
+`CONDUCTOR_ATTEMPT` and `CONDUCTOR_TASK_FILE` beside the crew variables. The
+line typed once the session is ready says where the task file is and how to
+submit. A `done` finishes nothing (one reminder line is typed per attempt, when
+the session is not waiting); a `handoff` is noted in the run log, never typed;
+a session that ends before its result fails its attempt, and the task gets its
+next attempt while it has one. A place among the server's sessions is reserved
+before anything is made: refused at the cap, the task waits as `ready` and
+nothing is spent.
+
+A result is the attempt's commit (a review's its verdict): the worktree must
+be clean apart from `.conductor/`, `HEAD` must descend from every input (a
+review's `HEAD` must be the candidate's), and the result tree may hold no path
+under `.conductor/` and no submodule; otherwise the submit is refused with
+why, and the attempt goes on. A work task's checks then run in a detached
+checkout of the result commit (`<worktree>.check`), one at a time across the
+server (`checks.maxConcurrent`), each recorded before it starts and after it
+ends with its exit, timing, log (at most 1 MiB, its SHA-256 and a tail) and
+whether it left tracked content as it found it; a check that cannot run,
+exits non-zero, times out or changes tracked files fails the attempt at that
+check, and the rest do not run. A review, or a task with no checks, succeeds
+at once. Every transition is written to the ledger before the side effect it
+precedes (`runs/managed.sqlite`); the run's `managed.revision` follows. The
+routes an agent submits with come with the next row (#334).
+
+The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
+`attempt` and `result`), `paused` and, once every task is terminal, `outcome`
+(`succeeded` when all succeeded, `cancelled` when one was cancelled and none
+failed, `failed` otherwise): the run is `finished` then, its idle sessions
+kept for a look until a stop; a managed run is not finished by its sessions
+ending. Each member carries the `task` and `attempt` its latest session is.
+A stop ends the attempts in flight (`stopped`; their tasks `ready` again for
+a continuation) and waits for the checks, which end with it. Pause, cancel,
+retry and the task routes come with the next rows.

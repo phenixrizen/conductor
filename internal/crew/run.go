@@ -33,6 +33,13 @@ import (
 // CONDUCTOR_CREW, CONDUCTOR_RUN and CONDUCTOR_MEMBER.
 type Launcher interface {
 	Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error)
+	// Reserve holds a place for one session among the server's, for a
+	// managed run's attempt (#334): the registry counts every session not
+	// ended, so a refusal at the cap comes here, before the worktree, the
+	// setup and the process exist, and spends nothing. The place goes to
+	// the Launch given the reservation (LaunchSpec.Reservation), or is let
+	// go with Release.
+	Reserve(ctx context.Context) (*session.Reservation, error)
 }
 
 // LaunchSpec is a member's session as the engine asks a Launcher for it.
@@ -43,6 +50,9 @@ type LaunchSpec struct {
 	Env map[string]string
 	// Ref tags the session with its run.
 	Ref session.CrewRef
+	// Reservation is the place reserved for the session (Launcher.Reserve)
+	// in a managed run; nil for a legacy member.
+	Reservation *session.Reservation
 	// Yolo is the run's yolo choice, fixed when the run was made: the agent's
 	// yolo recipe is applied when it has one.
 	Yolo bool
@@ -136,6 +146,9 @@ type MemberState struct {
 	// session waits on a prompt: a trust question before its prompt, or a
 	// question of its agent's.
 	NeedsInput bool `json:"needsInput,omitempty"`
+	// Task and Attempt are the member's latest attempt in a managed run.
+	Task    string `json:"task,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
 	// AgentSession is the agent's own session in the member's latest session,
 	// kept when that session has left the server: what ResumeMember resumes.
 	AgentSession *session.AgentSession `json:"agentSession,omitempty"`
@@ -197,6 +210,12 @@ type Run struct {
 	// behind the ledger or level with it. Absent for a legacy run, whose
 	// JSON is unchanged.
 	Managed *Managed `json:"managed,omitempty"`
+	// Paused says a managed run's dispatch is paused; Outcome, once every
+	// task is terminal, is succeeded, failed or cancelled; Tasks are its
+	// tasks (task.go).
+	Paused  bool        `json:"paused,omitempty"`
+	Outcome string      `json:"outcome,omitempty"`
+	Tasks   []TaskState `json:"tasks,omitempty"`
 	// Chat is the run's chat, oldest first, at most session.MaxRunChat
 	// messages: on a run read alone (Get) and in its record, not in a list.
 	Chat []proto.ChatMessage `json:"chat,omitempty"`
@@ -230,6 +249,13 @@ type Engine struct {
 	// excludeMu keeps two launches from writing a repository's info/exclude
 	// at once.
 	excludeMu sync.Mutex
+	// ledger is the managed runs' ledger (UseLedger); nil, managed launches
+	// are refused. gitMu keeps two dispatches from making worktrees of one
+	// repository at once (task.go).
+	ledger Ledger
+	gitMu  sync.Mutex
+	// checkSem bounds the checks running at once (checkSlots).
+	checkSem chan struct{}
 
 	// bySession maps the ID of each member's session to its sessionMember.
 	// It is read without mu, so that the activity and the changes of the
@@ -291,12 +317,28 @@ type Engine struct {
 type sessionMember struct {
 	r *run
 	m *member
+	// a is the attempt the session is, in a managed run; nil otherwise.
+	a *attempt
 }
 
 // run is a launch of a crew. Engine.mu guards what changes after it is made.
 type run struct {
 	// managed says the run is a managed one (a crew with tasks, #334).
-	managed                                       bool
+	managed bool
+	// The managed run's tasks (plan order), its setup, the commit it
+	// started from, whether its dispatch is paused, its attempts in flight,
+	// its outcome once every task is terminal, the goroutines verifying
+	// results (a stop waits for them) and its ledger revision (task.go).
+	plan                                          []Task
+	setup                                         []Check
+	base                                          string
+	tasks                                         []*task
+	paused                                        bool
+	active                                        int
+	outcome                                       string
+	checks                                        sync.WaitGroup
+	revision                                      int64
+	crewJSON                                      string // the crew as launched, for the ledger's run row
 	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
@@ -472,7 +514,7 @@ func (e *Engine) LaunchAdopting(ctx context.Context, c Crew, self, sessionID str
 	m := r.member(self)
 	m.state.SessionID, m.state.Started, m.state.Status = sessionID, &now, MemberRunning
 	m.prompted, m.promptedAt = true, now
-	e.bySession.Store(sessionID, sessionMember{r, m})
+	e.bySession.Store(sessionID, sessionMember{r: r, m: m})
 	r.note(session.ActivityStatus, "%s formed the crew from its own session and joined it", self)
 	r.touch()
 	e.mu.Unlock()
@@ -496,7 +538,10 @@ func (e *Engine) prepare(ctx context.Context, c Crew) (prefix string, err error)
 	if err := c.validateWithID(); err != nil {
 		return "", err
 	}
-	if err := c.Launchable(); err != nil {
+	if c.Managed() && e.ledger == nil {
+		return "", ErrNoLedger
+	}
+	if err := c.launchable(true); err != nil {
 		return "", err
 	}
 	if c.Isolation != IsolationWorktree {
@@ -669,7 +714,7 @@ func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, 
 		// members after it.
 		m.state.SessionID, m.state.Started, m.state.Status = id, &started, MemberStarting
 		m.prompted, m.promptedAt = true, started
-		e.bySession.Store(id, sessionMember{r, m})
+		e.bySession.Store(id, sessionMember{r: r, m: m})
 		r.note(session.ActivityStatus, "%s resumed its conversation", name)
 		e.mu.Unlock()
 		go e.settle(r, m, local)
@@ -703,6 +748,13 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 		}
 	}
 	e.mu.Unlock()
+	if r.managed {
+		// No member starts by a rule: the tasks are dispatched (task.go).
+		if err := e.startManaged(ctx, r); err != nil {
+			e.abort(r)
+			return nil, err
+		}
+	}
 	for i, m := range starts {
 		local, err := e.launch(ctx, r, m)
 		if err == nil {
@@ -743,6 +795,11 @@ func (e *Engine) add(c Crew, prefix, label string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed()}
+	if r.managed {
+		r.plan, r.setup = slices.Clone(c.Tasks), slices.Clone(c.Setup)
+		r.tasks = newTasks(c.Tasks)
+		r.crewJSON = crewAsLaunched(c)
+	}
 	r.chat = session.NewChatRoom(func(m session.ChatMessage) {
 		if e.OnRunChat != nil {
 			e.OnRunChat(r.id, m)
@@ -918,7 +975,7 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 	started := time.Now().UTC()
 	e.mu.Lock()
 	m.state.SessionID, m.state.Started = id, &started
-	e.bySession.Store(id, sessionMember{r, m})
+	e.bySession.Store(id, sessionMember{r: r, m: m})
 	r.note(session.ActivityStatus, "%s started", name)
 	stopping := r.stopping
 	e.mu.Unlock()
@@ -942,8 +999,13 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 // first gets no prompt: m ends, with how its process ended. An error means
 // the start failed: ctx ended or the prompt could not be written.
 func (e *Engine) prompt(ctx context.Context, r *run, m *member, local *session.Local) error {
+	return e.promptWith(ctx, r, m, local, typedPrompt(m.def.Prompt, r.goal))
+}
+
+// promptWith is prompt with the line to type given: a member's role prompt,
+// or an attempt's task line (taskLine).
+func (e *Engine) promptWith(ctx context.Context, r *run, m *member, local *session.Local, text string) error {
 	name := m.def.Name
-	text := typedPrompt(m.def.Prompt, r.goal)
 	hasPrompt := strings.TrimSpace(text) != ""
 	// pending says its prompt was accepted while the program took it
 	// slowly (session.ErrSubmitPending): marked prompted by its Enter.
@@ -1212,6 +1274,13 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 		e.mu.Unlock()
 		return
 	}
+	if r.managed {
+		// A done starts no one and finishes nothing; a handoff is noted,
+		// never typed: a managed run passes work by results (task.go).
+		e.managedActivity(r, sm, entry, isHandoff)
+		e.mu.Unlock()
+		return
+	}
 	var next []*member
 	if isHandoff {
 		e.handoff(r, m, entry)
@@ -1380,7 +1449,12 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	wg.Wait()
 	// The handoffs left are dropped; one being typed ends with its session.
 	waitFor(ctx, &r.deliveries)
+	// A managed run's checks end with the context the stop cancelled.
+	waitFor(ctx, &r.checks)
 	e.mu.Lock()
+	if r.managed {
+		r.stopAttempts()
+	}
 	if r.stoppedAt == nil {
 		now := time.Now().UTC()
 		r.stoppedAt = &now
@@ -1390,6 +1464,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	// going: such a run is not reopened.
 	r.stopDone = ctx.Err() == nil
 	e.mu.Unlock()
+	if r.managed {
+		e.recordStop(r)
+	}
 	e.noteEnd(r.id)
 	return errors.Join(errs...)
 }
@@ -1647,6 +1724,12 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 		st.Prompt, st.Args, st.Base = m.def.Prompt, slices.Clone(m.def.Args), m.base
 		out.Members = append(out.Members, st)
 	}
+	if r.managed {
+		out.Managed = &Managed{Revision: r.revision}
+		out.Paused = r.paused
+		out.Outcome = r.outcome
+		out.Tasks = r.taskStates()
+	}
 	if withChat {
 		for _, m := range r.chat.History() {
 			out.Chat = append(out.Chat, session.ChatToProto(m))
@@ -1704,7 +1787,11 @@ func runState(r Run) (string, int) {
 	switch {
 	case r.StoppedAt != nil:
 		return RunStopped, needs
-	case ended == len(r.Members):
+	case r.Managed != nil && r.Outcome != "":
+		// A managed run is finished once every task is terminal: its idle
+		// sessions stay for a look, and do not keep it running.
+		return RunFinished, 0
+	case r.Managed == nil && ended == len(r.Members):
 		return RunFinished, 0
 	case needs > 0:
 		return RunNeedsInput, needs
@@ -1881,7 +1968,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		e.bySession.Delete(old)
 	}
 	m.state.SessionID, m.state.Started, m.state.Ended, m.state.Err = id, &started, nil, ""
-	e.bySession.Store(id, sessionMember{r, m})
+	e.bySession.Store(id, sessionMember{r: r, m: m})
 	if resume != "" {
 		// Starting until its session is ready for a prompt (settle).
 		r.note(session.ActivityStatus, "%s resumed its conversation", name)

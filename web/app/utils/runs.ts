@@ -25,7 +25,8 @@ export function runState(run: RunInfo, sessions: readonly SessionInfo[]): { stat
     else if (st === 'needs_input') needs++
   }
   if (run.stoppedAt) return { state: 'stopped', needs }
-  if (ended === run.members.length) return { state: 'finished', needs: 0 }
+  // A managed run is finished once every task is terminal (its outcome), its idle sessions kept for a look; a legacy run once every member ended.
+  if (run.managed ? !!run.outcome : ended === run.members.length) return { state: 'finished', needs: 0 }
   if (needs > 0) return { state: 'needs_input', needs }
   return { state: 'running', needs: 0 }
 }
