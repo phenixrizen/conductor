@@ -396,12 +396,13 @@ type logSink struct {
 	ch    chan []byte
 	done  chan struct{}
 
-	mu      sync.Mutex
-	cut     string // why the log was cut, once it was
-	written int64
-	over    int64
-	tail    *capture
-	err     error
+	mu        sync.Mutex
+	cut       string // why the log was cut, once it was
+	abandoned bool   // finish gave up on the writer: nothing more is written
+	written   int64
+	over      int64
+	tail      *capture
+	err       error
 }
 
 func newLogSink(w io.Writer, limit int64) *logSink {
@@ -434,6 +435,9 @@ func (l *logSink) Write(p []byte) (int, error) {
 func (l *logSink) run() {
 	defer close(l.done)
 	for p := range l.ch {
+		if l.gone() {
+			continue // drained and dropped: Run has returned
+		}
 		if room := l.limit - l.written; room > 0 {
 			m := int(min(room, int64(len(p))))
 			if l.err == nil {
@@ -449,7 +453,7 @@ func (l *logSink) run() {
 			l.tail.Write(p)
 		}
 	}
-	if l.over == 0 || l.err != nil {
+	if l.over == 0 || l.err != nil || l.gone() {
 		return
 	}
 	_, tail, _, _ := l.tail.bytes()
@@ -459,18 +463,32 @@ func (l *logSink) run() {
 			return
 		}
 	}
-	if _, err := l.w.Write(tail); err != nil {
-		l.err = err
+	if !l.gone() {
+		if _, err := l.w.Write(tail); err != nil {
+			l.err = err
+		}
 	}
 }
 
+// gone reports whether finish gave up on the writer.
+func (l *logSink) gone() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.abandoned
+}
+
 // finish closes the queue and waits up to wait for the sink to write what
-// is left; it reports why the log is short, "" when it is whole.
+// is left; it reports why the log is short, "" when it is whole. Past the
+// wait the writer is left behind: a Write in flight may still return, and
+// nothing is written after it, neither the chunks queued nor the tail.
 func (l *logSink) finish(wait time.Duration) string {
 	close(l.ch)
 	select {
 	case <-l.done:
 	case <-time.After(wait):
+		l.mu.Lock()
+		l.abandoned = true
+		l.mu.Unlock()
 		return fmt.Sprintf("the log writer did not return within %s: the log is cut", wait)
 	}
 	l.mu.Lock()

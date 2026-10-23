@@ -249,10 +249,14 @@ func TestRunTellsTheCallersDeadlineFromItsTimeout(t *testing.T) {
 	}
 }
 
-// blockedWriter blocks every Write until released.
-type blockedWriter struct{ release chan struct{} }
+// blockedWriter blocks every Write until released, and counts them.
+type blockedWriter struct {
+	release chan struct{}
+	writes  atomic.Int32
+}
 
 func (b *blockedWriter) Write(p []byte) (int, error) {
+	b.writes.Add(1)
 	<-b.release
 	return len(p), nil
 }
@@ -261,7 +265,6 @@ func (b *blockedWriter) Write(p []byte) (int, error) {
 // ends with the log cut and says so.
 func TestRunLeavesAStalledLogWriterBehind(t *testing.T) {
 	bw := &blockedWriter{release: make(chan struct{})}
-	defer close(bw.release)
 	start := time.Now()
 	res := sh(t, time.Minute, "echo one; echo two; echo three", func(s *Spec) { s.Log = bw })
 	if res.Exit != 0 || res.Err != "" || string(res.Head) != "one\ntwo\nthree\n" {
@@ -269,6 +272,13 @@ func TestRunLeavesAStalledLogWriterBehind(t *testing.T) {
 	}
 	if !strings.Contains(res.LogErr, "did not return") || time.Since(start) > WaitDelay+5*time.Second {
 		t.Fatalf("log err %q after %v", res.LogErr, time.Since(start))
+	}
+	// Released after Run returned, the writer gets the Write in flight back
+	// and nothing more: the chunks queued and the tail are dropped.
+	close(bw.release)
+	time.Sleep(200 * time.Millisecond)
+	if n := bw.writes.Load(); n != 1 {
+		t.Fatalf("%d writes after the sink was left behind", n)
 	}
 	// A process that writes far more than the queue holds while the
 	// writer blocks: the process still ends, and the log is cut.
