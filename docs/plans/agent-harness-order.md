@@ -35,8 +35,14 @@ quiet terminal and a `submit_ok` finish nothing.
    refuses on its own: PR 4 makes `Launchable()` refuse a crew with tasks,
    and `StartMember`, `AddMember`, `ResumeMember`, `ResumeRun` and
    `ResumeRecord` refuse a managed run or record (`StartMember` starts any
-   pending member regardless of its rule today); PR 5 lifts the launch
-   refusal, PR 8 the resume refusals.
+   pending member regardless of its rule today). PR 6 lifts the launch
+   refusal, once the result route, tool and command exist and an end-to-end
+   test submits through them (PR 5 alone would start workers with no way to
+   submit). PR 8 lifts the `ResumeRun` and `ResumeRecord` refusals;
+   `ResumeMember`, and the session-resume route that delegates to it, stay
+   refused for a managed run (decision 6): a member resume reopens a stopped
+   run in place and relaunches in the old worktree, which is neither a
+   continuation nor a fresh attempt.
 2. **A task** is `{id, member, kind, instructions, needs[], checks[{id, argv,
    timeoutSeconds}]}`: ids `^[a-z0-9][a-z0-9_-]{0,39}$` (no dot, so
    `<task>.<n>` is unambiguous and git takes the branch); 128 tasks; 8 checks
@@ -52,13 +58,18 @@ quiet terminal and a `submit_ok` finish nothing.
    session per member: dispatching a member's next attempt stops its previous
    session; a succeeded task's session stays idle for inspection until Stop
    or the member's next attempt. Four attempts in flight per run, three per
-   task. A dispatch begins by reserving the attempt's session slot in the
-   registry (`Launcher.Reserve`, released if the launch does not happen):
-   `createLocalSession` starts the PTY before the registry's capacity check,
-   so a refusal at the cap must come before the worktree, `setup` and the
-   process exist; a refusal spends no attempt and makes nothing, and the
-   next dispatch takes the next attempt number, never a branch name already
-   made. Fan-in: the
+   task. A dispatch begins by stopping the member's previous session when
+   one is live (an idle worker of a finished or superseded task: the
+   retention rule above, and the slot it holds), waiting for its end, and
+   only then reserving the attempt's session slot in the registry
+   (`Launcher.Reserve`, released if the launch does not happen): the
+   registry counts every session that has not ended, so a reservation made
+   before that stop would stall at the cap behind the member's own idle
+   session; and `createLocalSession` starts the PTY before the registry's
+   capacity check, so the refusal must come before the worktree, `setup`
+   and the process exist. A refusal spends no attempt and makes nothing,
+   and the next dispatch takes the next attempt number, never a branch name
+   already made. Fan-in: the
    worktree roots at the first need's result, the task file names the other
    results' branches to merge, and submit refuses a HEAD that does not
    descend from all of them.
@@ -79,7 +90,12 @@ quiet terminal and a `submit_ok` finish nothing.
    agent or editor attached, runs `setup` there and then the checks: a check
    never reads the worker's live checkout, where the agent or a person at a
    shared terminal could change files while it runs and restore them after.
-   The receipt names the checkout's HEAD, compared before and after.
+   After `setup`, and before and after each check, the checkout's tracked
+   tree must equal the result commit (HEAD unchanged and `git diff --quiet
+   HEAD`): a tracked file changed by `setup` or by a check fails the
+   verification with its paths, since the checks would have read code the
+   receipt does not name; untracked and ignored files are a check's
+   permitted outputs. The receipt records `stable` from those comparisons.
    A failing check fails the attempt; the next one starts from that result
    commit with the log tail in its task file. A review that ran succeeds
    whatever its verdict; `needs_changes` reopens its subject (a fresh attempt
@@ -136,7 +152,12 @@ quiet terminal and a `submit_ok` finish nothing.
    managed run shows read-only from its snapshot; Resume makes the
    continuation under the existing lease, imports accepted results by
    reference, carries attempt counts, re-verifies a candidate that was
-   verifying if HEAD and cleanliness still match, and dispatches the rest.
+   verifying in a fresh verification checkout (`<task>.<n>.check.2`), never
+   the old one, and dispatches the rest. A check's process group can outlive
+   an owner killed outright (a SIGKILL skips the context's kill), so the
+   `check_started` row records the pid, process group and start time,
+   recovery reports whether such a process still exists and never kills a
+   recorded pid (pids are reused), and the old checkout is left to it.
    Uncertain boundaries (a dispatch with no `launched`, a typed line with no
    `entered`, a command that acts) wait for a person; nothing is retried on
    its own.
@@ -151,8 +172,9 @@ quiet terminal and a `submit_ok` finish nothing.
     MaxOutput, Log})`: a process-group kill as the probes have, the
     environment from `pty.BuildEnv` with `CONDUCTOR_*` and tokens stripped,
     `TERM=dumb`, stdin null, 64 KiB of head and 16 KiB of tail in memory, a
-    1 MiB log with a SHA-256; `checks.maxConcurrent` (default 1). Checks run
-    natively as the user; the editor and the docs say so.
+    1 MiB log with a SHA-256, and the process's pid, group and start time
+    in the result for the receipt; `checks.maxConcurrent` (default 1). Checks
+    run natively as the user; the editor and the docs say so.
 12. **Run outcome.** `state` keeps its four values; a managed run adds
     `outcome: succeeded | failed | cancelled` once every task is terminal,
     and `finished` no longer waits for idle sessions to end (#154's outcome).
@@ -178,10 +200,10 @@ quiet terminal and a `submit_ok` finish nothing.
 | 2 | | `internal/proc`: a bounded argv runner | No callers yet; its own review |
 | 3 | | The managed-run ledger in SQLite: the dependency, schema v1, transactions, the owner lock, receipts, recovery | Inert until managed crews; the storage and dependency review on its own |
 | 4 | | A crew can define tasks: schema, validation, `CrewRef`, env, the editor's Tasks table; the server refuses to launch, start, add to or resume a managed crew or run | A managed crew can be saved; nothing runs yet, and the legacy paths cannot run it |
-| 5 | | A managed run dispatches tasks into attempt worktrees and takes their results; the launch refusal lifted | The engine core, tested by calling the engine and the real registry |
-| 6 | | An agent reads its task and submits its result; a review's findings lead to a bounded repair | Ends slice A's vertical: the stub proves `done` finishes nothing |
+| 5 | | A managed run dispatches tasks into attempt worktrees and takes their results | The engine core, tested by calling the engine and the real registry; the launch refusal stays |
+| 6 | | An agent reads its task and submits its result; a review's findings lead to a bounded repair; the launch refusal lifted | Ends slice A's vertical: the stub proves `done` finishes nothing |
 | 7 | | The run page shows tasks, their checks and results, and what to do next | Needs 5 and 6's data and routes |
-| 8 | | A managed run continues after a restart without repeating finished work; the resume refusals lifted | Closes slice A |
+| 8 | | A managed run continues after a restart without repeating finished work; the run-resume and record-resume refusals lifted | Closes slice A |
 | 9 | | Members of a managed run exchange durable messages | Slice B |
 | 10 | | A member reports a blocker and saves a checkpoint | Slice B |
 | 11 | | The harness by hand on macOS, Linux and WSL with Claude Code and Codex; the docs | Qualification |
@@ -238,24 +260,29 @@ the self-service crew route, start, add and every resume route; vitest for
 
 **5. engine** (`internal/crew/task.go`, `run.go`, `worktree.go`, `gitcli`):
 decisions 3–6 and 12: `pump` under the engine's lock after every launch,
-close, result, unpause, cancel or retry; `dispatch` in order (the registry
-slot reserved through `Launcher.Reserve`, the `attempt.reserved` row, the
-member's previous session stopped, `AddWorktreeAt`, the task files, `setup`,
-`Launch` with the reservation, `attempt.launched`, the typed line,
+close, result, unpause, cancel or retry; `dispatch` in order (a
+`session.released` row and the member's previous session stopped, its end
+awaited; the registry slot reserved through `Launcher.Reserve`; the
+`attempt.reserved` row; `AddWorktreeAt`; the task files; `setup`; `Launch`
+with the reservation; `attempt.launched`; the typed line;
 `attempt.prompted`; a refusal at the slot spends nothing and makes
 nothing); `SubmitResult` with its 409 rules; `verify` on a goroutine in a
 WaitGroup that `stop` waits on, in the result's own detached checkout, with
-`setup` run there first; the `OnActivity` guards;
+`setup` run there first and the tracked tree compared to the result commit
+after `setup` and around each check; the `OnActivity` guards;
 `Run.tasks`, `MemberState.task` and `attempt`; `runState` by mode and its
 web mirror. Tests in `managed_test.go` on a real repository, the fake
 launcher, a fake ledger and a `runCheck` seam: the caps; a slot refused
 before anything is made; the worktree at the input commit; a dependent
 seeing the producer's tree; dirty, stale and mismatched refusals; a file
 changed and restored in the worker's checkout during a check leaving the
-receipt true to the result commit; `done` completing nothing; handoffs not
-typed; a session end failing its attempt; Stop draining checks;
-`AddWorktreeAt` in `worktree_test.go`; and in `internal/api`, the
-reservation against the real registry at `MaxSessions`.
+receipt true to the result commit; a tracked file changed by a check failing
+the verification with its path while an untracked output does not; `done`
+completing nothing; handoffs not typed; a session end failing its attempt;
+Stop draining checks; `AddWorktreeAt` in `worktree_test.go`; and in
+`internal/api`, against the real registry at `MaxSessions`: a replacement
+of the member's idle session launches at a cap of one, and a genuinely
+additional session is refused.
 
 **6. agent surface** (`internal/api/tasks.go`, `internal/cli/mcp.go`,
 `task.go`, `internal/agents/skill.go`, `web/e2e/stub-agent.sh`,
@@ -266,7 +293,8 @@ admin `GET /api/runs/{run}/tasks/{task}` and the per-action routes;
 `task_context` (32 KiB pages) and `task_result` with one minted commandId and
 one retry; `conductor task context|result` (loud outside a session); the
 skill's "Your task" section; the review gate and the repair dispatch; the
-stub's worker mode (reads the task over MCP or the CLI, commits, submits,
+launch refusal of PR 4 lifted once the Playwright run below submits through
+the route; the stub's worker mode (reads the task over MCP or the CLI, commits, submits,
 reviews `needs_changes` once then `approved`, then reports done); catalog
 ids `worker` and `worker-cli`; the failing-once check `["git","cat-file",
 "-e","HEAD:stub-fixed.txt"]`. Tests: every 4xx, the repeated receipt, the
@@ -283,10 +311,15 @@ graph, the actions and `runState`; Playwright assertions in `tasks.spec.ts`
 and rows in `crumbs.spec.ts` and `hscroll.spec.ts`.
 
 **8. recovery** (the resume paths in `run.go`, the ledger, the web):
-decision 9, the resume refusals of PR 4 lifted. Tests: a succeeded task
-never relaunched; a matching candidate verified with no session; a second
-resume refused; a predecessor's record and rows kept while a continuation
-cites them; Playwright
+decision 9; the `ResumeRun` and `ResumeRecord` refusals of PR 4 lifted,
+`ResumeMember`'s and the session-resume route's kept. Tests: a succeeded
+task never relaunched; a candidate that was verifying re-verified in a
+fresh checkout with no session; an owner killed outright while a check runs
+(its process outliving the owner, as a subprocess test shows): the check
+interrupted at the next start, the survivor reported and not killed, the
+re-verification in a fresh checkout; a second resume refused; a member
+resume of a managed run refused after recovery; a predecessor's record and
+rows kept while a continuation cites them; Playwright
 `tasks-resume.spec.ts` on its own server restarted on the same data, token
 and port.
 
