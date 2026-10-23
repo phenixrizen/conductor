@@ -49,10 +49,12 @@ func (rs *Records) Close() {
 // maxRecords bounds the records kept.
 const maxRecords = 500
 
-// maxRecordSize bounds one record read back: a run with 200 log lines is
-// well under it. maxGuardSize bounds the read Save makes of the record it
-// replaces, for its revision: wider, so a record too large to list still
-// keeps a managed snapshot from going back.
+// maxRecordSize bounds one record, written and read back: a run with 200
+// log lines is well under it, and Save trims the chat and the log of one
+// that is not, newest kept, so every record written is one the listing
+// reads. maxGuardSize bounds the read Save makes of the record it replaces,
+// for its revision: wider, so a record too large to list (an older
+// Conductor's) still keeps a managed snapshot from going back.
 const (
 	maxRecordSize = 4 << 20
 	maxGuardSize  = 64 << 20
@@ -164,10 +166,34 @@ func (rs *Records) Save(r Run) error {
 	if ok && have.Managed != nil && (r.Managed == nil || have.Managed.Revision > r.Managed.Revision) {
 		return nil
 	}
+	r, err = fit(r)
+	if err != nil {
+		return err
+	}
 	if err := rs.st.Save(r.ID+".json", r); err != nil {
 		return err
 	}
 	return rs.prune()
+}
+
+// fit trims r to a record the listing reads (maxRecordSize): the oldest
+// half of the chat and of the log go, again until it fits. A record that
+// does not fit without them is refused.
+func fit(r Run) (Run, error) {
+	for {
+		b, err := store.Encode(r)
+		if err != nil {
+			return r, err
+		}
+		if int64(len(b)) <= maxRecordSize {
+			return r, nil
+		}
+		if len(r.Chat) == 0 && len(r.Log) == 0 {
+			return r, fmt.Errorf("records: %s.json would be more than %d bytes", r.ID, maxRecordSize)
+		}
+		r.Chat = slices.Clone(r.Chat[(len(r.Chat)+1)/2:]) // one left goes too
+		r.Log = slices.Clone(r.Log[(len(r.Log)+1)/2:])
+	}
 }
 
 // Delete removes a run's record: the ledger's owner, once the run's rows
@@ -204,8 +230,10 @@ func (rs *Records) prune() error {
 	if err != nil {
 		return err
 	}
+	// Kept: a managed record, one the engine holds, and one too large to
+	// read, whose content is unknown (an older Conductor's: Save trims).
 	all = slices.DeleteFunc(all, func(f recordFile) bool {
-		return (f.ok && f.run.Managed != nil) || (rs.held != nil && rs.held(strings.TrimSuffix(f.name, ".json")))
+		return (f.ok && f.run.Managed != nil) || f.large || (rs.held != nil && rs.held(strings.TrimSuffix(f.name, ".json")))
 	})
 	if len(all) <= maxRecords {
 		return nil
@@ -229,9 +257,10 @@ func boolInt(b bool) int {
 }
 
 type recordFile struct {
-	name string
-	run  Run
-	ok   bool
+	name  string
+	run   Run
+	ok    bool
+	large bool // not read because it is over maxRecordSize
 }
 
 // load reads the records named, keeping one that cannot be read as not ok.
@@ -241,7 +270,7 @@ func (rs *Records) load(entries []store.Entry) ([]recordFile, error) {
 		var r Run
 		ok, err := rs.st.LoadLimit(en.Name, &r, maxRecordSize)
 		if err != nil || !ok || r.ID+".json" != en.Name {
-			out = append(out, recordFile{name: en.Name})
+			out = append(out, recordFile{name: en.Name, large: errors.Is(err, store.ErrTooLarge)})
 			continue
 		}
 		out = append(out, recordFile{name: en.Name, run: r, ok: true})
