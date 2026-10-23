@@ -23,6 +23,7 @@ export function ownError(m: Pick<RunMember, 'error'>): string {
 
 /** A start rule in words, with its icon: the table's Starts column, a graph node's last line. A member started by hand is muted. */
 export function startWords(start: CrewStart): { icon: string; text: string; muted: boolean } {
+  if (start.when === 'task') return { icon: 'i-lucide-list-checks', text: 'By its tasks', muted: false }
   if (start.when === 'after') return { icon: 'i-lucide-corner-down-right', text: `After ${start.member} is done`, muted: false }
   if (start.when === 'manual') return { icon: 'i-lucide-hand', text: 'When you press Start', muted: true }
   return { icon: 'i-lucide-zap', text: 'At launch', muted: false }
@@ -109,6 +110,7 @@ function list(names: readonly string[]): string {
 export function startSentence(members: readonly ShapeMember[]): string {
   const n = members.length
   if (!n) return 'no members yet'
+  if (members.every((m) => m.start.when === 'task')) return n === 1 ? `${members[0]!.name} does its tasks` : 'each does its tasks'
   const groups = groupsOf(members)
   const chains = groups.filter((g) => g.length > 1)
   const singles = groups.filter((g) => g.length === 1).map((g) => g[0]!)

@@ -77,11 +77,16 @@ export class Api {
   }
 
   crew(id: string) {
-    return this.ok<{ crew: { id: string; cwd: string; members: Array<{ name: string; start?: { when: string; member?: string } }> } }>('GET', `/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew)
+    return this.ok<{ crew: E2ECrew }>('GET', `/api/crews/${encodeURIComponent(id)}`).then((r) => r.crew)
   }
 
   launchCrew(id: string) {
     return this.ok<{ run: Run }>('POST', `/api/crews/${encodeURIComponent(id)}/launch`).then((r) => r.run)
+  }
+
+  /** A launch as the server answers it, status and body, for a launch the server refuses. */
+  launchCrewRaw(id: string) {
+    return this.call<{ error: { code: string; message: string } }>('POST', `/api/crews/${encodeURIComponent(id)}/launch`)
   }
 
   run(id: string) {
@@ -224,6 +229,15 @@ async function within<T>(ms: number, what: string, f: () => Promise<T>): Promise
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** A saved crew as the e2e reads it back: its members' starts, and, in a crew with tasks (#334), its tasks and setup. */
+export interface E2ECrew {
+  id: string
+  cwd: string
+  members: Array<{ name: string; start?: { when: string; member?: string } }>
+  tasks?: Array<{ id: string; member: string; kind: string; instructions: string; needs?: string[]; checks?: Array<{ id: string; argv: string[]; timeoutSeconds?: number }> }>
+  setup?: Array<{ id: string; argv: string[]; timeoutSeconds?: number }>
 }
 
 export const test = base.extend<{ api: Api }, { state: E2EState }>({

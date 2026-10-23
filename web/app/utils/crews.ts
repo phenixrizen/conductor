@@ -1,4 +1,4 @@
-import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewInfo, CrewInput, CrewMember, CrewStart, CrewSummary, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewStart, CrewSummary, CrewTask, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
@@ -9,7 +9,7 @@ import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from '.
  * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt and updatedAt) or members carrying page state can be passed as they are.
  */
 export function toCrewInput(c: CrewInput): CrewInput {
-  return {
+  const out: CrewInput = {
     name: c.name,
     goal: c.goal,
     cwd: c.cwd,
@@ -20,6 +20,24 @@ export function toCrewInput(c: CrewInput): CrewInput {
     yolo: c.yolo,
     members: c.members.map(toCrewMember),
   }
+  if (c.tasks) out.tasks = c.tasks.map(toCrewTask)
+  if (c.setup) out.setup = c.setup.map(toCrewCheck)
+  return out
+}
+
+/** A task as the server accepts it: its fields and nothing else; empty needs and checks left out. */
+export function toCrewTask(t: CrewTask): CrewTask {
+  const out: CrewTask = { id: t.id, member: t.member, kind: t.kind, instructions: t.instructions }
+  if (t.needs?.length) out.needs = [...t.needs]
+  if (t.checks?.length) out.checks = t.checks.map(toCrewCheck)
+  return out
+}
+
+/** A check or setup command as the server accepts it. */
+export function toCrewCheck(c: CrewCheck): CrewCheck {
+  const out: CrewCheck = { id: c.id, argv: [...c.argv] }
+  if (c.timeoutSeconds) out.timeoutSeconds = c.timeoutSeconds
+  return out
 }
 
 /** A member as the server accepts it, in a crew or on its own (POST /api/runs/{run}/members): its fields and nothing else. */
@@ -71,6 +89,128 @@ export function memberNameFrom(text: string, taken: readonly string[] = []): str
   }
 }
 
+/** A task's or a check's id as the server accepts it (internal/crew taskIDPattern): no dot, since an attempt's branch is `crew/<run>/<task>.<n>`. */
+export const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/
+
+/** The server's bounds on tasks (internal/crew). */
+export const TASK_LIMITS = { tasks: 128, instructions: 8000, checks: 8, timeout: 3600, timeoutDefault: 600, argv: 32, arg: 4096, argvBytes: 8192 } as const
+
+/** Why the server would refuse a task or check id, or '' when it is fine. */
+export function taskIdError(id: string, taken: readonly string[] = []): string {
+  if (!id) return 'Give it an id'
+  if (!TASK_ID.test(id)) return 'Lower-case letters, digits, "_" and "-", starting with a letter or digit, at most 40, no "."'
+  if (taken.includes(id)) return 'Another one has this id'
+  return ''
+}
+
+const bytes = (s: string) => new TextEncoder().encode(s).length
+
+/** Why the server would refuse a check or setup command (its id, argv and timeout), in order; empty when it is fine. */
+export function checkProblems(c: CrewCheck, what: string, taken: readonly string[] = []): string[] {
+  const out: string[] = []
+  const id = taskIdError(c.id, taken)
+  if (id) out.push(`${what}: ${id}`)
+  if (!c.argv.length || !c.argv[0]) out.push(`${what}: name a program`)
+  if (c.argv.length > TASK_LIMITS.argv) out.push(`${what}: at most ${TASK_LIMITS.argv} arguments`)
+  if (c.argv.some((a) => bytes(a) > TASK_LIMITS.arg)) out.push(`${what}: an argument is longer than ${TASK_LIMITS.arg} bytes`)
+  if (c.argv.reduce((n, a) => n + bytes(a), 0) > TASK_LIMITS.argvBytes) out.push(`${what}: the arguments are more than 8 KiB in all`)
+  if (c.timeoutSeconds !== undefined && (c.timeoutSeconds < 0 || c.timeoutSeconds > TASK_LIMITS.timeout || !Number.isInteger(c.timeoutSeconds)))
+    out.push(`${what}: the timeout is 1 to ${TASK_LIMITS.timeout} seconds`)
+  return out
+}
+
+/** What a crew with tasks and its members look like to the task rules. */
+export type TaskShape = Pick<CrewInput, 'tasks' | 'setup' | 'isolation'> & { members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'>> }
+
+/**
+ * Why the server would refuse a crew's tasks (internal/crew checkTasks), every problem in the server's order; empty when the crew would be
+ * accepted. A crew without tasks has no problem but a task-started member or a setup.
+ */
+export function taskProblems(c: TaskShape): string[] {
+  const out: string[] = []
+  const tasks = c.tasks ?? []
+  if (!tasks.length) {
+    if (c.setup?.length) out.push('Setup commands need tasks')
+    for (const m of c.members) if (m.start.when === 'task') out.push(`${m.name || 'a member'} starts by its tasks, but the crew has none`)
+    return out
+  }
+  if (tasks.length > TASK_LIMITS.tasks) out.push(`At most ${TASK_LIMITS.tasks} tasks`)
+  if (c.isolation !== 'worktree') out.push('A crew with tasks gives each member a git worktree: set "Each run" to worktrees')
+  for (const m of c.members) if (m.start.when !== 'task') out.push(`${m.name || 'a member'} must start by its tasks in a crew with tasks`)
+  if ((c.setup?.length ?? 0) > TASK_LIMITS.checks) out.push(`At most ${TASK_LIMITS.checks} setup commands`)
+  const setupIds: string[] = []
+  for (const [i, ch] of (c.setup ?? []).entries()) {
+    out.push(...checkProblems(ch, `Setup command ${i + 1}`, setupIds))
+    setupIds.push(ch.id)
+  }
+  const names = c.members.map((m) => m.name)
+  const ids: string[] = []
+  const kinds = new Map<string, string>()
+  for (const t of tasks) {
+    const what = t.id ? `Task ${t.id}` : 'A task'
+    const idErr = taskIdError(t.id, ids)
+    if (idErr) out.push(`${what}: ${idErr}`)
+    ids.push(t.id)
+    kinds.set(t.id, t.kind)
+    if (t.kind !== 'work' && t.kind !== 'review') out.push(`${what}: the kind is work or review`)
+    if (!names.includes(t.member)) out.push(`${what}: ${t.member ? `${t.member} is not a member` : 'choose its member'}`)
+    if (t.instructions.length > TASK_LIMITS.instructions) out.push(`${what}: the instructions are at most ${TASK_LIMITS.instructions} characters`)
+    const checks = t.checks ?? []
+    if (checks.length > TASK_LIMITS.checks) out.push(`${what}: at most ${TASK_LIMITS.checks} checks`)
+    if (t.kind === 'review' && checks.length) out.push(`${what}: a review has no checks; its verdict is its result`)
+    const checkIds: string[] = []
+    for (const [i, ch] of checks.entries()) {
+      out.push(...checkProblems(ch, `${what}, check ${i + 1}`, checkIds))
+      checkIds.push(ch.id)
+    }
+  }
+  for (const t of tasks) {
+    const what = t.id ? `Task ${t.id}` : 'A task'
+    for (const n of t.needs ?? []) {
+      if (n === t.id) out.push(`${what}: cannot need itself`)
+      else if (!ids.includes(n)) out.push(`${what}: needs ${n}, which is not a task`)
+    }
+    if (t.kind === 'review' && (t.needs?.length !== 1 || kinds.get(t.needs[0]!) !== 'work')) out.push(`${what}: a review needs exactly one work task, the one it reviews`)
+  }
+  const needs = new Map(tasks.map((t) => [t.id, t.needs ?? []]))
+  const walk = (id: string, path: string[]): string => {
+    if (path.includes(id)) return `Task ${path[0]}: the needs go round in a cycle: ${[...path, id].join(' needs ')}`
+    for (const n of needs.get(id) ?? []) {
+      const cycle = walk(n, [...path, id])
+      if (cycle) return cycle
+    }
+    return ''
+  }
+  for (const t of tasks) {
+    const cycle = walk(t.id, [])
+    if (cycle) {
+      out.push(cycle)
+      break
+    }
+  }
+  for (const m of c.members) if (!tasks.some((t) => t.member === m.name)) out.push(`${m.name || 'A member'} has no task; every member of a crew with tasks does one`)
+  return out
+}
+
+/** The problems of one task's row, for the mark under it: those of taskProblems that name it. */
+export function taskRowProblems(t: CrewTask, c: TaskShape): string[] {
+  const what = t.id ? `Task ${t.id}` : 'A task'
+  return taskProblems(c).filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
+}
+
+/** A new task for the editor: done by `member`, its id from the member's name, not one of `taken`. */
+export function draftTask(member: string, taken: readonly string[] = []): CrewTask {
+  const base = member.replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 40) || 'task'
+  let id = base
+  for (let i = 2; taken.includes(id); i++) id = `${base.slice(0, 40 - `-${i}`.length)}-${i}`
+  return { id, member, kind: 'work', instructions: '' }
+}
+
+/** The tasks after a member is renamed: those it does follow the new name. */
+export function tasksRenamed(tasks: readonly CrewTask[], from: string, to: string): CrewTask[] {
+  return tasks.map((t) => (t.member === from ? { ...t, member: to } : t))
+}
+
 /** A start condition as one value of the Starts select: `immediately`, `manual` or `after:<member>`. */
 export function startValue(s: CrewStart): string {
   return s.when === 'after' ? `after:${s.member ?? ''}` : s.when
@@ -79,6 +219,7 @@ export function startValue(s: CrewStart): string {
 /** The start condition a value of the Starts select stands for (startValue). */
 export function startFrom(value: string): CrewStart {
   if (value.startsWith('after:')) return { when: 'after', member: value.slice('after:'.length) }
+  if (value === 'task') return { when: 'task' }
   return { when: value === 'manual' ? 'manual' : 'immediately' }
 }
 

@@ -25,6 +25,17 @@ const (
 	StartImmediately = "immediately"
 	StartAfter       = "after" // once the member Start.Member names first reports done
 	StartManual      = "manual"
+	// StartTask is the start of a managed crew's members (Crew.Tasks): the
+	// run starts a member for each of its tasks as the task's needs are
+	// met, never by a rule of its own. Required in a managed crew, refused
+	// elsewhere.
+	StartTask = "task"
+)
+
+// What a task is for (Task.Kind).
+const (
+	TaskWork   = "work"   // the member works and submits a result, a commit
+	TaskReview = "review" // the member reviews one work task's result and submits a verdict
 )
 
 // Where a crew's members run (Crew.Where).
@@ -88,6 +99,27 @@ type Member struct {
 	Start   Start    `json:"start"`
 }
 
+// Task is a unit of a managed crew's work: a member does it once the tasks
+// it needs have results, in a worktree of its own made at those results,
+// and submits a result the checks decide. A review task reviews one work
+// task's result and submits a verdict.
+type Task struct {
+	ID           string   `json:"id"`     // taskIDPattern; the attempt's branch is crew/<run>/<task>.<n>
+	Member       string   `json:"member"` // the member who does it
+	Kind         string   `json:"kind"`   // work | review
+	Instructions string   `json:"instructions"`
+	Needs        []string `json:"needs,omitempty"`  // the tasks whose results it starts from; a review's one work task
+	Checks       []Check  `json:"checks,omitempty"` // run against the result; none for a review
+}
+
+// Check is a command the controller runs: against a result (Task.Checks)
+// or in a new worktree (Crew.Setup). An argv array, never a shell line.
+type Check struct {
+	ID             string   `json:"id"`
+	Argv           []string `json:"argv"`
+	TimeoutSeconds int      `json:"timeoutSeconds,omitempty"` // 1 to maxCheckTimeout; defaultCheckTimeout when 0
+}
+
 // Crew is a saved team of agents. The server sets ID, CreatedAt and UpdatedAt.
 type Crew struct {
 	ID                 string `json:"id"`
@@ -98,6 +130,14 @@ type Crew struct {
 	Isolation          string `json:"isolation"` // none | worktree
 	OpenAfterLaunch    bool   `json:"openAfterLaunch"`
 	ViewLinkTTLSeconds int64  `json:"viewLinkTtlSeconds,omitempty"` // a launch creates a view link that lasts this long; none when 0
+	// Tasks makes the crew managed (docs/plans/agent-harness-order.md): who
+	// does what, after which results, checked how. A crew without tasks
+	// runs by its members' start rules, as before.
+	Tasks []Task `json:"tasks,omitempty"`
+	// Setup is run in every new attempt worktree before its member starts,
+	// each entry an argv array, never a shell line: what a fresh worktree
+	// lacks (a dependency install). Only with Tasks.
+	Setup []Check `json:"setup,omitempty"`
 	// Yolo overrides the server's yolo default for the crew's runs: nil
 	// follows it, false launches every member without its agent's yolo
 	// recipe, true with it. A launch fixes the choice on the run.
@@ -120,7 +160,18 @@ const (
 	// maxLinkTTL bounds ViewLinkTTLSeconds as POST /api/sessions/{id}/links
 	// bounds ttlSeconds.
 	maxLinkTTL = 365 * 24 * 3600
+	// The tasks of a managed crew.
+	maxTasks            = 128
+	maxInstructions     = 8000 // characters (runes)
+	maxChecks           = 8    // per task, and setup entries per crew
+	maxCheckTimeout     = 3600 // seconds
+	defaultCheckTimeout = 600
 )
+
+// taskIDPattern keeps task and check ids short, lower case and free of
+// dots and path separators: a task id becomes part of a branch name,
+// crew/<run>/<task>.<n>, where the dot tells the attempt apart.
+var taskIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
 
 // MaxEncoded bounds a crew: its file, as the store writes it (store.Encode).
 // Validate holds every crew to it, so the crew a create or an update sends is
@@ -196,6 +247,9 @@ func (c Crew) Validate() error {
 	if err := c.checkStarts(names); err != nil {
 		return err
 	}
+	if err := c.checkTasks(names); err != nil {
+		return err
+	}
 	b, err := store.Encode(c)
 	if err != nil {
 		return invalidf("cannot be written as JSON: %v", err)
@@ -238,6 +292,165 @@ func (c Crew) checkStarts(names []string) error {
 	return nil
 }
 
+// checkTasks checks the tasks of a managed crew against its members, and
+// that a crew without tasks has no task-started member and no setup: ids
+// well formed and unique, at most maxTasks, every task's member known and
+// its needs known with no cycle, a review needing one work task and
+// having no checks, every member with a task, the checks and the setup
+// within their bounds, isolation worktree, every member started by its
+// tasks.
+func (c Crew) checkTasks(names []string) error {
+	if len(c.Tasks) == 0 {
+		if len(c.Setup) > 0 {
+			return invalidf("setup is only set with tasks")
+		}
+		for _, m := range c.Members {
+			if m.Start.When == StartTask {
+				return invalidf("member %s: start.when %q is only for a crew with tasks", quote(m.Name), StartTask)
+			}
+		}
+		return nil
+	}
+	if len(c.Tasks) > maxTasks {
+		return invalidf("too many tasks (at most %d)", maxTasks)
+	}
+	if c.Isolation != IsolationWorktree {
+		return invalidf("a crew with tasks needs isolation %q: each attempt works in a worktree of its own", IsolationWorktree)
+	}
+	for _, m := range c.Members {
+		if m.Start.When != StartTask {
+			return invalidf("member %s: in a crew with tasks, start.when must be %q", quote(m.Name), StartTask)
+		}
+	}
+	if len(c.Setup) > maxChecks {
+		return invalidf("too many setup commands (at most %d)", maxChecks)
+	}
+	for i, ch := range c.Setup {
+		if err := ch.validate(fmt.Sprintf("setup[%d]", i)); err != nil {
+			return err
+		}
+	}
+	ids := make([]string, 0, len(c.Tasks))
+	kinds := map[string]string{}
+	for _, t := range c.Tasks {
+		if !taskIDPattern.MatchString(t.ID) {
+			return invalidf("task %s: id must match %s", quote(t.ID), taskIDPattern)
+		}
+		if slices.Contains(ids, t.ID) {
+			return invalidf("task %s: the id is used twice", quote(t.ID))
+		}
+		ids = append(ids, t.ID)
+		kinds[t.ID] = t.Kind
+		if t.Kind != TaskWork && t.Kind != TaskReview {
+			return invalidf("task %s: kind %s must be %q or %q", quote(t.ID), quote(t.Kind), TaskWork, TaskReview)
+		}
+		if !slices.Contains(names, t.Member) {
+			return invalidf("task %s: member %s is not a member of this crew", quote(t.ID), quote(t.Member))
+		}
+		if utf8.RuneCountInString(t.Instructions) > maxInstructions {
+			return invalidf("task %s: instructions must be at most %d characters", quote(t.ID), maxInstructions)
+		}
+		if strings.ContainsRune(t.Instructions, 0) {
+			return invalidf("task %s: instructions contain NUL", quote(t.ID))
+		}
+		if len(t.Checks) > maxChecks {
+			return invalidf("task %s: too many checks (at most %d)", quote(t.ID), maxChecks)
+		}
+		if t.Kind == TaskReview && len(t.Checks) > 0 {
+			return invalidf("task %s: a review has no checks: its verdict is its result", quote(t.ID))
+		}
+		checkIDs := make([]string, 0, len(t.Checks))
+		for i, ch := range t.Checks {
+			if err := ch.validate(fmt.Sprintf("task %s: checks[%d]", quote(t.ID), i)); err != nil {
+				return err
+			}
+			if slices.Contains(checkIDs, ch.ID) {
+				return invalidf("task %s: check id %s is used twice", quote(t.ID), quote(ch.ID))
+			}
+			checkIDs = append(checkIDs, ch.ID)
+		}
+	}
+	for _, t := range c.Tasks {
+		for _, n := range t.Needs {
+			if n == t.ID {
+				return invalidf("task %s: cannot need itself", quote(t.ID))
+			}
+			if !slices.Contains(ids, n) {
+				return invalidf("task %s: needs %s, which is not a task of this crew", quote(t.ID), quote(n))
+			}
+		}
+		if t.Kind == TaskReview {
+			if len(t.Needs) != 1 || kinds[t.Needs[0]] != TaskWork {
+				return invalidf("task %s: a review needs exactly one work task, the one it reviews", quote(t.ID))
+			}
+		}
+	}
+	// A path from a task through its needs ends: a task seen twice on one
+	// path is a cycle.
+	needs := map[string][]string{}
+	for _, t := range c.Tasks {
+		needs[t.ID] = t.Needs
+	}
+	var walk func(id string, path []string) error
+	walk = func(id string, path []string) error {
+		if slices.Contains(path, id) {
+			return invalidf("task %s: the needs go round in a cycle, so it never starts: %s", quote(path[0]), strings.Join(append(path, id), " needs "))
+		}
+		path = append(path, id)
+		for _, n := range needs[id] {
+			if err := walk(n, path); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, t := range c.Tasks {
+		if err := walk(t.ID, nil); err != nil {
+			return err
+		}
+	}
+	for _, m := range c.Members {
+		if !slices.ContainsFunc(c.Tasks, func(t Task) bool { return t.Member == m.Name }) {
+			return invalidf("member %s: has no task; every member of a crew with tasks does one", quote(m.Name))
+		}
+	}
+	return nil
+}
+
+// validate checks a check or setup command: its id, argv (within the
+// member-args bounds, never empty) and timeout. what names it in the error.
+func (ch Check) validate(what string) error {
+	if !taskIDPattern.MatchString(ch.ID) {
+		return invalidf("%s: id %s must match %s", what, quote(ch.ID), taskIDPattern)
+	}
+	if len(ch.Argv) == 0 || ch.Argv[0] == "" {
+		return invalidf("%s: argv must name a program", what)
+	}
+	if len(ch.Argv) > maxArgs {
+		return invalidf("%s: too many argv entries (at most %d)", what, maxArgs)
+	}
+	total := 0
+	for i, a := range ch.Argv {
+		if strings.ContainsRune(a, 0) {
+			return invalidf("%s: argv[%d] contains NUL", what, i)
+		}
+		if len(a) > maxArg {
+			return invalidf("%s: argv[%d] is longer than %d bytes", what, i, maxArg)
+		}
+		total += len(a)
+	}
+	if total > maxArgsBytes {
+		return invalidf("%s: argv must be at most %d bytes in all", what, maxArgsBytes)
+	}
+	if ch.TimeoutSeconds < 0 || ch.TimeoutSeconds > maxCheckTimeout {
+		return invalidf("%s: timeoutSeconds must be between 1 and %d (%d when left out)", what, maxCheckTimeout, defaultCheckTimeout)
+	}
+	return nil
+}
+
+// Managed reports whether c is a managed crew: one with tasks.
+func (c Crew) Managed() bool { return len(c.Tasks) > 0 }
+
 // Validate checks what m can be checked for alone: its name, agent ID,
 // prompt, arguments and start condition, within their limits. Crew.Validate
 // checks it against the other members, and a run against its members when m
@@ -276,12 +489,12 @@ func (m Member) Validate() error {
 		if m.Start.Member == "" {
 			return invalidf("member %s: start.member must name the member to start after", quote(m.Name))
 		}
-	case StartImmediately, StartManual:
+	case StartImmediately, StartManual, StartTask:
 		if m.Start.Member != "" {
 			return invalidf("member %s: start.member is only set with start.when %q", quote(m.Name), StartAfter)
 		}
 	default:
-		return invalidf("member %s: start.when %s must be %q, %q or %q", quote(m.Name), quote(m.Start.When), StartImmediately, StartAfter, StartManual)
+		return invalidf("member %s: start.when %s must be %q, %q, %q or %q", quote(m.Name), quote(m.Start.When), StartImmediately, StartAfter, StartManual, StartTask)
 	}
 	return nil
 }
@@ -295,6 +508,11 @@ func (c Crew) Launchable() error {
 	}
 	if c.Where != WhereServer {
 		return invalidf("the crew runs on a host: only a crew that runs on the server can be launched")
+	}
+	if c.Managed() {
+		// Until a run can dispatch tasks and take their results (#334,
+		// rows 5 and 6), a managed crew is saved and edited, never run.
+		return invalidf("a crew with tasks cannot be launched yet: managed runs are not available in this Conductor")
 	}
 	return nil
 }

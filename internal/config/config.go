@@ -194,6 +194,14 @@ func (c *Config) SwitchyardOrigins() []string {
 }
 
 // Agents holds what agents may do on their own, with their session's token.
+// Crews is the crews section of the config.
+type Crews struct {
+	// Managed lets a crew with tasks run as a managed run (#334,
+	// docs/plans/agent-harness-order.md). On by default; off, a managed
+	// launch is refused while managed records stay readable.
+	Managed *bool `json:"managed,omitempty"`
+}
+
 type Agents struct {
 	// SelfService lets an agent form a crew around its own session, add
 	// members to its run, read its run and mint a view link to itself
@@ -219,6 +227,9 @@ func (c *Config) InstallSkill() bool { return c.Agents.InstallSkill == nil || *c
 
 // SelfService reports whether agents may serve themselves (Agents.SelfService, on by default).
 func (c *Config) SelfService() bool { return c.Agents.SelfService == nil || *c.Agents.SelfService }
+
+// ManagedCrews reports whether a crew with tasks may run (Crews.Managed, on by default).
+func (c *Config) ManagedCrews() bool { return c.Crews.Managed == nil || *c.Crews.Managed }
 
 // DefaultRendezvousServer is the public switchyard every server publishes
 // its sessions to unless the config names another or turns it off: what
@@ -605,6 +616,8 @@ type Config struct {
 	Rendezvous Rendezvous `json:"rendezvous"`
 	// Agents: what agents may do on their own.
 	Agents Agents `json:"agents"`
+	// Crews is the crews section: whether a crew with tasks may run (#334).
+	Crews Crews `json:"crews"`
 	// Switchyard, when enabled, makes this server a coordinator of hosted
 	// sessions that launches nothing (conductor switchyard).
 	Switchyard Switchyard `json:"switchyard"`
@@ -846,6 +859,14 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 				a.DNSEnv[k] = val
 			}
 		}
+	}
+	switch getenv("CONDUCTOR_CREWS_MANAGED") {
+	case "1", "true":
+		on := true
+		cfg.Crews.Managed = &on
+	case "0", "false":
+		off := false
+		cfg.Crews.Managed = &off
 	}
 	switch getenv("CONDUCTOR_AGENT_SELF_SERVICE") {
 	case "1", "true":

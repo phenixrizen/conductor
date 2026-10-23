@@ -14,7 +14,7 @@ import { startWords } from '~/utils/crewWords'
  * run's members), which a row may not take and may start after.
  */
 const members = defineModel<DraftMember[]>({ required: true })
-const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; single?: boolean; host?: string }>(), { others: () => [], single: false, host: '' })
+const props = withDefaults(defineProps<{ agents: AgentInfo[]; others?: string[]; single?: boolean; host?: string; managed?: boolean }>(), { others: () => [], single: false, host: '', managed: false })
 const emit = defineEmits<{ add: []; addFromSession: [] }>()
 
 // Every cell keeps its place in the one-column-per-field layout of a wide
@@ -27,7 +27,12 @@ const cell = {
   start: 'col-start-1 col-span-2 row-start-3 @min-[52rem]:col-start-auto @min-[52rem]:col-span-1 @min-[52rem]:row-start-auto',
   menu: 'col-start-3 row-start-1 @min-[52rem]:col-start-auto @min-[52rem]:row-start-auto',
 }
-const cols = 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[52rem]:grid-cols-[7rem_10.5rem_minmax(8rem,1fr)_13rem_1.5rem]'
+// A managed crew's members have no Starts column: their tasks start them.
+const cols = computed(() =>
+  props.managed
+    ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[52rem]:grid-cols-[7rem_10.5rem_minmax(8rem,1fr)_1.5rem]'
+    : 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[52rem]:grid-cols-[7rem_10.5rem_minmax(8rem,1fr)_13rem_1.5rem]',
+)
 
 /** The agent select: an agent not installed on the server (`host` names it) is marked, never disabled. */
 const agentItems = computed(() => props.agents.map((a) => agentItem(a, props.host)))
@@ -150,8 +155,9 @@ const focusedPrompt = ref<number | null>(null)
     <div class="hidden border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[52rem]:grid" :class="cols" aria-hidden="true">
       <span>Name</span>
       <span>Agent</span>
-      <span>First prompt <span class="font-normal normal-case tracking-normal">· $GOAL is the goal</span></span>
-      <span>Starts</span>
+      <span v-if="managed">Role <span class="font-normal normal-case tracking-normal">· written into each task file</span></span>
+      <span v-else>First prompt <span class="font-normal normal-case tracking-normal">· $GOAL is the goal</span></span>
+      <span v-if="!managed">Starts</span>
       <span />
     </div>
 
@@ -194,7 +200,7 @@ const focusedPrompt = ref<number | null>(null)
           :autoresize="focusedPrompt === m.key"
           :maxrows="12"
           maxlength="4000"
-          :placeholder="agentOf(m.agentId)?.allowArgs === false ? 'Shell input (optional)' : 'What it does first; $GOAL is the goal'"
+          :placeholder="managed ? 'Its role, in a line or two' : agentOf(m.agentId)?.allowArgs === false ? 'Shell input (optional)' : 'What it does first; $GOAL is the goal'"
           :title="agentOf(m.agentId)?.allowArgs === false ? 'Typed into the shell as one line once it is ready (optional)' : 'Typed into the agent as one line once it is ready. $GOAL is the crew\'s goal.'"
           :aria-label="`First prompt for ${who(m, i)}`"
           class="w-full"
@@ -205,6 +211,7 @@ const focusedPrompt = ref<number | null>(null)
         />
 
         <USelect
+          v-if="!managed"
           :class="cell.start"
           :model-value="startValue(m.start)"
           :items="startItems(m)"
