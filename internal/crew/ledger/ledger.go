@@ -45,10 +45,14 @@ var LockWait = 10 * time.Second
 // sees a transition half done.
 type Ledger struct {
 	dir string
-	db  *sql.DB
-	// mu orders the writers: the one connection would too, but a
-	// transaction that waited on it would time out as busy instead.
-	mu sync.Mutex
+	// db is nil when there is nothing to read: no database where the
+	// ledger could not make one, or one that cannot be opened at all.
+	db *sql.DB
+	// mu orders the writers (the one connection would too, but a
+	// transaction that waited on it would time out as busy instead) and
+	// guards closed.
+	mu     sync.Mutex
+	closed bool
 
 	readOnly bool
 	why      string
@@ -58,79 +62,128 @@ type Ledger struct {
 	beforeCommit func() error
 }
 
-// ErrReadOnly is returned by a write to a ledger that opened read-only;
-// Why says why.
-var ErrReadOnly = errors.New("ledger: read-only")
+// Errors of a ledger that cannot serve.
+var (
+	// ErrReadOnly is returned by a write to a ledger that opened
+	// read-only; ReadOnly says why.
+	ErrReadOnly = errors.New("ledger: read-only")
+	// ErrUnavailable is returned by a read of a ledger with no database
+	// to read; ReadOnly says why.
+	ErrUnavailable = errors.New("ledger: unavailable")
+	// ErrClosed is returned once Close has begun.
+	ErrClosed = errors.New("ledger: closed")
+)
+
+// takeLock is takeOwnerLock; the tests make it fail.
+var takeLock = takeOwnerLock
 
 // Open opens, or creates, the database under dir (the runs directory,
 // 0700) and takes the owner lock. It never fails for want of the lock or
-// of a usable database: the ledger then opens read-only, and ReadOnly
-// says why, so that the server runs its legacy crews while managed launches
-// answer 503. It fails only when the directory cannot be made or the file
-// cannot be opened at all.
+// of a usable database: the ledger then opens read-only, or with nothing
+// to read, and ReadOnly says why, so that the server runs its legacy
+// crews while managed launches answer 503. It fails only when the
+// directory cannot be made or the database file is a symbolic link.
 func Open(dir string) (*Ledger, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	l := &Ledger{dir: dir}
-	lock, why, err := takeOwnerLock(filepath.Join(dir, Lock), LockWait)
+	lock, why, err := takeLock(filepath.Join(dir, Lock), LockWait)
 	if err != nil {
-		return nil, err
+		// The lock file itself: the ledger is unavailable, the server not.
+		l.readOnly, l.why = true, err.Error()
+		return l, nil
 	}
 	l.lock = lock
 	if lock == nil {
 		l.readOnly, l.why = true, why
 	}
 	path := filepath.Join(dir, File)
-	if _, err := os.Lstat(path); err == nil {
-		if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			l.release()
-			return nil, fmt.Errorf("ledger: %s is a symbolic link", path)
-		}
-	}
-	db, err := sql.Open("sqlite", dsn(path, l.readOnly))
-	if err != nil {
+	fi, statErr := os.Lstat(path)
+	if statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
 		l.release()
-		return nil, err
+		return nil, fmt.Errorf("ledger: %s is a symbolic link", path)
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
-	l.db = db
+	if l.readOnly && statErr != nil {
+		// Nothing to read, and not ours to make.
+		l.why += "; no database to read"
+		return l, nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		l.release()
-		return nil, fmt.Errorf("ledger: %s: %w", path, err)
+	db, err := l.open(ctx, path, l.readOnly)
+	if err != nil {
+		if l.readOnly {
+			l.why += "; " + err.Error()
+			return l, nil
+		}
+		// The owner, but the database will not open (a damaged header):
+		// kept as it is, read when it can be, never written.
+		l.readOnly, l.why = true, err.Error()
+		if db, err = l.open(ctx, path, true); err != nil {
+			l.why += "; nor read: " + err.Error()
+			return l, nil
+		}
+		l.db = db
+		return l, nil
 	}
-	if err := os.Chmod(path, 0o600); err != nil && !l.readOnly {
-		db.Close()
-		l.release()
-		return nil, err
-	}
+	l.db = db
 	if !l.readOnly {
+		if err := os.Chmod(path, 0o600); err != nil {
+			db.Close()
+			l.release()
+			return nil, err
+		}
 		if err := l.prepare(ctx); err != nil {
 			// A damaged database, or one a later binary wrote: kept as it
 			// is, read when it can be, never written.
 			l.readOnly, l.why = true, err.Error()
 			db.Close()
-			db, err = sql.Open("sqlite", dsn(path, true))
-			if err != nil {
-				l.release()
-				return nil, err
+			if db, err = l.open(ctx, path, true); err != nil {
+				l.why += "; nor read: " + err.Error()
+				l.db = nil
+				return l, nil
 			}
-			db.SetMaxOpenConns(1)
 			l.db = db
 		}
 	}
 	return l, nil
 }
 
-// dsn is the connection string: the file, the pragmas every connection
-// needs (a busy timeout, foreign keys on, a full sync, WAL; on darwin a
-// full fsync, since a plain fsync there does not reach the disk), and
-// read-only mode when the ledger is.
+// open opens the database at path and reaches it once.
+func (l *Ledger) open(ctx context.Context, path string, readOnly bool) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dsn(path, readOnly))
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ledger: %s: %w", path, err)
+	}
+	return db, nil
+}
+
+// conn gives the database for a read, or why there is none.
+func (l *Ledger) conn() (*sql.DB, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case l.closed:
+		return nil, ErrClosed
+	case l.db == nil:
+		return nil, fmt.Errorf("%w: %s", ErrUnavailable, l.why)
+	}
+	return l.db, nil
+}
+
+// dsn is the connection string: the file as a URI (its path escaped, so a
+// directory with '#', '?' or '%' in its name is the directory it is), the
+// pragmas every connection needs (a busy timeout, foreign keys on, a full
+// sync, WAL; on darwin a full fsync, since a plain fsync there does not
+// reach the disk), and read-only mode when the ledger is.
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
 	pragmas := []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(FULL)", "journal_mode(WAL)"}
@@ -145,7 +198,8 @@ func dsn(path string, readOnly bool) string {
 	if readOnly {
 		q.Set("mode", "ro")
 	}
-	return "file:" + path + "?" + q.Encode()
+	u := url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}
+	return u.String()
 }
 
 // prepare checks the database (quick_check) and brings it to Version, or
@@ -202,10 +256,15 @@ func (l *Ledger) ReadOnly() (bool, string) { return l.readOnly, l.why }
 func (l *Ledger) Dir() string { return l.dir }
 
 // Close checkpoints the write-ahead log into the database, closes it and
-// releases the owner lock.
+// releases the owner lock. A read or a write after it begins gets
+// ErrClosed; one in flight gets the database's own error, never a panic.
 func (l *Ledger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return nil
+	}
+	l.closed = true
 	var errs []error
 	if l.db != nil {
 		if !l.readOnly {
@@ -214,7 +273,6 @@ func (l *Ledger) Close() error {
 			}
 		}
 		errs = append(errs, l.db.Close())
-		l.db = nil
 	}
 	l.release()
 	return errors.Join(errs...)

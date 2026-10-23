@@ -541,3 +541,146 @@ func TestBounds(t *testing.T) {
 		t.Fatal("another run's row put in this run's transition")
 	}
 }
+
+// A damaged header, which the database will not open at all, leaves the
+// ledger with nothing to read and the server running: Open does not fail.
+func TestADamagedHeaderDoesNotFailOpen(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	newRun(t, l, "team-00000001")
+	l.Close()
+	path := filepath.Join(dir, File)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte(strings.Repeat("\xff", 100)), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	again, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed on a damaged header: %v", err)
+	}
+	defer again.Close()
+	if ro, why := again.ReadOnly(); !ro || why == "" {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	if _, err := again.Runs(context.Background()); err == nil {
+		t.Fatal("a read of a database that will not open")
+	}
+	if _, err := again.Transition(context.Background(), "team-00000001", func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a write: %v", err)
+	}
+}
+
+// Locks unsupported where there is no database yet: nothing to read, the
+// ledger says so, and Open does not fail.
+func TestUnsupportedLocksWithNoDatabaseDoNotFailOpen(t *testing.T) {
+	old := takeLock
+	takeLock = func(path string, wait time.Duration) (*ownerLock, string, error) {
+		return nil, "the filesystem of " + path + " does not support locks (test)", nil
+	}
+	t.Cleanup(func() { takeLock = old })
+	l, err := Open(filepath.Join(t.TempDir(), "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	ro, why := l.ReadOnly()
+	if !ro || !strings.Contains(why, "does not support locks") || !strings.Contains(why, "no database to read") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	if _, err := l.Runs(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a read: %v", err)
+	}
+	if _, _, err := l.Receipt(context.Background(), "team-00000001", "admin", "c1"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a receipt: %v", err)
+	}
+}
+
+// A data directory with '#', '?' or '%' in its name is the directory it
+// is: the path travels escaped in the connection string.
+func TestAPathWithURICharactersIsOpened(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "odd #dir?x%2Fy", "runs")
+	l := openLedger(t, dir)
+	if ro, why := l.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	newRun(t, l, "team-00000001")
+	if _, err := os.Stat(filepath.Join(dir, File)); err != nil {
+		t.Fatalf("the database is not where the directory is: %v", err)
+	}
+	l.Close()
+	again := openLedger(t, dir)
+	if r, ok, err := again.Run(context.Background(), "team-00000001"); err != nil || !ok || r.Revision != 1 {
+		t.Fatalf("after reopen: %+v %v %v", r, ok, err)
+	}
+}
+
+// Reads racing Close get an error, never a panic.
+func TestReadsDuringCloseAreControlled(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	newRun(t, l, "team-00000001")
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				if _, _, err := l.Receipt(ctx, "team-00000001", "admin", "c1"); err != nil && !errors.Is(err, ErrClosed) && !strings.Contains(err.Error(), "closed") {
+					t.Errorf("a read during close: %v", err)
+					return
+				}
+				l.Runs(ctx)
+			}
+		}()
+	}
+	time.Sleep(5 * time.Millisecond)
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+	if _, err := l.Runs(ctx); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a read after close: %v", err)
+	}
+	if _, err := l.Transition(ctx, "team-00000001", func(*Tx) error { return nil }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a write after close: %v", err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("a second close: %v", err)
+	}
+}
+
+// A command accepted on a run already stopped is concluded uncertain at
+// the next start, the run's state kept; a second recovery writes nothing.
+func TestRecoverConcludesTheOpenRowsOfAStoppedRun(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	newRun(t, l, "team-00000001")
+	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		r, _, _ := tx.Run()
+		r.State, r.ClosedAt = RunStopped, tx.Now()
+		if err := tx.PutRun(r); err != nil {
+			return err
+		}
+		_, _, err := tx.Command("alice", "c1", "run.stop", "fp")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := l.Recover(ctx)
+	if err != nil || len(rec) != 1 || rec[0].Interrupted || rec[0].Commands != 1 {
+		t.Fatalf("%+v %v", rec, err)
+	}
+	if r, _, _ := l.Run(ctx, "team-00000001"); r.State != RunStopped {
+		t.Fatalf("the stopped run's state moved: %+v", r)
+	}
+	if c, _, _ := l.Receipt(ctx, "team-00000001", "alice", "c1"); c.Status != CommandUncertain {
+		t.Fatalf("c1 %+v", c)
+	}
+	if rec, err := l.Recover(ctx); err != nil || len(rec) != 0 {
+		t.Fatalf("second recover: %+v %v", rec, err)
+	}
+}

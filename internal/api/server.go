@@ -334,11 +334,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		}
 		s.records = records
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
-		ld, err := openLedger(context.Background(), st, log)
-		if err != nil {
-			return nil, err
-		}
-		s.ledger = ld
+		s.ledger = openLedger(context.Background(), st, log)
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after

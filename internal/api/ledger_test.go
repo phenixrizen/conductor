@@ -3,8 +3,12 @@ package api
 import (
 	"context"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/phenixrizen/conductor/internal/config"
 	"github.com/phenixrizen/conductor/internal/crew/ledger"
 )
 
@@ -56,5 +60,32 @@ func TestACommandsReceiptIsReadBackWithoutActing(t *testing.T) {
 	}
 	if runs, err := e.srv.ledger.Runs(ctx); err != nil || len(runs) != 1 || runs[0].Revision != 1 {
 		t.Fatalf("the read acted: %v %v", runs, err)
+	}
+}
+
+// A damaged ledger in the data directory never keeps the server from
+// starting: the legacy crews run, the receipts answer 503.
+func TestADamagedLedgerDoesNotStopTheServer(t *testing.T) {
+	e := newTestEnv(t, func(cfg *config.Config) {
+		cfg.DataDir = filepath.Join(t.TempDir(), "data")
+		runs := filepath.Join(cfg.DataDir, "runs")
+		if err := os.MkdirAll(runs, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runs, ledger.File), []byte(strings.Repeat("\xff", 4096)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if e.srv.ledger == nil {
+		t.Fatal("no ledger")
+	}
+	if ro, _ := e.srv.ledger.ReadOnly(); !ro {
+		t.Fatal("a damaged ledger opened for writing")
+	}
+	if resp, out := e.do("GET", "/api/runs/team-00000001/commands/c1", adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable && resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	if resp, _ := e.do("GET", "/api/crews", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the legacy API: %d", resp.StatusCode)
 	}
 }

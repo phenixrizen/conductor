@@ -64,6 +64,9 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return 0, ErrClosed
+	}
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -253,7 +256,11 @@ func (l *Ledger) Runs(ctx context.Context) ([]RunRow, error) {
 }
 
 func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at FROM runs `+where, args...)
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at FROM runs `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +281,11 @@ func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow,
 
 // Tasks reads a run's tasks, in id order.
 func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from FROM tasks WHERE run_id = ? ORDER BY id`, runID)
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from FROM tasks WHERE run_id = ? ORDER BY id`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +303,11 @@ func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
 
 // Attempts reads a run's attempts, by task and number.
 func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at
 		FROM attempts WHERE run_id = ? ORDER BY task_id, n`, runID)
 	if err != nil {
 		return nil, err
@@ -322,7 +337,11 @@ func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLo
 	if withLog {
 		logCol = "log"
 	}
-	rows, err := l.db.QueryContext(ctx, `SELECT task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, `+logCol+`, log_sha256, tail
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, `+logCol+`, log_sha256, tail
 		FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
 	if err != nil {
 		return nil, err
@@ -352,9 +371,13 @@ func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLo
 
 // Receipt reads a command's receipt.
 func (l *Ledger) Receipt(ctx context.Context, runID, actor, id string) (CommandRow, bool, error) {
+	db, err := l.conn()
+	if err != nil {
+		return CommandRow{}, false, err
+	}
 	r := CommandRow{RunID: runID, Actor: actor, ID: id}
 	var at string
-	err := l.db.QueryRowContext(ctx, "SELECT intent, fingerprint, status, receipt, created_at FROM commands WHERE run_id = ? AND actor = ? AND id = ?", runID, actor, id).
+	err = db.QueryRowContext(ctx, "SELECT intent, fingerprint, status, receipt, created_at FROM commands WHERE run_id = ? AND actor = ? AND id = ?", runID, actor, id).
 		Scan(&r.Intent, &r.Fingerprint, &r.Status, &r.Receipt, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CommandRow{}, false, nil
@@ -368,7 +391,11 @@ func (l *Ledger) Receipt(ctx context.Context, runID, actor, id string) (CommandR
 
 // Commands reads a run's commands, oldest first.
 func (l *Ledger) Commands(ctx context.Context, runID string) ([]CommandRow, error) {
-	rows, err := l.db.QueryContext(ctx, "SELECT actor, id, intent, fingerprint, status, receipt, created_at FROM commands WHERE run_id = ? ORDER BY created_at, actor, id", runID)
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, "SELECT actor, id, intent, fingerprint, status, receipt, created_at FROM commands WHERE run_id = ? ORDER BY created_at, actor, id", runID)
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +418,11 @@ func (l *Ledger) Events(ctx context.Context, runID string, after int64, limit in
 	if limit <= 0 {
 		limit = 1000
 	}
-	rows, err := l.db.QueryContext(ctx, "SELECT seq, at, kind, payload FROM events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?", runID, after, limit)
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, "SELECT seq, at, kind, payload FROM events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?", runID, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -419,25 +450,32 @@ type Recovered struct {
 }
 
 // Recover concludes what the owner left open when it last stopped, for
-// every run: an attempt reserved and not launched is uncertain (a worktree
-// and a process may exist); one launched, running, submitting or verifying
-// is interrupted (its session went with the server; a candidate verifying
-// is verified again in a fresh checkout); a check started or running is
-// interrupted (its process may be alive still, so it is reported, never
-// killed); a command accepted is uncertain; a run running is interrupted.
-// One `recovered` event per run touched says so. A second call finds
-// nothing open and writes nothing.
+// every run that was running or has a row left open (a stopped run's
+// command accepted and never settled, say): an attempt reserved and not
+// launched is uncertain (a worktree and a process may exist); one
+// launched, running, submitting or verifying is interrupted (its session
+// went with the server; a candidate verifying is verified again in a
+// fresh checkout); a check started or running is interrupted (its process
+// may be alive still, so it is reported, never killed); a command accepted
+// is uncertain; a run running is interrupted, a run already stopped or
+// finished keeps its state. One `recovered` event per run touched says
+// so. A second call finds nothing open and writes nothing.
 func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 	if l.readOnly {
 		return nil, fmt.Errorf("%w: %s", ErrReadOnly, l.why)
 	}
-	runs, err := l.runs(ctx, "WHERE state = ? ORDER BY created_at, id", RunRunning)
+	runs, err := l.runs(ctx, `WHERE state = ?
+		OR EXISTS (SELECT 1 FROM attempts a WHERE a.run_id = runs.id AND a.state IN (?, ?, ?, ?, ?))
+		OR EXISTS (SELECT 1 FROM checks c WHERE c.run_id = runs.id AND c.state IN (?, ?))
+		OR EXISTS (SELECT 1 FROM commands m WHERE m.run_id = runs.id AND m.status = ?)
+		ORDER BY created_at, id`,
+		RunRunning, AttemptReserved, AttemptLaunched, AttemptRunning, AttemptSubmitting, AttemptVerifying, CheckStarted, CheckRunning, CommandAccepted)
 	if err != nil {
 		return nil, err
 	}
 	var out []Recovered
 	for _, run := range runs {
-		rec := Recovered{RunID: run.ID, Attempts: map[string]int{}, Interrupted: true}
+		rec := Recovered{RunID: run.ID, Attempts: map[string]int{}, Interrupted: run.State == RunRunning}
 		_, err := l.Transition(ctx, run.ID, func(t *Tx) error {
 			now := stamp(t.now)
 			for _, c := range []struct{ from, to, stage string }{
@@ -466,8 +504,10 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 			}
 			n, _ = res.RowsAffected()
 			rec.Commands = int(n)
-			if _, err := t.tx.ExecContext(ctx, "UPDATE runs SET state = ? WHERE id = ?", RunInterrupted, run.ID); err != nil {
-				return err
+			if rec.Interrupted {
+				if _, err := t.tx.ExecContext(ctx, "UPDATE runs SET state = ? WHERE id = ?", RunInterrupted, run.ID); err != nil {
+					return err
+				}
 			}
 			return t.Event("recovered", rec)
 		})
@@ -492,6 +532,9 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return ErrClosed
+	}
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

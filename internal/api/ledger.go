@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -19,14 +20,17 @@ import (
 // the owner lock, the filesystem has no locks, the database is damaged or
 // newer) is logged, and managed launches answer 503 from then on; the
 // legacy runs are untouched by it.
-func openLedger(ctx context.Context, st *store.Store, log logger) (*ledger.Ledger, error) {
+func openLedger(ctx context.Context, st *store.Store, log logger) *ledger.Ledger {
 	ld, err := ledger.Open(filepath.Join(st.Dir(), "runs"))
 	if err != nil {
-		return nil, err
+		// The directory or the file itself: the server runs its legacy
+		// crews all the same, with no ledger.
+		log.Warn("managed runs are off: the ledger could not be opened", "err", err)
+		return nil
 	}
 	if ro, why := ld.ReadOnly(); ro {
 		log.Warn("managed runs are off: the ledger is read-only", "why", why)
-		return ld, nil
+		return ld
 	}
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -35,9 +39,9 @@ func openLedger(ctx context.Context, st *store.Store, log logger) (*ledger.Ledge
 		log.Warn("the ledger's recovery failed", "err", err)
 	}
 	for _, r := range recovered {
-		log.Info("a managed run was interrupted by the last server's end", "run", r.RunID, "attempts", r.Attempts, "checks", r.Checks, "commands", r.Commands)
+		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks, "commands", r.Commands)
 	}
-	return ld, nil
+	return ld
 }
 
 // logger is what openLedger logs with.
@@ -67,6 +71,10 @@ func (s *Server) handleGetCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, ok, err := s.ledger.Receipt(r.Context(), runID, adminActor, id)
+	if errors.Is(err, ledger.ErrUnavailable) || errors.Is(err, ledger.ErrClosed) {
+		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
+		return
+	}
 	if err != nil {
 		s.log.Warn("command receipt", "run", runID, "command", id, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal", "the receipt could not be read")
