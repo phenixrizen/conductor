@@ -80,6 +80,10 @@ type CrewRef struct {
 	RunID  string `json:"runId"`
 	CrewID string `json:"crewId"`
 	Member string `json:"member"`
+	// Task and Attempt are set when the session is an attempt at a task of
+	// a managed run (#334): the task's id and the attempt's number.
+	Task    string `json:"task,omitempty"`
+	Attempt int    `json:"attempt,omitempty"`
 }
 
 // Driver is the minimal interface the registry and API need from any session

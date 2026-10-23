@@ -2748,6 +2748,41 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   timeout, a cancel told from a timeout, a leftover killed after exit 0 and
   exit 3, head and tail and the log over 1 MiB, the environment stripped,
   `Started`'s pid.
+- **A crew can define tasks: who does what, after which results, checked
+  how (#342, 2026-10-22).** Row 4 of the agent harness (#334,
+  `docs/plans/agent-harness-order.md`). A saved crew takes `tasks`, each
+  `{id, member, kind: work | review, instructions, needs[], checks[{id,
+  argv, timeoutSeconds}]}`, and a crew-level `setup[]` of commands run in
+  every new attempt worktree; `Crew.Validate` holds them to the server's
+  rules (ids `^[a-z0-9][a-z0-9_-]{0,39}$` and unique, 128 tasks, known
+  members and needs with no cycle, a review needing one work task and
+  having no checks, every member with a task, 8 checks of argv within the
+  member-args bounds and a timeout of 1–3600 s, instructions of 8,000
+  characters, isolation `worktree`, every member started by its tasks:
+  `start.when: "task"`, refused in a crew without tasks). `session.CrewRef`
+  gains `task` and `attempt`, set in an attempt's environment as
+  `CONDUCTOR_TASK`, `CONDUCTOR_ATTEMPT` and `CONDUCTOR_TASK_FILE`
+  (`crewInject`). A config key `crews.managed` (`CONDUCTOR_CREWS_MANAGED`,
+  on by default). Until a run can dispatch tasks (rows 5 and 6) and
+  continue after a restart (row 8), the server refuses on its own:
+  `Launchable()` refuses a crew with tasks ("cannot be launched yet", `400
+  invalid_crew`), and a managed run's record is not resumed, nor are its
+  members started, added or resumed by hand (`409 managed_run`). The
+  editor: a Coordination select (start rules | tasks) that makes the crew
+  managed (worktrees, every member by its tasks) and shows a Tasks table
+  (`CrewTasksTable`: id, member, kind, needs, instructions, checks in a
+  popover with `ArgvInput` chips, a quoted argument one element; the Setup
+  commands below), the members table losing its Starts column, the rules
+  mirrored client-side (`taskProblems`) under each row and in the Save
+  gate, Launch disabled with the reason. `docs/protocol.md` has the body
+  and the bounds. Go, race: the validation table (`tasks_test.go`), the
+  store round-trip with a legacy crew's JSON unchanged, `crewInject`, a
+  managed crew saved then refused to launch, a start rule refused in it, a
+  managed record refused by resume. vitest: `taskProblems` and the row
+  problems, `toCrewInput` with tasks, `draftTask`, `tasksRenamed`, the task
+  start's words. Playwright `tasks-editor.spec.ts`: a cycle blocks Save
+  with its words; a check's quoted argument saves as one element; the
+  saved crew's tasks as sent; Launch disabled and refused by the server.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

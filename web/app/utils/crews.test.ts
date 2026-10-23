@@ -1,30 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentInfo, CrewInfo, CrewMember, CrewStart, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, CrewInfo, CrewMember, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import {
-  argsFrom,
-  broadcastByName,
-  broadcastSelection,
-  broadcastSummary,
-  crewFeed,
-  crewKey,
-  defaultCrew,
-  holdViewLink,
-  joinTileStatus,
-  memberNameError,
-  memberNameFrom,
-  memberStatus,
-  pageAfterDelete,
-  runCounts,
-  sidebarRunFor,
-  startFrom,
-  startValue,
-  summaryOf,
-  takeViewLink,
-  toCrewInput,
-  toCrewMember,
-  toDraft,
-} from './crews'
+import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, draftTask, tasksFollowMembers } from './crews'
+import type { TaskShape } from './crews'
+import { startSentence, startWords } from './crewWords'
 
 const lead: CrewMember = { name: 'lead', agentId: 'claude', prompt: 'Own the plan for $GOAL.', args: ['--model', 'x'], start: { when: 'immediately' } }
 const tests: CrewMember = { name: 'tests', agentId: 'shell', prompt: '', start: { when: 'after', member: 'lead' } }
@@ -360,6 +339,18 @@ describe('toDraft and crewKey', () => {
     d.members[1]!.args = argsFrom('  ')
     expect(crewKey(d)).toBe(crewKey(info))
   })
+
+  it('counts argv text still being typed as unsaved, without sending it', () => {
+    const saved: CrewInfo = { ...info, isolation: 'worktree', tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'Build.', checks: [{ id: 'unit', argv: ['go', 'test'] }] }], setup: [{ id: 'deps', argv: ['npm', 'ci'] }] }
+    const d = toDraft(saved)
+    expect(crewKey(d)).toBe(crewKey(saved))
+    const typing = { ...d, tasks: d.tasks!.map((t) => ({ ...t, checks: t.checks!.map((c) => ({ ...c, pending: '"unclosed' })) })) }
+    expect(crewKey(typing)).not.toBe(crewKey(saved))
+    expect(toCrewInput(typing).tasks![0]!.checks).toEqual([{ id: 'unit', argv: ['go', 'test'] }])
+    const setupTyping = { ...d, setup: d.setup!.map((c) => ({ ...c, pending: 'x' })) }
+    expect(crewKey(setupTyping)).not.toBe(crewKey(saved))
+    expect(toCrewInput(setupTyping).setup).toEqual([{ id: 'deps', argv: ['npm', 'ci'] }])
+  })
 })
 
 describe('summaryOf', () => {
@@ -462,5 +453,118 @@ describe('broadcastSelection', () => {
   it('keeps a tick on a member with no session yet, and sends only to those the server will type into', () => {
     const r = broadcastSelection([m('lead', true, true), m('core'), m('tests', false)], { tests: true })
     expect(r).toEqual({ selected: ['lead', 'core', 'tests'], sending: ['core'], waiting: ['lead'] })
+  })
+})
+
+describe('taskProblems', () => {
+  // The fixtures hold plain tasks, so an edit can reach their needs and checks.
+  type Fixture = Omit<TaskShape, 'tasks' | 'members'> & { tasks: CrewTask[]; members: Array<{ name: string; start: CrewStart }> }
+  const managed = (): Fixture => ({
+    isolation: 'worktree',
+    members: [
+      { name: 'builder', start: { when: 'task' } },
+      { name: 'reviewer', start: { when: 'task' } },
+    ],
+    tasks: [
+      { id: 'build', member: 'builder', kind: 'work', instructions: 'Build it.', checks: [{ id: 'unit', argv: ['go', 'test', './...'], timeoutSeconds: 600 }] },
+      { id: 'review', member: 'reviewer', kind: 'review', instructions: 'Review it.', needs: ['build'] },
+    ],
+    setup: [{ id: 'deps', argv: ['npm', 'ci'] }],
+  })
+  it('accepts a builder and its reviewer', () => {
+    expect(taskProblems(managed())).toEqual([])
+  })
+  it('has no problem with a crew without tasks, unless a member starts by tasks or a setup is left', () => {
+    expect(taskProblems({ isolation: 'none', members: [{ name: 'lead', start: { when: 'immediately' } }] })).toEqual([])
+    expect(taskProblems({ isolation: 'none', members: [{ name: 'lead', start: { when: 'task' } }] })).toEqual(['lead starts by its tasks, but the crew has none'])
+    expect(taskProblems({ isolation: 'none', members: [], setup: [{ id: 'x', argv: ['true'] }] })).toEqual(['Setup commands need tasks'])
+  })
+  it('names each rule the server has, in its words', () => {
+    const cases: Array<[string, (c: Fixture) => void, string]> = [
+      ['a member not by tasks', (c) => (c.members[0]!.start = { when: 'immediately' }), 'builder must start by its tasks'],
+      ['no worktrees', (c) => (c.isolation = 'none'), 'gives each member a git worktree'],
+      ['a bad id', (c) => (c.tasks![0]!.id = 'Build.1'), 'Task Build.1: Lower-case'],
+      ['an id twice', (c) => (c.tasks![1]!.id = 'build'), 'Task build: Another one has this id'],
+      ['an unknown member', (c) => (c.tasks![0]!.member = 'ghost'), 'ghost is not a member'],
+      ['long instructions', (c) => (c.tasks![0]!.instructions = 'x'.repeat(8001)), 'at most 8000 characters'],
+      ['a review with checks', (c) => (c.tasks![1]!.checks = [{ id: 'x', argv: ['true'] }]), 'a review has no checks'],
+      ['a check with no program', (c) => (c.tasks![0]!.checks![0]!.argv = []), 'check 1: name a program'],
+      ['a check timeout past the bound', (c) => (c.tasks![0]!.checks![0]!.timeoutSeconds = 3601), 'the timeout is 1 to 3600'],
+      ['a need of itself', (c) => (c.tasks![0]!.needs = ['build']), 'cannot need itself'],
+      ['an unknown need', (c) => (c.tasks![0]!.needs = ['ghost']), 'needs ghost, which is not a task'],
+      ['a review needing two', (c) => (c.tasks![1]!.needs = ['build', 'build']), 'exactly one work task'],
+      [
+        'a cycle',
+        (c) => {
+          c.tasks!.push({ id: 'docs', member: 'builder', kind: 'work', instructions: '', needs: ['build'] })
+          c.tasks![0]!.needs = ['docs']
+        },
+        'go round in a cycle: build needs docs needs build',
+      ],
+      ['a member with no task', (c) => c.members.push({ name: 'idle', start: { when: 'task' } }), 'idle has no task'],
+      ['a setup command with a bad id', (c) => (c.setup![0]!.id = 'Deps'), 'Setup command 1: Lower-case'],
+    ]
+    for (const [name, edit, words] of cases) {
+      const c = managed()
+      edit(c)
+      expect(taskProblems(c).join('\n'), name).toContain(words)
+    }
+  })
+  it("keeps a row's problems apart", () => {
+    const c = managed()
+    c.tasks![0]!.member = 'ghost'
+    expect(taskRowProblems(c.tasks![0]!, c)).toEqual(['Task build: ghost is not a member'])
+    expect(taskRowProblems(c.tasks![1]!, c)).toEqual([])
+  })
+})
+
+describe('tasks in the editor', () => {
+  it('carries tasks and setup through toCrewInput, empty needs and checks left out', () => {
+    const c = { ...defaultCrew([]), tasks: [{ id: 'a', member: 'lead', kind: 'work' as const, instructions: '', needs: [], checks: [] }], setup: [{ id: 's', argv: ['true'], timeoutSeconds: 0 }] }
+    expect(toCrewInput(c).tasks).toEqual([{ id: 'a', member: 'lead', kind: 'work', instructions: '' }])
+    expect(toCrewInput(c).setup).toEqual([{ id: 's', argv: ['true'] }])
+    expect(toCrewInput(defaultCrew([]))).not.toHaveProperty('tasks')
+  })
+  it('makes a task id from the member name, not one taken', () => {
+    expect(draftTask('builder')).toMatchObject({ id: 'builder', member: 'builder', kind: 'work', instructions: '', needKeys: [] })
+    expect(draftTask('builder', ['builder']).id).toBe('builder-2')
+    expect(draftTask('a.b', []).id).toBe('a-b')
+  })
+  it('a task follows its member by key: through a duplicate name, a blank, and keeps the last name of one gone', () => {
+    const dev = { name: 'dev', key: 1 }
+    const dev2 = { name: 'dev2', key: 2 }
+    const a = { ...draftTask(dev), id: 'a' }
+    const b = { ...draftTask(dev2), id: 'b' }
+    expect([a.memberKey, b.memberKey]).toEqual([1, 2])
+    // dev2 → dev (a duplicate for a moment) → dev3: a stays dev's.
+    let tasks = tasksFollowMembers([a, b], [dev, { ...dev2, name: 'dev' }])
+    expect(tasks.map((t) => t.member)).toEqual(['dev', 'dev'])
+    tasks = tasksFollowMembers(tasks, [dev, { ...dev2, name: 'dev3' }])
+    expect(tasks.map((t) => t.member)).toEqual(['dev', 'dev3'])
+    // Cleared and retyped as another name.
+    tasks = tasksFollowMembers(tasks, [{ ...dev, name: '' }, { ...dev2, name: 'dev3' }])
+    expect(tasks[0]!.member).toBe('')
+    tasks = tasksFollowMembers(tasks, [{ ...dev, name: 'builder' }, { ...dev2, name: 'dev3' }])
+    expect(tasks[0]!.member).toBe('builder')
+    // The member gone: the task keeps the last name, which the rules flag.
+    tasks = tasksFollowMembers(tasks, [{ ...dev2, name: 'dev3' }])
+    expect(tasks[0]!.member).toBe('builder')
+    expect(taskProblems({ isolation: 'worktree', members: [{ name: 'dev3', start: { when: 'task' } }], tasks })).toContain('Task a: builder is not a member')
+    // A saved crew's tasks get their members' keys.
+    const d = toDraft({ ...info, isolation: 'worktree', tasks: [{ id: 'x', member: info.members[0]!.name, kind: 'work', instructions: 'X.' }] })
+    expect(d.tasks![0]!.memberKey).toBe(d.members[0]!.key)
+  })
+  it('a task whose member is gone is flagged, even when another member carries the name now', () => {
+    const dev = { name: 'dev', key: 1, start: { when: 'task' as const } }
+    const t = { ...draftTask({ name: 'dev', key: 2 }), id: 'a', instructions: 'A.' }
+    expect(taskProblems({ isolation: 'worktree', members: [dev], tasks: [t] })).toEqual(['Task a: its member is gone (dev): choose one'])
+    expect(taskProblems({ isolation: 'worktree', members: [dev], tasks: [{ ...t, memberKey: 1 }] })).toEqual([])
+    // Keyless members (a saved crew's rules) judge by name alone.
+    expect(taskProblems({ isolation: 'worktree', members: [{ name: 'dev', start: { when: 'task' } }], tasks: [t] })).toEqual([])
+  })
+  it('reads a task start', () => {
+    expect(startFrom('task')).toEqual({ when: 'task' })
+    expect(startWords({ when: 'task' }).text).toBe('By its tasks')
+    expect(startSentence([{ name: 'a', start: { when: 'task' } }, { name: 'b', start: { when: 'task' } }])).toBe('each does its tasks')
   })
 })

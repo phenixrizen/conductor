@@ -37,6 +37,9 @@ type crewInput struct {
 	ViewLinkTTLSeconds int64         `json:"viewLinkTtlSeconds"`
 	Yolo               *bool         `json:"yolo"`
 	Members            []crew.Member `json:"members"`
+	// Tasks and Setup make a managed crew (#334): validated with the rest.
+	Tasks []crew.Task  `json:"tasks,omitempty"`
+	Setup []crew.Check `json:"setup,omitempty"`
 }
 
 // handleListCrews lists one page of the saved crews' summaries, ordered by
@@ -194,7 +197,7 @@ func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bo
 	}
 	c := crew.Crew{
 		Name: in.Name, Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
-		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members,
+		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
 	}
 	trimmed := c
 	trimmed.Name = strings.TrimSpace(c.Name)

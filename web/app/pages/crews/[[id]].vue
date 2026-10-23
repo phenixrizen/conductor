@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 
@@ -181,11 +181,19 @@ const tabItems = computed(() => [
 const banners = computed(() => crewLive.value.map((r) => ({ run: r, line: liveRunLine(r, live.sessions.value) })))
 
 const nameMissing = computed(() => !draft.value?.name.trim())
-const invalid = computed(() => {
+/** Why the draft cannot be saved, in words; '' when it can. The Save button says it; the server checks the same things. */
+const saveProblem = computed(() => {
   const d = draft.value
-  if (!d) return true
-  return nameMissing.value || d.members.some((m, i) => memberNameError(m.name, d.members.filter((_, j) => j !== i).map((x) => x.name)) || !m.agentId)
+  if (!d) return 'Loading'
+  if (nameMissing.value) return 'The crew needs a name'
+  for (const [i, m] of d.members.entries()) {
+    const err = memberNameError(m.name, d.members.filter((_, j) => j !== i).map((x) => x.name))
+    if (err) return err
+    if (!m.agentId) return `${m.name || 'A member'} needs an agent`
+  }
+  return taskProblems(d)[0] ?? ''
 })
+const invalid = computed(() => !!saveProblem.value)
 /** What stops a launch from the crew page; the server still decides (a 409 answers). */
 const launchBlocked = computed(() => {
   const d = draft.value
@@ -194,6 +202,7 @@ const launchBlocked = computed(() => {
   if (!d.members.length) return 'Add a member first'
   if (d.where !== 'server') return 'Only a crew that runs on the server can be launched'
   if (invalid.value) return 'Fix the fields marked in red first'
+  if (d.tasks) return 'A crew with tasks cannot be launched in this Conductor yet'
   return ''
 })
 const subtitle = computed(() => {
@@ -612,7 +621,7 @@ usePalette().registerPage(() => ({
             <!-- Plain buttons: the bar is inverted, and the theme's buttons are drawn for the page's own background. -->
             <div class="ml-auto flex flex-none items-center gap-2">
               <button type="button" class="rounded-md px-2.5 py-1 text-sm font-medium ring-1 ring-inset ring-current/30 transition-colors hover:bg-current/10 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-current" :disabled="saving" @click="discard">Discard</button>
-              <button type="button" class="flex items-center gap-1.5 rounded-md bg-default px-3 py-1 text-sm font-medium text-highlighted transition-opacity hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-current" :disabled="invalid || saving || !!launchingKey" @click="onSave">
+              <button type="button" class="flex items-center gap-1.5 rounded-md bg-default px-3 py-1 text-sm font-medium text-highlighted transition-opacity hover:opacity-90 disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-current" :disabled="invalid || saving || !!launchingKey" :title="saveProblem || undefined" :data-save-problem="saveProblem || undefined" @click="onSave">
                 <UIcon v-if="saving" name="i-lucide-loader-circle" class="size-3.5 animate-spin" />Save
               </button>
             </div>

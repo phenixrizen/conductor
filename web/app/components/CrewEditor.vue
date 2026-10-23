@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { draftMember, memberNameFrom, type DraftCrew } from '~/utils/crews'
+import { draftMember, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -94,12 +94,37 @@ function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
   crew.value = { ...crew.value, [key]: value }
 }
 
+/** The members as the table hands them back; in a crew with tasks, each task's member follows its draft member's name, by key. */
+function setMembers(next: DraftMember[]) {
+  const tasks = crew.value.tasks ? tasksFollowMembers(crew.value.tasks, next) : undefined
+  crew.value = { ...crew.value, members: next, tasks }
+}
+
 const taken = computed(() => crew.value.members.map((m) => m.name))
+
+/** How a run starts its members: by their start rules, or by the tasks the crew defines (#334). */
+const coordinationItems = [
+  { label: 'by start rules: each member starts when its rule says', value: 'starts' },
+  { label: 'by tasks: each member does its tasks as their needs are met', value: 'tasks' },
+]
+const coordination = computed({
+  get: () => (crew.value.tasks ? 'tasks' : 'starts'),
+  set: (v: string) => {
+    if (v === 'tasks') {
+      crew.value = { ...crew.value, isolation: 'worktree', tasks: crew.value.tasks ?? [], members: crew.value.members.map((m) => ({ ...m, start: { when: 'task' as const } })) }
+    } else {
+      crew.value = { ...crew.value, tasks: undefined, setup: undefined, members: crew.value.members.map((m) => (m.start.when === 'task' ? { ...m, start: { when: 'immediately' as const } } : m)) }
+    }
+  },
+})
+const managed = computed(() => !!crew.value.tasks)
+/** A new member's start: by its tasks in a managed crew, at launch otherwise. */
+const newStart = computed<CrewStart>(() => (managed.value ? { when: 'task' } : { when: 'immediately' }))
 
 function addMember() {
   const agent = props.agents[0]
   if (!agent) return
-  set('members', [...crew.value.members, draftMember({ name: memberNameFrom(agent.id, taken.value), agentId: agent.id, prompt: '', start: { when: 'immediately' } })])
+  set('members', [...crew.value.members, draftMember({ name: memberNameFrom(agent.id, taken.value), agentId: agent.id, prompt: '', start: newStart.value })])
 }
 
 // "Add from a running session": its agent becomes a new member, and its
@@ -108,7 +133,7 @@ const pickOpen = ref(false)
 const running = computed(() => live.sessions.value.filter((s) => s.kind === 'server' && isActive(s)))
 
 function addFrom(s: SessionInfo) {
-  const next = { ...crew.value, members: [...crew.value.members, draftMember({ name: memberNameFrom(s.crew?.member || s.name, taken.value), agentId: s.agentId, prompt: '', start: { when: 'immediately' } })] }
+  const next = { ...crew.value, members: [...crew.value.members, draftMember({ name: memberNameFrom(s.crew?.member || s.name, taken.value), agentId: s.agentId, prompt: '', start: newStart.value })] }
   if (!next.cwd.trim()) next.cwd = s.cwd
   crew.value = next
   pickOpen.value = false
@@ -176,17 +201,24 @@ function refused(message: string) {
       </UFormField>
     </div>
 
-    <p v-if="crew.isolation === 'worktree'" class="-mt-2 text-xs text-muted">
+    <UFormField label="Coordination" name="coordination" :ui="{ help: 'mt-1 text-xs' }" :help="managed ? 'Each attempt at a task works in a worktree of its own, made at the results it needs; the checks decide a result, never a quiet terminal. A crew with tasks cannot be launched in this Conductor yet.' : ''">
+      <USelect v-model="coordination" :items="coordinationItems" aria-label="Coordination" class="w-full" data-crew-coordination />
+    </UFormField>
+
+    <p v-if="crew.isolation === 'worktree' && !managed" class="-mt-2 text-xs text-muted">
       Each member works in <code>.conductor/worktrees/&lt;run&gt;/&lt;member&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;member&gt;</code>. The directory must be in a git repository with a commit.
+    </p>
+    <p v-else-if="managed" class="-mt-2 text-xs text-muted">
+      Each attempt works in <code>.conductor/worktrees/&lt;run&gt;/&lt;task&gt;.&lt;n&gt;</code> of the repository, on its own branch <code>crew/&lt;run&gt;/&lt;task&gt;.&lt;n&gt;</code>. The directory must be in a git repository with a commit.
     </p>
 
     <div class="flex flex-col gap-3" data-crew-members-section>
       <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <span class="text-sm font-semibold text-highlighted">Members</span>
         <span class="min-w-0 text-[12.5px] text-muted" data-start-sentence>{{ startSentence(crew.members) }}</span>
-        <UTabs v-model="membersView" :items="membersViewItems" :content="false" size="xs" color="neutral" class="ml-auto" data-members-view />
+        <UTabs v-if="!managed" v-model="membersView" :items="membersViewItems" :content="false" size="xs" color="neutral" class="ml-auto" data-members-view />
       </div>
-      <CrewMembersTable v-if="membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" @update:model-value="set('members', $event)" @add="addMember" @add-from-session="pickOpen = true" />
+      <CrewMembersTable v-if="managed || membersView === 'table'" :model-value="crew.members" :agents="agents" :host="serverHost.host.value" :managed="managed" @update:model-value="setMembers" @add="addMember" @add-from-session="pickOpen = true" />
       <template v-else>
         <CrewGraph :members="crew.members" :agent-names="agentNames" editable :selected="selectedMember" @select="selectedMember = $event" @set-start="setStart" @remove="removeMember" @refused="refused" />
         <div class="flex flex-wrap gap-x-4 gap-y-1">
@@ -195,6 +227,8 @@ function refused(message: string) {
         </div>
       </template>
     </div>
+
+    <CrewTasksTable v-if="managed" :model-value="crew.tasks ?? []" :setup="crew.setup" :members="crew.members" :isolation="crew.isolation" @update:model-value="set('tasks', $event)" @update:setup="set('setup', $event)" />
 
     <UModal v-model:open="pickOpen" title="Add from a running session" description="Its agent becomes a new member, and its working directory the crew's when the crew has none yet.">
       <template #body>

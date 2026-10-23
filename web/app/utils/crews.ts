@@ -1,4 +1,4 @@
-import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewInfo, CrewInput, CrewMember, CrewStart, CrewSummary, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewStart, CrewSummary, CrewTask, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
@@ -8,8 +8,8 @@ import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from '.
  * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
  * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt and updatedAt) or members carrying page state can be passed as they are.
  */
-export function toCrewInput(c: CrewInput): CrewInput {
-  return {
+export function toCrewInput(c: Omit<CrewInput, 'tasks'> & { tasks?: ReadonlyArray<CrewTask | DraftTask> }): CrewInput {
+  const out: CrewInput = {
     name: c.name,
     goal: c.goal,
     cwd: c.cwd,
@@ -20,6 +20,73 @@ export function toCrewInput(c: CrewInput): CrewInput {
     yolo: c.yolo,
     members: c.members.map(toCrewMember),
   }
+  if (c.tasks) out.tasks = plainTasks(c.tasks).map(toCrewTask)
+  if (c.setup) out.setup = c.setup.map(toCrewCheck)
+  return out
+}
+
+/** A task as the server accepts it: its fields and nothing else; empty needs and checks left out. */
+export function toCrewTask(t: CrewTask): CrewTask {
+  const out: CrewTask = { id: t.id, member: t.member, kind: t.kind, instructions: t.instructions }
+  if (t.needs?.length) out.needs = [...t.needs]
+  if (t.checks?.length) out.checks = t.checks.map(toCrewCheck)
+  return out
+}
+
+/** A check or setup command as the server accepts it; the text still being typed into its argv (DraftCheck.pending) is left out. */
+export function toCrewCheck(c: CrewCheck): CrewCheck {
+  const out: CrewCheck = { id: c.id, argv: [...c.argv] }
+  if (c.timeoutSeconds) out.timeoutSeconds = c.timeoutSeconds
+  return out
+}
+
+/** A check in the editor: its fields, and the argv text typed and not yet committed (an unclosed quote), which blocks a save. */
+export interface DraftCheck extends CrewCheck {
+  pending?: string
+}
+
+/**
+ * A task in the editor: a key that stays while it is renamed or moved, its needs as the keys of the tasks it needs, and its member as the key of
+ * the draft member it belongs to, so a rename never touches them; `member` follows that member's name (tasksFollowMembers), through a blank or a
+ * duplicate on the way, and stays as the last name when the member is gone (a problem the rules name).
+ */
+export interface DraftTask extends Omit<CrewTask, 'needs' | 'checks'> {
+  key: number
+  needKeys: number[]
+  memberKey?: number
+  checks?: DraftCheck[]
+}
+
+let taskKeys = 0
+
+/** The tasks of a saved crew as the editor holds them: keyed, their needs by key. */
+export function draftTasks(tasks: readonly CrewTask[], members: ReadonlyArray<Pick<DraftMember, 'name' | 'key'>> = []): DraftTask[] {
+  const keyed = tasks.map((t) => ({ t, key: ++taskKeys }))
+  const keyOf = new Map(keyed.map(({ t, key }) => [t.id, key]))
+  return keyed.map(({ t, key }) => ({
+    id: t.id,
+    member: t.member,
+    memberKey: members.find((m) => m.name === t.member)?.key,
+    kind: t.kind,
+    instructions: t.instructions,
+    key,
+    needKeys: (t.needs ?? []).map((n) => keyOf.get(n)).filter((k): k is number => k !== undefined),
+    checks: t.checks?.map((c) => ({ ...toCrewCheck(c) })),
+  }))
+}
+
+/** The editor's tasks as the server takes them: needs by id, pending text left out. Tasks without keys pass as they are. */
+export function plainTasks(tasks: ReadonlyArray<CrewTask | DraftTask>): CrewTask[] {
+  const idOf = new Map<number, string>()
+  for (const t of tasks) if ('key' in t) idOf.set(t.key, t.id)
+  return tasks.map((t) => {
+    if (!('key' in t)) return t
+    const out: CrewTask = { id: t.id, member: t.member, kind: t.kind, instructions: t.instructions }
+    const needs = t.needKeys.map((k) => idOf.get(k)).filter((id): id is string => id !== undefined)
+    if (needs.length) out.needs = needs
+    if (t.checks?.length) out.checks = t.checks.map(toCrewCheck)
+    return out
+  })
 }
 
 /** A member as the server accepts it, in a crew or on its own (POST /api/runs/{run}/members): its fields and nothing else. */
@@ -71,6 +138,157 @@ export function memberNameFrom(text: string, taken: readonly string[] = []): str
   }
 }
 
+/** A task's or a check's id as the server accepts it (internal/crew taskIDPattern): no dot, since an attempt's branch is `crew/<run>/<task>.<n>`. */
+export const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/
+
+/** The server's bounds on tasks (internal/crew). */
+export const TASK_LIMITS = { tasks: 128, instructions: 8000, checks: 8, timeout: 3600, timeoutDefault: 600, argv: 32, arg: 4096, argvBytes: 8192 } as const
+
+/** Why the server would refuse a task or check id, or '' when it is fine. */
+export function taskIdError(id: string, taken: readonly string[] = []): string {
+  if (!id) return 'Give it an id'
+  if (!TASK_ID.test(id)) return 'Lower-case letters, digits, "_" and "-", starting with a letter or digit, at most 40, no "."'
+  if (taken.includes(id)) return 'Another one has this id'
+  return ''
+}
+
+const bytes = (s: string) => new TextEncoder().encode(s).length
+
+/** Why the server would refuse a check or setup command (its id, argv and timeout), in order; empty when it is fine. */
+export function checkProblems(c: DraftCheck, what: string, taken: readonly string[] = []): string[] {
+  const out: string[] = []
+  const id = taskIdError(c.id, taken)
+  if (id) out.push(`${what}: ${id}`)
+  if (!c.argv.length || !c.argv[0]) out.push(`${what}: name a program`)
+  if (c.pending) out.push(`${what}: an argument is still being typed: close its quote, or press Enter`)
+  if (c.argv.some((a) => a.includes('\0'))) out.push(`${what}: an argument contains NUL`)
+  if (c.argv.length > TASK_LIMITS.argv) out.push(`${what}: at most ${TASK_LIMITS.argv} arguments`)
+  if (c.argv.some((a) => bytes(a) > TASK_LIMITS.arg)) out.push(`${what}: an argument is longer than ${TASK_LIMITS.arg} bytes`)
+  if (c.argv.reduce((n, a) => n + bytes(a), 0) > TASK_LIMITS.argvBytes) out.push(`${what}: the arguments are more than 8 KiB in all`)
+  if (c.timeoutSeconds !== undefined && (c.timeoutSeconds < 0 || c.timeoutSeconds > TASK_LIMITS.timeout || !Number.isInteger(c.timeoutSeconds)))
+    out.push(`${what}: the timeout is 1 to ${TASK_LIMITS.timeout} seconds`)
+  return out
+}
+
+/** What a crew with tasks and its members look like to the task rules: a saved crew's tasks or the editor's. */
+export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'> & { key?: number }> }
+
+/** Characters as the server counts them (runes), not UTF-16 units. */
+const chars = (s: string) => [...s].length
+
+/**
+ * Why the server would refuse a crew's tasks (internal/crew checkTasks), every problem in the server's order; empty when the crew would be
+ * accepted. A crew without tasks has no problem but a task-started member or a setup.
+ */
+export function taskProblems(c: TaskShape): string[] {
+  const out: string[] = []
+  const tasks = plainTasks(c.tasks ?? [])
+  const drafts = (c.tasks ?? []).filter((t): t is DraftTask => 'key' in t)
+  if (!tasks.length) {
+    if (c.setup?.length) out.push('Setup commands need tasks')
+    for (const m of c.members) if (m.start.when === 'task') out.push(`${m.name || 'a member'} starts by its tasks, but the crew has none`)
+    return out
+  }
+  if (tasks.length > TASK_LIMITS.tasks) out.push(`At most ${TASK_LIMITS.tasks} tasks`)
+  if (c.isolation !== 'worktree') out.push('A crew with tasks gives each member a git worktree: set "Each run" to worktrees')
+  for (const m of c.members) if (m.start.when !== 'task') out.push(`${m.name || 'a member'} must start by its tasks in a crew with tasks`)
+  if ((c.setup?.length ?? 0) > TASK_LIMITS.checks) out.push(`At most ${TASK_LIMITS.checks} setup commands`)
+  const setupIds: string[] = []
+  for (const [i, ch] of (c.setup ?? []).entries()) {
+    out.push(...checkProblems(ch, `Setup command ${i + 1}`, setupIds))
+    setupIds.push(ch.id)
+  }
+  const names = c.members.map((m) => m.name)
+  // A draft task is owned by a member key: one no member has any more (removed, even when another member carries the name now) needs a
+  // member chosen, so a save never moves the task to a namesake.
+  const keys = new Set(c.members.flatMap((m) => (m.key === undefined ? [] : [m.key])))
+  const ids: string[] = []
+  const kinds = new Map<string, string>()
+  for (const [i, t] of tasks.entries()) {
+    const what = t.id ? `Task ${t.id}` : 'A task'
+    const idErr = taskIdError(t.id, ids)
+    if (idErr) out.push(`${what}: ${idErr}`)
+    ids.push(t.id)
+    kinds.set(t.id, t.kind)
+    if (t.kind !== 'work' && t.kind !== 'review') out.push(`${what}: the kind is work or review`)
+    const own = (c.tasks ?? [])[i]
+    const orphan = own !== undefined && 'key' in own && own.memberKey !== undefined && keys.size > 0 && !keys.has(own.memberKey)
+    if (orphan) out.push(`${what}: its member is gone${t.member ? ` (${t.member})` : ''}: choose one`)
+    else if (!names.includes(t.member)) out.push(`${what}: ${t.member ? `${t.member} is not a member` : 'choose its member'}`)
+    if (chars(t.instructions) > TASK_LIMITS.instructions) out.push(`${what}: the instructions are at most ${TASK_LIMITS.instructions} characters`)
+    if (t.instructions.includes('\0')) out.push(`${what}: the instructions contain NUL`)
+    const draft = drafts.find((d) => d.id === t.id && d.key !== undefined)
+    const checks = draft?.checks ?? t.checks ?? []
+    if (checks.length > TASK_LIMITS.checks) out.push(`${what}: at most ${TASK_LIMITS.checks} checks`)
+    if (t.kind === 'review' && checks.length) out.push(`${what}: a review has no checks; its verdict is its result`)
+    const checkIds: string[] = []
+    for (const [i, ch] of checks.entries()) {
+      out.push(...checkProblems(ch, `${what}, check ${i + 1}`, checkIds))
+      checkIds.push(ch.id)
+    }
+  }
+  for (const t of tasks) {
+    const what = t.id ? `Task ${t.id}` : 'A task'
+    for (const n of t.needs ?? []) {
+      if (n === t.id) out.push(`${what}: cannot need itself`)
+      else if (!ids.includes(n)) out.push(`${what}: needs ${n}, which is not a task`)
+    }
+    if (t.kind === 'review' && (t.needs?.length !== 1 || kinds.get(t.needs[0]!) !== 'work')) out.push(`${what}: a review needs exactly one work task, the one it reviews`)
+  }
+  // A depth-first walk: a task still being visited is a cycle, one finished with is not walked again, so a dense graph costs its edges.
+  const needs = new Map(tasks.map((t) => [t.id, t.needs ?? []]))
+  const state = new Map<string, 'visiting' | 'done'>()
+  const walk = (id: string, path: string[]): string => {
+    if (state.get(id) === 'done') return ''
+    if (state.get(id) === 'visiting') {
+      const cycle = [...path.slice(path.indexOf(id)), id]
+      return `Task ${cycle[0]}: the needs go round in a cycle: ${cycle.join(' needs ')}`
+    }
+    state.set(id, 'visiting')
+    for (const n of needs.get(id) ?? []) {
+      const cycle = walk(n, [...path, id])
+      if (cycle) return cycle
+    }
+    state.set(id, 'done')
+    return ''
+  }
+  for (const t of tasks) {
+    const cycle = walk(t.id, [])
+    if (cycle) {
+      out.push(cycle)
+      break
+    }
+  }
+  for (const m of c.members) if (!tasks.some((t) => t.member === m.name)) out.push(`${m.name || 'A member'} has no task; every member of a crew with tasks does one`)
+  return out
+}
+
+/** The problems of one task's row, for the mark under it: those of taskProblems that name it. */
+export function taskRowProblems(t: Pick<CrewTask, 'id'>, c: TaskShape): string[] {
+  const what = t.id ? `Task ${t.id}` : 'A task'
+  return taskProblems(c).filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
+}
+
+/** A new task for the editor: done by `member`, its id from the member's name, not one of `taken`. */
+export function draftTask(member: string | Pick<DraftMember, 'name' | 'key'>, taken: readonly string[] = []): DraftTask {
+  const name = typeof member === 'string' ? member : member.name
+  const base = name.replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 40) || 'task'
+  let id = base
+  for (let i = 2; taken.includes(id); i++) id = `${base.slice(0, 40 - `-${i}`.length)}-${i}`
+  const out: DraftTask = { id, member: name, kind: 'work', instructions: '', key: ++taskKeys, needKeys: [] }
+  if (typeof member !== 'string') out.memberKey = member.key
+  return out
+}
+
+/** The tasks with each one's member as its draft member is named now, by key: a rename, a blank or a duplicate on the way loses no assignment. A task whose member is gone keeps the last name. */
+export function tasksFollowMembers(tasks: readonly DraftTask[], members: ReadonlyArray<Pick<DraftMember, 'name' | 'key'>>): DraftTask[] {
+  const nameOf = new Map(members.map((m) => [m.key, m.name]))
+  return tasks.map((t) => {
+    const name = t.memberKey === undefined ? undefined : nameOf.get(t.memberKey)
+    return name === undefined || name === t.member ? t : { ...t, member: name }
+  })
+}
+
 /** A start condition as one value of the Starts select: `immediately`, `manual` or `after:<member>`. */
 export function startValue(s: CrewStart): string {
   return s.when === 'after' ? `after:${s.member ?? ''}` : s.when
@@ -79,6 +297,7 @@ export function startValue(s: CrewStart): string {
 /** The start condition a value of the Starts select stands for (startValue). */
 export function startFrom(value: string): CrewStart {
   if (value.startsWith('after:')) return { when: 'after', member: value.slice('after:'.length) }
+  if (value === 'task') return { when: 'task' }
   return { when: value === 'manual' ? 'manual' : 'immediately' }
 }
 
@@ -103,10 +322,11 @@ export interface DraftMember extends CrewMember {
   argsText: string
 }
 
-/** A crew in the editor; no id until it is saved. */
-export interface DraftCrew extends CrewInput {
+/** A crew in the editor; no id until it is saved. Its tasks are keyed (DraftTask). */
+export interface DraftCrew extends Omit<CrewInput, 'tasks'> {
   id?: string
   members: DraftMember[]
+  tasks?: DraftTask[]
 }
 
 let memberKeys = 0
@@ -116,7 +336,9 @@ export function draftMember(m: CrewMember): DraftMember {
 }
 
 export function toDraft(c: CrewInput & { id?: string }): DraftCrew {
-  return { ...toCrewInput(c), id: c.id, members: c.members.map(draftMember) }
+  const input = toCrewInput(c)
+  const members = c.members.map(draftMember)
+  return { ...input, id: c.id, members, tasks: input.tasks ? draftTasks(input.tasks, members) : undefined }
 }
 
 /** The extra arguments typed for a member, split as the Launch dialog splits them; undefined when there are none. */
@@ -126,8 +348,19 @@ export function argsFrom(text: string): string[] | undefined {
 }
 
 /** A crew as the server would store it, for telling a draft from what is saved. */
-export function crewKey(c: CrewInput): string {
-  return JSON.stringify(toCrewInput(c))
+export function crewKey(c: Parameters<typeof toCrewInput>[0]): string {
+  return JSON.stringify([toCrewInput(c), pendingTexts(c)])
+}
+
+/** The argv text typed into checks and setup commands and not yet committed: part of what is unsaved (a draft with it is kept), never of what is sent. */
+function pendingTexts(c: Parameters<typeof toCrewInput>[0]): string[] {
+  const out: string[] = []
+  for (const [i, ch] of (c.setup ?? []).entries()) if ('pending' in ch && ch.pending) out.push(`setup ${i}: ${ch.pending}`)
+  for (const t of c.tasks ?? []) {
+    if (!('key' in t)) continue
+    for (const [i, ch] of (t.checks ?? []).entries()) if (ch.pending) out.push(`${t.key} ${i}: ${ch.pending}`)
+  }
+  return out
 }
 
 /** The page of the Crews list to show after a delete left `left` crews on page `page`: the one before, when the delete emptied a page past the first. */
