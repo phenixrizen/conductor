@@ -50,8 +50,13 @@ func (rs *Records) Close() {
 const maxRecords = 500
 
 // maxRecordSize bounds one record read back: a run with 200 log lines is
-// well under it.
-const maxRecordSize = 4 << 20
+// well under it. maxGuardSize bounds the read Save makes of the record it
+// replaces, for its revision: wider, so a record too large to list still
+// keeps a managed snapshot from going back.
+const (
+	maxRecordSize = 4 << 20
+	maxGuardSize  = 64 << 20
+)
 
 // NewRecords opens runs/ under st and reconciles what it holds: the records
 // of the runs that were running when the server last stopped (journaled
@@ -149,12 +154,15 @@ func (rs *Records) Save(r Run) error {
 	}
 	// A managed record on disk takes only a newer managed snapshot: an
 	// older one, or a legacy snapshot of the same run (a journal save
-	// queued before the run was known managed), is dropped.
+	// queued before the run was known managed), is dropped. A record that
+	// cannot be read is not written over: its revision is unknown.
 	var have Run
-	if ok, err := rs.st.LoadLimit(r.ID+".json", &have, maxRecordSize); err == nil && ok && have.Managed != nil {
-		if r.Managed == nil || have.Managed.Revision > r.Managed.Revision {
-			return nil
-		}
+	ok, err := rs.st.LoadLimit(r.ID+".json", &have, maxGuardSize)
+	if err != nil {
+		return fmt.Errorf("records: %s.json cannot be read, so it is not replaced: %w", r.ID, err)
+	}
+	if ok && have.Managed != nil && (r.Managed == nil || have.Managed.Revision > r.Managed.Revision) {
+		return nil
 	}
 	if err := rs.st.Save(r.ID+".json", r); err != nil {
 		return err

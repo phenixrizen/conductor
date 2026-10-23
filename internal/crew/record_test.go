@@ -467,6 +467,36 @@ func TestAManagedRecordIsTheLedgersToKeep(t *testing.T) {
 	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed == nil || r.Managed.Revision != 8 || r.Name != "newer" {
 		t.Fatalf("an unversioned snapshot landed: %+v", r)
 	}
+	// A managed record too large to list (past maxRecordSize) still keeps
+	// an older or unversioned snapshot off; one that cannot be read at all
+	// is not written over.
+	big := managed
+	big.Managed = &Managed{Revision: 9}
+	big.Log = []session.ActivityEntry{{Type: session.ActivityStatus, Message: strings.Repeat("x", 5<<20)}}
+	if err := rs.Save(big); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(unversioned); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "team-0000aaaa.json")); err != nil || fi.Size() < 5<<20 {
+		t.Fatalf("the large managed record was written over: %v %v", fi, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "team-0000aaaa.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(unversioned); err == nil {
+		t.Fatal("a record that cannot be read was written over")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "team-0000aaaa.json")); string(b) != "{not json" {
+		t.Fatalf("the unreadable record changed: %q", b)
+	}
+	if err := os.Remove(filepath.Join(dir, "team-0000aaaa.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(managed); err != nil {
+		t.Fatal(err)
+	}
 	// The records open: the managed run, still running, is left to the
 	// ledger; a legacy run still running is interrupted.
 	legacy := Run{ID: "team-0000bbbb", CrewID: "team", Name: "team", StartedAt: base.Add(24 * time.Hour), State: RunRunning, Members: []MemberState{{Name: "lead", Status: MemberRunning}}, Log: []session.ActivityEntry{}}
