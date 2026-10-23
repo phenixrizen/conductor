@@ -67,7 +67,9 @@ func (s *Server) handleGetCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.ledger == nil {
-		writeError(w, http.StatusNotFound, "not_found", "no such command")
+		// No ledger opened: the receipt may exist and cannot be read, which
+		// is not its absence.
+		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
 		return
 	}
 	c, ok, err := s.ledger.Receipt(r.Context(), runID, adminActor, id)

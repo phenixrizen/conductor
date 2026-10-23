@@ -456,6 +456,17 @@ func TestAManagedRecordIsTheLedgersToKeep(t *testing.T) {
 	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed.Revision != 8 || r.Name != "newer" {
 		t.Fatalf("a newer revision did not land: %+v", r.Managed)
 	}
+	// A legacy snapshot of the same run (a journal save queued before the
+	// run was known managed) never lands over it either.
+	unversioned := managed
+	unversioned.Managed = nil
+	unversioned.Name = "legacy"
+	if err := rs.Save(unversioned); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed == nil || r.Managed.Revision != 8 || r.Name != "newer" {
+		t.Fatalf("an unversioned snapshot landed: %+v", r)
+	}
 	// The records open: the managed run, still running, is left to the
 	// ledger; a legacy run still running is interrupted.
 	legacy := Run{ID: "team-0000bbbb", CrewID: "team", Name: "team", StartedAt: base.Add(24 * time.Hour), State: RunRunning, Members: []MemberState{{Name: "lead", Status: MemberRunning}}, Log: []session.ActivityEntry{}}

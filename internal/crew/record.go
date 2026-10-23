@@ -135,8 +135,9 @@ func (rs *Records) reconcile() error {
 // Save writes r's record, replacing an earlier one of the same run (a
 // stopped run that was reopened and ended again), and drops the oldest past
 // maxRecords. A managed run's record never goes back: a save with a
-// revision behind the one on disk is dropped, so a late snapshot cannot
-// undo what the ledger has (docs/plans/agent-harness-order.md, decision 7).
+// revision behind the one on disk, or with no revision at all, is dropped,
+// so a late snapshot cannot undo what the ledger has
+// (docs/plans/agent-harness-order.md, decision 7).
 func (rs *Records) Save(r Run) error {
 	if !ValidRunID(r.ID) {
 		return fmt.Errorf("records: bad run id %q", r.ID)
@@ -146,9 +147,12 @@ func (rs *Records) Save(r Run) error {
 	if rs.closed {
 		return nil
 	}
-	if r.Managed != nil {
-		var have Run
-		if ok, err := rs.st.LoadLimit(r.ID+".json", &have, maxRecordSize); err == nil && ok && have.Managed != nil && have.Managed.Revision > r.Managed.Revision {
+	// A managed record on disk takes only a newer managed snapshot: an
+	// older one, or a legacy snapshot of the same run (a journal save
+	// queued before the run was known managed), is dropped.
+	var have Run
+	if ok, err := rs.st.LoadLimit(r.ID+".json", &have, maxRecordSize); err == nil && ok && have.Managed != nil {
+		if r.Managed == nil || have.Managed.Revision > r.Managed.Revision {
 			return nil
 		}
 	}

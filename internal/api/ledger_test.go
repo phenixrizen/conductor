@@ -82,7 +82,33 @@ func TestADamagedLedgerDoesNotStopTheServer(t *testing.T) {
 	if ro, _ := e.srv.ledger.ReadOnly(); !ro {
 		t.Fatal("a damaged ledger opened for writing")
 	}
-	if resp, out := e.do("GET", "/api/runs/team-00000001/commands/c1", adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable && resp.StatusCode != http.StatusNotFound {
+	if resp, out := e.do("GET", "/api/runs/team-00000001/commands/c1", adminToken, nil); resp.StatusCode != http.StatusServiceUnavailable {
+		// Nothing can be read from it: unavailable, not absent.
+		t.Fatalf("%d %v", resp.StatusCode, out)
+	}
+	if resp, _ := e.do("GET", "/api/crews", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("the legacy API: %d", resp.StatusCode)
+	}
+}
+
+// A ledger that cannot be opened at all (its file a symbolic link) leaves
+// the server running with none; a receipt is then unavailable, not absent.
+func TestALedgerThatCannotOpenAnswersUnavailable(t *testing.T) {
+	e := newTestEnv(t, func(cfg *config.Config) {
+		cfg.DataDir = filepath.Join(t.TempDir(), "data")
+		runs := filepath.Join(cfg.DataDir, "runs")
+		if err := os.MkdirAll(runs, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(runs, "elsewhere.sqlite"), filepath.Join(runs, ledger.File)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if e.srv.ledger != nil {
+		t.Fatal("a ledger opened on a symbolic link")
+	}
+	resp, out := e.do("GET", "/api/runs/team-00000001/commands/c1", adminToken, nil)
+	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("%d %v", resp.StatusCode, out)
 	}
 	if resp, _ := e.do("GET", "/api/crews", adminToken, nil); resp.StatusCode != http.StatusOK {
