@@ -63,9 +63,10 @@ type Receipt struct {
 
 // Refusals a failed receipt names.
 const (
-	RefusalTaskState  = "task_state"
-	RefusalRunStopped = "run_stopped"
-	RefusalNotFound   = "not_found"
+	RefusalTaskState     = "task_state"
+	RefusalRunStopped    = "run_stopped"
+	RefusalNotFound      = "not_found"
+	RefusalStaleRevision = "stale_revision"
 )
 
 // refusalOf names the refusal err is.
@@ -75,6 +76,8 @@ func refusalOf(err error) string {
 		return RefusalRunStopped
 	case errors.Is(err, ErrTaskNotFound):
 		return RefusalNotFound
+	case errors.Is(err, ErrStaleRevision):
+		return RefusalStaleRevision
 	}
 	return RefusalTaskState
 }
@@ -100,12 +103,15 @@ var errCommandRepeated = errors.New("command repeated")
 // than the transaction; a change that errs changed nothing.
 type change func(r *run) (t *task, events []event, err error)
 
-// act runs a command of actor on the run: the receipt given before is
-// returned for a repeat (a conflict for other content); otherwise do runs
-// in the run's transaction, the revision checked first, with the receipt
-// written beside the change, and what rests on the commit follows
-// (afterTransact). undo, when given, puts the change back when the commit
-// fails, as transact takes it.
+// act runs a command of actor on the run in two transactions, the
+// ledger's way (decision 10): the first takes the command (its row
+// accepted; a repeat answers with the receipt given before, other content
+// is a conflict, the run's cap refuses it: nothing changes), the second
+// makes the change, the revision checked first, and settles the receipt
+// beside it, so a change is never made for a command the ledger did not
+// take, and a command taken without a settled receipt is one the server
+// ended between (the recovery leaves it uncertain). undo, when given, puts
+// the change back when its commit fails, as transact takes it.
 func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, intent string, args []string, do change, undo func(r *run)) (Receipt, error) {
 	if !CommandIDPattern.MatchString(cmd.ID) {
 		return Receipt{}, ErrBadCommandID
@@ -123,26 +129,59 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	} else if found {
 		return priorReceipt(prior, intent, fp)
 	}
+	// The command taken: a row of its own, before any change rests on it.
+	// The revision it was taken at is the one the asker's expectation is
+	// held to, and nothing else may commit between the taking and the
+	// change.
+	var before int64
+	err = e.transact(ctx, r, func() tx {
+		before = r.revision
+		w := tx{events: []event{{"command.accepted", map[string]any{"actor": actor, "command": cmd.ID, "intent": intent, "args": args}}}}
+		w.more = func(ltx LedgerTx) error {
+			if _, found, err := ltx.Command(actor, cmd.ID, intent, fp); err != nil {
+				return err
+			} else if found {
+				return errCommandRepeated
+			}
+			return nil
+		}
+		return w
+	}, nil)
+	switch {
+	case errors.Is(err, errCommandRepeated):
+		prior, found, rerr := e.ledger.Receipt(ctx, runID, actor, cmd.ID)
+		if rerr != nil || !found {
+			return Receipt{}, errors.Join(err, rerr)
+		}
+		return priorReceipt(prior, intent, fp)
+	case errors.Is(err, ledger.ErrCommandConflict):
+		return Receipt{}, ErrCommandConflict
+	case errors.Is(err, ledger.ErrTooManyCommands):
+		return Receipt{}, ErrTooManyCommands
+	case err != nil:
+		e.afterTransact(r, err)
+		return Receipt{}, err
+	}
+	// The change, with its receipt.
 	var out Receipt
 	var cmdErr error
-	var stale bool
 	var back func()
 	if undo != nil {
 		back = func() { undo(r) }
 	}
 	err = e.transact(ctx, r, func() tx {
-		if cmd.ExpectedRevision > 0 && cmd.ExpectedRevision != r.revision {
-			stale = true
-			cmdErr = fmt.Errorf("%w: expected %d, the run is at %d", ErrStaleRevision, cmd.ExpectedRevision, r.revision)
-			return tx{} // not taken: nothing to write
+		var t *task
+		var events []event
+		if cmd.ExpectedRevision > 0 && (cmd.ExpectedRevision != before || r.revision != before+1) {
+			cmdErr = fmt.Errorf("%w: expected %d, the run was at %d when the command was taken and is at %d", ErrStaleRevision, cmd.ExpectedRevision, before, r.revision)
+		} else {
+			t, events, cmdErr = do(r)
 		}
-		t, events, err := do(r)
 		// A run's transactions commit one after another, each as the
 		// revision after the run's: the receipt kept says which.
 		out = Receipt{CommandID: cmd.ID, Intent: intent, Revision: r.revision + 1, Status: ledger.CommandDone}
-		if err != nil {
-			cmdErr = err
-			out.Status, out.Error, out.Refusal = ledger.CommandFailed, err.Error(), refusalOf(err)
+		if cmdErr != nil {
+			out.Status, out.Error, out.Refusal = ledger.CommandFailed, cmdErr.Error(), refusalOf(cmdErr)
 		}
 		if t != nil {
 			st := r.taskStateOf(t)
@@ -151,34 +190,11 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 		paused := r.paused
 		out.Paused = &paused
 		w := tx{events: append(events, event{"command." + intent, map[string]any{"actor": actor, "command": cmd.ID, "args": args, "status": out.Status, "error": out.Error}})}
-		w.more = func(ltx LedgerTx) error {
-			if _, found, err := ltx.Command(actor, cmd.ID, intent, fp); err != nil {
-				return err
-			} else if found {
-				return errCommandRepeated
-			}
-			return ltx.Settle(actor, cmd.ID, out.Status, out)
-		}
+		w.more = func(ltx LedgerTx) error { return ltx.Settle(actor, cmd.ID, out.Status, out) }
 		return w
 	}, back)
-	if stale {
-		return Receipt{}, cmdErr
-	}
-	switch {
-	case errors.Is(err, errCommandRepeated):
-		prior, found, rerr := e.ledger.Receipt(ctx, runID, actor, cmd.ID)
-		if rerr != nil || !found {
-			return Receipt{}, errors.Join(err, rerr)
-		}
-		return priorReceipt(prior, intent, fp)
-	case err != nil:
+	if err != nil {
 		e.afterTransact(r, err)
-		switch {
-		case errors.Is(err, ledger.ErrCommandConflict):
-			return Receipt{}, ErrCommandConflict
-		case errors.Is(err, ledger.ErrTooManyCommands):
-			return Receipt{}, ErrTooManyCommands
-		}
 		return Receipt{}, err
 	}
 	e.afterTransact(r, nil)

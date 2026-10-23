@@ -28,8 +28,9 @@ const maxCheckpointField = 4000
 // Blocker and checkpoint errors.
 var (
 	ErrBadBlocker    = errors.New("a blocker is a reason of one to 500 characters, with a message of at most 4000")
-	ErrBadCheckpoint = errors.New("a checkpoint says what is done and what remains, each at most 4000 characters, with notes of at most 4000")
+	ErrBadCheckpoint = errors.New("a checkpoint says what is done and what remains, each at most 4000 characters, with notes of at most 4000, 16 KiB in all")
 	ErrNoCommit      = errors.New("the worktree has no commit to tie the checkpoint to")
+	ErrReviewNoCheck = errors.New("a review saves no checkpoint: it commits nothing, and its attempt always starts at the candidate")
 )
 
 // blocker is what an attempt says stops it.
@@ -80,7 +81,7 @@ func decodeCheckpoint(raw string) *checkpoint {
 // and the session asks for it (the message, else the reason) as the
 // agent's own question. The task is returned as it then is.
 func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string) (TaskState, error) {
-	reason, message = strings.TrimSpace(reason), strings.TrimSpace(message)
+	reason, message = cleanText(reason), cleanText(message)
 	if reason == "" || utf8.RuneCountInString(reason) > 500 || utf8.RuneCountInString(message) > maxCheckpointField {
 		return TaskState{}, ErrBadBlocker
 	}
@@ -145,7 +146,7 @@ func (e *Engine) unblock(r *run, a *attempt, state session.AttentionState) {
 // worktree's commit: on the attempt, as the task's latest, and in the
 // ledger. The attempt as it then is, is returned.
 func (e *Engine) SaveCheckpoint(ctx context.Context, sessionID, done, remaining, notes string) (AttemptState, error) {
-	done, remaining, notes = strings.TrimSpace(done), strings.TrimSpace(remaining), strings.TrimSpace(notes)
+	done, remaining, notes = cleanText(done), cleanText(remaining), cleanText(notes)
 	if done == "" || utf8.RuneCountInString(done) > maxCheckpointField || utf8.RuneCountInString(remaining) > maxCheckpointField || utf8.RuneCountInString(notes) > maxCheckpointField {
 		return AttemptState{}, ErrBadCheckpoint
 	}
@@ -154,8 +155,11 @@ func (e *Engine) SaveCheckpoint(ctx context.Context, sessionID, done, remaining,
 		return AttemptState{}, err
 	}
 	e.mu.Lock()
-	worktree := a.worktree
+	worktree, kind := a.worktree, a.t.def.Kind
 	e.mu.Unlock()
+	if kind == TaskReview {
+		return AttemptState{}, ErrReviewNoCheck
+	}
 	if worktree == "" {
 		return AttemptState{}, fmt.Errorf("%w: the attempt has no worktree yet", ErrNotRunning)
 	}
@@ -163,18 +167,25 @@ func (e *Engine) SaveCheckpoint(ctx context.Context, sessionID, done, remaining,
 	if err != nil || head == "" {
 		return AttemptState{}, ErrNoCommit
 	}
+	c := &checkpoint{done: done, remaining: remaining, notes: notes, commit: head, at: time.Now().UTC()}
+	// As the ledger keeps it: within its bound before anything changes, so
+	// a refused row never stays marked for every transaction after.
+	if b, err := json.Marshal(c.api()); err != nil || len(b) > ledger.MaxCheckpoint {
+		return AttemptState{}, ErrBadCheckpoint
+	}
 	var out AttemptState
+	var prevA, prevT *checkpoint
 	err = e.transact(ctx, r, func() tx {
 		if !a.closedAt.IsZero() || a.state != ledger.AttemptRunning {
 			return tx{}
 		}
-		c := &checkpoint{done: done, remaining: remaining, notes: notes, commit: head, at: time.Now().UTC()}
+		prevA, prevT = a.checkpoint, a.t.checkpoint
 		a.checkpoint, a.t.checkpoint = c, c
 		r.markAttempt(a)
 		r.note(session.ActivityStatus, "task %s: attempt %d checkpoint at %s: %s", a.t.def.ID, a.n, short(head), oneLine.Replace(shortText(done)))
 		out = attemptStateOf(a)
 		return ev("task.checkpoint", map[string]any{"task": a.t.def.ID, "attempt": a.n, "commit": head})
-	}, nil)
+	}, func() { a.checkpoint, a.t.checkpoint = prevA, prevT })
 	if err != nil {
 		e.afterTransact(r, err)
 		return AttemptState{}, err
@@ -183,6 +194,19 @@ func (e *Engine) SaveCheckpoint(ctx context.Context, sessionID, done, remaining,
 		return AttemptState{}, fmt.Errorf("%w: the attempt is not running", ErrNotRunning)
 	}
 	return out, nil
+}
+
+// cleanText takes the control characters out of what an agent sends
+// (a message is typed into a terminal; a blocker and a checkpoint are
+// shown), keeping line breaks and tabs; the length is bounded by the
+// caller, in characters and in the bytes the ledger keeps.
+func cleanText(s string) string {
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s))
 }
 
 // attemptOf is the session's run and attempt; ErrNotAnAttempt otherwise.

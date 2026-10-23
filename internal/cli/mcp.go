@@ -411,6 +411,9 @@ func inboxText(out map[string]any) string {
 	for _, x := range msgs {
 		m, _ := x.(map[string]any)
 		state := "waiting to be typed into your session"
+		if m["uncertain"] == true {
+			state = "may have been typed before the server ended: read it here"
+		}
 		if m["deliveredAt"] != nil {
 			state = "typed into your session"
 		}

@@ -199,12 +199,15 @@ func (t *Tx) Continued(from string) error {
 
 // PutTask puts a task's row, new or changed.
 func (t *Tx) PutTask(r TaskRow) error {
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO tasks (run_id, id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if len(r.Repair) > MaxPayload {
+		return fmt.Errorf("ledger: the repair of task %s is more than %d bytes", r.ID, MaxPayload)
+	}
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO tasks (run_id, id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from, repair, extra)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, id) DO UPDATE SET member = excluded.member, kind = excluded.kind, state = excluded.state, reason = excluded.reason,
 			attempts = excluded.attempts, result_attempt = excluded.result_attempt, result_commit = excluded.result_commit, verdict = excluded.verdict,
-			imported_from = excluded.imported_from`,
-		t.runID, r.ID, r.Member, r.Kind, r.State, r.Reason, r.Attempts, r.ResultAttempt, r.ResultCommit, r.Verdict, r.ImportedFrom)
+			imported_from = excluded.imported_from, repair = excluded.repair, extra = excluded.extra`,
+		t.runID, r.ID, r.Member, r.Kind, r.State, r.Reason, r.Attempts, r.ResultAttempt, r.ResultCommit, r.Verdict, r.ImportedFrom, r.Repair, r.Extra)
 	return err
 }
 
@@ -240,10 +243,10 @@ func (t *Tx) PutMessage(r MessageRow) error {
 	if n >= maxMessages {
 		return fmt.Errorf("%w: %d messages", ErrTooManyMessages, n)
 	}
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO messages (run_id, seq, from_member, to_member, text, created_at, delivered_at, acked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(run_id, seq) DO UPDATE SET delivered_at = excluded.delivered_at, acked_at = excluded.acked_at`,
-		t.runID, r.Seq, r.From, r.To, r.Text, stamp(r.CreatedAt), stamp(r.DeliveredAt), stamp(r.AckedAt))
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO messages (run_id, seq, from_member, to_member, text, created_at, typing_at, delivered_at, acked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, seq) DO UPDATE SET typing_at = excluded.typing_at, delivered_at = excluded.delivered_at, acked_at = excluded.acked_at`,
+		t.runID, r.Seq, r.From, r.To, r.Text, stamp(r.CreatedAt), stamp(r.TypingAt), stamp(r.DeliveredAt), stamp(r.AckedAt))
 	return err
 }
 
@@ -256,7 +259,7 @@ func (l *Ledger) Messages(ctx context.Context, runID string) ([]MessageRow, erro
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, "SELECT seq, from_member, to_member, text, created_at, delivered_at, acked_at FROM messages WHERE run_id = ? ORDER BY seq", runID)
+	rows, err := db.QueryContext(ctx, "SELECT seq, from_member, to_member, text, created_at, typing_at, delivered_at, acked_at FROM messages WHERE run_id = ? ORDER BY seq", runID)
 	if err != nil {
 		return nil, err
 	}
@@ -264,11 +267,11 @@ func (l *Ledger) Messages(ctx context.Context, runID string) ([]MessageRow, erro
 	var out []MessageRow
 	for rows.Next() {
 		r := MessageRow{RunID: runID}
-		var created, delivered, acked string
-		if err := rows.Scan(&r.Seq, &r.From, &r.To, &r.Text, &created, &delivered, &acked); err != nil {
+		var created, typing, delivered, acked string
+		if err := rows.Scan(&r.Seq, &r.From, &r.To, &r.Text, &created, &typing, &delivered, &acked); err != nil {
 			return nil, err
 		}
-		r.CreatedAt, r.DeliveredAt, r.AckedAt = unstamp(created), unstamp(delivered), unstamp(acked)
+		r.CreatedAt, r.TypingAt, r.DeliveredAt, r.AckedAt = unstamp(created), unstamp(typing), unstamp(delivered), unstamp(acked)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -373,7 +376,7 @@ func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from FROM tasks WHERE run_id = ? ORDER BY id`, runID)
+	rows, err := db.QueryContext(ctx, `SELECT id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from, repair, extra FROM tasks WHERE run_id = ? ORDER BY id`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +384,7 @@ func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
 	var out []TaskRow
 	for rows.Next() {
 		r := TaskRow{RunID: runID}
-		if err := rows.Scan(&r.ID, &r.Member, &r.Kind, &r.State, &r.Reason, &r.Attempts, &r.ResultAttempt, &r.ResultCommit, &r.Verdict, &r.ImportedFrom); err != nil {
+		if err := rows.Scan(&r.ID, &r.Member, &r.Kind, &r.State, &r.Reason, &r.Attempts, &r.ResultAttempt, &r.ResultCommit, &r.Verdict, &r.ImportedFrom, &r.Repair, &r.Extra); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

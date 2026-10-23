@@ -39,8 +39,14 @@ type message struct {
 	createdAt   time.Time
 	deliveredAt time.Time
 	ackedAt     time.Time
-	// queued says the message waits in the recipient's handoff queue.
-	queued bool
+	// typingAt is when the engine set out to type the message (the intent
+	// recorded before the line), deliveredAt when the line was entered.
+	typingAt time.Time
+	// queued says the message waits in the recipient's handoff queue;
+	// uncertain that a continuation found it set out to be typed and not
+	// entered before the server ended: it is not typed again (the
+	// recipient reads it in its inbox), and says so.
+	queued, uncertain bool
 }
 
 // Message is a message as the API answers it.
@@ -52,10 +58,14 @@ type Message struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	DeliveredAt *time.Time `json:"deliveredAt,omitempty"`
 	AckedAt     *time.Time `json:"ackedAt,omitempty"`
+	// Uncertain says the server ended as the message was being typed: it
+	// may or may not have reached the recipient's terminal, and is not
+	// typed again.
+	Uncertain bool `json:"uncertain,omitempty"`
 }
 
 func (m *message) api() Message {
-	out := Message{Seq: m.seq, From: m.from, To: m.to, Text: m.text, CreatedAt: m.createdAt}
+	out := Message{Seq: m.seq, From: m.from, To: m.to, Text: m.text, CreatedAt: m.createdAt, Uncertain: m.uncertain}
 	if !m.deliveredAt.IsZero() {
 		at := m.deliveredAt
 		out.DeliveredAt = &at
@@ -68,12 +78,24 @@ func (m *message) api() Message {
 }
 
 func (r *run) messageRow(m *message) ledger.MessageRow {
-	return ledger.MessageRow{RunID: r.id, Seq: m.seq, From: m.from, To: m.to, Text: m.text, CreatedAt: m.createdAt, DeliveredAt: m.deliveredAt, AckedAt: m.ackedAt}
+	return ledger.MessageRow{RunID: r.id, Seq: m.seq, From: m.from, To: m.to, Text: m.text, CreatedAt: m.createdAt, TypingAt: m.typingAt, DeliveredAt: m.deliveredAt, AckedAt: m.ackedAt}
 }
 
 // messageText is the line a message types, less its carriage return.
 func messageText(m *message) string {
 	return strings.TrimSpace(fmt.Sprintf("Message from %s (#%d): %s", m.from, m.seq, oneLine.Replace(m.text)))
+}
+
+// prompted reports whether the member's attempt in flight has had its
+// task line: a message is typed after it, never before. The caller holds
+// e.mu.
+func (r *run) prompted(m *member) bool {
+	for _, t := range r.tasks {
+		if a := t.active(); a != nil && a.m == m {
+			return !a.promptedAt.IsZero()
+		}
+	}
+	return false
 }
 
 // unacked counts the messages to the member not acknowledged. The caller
@@ -103,8 +125,10 @@ func (e *Engine) SendMessage(ctx context.Context, sessionID, to, text string) (M
 
 // send is SendMessage from a member the engine knows.
 func (e *Engine) send(ctx context.Context, r *run, from *member, to, text string) (Message, error) {
-	text = strings.TrimSpace(text)
-	if text == "" || utf8.RuneCountInString(text) > maxMessageChars {
+	// Cleaned and bounded, in characters and in the bytes the ledger
+	// keeps, before anything changes: the line is typed into a terminal.
+	text = cleanText(text)
+	if text == "" || utf8.RuneCountInString(text) > maxMessageChars || len(text) > ledger.MaxMessageText {
 		return Message{}, ErrBadMessage
 	}
 	e.mu.Lock()
@@ -191,7 +215,7 @@ func (e *Engine) deliverMessages(r *run, to *member) {
 	}
 	queued := 0
 	for _, m := range r.messages {
-		if m.to != to.def.Name || !m.deliveredAt.IsZero() || m.queued {
+		if m.to != to.def.Name || !m.deliveredAt.IsZero() || m.queued || m.uncertain {
 			continue
 		}
 		if len(to.handoffs) >= maxHandoffs {
@@ -211,6 +235,35 @@ func (e *Engine) deliverMessages(r *run, to *member) {
 	to.delivering.Store(true)
 	r.deliveries.Add(1)
 	go e.deliver(r, to, local)
+}
+
+// typing records that the engine sets out to type the message into its
+// recipient's session (deliver), before the line: the intent, so that a
+// line the server's end cuts off is told from one never typed. It reports
+// whether the record is in; refused, the message waits for the next
+// delivery. The caller does not hold e.mu.
+func (e *Engine) typing(r *run, seq int64) bool {
+	err := e.transact(context.Background(), r, func() tx {
+		m := r.messageBySeq(seq)
+		if m == nil || !m.deliveredAt.IsZero() {
+			return tx{}
+		}
+		if !m.typingAt.IsZero() {
+			return tx{} // set out before, within this run: typed again as a handoff is
+		}
+		m.typingAt = time.Now().UTC()
+		w := ev("message.typing", map[string]any{"seq": m.seq, "from": m.from, "to": m.to})
+		w.more = func(ltx LedgerTx) error { return ltx.PutMessage(r.messageRow(m)) }
+		return w
+	}, nil)
+	if err != nil {
+		e.mu.Lock()
+		r.unqueued(seq)
+		e.mu.Unlock()
+		e.afterTransact(r, err)
+		return false
+	}
+	return true
 }
 
 // delivered records that the message was typed into its recipient's

@@ -82,6 +82,11 @@ type TaskRow struct {
 	ResultCommit  string // its commit
 	Verdict       string // a review's
 	ImportedFrom  string // "<run>/<task>/<n>" when a continuation imported the result
+	// Repair is the repair a review asked of the task, as JSON (the
+	// engine's crew.TaskRepair), "" without one; Extra the attempts
+	// allowed past the bound (retries, and attempts not counted).
+	Repair string
+	Extra  int
 }
 
 // AttemptRow is one try at a task.
@@ -117,11 +122,16 @@ type AttemptRow struct {
 // (DeliveredAt, zero until then) and when the recipient acknowledged it
 // (AckedAt, zero until then).
 type MessageRow struct {
-	RunID       string
-	Seq         int64
-	From, To    string
-	Text        string
-	CreatedAt   time.Time
+	RunID     string
+	Seq       int64
+	From, To  string
+	Text      string
+	CreatedAt time.Time
+	// TypingAt is when the engine set out to type the message into the
+	// recipient's session (the intent, before the line), DeliveredAt when
+	// the line was entered: typing set and delivered not, after the
+	// server's end, is a delivery that cannot be told.
+	TypingAt    time.Time
 	DeliveredAt time.Time
 	AckedAt     time.Time
 }

@@ -842,14 +842,25 @@ func (r *run) startCommit(t *task) string {
 	if t.repair != nil && t.repair.commit != "" {
 		return t.repair.commit
 	}
+	if t.def.Kind == TaskReview {
+		// A review always starts at its candidate, whatever its attempts
+		// did: its result is its verdict on that commit.
+		for _, in := range r.inputs(t) {
+			if in.commit != "" {
+				return in.commit
+			}
+		}
+		return r.base
+	}
 	if n := len(t.attempts); n > 0 {
 		last := t.attempts[n-1]
 		if last.state == ledger.AttemptFailed && last.result != "" {
 			return last.result
 		}
-		if last.result == "" && last.checkpoint != nil && last.checkpoint.commit != "" {
-			// Ended without a result (its session went): its work up to
-			// the checkpoint is kept.
+		if last.state == ledger.AttemptFailed && last.result == "" && last.checkpoint != nil && last.checkpoint.commit != "" {
+			// Failed without a result (its session went): its work up to
+			// the checkpoint is kept. A withdrawn or cancelled attempt's
+			// checkpoint rested on an input since changed: not used.
 			return last.checkpoint.commit
 		}
 	} else if t.checkpoint != nil && t.checkpoint.commit != "" {
@@ -1105,7 +1116,12 @@ func (r *run) taskRow(t *task) ledger.TaskRow {
 			n++
 		}
 	}
-	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n + t.prior, ImportedFrom: t.imported}
+	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n + t.prior, ImportedFrom: t.imported, Extra: t.extra}
+	if rp := t.repair; rp != nil {
+		if b, err := json.Marshal(TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: rp.findings}); err == nil {
+			row.Repair = string(b)
+		}
+	}
 	if t.result != nil {
 		row.ResultAttempt, row.ResultCommit, row.Verdict = t.result.attempt, t.result.commit, t.result.verdict
 	}
@@ -1813,6 +1829,9 @@ func (e *Engine) withdraw(r *run, sub *task, why string) []event {
 		default:
 			continue
 		}
+		// Its checkpoint rested on the input withdrawn: the next attempt
+		// starts from the new result, not from it.
+		t.checkpoint = nil
 		t.state, t.reason = ledger.TaskBlocked, why
 		r.markTask(t)
 		events = append(events, e.withdraw(r, t, "needs "+t.def.ID+", withdrawn")...)

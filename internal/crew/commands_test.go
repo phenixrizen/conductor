@@ -315,8 +315,8 @@ func TestCommandsKeepReceiptsAndAcceptTakesAFailedResult(t *testing.T) {
 			t.Errorf("command %s in the ledger: %+v %v %v", id, row, ok, err)
 		}
 	}
-	if row, _, _ := l.Receipt(ctx, run.ID, "admin", "p2"); row.ID != "" {
-		t.Fatalf("the stale command was kept: %+v", row)
+	if row, ok, _ := l.Receipt(ctx, run.ID, "admin", "p2"); !ok || row.Status != ledger.CommandFailed || !strings.Contains(row.Receipt, RefusalStaleRevision) {
+		t.Fatalf("the stale command's receipt: %+v %v", row, ok)
 	}
 	kinds := l.kinds(run.ID)
 	for _, want := range []string{"command.pause", "command.unpause", "command.accept", "task.accepted", "command.cancel", "command.retry"} {

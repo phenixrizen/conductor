@@ -168,6 +168,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		if len(m.handoffs) == 0 {
 			m.stopDelivering()
 			e.mu.Unlock()
+			// Messages past the queue's room, if any, are queued now
+			// (deliverMessages starts a delivery of its own for them).
+			e.deliverMessages(r, m)
 			return
 		}
 		why := ""
@@ -191,7 +194,7 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			e.mu.Unlock()
 			return
 		}
-		if m.state.Status != MemberRunning {
+		if m.state.Status != MemberRunning || (r.managed && !r.prompted(m)) {
 			r.noteQueued(m, "has not had its prompt yet")
 			e.mu.Unlock()
 			waitWake(r, m, l)
@@ -200,6 +203,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		h := m.handoffs[0]
 		m.handoffs = slices.Delete(m.handoffs, 0, 1)
 		e.mu.Unlock()
+		if h.seq > 0 && !e.typing(r, h.seq) {
+			continue // not recorded: the message waits for the next delivery
+		}
 
 		res, err := l.Submit(r.ctx, session.Submission{Text: h.text, ByName: typedBy, UnlessWaiting: true, Finished: func(res session.SubmitResult, err error) {
 			// A handoff accepted while the program took it slowly

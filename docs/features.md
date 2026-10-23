@@ -2991,7 +2991,21 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   attempt; the checkpoint kept in the row, the next attempt starting there
   with the section in its task file, a continuation's first attempt too),
   `api/messages_test.go`, `cli/task_test.go`, and the chatty worker's
-  checkpoint in `tasks-messages.spec.ts`.
+  checkpoint in `tasks-messages.spec.ts`. The Codex review of rows 6–10
+  (ten findings) led to: a command taken in a transaction of its own
+  before it acts (its row `accepted`; the cap, a conflict and a repeat
+  answered there with nothing changed), settled in a second, a stale
+  revision kept as a failed receipt; a checkpoint bounded as kept (16 KiB)
+  before anything changes, never a review's (its attempt always starts at
+  its candidate), cleared on a dependent when its input is withdrawn;
+  texts cleaned (`session.CleanMessage`) and bounded in bytes before they
+  are kept or typed; the delivery intent recorded before a message is
+  typed (`message.typing`), an uncertain delivery not typed again after a
+  restart; a continuation carrying repairs and allowances (`tasks.repair`,
+  `tasks.extra`), every message under its own rows, and an import's source
+  and summary through later continuations; delivery going on past the
+  queue's room; a recovered record dropping a withdrawn result
+  (`review_fixes_test.go`).
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

@@ -230,9 +230,12 @@ func TestAnAttemptReadsItsTaskAndSubmitsItsResultAndTheAdminCommandsTheRun(t *te
 	if resp, out := e.do("POST", base+"/unpause", adminToken, map[string]any{"commandId": "c2", "expectedRevision": rev + 100}); resp.StatusCode != http.StatusConflict || errCodeOf(out) != "stale_revision" {
 		t.Fatalf("stale: %d %v", resp.StatusCode, out)
 	}
-	resp, out = e.do("POST", base+"/unpause", adminToken, map[string]any{"commandId": "c3", "expectedRevision": rev})
-	if rc := receiptOf(t, out); resp.StatusCode != http.StatusOK || rc["paused"] != false {
-		t.Fatalf("unpause: %d %v", resp.StatusCode, out)
+	// The revision expected is the run's now (each command bumps it twice: taken, then settled).
+	_, cur := e.do("GET", base, adminToken, nil)
+	now, _ := cur["run"].(map[string]any)["managed"].(map[string]any)["revision"].(float64)
+	resp, out = e.do("POST", base+"/unpause", adminToken, map[string]any{"commandId": "c3", "expectedRevision": now})
+	if rc := receiptOf(t, out); resp.StatusCode != http.StatusOK || rc["paused"] != false || rc["revision"] != now+2 {
+		t.Fatalf("unpause: %d %v (revision now %v)", resp.StatusCode, out, now)
 	}
 	for _, body := range []any{map[string]any{"commandId": "bad id"}, map[string]any{"commandId": "c4", "nope": 1}, nil} {
 		if resp, out := e.do("POST", base+"/pause", adminToken, body); resp.StatusCode != http.StatusBadRequest {

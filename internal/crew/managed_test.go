@@ -31,6 +31,9 @@ type fakeLedger struct {
 	checks   []ledger.CheckRow
 	commands map[string]ledger.CommandRow
 	messages map[string]ledger.MessageRow
+	// commandCap, when set, is how many commands a run takes (the ledger's
+	// 4096), for a test of the cap.
+	commandCap int
 	// failOn names the events whose transaction fails (comma-separated;
 	// "kind[key=value]" matches a payload field too); failOnce clears it
 	// after one failure. blockOn names events whose transaction waits,
@@ -81,6 +84,8 @@ type fakeTx struct {
 	checks   []ledger.CheckRow
 	commands []ledger.CommandRow
 	messages []ledger.MessageRow
+	// settles are the outcomes of commands taken before, applied at commit.
+	settles []ledger.CommandRow
 	// continued is the run this transaction's run continues, marked at commit.
 	continued string
 }
@@ -136,12 +141,22 @@ func (l *fakeLedger) Receipt(ctx context.Context, runID, actor, id string) (ledg
 func (tx *fakeTx) Command(actor, id, intent, fingerprint string) (ledger.CommandRow, bool, error) {
 	tx.l.mu.Lock()
 	prior, ok := tx.l.commands[tx.runID+"/"+actor+"/"+id]
+	n := 0
+	for k := range tx.l.commands {
+		if strings.HasPrefix(k, tx.runID+"/") {
+			n++
+		}
+	}
+	cap := tx.l.commandCap
 	tx.l.mu.Unlock()
 	if ok {
 		if prior.Intent != intent || prior.Fingerprint != fingerprint {
 			return ledger.CommandRow{}, false, ledger.ErrCommandConflict
 		}
 		return prior, true, nil
+	}
+	if cap > 0 && n >= cap {
+		return ledger.CommandRow{}, false, ledger.ErrTooManyCommands
 	}
 	tx.commands = append(tx.commands, ledger.CommandRow{RunID: tx.runID, Actor: actor, ID: id, Intent: intent, Fingerprint: fingerprint, Status: ledger.CommandAccepted, CreatedAt: time.Now().UTC()})
 	return ledger.CommandRow{}, false, nil
@@ -169,7 +184,15 @@ func (tx *fakeTx) Settle(actor, id, status string, receipt any) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("fake ledger: no command %s of %s in the transaction", id, actor)
+	// Taken in an earlier transaction (act's first): settled at commit.
+	tx.l.mu.Lock()
+	_, ok := tx.l.commands[tx.runID+"/"+actor+"/"+id]
+	tx.l.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("fake ledger: no command %s of %s to settle", id, actor)
+	}
+	tx.settles = append(tx.settles, ledger.CommandRow{RunID: tx.runID, Actor: actor, ID: id, Status: status, Receipt: string(b)})
+	return nil
 }
 
 func (l *fakeLedger) Available() error {
@@ -216,6 +239,12 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 	l.checks = append(l.checks, tx.checks...)
 	for _, c := range tx.commands {
 		l.commands[c.RunID+"/"+c.Actor+"/"+c.ID] = c
+	}
+	for _, st := range tx.settles {
+		key := st.RunID + "/" + st.Actor + "/" + st.ID
+		row := l.commands[key]
+		row.Status, row.Receipt = st.Status, st.Receipt
+		l.commands[key] = row
 	}
 	if tx.continued != "" {
 		row := l.runs[tx.continued]

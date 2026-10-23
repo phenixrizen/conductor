@@ -148,19 +148,60 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		rows[row.ID] = row
 	}
 	last := map[string]ledger.AttemptRow{}
-	byN := map[string]ledger.AttemptRow{}
 	for _, a := range from.Attempts {
 		if a.N > last[a.TaskID].N {
 			last[a.TaskID] = a
 		}
-		byN[a.TaskID+"/"+strconv.Itoa(a.N)] = a
 	}
-	var imported, again, uncertain int
+	// The results imported by reference: from this run's rows, or from the
+	// run an earlier continuation imported them from (the reference is
+	// kept as it was). Read before the transaction: the ledger's one
+	// connection serves no reader inside one.
+	sources := map[string]Loaded{from.Run.ID: from}
+	source := func(ref string) (ledger.AttemptRow, bool) {
+		runID, taskID, n, ok := parseImport(ref)
+		if !ok {
+			return ledger.AttemptRow{}, false
+		}
+		src, ok := sources[runID]
+		if !ok {
+			loaded, found, err := e.ledger.Load(ctx, runID)
+			if err != nil || !found {
+				return ledger.AttemptRow{}, false
+			}
+			sources[runID] = loaded
+			src = loaded
+		}
+		row := byN(src.Attempts, taskID, n)
+		return row, row.N == n
+	}
+	refs := map[string]ledger.AttemptRow{}
+	for _, row := range from.Tasks {
+		if row.State != ledger.TaskSucceeded || row.ResultAttempt == 0 {
+			continue
+		}
+		ref := row.ImportedFrom
+		if ref == "" {
+			ref = from.Run.ID + "/" + row.ID + "/" + strconv.Itoa(row.ResultAttempt)
+		}
+		if ra, ok := source(ref); ok {
+			refs[row.ID] = ra
+		}
+	}
+	var imported, again, uncertain, held int
 	err := e.transact(ctx, r, func() tx {
 		r.base, r.paused, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.ID
 		r.markRun()
 		for _, row := range from.Messages {
-			r.messages = append(r.messages, &message{seq: row.Seq, from: row.From, to: row.To, text: row.Text, createdAt: row.CreatedAt, deliveredAt: row.DeliveredAt, ackedAt: row.AckedAt})
+			m := &message{seq: row.Seq, from: row.From, to: row.To, text: row.Text, createdAt: row.CreatedAt, typingAt: row.TypingAt, deliveredAt: row.DeliveredAt, ackedAt: row.AckedAt}
+			if !row.TypingAt.IsZero() && row.DeliveredAt.IsZero() {
+				// Set out to be typed and not entered before the server
+				// ended: whether it reached the terminal cannot be told.
+				m.uncertain = true
+				held++
+				r.note(session.ActivityStatus, "message %d from %s to %s may have been typed before the server ended: not typed again, in %s's inbox", m.seq, m.from, m.to, m.to)
+			}
+			r.messages = append(r.messages, m)
 		}
 		for _, t := range r.tasks {
 			row, ok := rows[t.def.ID]
@@ -168,14 +209,17 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 				r.markTask(t)
 				continue
 			}
-			t.prior = row.Attempts
+			t.prior, t.extra = row.Attempts, row.Extra
+			if rp := decodeRepair(row.Repair); rp != nil {
+				t.repair = rp
+			}
 			la, hasLast := last[t.def.ID]
-			if hasLast && la.Checkpoint != "" {
+			if hasLast && la.Checkpoint != "" && t.def.Kind == TaskWork {
 				t.checkpoint = decodeCheckpoint(la.Checkpoint)
 			}
 			switch row.State {
 			case ledger.TaskSucceeded:
-				ra := byN[t.def.ID+"/"+strconv.Itoa(row.ResultAttempt)]
+				ra := refs[t.def.ID]
 				res := decodeResult(ra.Result)
 				at := ra.ClosedAt
 				if at.IsZero() {
@@ -185,7 +229,10 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 				if t.result.verdict == "" {
 					t.result.verdict = row.Verdict
 				}
-				t.imported = from.Run.ID + "/" + t.def.ID + "/" + strconv.Itoa(row.ResultAttempt)
+				t.imported = row.ImportedFrom
+				if t.imported == "" {
+					t.imported = from.Run.ID + "/" + t.def.ID + "/" + strconv.Itoa(row.ResultAttempt)
+				}
 				t.state, t.reason = ledger.TaskSucceeded, ""
 				imported++
 			case ledger.TaskFailed:
@@ -214,9 +261,21 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		}
 		r.ready()
 		e.settleRun(r)
-		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d waiting for a decision", from.Run.ID, imported, again, uncertain)
-		w := ev("run.continued", map[string]any{"from": from.Run.ID, "base": r.base, "imported": imported, "reverified": again, "uncertain": uncertain})
-		w.more = func(ltx LedgerTx) error { return ltx.Continued(from.Run.ID) }
+		r.note(session.ActivityStatus, "continues %s: %d results kept, %d verified again, %d waiting for a decision, %d messages carried", from.Run.ID, imported, again, uncertain, len(r.messages))
+		w := ev("run.continued", map[string]any{"from": from.Run.ID, "base": r.base, "imported": imported, "reverified": again, "uncertain": uncertain, "messages": len(r.messages), "held": held})
+		w.more = func(ltx LedgerTx) error {
+			if err := ltx.Continued(from.Run.ID); err != nil {
+				return err
+			}
+			// The messages carried, under this run: a later continuation
+			// reads them here.
+			for _, m := range r.messages {
+				if err := ltx.PutMessage(r.messageRow(m)); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 		return w
 	}, nil)
 	if errors.Is(err, ledger.ErrContinued) {
@@ -241,6 +300,29 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 	}
 	e.pumpLocked(r)
 	return nil
+}
+
+// parseImport reads an import reference, "<run>/<task>/<n>".
+func parseImport(ref string) (runID, taskID string, n int, ok bool) {
+	parts := strings.Split(ref, "/")
+	if len(parts) != 3 {
+		return "", "", 0, false
+	}
+	n, err := strconv.Atoi(parts[2])
+	if err != nil || n < 1 || !ValidRunID(parts[0]) || !ValidTaskID(parts[1]) {
+		return "", "", 0, false
+	}
+	return parts[0], parts[1], n, true
+}
+
+// decodeRepair reads a task row's repair; nil for an empty or unreadable
+// one.
+func decodeRepair(raw string) *repair {
+	var rp TaskRepair
+	if raw == "" || json.Unmarshal([]byte(raw), &rp) != nil {
+		return nil
+	}
+	return &repair{review: rp.Review, attempt: rp.Attempt, commit: rp.Commit, summary: rp.Summary, findings: rp.Findings}
 }
 
 // byN is the attempt row of the task numbered n, or a zero row.
@@ -380,7 +462,11 @@ func Recovered(rec Run, from Loaded) Run {
 		t := &rec.Tasks[i]
 		if row, ok := rows[t.ID]; ok {
 			t.State, t.Reason, t.Attempts, t.ImportedFrom = row.State, row.Reason, row.Attempts, row.ImportedFrom
-			if row.ResultAttempt > 0 && (t.Result == nil || t.Result.Attempt != row.ResultAttempt) {
+			switch {
+			case row.ResultAttempt == 0:
+				// Withdrawn, or never made: the snapshot's result goes.
+				t.Result = nil
+			case t.Result == nil || t.Result.Attempt != row.ResultAttempt:
 				res := decodeResult(byN(from.Attempts, t.ID, row.ResultAttempt).Result)
 				t.Result = &ResultState{Attempt: row.ResultAttempt, Commit: row.ResultCommit, Summary: res.Summary, Issues: res.Issues, Verdict: row.Verdict, Findings: res.Findings, At: byN(from.Attempts, t.ID, row.ResultAttempt).ClosedAt}
 			}

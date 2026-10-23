@@ -171,7 +171,7 @@ func (s *Server) taskError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "too_many_commands", err.Error())
 	case errors.Is(err, crew.ErrInboxFull):
 		writeError(w, http.StatusTooManyRequests, "inbox_full", err.Error())
-	case errors.Is(err, crew.ErrBadMessage), errors.Is(err, crew.ErrBadBlocker), errors.Is(err, crew.ErrBadCheckpoint):
+	case errors.Is(err, crew.ErrBadMessage), errors.Is(err, crew.ErrBadBlocker), errors.Is(err, crew.ErrBadCheckpoint), errors.Is(err, crew.ErrReviewNoCheck):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, crew.ErrMemberNotFound):
 		writeError(w, http.StatusNotFound, "no_member", err.Error())

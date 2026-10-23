@@ -63,8 +63,9 @@ func TestAMessageIsTypedIntoTheRecipientOnceItHasItsTask(t *testing.T) {
 	_, p := fl.attemptSession(t, d)
 	want := "Message from lead (#1): the API is final: internal/api/users.go"
 	deadline := time.Now().Add(10 * time.Second)
+	var lines []string // typed drains what came since: gathered
 	for {
-		lines := typed(p)
+		lines = append(lines, typed(p)...)
 		if slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, want) }) {
 			if !strings.Contains(lines[0], "Conductor task") {
 				t.Fatalf("the message came before the task line: %q", lines)
@@ -174,11 +175,13 @@ func TestAContinuationCarriesTheMessages(t *testing.T) {
 	d := waitAttempt(t, e2, next.ID, "docs", ledger.AttemptRunning)
 	_, p := fl2.attemptSession(t, d)
 	deadline := time.Now().Add(10 * time.Second)
-	for !slices.ContainsFunc(typed(p), func(l string) bool { return strings.Contains(l, "Message from lead (#1): carried over") }) {
+	var lines []string
+	for !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "Message from lead (#1): carried over") }) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the carried message was not typed: %q", typed(p))
+			t.Fatalf("the carried message was not typed: %q", lines)
 		}
 		time.Sleep(20 * time.Millisecond)
+		lines = append(lines, typed(p)...)
 	}
 	waitMessages(t, e2, next.ID, "delivered", func(ms []Message) bool { return len(ms) == 1 && ms[0].DeliveredAt != nil })
 	stopRun(t, e2, next.ID)

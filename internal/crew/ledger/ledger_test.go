@@ -823,7 +823,7 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
-	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "DROP TABLE messages"} {
+	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "ALTER TABLE tasks DROP COLUMN repair", "ALTER TABLE tasks DROP COLUMN extra", "DROP TABLE messages"} {
 		if _, err := l.db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
@@ -845,7 +845,7 @@ func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 		if err := tx.PutRun(RunRow{ID: "team-00000001", CrewID: "team", State: RunRunning, CreatedAt: tx.Now()}); err != nil {
 			return err
 		}
-		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
+		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning, Repair: `{"review":"review"}`, Extra: 2}); err != nil {
 			return err
 		}
 		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now(), Result: `{"summary":"built"}`, Checkpoint: `{"done":"half"}`}); err != nil {
@@ -862,15 +862,18 @@ func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 	if err != nil || len(attempts) != 1 || attempts[0].Result != `{"summary":"built"}` || attempts[0].Checkpoint != `{"done":"half"}` {
 		t.Fatalf("attempts after the migration: %+v %v", attempts, err)
 	}
-	if msgs, err := again.Messages(ctx, "team-00000001"); err != nil || len(msgs) != 1 || msgs[0].From != "lead" || msgs[0].To != "docs" || msgs[0].Text != "hello" || !msgs[0].DeliveredAt.IsZero() {
+	if msgs, err := again.Messages(ctx, "team-00000001"); err != nil || len(msgs) != 1 || msgs[0].From != "lead" || msgs[0].To != "docs" || msgs[0].Text != "hello" || !msgs[0].DeliveredAt.IsZero() || !msgs[0].TypingAt.IsZero() {
 		t.Fatalf("messages after the migration: %+v %v", msgs, err)
 	}
+	if tasks, err := again.Tasks(ctx, "team-00000001"); err != nil || len(tasks) != 1 || tasks[0].Repair != `{"review":"review"}` || tasks[0].Extra != 2 {
+		t.Fatalf("tasks after the migration: %+v %v", tasks, err)
+	}
 	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
-		return tx.PutMessage(MessageRow{RunID: "team-00000001", Seq: 1, From: "lead", To: "docs", Text: "hello", CreatedAt: tx.Now(), DeliveredAt: tx.Now()})
+		return tx.PutMessage(MessageRow{RunID: "team-00000001", Seq: 1, From: "lead", To: "docs", Text: "hello", CreatedAt: tx.Now(), TypingAt: tx.Now(), DeliveredAt: tx.Now()})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if msgs, _ := again.Messages(ctx, "team-00000001"); msgs[0].DeliveredAt.IsZero() {
+	if msgs, _ := again.Messages(ctx, "team-00000001"); msgs[0].DeliveredAt.IsZero() || msgs[0].TypingAt.IsZero() {
 		t.Fatalf("the delivery was not kept: %+v", msgs)
 	}
 	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {

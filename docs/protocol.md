@@ -2199,11 +2199,17 @@ revision after it. The same id sent again with the same content answers with
 the same receipt and `repeat: true`, never a second change, also for a
 failed one; the same id with other content is `409 command_conflict`.
 `expectedRevision`, when given, refuses the command with `409 stale_revision`
-once the run's `managed.revision` has moved on, and nothing is kept. A run
-keeps 4,096 commands (`409 too_many_commands`); `GET
-/api/runs/{run}/commands/{command}` reads a receipt without acting; a legacy
-run takes no command (`409 task_state`). The engine's own `PauseRun`,
-`CancelTask` and `RetryTask` make the same changes without a receipt.
+once the run's `managed.revision` has moved on: kept as a failed receipt
+(`refusal: stale_revision`), which the same id answers with again. A command
+is taken in a transaction of its own before it acts (its row `accepted`;
+the same id again, other content and the run's cap are answered there, and
+nothing changes), then acted on and settled in a second (`done` or
+`failed`); a command taken whose settlement the server's end cut off is
+`uncertain` after the recovery, and read as such. A run keeps 4,096
+commands (`409 too_many_commands`); `GET /api/runs/{run}/commands/{command}`
+reads a receipt without acting; a legacy run takes no command (`409
+task_state`). The engine's own `PauseRun`, `CancelTask` and `RetryTask` make
+the same changes without a receipt.
 
 **After the server's end, a continuation.** When the server starts and
 takes the ledger's owner lock, it concludes what the last server left open
@@ -2231,7 +2237,11 @@ not counted against the task); a task whose last attempt's launch is
 uncertain is `failed` with why until a retry, since nothing is retried on
 its own; the rest is ready or blocked as its needs say, and the attempts
 spent before count against every task and number the next (`crew/<new
-run>/<task>.<n>` continues the numbering). The run log says what was kept,
+run>/<task>.<n>` continues the numbering). A repair a review asked for and
+the attempts a task was allowed past the bound are the task's row's
+(`repair`, `extra`) and carry over; a result imported before keeps its
+source (`importedFrom` names the attempt that made it, in whichever run)
+and its summary, issues and findings through every later continuation. The run log says what was kept,
 verified again and left for a decision; the continuation is made once
 (`409 already_resumed` names it), and a run still going is not continued
 (`409 run_running`).
@@ -2241,8 +2251,12 @@ exchange messages (`POST /api/sessions/{id}/messages`, the MCP tool
 `message_send`, `conductor task send`): a message is kept in the ledger
 (`message.sent`) and typed into the recipient's session as one line after
 its task line, through the handoff queue, once the recipient's attempt has
-one (`message.delivered`; a member not started yet gets it then, a
-continuation carries what was not delivered); the recipient reads its
+one: the intent is recorded before the line (`message.typing`), the
+delivery once the line is entered (`message.delivered`); a member not
+started yet gets it then; a continuation carries every message under its
+own rows, and one set out to be typed and not entered before the server
+ended is not typed again (`uncertain` in the inbox, said in the run log),
+since whether it reached the terminal cannot be told; the recipient reads its
 inbox (`GET …/inbox`, `inbox_read`, `conductor task inbox`) and
 acknowledges what it has read (`POST …/inbox/ack`, `inbox_ack`,
 `conductor task ack`; `message.acked`), and keeps at most 50 messages not
@@ -2255,10 +2269,14 @@ its result, clears it (`task.unblocked`). An attempt saves a checkpoint
 (`POST …/task/checkpoint`, `task_checkpoint`, `conductor task
 checkpoint`): what is done, what remains and notes, tied to the commit its
 worktree is at, on the attempt (`attempt.checkpoint`) and in the ledger
-(`task.checkpoint`); the task's next attempt reads it in its task file
+(`task.checkpoint`; at most 16 KiB as kept, refused before anything
+changes otherwise); the task's next attempt reads it in its task file
 ("Where the last attempt got to"), and an attempt after one that ended
 without a result, or a continuation's first attempt at the task, starts at
-the checkpoint's commit, so the work is kept. The ledger's schema is
+the checkpoint's commit, so the work is kept. A review saves no checkpoint
+(`400`): it commits nothing, and its attempt always starts at its
+candidate; a task whose input is withdrawn by a review loses its
+checkpoint with it, since the next attempt starts from the new result. The ledger's schema is
 version 3 for the checkpoint column and the messages table; a version 2
 database is brought to it as it opens.
 

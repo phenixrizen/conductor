@@ -43,7 +43,7 @@ var migrations = map[int][]string{
 	1: {"ALTER TABLE attempts ADD COLUMN result TEXT NOT NULL DEFAULT ''"},
 	// Version 3 (#334, rows 9 and 10): an attempt's checkpoint, and the
 	// messages the members of a run send one another.
-	2: {"ALTER TABLE attempts ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''", messagesTable},
+	2: {"ALTER TABLE attempts ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''", "ALTER TABLE tasks ADD COLUMN repair TEXT NOT NULL DEFAULT ''", "ALTER TABLE tasks ADD COLUMN extra INTEGER NOT NULL DEFAULT 0", messagesTable},
 }
 
 // messagesTable is the messages table (#334, row 9): one row per message
@@ -57,6 +57,7 @@ const messagesTable = `CREATE TABLE messages (
 		to_member TEXT NOT NULL,
 		text TEXT NOT NULL,
 		created_at TEXT NOT NULL,
+		typing_at TEXT NOT NULL DEFAULT '',
 		delivered_at TEXT NOT NULL DEFAULT '',
 		acked_at TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, seq)
@@ -483,6 +484,8 @@ var schema = []string{
 		result_commit TEXT NOT NULL DEFAULT '',
 		verdict TEXT NOT NULL DEFAULT '',
 		imported_from TEXT NOT NULL DEFAULT '',
+		repair TEXT NOT NULL DEFAULT '',
+		extra INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (run_id, id)
 	)`,
 	`CREATE TABLE attempts (
