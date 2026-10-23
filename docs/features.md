@@ -2669,6 +2669,25 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **A bounded runner for commands Conductor runs outside a PTY (#338,
+  2026-10-22).** `internal/proc.Run(ctx, Spec)`: an argv array, never a
+  shell line; an absolute directory; a required timeout (at most two hours)
+  past which the process group is killed, as the probes kill theirs; the
+  environment a session gets (`pty.BuildEnv`: the allowlist and the
+  caller's `Allow`, `CONDUCTOR_*` and the blocked loaders out, a
+  `CONDUCTOR_*` or loader name in `Env` refused before the start), then
+  `TERM=dumb` and `NO_COLOR=1`; stdin from nothing; stdout and stderr
+  together, the first 64 KiB and the last 16 KiB kept in memory with the
+  total and `Truncated`, an optional log of the first 1 MiB, a dropped
+  line and the last 256 KiB; `Started` called with the pid, the group and
+  the start time as soon as the process exists; the result's exit code or
+  signal, `TimedOut`, `Canceled`, and `Killed` when something in the group
+  was still alive after the wait (`WaitDelay` 2 s) and was killed then.
+  No callers yet: the managed-run checks (#334, row 5) are the first. Go,
+  race: exits and a signal, a bad spec refused, the group killed at the
+  timeout, a cancel told from a timeout, a leftover killed after exit 0 and
+  exit 3, head and tail and the log over 1 MiB, the environment stripped,
+  `Started`'s pid.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's
