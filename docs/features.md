@@ -2669,6 +2669,37 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The managed runs' ledger in SQLite (#340, 2026-10-22).** The owner's
+  choice for the harness (#334): `internal/crew/ledger`, the one importer of
+  `modernc.org/sqlite` (SQLite translated to Go, so `CGO_ENABLED=0` stays),
+  one database `runs/managed.sqlite` in the data directory, 0600, opened
+  with WAL, a full sync (on darwin a full fsync), foreign keys and a busy
+  timeout, one connection: a transition is one `BEGIN IMMEDIATE … COMMIT`
+  that puts the rows, records the run's next event and answers a command,
+  then bumps the run's revision. Schema v1: runs, tasks, attempts, checks
+  (a log of at most 1 MiB with its SHA-256), commands (the receipts, keyed
+  by run, actor and id: a repeat with the same content gets the same
+  receipt, other content `command_conflict`, 4,096 per run), events (a
+  gapless `seq`). `Recover` at start turns what the last owner left open
+  into interrupted or uncertain and writes one `recovered` event per run,
+  once. `Prune` deletes a closed run's rows when nothing cites it. The
+  owner lock `runs/owner.lock` (flock, tried once at open and then in the
+  background for 10 s, so a server replacing one still shutting down
+  serves at once and takes the lock as it is let go): held by another
+  server, unsupported by the filesystem, a database that fails its check or
+  one a newer Conductor wrote all open the ledger read-only, logged, the
+  legacy runs untouched. `Run.Managed` (omitempty) marks a managed run's
+  record with its revision: the records never count or prune it, never
+  mark it interrupted, never write an older revision over a newer one;
+  `Records.Delete` is the owner's. `GET /api/runs/{run}/commands/{command}`
+  reads a receipt without acting. Nothing writes to the ledger yet: a crew
+  with tasks (row 4) and its dispatch (row 5) come next; the 503 for a
+  managed launch and the snapshot rebuilt from the database come with
+  them. Go, race: the ledger's schema, a newer schema and a damaged
+  database read-only, the owner lock across two processes, a transition all
+  or nothing with a commit made to fail, 50 goroutines' events gapless,
+  receipts, recovery concluding once, pruning and what is not prunable,
+  the bounds; the records' managed rules; the receipt route.
 - **A run's record is never pruned while the engine holds the run (#335,
   2026-10-22).** `Records.Save` journals a run from its launch on and, on
   every save, prunes the oldest records past 500 by start time without
@@ -2681,6 +2712,42 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   forget makes (`journalForgotten`) prunes under it. Go, race:
   `TestAHeldRunsRecordSurvivesThePrune`, with that save run inline under
   the lock.
+- **A bounded runner for commands Conductor runs outside a PTY (#338,
+  2026-10-22).** `internal/proc.Run(ctx, Spec)`: an argv array, never a
+  shell line; an absolute directory; a required timeout (at most two hours)
+  past which the process group is killed, as the probes kill theirs; the
+  environment a session gets (`pty.BuildEnv`: the allowlist and the
+  caller's `Allow`, `CONDUCTOR_*` and the blocked loaders out, a
+  `CONDUCTOR_*` or loader name in `Env` refused before the start), then
+  `TERM=dumb` and `NO_COLOR=1`; stdin from nothing; stdout and stderr
+  together through a pipe of Conductor's own, the first 64 KiB and the
+  last 16 KiB kept in memory with the total and `Truncated`, an optional
+  log of the first 1 MiB, a dropped line and the last 256 KiB, written on
+  a goroutine of its own so a writer that blocks holds nothing up (the log
+  is cut, and `LogErr` says so); `Started` called with the pid, the group
+  and the start time once the process exists and before any output is
+  read; the result's exit code or signal, `TimedOut` (the run's own
+  deadline) told from `Canceled` (the caller's context, however it ended),
+  and `Killed` when a child the process left behind still held its pipe
+  when the process exited. The group is killed when its leader has exited
+  and before it is reaped (a `waitid` without reaping on Linux, a kqueue
+  on macOS say so; a process gone before the watch was set up counts as
+  exited; a watch that cannot be set up, or fails while the process runs,
+  ends the command at once rather than invent an exit, named in `Err`):
+  the exited process keeps its pid, and so the group's id,
+  until it is reaped, so the group is still its own and no other's, and
+  what the process left behind goes with it, its output redirected or not.
+  No signal to the group is sent once the reaping has begun, and a cancel
+  in flight finishes before it; the process itself is killed with the
+  group, so a command that joined another group is still ended at the
+  timeout. A child that left the group (setsid) and kept the output is
+  given 2 s, then left alone, named in `Err`. `golang.org/x/sys` becomes a
+  direct dependency for the two notifications (it was indirect already).
+  No callers yet: the managed-run checks (#334, row 5) are the first. Go,
+  race: exits and a signal, a bad spec refused, the group killed at the
+  timeout, a cancel told from a timeout, a leftover killed after exit 0 and
+  exit 3, head and tail and the log over 1 MiB, the environment stripped,
+  `Started`'s pid.
 - **A crew can define tasks: who does what, after which results, checked
   how (#342, 2026-10-22).** Row 4 of the agent harness (#334,
   `docs/plans/agent-harness-order.md`). A saved crew takes `tasks`, each

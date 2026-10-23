@@ -280,8 +280,10 @@ registers the `conductor:` scheme: an invite opens its own join page with
 | `internal/store` | atomic JSON documents in the data directory, and plain files such as the generated workbench token |
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
+| `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, or the database is damaged or newer |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
+| `internal/proc` | a bounded run of one command outside a PTY: argv, directory, timeout, the output's first and last bytes, the process group killed when the run ends; the managed-run checks' runner (#334) |
 | `internal/session` | ring buffer, fan-out hub, `Local` session (submissions, attention, trust watcher, the agent's own session), registry, bounded file reads |
 | `internal/share` | share tokens (random, hashed at rest) and revocation |
 | `internal/signal` | hosted sessions: host connections, viewer brokering, relay |
@@ -380,3 +382,8 @@ can be resumed while it is listed, a crew member while its run is kept. Hosted
 sessions survive a brief server outage
 through the host's reconnect-and-resume secret only while the server process is
 alive.
+
+A managed run (a crew with tasks, #334) has its truth in the ledger,
+`runs/managed.sqlite`, beside the records: its record is a cache of it with a
+revision, never counted among the 500, never pruned by the records nor marked
+interrupted when they open, and never written back to an older revision.

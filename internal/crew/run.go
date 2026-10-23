@@ -192,9 +192,20 @@ type Run struct {
 	// prompt typed, handoff queued, delivered or dropped, stopped, and the
 	// rest docs/protocol.md lists. At most maxRunLog entries.
 	Log []session.ActivityEntry `json:"log"`
+	// Managed is set for a managed run (a crew with tasks): its revision in
+	// the ledger, which every transition bumps, so a record is known to be
+	// behind the ledger or level with it. Absent for a legacy run, whose
+	// JSON is unchanged.
+	Managed *Managed `json:"managed,omitempty"`
 	// Chat is the run's chat, oldest first, at most session.MaxRunChat
 	// messages: on a run read alone (Get) and in its record, not in a list.
 	Chat []proto.ChatMessage `json:"chat,omitempty"`
+}
+
+// Managed is what a managed run's record carries beside the run: the
+// ledger's revision of it (docs/plans/agent-harness-order.md, decision 7).
+type Managed struct {
+	Revision int64 `json:"revision"`
 }
 
 // managed reports whether the run is a managed one, from its members: a
