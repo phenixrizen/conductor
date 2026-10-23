@@ -412,6 +412,10 @@ type agent struct {
 	// out (pingOn).
 	beforeAnswer atomic.Pointer[func()]
 	beforePing   atomic.Pointer[func()]
+	// pinging says keepHearing found a link held at its last tick, so it
+	// pings: false once a tick found none, after which it reserves no ping
+	// until a link is held again (tests wait on it before a lapse).
+	pinging atomic.Bool
 }
 
 // inputDeadline is when keystrokes arriving now must be written by (a

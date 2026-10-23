@@ -129,13 +129,11 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		// The pings under way end (keepHearing pings no more with no link
-		// held; one noted just as the link went completes within a round
-		// trip, and a tick's worth of quiet sees the last of them out), so
-		// none completes after the lapse and vouches again; then the spell
-		// passes: the last answered ping ages past the bound.
-		untilPingsDone(t, a.live.Load())
-		time.Sleep(firstPing)
+		// keepHearing has found no link held (a tick after the link went:
+		// it reserves no ping from then on), and the pings under way have
+		// their pongs, so none completes after the lapse and vouches again;
+		// then the spell passes: the last answered ping ages past the bound.
+		untilNotPinging(t, a)
 		untilPingsDone(t, a.live.Load())
 		a.live.Load().lapse()
 		untilVouches(t, a, false)
@@ -149,6 +147,19 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 }
 
 var firstCases = []string{"start", "reconnect", "idle"}
+
+// untilNotPinging waits until keepHearing has found no link held at a
+// tick: it pings no more until one is.
+func untilNotPinging(t *testing.T, a *agent) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for a.pinging.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the host still pings with no link held")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 // untilPingsDone waits until no ping of l waits for its pong.
 func untilPingsDone(t *testing.T, l *connLive) {
