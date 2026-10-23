@@ -223,6 +223,11 @@ type Engine struct {
 	// It is read without mu, so that the activity and the changes of the
 	// sessions no run has cost the engine no lock; it is written under mu.
 	bySession sync.Map
+	// held holds the ID of each run the engine keeps, from add to forget,
+	// written under mu and read without it (holds): the records ask whether
+	// a run is held as they prune, on the goroutine that saves a record,
+	// which may be the one forgetting a run under mu.
+	held sync.Map
 
 	mu    sync.Mutex
 	runs  map[string]*run
@@ -751,6 +756,7 @@ func (e *Engine) add(c Crew, prefix, label string) *run {
 	}
 	e.evict()
 	e.runs[r.id] = r
+	e.held.Store(r.id, struct{}{})
 	e.order = append(e.order, r)
 	if label != "" {
 		r.note(session.ActivityStatus, "launched %s as %q: %d members, %d starting now", c.Name, label, len(c.Members), immediate)
@@ -1478,6 +1484,7 @@ func (e *Engine) journalForgotten(r *run) {
 // caller holds e.mu.
 func (e *Engine) forget(r *run) {
 	delete(e.runs, r.id)
+	e.held.Delete(r.id)
 	e.order = slices.DeleteFunc(e.order, func(o *run) bool { return o == r })
 	for _, m := range r.members {
 		if m.state.SessionID != "" {
@@ -1488,6 +1495,15 @@ func (e *Engine) forget(r *run) {
 	if e.OnForget != nil {
 		e.OnForget(r.snapshot(false, false))
 	}
+}
+
+// holds reports whether the engine holds the run with the given ID, without
+// its lock (held): the records ask as they prune (Records.prune), on the
+// goroutine that saves a record, which may be the one forgetting a run under
+// the engine's lock (journalForgotten), so the answer must not wait for it.
+func (e *Engine) holds(runID string) bool {
+	_, ok := e.held.Load(runID)
+	return ok
 }
 
 // IfKept runs f while the engine keeps the run with the given ID, under the

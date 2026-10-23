@@ -350,3 +350,63 @@ func TestARecordsOpenClearsAMarkNamingNoRecord(t *testing.T) {
 		t.Fatalf("the source after the open: %v %q", ok, got.ResumedBy)
 	}
 }
+
+// A record the engine still holds is never pruned, nor counted among the
+// 500: a run's record follows it from its launch on, so a long run's would
+// otherwise be the oldest and go, written again at the run's next change,
+// and a server ending in between would have no record of it (#335). The
+// saves run inline here, so the one a forget makes (journalForgotten) prunes
+// under the engine's lock: the held check must not take that lock.
+func TestAHeldRunsRecordSurvivesThePrune(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	rs, dir := newRecords(t)
+	e.RecordEnds(rs, func(runID string, err error) { t.Errorf("%s: %v", runID, err) }, func(f func()) { f() })
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "Plan it.")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, e, run.ID, "lead", MemberRunning, 5*time.Second)
+	// Its record as the journal writes it while it runs, older than every
+	// other, then 501 records of runs that ended.
+	base := time.Date(2026, 10, 3, 10, 0, 0, 0, time.UTC)
+	held := Run{ID: run.ID, CrewID: run.CrewID, Name: run.Name, StartedAt: base.Add(-time.Hour), State: RunRunning, Members: []MemberState{}, Log: []session.ActivityEntry{}}
+	if err := rs.Save(held); err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxRecords + 1 {
+		r := Run{ID: fmt.Sprintf("team-%08x", i), CrewID: "team", Name: "team", StartedAt: base.Add(time.Duration(i) * time.Minute), State: RunFinished, Members: []MemberState{}, Log: []session.ActivityEntry{}}
+		if err := rs.Save(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != maxRecords+1 {
+		t.Fatalf("%d records kept, not the held run's and %d", len(entries), maxRecords)
+	}
+	if _, ok, _ := rs.Get(run.ID); !ok {
+		t.Fatal("the held run's record, the oldest, was pruned")
+	}
+	if _, ok, _ := rs.Get("team-00000000"); ok {
+		t.Fatal("the oldest ended run's record was kept")
+	}
+	if _, ok, _ := rs.Get("team-00000001"); !ok {
+		t.Fatal("the second oldest ended run's record was pruned")
+	}
+
+	// Forgotten (its record written once more, inline, under the engine's
+	// lock), the run's record counts: saved again as the oldest, it goes.
+	stopRun(t, e, run.ID)
+	e.ForgetForTest(run.ID)
+	if _, ok := e.Get(run.ID); ok {
+		t.Fatal("still held")
+	}
+	if err := rs.Save(held); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := rs.Get(run.ID); ok {
+		t.Fatal("the forgotten run's record, the oldest, was kept")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != maxRecords {
+		t.Fatalf("%d records kept", len(entries))
+	}
+}
