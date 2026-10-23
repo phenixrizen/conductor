@@ -16,12 +16,22 @@ import (
 // data directory, so the Crews page can chart a crew's last runs after the
 // engine, or the server, has forgotten them: the run as GET /api/runs/{run}
 // answers it (members, their times, states, diffs and agent sessions, the
-// log), never a terminal's contents. At most maxRecords are kept; a save
-// past that drops the oldest by start time.
+// log), never a terminal's contents. At most maxRecords records of runs the
+// engine no longer holds are kept; a save past that drops the oldest of
+// those by start time, never a held run's: its record follows it from its
+// launch on (Engine.Journal), and would otherwise be the oldest, dropped and
+// written again at the run's next change, with no record of the run for a
+// server that ended in between.
 type Records struct {
 	st     *store.Store
 	mu     sync.Mutex
 	closed bool
+	// held reports whether the engine still holds the run with the given ID
+	// (RecordEnds sets it): prune leaves its record alone and never counts
+	// it. It is called under mu on the goroutine that saves, which may be the
+	// one forgetting a run under the engine's lock (journalForgotten), so it
+	// must not take that lock.
+	held func(runID string) bool
 }
 
 // Close stops the records: a save after it is dropped (the server is
@@ -132,7 +142,9 @@ func (rs *Records) Save(r Run) error {
 	return rs.prune()
 }
 
-// prune drops the oldest records past maxRecords. The caller holds rs.mu.
+// prune drops the oldest records past maxRecords among those of runs the
+// engine no longer holds (held); a held run's record is left alone and not
+// counted. The caller holds rs.mu.
 func (rs *Records) prune() error {
 	entries, err := rs.st.List()
 	if err != nil {
@@ -144,6 +156,12 @@ func (rs *Records) prune() error {
 	all, err := rs.load(entries)
 	if err != nil {
 		return err
+	}
+	if rs.held != nil {
+		all = slices.DeleteFunc(all, func(f recordFile) bool { return rs.held(strings.TrimSuffix(f.name, ".json")) })
+		if len(all) <= maxRecords {
+			return nil
+		}
 	}
 	// Oldest first by start time; a record that cannot be read goes first.
 	slices.SortFunc(all, func(a, b recordFile) int {
@@ -280,6 +298,9 @@ func (e *Engine) RecordEnds(rs *Records, warn func(runID string, err error), run
 	if run == nil {
 		run = func(f func()) { go f() }
 	}
+	rs.mu.Lock()
+	rs.held = e.holds
+	rs.mu.Unlock()
 	type pending struct {
 		saved    uint64 // the newest end written
 		inflight int    // ends not yet saved or dropped; the entry goes at zero
