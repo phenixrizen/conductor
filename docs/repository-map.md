@@ -9,6 +9,7 @@
 | `internal/store` | atomic JSON documents in the data directory (`dataDir`) |
 | `internal/agents` | per-agent hook adapters: assets under `dataDir/hooks`, launch injection, on-demand install into the agent's own config, the Conductor skill and where each agent reads it (`SkillPath`, installed at launch), hook payload mappers |
 | `internal/crew` | crews (saved teams of agents) and their runs: model, persistence in `crews/<id>.json`, run engine |
+| `internal/crew/ledger` | the managed runs' ledger (#334): one SQLite database per data directory, `runs/managed.sqlite`, the one importer of `modernc.org/sqlite`; a run's transitions as transactions, its events in sequence, its commands' receipts, its checks' evidence; the owner lock `runs/owner.lock`; recovery at start |
 | `internal/gitcli`, `internal/gitrepo` | git for the Files tab: the working tree's status and a file at a revision through the git binary (argv, the C locale); the commit log and a commit's files through go-git (no binary needed; a crew's linked worktree opens through its common directory) |
 | `internal/nvim` | the editor's Neovim: one `nvim --embed` per open file on the machine that runs the session, driven over msgpack-rpc (the official Go client); the buffer's changes, the cursor, the mode, the command line and the messages to a handler, keys in; `internal/session/nvim.go` puts it on the terminal's connection under the `fileEdit` policy |
 | `internal/proto` | binary framing and JSON messages |

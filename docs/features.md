@@ -2669,6 +2669,37 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **The managed runs' ledger in SQLite (#340, 2026-10-22).** The owner's
+  choice for the harness (#334): `internal/crew/ledger`, the one importer of
+  `modernc.org/sqlite` (SQLite translated to Go, so `CGO_ENABLED=0` stays),
+  one database `runs/managed.sqlite` in the data directory, 0600, opened
+  with WAL, a full sync (on darwin a full fsync), foreign keys and a busy
+  timeout, one connection: a transition is one `BEGIN IMMEDIATE … COMMIT`
+  that puts the rows, records the run's next event and answers a command,
+  then bumps the run's revision. Schema v1: runs, tasks, attempts, checks
+  (a log of at most 1 MiB with its SHA-256), commands (the receipts, keyed
+  by run, actor and id: a repeat with the same content gets the same
+  receipt, other content `command_conflict`, 4,096 per run), events (a
+  gapless `seq`). `Recover` at start turns what the last owner left open
+  into interrupted or uncertain and writes one `recovered` event per run,
+  once. `Prune` deletes a closed run's rows when nothing cites it. The
+  owner lock `runs/owner.lock` (flock, tried once at open and then in the
+  background for 10 s, so a server replacing one still shutting down
+  serves at once and takes the lock as it is let go): held by another
+  server, unsupported by the filesystem, a database that fails its check or
+  one a newer Conductor wrote all open the ledger read-only, logged, the
+  legacy runs untouched. `Run.Managed` (omitempty) marks a managed run's
+  record with its revision: the records never count or prune it, never
+  mark it interrupted, never write an older revision over a newer one;
+  `Records.Delete` is the owner's. `GET /api/runs/{run}/commands/{command}`
+  reads a receipt without acting. Nothing writes to the ledger yet: a crew
+  with tasks (row 4) and its dispatch (row 5) come next; the 503 for a
+  managed launch and the snapshot rebuilt from the database come with
+  them. Go, race: the ledger's schema, a newer schema and a damaged
+  database read-only, the owner lock across two processes, a transition all
+  or nothing with a commit made to fail, 50 goroutines' events gapless,
+  receipts, recovery concluding once, pruning and what is not prunable,
+  the bounds; the records' managed rules; the receipt route.
 - **A run's record is never pruned while the engine holds the run (#335,
   2026-10-22).** `Records.Save` journals a run from its launch on and, on
   every save, prunes the oldest records past 500 by start time without

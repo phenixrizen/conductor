@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -408,5 +409,158 @@ func TestAHeldRunsRecordSurvivesThePrune(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != maxRecords {
 		t.Fatalf("%d records kept", len(entries))
+	}
+}
+
+// A managed run's record is the ledger's cache: never counted among the
+// 500 nor pruned by the records, never marked interrupted when the records
+// open (the ledger concludes what became of it), never written back to an
+// older revision, and deleted only when asked (Delete).
+func TestAManagedRecordIsTheLedgersToKeep(t *testing.T) {
+	rs, dir := newRecords(t)
+	base := time.Date(2026, 10, 3, 10, 0, 0, 0, time.UTC)
+	managed := Run{ID: "team-0000aaaa", CrewID: "team", Name: "team", StartedAt: base.Add(-time.Hour), State: RunRunning, Members: []MemberState{}, Log: []session.ActivityEntry{}, Managed: &Managed{Revision: 7}}
+	if err := rs.Save(managed); err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxRecords + 1 {
+		r := Run{ID: fmt.Sprintf("team-%08x", i), CrewID: "team", Name: "team", StartedAt: base.Add(time.Duration(i) * time.Minute), State: RunFinished, Members: []MemberState{}, Log: []session.ActivityEntry{}}
+		if err := rs.Save(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != maxRecords+1 {
+		t.Fatalf("%d records kept, not the managed run's and %d", len(entries), maxRecords)
+	}
+	if _, ok, _ := rs.Get("team-0000aaaa"); !ok {
+		t.Fatal("the managed run's record, the oldest, was pruned")
+	}
+	if _, ok, _ := rs.Get("team-00000000"); ok {
+		t.Fatal("the oldest ended run's record was kept")
+	}
+	// An older revision never lands over a newer one; a newer one does.
+	older := managed
+	older.Managed = &Managed{Revision: 6}
+	older.Name = "older"
+	if err := rs.Save(older); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed.Revision != 7 || r.Name != "team" {
+		t.Fatalf("an older revision landed: %+v", r.Managed)
+	}
+	newer := managed
+	newer.Managed = &Managed{Revision: 8}
+	newer.Name = "newer"
+	if err := rs.Save(newer); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed.Revision != 8 || r.Name != "newer" {
+		t.Fatalf("a newer revision did not land: %+v", r.Managed)
+	}
+	// A legacy snapshot of the same run (a journal save queued before the
+	// run was known managed) never lands over it either.
+	unversioned := managed
+	unversioned.Managed = nil
+	unversioned.Name = "legacy"
+	if err := rs.Save(unversioned); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed == nil || r.Managed.Revision != 8 || r.Name != "newer" {
+		t.Fatalf("an unversioned snapshot landed: %+v", r)
+	}
+	// A record is written to fit the listing's bound: a snapshot with a
+	// chat and a log past it is trimmed, newest kept, and stays a managed
+	// record an older or unversioned snapshot cannot replace.
+	big := managed
+	big.Managed = &Managed{Revision: 9}
+	big.Chat = []proto.ChatMessage{{ID: "old", Text: strings.Repeat("x", 3<<20)}, {ID: "new", Text: "kept"}}
+	big.Log = []session.ActivityEntry{{Type: session.ActivityStatus, Message: strings.Repeat("y", 5<<20)}}
+	if err := rs.Save(big); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "team-0000aaaa.json")); err != nil || fi.Size() > maxRecordSize {
+		t.Fatalf("the record was not trimmed to the bound: %v %v", fi, err)
+	}
+	if r, _, err := rs.Get("team-0000aaaa"); err != nil || r.Managed == nil || r.Managed.Revision != 9 || len(r.Chat) != 1 || r.Chat[0].ID != "new" || len(r.Log) != 0 {
+		t.Fatalf("the trimmed record: %v %+v", err, r)
+	}
+	if err := rs.Save(unversioned); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed == nil || r.Managed.Revision != 9 {
+		t.Fatalf("an unversioned snapshot replaced the trimmed record: %+v", r)
+	}
+	// A record over the bound on disk (an older Conductor's) is neither
+	// replaced by an older or unversioned snapshot nor pruned: Save reads
+	// it with a wider bound for its revision, and the prune keeps what it
+	// cannot read for size.
+	huge := managed
+	huge.Managed = &Managed{Revision: 10}
+	huge.Log = []session.ActivityEntry{{Type: session.ActivityStatus, Message: strings.Repeat("z", 5<<20)}}
+	b, err := store.Encode(huge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "team-0000aaaa.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(unversioned); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(managed); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "team-0000aaaa.json")); err != nil || fi.Size() < 5<<20 {
+		t.Fatalf("the oversized managed record was written over or pruned: %v %v", fi, err)
+	}
+	// One that cannot be read at all is not written over either.
+	if err := os.WriteFile(filepath.Join(dir, "team-0000aaaa.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(unversioned); err == nil {
+		t.Fatal("a record that cannot be read was written over")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "team-0000aaaa.json")); string(b) != "{not json" {
+		t.Fatalf("the unreadable record changed: %q", b)
+	}
+	if err := os.Remove(filepath.Join(dir, "team-0000aaaa.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(newer); err != nil {
+		t.Fatal(err)
+	}
+	// The records open: the managed run, still running, is left to the
+	// ledger; a legacy run still running is interrupted.
+	legacy := Run{ID: "team-0000bbbb", CrewID: "team", Name: "team", StartedAt: base.Add(24 * time.Hour), State: RunRunning, Members: []MemberState{{Name: "lead", Status: MemberRunning}}, Log: []session.ActivityEntry{}}
+	if err := rs.Save(legacy); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Dir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := NewRecords(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(again.Close)
+	if r, _, _ := again.Get("team-0000aaaa"); r.State != RunRunning || r.Managed == nil || r.Managed.Revision != 8 {
+		t.Fatalf("the managed run was touched: %+v", r)
+	}
+	if r, _, _ := again.Get("team-0000bbbb"); r.State != RunInterrupted {
+		t.Fatalf("the legacy run was not interrupted: %+v", r)
+	}
+	// Deleted when asked, and nothing when gone.
+	if err := again.Delete("team-0000aaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := again.Get("team-0000aaaa"); ok {
+		t.Fatal("still there after Delete")
+	}
+	if err := again.Delete("team-0000aaaa"); err != nil {
+		t.Fatalf("a second delete: %v", err)
+	}
+	if err := again.Delete("../x"); err == nil {
+		t.Fatal("a bad id was deleted")
 	}
 }

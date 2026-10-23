@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -21,7 +22,10 @@ import (
 // those by start time, never a held run's: its record follows it from its
 // launch on (Engine.Journal), and would otherwise be the oldest, dropped and
 // written again at the run's next change, with no record of the run for a
-// server that ended in between.
+// server that ended in between. A managed run's record (Run.Managed) is a
+// cache of the ledger: never counted, never dropped here, nor marked
+// interrupted by reconcile; the ledger's owner prunes it with the run's
+// rows, once the run is closed and nothing cites it.
 type Records struct {
 	st     *store.Store
 	mu     sync.Mutex
@@ -45,9 +49,16 @@ func (rs *Records) Close() {
 // maxRecords bounds the records kept.
 const maxRecords = 500
 
-// maxRecordSize bounds one record read back: a run with 200 log lines is
-// well under it.
-const maxRecordSize = 4 << 20
+// maxRecordSize bounds one record, written and read back: a run with 200
+// log lines is well under it, and Save trims the chat and the log of one
+// that is not, newest kept, so every record written is one the listing
+// reads. maxGuardSize bounds the read Save makes of the record it replaces,
+// for its revision: wider, so a record too large to list (an older
+// Conductor's) still keeps a managed snapshot from going back.
+const (
+	maxRecordSize = 4 << 20
+	maxGuardSize  = 64 << 20
+)
 
 // NewRecords opens runs/ under st and reconciles what it holds: the records
 // of the runs that were running when the server last stopped (journaled
@@ -91,6 +102,10 @@ func (rs *Records) reconcile() error {
 		if !f.ok {
 			continue
 		}
+		if f.run.Managed != nil {
+			// The ledger says what became of it (ledger.Recover).
+			continue
+		}
 		if f.run.StoppedAt == nil && (f.run.State == RunRunning || f.run.State == RunNeedsInput) {
 			r := &files[i].run
 			r.State, r.NeedsInput = RunInterrupted, 0
@@ -126,7 +141,10 @@ func (rs *Records) reconcile() error {
 
 // Save writes r's record, replacing an earlier one of the same run (a
 // stopped run that was reopened and ended again), and drops the oldest past
-// maxRecords.
+// maxRecords. A managed run's record never goes back: a save with a
+// revision behind the one on disk, or with no revision at all, is dropped,
+// so a late snapshot cannot undo what the ledger has
+// (docs/plans/agent-harness-order.md, decision 7).
 func (rs *Records) Save(r Run) error {
 	if !ValidRunID(r.ID) {
 		return fmt.Errorf("records: bad run id %q", r.ID)
@@ -136,15 +154,70 @@ func (rs *Records) Save(r Run) error {
 	if rs.closed {
 		return nil
 	}
+	// A managed record on disk takes only a newer managed snapshot: an
+	// older one, or a legacy snapshot of the same run (a journal save
+	// queued before the run was known managed), is dropped. A record that
+	// cannot be read is not written over: its revision is unknown.
+	var have Run
+	ok, err := rs.st.LoadLimit(r.ID+".json", &have, maxGuardSize)
+	if err != nil {
+		return fmt.Errorf("records: %s.json cannot be read, so it is not replaced: %w", r.ID, err)
+	}
+	if ok && have.Managed != nil && (r.Managed == nil || have.Managed.Revision > r.Managed.Revision) {
+		return nil
+	}
+	r, err = fit(r)
+	if err != nil {
+		return err
+	}
 	if err := rs.st.Save(r.ID+".json", r); err != nil {
 		return err
 	}
 	return rs.prune()
 }
 
+// fit trims r to a record the listing reads (maxRecordSize): the oldest
+// half of the chat and of the log go, again until it fits. A record that
+// does not fit without them is refused.
+func fit(r Run) (Run, error) {
+	for {
+		b, err := store.Encode(r)
+		if err != nil {
+			return r, err
+		}
+		if int64(len(b)) <= maxRecordSize {
+			return r, nil
+		}
+		if len(r.Chat) == 0 && len(r.Log) == 0 {
+			return r, fmt.Errorf("records: %s.json would be more than %d bytes", r.ID, maxRecordSize)
+		}
+		r.Chat = slices.Clone(r.Chat[(len(r.Chat)+1)/2:]) // one left goes too
+		r.Log = slices.Clone(r.Log[(len(r.Log)+1)/2:])
+	}
+}
+
+// Delete removes a run's record: the ledger's owner, once the run's rows
+// are gone (ledger.Prune). Nothing when there is none.
+func (rs *Records) Delete(runID string) error {
+	if !ValidRunID(runID) {
+		return fmt.Errorf("records: bad run id %q", runID)
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.closed {
+		return nil
+	}
+	err := rs.st.Delete(runID + ".json")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 // prune drops the oldest records past maxRecords among those of runs the
-// engine no longer holds (held); a held run's record is left alone and not
-// counted. The caller holds rs.mu.
+// engine no longer holds (held) and that are not managed; a held run's
+// record and a managed run's are left alone and not counted. The caller
+// holds rs.mu.
 func (rs *Records) prune() error {
 	entries, err := rs.st.List()
 	if err != nil {
@@ -157,11 +230,13 @@ func (rs *Records) prune() error {
 	if err != nil {
 		return err
 	}
-	if rs.held != nil {
-		all = slices.DeleteFunc(all, func(f recordFile) bool { return rs.held(strings.TrimSuffix(f.name, ".json")) })
-		if len(all) <= maxRecords {
-			return nil
-		}
+	// Kept: a managed record, one the engine holds, and one too large to
+	// read, whose content is unknown (an older Conductor's: Save trims).
+	all = slices.DeleteFunc(all, func(f recordFile) bool {
+		return (f.ok && f.run.Managed != nil) || f.large || (rs.held != nil && rs.held(strings.TrimSuffix(f.name, ".json")))
+	})
+	if len(all) <= maxRecords {
+		return nil
 	}
 	// Oldest first by start time; a record that cannot be read goes first.
 	slices.SortFunc(all, func(a, b recordFile) int {
@@ -182,9 +257,10 @@ func boolInt(b bool) int {
 }
 
 type recordFile struct {
-	name string
-	run  Run
-	ok   bool
+	name  string
+	run   Run
+	ok    bool
+	large bool // not read because it is over maxRecordSize
 }
 
 // load reads the records named, keeping one that cannot be read as not ok.
@@ -194,7 +270,7 @@ func (rs *Records) load(entries []store.Entry) ([]recordFile, error) {
 		var r Run
 		ok, err := rs.st.LoadLimit(en.Name, &r, maxRecordSize)
 		if err != nil || !ok || r.ID+".json" != en.Name {
-			out = append(out, recordFile{name: en.Name})
+			out = append(out, recordFile{name: en.Name, large: errors.Is(err, store.ErrTooLarge)})
 			continue
 		}
 		out = append(out, recordFile{name: en.Name, run: r, ok: true})
