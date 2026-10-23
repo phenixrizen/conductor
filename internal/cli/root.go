@@ -20,6 +20,8 @@ Usage:
   conductor notify [flags]     report "needs input" from inside a session
   conductor crew create|add|status|link
                                form a crew around this session, from inside it
+  conductor task context|result
+                               read this session's task in a managed run, and submit its result
   conductor up <crew-id> [--server URL] [--token T] [--open]
                                launch a saved crew as a run and print its URL
   conductor crews [--server URL] [--token T] [--ids]
@@ -62,6 +64,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runMcp(ctx, args[1:], stdin, stdout, stderr)
 	case "crew":
 		return runCrew(ctx, args[1:], stdin, stdout, stderr)
+	case "task":
+		return runTask(ctx, args[1:], stdin, stdout, stderr)
 	case "up":
 		return runUp(ctx, args[1:], stdout, stderr)
 	case "crews":

@@ -429,3 +429,54 @@ func TestGitMessagePrefersTheFatalLine(t *testing.T) {
 		}
 	}
 }
+
+func TestAddWorktreeAtStartsAtTheCommitGiven(t *testing.T) {
+	repo := newRepo(t)
+	first := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	writeFile(t, filepath.Join(repo, "later.txt"), "later\n")
+	commitAll(t, repo, "later")
+	path := filepath.Join(repo, ".conductor", "worktrees", "api-sweep-1a2b3c4d", "build.2")
+	if err := AddWorktreeAt(t.Context(), repo, path, "crew/api-sweep-1a2b3c4d/build.2", first); err != nil {
+		t.Fatal(err)
+	}
+	if head := strings.TrimSpace(runGit(t, path, "rev-parse", "HEAD")); head != first {
+		t.Fatalf("the worktree is at %s, not %s", head, first)
+	}
+	if _, err := os.Stat(filepath.Join(path, "later.txt")); err == nil {
+		t.Fatal("the worktree has the later commit's file")
+	}
+	if branch := strings.TrimSpace(runGit(t, path, "rev-parse", "--abbrev-ref", "HEAD")); branch != "crew/api-sweep-1a2b3c4d/build.2" {
+		t.Fatalf("the worktree is on %q", branch)
+	}
+	// Only a full commit id: a short one, a branch name or an option is
+	// refused before git runs.
+	for _, rev := range []string{first[:12], "HEAD", "main", "-x", ""} {
+		if err := AddWorktreeAt(t.Context(), repo, filepath.Join(repo, ".conductor", "worktrees", "other", "x"), "crew/other/x", rev); err == nil || !strings.Contains(err.Error(), "not a commit id") {
+			t.Fatalf("rev %q: %v", rev, err)
+		}
+	}
+}
+
+func TestAddDetachedWorktreeHasNoBranch(t *testing.T) {
+	repo := newRepo(t)
+	head := strings.TrimSpace(runGit(t, repo, "rev-parse", "HEAD"))
+	path := filepath.Join(repo, ".conductor", "worktrees", "api-sweep-1a2b3c4d", "build.1.check")
+	if err := AddDetachedWorktree(t.Context(), repo, path, head); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(runGit(t, path, "rev-parse", "HEAD")); got != head {
+		t.Fatalf("the checkout is at %s, not %s", got, head)
+	}
+	if ref := strings.TrimSpace(runGit(t, path, "rev-parse", "--abbrev-ref", "HEAD")); ref != "HEAD" {
+		t.Fatalf("the checkout is on a branch: %q", ref)
+	}
+	if b, err := os.ReadFile(filepath.Join(path, "README")); err != nil || string(b) != "one\ntwo\nthree\n" {
+		t.Fatalf("README in the checkout: %q %v", b, err)
+	}
+	if out := runGit(t, repo, "branch", "--list"); strings.Contains(out, "check") {
+		t.Fatalf("a branch was made: %s", out)
+	}
+	if err := AddDetachedWorktree(t.Context(), repo, filepath.Join(repo, ".conductor", "worktrees", "other"), "HEAD"); err == nil || !strings.Contains(err.Error(), "not a commit id") {
+		t.Fatalf("a revision that is not a commit id: %v", err)
+	}
+}

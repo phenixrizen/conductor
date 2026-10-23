@@ -346,12 +346,21 @@ func (e *Engine) noteEnd(runID string) {
 	e.mu.Lock()
 	cur, ok := e.runs[runID]
 	midStop := ok && cur.stopping && cur.stoppedAt == nil
+	// A managed run's end is told once the change that ended it is
+	// committed (transact): a session ending meanwhile does not tell it.
+	// The snapshot is taken under the same hold, so what is told is what
+	// was judged committed.
+	pending := ok && cur.managed && cur.endPending
+	var r Run
+	if ok && !midStop && !pending {
+		r = cur.snapshot(false, true)
+	}
 	e.mu.Unlock()
-	if !ok || midStop {
+	if !ok || midStop || pending {
 		return
 	}
-	r, ok := e.Get(runID)
-	if !ok || (r.State != RunStopped && r.State != RunFinished) {
+	e.refresh(&r)
+	if r.State != RunStopped && r.State != RunFinished {
 		return
 	}
 	e.OnEnd(r)

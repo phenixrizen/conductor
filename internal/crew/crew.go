@@ -173,6 +173,9 @@ const (
 // crew/<run>/<task>.<n>, where the dot tells the attempt apart.
 var taskIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
 
+// ValidTaskID reports whether id is shaped as a task id.
+func ValidTaskID(id string) bool { return taskIDPattern.MatchString(id) }
+
 // MaxEncoded bounds a crew: its file, as the store writes it (store.Encode).
 // Validate holds every crew to it, so the crew a create or an update sends is
 // held to it too; the request body itself may be larger (the API takes up to
@@ -514,20 +517,18 @@ func (m Member) Validate() error {
 	return nil
 }
 
-// Launchable reports why c cannot be launched as it is: it has no members, or
-// it runs on a host, which the server cannot launch a session on. The error
-// matches ErrInvalid.
+// launchable is Launchable with managed crews allowed when managed says
+// so: the engine, which dispatches their tasks (#334, row 5), allows them;
+// the API does not until an agent can read its task and submit its
+// Launchable reports why the crew cannot be launched as a run: no members,
+// or a crew that runs on a host. A crew with tasks launches as a managed
+// run (#334): the API checks the server's switch and ledger before it.
 func (c Crew) Launchable() error {
 	if len(c.Members) == 0 {
 		return invalidf("the crew has no members")
 	}
 	if c.Where != WhereServer {
 		return invalidf("the crew runs on a host: only a crew that runs on the server can be launched")
-	}
-	if c.Managed() {
-		// Until a run can dispatch tasks and take their results (#334,
-		// rows 5 and 6), a managed crew is saved and edited, never run.
-		return invalidf("a crew with tasks cannot be launched yet: managed runs are not available in this Conductor")
 	}
 	return nil
 }

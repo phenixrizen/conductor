@@ -35,10 +35,11 @@ member.json: one member of the list above. "-" reads stdin.
 // maxCrewFile bounds what create and add read.
 const maxCrewFile = 2 << 20
 
-// crewClient talks to the session's own routes.
+// crewClient talks to the session's own routes; prefix names the command
+// in its errors (crew, or task).
 type crewClient struct {
-	base, token string
-	client      *http.Client
+	base, token, prefix string
+	client              *http.Client
 }
 
 // crewClientFromEnv derives the session's routes from the notify URL
@@ -52,7 +53,7 @@ func crewClientFromEnv(getenv func(string) string) (*crewClient, error) {
 	if !ok {
 		return nil, fmt.Errorf("crew: %s does not name a session's attention route", notify.EnvURL)
 	}
-	return &crewClient{base: base, token: token, client: &http.Client{
+	return &crewClient{base: base, token: token, prefix: "crew", client: &http.Client{
 		Timeout: 60 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return errors.New("redirect refused: a token never follows a rewrite")
@@ -90,14 +91,14 @@ func (c *crewClient) call(ctx context.Context, method, path string, body any) (m
 	var out map[string]any
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("crew: the server answered %d with no JSON", resp.StatusCode)
+			return nil, fmt.Errorf("%s: the server answered %d with no JSON", c.prefix, resp.StatusCode)
 		}
 	}
 	if resp.StatusCode >= 300 {
 		if e, ok := out["error"].(map[string]any); ok {
-			return nil, fmt.Errorf("crew: %v (%v)", e["message"], e["code"])
+			return nil, fmt.Errorf("%s: %v (%v)", c.prefix, e["message"], e["code"])
 		}
-		return nil, fmt.Errorf("crew: the server answered %d", resp.StatusCode)
+		return nil, fmt.Errorf("%s: the server answered %d", c.prefix, resp.StatusCode)
 	}
 	return out, nil
 }

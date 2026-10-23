@@ -3,13 +3,16 @@ import { expect, test } from './fixtures'
 // A crew with tasks (#334, row 4): the editor's Coordination select turns the
 // crew managed; the tasks table takes a task per thing a member delivers; a
 // cycle in the needs blocks Save with its words; a check's quoted argument
-// is one array element; the crew is saved and cannot be launched yet.
+// is one array element; the crew is saved and launches as a managed run
+// (row 6).
 let crewId = ''
+let runId = ''
 test.afterEach(async ({ api }) => {
+  if (runId) await api.stopRun(runId)
   if (crewId) await api.call('DELETE', `/api/crews/${encodeURIComponent(crewId)}`)
 })
 
-test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, Launch waits for a later Conductor', async ({ page, api }) => {
+test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, Launch makes a managed run', async ({ page, api }) => {
   await page.goto('/crews')
   await page.locator('[data-new-crew]').click()
   await expect(page).toHaveURL(/\/crews\/new$/)
@@ -103,9 +106,11 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   expect(crew.tasks?.[0]?.checks).toEqual([{ id: 'unit', argv: ['sh', '-c', 'echo hi there'] }])
   expect(crew.members.map((m) => m.start?.when)).toEqual(['task', 'task'])
 
-  // Not launched yet: the page says why, and the server refuses too.
-  await expect(page.locator('[data-launch]')).toBeDisabled()
-  const refused = await api.launchCrewRaw(crewId)
-  expect(refused.status).toBe(400)
-  expect(refused.body.error.message).toContain('cannot be launched yet')
+  // Launched as a managed run: the page offers it, and the server makes one with the tasks.
+  await expect(page.locator('[data-launch]')).toBeEnabled()
+  const launched = await api.call<{ run: { id: string; managed?: { revision: number }; tasks?: Array<{ id: string }> } }>('POST', `/api/crews/${encodeURIComponent(crewId)}/launch`)
+  expect(launched.status).toBe(201)
+  runId = launched.body.run.id
+  expect(launched.body.run.managed).toBeTruthy()
+  expect(launched.body.run.tasks?.map((t) => t.id)).toEqual(['build', 'review'])
 })

@@ -160,6 +160,44 @@ func CheckRepo(ctx context.Context, repo string) error {
 // repository runs (no post-checkout, no reference-transaction), nor any
 // filter. The error matches ErrNotRepo when repo is in no git working tree,
 // and is ErrNoGit when git is not on PATH.
+// AddWorktreeAt is AddWorktree at the commit rev, a full object id, for an
+// attempt of a managed run: its worktree starts at the result it builds on.
+func AddWorktreeAt(ctx context.Context, repo, path, branch, rev string) error {
+	if err := checkGit(); err != nil {
+		return err
+	}
+	if !fullCommit(rev) {
+		return fmt.Errorf("worktree: %q is not a commit id", rev)
+	}
+	return gitcli.AddWorktree(ctx, repo, path, branch, rev)
+}
+
+// AddDetachedWorktree is a checkout of rev with no branch, for the checks
+// of a managed run against a result: nothing commits to it.
+func AddDetachedWorktree(ctx context.Context, repo, path, rev string) error {
+	if err := checkGit(); err != nil {
+		return err
+	}
+	if !fullCommit(rev) {
+		return fmt.Errorf("worktree: %q is not a commit id", rev)
+	}
+	return gitcli.AddDetachedWorktree(ctx, repo, path, rev)
+}
+
+// fullCommit reports whether s is a full commit id: 40 hex characters (64
+// in a SHA-256 repository).
+func fullCommit(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func AddWorktree(ctx context.Context, repo, path, branch string) error {
 	if err := inRepo(ctx, repo); err != nil {
 		return err

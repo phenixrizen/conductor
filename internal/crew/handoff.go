@@ -25,6 +25,10 @@ const maxHandoffs = 10
 type handoff struct {
 	from, text string
 	queued     bool
+	// seq is the message the handoff carries in a managed run (messages.go),
+	// 0 for a legacy handoff: entered, the message is recorded delivered;
+	// dropped, it waits for the recipient's next session.
+	seq int64
 }
 
 // oneLine makes one line of what the engine types, a handoff's message or a
@@ -164,6 +168,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		if len(m.handoffs) == 0 {
 			m.stopDelivering()
 			e.mu.Unlock()
+			// Messages past the queue's room, if any, are queued now
+			// (deliverMessages starts a delivery of its own for them).
+			e.deliverMessages(r, m)
 			return
 		}
 		why := ""
@@ -175,6 +182,11 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		}
 		if why != "" {
 			for _, h := range m.handoffs {
+				if h.seq > 0 {
+					// A message waits for the recipient's next session.
+					r.unqueued(h.seq)
+					continue
+				}
 				r.note(session.ActivityError, "handoff dropped from %s to %s: %s", h.from, m.def.Name, why)
 			}
 			m.handoffs = nil
@@ -182,7 +194,7 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			e.mu.Unlock()
 			return
 		}
-		if m.state.Status != MemberRunning {
+		if m.state.Status != MemberRunning || (r.managed && !r.prompted(m)) {
 			r.noteQueued(m, "has not had its prompt yet")
 			e.mu.Unlock()
 			waitWake(r, m, l)
@@ -191,6 +203,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		h := m.handoffs[0]
 		m.handoffs = slices.Delete(m.handoffs, 0, 1)
 		e.mu.Unlock()
+		if h.seq > 0 && !e.typing(r, h.seq) {
+			continue // not recorded: the message waits for the next delivery
+		}
 
 		res, err := l.Submit(r.ctx, session.Submission{Text: h.text, ByName: typedBy, UnlessWaiting: true, Finished: func(res session.SubmitResult, err error) {
 			// A handoff accepted while the program took it slowly
@@ -199,6 +214,12 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			r.noteHandoffEnd(h, m.def.Name, res, err)
+			switch {
+			case h.seq > 0 && res.Entered:
+				go e.delivered(r, h.seq)
+			case h.seq > 0 && !res.Typed:
+				go e.untyped(r, h.seq, gone(r, l, err))
+			}
 		}})
 		if e.tried != nil {
 			e.tried(m.def.Name, res.Typed)
@@ -209,10 +230,16 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			r.note(session.ActivityStatus, "handoff from %s to %s waits for %s to take its input: it is entered once it has", h.from, m.def.Name, m.def.Name)
 		case err != nil && !res.Typed:
 			r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, m.def.Name, err)
+			if h.seq > 0 {
+				go e.untyped(r, h.seq, gone(r, l, err))
+			}
 		case err != nil:
 			r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %v", h.from, m.def.Name, err)
 		case res.Entered:
 			r.noteHandoff(h.from, m.def.Name)
+			if h.seq > 0 {
+				go e.delivered(r, h.seq)
+			}
 		case res.Typed:
 			// A question came up during the pause: the text waits in the
 			// agent's input, and is never typed again.
@@ -230,6 +257,14 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			waitWake(r, m, l)
 		}
 	}
+}
+
+// gone says the session l a line was not typed into is no longer one to
+// type into: it ended, the submission said so, or the run is stopping. A
+// message dropped so waits for the recipient's next session; one a live
+// session refused is dropped as a handoff is, and noted.
+func gone(r *run, l *session.Local, err error) bool {
+	return isClosed(l.Ended()) || errors.Is(err, session.ErrSessionEnded) || r.ctx.Err() != nil
 }
 
 // noteHandoffEnd notes how the handoff h to the member named to ended once

@@ -28,6 +28,42 @@ export interface Run {
   stoppedAt?: string
   members: RunMember[]
   log: Array<{ at: string; type: string; message?: string }>
+  /** The run this one resumed or continued, and the run that resumed or continued this one. */
+  resumedFrom?: string
+  resumedBy?: string
+  /** A record of a run the server no longer holds, read-only. */
+  record?: boolean
+  /** A managed run (a crew with tasks): its ledger revision, its tasks, whether its dispatch is paused, and its outcome once every task is terminal. */
+  managed?: { revision: number }
+  paused?: boolean
+  outcome?: string
+  tasks?: RunTask[]
+}
+
+export interface RunAttempt {
+  n: number
+  sessionId?: string
+  worktree?: string
+  branch?: string
+  start?: string
+  result?: string
+  state: string
+  stage?: string
+  error?: string
+  /** GET /api/runs/{run}/tasks/{task} only: what the attempt submitted. */
+  submitted?: { summary?: string; commit?: string; issues?: string[]; verdict?: string; findings?: Array<{ severity: string; path?: string; line?: number; message: string }> }
+}
+
+export interface RunTask {
+  id: string
+  member: string
+  kind: string
+  needs?: string[]
+  state: string
+  reason?: string
+  attempts: number
+  attempt?: RunAttempt
+  result?: { attempt: number; commit?: string; summary?: string; issues?: string[]; verdict?: string; findings?: Array<{ severity: string; path?: string; line?: number; message: string }>; at: string }
 }
 
 export interface Session {
@@ -123,6 +159,13 @@ export function logged(run: Run, text: string): boolean {
 }
 
 /** The member of a run with the given name. */
+/** The run's task by id, or a throw. */
+export function task(run: Run, id: string): RunTask {
+  const t = run.tasks?.find((t) => t.id === id)
+  if (!t) throw new Error(`no task ${id} in ${JSON.stringify(run.tasks)}`)
+  return t
+}
+
 export function member(run: Run, name: string): RunMember {
   const m = run.members.find((x) => x.name === name)
   if (!m) throw new Error(`run ${run.id} has no member ${name}`)

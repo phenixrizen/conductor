@@ -2783,6 +2783,230 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   start's words. Playwright `tasks-editor.spec.ts`: a cycle blocks Save
   with its words; a check's quoted argument saves as one element; the
   saved crew's tasks as sent; Launch disabled and refused by the server.
+- **A managed run dispatches tasks into attempt worktrees and takes their
+  results (#344, 2026-10-23).** Row 5 of the agent harness (#334). A crew
+  with tasks launches a managed run: its tasks are dispatched as attempts, in
+  plan order as their needs have results, each a fresh member session in
+  `<cwd>/.conductor/worktrees/<run>/<task>.<n>` on `crew/<run>/<task>.<n>`,
+  made at the commit the task starts from (its first need's result, the run's
+  base, or its own last attempt's result when that failed a check), with the
+  task in `.conductor/task.md` and `task.json`, the crew's setup run first and
+  one line typed that says where the task is and how to submit; four attempts
+  in flight per run, three per task, one per member (its previous session let
+  go first); a place among the server's sessions is reserved before anything
+  is made (`session.Reservation`), and a refusal spends nothing. A result
+  (`Engine.SubmitResult`) needs the worktree on the attempt's branch and
+  clean apart from `.conductor/`, HEAD descending from every input (a
+  review's HEAD the candidate's), no `.conductor` directory and no submodule
+  in the tree; a work task's checks run in a detached checkout of the result
+  commit after the crew's setup there, one at a time across the server, each
+  recorded before it starts, with its process and with its outcome, and the
+  checkout compared with the commit after each (content, mode, link target,
+  through an index of its own; HEAD still the commit); a check that exits
+  non-zero, times out, moves the checkout or changes tracked files fails the
+  attempt at it. Every change of state is made and recorded in one
+  transaction of the run's, the dispatch that rests on it after the commit:
+  a run's transactions commit in order, each with the state as it was, a
+  change the ledger refuses is undone or pauses the run's dispatch, and the
+  end is reported once its commit is in; a submitted result is kept whole in
+  the attempt's row (summary, issues, verdict, findings: the ledger's schema
+  is version 2 for it, a version 1 database brought to it as it opens), and
+  the checks' checkout refuses a crew directory the result turned into a
+  link. A live managed run, or one with a change the ledger has not taken, is never
+  evicted for room; a cancelled attempt's context and session end with
+  whatever commit makes the cancel durable; the end of a
+  managed run is told once the change that ended it is committed, and a stop
+  the ledger refused is the stop's error. A done finishes nothing (one reminder), a handoff is noted
+  and never typed, a session ending before its result fails its attempt.
+  Every transition goes to the ledger before its side effect. The run reports
+  `tasks`, `paused` and `outcome` and is finished by the outcome, not by its
+  sessions ending; PauseRun, CancelTask and RetryTask drive it; Stop ends the
+  attempts and waits for the checks. The engine's launch gate is lifted with a
+  ledger; the API's stays until row 6 (the routes, tools and CLI). Tests: the
+  engine with a fake ledger and fake sessions (`managed_test.go`), the
+  registry's reservations, the web run-state mirror. Not here: the agent's
+  routes and tools, the run page, recovery (rows 6–8).
+- **An agent reads its task and submits its result; a review's findings
+  lead to a bounded repair (#344, 2026-10-23).** Row 6 of the agent harness
+  (#334), in the same PR as row 5. An attempt's session reads its task and
+  submits its result with its own token: `GET /api/sessions/{id}/task`
+  (`task.md` in pages of 32 KiB, with `task.json`) and `POST
+  /api/sessions/{id}/task/result` (`201` once recorded, `200` for the same
+  commit again, `409` with why and the attempt running on; the workbench
+  token is refused, a result is always the agent's); the MCP tools
+  `task_context` and `task_result`, `conductor task context|result`
+  (`--summary`, `--issue`, `--commit`, `--verdict`, `--finding
+  "SEVERITY[:PATH[:LINE]] MESSAGE"`, `--file` for strict JSON; loud outside
+  a session, unlike `crew`), and the skill's "Your task" section. A review's
+  `needs_changes` reopens the task it reviewed (`Engine.reopen`): the task
+  has no result, its next attempt starts at the reviewed commit with the
+  findings in its task file (`task.json`'s `repair`, "Findings to address"
+  in `task.md`), and what rested on the result is withdrawn transitively
+  (`withdraw`): the review and every dependent blocked again, their results
+  dropped, an attempt in flight cancelled at stage `withdrawn` with its
+  session stopped once recorded, none of it counted against the tasks; with
+  no attempt left the task fails keeping the repair for a retry. Commands
+  with receipts (`internal/crew/commands.go`): `POST /api/runs/{run}/pause|
+  unpause` and `…/tasks/{task}/cancel|retry|accept` take `{commandId,
+  expectedRevision?}` and answer `{receipt}` written in the change's own
+  transaction (the same id again is the same receipt, `repeat: true`, also
+  for a failure; other content `409 command_conflict`; a stale revision
+  `409 stale_revision` and nothing kept); `Engine.PauseRun`, `CancelTask`
+  and `RetryTask` share the changes; Accept takes a failed task's last
+  submitted commit as its result. `GET /api/runs/{run}/tasks/{task}` gives
+  every attempt with what it submitted. The API's launch gate is lifted:
+  a crew with tasks launches when `crews.managed` is on and the ledger is
+  the server's (`409 managed_off`, `503 ledger_unavailable`);
+  `checks.maxConcurrent` (`CONDUCTOR_CHECKS_MAX_CONCURRENT`, 1) bounds the
+  checks running at once. The e2e stub is a worker (`STUB_WORKER=mcp|cli`,
+  catalog ids `worker` and `worker-cli`): it reads the task through
+  `conductor mcp` on stdio or the CLI, commits `stub-<member>.txt` (and
+  `stub-fixed.txt` once a finding or an attempt before asks), reviews
+  `needs_changes` once then `approved`. Tests: the engine's review gate,
+  withdrawals, receipts and Accept (`commands_test.go`), the routes
+  (`api/tasks_test.go`, the launch gate included), `conductor task` and the
+  tools (`cli/task_test.go`, `mcp_test.go`), the skill, and Playwright
+  `tasks.spec.ts` (a check failing once, the repair, the dependent at the
+  accepted commit, the run's outcome, no start by a done) and
+  `tasks-review.spec.ts` (a review's needs_changes and the approved repair).
+- **The run page shows tasks, their checks and results, and what to do next
+  (#344, 2026-10-23).** Row 7 of the agent harness (#334), in the same PR as
+  rows 5 and 6. A managed run's page has a **Tasks** tab first
+  (`?view=tasks`; a legacy run asked for it gets the grid): one row per task
+  in the crew's order (`RunTasks.vue`) with its state dot and badge, kind,
+  member, attempt, what it does in words (`taskWords`: what it waits for,
+  which attempt runs or checks, how it ended, why a ready task does not
+  start), its result commit, and its actions (Open the attempt's session,
+  Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
+  apply); the selected task, kept in the URL as `?task=`, opens its result
+  (summary, issues, findings) and every attempt with what it submitted
+  (`GET /api/runs/{run}/tasks/{task}`). Cancel and Accept anyway ask first.
+  Every command carries a receipt (`utils/tasks.ts`: the browser mints the
+  id, a reply lost to the network is asked for once more with the same id,
+  a refusal's words come from the receipt; `useTaskCommands` for the toasts).
+  The header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and
+  `paused` instead of the member counts, and has a Pause / Resume button for
+  the dispatch (a receipt too). The grid's tiles say the member's task
+  (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
+  (Tasks unless switched; the choice kept with the graph's preferences): one
+  node per task (`CrewGraphTaskNode.vue`: kind, id, state, member, attempt,
+  words, Open) in columns by depth (`utils/taskGraph.ts`, the crew graph's
+  geometry; a need the run has no task for, or a cycle, is a root with a
+  warning), a dotted `needs` edge in the brand colour from each task to the
+  tasks that need it (`data-graph-edge-kind="needs"`), the legend for both;
+  a phone gets the tasks as a list, one after the tasks it needs. The palette:
+  the run page's group gains a row per task (Enter shows it in the Tasks
+  view; → opens its session, retries, accepts or cancels, the last two asked)
+  and a Pause / Resume row; a run row's detail says `2/5 tasks · 1 failed ·
+  paused` and offers Open the tasks. The web client gains `runTask`,
+  `pauseRun` and `taskCommand`, `ApiError` the whole reply (`body`) for a
+  refusal's receipt. Tests: vitest `tasks.test.ts` (counts, badges, words,
+  actions, the id, the retry-once wrapper and the refusal) and
+  `taskGraph.test.ts` (depths, warnings, layout both ways, edges, the list
+  order); Playwright `tasks.spec.ts` gains the page: the rows and their
+  states, the commit against `git rev-parse crew/<run>/build.2`, the header's
+  `2/2 tasks`, the detail's attempts with the failed check and what was
+  submitted, the tile's `build #2`, the graph's two task nodes and one needs
+  edge and the switch to the members, the palette's task row; and a crew
+  whose check always fails: `1 failed`, Pause and Resume with the badge,
+  Accept anyway through the dialog finishing the run with attempt 3's commit
+  and the dependent starting from it.
+- **A managed run continues after a restart without repeating finished
+  work (#344, 2026-10-23).** Row 8 of the agent harness (#334), in the same
+  PR as rows 5–7. The server, taking the ledger's owner lock at start,
+  concludes what the last one left open (`ledger.Recover`) and writes the
+  record of every managed run whose record lags the ledger or is missing
+  as the ledger has it (`crew.Recovered`, `syncRecords`: the run
+  interrupted when the recovery found it running, each task as its row and
+  its last attempt say, the sessions ended), so the run reads right until
+  it is continued. `POST
+  /api/runs/{run}/resume` on a managed run, held or recorded, makes a
+  continuation (`Engine.ContinueRun`, `internal/crew/continue.go`): a new
+  run of the crew as launched from the same base, the old named in
+  `resumedFrom` and naming the new in `resumedBy` (the ledger's
+  `continuedFrom`/`continuedBy`, written in the continuation's first
+  transaction), each task taken up as its rows say: a result that stood
+  kept by reference (`importedFrom`, no attempt, a dependent's task file
+  naming the old run's branch), a failed or cancelled task as it was, a
+  work task interrupted or stopped while its result was being verified
+  given a session-less attempt that verifies the same commit again
+  (`reverify`/`dispatchCandidate`, `result.reverified`, not counted), a
+  task whose attempt's launch is uncertain failed with why until a retry,
+  the rest ready or blocked; the attempts spent before count against the
+  tasks (`task.prior`) and number the next attempt, so branches never
+  collide. The web continues a managed run from its header (Continue) once
+  it stopped or ended with an outcome, and says what was kept and what a
+  continuation takes up. Tests: `crew/continue_test.go` (results kept with
+  the old branch as input, fresh attempts numbered after the interrupted
+  one, the rows naming each other, the candidate verified again without a
+  session, the uncertain launch waiting for a retry, the refusals, the
+  recovered record), `api/continue_test.go` (the resume route continuing
+  a stopped managed run once, the live run refused), vitest for the
+  words, and Playwright `tasks-resume.spec.ts`: a server of its own ended
+  while a check runs, started again on the same data, the record
+  interrupted, the continuation verifying the candidate again and the
+  dependent starting from it, the old run naming the new, the pages.
+- **Members of a managed run exchange durable messages (#344,
+  2026-10-23).** Row 9 of the agent harness (#334), in the same PR as rows
+  5–8. A member sends another a message (`POST /api/sessions/{id}/
+  messages`, the MCP tool `message_send`, `conductor task send --to`):
+  kept in the ledger (schema version 3: a `messages` table, with the
+  checkpoint column of row 10; a version 2 database is brought to it) and
+  typed into the recipient's session as one line, `Message from <from>
+  (#n): …`, after its task line through the handoff queue once its attempt
+  has one (`deliverMessages`, `handoff.seq`; a member not started yet gets
+  it then; a continuation carries what was not delivered); the recipient
+  reads its inbox (`GET …/inbox`, `inbox_read`, `conductor task inbox`)
+  and acknowledges (`POST …/inbox/ack`, `inbox_ack`, `conductor task
+  ack`), keeping at most 50 not acknowledged (`429 inbox_full`). A handoff
+  reported in a managed run is a message to the member it names. The run
+  log and the events (`message.sent`, `message.delivered`,
+  `message.acked`) say so; `GET /api/runs/{run}/messages` lists them. The
+  skill's "Messages, blockers and checkpoints" section says how. Tests:
+  `crew/messages_test.go` (typed after the task line and recorded
+  delivered, the inbox and its acknowledgement, the refusals, the full
+  inbox, a handoff as a message, a continuation carrying a message),
+  `api/messages_test.go`, `cli/task_test.go`, `mcp_test.go`, the skill
+  test, and Playwright `tasks-messages.spec.ts` (the chatty worker's
+  message reaching the writer once it has its task, read from its inbox).
+- **A member reports a blocker and saves a checkpoint (#344,
+  2026-10-23).** Row 10 of the agent harness (#334), in the same PR. An
+  attempt reports what blocks it (`POST /api/sessions/{id}/task/blocked`,
+  `task_blocked`, `conductor task blocked --reason --message`): the task
+  carries the blocker (`blocker {reason, message, by, at}`; the Tasks view
+  says "attempt n blocked by lead: reason"), the session asks the message
+  as the agent's own question, and a `working` or `done` report of the
+  attempt (`OnActivity` → `unblock`), or its result, clears it
+  (`task.blocked`, `task.unblocked`). An attempt saves a checkpoint (`POST
+  …/task/checkpoint`, `task_checkpoint`, `conductor task checkpoint
+  --done --remaining --notes`): what is done, what remains and notes, tied
+  to the commit its worktree is at, kept on the attempt and in the ledger
+  (`attempts.checkpoint`, `task.checkpoint`); the task's next attempt reads
+  it in its task file ("Where the last attempt got to"), and an attempt
+  after one that ended without a result, or a continuation's first attempt
+  at the task, starts at the checkpoint's commit (`startCommit`), so a
+  crashed session's work is not lost. The Tasks view shows an attempt's
+  checkpoint. Tests: `crew/checkpoints_test.go` (the blocker shown,
+  cleared by a working report and by a result, refused on an ended
+  attempt; the checkpoint kept in the row, the next attempt starting there
+  with the section in its task file, a continuation's first attempt too),
+  `api/messages_test.go`, `cli/task_test.go`, and the chatty worker's
+  checkpoint in `tasks-messages.spec.ts`. The Codex review of rows 6–10
+  (ten findings) led to: a command taken in a transaction of its own
+  before it acts (its row `accepted`; the cap, a conflict and a repeat
+  answered there with nothing changed), settled in a second, a stale
+  revision kept as a failed receipt; a checkpoint bounded as kept (16 KiB)
+  before anything changes, never a review's (its attempt always starts at
+  its candidate), cleared on a dependent when its input is withdrawn;
+  texts cleaned (`session.CleanMessage`) and bounded in bytes before they
+  are kept or typed; the delivery intent recorded before a message is
+  typed (`message.typing`), an uncertain delivery not typed again after a
+  restart, a line the recipient's end cut off before it went in recorded as
+  not typed (`message.untyped`) and typed into the next session; a continuation carrying repairs and allowances (`tasks.repair`,
+  `tasks.extra`), every message under its own rows, and an import's source
+  and summary through later continuations; delivery going on past the
+  queue's room; a recovered record dropping a withdrawn result
+  (`review_fixes_test.go`).
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

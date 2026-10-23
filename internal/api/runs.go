@@ -57,7 +57,7 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	ref := spec.Ref
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom, runChat: room}, &ref)
+	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom, runChat: room, reservation: spec.Reservation}, &ref)
 	if aerr != nil {
 		return nil, aerr
 	}
@@ -70,6 +70,15 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 		}
 	}
 	return local, nil
+}
+
+// Reserve holds a place for a managed run's attempt among the server's
+// sessions (crew.Launcher): refused at the cap before anything is made.
+func (s *Server) Reserve(ctx context.Context) (*session.Reservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.registry.Reserve()
 }
 
 // lookupLocal finds a server session in the registry, for the run engine.
@@ -192,6 +201,22 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.crewStoreError(w, r.PathValue("id"), err)
 		return
+	}
+	if c.Managed() {
+		// A managed run needs the server's ledger, as its owner, and the
+		// crews.managed switch on (the engine checks the ledger again).
+		if !s.cfg.ManagedCrews() {
+			writeError(w, http.StatusConflict, "managed_off", "crews with tasks are off on this server (crews.managed)")
+			return
+		}
+		if s.ledger == nil {
+			writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
+			return
+		}
+		if ro, why := s.ledger.ReadOnly(); ro {
+			writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", why)
+			return
+		}
 	}
 	if err := c.Launchable(); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
@@ -566,7 +591,14 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + by, "run": by}})
 		return true
 	}
-	run, err := s.runs.ResumeRecord(ctx, rec)
+	var run *crew.Run
+	if rec.Managed != nil {
+		// A managed run's record is a cache of the ledger, which the
+		// continuation reads (#334, row 8).
+		run, err = s.runs.ContinueRun(ctx, id, rec.Label)
+	} else {
+		run, err = s.runs.ResumeRecord(ctx, rec)
+	}
 	if err != nil {
 		s.runError(w, "resume run from its record", id, err)
 		return true
@@ -629,6 +661,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := runContext(r)
 	defer cancel()
 	run, err := s.runs.ResumeRun(ctx, id)
+	if errors.Is(err, crew.ErrManaged) {
+		// A managed run is continued (#334, row 8): its results kept, the
+		// rest dispatched again.
+		run, err = s.runs.ContinueRun(ctx, id, "")
+	}
 	if errors.Is(err, crew.ErrRunNotFound) && s.records != nil {
 		// A run the engine no longer holds is resumed from its record,
 		// once: the record then names the continuation, as a held run does.

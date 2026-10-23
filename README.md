@@ -661,7 +661,8 @@ every session that is done** and **Clear the new-event badges** sit under
 **>**. On a session page **S** shares it and **X** asks to stop it
 (**Alt+X** in its terminal); **G S** opens Settings in the desktop app
 (**Alt+,**). A link can name a view: `?tab=files|chat|activity|people`
-on a session page, `?view=grid|graph|timeline` on a run page,
+on a session page, `?view=grid|graph|timeline|tasks` on a run page (`&task=`
+names the task shown),
 `?filter=all|needs|running` on the Yard. **Alt+Q** leaves a terminal's
 focus on the Yard and the Roundhouse everywhere (Alt+Esc too, except on
 Windows, which keeps that one for its windows); the shortcuts modal
@@ -1253,7 +1254,11 @@ diff, Start now or Resume where they apply), solid edges labelled "when done"
 for "starts after X is done" and dashed, moving edges for the handoffs delivered in this run,
 with a count and the last message on hover. Roots sit on the left (or on top:
 the direction and the handoff switch are remembered by the browser), a click
-selects, a double click or Enter opens the member's session. The crew editor
+selects, a double click or Enter opens the member's session. A managed run's
+graph has a **Tasks | Members** switch and shows the tasks unless switched:
+one node per task (kind, id, state, member, attempt, what it does now, Open)
+in columns by what it needs, with a dotted `needs` edge from each task to the
+tasks that need its result. The crew editor
 has the same graph as a second mode of the members section: drag from a
 member's right handle to another's left and that one starts after it; the ×
 on an edge removes the rule (the member starts at launch); a node's menu
@@ -1262,6 +1267,34 @@ drawn dashed. A member waits for at most one
 other, so a second parent, a self edge and a cycle are refused with a word
 on why. On a phone the graph is a list indented by depth with the same
 badges, and the Crews table shows each crew's shape in miniature.
+
+**The tasks.** A managed run (a crew with tasks, see
+[Crews](#crews)) has a **Tasks** tab first: one row per task with its state,
+kind, member, attempt, what it does in words (what it waits for, which
+attempt runs or is checked, how it ended, why a ready task does not start),
+its result commit and its actions: **Open** the attempt's session, **Retry** a
+failed or cancelled task (one more attempt), **Accept anyway** a failed task's
+last submitted commit as its result (asked first), **Cancel** a task (asked
+first), **Copy branch**. A row opens the task: its result (summary, issues, a
+review's findings) and every attempt with where it started, what it submitted
+and what failed it. The header says `3/7 tasks`, `1 failed`, `2 running`,
+`1 checking` and `paused`, and **Pause** holds the dispatch (attempts in
+flight go on, no task starts) until **Resume**. Every one of these is a
+command with a receipt: the browser mints an id, a reply lost to the network
+is asked for once more with the same id and answered as the first, and a
+refusal says why. The palette lists the tasks under the page's group, each
+with the same actions. A managed run outlives the server: started again on
+the same data, the server concludes what was left open, the run reads as
+interrupted, and **Continue** (the resume route) makes a new run that keeps
+every result that stood, verifies again a result that was being checked,
+takes up the rest, and leaves an attempt whose launch was never known for a
+person to retry. The members pass each other what the next task needs to
+know beyond a result as messages, typed into the recipient's session once it
+has its task and read from its inbox; a member that something stops says so
+(the task shows as blocked, and the session asks the people watching); and a
+member saves checkpoints as it goes, so an attempt that ends without a
+result, or a continuation, starts from the last one rather than from
+scratch.
 
 **The timeline and the charts.** A **Timeline** tab beside the graph draws
 one bar per member from its start to its end or now, amber where its session
@@ -1316,7 +1349,11 @@ a view link, that link on a third line, `view <url>`.
 (`--mcp-config`) and Codex (`-c mcp_servers.conductor.…`), every launch
 registers `conductor mcp`, a stdio server with the skill's commands as tools:
 `report`, `set_state`, `ask` (with choices), `form_crew`, `add_member`,
-`run_status` and `link`; outside a session the tools say so and do nothing.
+`run_status`, `link`, and for a member of a managed run `task_context`,
+`task_result`, `message_send`, `inbox_read`, `inbox_ack`, `task_blocked` and
+`task_checkpoint` (`conductor task context|result|send|inbox|ack|blocked|
+checkpoint` on the command line); outside a session the tools say so and do
+nothing.
 `agents.mcp: false` (`CONDUCTOR_AGENT_MCP=0`) turns the registration off.
 The server's launches register it; `conductor host` does not yet, and the
 other agents get the skill's commands alone.
@@ -1560,6 +1597,8 @@ file must run `compinit` before that line.
 | `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
 | `agents.mcp` | `CONDUCTOR_AGENT_MCP` (`1`/`true` on, `0`/`false` off) | `true` | register `conductor mcp` with agents that take an MCP server at launch (Claude Code, Codex), so the skill's reports and crew actions are tools |
 | `agents.installSkill` | `CONDUCTOR_AGENT_INSTALL_SKILL` (`1`/`true` on, `0`/`false` off) | `true` | a launch puts the Conductor skill in the agent's skills directory, in the server user's home, once per agent per server start (see [The Conductor skill](#events-and-hooks)) |
+| `crews.managed` | `CONDUCTOR_CREWS_MANAGED` (`1`/`true` on, `0`/`false` off) | `true` | a crew with tasks may launch as a managed run (#334); off, such a launch answers `409 managed_off` while managed runs' records stay readable |
+| `checks.maxConcurrent` | `CONDUCTOR_CHECKS_MAX_CONCURRENT` (1 to 64) | `1` | how many of the managed runs' checks run at once across the server: a `go test` beside four agents on a laptop is one at a time |
 | `yolo` | `CONDUCTOR_YOLO` (`1`/`true` on, `0`/`false` off) | `false` | launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise; `conductor serve --yolo` turns it on (see [Yolo](#yolo)) |
 | `paths.browse` | `CONDUCTOR_PATHS_BROWSE` | `roots` | what `GET /api/paths` may list: `roots` (the allowed roots alone) or `any` (every directory the server's user can read, asked for with `scope=any`); the desktop app sets `any` for its own server, whose Settings picker chooses the roots and the data directory |
 | `reach.mode` | `CONDUCTOR_REACH` | `auto` | how the server finds out it can be reached from outside its network: `auto` asks a STUN server for the public address and, once there is a TLS listener, maps its port on the router (UPnP IGD, PCP or NAT-PMP, renewed and deleted on shutdown; plain http is never mapped); `manual` asks for the address only, for a port you forwarded yourself; `off` asks nothing. `GET /api/reach` reports the result; the Share dialog says what a link reaches |

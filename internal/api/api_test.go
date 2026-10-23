@@ -3277,3 +3277,26 @@ func TestFileEventsNameTheirOpAndPath(t *testing.T) {
 	}
 	t.Fatal("the file event is not in the activity")
 }
+
+// A managed run's attempt reserves its place among the sessions before it
+// makes anything (crew.Launcher.Reserve): the place counts as a session
+// does, and is let go when the launch does not follow.
+func TestAReservationHoldsAPlaceAmongTheSessions(t *testing.T) {
+	e := newTestEnv(t, func(c *config.Config) { c.MaxSessions = 1 })
+	res, err := e.srv.Reserve(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, out := e.do("POST", "/api/sessions", adminToken, map[string]any{"agentId": "cat"})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("a session over a held place: %d %v", resp.StatusCode, out)
+	}
+	if _, err := e.srv.Reserve(t.Context()); !errors.Is(err, session.ErrTooManySessions) {
+		t.Fatalf("a second place at the cap: %v", err)
+	}
+	res.Release()
+	e.createSession("cat")
+	if _, err := e.srv.Reserve(t.Context()); !errors.Is(err, session.ErrTooManySessions) {
+		t.Fatalf("a place beside a session at the cap: %v", err)
+	}
+}

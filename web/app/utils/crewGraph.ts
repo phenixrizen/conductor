@@ -41,7 +41,8 @@ export interface GraphEdge {
   id: string
   from: string
   to: string
-  kind: 'after' | 'handoff'
+  /** A start rule, the handoffs of a run, or a task's need of another's result (taskGraph.ts). */
+  kind: 'after' | 'handoff' | 'needs'
   /** Handoffs from `from` to `to` delivered in this run. */
   count?: number
   /** The last handoff's words and time, when the feed had them. */

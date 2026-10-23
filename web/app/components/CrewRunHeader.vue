@@ -4,13 +4,16 @@ import type { AgentInfo, RunInfo } from '~/composables/useSessions'
 import { draftMember, memberNameError, memberNameFrom, type DraftMember } from '~/utils/crews'
 import { runResumable, runSubtitle, shortRunId } from '~/utils/crewWords'
 import { relativeTime } from '~/utils/sessions'
+import { sendCommand, taskBadges } from '~/utils/tasks'
 
 /**
  * The run page's header: the run named by its crew and its start, how many
- * members need input and run, how long it has been up, and its actions: add
- * an agent mid-run, share the run (a run link), stop every member, and once
- * stopped resume it as a new run. Each action calls the server and hands the
- * run as it is after it to the page (`changed`).
+ * members need input and run (a managed run: its tasks done, failed, running
+ * and checking, and whether its dispatch is paused), how long it has been
+ * up, and its actions: add an agent mid-run, share the run (a run link),
+ * pause or resume a managed run's dispatch (a command with a receipt), stop
+ * every member, and once stopped resume it as a new run. Each action calls
+ * the server and hands the run as it is after it to the page (`changed`).
  */
 const props = withDefaults(
   defineProps<{
@@ -94,7 +97,7 @@ async function resumeRun() {
   try {
     const next = await api.resumeRun(props.runId)
     live.applyRun(next)
-    toast.add({ title: 'Run resumed', description: `${next.id}: the conversations continue in their worktrees.`, icon: 'i-lucide-play', color: 'success' })
+    toast.add({ title: next.managed ? 'Run continued' : 'Run resumed', description: next.managed ? `${next.id}: the results kept, the rest taken up.` : `${next.id}: the conversations continue in their worktrees.`, icon: 'i-lucide-play', color: 'success' })
     await router.push(`/runs/${encodeURIComponent(next.id)}`)
   } catch (e) {
     // Resumed already (#126): the continuation the server names is the run to open.
@@ -105,6 +108,24 @@ async function resumeRun() {
     toast.add({ title: 'Resume failed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
     resuming.value = false
+  }
+}
+
+// A managed run: its task badges, and Pause / Resume of its dispatch.
+const badges = computed(() => (props.run?.managed ? taskBadges(props.run) : null))
+const pausing = ref(false)
+async function togglePause() {
+  const r = props.run
+  if (!r?.managed) return
+  const paused = !r.paused
+  pausing.value = true
+  try {
+    await sendCommand((body) => api.pauseRun(props.runId, paused, body))
+    toast.add({ title: paused ? 'Dispatch paused' : 'Dispatch resumed', description: paused ? 'Attempts in flight go on; no task starts until it is resumed.' : undefined, icon: paused ? 'i-lucide-pause' : 'i-lucide-play', color: 'neutral' })
+  } catch (e) {
+    toast.add({ title: paused ? 'Not paused' : 'Not resumed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
+  } finally {
+    pausing.value = false
   }
 }
 
@@ -127,7 +148,7 @@ async function stopAll() {
 }
 
 // The run page's command palette (#302) runs the header's buttons: Add agent, Share, Stop (asked in the palette's row), Resume.
-defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun })
+defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll, resume: resumeRun, togglePause })
 </script>
 
 <template>
@@ -147,8 +168,14 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
     <template #trailing>
       <div v-if="run" class="ml-2 hidden min-w-0 items-center gap-1.5 sm:flex">
         <UBadge v-if="record" label="record" color="neutral" variant="subtle" size="sm" class="flex-none" title="A run the server no longer holds, as it was when it ended: read-only" data-run-record />
-        <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
-        <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
+        <template v-if="badges">
+          <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+          <UBadge v-if="counts.needs" :label="`${counts.needs} need input`" color="warning" variant="subtle" size="sm" class="flex-none" />
+        </template>
+        <template v-else>
+          <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
+          <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" />
+        </template>
         <span class="ml-1 truncate font-mono text-xs text-muted">{{ uptime }}</span>
       </div>
     </template>
@@ -161,15 +188,21 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         <span class="hidden sm:inline">Chat</span>
         <ChatUnreadPill :count="chatUnread" />
       </UButton>
-      <UButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" aria-label="Resume as new run" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">Resume as new run</span></UButton>
+      <UButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :aria-label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></UButton>
+      <UButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :aria-label="run.paused ? 'Resume the dispatch' : 'Pause the dispatch'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></UButton>
       <UButton v-if="!stopped && !record" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton class="hidden sm:inline-flex" />
     </template>
   </UDashboardNavbar>
   <!-- On a phone the counts and the uptime take a line of their own: the bar keeps the name and the buttons. -->
   <div v-if="run" class="flex items-center gap-1.5 border-b border-default px-4 py-1.5 sm:hidden" data-run-header-strip>
-    <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-needs />
-    <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-running />
+    <template v-if="badges">
+      <UBadge v-for="b in badges" :key="b.label" :label="b.label" :color="b.color" variant="subtle" size="sm" class="flex-none" data-run-task-badge />
+    </template>
+    <template v-else>
+      <UBadge :label="`${counts.needs} need input`" :color="counts.needs ? 'warning' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-needs />
+      <UBadge :label="`${counts.running} running`" :color="counts.running ? 'success' : 'neutral'" variant="subtle" size="sm" class="flex-none" data-run-header-running />
+    </template>
     <span class="min-w-0 truncate font-mono text-[11px] text-muted">{{ uptime }}</span>
   </div>
 

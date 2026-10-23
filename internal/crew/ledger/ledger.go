@@ -33,8 +33,35 @@ const (
 )
 
 // Version is the schema this binary writes. A database of a later version
-// opens read-only.
-const Version = 1
+// opens read-only; an earlier one is brought to it (migrations).
+const Version = 3
+
+// migrations bring a database from the version keyed to the next, in one
+// transaction with the version's change: 1 to 2 adds the attempts'
+// result column.
+var migrations = map[int][]string{
+	1: {"ALTER TABLE attempts ADD COLUMN result TEXT NOT NULL DEFAULT ''"},
+	// Version 3 (#334, rows 9 and 10): an attempt's checkpoint, and the
+	// messages the members of a run send one another.
+	2: {"ALTER TABLE attempts ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''", "ALTER TABLE tasks ADD COLUMN repair TEXT NOT NULL DEFAULT ''", "ALTER TABLE tasks ADD COLUMN extra INTEGER NOT NULL DEFAULT 0", messagesTable},
+}
+
+// messagesTable is the messages table (#334, row 9): one row per message
+// a member sent another, by sequence within the run, with when it was
+// typed into the recipient's session and when the recipient acknowledged
+// it.
+const messagesTable = `CREATE TABLE messages (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		seq INTEGER NOT NULL,
+		from_member TEXT NOT NULL,
+		to_member TEXT NOT NULL,
+		text TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		typing_at TEXT NOT NULL DEFAULT '',
+		delivered_at TEXT NOT NULL DEFAULT '',
+		acked_at TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, seq)
+	)`
 
 // LockWait is how long a ledger keeps trying for the owner lock held by
 // another process after Open (awaitLock): a desktop restart overlaps the
@@ -330,7 +357,7 @@ func (l *Ledger) prepare(ctx context.Context) error {
 	case err == nil && version == Version:
 		return nil
 	case err == nil:
-		return fmt.Errorf("ledger: the database is version %d, which this Conductor cannot bring to %d", version, Version)
+		return l.migrate(ctx, version)
 	case errors.Is(err, sql.ErrNoRows) || isNoTable(err):
 		// New, or empty: made whole in one transaction.
 	default:
@@ -347,6 +374,31 @@ func (l *Ledger) prepare(ctx context.Context) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (?)", Version); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrate brings the database from version from to Version, one version
+// at a time in one transaction, or refuses one it has no way up from.
+func (l *Ledger) migrate(ctx context.Context, from int) error {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for v := from; v < Version; v++ {
+		stmts, ok := migrations[v]
+		if !ok {
+			return fmt.Errorf("ledger: the database is version %d, which this Conductor cannot bring to %d", from, Version)
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("ledger: migrating from version %d: %w", v, err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE schema_version SET version = ?", Version); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -432,6 +484,8 @@ var schema = []string{
 		result_commit TEXT NOT NULL DEFAULT '',
 		verdict TEXT NOT NULL DEFAULT '',
 		imported_from TEXT NOT NULL DEFAULT '',
+		repair TEXT NOT NULL DEFAULT '',
+		extra INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (run_id, id)
 	)`,
 	`CREATE TABLE attempts (
@@ -451,6 +505,8 @@ var schema = []string{
 		launched_at TEXT NOT NULL DEFAULT '',
 		prompted_at TEXT NOT NULL DEFAULT '',
 		closed_at TEXT NOT NULL DEFAULT '',
+		result TEXT NOT NULL DEFAULT '',
+		checkpoint TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, task_id, n),
 		FOREIGN KEY (run_id, task_id) REFERENCES tasks(run_id, id) ON DELETE CASCADE
 	)`,
@@ -502,4 +558,5 @@ var schema = []string{
 		payload TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, seq)
 	)`,
+	messagesTable,
 }

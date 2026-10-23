@@ -179,28 +179,102 @@ func (t *Tx) PutRun(r RunRow) error {
 	return err
 }
 
+// ErrContinued says the run named has been continued already, or has no
+// row: a continuation is made once.
+var ErrContinued = errors.New("ledger: the run was continued already")
+
+// Continued marks the run from as continued by this transition's run: its
+// continued_by, set once; ErrContinued when it is set already or the run
+// has no row. The one write a transition makes to another run's row.
+func (t *Tx) Continued(from string) error {
+	res, err := t.tx.ExecContext(t.ctx, "UPDATE runs SET continued_by = ? WHERE id = ? AND continued_by = ''", t.runID, from)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("%w: %s", ErrContinued, from)
+	}
+	return nil
+}
+
 // PutTask puts a task's row, new or changed.
 func (t *Tx) PutTask(r TaskRow) error {
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO tasks (run_id, id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if len(r.Repair) > MaxPayload {
+		return fmt.Errorf("ledger: the repair of task %s is more than %d bytes", r.ID, MaxPayload)
+	}
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO tasks (run_id, id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from, repair, extra)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, id) DO UPDATE SET member = excluded.member, kind = excluded.kind, state = excluded.state, reason = excluded.reason,
 			attempts = excluded.attempts, result_attempt = excluded.result_attempt, result_commit = excluded.result_commit, verdict = excluded.verdict,
-			imported_from = excluded.imported_from`,
-		t.runID, r.ID, r.Member, r.Kind, r.State, r.Reason, r.Attempts, r.ResultAttempt, r.ResultCommit, r.Verdict, r.ImportedFrom)
+			imported_from = excluded.imported_from, repair = excluded.repair, extra = excluded.extra`,
+		t.runID, r.ID, r.Member, r.Kind, r.State, r.Reason, r.Attempts, r.ResultAttempt, r.ResultCommit, r.Verdict, r.ImportedFrom, r.Repair, r.Extra)
 	return err
 }
 
 // PutAttempt puts an attempt's row, new or changed.
 func (t *Tx) PutAttempt(r AttemptRow) error {
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO attempts (run_id, task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if len(r.Result) > MaxResult {
+		return fmt.Errorf("ledger: the result of attempt %s/%d is more than %d bytes", r.TaskID, r.N, MaxResult)
+	}
+	if len(r.Checkpoint) > MaxCheckpoint {
+		return fmt.Errorf("ledger: the checkpoint of attempt %s/%d is more than %d bytes", r.TaskID, r.N, MaxCheckpoint)
+	}
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO attempts (run_id, task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, task_id, n) DO UPDATE SET member = excluded.member, session_id = excluded.session_id, worktree = excluded.worktree,
 			branch = excluded.branch, start_commit = excluded.start_commit, result_commit = excluded.result_commit, state = excluded.state,
 			stage = excluded.stage, error = excluded.error, reserved_at = excluded.reserved_at, launched_at = excluded.launched_at,
-			prompted_at = excluded.prompted_at, closed_at = excluded.closed_at`,
+			prompted_at = excluded.prompted_at, closed_at = excluded.closed_at, result = excluded.result, checkpoint = excluded.checkpoint`,
 		t.runID, r.TaskID, r.N, r.Member, r.SessionID, r.Worktree, r.Branch, r.StartCommit, r.ResultCommit, r.State, r.Stage, r.Error,
-		stamp(r.ReservedAt), stamp(r.LaunchedAt), stamp(r.PromptedAt), stamp(r.ClosedAt))
+		stamp(r.ReservedAt), stamp(r.LaunchedAt), stamp(r.PromptedAt), stamp(r.ClosedAt), r.Result, r.Checkpoint)
 	return err
+}
+
+// PutMessage puts a message's row, new or changed (delivered, acked); a
+// run keeps at most maxMessages, and a text at most MaxMessageText bytes.
+func (t *Tx) PutMessage(r MessageRow) error {
+	if len(r.Text) > MaxMessageText {
+		return fmt.Errorf("ledger: message %d is more than %d bytes", r.Seq, MaxMessageText)
+	}
+	var n int
+	if err := t.tx.QueryRowContext(t.ctx, "SELECT COUNT(*) FROM messages WHERE run_id = ? AND seq != ?", t.runID, r.Seq).Scan(&n); err != nil {
+		return err
+	}
+	if n >= maxMessages {
+		return fmt.Errorf("%w: %d messages", ErrTooManyMessages, n)
+	}
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO messages (run_id, seq, from_member, to_member, text, created_at, typing_at, delivered_at, acked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, seq) DO UPDATE SET typing_at = excluded.typing_at, delivered_at = excluded.delivered_at, acked_at = excluded.acked_at`,
+		t.runID, r.Seq, r.From, r.To, r.Text, stamp(r.CreatedAt), stamp(r.TypingAt), stamp(r.DeliveredAt), stamp(r.AckedAt))
+	return err
+}
+
+// ErrTooManyMessages says the run keeps as many messages as it may.
+var ErrTooManyMessages = errors.New("ledger: the run keeps as many messages as it may")
+
+// Messages reads a run's messages in sequence.
+func (l *Ledger) Messages(ctx context.Context, runID string) ([]MessageRow, error) {
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, "SELECT seq, from_member, to_member, text, created_at, typing_at, delivered_at, acked_at FROM messages WHERE run_id = ? ORDER BY seq", runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MessageRow
+	for rows.Next() {
+		r := MessageRow{RunID: runID}
+		var created, typing, delivered, acked string
+		if err := rows.Scan(&r.Seq, &r.From, &r.To, &r.Text, &created, &typing, &delivered, &acked); err != nil {
+			return nil, err
+		}
+		r.CreatedAt, r.TypingAt, r.DeliveredAt, r.AckedAt = unstamp(created), unstamp(typing), unstamp(delivered), unstamp(acked)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // PutCheck puts a check's row, new or changed; its log at most MaxLog, and
@@ -302,7 +376,7 @@ func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from FROM tasks WHERE run_id = ? ORDER BY id`, runID)
+	rows, err := db.QueryContext(ctx, `SELECT id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from, repair, extra FROM tasks WHERE run_id = ? ORDER BY id`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +384,7 @@ func (l *Ledger) Tasks(ctx context.Context, runID string) ([]TaskRow, error) {
 	var out []TaskRow
 	for rows.Next() {
 		r := TaskRow{RunID: runID}
-		if err := rows.Scan(&r.ID, &r.Member, &r.Kind, &r.State, &r.Reason, &r.Attempts, &r.ResultAttempt, &r.ResultCommit, &r.Verdict, &r.ImportedFrom); err != nil {
+		if err := rows.Scan(&r.ID, &r.Member, &r.Kind, &r.State, &r.Reason, &r.Attempts, &r.ResultAttempt, &r.ResultCommit, &r.Verdict, &r.ImportedFrom, &r.Repair, &r.Extra); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -324,7 +398,7 @@ func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, erro
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at
+	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result, checkpoint
 		FROM attempts WHERE run_id = ? ORDER BY task_id, n`, runID)
 	if err != nil {
 		return nil, err
@@ -334,7 +408,7 @@ func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, erro
 	for rows.Next() {
 		r := AttemptRow{RunID: runID}
 		var reserved, launched, prompted, closed string
-		if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed); err != nil {
+		if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed, &r.Result, &r.Checkpoint); err != nil {
 			return nil, err
 		}
 		r.ReservedAt, r.LaunchedAt, r.PromptedAt, r.ClosedAt = unstamp(reserved), unstamp(launched), unstamp(prompted), unstamp(closed)

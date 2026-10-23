@@ -64,7 +64,7 @@ func TestOpenMakesTheSchema(t *testing.T) {
 		tables = append(tables, n)
 	}
 	rows.Close()
-	if want := "attempts checks commands events runs schema_version tasks"; strings.Join(tables, " ") != want {
+	if want := "attempts checks commands events messages runs schema_version tasks"; strings.Join(tables, " ") != want {
 		t.Fatalf("tables %v", tables)
 	}
 	newRun(t, l, "team-00000001")
@@ -815,5 +815,100 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 	}
 	if total > 64*unit {
 		t.Fatalf("%d bytes of logs kept, past the budget", total)
+	}
+}
+
+// A database the first Conductor made (version 1, no result column on the
+// attempts) is brought to the version this one writes as it opens.
+func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "ALTER TABLE tasks DROP COLUMN repair", "ALTER TABLE tasks DROP COLUMN extra", "DROP TABLE messages"} {
+		if _, err := l.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := l.db.Exec("UPDATE schema_version SET version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	again := openLedger(t, dir)
+	if ro, why := again.ReadOnly(); ro {
+		t.Fatalf("read-only after the migration: %s", why)
+	}
+	var version int
+	if err := again.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
+		t.Fatalf("version %d %v", version, err)
+	}
+	ctx := context.Background()
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		if err := tx.PutRun(RunRow{ID: "team-00000001", CrewID: "team", State: RunRunning, CreatedAt: tx.Now()}); err != nil {
+			return err
+		}
+		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning, Repair: `{"review":"review"}`, Extra: 2}); err != nil {
+			return err
+		}
+		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now(), Result: `{"summary":"built"}`, Checkpoint: `{"done":"half"}`}); err != nil {
+			return err
+		}
+		if err := tx.PutMessage(MessageRow{RunID: "team-00000001", Seq: 1, From: "lead", To: "docs", Text: "hello", CreatedAt: tx.Now()}); err != nil {
+			return err
+		}
+		return tx.Event("result.submitted", nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := again.Attempts(ctx, "team-00000001")
+	if err != nil || len(attempts) != 1 || attempts[0].Result != `{"summary":"built"}` || attempts[0].Checkpoint != `{"done":"half"}` {
+		t.Fatalf("attempts after the migration: %+v %v", attempts, err)
+	}
+	if msgs, err := again.Messages(ctx, "team-00000001"); err != nil || len(msgs) != 1 || msgs[0].From != "lead" || msgs[0].To != "docs" || msgs[0].Text != "hello" || !msgs[0].DeliveredAt.IsZero() || !msgs[0].TypingAt.IsZero() {
+		t.Fatalf("messages after the migration: %+v %v", msgs, err)
+	}
+	if tasks, err := again.Tasks(ctx, "team-00000001"); err != nil || len(tasks) != 1 || tasks[0].Repair != `{"review":"review"}` || tasks[0].Extra != 2 {
+		t.Fatalf("tasks after the migration: %+v %v", tasks, err)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		return tx.PutMessage(MessageRow{RunID: "team-00000001", Seq: 1, From: "lead", To: "docs", Text: "hello", CreatedAt: tx.Now(), TypingAt: tx.Now(), DeliveredAt: tx.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if msgs, _ := again.Messages(ctx, "team-00000001"); msgs[0].DeliveredAt.IsZero() || msgs[0].TypingAt.IsZero() {
+		t.Fatalf("the delivery was not kept: %+v", msgs)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		return tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 2, Member: "lead", State: AttemptReserved, ReservedAt: tx.Now(), Result: strings.Repeat("x", MaxResult+1)})
+	}); err == nil || !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("a result over the bound: %v", err)
+	}
+}
+
+// A continuation names the run it continues once: the old run's row takes
+// continued_by in the new run's transition, and a second continuation, or
+// one of a run with no row, is refused.
+func TestAContinuationIsNamedOnce(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	for _, id := range []string{"team-00000001", "team-00000002", "team-00000003"} {
+		if _, err := l.Transition(ctx, id, func(tx *Tx) error {
+			return tx.PutRun(RunRow{ID: id, CrewID: "team", Crew: "{}", State: RunRunning, CreatedAt: tx.Now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := l.Transition(ctx, "team-00000002", func(tx *Tx) error { return tx.Continued("team-00000001") }); err != nil {
+		t.Fatal(err)
+	}
+	if row, _, _ := l.Run(ctx, "team-00000001"); row.ContinuedBy != "team-00000002" {
+		t.Fatalf("continued_by %q", row.ContinuedBy)
+	}
+	if _, err := l.Transition(ctx, "team-00000003", func(tx *Tx) error { return tx.Continued("team-00000001") }); !errors.Is(err, ErrContinued) {
+		t.Fatalf("a second continuation: %v", err)
+	}
+	if _, err := l.Transition(ctx, "team-00000003", func(tx *Tx) error { return tx.Continued("team-00000009") }); !errors.Is(err, ErrContinued) {
+		t.Fatalf("a run with no row: %v", err)
+	}
+	if row, _, _ := l.Run(ctx, "team-00000001"); row.ContinuedBy != "team-00000002" {
+		t.Fatalf("continued_by after the refusals: %q", row.ContinuedBy)
 	}
 }

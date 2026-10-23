@@ -1,4 +1,5 @@
 import type { ChatMessage, ActivityEntry, Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
+import type { Receipt } from '~/utils/tasks'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
 import type { TouchedReply } from '~/utils/touchedIndex'
 
@@ -401,12 +402,94 @@ export interface RunMember {
   needsInput?: boolean
   /** The agent session of its latest session, kept once that session has left the server: what its Resume resumes. */
   agentSession?: AgentSession
+  /** In a managed run: the task and attempt its latest session is (#334). */
+  task?: string
+  attempt?: number
   /**
    * GET /api/runs/{run} only: lines of tracked files its worktree adds and removes against the commit it began from,
    * committed or not (`git diff --shortstat <base>`; untracked files do not count, a branch merged into its own does).
    * Read at most every 10 s; the last value stays when a read fails.
    */
   diff?: { added: number; removed: number }
+}
+
+/** A task of a managed run as the run reports it (#334). */
+export interface RunTask {
+  id: string
+  member: string
+  kind: 'work' | 'review'
+  needs?: string[]
+  /** blocked (its needs have no result yet, or never will: `reason` says), ready, running (an attempt is in flight), verifying (a result is checked), succeeded, failed, cancelled. */
+  state: 'blocked' | 'ready' | 'running' | 'verifying' | 'succeeded' | 'failed' | 'cancelled'
+  reason?: string
+  /** Attempts made so far. */
+  attempts: number
+  /** The latest attempt. */
+  attempt?: RunAttempt
+  /** The result that stands, once an attempt succeeded. */
+  result?: RunTaskResult
+  /** A continuation's result taken by reference from the run it continues, as `<run>/<task>/<n>`. */
+  importedFrom?: string
+  /** What the attempt in flight says stops it (#334, row 10), until it works on or ends. */
+  blocker?: { reason: string; message?: string; by: string; at: string }
+}
+
+/** Where an attempt got to, as it saved it: tied to its worktree's commit. */
+export interface AttemptCheckpoint {
+  done: string
+  remaining: string
+  notes?: string
+  commit: string
+  at: string
+}
+
+/** One attempt at a task: one member session in one worktree. */
+export interface RunAttempt {
+  n: number
+  sessionId?: string
+  worktree?: string
+  branch?: string
+  /** The commit the worktree was made at, and the result commit once submitted. */
+  start?: string
+  result?: string
+  state: 'reserved' | 'launched' | 'running' | 'submitting' | 'verifying' | 'succeeded' | 'failed' | 'cancelled' | 'stopped' | 'interrupted' | 'uncertain'
+  /** What it was doing when it failed or was cut short, and why. */
+  stage?: string
+  error?: string
+  startedAt?: string
+  endedAt?: string
+  /** What the attempt submitted, in a task's own read (`runTask`); the run's read leaves it out. */
+  submitted?: SubmittedResult
+  /** The attempt's last checkpoint (#334, row 10). */
+  checkpoint?: AttemptCheckpoint
+}
+
+/** A finding of a review. */
+export interface Finding {
+  severity: 'blocker' | 'major' | 'minor' | 'nit'
+  path?: string
+  line?: number
+  message: string
+}
+
+/** What an attempt submitted: a work task's commit, summary and issues, or a review's verdict and findings. */
+export interface SubmittedResult {
+  summary?: string
+  commit?: string
+  issues?: string[]
+  verdict?: 'approved' | 'needs_changes'
+  findings?: Finding[]
+}
+
+/** A task's accepted result: a work task's commit and summary, or a review's verdict and findings. */
+export interface RunTaskResult {
+  attempt: number
+  commit?: string
+  summary?: string
+  issues?: string[]
+  verdict?: 'approved' | 'needs_changes'
+  findings?: Finding[]
+  at: string
 }
 
 /** A launch of a crew. Runs live in the server's memory: a restart forgets them. */
@@ -440,6 +523,14 @@ export interface RunInfo {
   /** The stopped run this one resumed, and the run that resumed this one (Resume as new run). */
   resumedFrom?: string
   resumedBy?: string
+  /** A managed run (a crew with tasks, #334): its revision in the ledger, which every transition bumps. Absent for a legacy run. */
+  managed?: { revision: number }
+  /** A managed run whose dispatch is paused: attempts in flight go on, none starts. */
+  paused?: boolean
+  /** A managed run's outcome once every task is terminal: it is `finished` then, its idle sessions kept for a look. */
+  outcome?: 'succeeded' | 'failed' | 'cancelled'
+  /** A managed run's tasks, in the crew's order. */
+  tasks?: RunTask[]
   /**
    * A record of a run the server no longer holds (it ended before the server last started, or was evicted), as `GET /api/runs/{run}`
    * marks it and the crew's runs list it: read-only, nothing of it live, its `state` as recorded (`interrupted` for a run that was running
@@ -610,6 +701,17 @@ export function useSessions() {
      */
     broadcastRun: (runId: string, body: { text: string; members?: string[]; byName?: string }) =>
       request<BroadcastResult>(`/api/runs/${encodeURIComponent(runId)}/broadcast`, { method: 'POST', body }),
+    /** A managed run's task with every attempt, each with what it submitted (#334). */
+    runTask: (runId: string, taskId: string) => request<{ task: RunTask; attempts: RunAttempt[] }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}`),
+    /**
+     * Pauses or resumes a managed run's dispatch, as a command with a receipt (docs/protocol.md, "Commands with receipts"): the same
+     * `commandId` again answers with the same receipt; `expectedRevision` refuses the command once the run moved on (409 `stale_revision`).
+     */
+    pauseRun: (runId: string, paused: boolean, body: { commandId: string; expectedRevision?: number }) =>
+      request<{ receipt: Receipt }>(`/api/runs/${encodeURIComponent(runId)}/${paused ? 'pause' : 'unpause'}`, { method: 'POST', body }),
+    /** Cancels, retries or accepts a task of a managed run, as a command with a receipt; a refusal is a 409 carrying the receipt. */
+    taskCommand: (runId: string, taskId: string, command: 'cancel' | 'retry' | 'accept', body: { commandId: string; expectedRevision?: number }) =>
+      request<{ receipt: Receipt }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/${command}`, { method: 'POST', body }),
     /** A run's share links, each with the viewers attached through it to the sessions of its members. */
     listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
     /** The run's links, whether a member is published to the switchyard now, and whether a member's publication there was ended, which a run link made now makes again. */
