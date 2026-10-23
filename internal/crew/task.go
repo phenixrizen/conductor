@@ -231,6 +231,10 @@ type attempt struct {
 	promptedAt time.Time
 	closedAt   time.Time
 	reminded   bool
+	// provisional says the attempt has no place yet (dispatch has not
+	// reserved its row): the ledger does not see it, nor count it, until
+	// the reservation is committed, so one refused leaves no row behind.
+	provisional bool
 	// sessionEnded says the session ended while a result was being taken
 	// (submitting or verifying): a submission refused then fails the
 	// attempt instead of leaving it running with no session to watch.
@@ -386,7 +390,7 @@ func (r *run) drain() snapshot {
 			s.ts = append(s.ts, t)
 		}
 		for _, a := range t.attempts {
-			if _, ok := r.changedAttempts[a]; ok {
+			if _, ok := r.changedAttempts[a]; ok && !a.provisional {
 				s.attempts = append(s.attempts, r.attemptRow(a))
 				s.as = append(s.as, a)
 			}
@@ -492,12 +496,12 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		return nil
 	})
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if err != nil {
 		snap.undo(r)
 		if undo != nil {
 			undo()
 		}
+		e.mu.Unlock()
 		return err
 	}
 	r.revision = rev
@@ -505,6 +509,15 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	if r.endPending {
 		r.endPending = false
 		e.noteEndLater(r)
+	}
+	// The sessions whose attempts' end this commit made durable.
+	stops := r.pendingStops
+	r.pendingStops = nil
+	e.mu.Unlock()
+	for _, id := range stops {
+		if l, ok := e.lookup(id); ok {
+			go stopLocal(l)
+		}
 	}
 	return nil
 }
@@ -759,7 +772,7 @@ func (e *Engine) pump(r *run) {
 			continue
 		}
 		ctx, cancel := context.WithCancel(r.ctx)
-		a := &attempt{t: t, m: m, n: len(t.attempts) + 1, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t)}
+		a := &attempt{t: t, m: m, n: len(t.attempts) + 1, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t), provisional: true}
 		t.attempts = append(t.attempts, a)
 		t.state, t.reason = ledger.TaskRunning, ""
 		r.active++
@@ -803,10 +816,11 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 }
 
 // recordStop ends a managed run's attempts in flight as stopped and
-// writes the stop: the attempts, their tasks, the run's row. The caller
-// does not hold e.mu; the run is stopped.
-func (e *Engine) recordStop(r *run) {
-	_ = e.transact(context.Background(), r, func() tx {
+// writes the stop: the attempts, their tasks, the run's row; the end is
+// told once it is committed. The caller does not hold e.mu; the run is
+// stopped. The error is the ledger's refusal: the stop stays pending.
+func (e *Engine) recordStop(r *run) error {
+	return e.transact(context.Background(), r, func() tx {
 		n := 0
 		for _, t := range r.tasks {
 			if a := t.active(); a != nil {
@@ -815,6 +829,7 @@ func (e *Engine) recordStop(r *run) {
 			}
 		}
 		r.markRun()
+		r.endPending = true
 		return ev("run.stopped", map[string]any{"attempts": n})
 	}, nil)
 }
@@ -848,6 +863,7 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 		return
 	}
 	a.state, a.stage, a.err, a.closedAt = state, stage, errText, time.Now().UTC()
+	a.provisional = false // closed, it is an attempt made, whatever it got to
 	a.cancel()
 	r.active--
 	t := a.t
@@ -930,7 +946,13 @@ func (r *run) attemptRow(a *attempt) ledger.AttemptRow {
 
 // taskRow is t as the ledger keeps it. The caller holds e.mu.
 func (r *run) taskRow(t *task) ledger.TaskRow {
-	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: len(t.attempts)}
+	n := 0
+	for _, a := range t.attempts {
+		if !a.provisional {
+			n++
+		}
+	}
+	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n}
 	if t.result != nil {
 		row.ResultAttempt, row.ResultCommit, row.Verdict = t.result.attempt, t.result.commit, t.result.verdict
 	}
@@ -1024,10 +1046,11 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		if !a.closedAt.IsZero() {
 			return tx{}
 		}
-		a.worktree, a.branch = worktree, branch
+		a.worktree, a.branch, a.provisional = worktree, branch, false
 		r.markAttempt(a)
+		r.markTask(t)
 		return ev("attempt.reserved", map[string]any{"task": t.def.ID, "attempt": a.n, "member": m.def.Name, "start": a.start, "inputs": len(a.inputs)})
-	}, func() { a.worktree, a.branch = "", "" }); err != nil {
+	}, func() { a.worktree, a.branch, a.provisional = "", "", true }); err != nil {
 		// The ledger refused the intent: nothing is made, and the run's
 		// dispatch pauses until a person looks.
 		_ = e.transact(context.Background(), r, func() tx {
@@ -1264,7 +1287,9 @@ func (e *Engine) managedEnded(r *run, a *attempt) {
 	}
 	e.mu.Unlock()
 	err := e.transact(context.Background(), r, func() tx {
-		if !a.closedAt.IsZero() {
+		if !a.closedAt.IsZero() || r.stopping || r.ctx.Err() != nil {
+			// Closed already, or a stop under way, which closes it as
+			// stopped.
 			return tx{}
 		}
 		if a.state == ledger.AttemptSubmitting || a.state == ledger.AttemptVerifying {
@@ -1429,8 +1454,10 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 		r.note(session.ActivityStatus, "task %s: attempt %d submitted %s", t.def.ID, a.n, resultWords(t.def.Kind, head, res))
 		return ev("result.submitted", map[string]any{"task": t.def.ID, "attempt": a.n, "commit": a.result, "verdict": res.Verdict, "summary": res.Summary, "issues": len(res.Issues), "findings": len(res.Findings)})
 	}, func() {
+		// Back to running within the transaction, so a second submit
+		// waiting on it finds the attempt open again.
 		if a.closedAt.IsZero() && a.state == ledger.AttemptVerifying {
-			a.state, t.state = ledger.AttemptSubmitting, ledger.TaskRunning
+			a.state, t.state = ledger.AttemptRunning, ledger.TaskRunning
 			a.submitted, a.result = nil, ""
 			r.note(session.ActivityError, "task %s: attempt %d's result was not recorded", t.def.ID, a.n)
 		}
@@ -1598,14 +1625,17 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 		return fmt.Errorf("%w: it is %s", ErrTaskState, t.state)
 	}
 	e.mu.Unlock()
-	var sessionID string
 	err := e.transact(ctx, r, func() tx {
 		switch t.state {
 		case ledger.TaskSucceeded, ledger.TaskFailed, ledger.TaskCancelled:
 			return tx{} // ended meanwhile
 		}
 		if a := t.active(); a != nil {
-			sessionID = a.sessionID
+			if a.sessionID != "" {
+				// Stopped by the commit that makes the cancel durable: this
+				// one, or a later one that carries it.
+				r.pendingStops = append(r.pendingStops, a.sessionID)
+			}
 			e.closeAttempt(r, a, ledger.AttemptCancelled, a.state, "cancelled")
 		} else {
 			t.state, t.reason = ledger.TaskCancelled, "cancelled"
@@ -1620,13 +1650,7 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 		}
 		return out
 	}, nil)
-	// The session goes once the cancel is recorded, by its own commit or
-	// by the pause's that carries it.
-	if e.afterTransact(r, err) && sessionID != "" {
-		if l, ok := e.lookup(sessionID); ok {
-			stopLocal(l)
-		}
-	}
+	e.afterTransact(r, err)
 	return err
 }
 

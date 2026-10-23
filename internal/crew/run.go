@@ -347,7 +347,11 @@ type run struct {
 	runChanged      bool
 	// endPending says the run's outcome was set in a transaction not yet
 	// committed: OnEnd follows the commit (transact).
-	endPending                                    bool
+	endPending bool
+	// pendingStops are the sessions to stop once the change that ends
+	// their attempts is committed (a cancel): stopped by the transaction
+	// that makes it durable.
+	pendingStops                                  []string
 	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
@@ -1484,7 +1488,13 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	r.stopDone = ctx.Err() == nil
 	e.mu.Unlock()
 	if r.managed {
-		e.recordStop(r)
+		// The stop's end is reported once its record is committed; one
+		// the ledger refused is the stop's error, the run stopped all the
+		// same.
+		if err := e.recordStop(r); err != nil {
+			errs = append(errs, fmt.Errorf("the ledger could not record the stop: %w", err))
+		}
+		return errors.Join(errs...)
 	}
 	e.noteEnd(r.id)
 	return errors.Join(errs...)
@@ -1536,6 +1546,12 @@ func (e *Engine) evict() {
 // idle reports whether nothing runs in r. The caller holds e.mu; it reads the
 // sessions, which never call into the engine while they hold their locks.
 func (e *Engine) idle(r *run) bool {
+	if r.managed && r.stoppedAt == nil && r.outcome == "" {
+		// A managed run goes on between sessions: an attempt in its
+		// setup, a result being verified. Nothing runs in it once it is
+		// stopped or every task is terminal.
+		return false
+	}
 	for _, m := range r.members {
 		if m.state.Status == MemberStarting {
 			return false

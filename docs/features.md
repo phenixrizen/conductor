@@ -2812,7 +2812,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the attempt's row (summary, issues, verdict, findings: the ledger's schema
   is version 2 for it, a version 1 database brought to it as it opens), and
   the checks' checkout refuses a crew directory the result turned into a
-  link. A done finishes nothing (one reminder), a handoff is noted
+  link. A live managed run is never evicted for room; a cancelled attempt's
+  session stops with whatever commit makes the cancel durable; the end of a
+  managed run is told once the change that ended it is committed, and a stop
+  the ledger refused is the stop's error. A done finishes nothing (one reminder), a handoff is noted
   and never typed, a session ending before its result fails its attempt.
   Every transition goes to the ledger before its side effect. The run reports
   `tasks`, `paused` and `outcome` and is finished by the outcome, not by its

@@ -1592,3 +1592,155 @@ func TestForgettingARunDropsEveryAttemptsSession(t *testing.T) {
 		}
 	}
 }
+
+func TestACancelsSessionStopsWithWhateverCommitCarriesIt(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	_, p := fl.attemptSession(t, a)
+	l.mu.Lock()
+	l.failOn = "task.cancelled,run.paused"
+	l.mu.Unlock()
+	if err := e.CancelTask(context.Background(), run.ID, "build"); err == nil {
+		t.Fatal("a cancel the ledger refused was reported taken")
+	}
+	// Neither the cancel nor the pause landed: the session waits for a
+	// commit, and goes with the first that lands.
+	select {
+	case <-p.Done():
+		t.Fatal("the session was stopped before the cancel was durable")
+	case <-time.After(500 * time.Millisecond):
+	}
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	if err := e.PauseRun(context.Background(), run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled attempt's session was not stopped once durable")
+	}
+	l.mu.Lock()
+	trow := l.tasks[run.ID+"/build"]
+	l.mu.Unlock()
+	if trow.State != ledger.TaskCancelled {
+		t.Fatalf("the task's row: %+v", trow)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestALiveManagedRunIsNeverEvicted(t *testing.T) {
+	old := maxRuns
+	maxRuns = 1
+	t.Cleanup(func() { maxRuns = old })
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	c := repoCrew(dir, work("build", "lead"))
+	c.Setup = []Check{{ID: "slow", Argv: []string{"sleep", "30"}, TimeoutSeconds: 60}}
+	run := launchManaged(t, e, c)
+	// The attempt is in its setup: no member starting, no session, and
+	// the run must stay through another launch at the bound.
+	waitLogged(t, e, run.ID, "attempt 1 reserved", 1, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	other, release, err := e.LaunchNamed(ctx, testCrew(immediate("lead", "hello")), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.Get(run.ID); !ok {
+		t.Fatal("the managed run was evicted while its attempt was in setup")
+	}
+	stopRun(t, e, run.ID)
+	stopRun(t, e, other.ID)
+}
+
+func TestAManagedRunsEndIsToldOnceItIsCommitted(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	ends := make(chan string, 4)
+	e.OnEnd = func(r Run) { ends <- r.State }
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	_, p := fl.attemptSession(t, a)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	// The acceptance's commit held: the run reads as finished meanwhile,
+	// and its session ending then tells no end.
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "task.succeeded", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the acceptance did not reach its commit")
+	}
+	if r, _ := e.Get(run.ID); r.State != RunFinished {
+		t.Fatalf("the run while the acceptance commits: %s", r.State)
+	}
+	p.End(0)
+	select {
+	case st := <-ends:
+		t.Fatalf("an end (%s) was told before the acceptance was committed", st)
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(l.release)
+	select {
+	case st := <-ends:
+		if st != RunFinished {
+			t.Fatalf("the end told: %s", st)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no end was told once the acceptance was committed")
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestAStopTheLedgerCouldNotRecordIsTheStopsError(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	ends := make(chan string, 4)
+	e.OnEnd = func(r Run) { ends <- r.State }
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	l.mu.Lock()
+	l.failOn = "run.stopped"
+	l.mu.Unlock()
+	err := e.Stop(context.Background(), run.ID)
+	if err == nil || !strings.Contains(err.Error(), "could not record the stop") {
+		t.Fatalf("a stop the ledger refused: %v", err)
+	}
+	if r, _ := e.Get(run.ID); r.State != RunStopped || r.Tasks[0].Attempt.State != ledger.AttemptStopped {
+		t.Fatalf("the run after the refused stop: %s %+v", r.State, r.Tasks[0].Attempt)
+	}
+	select {
+	case st := <-ends:
+		t.Fatalf("an end (%s) was told for a stop the ledger does not have", st)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestARefusedReservationLeavesNoRowBehind(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	fl.mu.Lock()
+	fl.reserveFails = session.ErrTooManySessions
+	fl.mu.Unlock()
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	waitLogged(t, e, run.ID, "no place for attempt 1 yet", 2, 5*time.Second)
+	l.mu.Lock()
+	rows := len(l.attempts)
+	build, docs := l.tasks[run.ID+"/build"], l.tasks[run.ID+"/docs"]
+	l.mu.Unlock()
+	if rows != 0 || build.Attempts != 0 || docs.Attempts != 0 {
+		t.Fatalf("the ledger after two refused reservations: %d attempt rows, build %+v, docs %+v", rows, build, docs)
+	}
+	if l.count(run.ID, "attempt.unreserved") != 2 {
+		t.Fatalf("events: %v", l.kinds(run.ID))
+	}
+	stopRun(t, e, run.ID)
+}
