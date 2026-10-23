@@ -77,19 +77,21 @@ var watchFails = false
 
 // watchExit reports the process's exit without reaping it (watchPID: a
 // waitid without reaping on Linux, a kqueue on macOS) and gives the wait
-// that reaps it after. A process gone before the watch was set up counts
-// as exited. A watch that cannot be set up is an error: Run then ends the
-// command rather than guess at its exit, since a signal to the group after
-// the reaping could reach another's.
-func watchExit(cmd *exec.Cmd, g *lifecycle) (<-chan struct{}, func() error, error) {
-	exited := make(chan struct{})
+// that reaps it after. The channel gives nil for an exit seen, or the
+// error of a watch that failed while the process may be alive still. A
+// process gone before the watch was set up counts as exited. A watch that
+// cannot be set up is an error: Run then ends the command rather than
+// guess at its exit, since a signal to the group after the reaping could
+// reach another's.
+func watchExit(cmd *exec.Cmd, g *lifecycle) (<-chan error, func() error, error) {
+	exited := make(chan error, 1)
 	if watchFails {
 		return nil, nil, errors.New("the watch was made to fail")
 	}
-	stop, err := watchPID(cmd.Process.Pid, func() { close(exited) })
+	stop, err := watchPID(cmd.Process.Pid, func(err error) { exited <- err })
 	switch {
 	case errors.Is(err, errExited):
-		close(exited)
+		exited <- nil
 		return exited, func() error { return g.reap(cmd) }, nil
 	case err != nil:
 		return nil, nil, err

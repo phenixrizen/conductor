@@ -2689,8 +2689,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   when the process exited. The group is killed when its leader has exited
   and before it is reaped (a `waitid` without reaping on Linux, a kqueue
   on macOS say so; a process gone before the watch was set up counts as
-  exited; a watch that cannot be set up ends the command at once, named
-  in `Err`): the exited process keeps its pid, and so the group's id,
+  exited; a watch that cannot be set up, or fails while the process runs,
+  ends the command at once rather than invent an exit, named in `Err`):
+  the exited process keeps its pid, and so the group's id,
   until it is reaped, so the group is still its own and no other's, and
   what the process left behind goes with it, its output redirected or not.
   No signal to the group is sent once the reaping has begun, and a cancel

@@ -27,6 +27,6 @@ func exitStatus(state *os.ProcessState) (int, string) { return state.ExitCode(),
 
 var watchFails = false
 
-func watchExit(*exec.Cmd, *lifecycle) (<-chan struct{}, func() error, error) {
+func watchExit(*exec.Cmd, *lifecycle) (<-chan error, func() error, error) {
 	return nil, nil, errors.New("proc: no exit watch on this platform")
 }

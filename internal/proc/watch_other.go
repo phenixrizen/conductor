@@ -4,6 +4,6 @@ package proc
 
 import "errors"
 
-func watchPID(int, func()) (func(), error) {
+func watchPID(int, func(error)) (func(), error) {
 	return nil, errors.New("proc: no exit watch on this platform")
 }

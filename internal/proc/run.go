@@ -242,15 +242,19 @@ func Run(ctx context.Context, s Spec) Result {
 		io.Copy(sink, r)
 	}()
 
-	<-exited
+	watchErr := <-exited
 	res.Duration = time.Since(started)
 	// The pipe closes with the process, at once, unless a child it left
-	// behind holds it: that child goes with the group now.
+	// behind holds it: that child goes with the group now. A watch that
+	// failed saw no exit: the process is ended now, while its id is its own
+	// for certain, and the result says so.
 	held := false
-	select {
-	case <-eof:
-	case <-time.After(holdGrace):
-		held = true
+	if watchErr == nil {
+		select {
+		case <-eof:
+		case <-time.After(holdGrace):
+			held = true
+		}
 	}
 	g.signal(cmd)
 	err = wait()
@@ -260,6 +264,9 @@ func Run(ctx context.Context, s Spec) Result {
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
 		res.Err = err.Error()
+	}
+	if watchErr != nil {
+		res.Err = "proc: the exit could not be watched, so the command was ended: " + watchErr.Error()
 	}
 	classify(ctx, &res)
 	select {

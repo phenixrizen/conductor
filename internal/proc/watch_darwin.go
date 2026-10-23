@@ -9,7 +9,7 @@ import (
 // watchPID calls exited once the process has exited and before it is
 // reaped: a kqueue reports NOTE_EXIT then. A process that exited before
 // the watch is set up cannot be found (ESRCH): errExited.
-func watchPID(pid int, exited func()) (stop func(), err error) {
+func watchPID(pid int, exited func(err error)) (stop func(), err error) {
 	kq, err := unix.Kqueue()
 	if err != nil {
 		return nil, err
@@ -26,13 +26,19 @@ func watchPID(pid int, exited func()) (stop func(), err error) {
 	go func() {
 		defer unix.Close(kq)
 		out := make([]unix.Kevent_t, 1)
+		var err error
 		for {
-			n, err := unix.Kevent(kq, nil, out, nil)
-			if n > 0 || (err != nil && !errors.Is(err, unix.EINTR)) {
+			var n int
+			n, err = unix.Kevent(kq, nil, out, nil)
+			if n > 0 {
+				err = nil
+				break
+			}
+			if err != nil && !errors.Is(err, unix.EINTR) {
 				break
 			}
 		}
-		exited()
+		exited(err)
 		<-done
 	}()
 	return func() { close(done) }, nil
