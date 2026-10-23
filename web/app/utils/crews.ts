@@ -329,7 +329,18 @@ export function argsFrom(text: string): string[] | undefined {
 
 /** A crew as the server would store it, for telling a draft from what is saved. */
 export function crewKey(c: Parameters<typeof toCrewInput>[0]): string {
-  return JSON.stringify(toCrewInput(c))
+  return JSON.stringify([toCrewInput(c), pendingTexts(c)])
+}
+
+/** The argv text typed into checks and setup commands and not yet committed: part of what is unsaved (a draft with it is kept), never of what is sent. */
+function pendingTexts(c: Parameters<typeof toCrewInput>[0]): string[] {
+  const out: string[] = []
+  for (const [i, ch] of (c.setup ?? []).entries()) if ('pending' in ch && ch.pending) out.push(`setup ${i}: ${ch.pending}`)
+  for (const t of c.tasks ?? []) {
+    if (!('key' in t)) continue
+    for (const [i, ch] of (t.checks ?? []).entries()) if (ch.pending) out.push(`${t.key} ${i}: ${ch.pending}`)
+  }
+  return out
 }
 
 /** The page of the Crews list to show after a delete left `left` crews on page `page`: the one before, when the delete emptied a page past the first. */

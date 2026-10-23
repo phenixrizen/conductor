@@ -50,6 +50,14 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   await expect(save).not.toHaveAttribute('data-save-problem', /./)
   await expect(save).toBeEnabled()
 
+  // The lead's name cleared and typed again: its task follows the name.
+  const leadName = members.nth(0).getByLabel(/^Name of/)
+  await leadName.fill('')
+  await expect(save).toBeDisabled()
+  await leadName.fill('lead')
+  await expect(tasks.nth(0).locator('[data-task-member]')).toContainText('lead')
+  await expect(save).not.toHaveAttribute('data-save-problem', /./)
+
   // A cycle: build needs review, which needs build. Save is blocked, and
   // the row says why.
   await tasks.nth(0).locator('[data-task-needs]').click()

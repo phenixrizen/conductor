@@ -339,6 +339,18 @@ describe('toDraft and crewKey', () => {
     d.members[1]!.args = argsFrom('  ')
     expect(crewKey(d)).toBe(crewKey(info))
   })
+
+  it('counts argv text still being typed as unsaved, without sending it', () => {
+    const saved: CrewInfo = { ...info, isolation: 'worktree', tasks: [{ id: 'build', member: 'lead', kind: 'work', instructions: 'Build.', checks: [{ id: 'unit', argv: ['go', 'test'] }] }], setup: [{ id: 'deps', argv: ['npm', 'ci'] }] }
+    const d = toDraft(saved)
+    expect(crewKey(d)).toBe(crewKey(saved))
+    const typing = { ...d, tasks: d.tasks!.map((t) => ({ ...t, checks: t.checks!.map((c) => ({ ...c, pending: '"unclosed' })) })) }
+    expect(crewKey(typing)).not.toBe(crewKey(saved))
+    expect(toCrewInput(typing).tasks![0]!.checks).toEqual([{ id: 'unit', argv: ['go', 'test'] }])
+    const setupTyping = { ...d, setup: d.setup!.map((c) => ({ ...c, pending: 'x' })) }
+    expect(crewKey(setupTyping)).not.toBe(crewKey(saved))
+    expect(toCrewInput(setupTyping).setup).toEqual([{ id: 'deps', argv: ['npm', 'ci'] }])
+  })
 })
 
 describe('summaryOf', () => {

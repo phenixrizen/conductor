@@ -94,14 +94,24 @@ function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
   crew.value = { ...crew.value, [key]: value }
 }
 
-/** The members as the table hands them back; in a crew with tasks, a renamed member's tasks follow its name. */
+/** A member's name as its tasks still carry it while its own is blank (cleared to be retyped), by member key: the tasks follow the name typed next. */
+const namedAs = new Map<number, string>()
+
+/** The members as the table hands them back; in a crew with tasks, a renamed member's tasks follow its name, through a blank. */
 function setMembers(next: DraftMember[]) {
   const before = new Map(crew.value.members.map((m) => [m.key, m.name]))
   let tasks = crew.value.tasks
   if (tasks) {
     for (const m of next) {
       const old = before.get(m.key)
-      if (old && old !== m.name) tasks = tasksRenamed(tasks, old, m.name)
+      if (old === undefined || old === m.name) continue
+      if (!m.name) {
+        if (old) namedAs.set(m.key, old)
+        continue
+      }
+      const from = old || namedAs.get(m.key)
+      if (from) tasks = tasksRenamed(tasks, from, m.name)
+      namedAs.delete(m.key)
     }
   }
   crew.value = { ...crew.value, members: next, tasks }
