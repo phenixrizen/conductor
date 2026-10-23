@@ -129,7 +129,14 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		// The spell passes: the last answered ping ages past the bound.
+		// The pings under way end (keepHearing pings no more with no link
+		// held; one noted just as the link went completes within a round
+		// trip, and a tick's worth of quiet sees the last of them out), so
+		// none completes after the lapse and vouches again; then the spell
+		// passes: the last answered ping ages past the bound.
+		untilPingsDone(t, a.live.Load())
+		time.Sleep(firstPing)
+		untilPingsDone(t, a.live.Load())
 		a.live.Load().lapse()
 		untilVouches(t, a, false)
 		srv.pongs.Store(pongHold)
@@ -142,6 +149,24 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 }
 
 var firstCases = []string{"start", "reconnect", "idle"}
+
+// untilPingsDone waits until no ping of l waits for its pong.
+func untilPingsDone(t *testing.T, l *connLive) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		l.mu.Lock()
+		n := l.underWay
+		l.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d pings still under way", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 // untilLive waits until the host's control writer is up, with the
 // connection's liveness it pings on.
