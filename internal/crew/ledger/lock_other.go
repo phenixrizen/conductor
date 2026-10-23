@@ -2,12 +2,10 @@
 
 package ledger
 
-import "time"
-
 type ownerLock struct{}
 
-func takeOwnerLock(path string, wait time.Duration) (*ownerLock, string, error) {
-	return nil, "the owner lock is not supported on this platform", nil
+func takeOwnerLock(path string) (*ownerLock, string, bool, error) {
+	return nil, "the owner lock is not supported on this platform", false, nil
 }
 
 func (*ownerLock) release() {}

@@ -187,18 +187,77 @@ func TestTheOwnerLockHoldsAcrossProcesses(t *testing.T) {
 	old := LockWait
 	LockWait = 300 * time.Millisecond
 	t.Cleanup(func() { LockWait = old })
+	// Open does not wait: the ledger is read-only at once, waiting for the
+	// lock, and says who holds it; past LockWait it stops waiting.
+	began := time.Now()
 	l, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if took := time.Since(began); took > 200*time.Millisecond {
+		t.Fatalf("Open waited %v for a held lock", took)
+	}
 	ro, why := l.ReadOnly()
-	if !ro || !strings.Contains(why, "another server holds") || !strings.Contains(why, "pid") {
+	if !ro || !strings.HasPrefix(why, "waiting for the owner lock: another server holds") || !strings.Contains(why, "pid") {
 		t.Fatalf("read-only %v: %s", ro, why)
 	}
+	if _, err := l.Transition(context.Background(), "team-00000001", func(tx *Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a transition while waiting: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		ro, why = l.ReadOnly()
+		if !strings.HasPrefix(why, "waiting") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still waiting after LockWait: %s", why)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !ro || !strings.HasPrefix(why, "another server holds") {
+		t.Fatalf("after LockWait: %v %s", ro, why)
+	}
 	l.Close()
-	// The helper lets go: the lock is ours.
+	// Let go within the wait, the lock is taken in the background: the
+	// ledger turns the owner's, and OnOwned's function runs once.
+	LockWait = 5 * time.Second
+	l, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ro, why := l.ReadOnly(); !ro || !strings.HasPrefix(why, "waiting") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	owned := make(chan struct{}, 2)
+	l.OnOwned(func() { owned <- struct{}{} })
 	stdin.Close()
 	helper.Wait()
+	select {
+	case <-owned:
+	case <-time.After(4 * time.Second):
+		ro, why := l.ReadOnly()
+		t.Fatalf("the lock was not taken once let go: read-only %v: %s", ro, why)
+	}
+	if ro, why := l.ReadOnly(); ro {
+		t.Fatalf("still read-only: %s", why)
+	}
+	if _, err := l.Transition(context.Background(), "team-00000001", func(tx *Tx) error {
+		if err := tx.PutRun(RunRow{ID: "team-00000001", CrewID: "team", State: RunRunning, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		return tx.Event("run.created", nil)
+	}); err != nil {
+		t.Fatalf("a transition as the late owner: %v", err)
+	}
+	l.OnOwned(func() { owned <- struct{}{} })
+	select {
+	case <-owned:
+		t.Fatal("OnOwned ran twice")
+	case <-time.After(200 * time.Millisecond):
+	}
+	l.Close()
+	// A new Open takes it at once.
 	l = openLedger(t, dir)
 	if ro, why := l.ReadOnly(); ro {
 		t.Fatalf("still read-only: %s", why)
@@ -578,8 +637,8 @@ func TestADamagedHeaderDoesNotFailOpen(t *testing.T) {
 // ledger says so, and Open does not fail.
 func TestUnsupportedLocksWithNoDatabaseDoNotFailOpen(t *testing.T) {
 	old := takeLock
-	takeLock = func(path string, wait time.Duration) (*ownerLock, string, error) {
-		return nil, "the filesystem of " + path + " does not support locks (test)", nil
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		return nil, "the filesystem of " + path + " does not support locks (test)", false, nil
 	}
 	t.Cleanup(func() { takeLock = old })
 	l, err := Open(filepath.Join(t.TempDir(), "runs"))
@@ -682,5 +741,79 @@ func TestRecoverConcludesTheOpenRowsOfAStoppedRun(t *testing.T) {
 	}
 	if rec, err := l.Recover(ctx); err != nil || len(rec) != 0 {
 		t.Fatalf("second recover: %+v %v", rec, err)
+	}
+}
+
+// A run's logs are bounded in all: a log that would pass MaxRunLogs is not
+// kept, its hash and tail are; a row's own log, replaced, counts no more.
+func TestARunsLogsAreBoundedInAll(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	newRun(t, l, "team-00000001")
+	// The budget scaled down: 64 logs of a KiB fill it.
+	const unit = 1 << 10
+	old := maxRunLogs
+	maxRunLogs = 64 * unit
+	t.Cleanup(func() { maxRunLogs = old })
+	put := func(id string, k int, size int) CheckRow {
+		var got CheckRow
+		if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+			if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskVerifying}); err != nil {
+				return err
+			}
+			if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now()}); err != nil {
+				return err
+			}
+			return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: id, K: k, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, size), LogSHA256: "abc", Tail: "tail"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		checks, _ := l.Checks(ctx, "team-00000001", "build", 1, true)
+		for _, c := range checks {
+			if c.ID == id && c.K == k {
+				got = c
+			}
+		}
+		return got
+	}
+	// 64 logs of a unit fill the budget; the 65th is dropped, hash and tail kept.
+	for i := range 64 {
+		if c := put(fmt.Sprintf("c%02d", i), 1, unit); c.LogDropped || len(c.Log) != unit {
+			t.Fatalf("log %d: dropped %v, %d bytes", i, c.LogDropped, len(c.Log))
+		}
+	}
+	if c := put("c64", 1, unit); !c.LogDropped || c.Log != nil || c.LogSHA256 != "abc" || c.Tail != "tail" {
+		t.Fatalf("the 65th: %+v", c)
+	}
+	// A row's own log replaced counts no more: the same row again fits.
+	if c := put("c00", 1, unit); c.LogDropped || len(c.Log) != unit {
+		t.Fatalf("a replaced log: dropped %v, %d bytes", c.LogDropped, len(c.Log))
+	}
+	// One byte more over the budget is dropped, one byte less kept.
+	if c := put("c65", 1, 1); !c.LogDropped {
+		t.Fatal("a byte past the budget was kept")
+	}
+	if c := put("c00", 1, unit-1); c.LogDropped {
+		t.Fatal("a log within the budget was dropped")
+	}
+	if c := put("c65", 2, 1); c.LogDropped || len(c.Log) != 1 {
+		t.Fatalf("the freed byte: %+v", c)
+	}
+	// A row marked dropped stores no bytes, whatever it carries.
+	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "c64", K: 1, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit), LogDropped: true, LogSHA256: "abc", Tail: "tail"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checks, _ := l.Checks(ctx, "team-00000001", "build", 1, true)
+	var total int
+	for _, c := range checks {
+		total += len(c.Log)
+		if c.ID == "c64" && (!c.LogDropped || c.Log != nil) {
+			t.Fatalf("a dropped row with bytes: %+v", c)
+		}
+	}
+	if total > 64*unit {
+		t.Fatalf("%d bytes of logs kept, past the budget", total)
 	}
 }

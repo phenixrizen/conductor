@@ -2683,7 +2683,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gapless `seq`). `Recover` at start turns what the last owner left open
   into interrupted or uncertain and writes one `recovered` event per run,
   once. `Prune` deletes a closed run's rows when nothing cites it. The
-  owner lock `runs/owner.lock` (flock, a 10 s wait): held by another
+  owner lock `runs/owner.lock` (flock, tried once at open and then in the
+  background for 10 s, so a server replacing one still shutting down
+  serves at once and takes the lock as it is let go): held by another
   server, unsupported by the filesystem, a database that fails its check or
   one a newer Conductor wrote all open the ledger read-only, logged, the
   legacy runs untouched. `Run.Managed` (omitempty) marks a managed run's

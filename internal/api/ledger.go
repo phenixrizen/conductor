@@ -29,9 +29,23 @@ func openLedger(ctx context.Context, st *store.Store, log logger) *ledger.Ledger
 		return nil
 	}
 	if ro, why := ld.ReadOnly(); ro {
+		// Held by another server, this one serves meanwhile and takes the
+		// lock as it is let go (the server it replaces shutting down):
+		// then it concludes what that one left open.
 		log.Warn("managed runs are off: the ledger is read-only", "why", why)
+		ld.OnOwned(func() {
+			log.Info("the ledger's owner lock was taken: managed runs are on")
+			recoverLedger(context.Background(), ld, log)
+		})
 		return ld
 	}
+	recoverLedger(ctx, ld, log)
+	return ld
+}
+
+// recoverLedger concludes what the last owner left open (ledger.Recover)
+// and logs each run touched.
+func recoverLedger(ctx context.Context, ld *ledger.Ledger, log logger) {
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	recovered, err := ld.Recover(rctx)
@@ -41,7 +55,6 @@ func openLedger(ctx context.Context, st *store.Store, log logger) *ledger.Ledger
 	for _, r := range recovered {
 		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks, "commands", r.Commands)
 	}
-	return ld
 }
 
 // logger is what openLedger logs with.

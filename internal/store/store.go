@@ -135,6 +135,9 @@ func (s *Store) Load(name string, v any) (bool, error) {
 // does. It passes: a caller may read again.
 var ErrChanged = errors.New("changed while it was opened")
 
+// ErrTooLarge says a file is over the limit a bounded load was given.
+var ErrTooLarge = errors.New("too large")
+
 // LoadLimit is Load for a document of at most limit bytes. A larger one is an
 // error that says so, and is not read past the limit. Only a regular file is
 // read: a symbolic link, which List leaves out too, is refused rather than
@@ -177,7 +180,7 @@ func (s *Store) LoadLimit(name string, v any, limit int64) (bool, error) {
 		return false, err
 	}
 	if int64(len(b)) > limit {
-		return false, fmt.Errorf("store: %s is more than %d bytes", name, limit)
+		return false, fmt.Errorf("store: %s is more than %d bytes: %w", name, limit, ErrTooLarge)
 	}
 	if err := DecodeStrict(b, v); err != nil {
 		return false, fmt.Errorf("store: parse %s: %w", name, err)

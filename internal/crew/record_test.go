@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/phenixrizen/conductor/internal/proto"
 	"github.com/phenixrizen/conductor/internal/session"
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -466,6 +467,67 @@ func TestAManagedRecordIsTheLedgersToKeep(t *testing.T) {
 	}
 	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed == nil || r.Managed.Revision != 8 || r.Name != "newer" {
 		t.Fatalf("an unversioned snapshot landed: %+v", r)
+	}
+	// A record is written to fit the listing's bound: a snapshot with a
+	// chat and a log past it is trimmed, newest kept, and stays a managed
+	// record an older or unversioned snapshot cannot replace.
+	big := managed
+	big.Managed = &Managed{Revision: 9}
+	big.Chat = []proto.ChatMessage{{ID: "old", Text: strings.Repeat("x", 3<<20)}, {ID: "new", Text: "kept"}}
+	big.Log = []session.ActivityEntry{{Type: session.ActivityStatus, Message: strings.Repeat("y", 5<<20)}}
+	if err := rs.Save(big); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "team-0000aaaa.json")); err != nil || fi.Size() > maxRecordSize {
+		t.Fatalf("the record was not trimmed to the bound: %v %v", fi, err)
+	}
+	if r, _, err := rs.Get("team-0000aaaa"); err != nil || r.Managed == nil || r.Managed.Revision != 9 || len(r.Chat) != 1 || r.Chat[0].ID != "new" || len(r.Log) != 0 {
+		t.Fatalf("the trimmed record: %v %+v", err, r)
+	}
+	if err := rs.Save(unversioned); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := rs.Get("team-0000aaaa"); r.Managed == nil || r.Managed.Revision != 9 {
+		t.Fatalf("an unversioned snapshot replaced the trimmed record: %+v", r)
+	}
+	// A record over the bound on disk (an older Conductor's) is neither
+	// replaced by an older or unversioned snapshot nor pruned: Save reads
+	// it with a wider bound for its revision, and the prune keeps what it
+	// cannot read for size.
+	huge := managed
+	huge.Managed = &Managed{Revision: 10}
+	huge.Log = []session.ActivityEntry{{Type: session.ActivityStatus, Message: strings.Repeat("z", 5<<20)}}
+	b, err := store.Encode(huge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "team-0000aaaa.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(unversioned); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(managed); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "team-0000aaaa.json")); err != nil || fi.Size() < 5<<20 {
+		t.Fatalf("the oversized managed record was written over or pruned: %v %v", fi, err)
+	}
+	// One that cannot be read at all is not written over either.
+	if err := os.WriteFile(filepath.Join(dir, "team-0000aaaa.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(unversioned); err == nil {
+		t.Fatal("a record that cannot be read was written over")
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "team-0000aaaa.json")); string(b) != "{not json" {
+		t.Fatalf("the unreadable record changed: %q", b)
+	}
+	if err := os.Remove(filepath.Join(dir, "team-0000aaaa.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := rs.Save(newer); err != nil {
+		t.Fatal(err)
 	}
 	// The records open: the managed run, still running, is left to the
 	// ledger; a legacy run still running is interrupted.

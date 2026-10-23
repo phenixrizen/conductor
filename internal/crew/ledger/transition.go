@@ -59,11 +59,11 @@ func (t *Tx) Run() (RunRow, bool, error) {
 // it). fn's error, or the commit's, undoes everything. ErrReadOnly when the
 // ledger takes no writes.
 func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) error) (int64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.readOnly {
 		return 0, fmt.Errorf("%w: %s", ErrReadOnly, l.why)
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
 		return 0, ErrClosed
 	}
@@ -203,7 +203,10 @@ func (t *Tx) PutAttempt(r AttemptRow) error {
 	return err
 }
 
-// PutCheck puts a check's row, new or changed; its log at most MaxLog.
+// PutCheck puts a check's row, new or changed; its log at most MaxLog, and
+// the run's logs at most MaxRunLogs in all: a log that would pass that is
+// not kept (LogDropped), its hash and tail are. The row's own log, when it
+// is replaced, counts no more.
 func (t *Tx) PutCheck(r CheckRow) error {
 	if len(r.Log) > MaxLog {
 		return fmt.Errorf("%w: the log is %d bytes", ErrTooLarge, len(r.Log))
@@ -212,15 +215,29 @@ func (t *Tx) PutCheck(r CheckRow) error {
 	if err != nil {
 		return err
 	}
+	if r.LogDropped {
+		r.Log = nil // dropped is dropped: no bytes behind the mark
+	}
+	if len(r.Log) > 0 {
+		var kept int64
+		if err := t.tx.QueryRowContext(t.ctx, `SELECT COALESCE(SUM(LENGTH(log)), 0) FROM checks WHERE run_id = ? AND NOT (task_id = ? AND n = ? AND id = ? AND k = ?)`,
+			t.runID, r.TaskID, r.N, r.ID, r.K).Scan(&kept); err != nil {
+			return err
+		}
+		if kept+int64(len(r.Log)) > maxRunLogs {
+			r.Log, r.LogDropped = nil, true
+		}
+	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO checks (run_id, task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at,
-			exit, signal, timed_out, killed, stable, truncated, total, log, log_sha256, tail)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, task_id, n, id, k) DO UPDATE SET argv = excluded.argv, dir = excluded.dir, subject = excluded.subject, state = excluded.state,
 			pid = excluded.pid, pgroup = excluded.pgroup, process_started_at = excluded.process_started_at, started_at = excluded.started_at,
 			finished_at = excluded.finished_at, exit = excluded.exit, signal = excluded.signal, timed_out = excluded.timed_out, killed = excluded.killed,
-			stable = excluded.stable, truncated = excluded.truncated, total = excluded.total, log = excluded.log, log_sha256 = excluded.log_sha256, tail = excluded.tail`,
+			stable = excluded.stable, truncated = excluded.truncated, total = excluded.total, log = excluded.log, log_dropped = excluded.log_dropped,
+			log_sha256 = excluded.log_sha256, tail = excluded.tail`,
 		t.runID, r.TaskID, r.N, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
-		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, r.LogSHA256, r.Tail)
+		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail)
 	return err
 }
 
@@ -341,7 +358,7 @@ func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLo
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, `+logCol+`, log_sha256, tail
+	rows, err := db.QueryContext(ctx, `SELECT task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, `+logCol+`, log_dropped, log_sha256, tail
 		FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
 	if err != nil {
 		return nil, err
@@ -351,11 +368,12 @@ func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLo
 	for rows.Next() {
 		r := CheckRow{RunID: runID}
 		var argv, pstarted, started, finished string
-		var timedOut, killed, stable, truncated int
+		var timedOut, killed, stable, truncated, dropped int
 		var log []byte
-		if err := rows.Scan(&r.TaskID, &r.N, &r.ID, &r.K, &argv, &r.Dir, &r.Subject, &r.State, &r.PID, &r.Group, &pstarted, &started, &finished, &r.Exit, &r.Signal, &timedOut, &killed, &stable, &truncated, &r.Total, &log, &r.LogSHA256, &r.Tail); err != nil {
+		if err := rows.Scan(&r.TaskID, &r.N, &r.ID, &r.K, &argv, &r.Dir, &r.Subject, &r.State, &r.PID, &r.Group, &pstarted, &started, &finished, &r.Exit, &r.Signal, &timedOut, &killed, &stable, &truncated, &r.Total, &log, &dropped, &r.LogSHA256, &r.Tail); err != nil {
 			return nil, err
 		}
+		r.LogDropped = dropped != 0
 		if argv != "" {
 			if err := json.Unmarshal([]byte(argv), &r.Argv); err != nil {
 				return nil, err
@@ -461,8 +479,8 @@ type Recovered struct {
 // finished keeps its state. One `recovered` event per run touched says
 // so. A second call finds nothing open and writes nothing.
 func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
-	if l.readOnly {
-		return nil, fmt.Errorf("%w: %s", ErrReadOnly, l.why)
+	if ro, why := l.ReadOnly(); ro {
+		return nil, fmt.Errorf("%w: %s", ErrReadOnly, why)
 	}
 	runs, err := l.runs(ctx, `WHERE state = ?
 		OR EXISTS (SELECT 1 FROM attempts a WHERE a.run_id = runs.id AND a.state IN (?, ?, ?, ?, ?))
