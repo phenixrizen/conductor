@@ -554,6 +554,14 @@ describe('tasks in the editor', () => {
     const d = toDraft({ ...info, isolation: 'worktree', tasks: [{ id: 'x', member: info.members[0]!.name, kind: 'work', instructions: 'X.' }] })
     expect(d.tasks![0]!.memberKey).toBe(d.members[0]!.key)
   })
+  it('a task whose member is gone is flagged, even when another member carries the name now', () => {
+    const dev = { name: 'dev', key: 1, start: { when: 'task' as const } }
+    const t = { ...draftTask({ name: 'dev', key: 2 }), id: 'a', instructions: 'A.' }
+    expect(taskProblems({ isolation: 'worktree', members: [dev], tasks: [t] })).toEqual(['Task a: its member is gone (dev): choose one'])
+    expect(taskProblems({ isolation: 'worktree', members: [dev], tasks: [{ ...t, memberKey: 1 }] })).toEqual([])
+    // Keyless members (a saved crew's rules) judge by name alone.
+    expect(taskProblems({ isolation: 'worktree', members: [{ name: 'dev', start: { when: 'task' } }], tasks: [t] })).toEqual([])
+  })
   it('reads a task start', () => {
     expect(startFrom('task')).toEqual({ when: 'task' })
     expect(startWords({ when: 'task' }).text).toBe('By its tasks')

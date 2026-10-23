@@ -171,7 +171,7 @@ export function checkProblems(c: DraftCheck, what: string, taken: readonly strin
 }
 
 /** What a crew with tasks and its members look like to the task rules: a saved crew's tasks or the editor's. */
-export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'>> }
+export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'> & { key?: number }> }
 
 /** Characters as the server counts them (runes), not UTF-16 units. */
 const chars = (s: string) => [...s].length
@@ -199,16 +199,22 @@ export function taskProblems(c: TaskShape): string[] {
     setupIds.push(ch.id)
   }
   const names = c.members.map((m) => m.name)
+  // A draft task is owned by a member key: one no member has any more (removed, even when another member carries the name now) needs a
+  // member chosen, so a save never moves the task to a namesake.
+  const keys = new Set(c.members.flatMap((m) => (m.key === undefined ? [] : [m.key])))
   const ids: string[] = []
   const kinds = new Map<string, string>()
-  for (const t of tasks) {
+  for (const [i, t] of tasks.entries()) {
     const what = t.id ? `Task ${t.id}` : 'A task'
     const idErr = taskIdError(t.id, ids)
     if (idErr) out.push(`${what}: ${idErr}`)
     ids.push(t.id)
     kinds.set(t.id, t.kind)
     if (t.kind !== 'work' && t.kind !== 'review') out.push(`${what}: the kind is work or review`)
-    if (!names.includes(t.member)) out.push(`${what}: ${t.member ? `${t.member} is not a member` : 'choose its member'}`)
+    const own = (c.tasks ?? [])[i]
+    const orphan = own !== undefined && 'key' in own && own.memberKey !== undefined && keys.size > 0 && !keys.has(own.memberKey)
+    if (orphan) out.push(`${what}: its member is gone${t.member ? ` (${t.member})` : ''}: choose one`)
+    else if (!names.includes(t.member)) out.push(`${what}: ${t.member ? `${t.member} is not a member` : 'choose its member'}`)
     if (chars(t.instructions) > TASK_LIMITS.instructions) out.push(`${what}: the instructions are at most ${TASK_LIMITS.instructions} characters`)
     if (t.instructions.includes('\0')) out.push(`${what}: the instructions contain NUL`)
     const draft = drafts.find((d) => d.id === t.id && d.key !== undefined)
