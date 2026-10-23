@@ -325,10 +325,15 @@ func (c Crew) checkTasks(names []string) error {
 	if len(c.Setup) > maxChecks {
 		return invalidf("too many setup commands (at most %d)", maxChecks)
 	}
+	setupIDs := make([]string, 0, len(c.Setup))
 	for i, ch := range c.Setup {
 		if err := ch.validate(fmt.Sprintf("setup[%d]", i)); err != nil {
 			return err
 		}
+		if slices.Contains(setupIDs, ch.ID) {
+			return invalidf("setup[%d]: id %s is used twice", i, quote(ch.ID))
+		}
+		setupIDs = append(setupIDs, ch.ID)
 	}
 	ids := make([]string, 0, len(c.Tasks))
 	kinds := map[string]string{}
@@ -385,23 +390,33 @@ func (c Crew) checkTasks(names []string) error {
 			}
 		}
 	}
-	// A path from a task through its needs ends: a task seen twice on one
-	// path is a cycle.
+	// Every path from a task through its needs ends: a depth-first walk
+	// that finds a task it is still visiting has a cycle, and a task it has
+	// finished with is not walked again, so a dense graph costs its edges,
+	// never its paths.
 	needs := map[string][]string{}
 	for _, t := range c.Tasks {
 		needs[t.ID] = t.Needs
 	}
+	const visiting, done = 1, 2
+	state := map[string]int{}
 	var walk func(id string, path []string) error
 	walk = func(id string, path []string) error {
-		if slices.Contains(path, id) {
-			return invalidf("task %s: the needs go round in a cycle, so it never starts: %s", quote(path[0]), strings.Join(append(path, id), " needs "))
+		switch state[id] {
+		case done:
+			return nil
+		case visiting:
+			cycle := append(slices.Clone(path[slices.Index(path, id):]), id)
+			return invalidf("task %s: the needs go round in a cycle, so it never starts: %s", quote(cycle[0]), strings.Join(cycle, " needs "))
 		}
+		state[id] = visiting
 		path = append(path, id)
 		for _, n := range needs[id] {
 			if err := walk(n, path); err != nil {
 				return err
 			}
 		}
+		state[id] = done
 		return nil
 	}
 	for _, t := range c.Tasks {

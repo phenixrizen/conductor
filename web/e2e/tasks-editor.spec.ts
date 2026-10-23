@@ -47,6 +47,7 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
 
   const bar = page.locator('[data-unsaved-bar]')
   const save = bar.getByRole('button', { name: 'Save' })
+  await expect(save).not.toHaveAttribute('data-save-problem', /./)
   await expect(save).toBeEnabled()
 
   // A cycle: build needs review, which needs build. Save is blocked, and
@@ -56,6 +57,7 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   await page.keyboard.press('Escape')
   await expect(tasks.nth(0).locator('[data-task-error]')).toContainText('cycle')
   await expect(save).toBeDisabled()
+  await expect(save).toHaveAttribute('data-save-problem', /cycle/)
   await tasks.nth(0).locator('[data-task-needs]').click()
   await page.getByRole('option', { name: 'review' }).click()
   await page.keyboard.press('Escape')

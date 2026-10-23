@@ -3,8 +3,10 @@ package crew
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/phenixrizen/conductor/internal/store"
 )
@@ -146,5 +148,83 @@ func TestACrewWithTasksRoundTrips(t *testing.T) {
 	}
 	if !strings.Contains(string(legacy), `"when":"immediately"`) {
 		t.Fatalf("legacy JSON: %s", legacy)
+	}
+}
+
+// A dense graph (every task needing every task before it) is valid and
+// checked in the time its edges take, not its paths.
+func TestValidateChecksADenseGraphQuickly(t *testing.T) {
+	c := managedCrew()
+	c.Tasks = nil
+	for i := range maxTasks - 1 { // 127 work tasks, each needing every one before it, and the review
+		tk := Task{ID: fmt.Sprintf("t%03d", i), Member: "builder", Kind: TaskWork, Instructions: "x"}
+		for j := range i {
+			tk.Needs = append(tk.Needs, fmt.Sprintf("t%03d", j))
+		}
+		c.Tasks = append(c.Tasks, tk)
+	}
+	c.Tasks = append(c.Tasks, Task{ID: "review", Member: "reviewer", Kind: TaskReview, Instructions: "x", Needs: []string{"t000"}})
+	start := time.Now()
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("a dense graph took %v", d)
+	}
+	// With one edge back, the cycle is named from where it closes.
+	c.Tasks[0].Needs = []string{"t005"}
+	err := c.Validate()
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "task \"t000\": the needs go round in a cycle") || !strings.Contains(err.Error(), "t005 needs t000") {
+		t.Fatalf("the cycle: %v", err)
+	}
+}
+
+// A refused operation on a managed run leaves the engine usable: the lock
+// it looked the run up under is released.
+func TestAManagedRunsRefusalLeavesTheEngineUsable(t *testing.T) {
+	e, _ := newEngine(t)
+	c := managedCrew()
+	r := e.add(c, "", "")
+	e.launched(r)
+	ctx := t.Context()
+	if err := e.StartMember(ctx, r.id, "builder"); !errors.Is(err, ErrManaged) {
+		t.Fatalf("start: %v", err)
+	}
+	if err := e.AddMember(ctx, r.id, immediate("extra", "x")); !errors.Is(err, ErrManaged) {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := e.ResumeMember(ctx, r.id, "builder", ""); !errors.Is(err, ErrManaged) {
+		t.Fatalf("resume member: %v", err)
+	}
+	if _, err := e.ResumeRun(ctx, r.id); !errors.Is(err, ErrManaged) {
+		t.Fatalf("resume run: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		e.List()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the engine is locked after the refusals")
+	}
+}
+
+// A member started by its tasks is not added to a legacy run: it would
+// never start by a rule, and would make the run read as managed.
+func TestATaskMemberIsNotAddedToALegacyRun(t *testing.T) {
+	e, fl := newEngine(t)
+	fl.onLaunch = askAtOnce
+	run, err := e.Launch(t.Context(), testCrew(immediate("lead", "x")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.AddMember(t.Context(), run.ID, taskMember("worker"))
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `only for a crew with tasks`) {
+		t.Fatalf("add: %v", err)
+	}
+	if got, _ := e.Get(run.ID); len(got.Members) != 1 || got.managed() {
+		t.Fatalf("the run after the refusal: %+v", got)
 	}
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentInfo, CrewInfo, CrewMember, CrewStart, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, CrewInfo, CrewMember, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
 import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, draftTask, tasksRenamed } from './crews'
 import type { TaskShape } from './crews'
@@ -445,7 +445,9 @@ describe('broadcastSelection', () => {
 })
 
 describe('taskProblems', () => {
-  const managed = (): TaskShape => ({
+  // The fixtures hold plain tasks, so an edit can reach their needs and checks.
+  type Fixture = Omit<TaskShape, 'tasks' | 'members'> & { tasks: CrewTask[]; members: Array<{ name: string; start: CrewStart }> }
+  const managed = (): Fixture => ({
     isolation: 'worktree',
     members: [
       { name: 'builder', start: { when: 'task' } },
@@ -466,7 +468,7 @@ describe('taskProblems', () => {
     expect(taskProblems({ isolation: 'none', members: [], setup: [{ id: 'x', argv: ['true'] }] })).toEqual(['Setup commands need tasks'])
   })
   it('names each rule the server has, in its words', () => {
-    const cases: Array<[string, (c: TaskShape) => void, string]> = [
+    const cases: Array<[string, (c: Fixture) => void, string]> = [
       ['a member not by tasks', (c) => (c.members[0]!.start = { when: 'immediately' }), 'builder must start by its tasks'],
       ['no worktrees', (c) => (c.isolation = 'none'), 'gives each member a git worktree'],
       ['a bad id', (c) => (c.tasks![0]!.id = 'Build.1'), 'Task Build.1: Lower-case'],
@@ -487,7 +489,7 @@ describe('taskProblems', () => {
         },
         'go round in a cycle: build needs docs needs build',
       ],
-      ['a member with no task', (c) => (c.members = [...c.members, { name: 'idle', start: { when: 'task' } }]), 'idle has no task'],
+      ['a member with no task', (c) => c.members.push({ name: 'idle', start: { when: 'task' } }), 'idle has no task'],
       ['a setup command with a bad id', (c) => (c.setup![0]!.id = 'Deps'), 'Setup command 1: Lower-case'],
     ]
     for (const [name, edit, words] of cases) {
@@ -512,7 +514,7 @@ describe('tasks in the editor', () => {
     expect(toCrewInput(defaultCrew([]))).not.toHaveProperty('tasks')
   })
   it('makes a task id from the member name, not one taken', () => {
-    expect(draftTask('builder')).toEqual({ id: 'builder', member: 'builder', kind: 'work', instructions: '' })
+    expect(draftTask('builder')).toMatchObject({ id: 'builder', member: 'builder', kind: 'work', instructions: '', needKeys: [] })
     expect(draftTask('builder', ['builder']).id).toBe('builder-2')
     expect(draftTask('a.b', []).id).toBe('a-b')
   })

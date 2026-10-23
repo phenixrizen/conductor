@@ -62,6 +62,24 @@ func TestAManagedCrewIsSavedAndNotYetRun(t *testing.T) {
 	if err := e.srv.records.Save(rec); err != nil {
 		t.Fatal(err)
 	}
+	// A task-started member is refused on a legacy run's add-member route too.
+	lead := map[string]any{"name": "Legacy", "goal": "g", "cwd": e.root, "where": "server", "isolation": "none",
+		"members": []map[string]any{{"name": "lead", "agentId": "cat", "prompt": "", "start": map[string]any{"when": "immediately"}}}}
+	resp, out = e.do("POST", "/api/crews", adminToken, lead)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("legacy crew: %d %v", resp.StatusCode, out)
+	}
+	legacyID, _ := out["crew"].(map[string]any)["id"].(string)
+	resp, out = e.do("POST", "/api/crews/"+legacyID+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("legacy launch: %d %v", resp.StatusCode, out)
+	}
+	runID, _ := out["run"].(map[string]any)["id"].(string)
+	t.Cleanup(func() { e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil) })
+	resp, out = e.do("POST", "/api/runs/"+runID+"/members", adminToken, map[string]any{"name": "worker", "agentId": "cat", "prompt": "", "start": map[string]any{"when": "task"}})
+	if code, msg := apiErr(out); resp.StatusCode != http.StatusBadRequest || code != "invalid_crew" || !strings.Contains(msg, "only for a crew with tasks") {
+		t.Fatalf("add a task member: %d %v", resp.StatusCode, out)
+	}
 	resp, out = e.do("POST", "/api/runs/team-0000aaaa/resume", adminToken, nil)
 	if code, _ := apiErr(out); resp.StatusCode != http.StatusConflict || code != "managed_run" {
 		t.Fatalf("resume: %d %v", resp.StatusCode, out)

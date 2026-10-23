@@ -1,23 +1,36 @@
 <script setup lang="ts">
-import type { CrewCheck } from '~/composables/useSessions'
-import { TASK_LIMITS, checkProblems } from '~/utils/crews'
+import { watch } from 'vue'
+import { TASK_LIMITS, checkProblems, type DraftCheck } from '~/utils/crews'
 
 /**
  * The commands of a task's checks or a crew's setup (#334): an id, an argv
  * as chips (ArgvInput: never a shell line, a quoted argument one chip) and a
  * timeout in seconds. The list's owner names what they are.
  */
-const checks = defineModel<CrewCheck[]>({ default: () => [] })
+const checks = defineModel<DraftCheck[]>({ default: () => [] })
 const props = defineProps<{ what: string; max?: number }>()
 
 const max = computed(() => props.max ?? TASK_LIMITS.checks)
 
-function update(i: number, patch: Partial<CrewCheck>) {
-  checks.value = checks.value.map((c, j) => (j === i ? { ...c, ...patch } : c))
+// Two updates in one tick (ArgvInput commits its chips and clears its text
+// together) each see the list as the parent last passed it, so the later
+// would undo the earlier: the latest list sent up stands until the parent's
+// comes back.
+let latest: DraftCheck[] | null = null
+watch(checks, () => {
+  latest = null
+})
+function send(next: DraftCheck[]) {
+  latest = next
+  checks.value = next
+}
+
+function update(i: number, patch: Partial<DraftCheck>) {
+  send((latest ?? checks.value).map((c, j) => (j === i ? { ...c, ...patch } : c)))
 }
 
 function remove(i: number) {
-  checks.value = checks.value.filter((_, j) => j !== i)
+  send((latest ?? checks.value).filter((_, j) => j !== i))
 }
 
 function add() {
@@ -28,12 +41,12 @@ function add() {
 }
 
 /** The first problem of a row, for the mark under it. */
-function problem(c: CrewCheck, i: number): string {
+function problem(c: DraftCheck, i: number): string {
   const taken = checks.value.filter((_, j) => j !== i).map((x) => x.id)
   return checkProblems(c, props.what, taken)[0]?.replace(`${props.what}: `, '') ?? ''
 }
 
-function timeoutOf(c: CrewCheck): string {
+function timeoutOf(c: DraftCheck): string {
   return c.timeoutSeconds ? String(c.timeoutSeconds) : ''
 }
 
@@ -49,7 +62,8 @@ function setTimeout(i: number, text: string) {
       <div class="flex flex-wrap items-start gap-2">
         <UInput :model-value="c.id" placeholder="id" maxlength="40" autocapitalize="off" spellcheck="false" :aria-label="`Id of ${what} ${i + 1}`" :ui="{ base: 'font-mono' }" class="w-28" @update:model-value="update(i, { id: String($event) })" />
         <div class="min-w-48 flex-1">
-          <ArgvInput :model-value="c.argv" :placeholder="`program and arguments; a quoted argument is one`" :invalid="!c.argv.length" :aria-label="`Command of ${what} ${i + 1}`" @update:model-value="update(i, { argv: $event })" />
+          <!-- The text typed and not yet a chip (an unclosed quote) stays in the draft: it blocks a save rather than vanish. -->
+          <ArgvInput :model-value="c.argv" :pending="c.pending ?? ''" :placeholder="`program and arguments; a quoted argument is one`" :invalid="!c.argv.length || !!c.pending" :aria-label="`Command of ${what} ${i + 1}`" @update:model-value="update(i, { argv: $event })" @update:pending="update(i, { pending: $event || undefined })" />
         </div>
         <UInput :model-value="timeoutOf(c)" type="number" inputmode="numeric" min="1" :max="TASK_LIMITS.timeout" :placeholder="String(TASK_LIMITS.timeoutDefault)" :aria-label="`Timeout in seconds of ${what} ${i + 1}`" class="w-24" @update:model-value="setTimeout(i, String($event))">
           <template #trailing><span class="text-xs text-muted">s</span></template>
