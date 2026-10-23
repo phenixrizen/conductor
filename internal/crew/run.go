@@ -581,6 +581,7 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 		return nil, ErrRunNotFound
 	}
 	if old.managed {
+		e.mu.Unlock()
 		return nil, ErrManaged
 	}
 	switch {
@@ -1327,6 +1328,7 @@ func (e *Engine) StartMember(ctx context.Context, runID, name string) error {
 		return ErrRunNotFound
 	}
 	if r.managed {
+		e.mu.Unlock()
 		return ErrManaged
 	}
 	m := r.member(name)
@@ -1364,6 +1366,7 @@ func (e *Engine) AddMember(ctx context.Context, runID string, m Member) error {
 		return ErrRunNotFound
 	}
 	if r.managed {
+		e.mu.Unlock()
 		return ErrManaged
 	}
 	if err := r.admit(m); err != nil {
@@ -1393,6 +1396,11 @@ func (r *run) admit(m Member) error {
 	}
 	if err := m.checkTypedPrompt(r.goal); err != nil {
 		return err
+	}
+	if m.Start.When == StartTask {
+		// A member started by its tasks belongs to a managed run, which
+		// takes no member by hand (ErrManaged, before admit).
+		return invalidf("member %s: start.when %q is only for a crew with tasks", quote(m.Name), StartTask)
 	}
 	switch {
 	case m.Start.When != StartAfter:
@@ -1897,6 +1905,7 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 		return "", ErrRunNotFound
 	}
 	if r.managed {
+		e.mu.Unlock()
 		return "", ErrManaged
 	}
 	m := r.member(name)

@@ -47,6 +47,25 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
 
   const bar = page.locator('[data-unsaved-bar]')
   const save = bar.getByRole('button', { name: 'Save' })
+  await expect(save).not.toHaveAttribute('data-save-problem', /./)
+  await expect(save).toBeEnabled()
+
+  // The lead's name cleared and typed again: its task follows the name.
+  const leadName = members.nth(0).getByLabel(/^Name of/)
+  await leadName.fill('')
+  await expect(save).toBeDisabled()
+  await leadName.fill('lead')
+  await expect(tasks.nth(0).locator('[data-task-member]')).toContainText('lead')
+  await expect(save).not.toHaveAttribute('data-save-problem', /./)
+  // The reviewer renamed through a duplicate (lead, taken) to leader and back: each task keeps its own member.
+  const reviewerName = members.nth(1).getByLabel(/^Name of/)
+  await reviewerName.fill('lead')
+  await expect(save).toBeDisabled()
+  await reviewerName.fill('leader')
+  await expect(tasks.nth(1).locator('[data-task-member]')).toContainText('leader')
+  await expect(tasks.nth(0).locator('[data-task-member]')).toContainText('lead')
+  await reviewerName.fill('reviewer')
+  await expect(tasks.nth(1).locator('[data-task-member]')).toContainText('reviewer')
   await expect(save).toBeEnabled()
 
   // A cycle: build needs review, which needs build. Save is blocked, and
@@ -56,6 +75,7 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   await page.keyboard.press('Escape')
   await expect(tasks.nth(0).locator('[data-task-error]')).toContainText('cycle')
   await expect(save).toBeDisabled()
+  await expect(save).toHaveAttribute('data-save-problem', /cycle/)
   await tasks.nth(0).locator('[data-task-needs]').click()
   await page.getByRole('option', { name: 'review' }).click()
   await page.keyboard.press('Escape')

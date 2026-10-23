@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { draftMember, memberNameFrom, tasksRenamed, type DraftCrew, type DraftMember } from '~/utils/crews'
+import { draftMember, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -94,16 +94,9 @@ function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
   crew.value = { ...crew.value, [key]: value }
 }
 
-/** The members as the table hands them back; in a crew with tasks, a renamed member's tasks follow its name. */
+/** The members as the table hands them back; in a crew with tasks, each task's member follows its draft member's name, by key. */
 function setMembers(next: DraftMember[]) {
-  const before = new Map(crew.value.members.map((m) => [m.key, m.name]))
-  let tasks = crew.value.tasks
-  if (tasks) {
-    for (const m of next) {
-      const old = before.get(m.key)
-      if (old && old !== m.name) tasks = tasksRenamed(tasks, old, m.name)
-    }
-  }
+  const tasks = crew.value.tasks ? tasksFollowMembers(crew.value.tasks, next) : undefined
   crew.value = { ...crew.value, members: next, tasks }
 }
 

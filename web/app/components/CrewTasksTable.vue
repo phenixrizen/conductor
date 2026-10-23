@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import type { CrewCheck, CrewTask } from '~/composables/useSessions'
-import { TASK_LIMITS, draftTask, taskRowProblems, type DraftMember, type TaskShape } from '~/utils/crews'
+import type { CrewCheck } from '~/composables/useSessions'
+import { TASK_LIMITS, draftTask, taskRowProblems, type DraftCheck, type DraftMember, type DraftTask, type TaskShape } from '~/utils/crews'
 
 /**
  * The tasks of a managed crew (#334): who does what, after which results,
@@ -9,7 +9,7 @@ import { TASK_LIMITS, draftTask, taskRowProblems, type DraftMember, type TaskSha
  * commands run in every new attempt worktree. The server's rules are shown
  * as they would be refused (taskRowProblems); the server still decides.
  */
-const tasks = defineModel<CrewTask[]>({ default: () => [] })
+const tasks = defineModel<DraftTask[]>({ default: () => [] })
 const setup = defineModel<CrewCheck[] | undefined>('setup', { default: undefined })
 const props = defineProps<{ members: DraftMember[]; isolation: 'none' | 'worktree' }>()
 
@@ -29,37 +29,40 @@ const cell = {
   menu: 'col-start-3 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
 }
 
-const memberItems = computed(() => props.members.filter((m) => m.name).map((m) => ({ label: m.name, value: m.name })))
+// A member is picked by its key, so its tasks follow its name; a task whose member is gone shows the last name, as not a member.
+const memberItems = computed(() => props.members.filter((m) => m.name).map((m) => ({ label: m.name, value: memberValue(m) })))
+function memberValue(m: { name: string; key?: number }): string {
+  return m.key === undefined ? m.name : `#${m.key}`
+}
+function memberOf(t: DraftTask): string {
+  const m = t.memberKey === undefined ? undefined : props.members.find((x) => x.key === t.memberKey)
+  return m ? memberValue(m) : t.member
+}
+function pickMember(i: number, value: string) {
+  const m = value.startsWith('#') ? props.members.find((x) => x.key === Number(value.slice(1))) : undefined
+  update(i, m ? { member: m.name, memberKey: m.key } : { member: value, memberKey: undefined })
+}
 const kindItems = [
   { label: 'work', value: 'work', icon: 'i-lucide-hammer' },
   { label: 'review', value: 'review', icon: 'i-lucide-search-check' },
 ]
 
-function membersFor(t: CrewTask) {
-  if (!t.member || props.members.some((m) => m.name === t.member)) return memberItems.value
+function membersFor(t: DraftTask) {
+  if (!t.member || memberOf(t) !== t.member || props.members.some((m) => m.key === undefined && m.name === t.member)) return memberItems.value
   return [...memberItems.value, { label: `${t.member} (not a member)`, value: t.member }]
 }
 
-function needsFor(t: CrewTask) {
-  return tasks.value.filter((x) => x.id && x.id !== t.id).map((x) => ({ label: x.id, value: x.id }))
+/** The other tasks, by key: a rename never touches a need. */
+function needsFor(t: DraftTask) {
+  return tasks.value.filter((x) => x.key !== t.key).map((x) => ({ label: x.id || '(no id yet)', value: x.key }))
 }
 
-function who(t: CrewTask, i: number): string {
+function who(t: DraftTask, i: number): string {
   return t.id || `task ${i + 1}`
 }
 
-function update(i: number, patch: Partial<CrewTask>) {
+function update(i: number, patch: Partial<DraftTask>) {
   tasks.value = tasks.value.map((t, j) => (j === i ? { ...t, ...patch } : t))
-}
-
-/** Renames a task; the tasks that need it follow the new id. */
-function rename(i: number, id: string) {
-  const old = tasks.value[i]?.id
-  tasks.value = tasks.value.map((t, j) => {
-    if (j === i) return { ...t, id }
-    if (old && t.needs?.includes(old)) return { ...t, needs: t.needs.map((n) => (n === old ? id : n)) }
-    return t
-  })
 }
 
 function setKind(i: number, kind: 'work' | 'review') {
@@ -69,8 +72,12 @@ function setKind(i: number, kind: 'work' | 'review') {
 
 /** Removes a task; the tasks that needed it no longer do. */
 function remove(i: number) {
-  const gone = tasks.value[i]?.id
-  tasks.value = tasks.value.filter((_, j) => j !== i).map((t) => (gone && t.needs?.includes(gone) ? { ...t, needs: t.needs.filter((n) => n !== gone) } : t))
+  const gone = tasks.value[i]?.key
+  tasks.value = tasks.value.filter((_, j) => j !== i).map((t) => (gone !== undefined && t.needKeys.includes(gone) ? { ...t, needKeys: t.needKeys.filter((k) => k !== gone) } : t))
+}
+
+function setChecks(i: number, checks: DraftCheck[]) {
+  update(i, { checks: checks.length ? checks : undefined })
 }
 
 function move(i: number, delta: number) {
@@ -83,21 +90,21 @@ function move(i: number, delta: number) {
 }
 
 function add() {
-  const member = props.members.find((m) => m.name)?.name ?? ''
+  const member = props.members.find((m) => m.name) ?? ''
   tasks.value = [...tasks.value, draftTask(member, tasks.value.map((t) => t.id))]
 }
 
-function problem(t: CrewTask): string {
+function problem(t: DraftTask): string {
   return taskRowProblems(t, shape.value)[0]?.replace(/^(Task [^:,]*|A task)[:,] ?/, '') ?? ''
 }
 
-function checksWords(t: CrewTask): string {
+function checksWords(t: DraftTask): string {
   const n = t.checks?.length ?? 0
   if (t.kind === 'review') return 'verdict'
   return n ? `${n} ${n === 1 ? 'check' : 'checks'}` : 'no checks'
 }
 
-function menu(t: CrewTask, i: number) {
+function menu(t: DraftTask, i: number) {
   return [
     [
       { label: 'Move up', icon: 'i-lucide-arrow-up', disabled: i === 0, onSelect: () => move(i, -1) },
@@ -135,12 +142,12 @@ watch(
         <span />
       </div>
 
-      <div v-for="(t, i) in tasks" :key="i" class="flex flex-col gap-2 border-b border-default px-4 py-2.5 last:border-b-0" data-crew-task :data-task-id="t.id">
+      <div v-for="(t, i) in tasks" :key="t.key" class="flex flex-col gap-2 border-b border-default px-4 py-2.5 last:border-b-0" data-crew-task :data-task-id="t.id">
         <div class="grid items-start" :class="cols">
-          <UInput :class="cell.id" :model-value="t.id" placeholder="id" maxlength="40" autocapitalize="off" spellcheck="false" :aria-label="`Id of ${who(t, i)}`" :ui="{ base: 'font-mono font-medium' }" class="w-full" @update:model-value="rename(i, String($event))" />
-          <USelect :class="cell.member" :model-value="t.member" :items="membersFor(t)" placeholder="Member" :aria-label="`Member of ${who(t, i)}`" class="w-full" data-task-member @update:model-value="update(i, { member: String($event) })" />
+          <UInput :class="cell.id" :model-value="t.id" placeholder="id" maxlength="40" autocapitalize="off" spellcheck="false" :aria-label="`Id of ${who(t, i)}`" :ui="{ base: 'font-mono font-medium' }" class="w-full" @update:model-value="update(i, { id: String($event) })" />
+          <USelect :class="cell.member" :model-value="memberOf(t)" :items="membersFor(t)" placeholder="Member" :aria-label="`Member of ${who(t, i)}`" class="w-full" data-task-member @update:model-value="pickMember(i, String($event))" />
           <USelect :class="cell.kind" :model-value="t.kind" :items="kindItems" :aria-label="`Kind of ${who(t, i)}`" class="w-full" data-task-kind @update:model-value="setKind(i, $event as 'work' | 'review')" />
-          <USelect :class="cell.needs" :model-value="t.needs ?? []" :items="needsFor(t)" multiple placeholder="nothing" :aria-label="`What ${who(t, i)} needs`" class="w-full" data-task-needs @update:model-value="update(i, { needs: ($event as string[]).length ? ($event as string[]) : undefined })" />
+          <USelect :class="cell.needs" :model-value="t.needKeys" :items="needsFor(t)" multiple placeholder="nothing" :aria-label="`What ${who(t, i)} needs`" class="w-full" data-task-needs @update:model-value="update(i, { needKeys: $event as number[] })" />
           <UTextarea
             :class="cell.instructions"
             :model-value="t.instructions"
@@ -162,7 +169,7 @@ watch(
               <template #content>
                 <div class="w-[32rem] max-w-[calc(100vw-2rem)] p-3">
                   <p class="mb-2 text-xs text-muted">Run against the result's commit, in a checkout of their own; every one must pass. Argv, never a shell line.</p>
-                  <CrewCheckList :model-value="t.checks ?? []" what="check" @update:model-value="update(i, { checks: $event.length ? $event : undefined })" />
+                  <CrewCheckList :model-value="t.checks ?? []" what="check" @update:model-value="setChecks(i, $event)" />
                 </div>
               </template>
             </UPopover>
