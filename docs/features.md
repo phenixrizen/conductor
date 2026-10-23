@@ -2804,10 +2804,13 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   checkout compared with the commit after each (content, mode, link target,
   through an index of its own; HEAD still the commit); a check that exits
   non-zero, times out, moves the checkout or changes tracked files fails the
-  attempt at it. Every change of state is recorded before the dispatch that
-  rests on it: a run's transitions commit in order, each a snapshot of the
-  state when it was taken, and a ledger that refuses one pauses the run's
-  dispatch. A done finishes nothing (one reminder), a handoff is noted
+  attempt at it. Every change of state is made and recorded in one
+  transaction of the run's, the dispatch that rests on it after the commit:
+  a run's transactions commit in order, each with the state as it was, a
+  change the ledger refuses is undone or pauses the run's dispatch, and the
+  end is reported once its commit is in; a submitted result is kept whole in
+  the attempt's row (summary, issues, verdict, findings), and the checks'
+  checkout refuses a crew directory the result turned into a link. A done finishes nothing (one reminder), a handoff is noted
   and never typed, a session ending before its result fails its attempt.
   Every transition goes to the ledger before its side effect. The run reports
   `tasks`, `paused` and `outcome` and is finished by the outcome, not by its

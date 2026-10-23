@@ -341,10 +341,13 @@ type run struct {
 	crewJSON string // the crew as launched, for the ledger's run row
 	// txMu orders the run's transitions (task.go: transition); the marks
 	// are what changed since the last one, drained by the next.
-	txMu                                          sync.Mutex
-	changedTasks                                  map[*task]struct{}
-	changedAttempts                               map[*attempt]struct{}
-	runChanged                                    bool
+	txMu            sync.Mutex
+	changedTasks    map[*task]struct{}
+	changedAttempts map[*attempt]struct{}
+	runChanged      bool
+	// endPending says the run's outcome was set in a transaction not yet
+	// committed: OnEnd follows the commit (transact).
+	endPending                                    bool
 	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
@@ -1471,9 +1474,6 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	// A managed run's checks end with the context the stop cancelled.
 	waitFor(ctx, &r.checks)
 	e.mu.Lock()
-	if r.managed {
-		e.stopAttempts(r)
-	}
 	if r.stoppedAt == nil {
 		now := time.Now().UTC()
 		r.stoppedAt = &now

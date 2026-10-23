@@ -2,6 +2,7 @@ package crew
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1097,6 +1098,211 @@ func TestASessionEndedDuringASubmissionFailsTheRefusedAttempt(t *testing.T) {
 	waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
 	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != ledger.AttemptRunning || row.Error != "the session ended before a result was submitted" {
 		t.Fatalf("after the refusal: %+v", row)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestAFailedCommitPausesDispatchUntilUnpaused(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("test", "lead", "build")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	l.mu.Lock()
+	l.failOn = "task.succeeded"
+	l.mu.Unlock()
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	// The acceptance could not be committed: the run's dispatch pauses,
+	// nothing rests on it, and the pause's own commit carries the rows.
+	waitLogged(t, e, run.ID, "dispatch paused", 1, 10*time.Second)
+	r, _ := e.Get(run.ID)
+	if !r.Paused || taskOf(t, e, run.ID, "test").Attempts != 0 {
+		t.Fatalf("after the failed commit: paused=%v test=%+v", r.Paused, taskOf(t, e, run.ID, "test"))
+	}
+	l.mu.Lock()
+	row := l.tasks[run.ID+"/build"]
+	l.failOn = ""
+	l.mu.Unlock()
+	if row.State != ledger.TaskSucceeded {
+		t.Fatalf("build's row after the pause: %+v", row)
+	}
+	if err := e.PauseRun(context.Background(), run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, run.ID, "test", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+}
+
+func TestACheckWhoseOutcomeIsNotRecordedFailsTheAttempt(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "ok", Argv: []string{"true"}}}
+	run := launchManaged(t, e, repoCrew(dir, build))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	l.mu.Lock()
+	l.failOn = "check.finished"
+	l.mu.Unlock()
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	a2 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if a2.Attempts != 2 {
+		t.Fatalf("attempt 2: %+v", a2)
+	}
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "check ok" || !strings.Contains(row.Error, "could not record the check's outcome") {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	submit(t, e, a2.Attempt.SessionID, Result{Summary: "built"})
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 2)
+	stopRun(t, e, run.ID)
+}
+
+func TestAResultThatLinksTheCrewsDirectoryAwayFailsItsChecks(t *testing.T) {
+	dir := newRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "web", "app.txt"), "app\n")
+	commitAll(t, dir, "web")
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "ok", Argv: []string{"true"}}}
+	c := repoCrew(dir, build)
+	c.Cwd = filepath.Join(dir, "web")
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	// The result replaces the crew's directory with a link out of the tree.
+	if err := os.RemoveAll(filepath.Join(a.Attempt.Worktree, "web")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..", filepath.Join(a.Attempt.Worktree, "web")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, a.Attempt.Worktree, "web is a link now")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "linked"})
+	waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	if l.count(run.ID, "check.started") != 0 {
+		t.Fatal("a check ran through the link")
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestABroadGraphIsReadiedQuickly(t *testing.T) {
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	var tasks []Task
+	for i := range 100 {
+		id := fmt.Sprintf("t%d", i)
+		member := fmt.Sprintf("m%d", i%12)
+		var needs []string
+		for _, j := range []int{i - 1, i - 2} {
+			if j >= 0 {
+				needs = append(needs, fmt.Sprintf("t%d", j))
+			}
+		}
+		tasks = append(tasks, work(id, member, needs...))
+	}
+	began := time.Now()
+	run := launchManaged(t, e, repoCrew(dir, tasks...))
+	if took := time.Since(began); took > 5*time.Second {
+		t.Fatalf("the launch took %v", took)
+	}
+	if ts := taskOf(t, e, run.ID, "t50"); ts.State != ledger.TaskBlocked || ts.Reason != "needs t49, t48" {
+		t.Fatalf("t50: %+v", ts)
+	}
+	waitAttempt(t, e, run.ID, "t0", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+}
+
+func TestAFailedUnpauseKeepsTheRunPaused(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("test", "lead", "build")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	ctx := context.Background()
+	if err := e.PauseRun(ctx, run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	l.failOn = "run.paused"
+	l.mu.Unlock()
+	if err := e.PauseRun(ctx, run.ID, false); err == nil {
+		t.Fatal("an unpause the ledger refused was taken")
+	}
+	if r, _ := e.Get(run.ID); !r.Paused {
+		t.Fatal("the run is not paused after the refused unpause")
+	}
+	// The attempt in flight ends; nothing rests on the refused unpause.
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	time.Sleep(300 * time.Millisecond)
+	if ts := taskOf(t, e, run.ID, "test"); ts.Attempts != 0 || ts.State != ledger.TaskReady {
+		t.Fatalf("test while paused: %+v", ts)
+	}
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	if err := e.PauseRun(ctx, run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, run.ID, "test", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+}
+
+func TestAnExecutableBitChangeIsSeenWhateverCoreFileMode(t *testing.T) {
+	dir := newRepo(t)
+	runGit(t, dir, "config", "core.fileMode", "false")
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "mode", Argv: []string{"sh", "-c", "chmod +x README"}}}
+	run := launchManaged(t, e, repoCrew(dir, build))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Error != "changed tracked files: README" {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestAReviewsFindingsAreKeptInTheLedger(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), review("review", "critic", "build")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built", Issues: []string{"no tests yet"}})
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	rev := waitAttempt(t, e, run.ID, "review", ledger.AttemptRunning)
+	findings := []Finding{{Severity: "major", Path: "built.txt", Line: 1, Message: "says yes without saying why"}}
+	submit(t, e, rev.Attempt.SessionID, Result{Verdict: VerdictNeedsChanges, Summary: "one thing", Findings: findings})
+	done := waitTask(t, e, run.ID, "review", ledger.TaskSucceeded, 1)
+	if done.Result == nil || len(done.Result.Findings) != 1 || done.Result.Findings[0].Message != findings[0].Message {
+		t.Fatalf("the review's result: %+v", done.Result)
+	}
+	if b := taskOf(t, e, run.ID, "build").Result; b == nil || !slices.Equal(b.Issues, []string{"no tests yet"}) {
+		t.Fatalf("build's issues: %+v", b)
+	}
+	row := l.attemptRow(t, run.ID, "review", 1)
+	var kept Result
+	if err := json.Unmarshal([]byte(row.Result), &kept); err != nil || kept.Verdict != VerdictNeedsChanges || len(kept.Findings) != 1 || kept.Findings[0].Path != "built.txt" {
+		t.Fatalf("the ledger's result: %q %v", row.Result, err)
+	}
+	if row := l.attemptRow(t, run.ID, "build", 1); !strings.Contains(row.Result, "no tests yet") {
+		t.Fatalf("build's result in the ledger: %q", row.Result)
 	}
 	stopRun(t, e, run.ID)
 }

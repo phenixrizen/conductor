@@ -451,6 +451,7 @@ var schema = []string{
 		launched_at TEXT NOT NULL DEFAULT '',
 		prompted_at TEXT NOT NULL DEFAULT '',
 		closed_at TEXT NOT NULL DEFAULT '',
+		result TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, task_id, n),
 		FOREIGN KEY (run_id, task_id) REFERENCES tasks(run_id, id) ON DELETE CASCADE
 	)`,

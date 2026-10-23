@@ -93,6 +93,13 @@ func (e *Engine) verify(r *run, a *attempt) {
 		e.accept(r, a, false, "checkout", fmt.Sprintf("the checkout is at %s, not the result %s", short(head), short(a.result)))
 		return
 	}
+	// The crew's directory in the checkout, as in the worktree: not
+	// through a link the result commits, which would send the checks
+	// elsewhere than the tree compared.
+	if err := checkNoLinks(dir, r.prefix); err != nil {
+		e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
+		return
+	}
 	cwd := filepath.Join(dir, r.prefix)
 	for _, ch := range r.setup {
 		if ctx.Err() != nil {
@@ -115,9 +122,11 @@ func (e *Engine) verify(r *run, a *attempt) {
 			return // closed meanwhile: cancelled or stopped
 		}
 		row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, StartedAt: time.Now().UTC()}
-		if err := e.transition(ctx, r, one("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "subject": a.result}), func(tx LedgerTx) error {
-			return tx.PutCheck(row)
-		}); err != nil {
+		if err := e.transact(ctx, r, func() tx {
+			out := ev("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "subject": a.result})
+			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
+			return out
+		}, nil); err != nil {
 			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check: "+session.CleanMessage(err.Error()))
 			return
 		}
@@ -131,9 +140,11 @@ func (e *Engine) verify(r *run, a *attempt) {
 		res := e.runCommand(ctx, cwd, ch, &log, func(p proc.Process) {
 			running := row
 			running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
-			_ = e.transition(context.Background(), r, one("check.running", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "pid": p.PID, "group": p.Group}), func(tx LedgerTx) error {
-				return tx.PutCheck(running)
-			})
+			_ = e.transact(context.Background(), r, func() tx {
+				out := ev("check.running", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "pid": p.PID, "group": p.Group})
+				out.more = func(ltx LedgerTx) error { return ltx.PutCheck(running) }
+				return out
+			}, nil)
 		})
 		<-sem
 		if ctx.Err() != nil {
@@ -141,9 +152,11 @@ func (e *Engine) verify(r *run, a *attempt) {
 			// by what cancelled it, with the check's end recorded.
 			fin := row
 			fin.State, fin.FinishedAt, fin.Killed, fin.Exit, fin.Signal = ledger.CheckInterrupted, time.Now().UTC(), res.Killed, res.Exit, res.Signal
-			_ = e.transition(context.Background(), r, one("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "interrupted": true, "duration": res.Duration.String()}), func(tx LedgerTx) error {
-				return tx.PutCheck(fin)
-			})
+			_ = e.transact(context.Background(), r, func() tx {
+				out := ev("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "interrupted": true, "duration": res.Duration.String()})
+				out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+				return out
+			}, nil)
 			return
 		}
 		moved, changed, untracked, cerr := checkoutIntact(ctx, dir, a.result)
@@ -157,9 +170,17 @@ func (e *Engine) verify(r *run, a *attempt) {
 		fin.LogSHA256 = hex.EncodeToString(sum[:])
 		fin.Tail = string(res.Tail)
 		words := checkWords(ch, res, moved, changed, cerr)
-		_ = e.transition(context.Background(), r, one("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable, "changed": changed, "untracked": untracked, "duration": res.Duration.String(), "error": words}), func(tx LedgerTx) error {
-			return tx.PutCheck(fin)
-		})
+		// The check's outcome is evidence: not recorded, the result is not
+		// taken on it.
+		if err := e.transact(context.Background(), r, func() tx {
+			out := ev("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable,
+				"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
+			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+			return out
+		}, nil); err != nil {
+			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check's outcome: "+session.CleanMessage(err.Error()))
+			return
+		}
 		if words != "" {
 			e.accept(r, a, false, "check "+ch.ID, words)
 			return
@@ -224,6 +245,12 @@ func checkoutIntact(ctx context.Context, dir, commit string) (moved bool, change
 	os.Remove(index) // git makes it
 	defer os.Remove(index)
 	env := map[string]string{"GIT_INDEX_FILE": index}
+	if modesKept(dir) {
+		// The filesystem keeps the executable bit: the comparison keeps it
+		// too, whatever core.fileMode the repository set, so a check that
+		// makes a file executable is seen.
+		env["GIT_CONFIG_COUNT"], env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"] = "1", "core.fileMode", "true"
+	}
 	if _, err := gitcli.RunEnv(ctx, dir, env, "read-tree", commit); err != nil {
 		return false, nil, nil, err
 	}
@@ -253,6 +280,34 @@ func checkoutIntact(ctx context.Context, dir, commit string) (moved bool, change
 		return false, changed, nil, err
 	}
 	return false, changed, splitNUL(out), nil
+}
+
+// maxListed bounds a path list in an event's payload.
+const maxListed = 50
+
+// bounded is the first maxListed of paths, with a mark for the rest.
+func bounded(paths []string) []string {
+	if len(paths) <= maxListed {
+		return paths
+	}
+	return append(slices.Clone(paths[:maxListed]), "…")
+}
+
+// modesKept reports whether the filesystem under dir keeps the executable
+// bit, by setting it on a file made there for the look and removed.
+func modesKept(dir string) bool {
+	f, err := os.CreateTemp(dir, ".conductor-mode-")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	defer os.Remove(name)
+	if err := os.Chmod(name, 0o755); err != nil {
+		return false
+	}
+	fi, err := os.Lstat(name)
+	return err == nil && fi.Mode().Perm()&0o100 != 0
 }
 
 // splitNUL splits a -z listing into its paths.

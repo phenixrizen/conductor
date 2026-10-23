@@ -2140,9 +2140,16 @@ its own that no flag of the checkout's can hide a change from, and `HEAD`
 still the commit); a check that cannot run, exits non-zero, times out, moves
 the checkout or changes tracked files fails the attempt at that check, and
 the rest do not run; untracked outputs are listed with it. A review, or a
-task with no checks, succeeds at once. Every transition is written to the ledger before the side effect it
-precedes (`runs/managed.sqlite`); the run's `managed.revision` follows. The
-routes an agent submits with come with the next row (#334).
+task with no checks, succeeds at once. Every change of a run's state is made and written to the ledger in
+one transaction of the run's, and the side effect that rests on it (a
+dispatch, a session, a line, a check) follows the commit; a run's
+transactions commit in order, each with the state as it was; while one
+commits, the run as read is one change ahead of the ledger, and a commit
+the ledger refuses is undone or, where it cannot be, pauses the run's
+dispatch and says so in the run log. The run's `managed.revision` follows
+each commit. A submitted result is kept whole in the attempt's row (its
+summary, issues, verdict and findings), so a review's findings outlive the
+server. The routes an agent submits with come with the next row (#334).
 
 The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
 `attempt` and `result`), `paused` and, once every task is terminal, `outcome`

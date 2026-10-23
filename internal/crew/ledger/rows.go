@@ -102,6 +102,10 @@ type AttemptRow struct {
 	LaunchedAt   time.Time
 	PromptedAt   time.Time
 	ClosedAt     time.Time
+	// Result is the submitted result as JSON (the engine's crew.Result:
+	// summary, commit, issues, verdict, findings), at most MaxResult
+	// bytes; "" before one is submitted.
+	Result string
 }
 
 // CheckRow is one run of a check against an attempt's result: its receipt.
@@ -164,6 +168,8 @@ const (
 	MaxRunLogs = 64 << 20
 	// MaxPayload bounds an event's payload and a command's receipt.
 	MaxPayload = 64 << 10
+	// MaxResult bounds an attempt's submitted result (AttemptRow.Result).
+	MaxResult = 256 << 10
 	// MaxCrew bounds the crew JSON kept with a run.
 	MaxCrew = 1 << 20
 )

@@ -192,14 +192,17 @@ func (t *Tx) PutTask(r TaskRow) error {
 
 // PutAttempt puts an attempt's row, new or changed.
 func (t *Tx) PutAttempt(r AttemptRow) error {
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO attempts (run_id, task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if len(r.Result) > MaxResult {
+		return fmt.Errorf("ledger: the result of attempt %s/%d is more than %d bytes", r.TaskID, r.N, MaxResult)
+	}
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO attempts (run_id, task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, task_id, n) DO UPDATE SET member = excluded.member, session_id = excluded.session_id, worktree = excluded.worktree,
 			branch = excluded.branch, start_commit = excluded.start_commit, result_commit = excluded.result_commit, state = excluded.state,
 			stage = excluded.stage, error = excluded.error, reserved_at = excluded.reserved_at, launched_at = excluded.launched_at,
-			prompted_at = excluded.prompted_at, closed_at = excluded.closed_at`,
+			prompted_at = excluded.prompted_at, closed_at = excluded.closed_at, result = excluded.result`,
 		t.runID, r.TaskID, r.N, r.Member, r.SessionID, r.Worktree, r.Branch, r.StartCommit, r.ResultCommit, r.State, r.Stage, r.Error,
-		stamp(r.ReservedAt), stamp(r.LaunchedAt), stamp(r.PromptedAt), stamp(r.ClosedAt))
+		stamp(r.ReservedAt), stamp(r.LaunchedAt), stamp(r.PromptedAt), stamp(r.ClosedAt), r.Result)
 	return err
 }
 
@@ -324,7 +327,7 @@ func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, erro
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at
+	rows, err := db.QueryContext(ctx, `SELECT task_id, n, member, session_id, worktree, branch, start_commit, result_commit, state, stage, error, reserved_at, launched_at, prompted_at, closed_at, result
 		FROM attempts WHERE run_id = ? ORDER BY task_id, n`, runID)
 	if err != nil {
 		return nil, err
@@ -334,7 +337,7 @@ func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, erro
 	for rows.Next() {
 		r := AttemptRow{RunID: runID}
 		var reserved, launched, prompted, closed string
-		if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed); err != nil {
+		if err := rows.Scan(&r.TaskID, &r.N, &r.Member, &r.SessionID, &r.Worktree, &r.Branch, &r.StartCommit, &r.ResultCommit, &r.State, &r.Stage, &r.Error, &reserved, &launched, &prompted, &closed, &r.Result); err != nil {
 			return nil, err
 		}
 		r.ReservedAt, r.LaunchedAt, r.PromptedAt, r.ClosedAt = unstamp(reserved), unstamp(launched), unstamp(prompted), unstamp(closed)
