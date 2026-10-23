@@ -121,6 +121,18 @@ func (l *fakeLedger) count(runID, kind string) int {
 	return n
 }
 
+// attemptRow is the attempt's row as the fake ledger last committed it.
+func (l *fakeLedger) attemptRow(t *testing.T, runID, taskID string, n int) ledger.AttemptRow {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	row, ok := l.attempts[fmt.Sprintf("%s/%s/%d", runID, taskID, n)]
+	if !ok {
+		t.Fatalf("no row for %s/%s/%d", runID, taskID, n)
+	}
+	return row
+}
+
 // managedEngine is an engine with a fake ledger over a fake launcher
 // whose sessions print a prompt once, so they are ready for their line.
 func managedEngine(t *testing.T) (*Engine, *fakeLauncher, *fakeLedger) {
@@ -827,4 +839,264 @@ func TestRunStateOfAManagedRunFollowsItsOutcome(t *testing.T) {
 	if state, _ := runState(Run{Members: ended}); state != RunFinished {
 		t.Fatalf("a legacy run whose members ended: %s", state)
 	}
+}
+
+func TestAChecksChangesAreSeenWhateverItDoesToTheIndexOrHEAD(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	hide := work("hide", "lead")
+	hide.Checks = []Check{{ID: "hide", Argv: []string{"sh", "-c", "echo x >> README && git update-index --assume-unchanged README"}}}
+	move := work("move", "writer")
+	move.Checks = []Check{{ID: "move", Argv: []string{"sh", "-c", "git reset -q --hard HEAD~1"}}}
+	run := launchManaged(t, e, repoCrew(dir, hide, move))
+	for _, id := range []string{"hide", "move"} {
+		a := waitAttempt(t, e, run.ID, id, ledger.AttemptRunning)
+		writeFile(t, filepath.Join(a.Attempt.Worktree, id+".txt"), "x\n")
+		commitAll(t, a.Attempt.Worktree, id)
+		submit(t, e, a.Attempt.SessionID, Result{Summary: id})
+	}
+	// Each check exits 0 and hides what it did: the comparison sees it,
+	// and the attempt fails at the check, recorded so.
+	waitTaskWhere(t, e, run.ID, "hide", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	if row := l.attemptRow(t, run.ID, "hide", 1); row.State != ledger.AttemptFailed || row.Stage != "check hide" || row.Error != "changed tracked files: README" {
+		t.Fatalf("hide's attempt 1: %+v", row)
+	}
+	waitTaskWhere(t, e, run.ID, "move", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	if row := l.attemptRow(t, run.ID, "move", 1); row.State != ledger.AttemptFailed || row.Stage != "check move" || row.Error != "moved the checkout to another commit" {
+		t.Fatalf("move's attempt 1: %+v", row)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestTheSetupRunsInTheChecksCheckoutAndMayChangeNothingTracked(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "dep", Argv: []string{"sh", "-c", "test -f dep.txt"}}}
+	c := repoCrew(dir, build)
+	c.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "echo dep > dep.txt"}}}
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if _, err := os.Stat(filepath.Join(a.Attempt.Worktree, "dep.txt")); err != nil {
+		t.Fatalf("the setup did not run in the worktree: %v", err)
+	}
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	// The check finds what the setup made in the checkout, listed as an
+	// untracked output.
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	if n := l.count(run.ID, "check.setup"); n != 1 {
+		t.Fatalf("check.setup events: %d", n)
+	}
+	stopRun(t, e, run.ID)
+
+	// A setup that changes tracked content fails the attempt before any
+	// check runs.
+	dir2 := newRepo(t)
+	e2, _, l2 := managedEngine(t)
+	c2 := repoCrew(dir2, build)
+	c2.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "echo x >> README"}}}
+	run2 := launchManaged(t, e2, c2)
+	a2 := waitAttempt(t, e2, run2.ID, "build", ledger.AttemptRunning)
+	// The worker's worktree took the change too: commit it as the work.
+	commitAll(t, a2.Attempt.Worktree, "the setup's change and the work")
+	submit(t, e2, a2.Attempt.SessionID, Result{Summary: "built"})
+	waitTaskWhere(t, e2, run2.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	if row := l2.attemptRow(t, run2.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "setup" || row.Error != "the setup changed tracked files: README" {
+		t.Fatalf("after a setup that changes tracked content: %+v", row)
+	}
+	if l2.count(run2.ID, "check.started") != 0 {
+		t.Fatal("a check ran after the setup changed the checkout")
+	}
+	stopRun(t, e2, run2.ID)
+}
+
+func TestACancelDuringTheReservationIsAccountedForOnce(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := managedEngine(t)
+	hold := make(chan struct{})
+	fl.mu.Lock()
+	fl.reserveHold = hold
+	fl.mu.Unlock()
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptReserved)
+	if err := e.CancelTask(context.Background(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	fl.mu.Lock()
+	fl.reserveHold = nil
+	fl.mu.Unlock()
+	close(hold)
+	// The dispatch ends with its reservation refused by the cancelled
+	// context: the run's starts drain.
+	done := make(chan struct{})
+	go func() {
+		e.mu.Lock()
+		r := e.runs[run.ID]
+		e.mu.Unlock()
+		r.starts.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the dispatch did not end")
+	}
+	// The attempt stays cancelled and counted once; nothing is in flight.
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	active, attempts := r.active, len(r.task("build").attempts)
+	e.mu.Unlock()
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskCancelled || ts.Attempt.State != ledger.AttemptCancelled || attempts != 1 || active != 0 {
+		t.Fatalf("after the cancel: %+v %+v active=%d attempts=%d", ts, ts.Attempt, active, attempts)
+	}
+	if err := e.RetryTask(context.Background(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	again := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if again.Attempts != 2 || again.Attempt.N != 2 {
+		t.Fatalf("after the retry: %+v", again)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestAPrefixedCrewKeepsItsTaskFilesInItsDirectory(t *testing.T) {
+	dir := newRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "web", "app.txt"), "app\n")
+	commitAll(t, dir, "web")
+	e, fl, _ := managedEngine(t)
+	c := repoCrew(dir, work("build", "lead"))
+	c.Cwd = filepath.Join(dir, "web")
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	tree := a.Attempt.Worktree
+	if _, err := os.Stat(filepath.Join(tree, "web", ".conductor", "task.md")); err != nil {
+		t.Fatalf("the task file is not in the crew's directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tree, ".conductor")); err == nil {
+		t.Fatal("a .conductor at the worktree's root")
+	}
+	_, p := fl.attemptSession(t, a)
+	waitTyped(t, p, 10*time.Second)
+	// A .conductor committed under the prefix is a reserved path.
+	writeFile(t, filepath.Join(tree, "web", ".conductor", "extra.txt"), "x\n")
+	runGit(t, tree, "add", "-f", "web/.conductor/extra.txt")
+	runGit(t, tree, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "reserved")
+	if _, err := e.SubmitResult(context.Background(), a.Attempt.SessionID, Result{}); !errors.Is(err, ErrReservedPath) {
+		t.Fatalf("a .conductor under the prefix: %v", err)
+	}
+	stopRun(t, e, run.ID)
+
+	// A commit that tracks .conductor in the crew's directory cannot take
+	// the task files: the attempt fails before the worktree is used.
+	writeFile(t, filepath.Join(dir, "web", ".conductor", "x"), "x\n")
+	runGit(t, dir, "add", "-f", "web/.conductor/x")
+	runGit(t, dir, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "tracks .conductor")
+	e2, _, _ := managedEngine(t)
+	run2 := launchManaged(t, e2, c)
+	failed := waitTaskWhere(t, e2, run2.ID, "build", "failed at the worktree", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.State == ledger.AttemptFailed && ts.Attempt.Stage == "worktree"
+	})
+	if !strings.Contains(failed.Attempt.Error, "tracks .conductor/") {
+		t.Fatalf("the attempt: %+v", failed.Attempt)
+	}
+	stopRun(t, e2, run2.ID)
+}
+
+func TestAResultOffTheAttemptsBranchIsRefused(t *testing.T) {
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	runGit(t, a.Attempt.Worktree, "checkout", "-q", "--detach")
+	if _, err := e.SubmitResult(context.Background(), a.Attempt.SessionID, Result{}); !errors.Is(err, ErrOffBranch) {
+		t.Fatalf("detached: %v", err)
+	}
+	runGit(t, a.Attempt.Worktree, "checkout", "-q", a.Attempt.Branch)
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	stopRun(t, e, run.ID)
+}
+
+func TestAPausedRunStillSettlesAndTheRunRowFollows(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if err := e.PauseRun(context.Background(), run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	row := l.runs[run.ID]
+	l.mu.Unlock()
+	if !row.Paused || row.State != ledger.RunRunning {
+		t.Fatalf("the run row after the pause: %+v", row)
+	}
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	waitTrue(t, "the paused run settled", func() bool {
+		r, _ := e.Get(run.ID)
+		return r.State == RunFinished && r.Outcome == ledger.OutcomeSucceeded && r.Paused
+	})
+	l.mu.Lock()
+	row = l.runs[run.ID]
+	l.mu.Unlock()
+	if row.State != ledger.RunFinished || row.Outcome != ledger.OutcomeSucceeded || !row.Paused {
+		t.Fatalf("the run row after the outcome: %+v", row)
+	}
+	stopRun(t, e, run.ID)
+}
+
+func TestAResultNotRecordedLeavesTheAttemptRunning(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	l.mu.Lock()
+	l.failOn = "result.submitted"
+	l.mu.Unlock()
+	if _, err := e.SubmitResult(context.Background(), a.Attempt.SessionID, Result{Summary: "built"}); err == nil || !strings.Contains(err.Error(), "injected") {
+		t.Fatalf("with the ledger refusing: %v", err)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskRunning || ts.Attempt.State != ledger.AttemptRunning || ts.Attempt.Result != "" {
+		t.Fatalf("after the refusal: %+v %+v", ts, ts.Attempt)
+	}
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	stopRun(t, e, run.ID)
+}
+
+func TestASessionEndedDuringASubmissionFailsTheRefusedAttempt(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "draft.txt"), "wip\n")
+	// The session ends while the result is being taken (as managedEnded
+	// remembers it); the refusal then fails the attempt.
+	e.mu.Lock()
+	e.runs[run.ID].task("build").attempts[0].sessionEnded = true
+	e.mu.Unlock()
+	var dirty *DirtyWorktreeError
+	if _, err := e.SubmitResult(context.Background(), a.Attempt.SessionID, Result{}); !errors.As(err, &dirty) {
+		t.Fatalf("a dirty worktree: %v", err)
+	}
+	waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != ledger.AttemptRunning || row.Error != "the session ended before a result was submitted" {
+		t.Fatalf("after the refusal: %+v", row)
+	}
+	stopRun(t, e, run.ID)
 }

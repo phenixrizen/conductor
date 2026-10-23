@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,10 +125,23 @@ func Run(ctx context.Context, dir string, args ...string) (string, error) {
 	return run(ctx, []string{"-C", dir}, args)
 }
 
+// RunEnv is Run with env set in git's environment beside the safe one: an
+// index of its own (GIT_INDEX_FILE) for a comparison of a checkout with
+// its commit that trusts no flag of the checkout's index (the crew's
+// checks).
+func RunEnv(ctx context.Context, dir string, env map[string]string, args ...string) (string, error) {
+	return runEnv(ctx, []string{"-C", dir}, env, args)
+}
+
 // run runs git with args where loc points it (-C dir, or a git directory
 // and a working tree named outright), for the filter look-up and the
 // command alike.
 func run(ctx context.Context, loc, args []string) (string, error) {
+	return runEnv(ctx, loc, nil, args)
+}
+
+// runEnv is run with env set in git's environment beside the safe one.
+func runEnv(ctx context.Context, loc []string, env map[string]string, args []string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("git: no command")
 	}
@@ -143,7 +157,7 @@ func run(ctx context.Context, loc, args []string) (string, error) {
 	argv = append(argv, args[0])
 	argv = append(argv, commandOptions(args[0])...)
 	argv = append(argv, args[1:]...)
-	out, stderr, err := execGit(ctx, argv)
+	out, stderr, err := execGit(ctx, argv, env)
 	if err != nil {
 		return "", gitError(ctx, args[0], stderr, err)
 	}
@@ -220,10 +234,15 @@ func baseArgs() []string {
 	return argv
 }
 
-// execGit runs git with argv in safeEnv, no input.
-func execGit(ctx context.Context, argv []string) (stdout, stderr string, err error) {
+// execGit runs git with argv in safeEnv, and env beside it, no input.
+func execGit(ctx context.Context, argv []string, env map[string]string) (stdout, stderr string, err error) {
 	cmd := exec.CommandContext(ctx, "git", argv...)
-	cmd.Env = pty.BuildEnv(pty.ParentEnv(), nil, safeEnv, nil)
+	set := safeEnv
+	if len(env) > 0 {
+		set = maps.Clone(safeEnv)
+		maps.Copy(set, env)
+	}
+	cmd.Env = pty.BuildEnv(pty.ParentEnv(), nil, set, nil)
 	var o, e bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &o, &e
 	err = cmd.Run()
@@ -282,7 +301,7 @@ const filterKeys = `^filter\..*\.(clean|smudge|process)$`
 func filterNames(ctx context.Context, loc []string) ([]string, error) {
 	argv := append(baseArgs(), loc...)
 	argv = append(argv, "config", "-z", "--name-only", "--get-regexp", filterKeys)
-	out, stderr, err := execGit(ctx, argv)
+	out, stderr, err := execGit(ctx, argv, nil)
 	var exit *exec.ExitError
 	switch {
 	case err == nil:

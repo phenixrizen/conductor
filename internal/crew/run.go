@@ -329,16 +329,22 @@ type run struct {
 	// started from, whether its dispatch is paused, its attempts in flight,
 	// its outcome once every task is terminal, the goroutines verifying
 	// results (a stop waits for them) and its ledger revision (task.go).
-	plan                                          []Task
-	setup                                         []Check
-	base                                          string
-	tasks                                         []*task
-	paused                                        bool
-	active                                        int
-	outcome                                       string
-	checks                                        sync.WaitGroup
-	revision                                      int64
-	crewJSON                                      string // the crew as launched, for the ledger's run row
+	plan     []Task
+	setup    []Check
+	base     string
+	tasks    []*task
+	paused   bool
+	active   int
+	outcome  string
+	checks   sync.WaitGroup
+	revision int64
+	crewJSON string // the crew as launched, for the ledger's run row
+	// txMu orders the run's transitions (task.go: transition); the marks
+	// are what changed since the last one, drained by the next.
+	txMu                                          sync.Mutex
+	changedTasks                                  map[*task]struct{}
+	changedAttempts                               map[*attempt]struct{}
+	runChanged                                    bool
 	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
@@ -1466,7 +1472,7 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	waitFor(ctx, &r.checks)
 	e.mu.Lock()
 	if r.managed {
-		r.stopAttempts()
+		e.stopAttempts(r)
 	}
 	if r.stoppedAt == nil {
 		now := time.Now().UTC()

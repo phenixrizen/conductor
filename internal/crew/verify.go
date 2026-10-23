@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -61,13 +62,17 @@ func checkTimeout(ch Check) time.Duration {
 
 // verify decides a's submitted result. A review, or a work task with no
 // checks, succeeds at once. A work task's checks run in a detached
-// checkout of the result commit (<worktree>.check), one check at a time
-// across the server (checkSlots), each recorded before it starts, with its
-// process once started, and with its outcome when it ends; a check that
-// cannot run, exits non-zero, times out or changes tracked content fails
-// the attempt at that check, and the rest do not run. Untracked outputs
-// are listed with the check. It runs on a goroutine the run's stop waits
-// for (r.checks) and ends with the attempt's context.
+// checkout of the result commit (<worktree>.check), after the crew's
+// setup there (what the worker had, the checks have; a setup that changes
+// tracked content fails the attempt), one check at a time across the
+// server (checkSlots), each recorded before it starts, with its process
+// once started, and with its outcome when it ends. After each one the
+// checkout is compared with the commit as git would store it
+// (checkoutIntact): a check that cannot run, exits non-zero, times out,
+// moves the checkout or changes tracked content fails the attempt at that
+// check, and the rest do not run; untracked outputs are listed with the
+// check. It runs on a goroutine the run's stop waits for (r.checks) and
+// ends with the attempt's context.
 func (e *Engine) verify(r *run, a *attempt) {
 	defer r.checks.Done()
 	t := a.t
@@ -89,16 +94,29 @@ func (e *Engine) verify(r *run, a *attempt) {
 		return
 	}
 	cwd := filepath.Join(dir, r.prefix)
+	for _, ch := range r.setup {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := e.runSetup(ctx, r, a, cwd, ch, "check.setup"); err != nil {
+			e.accept(r, a, false, "setup "+ch.ID, session.CleanMessage(err.Error()))
+			return
+		}
+	}
+	if len(r.setup) > 0 {
+		moved, changed, _, cerr := checkoutIntact(ctx, dir, a.result)
+		if words := intactWords(moved, changed, cerr); words != "" {
+			e.accept(r, a, false, "setup", "the setup "+words)
+			return
+		}
+	}
 	for _, ch := range t.def.Checks {
 		if ctx.Err() != nil {
 			return // closed meanwhile: cancelled or stopped
 		}
 		row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, StartedAt: time.Now().UTC()}
-		if err := e.transition(ctx, r, func(tx LedgerTx) error {
-			if err := tx.PutCheck(row); err != nil {
-				return err
-			}
-			return tx.Event("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "subject": a.result})
+		if err := e.transition(ctx, r, one("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "subject": a.result}), func(tx LedgerTx) error {
+			return tx.PutCheck(row)
 		}); err != nil {
 			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check: "+session.CleanMessage(err.Error()))
 			return
@@ -113,11 +131,8 @@ func (e *Engine) verify(r *run, a *attempt) {
 		res := e.runCommand(ctx, cwd, ch, &log, func(p proc.Process) {
 			running := row
 			running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
-			_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-				if err := tx.PutCheck(running); err != nil {
-					return err
-				}
-				return tx.Event("check.running", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "pid": p.PID, "group": p.Group})
+			_ = e.transition(context.Background(), r, one("check.running", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "pid": p.PID, "group": p.Group}), func(tx LedgerTx) error {
+				return tx.PutCheck(running)
 			})
 		})
 		<-sem
@@ -126,30 +141,24 @@ func (e *Engine) verify(r *run, a *attempt) {
 			// by what cancelled it, with the check's end recorded.
 			fin := row
 			fin.State, fin.FinishedAt, fin.Killed, fin.Exit, fin.Signal = ledger.CheckInterrupted, time.Now().UTC(), res.Killed, res.Exit, res.Signal
-			_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-				if err := tx.PutCheck(fin); err != nil {
-					return err
-				}
-				return tx.Event("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "interrupted": true, "duration": res.Duration.String()})
+			_ = e.transition(context.Background(), r, one("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "interrupted": true, "duration": res.Duration.String()}), func(tx LedgerTx) error {
+				return tx.PutCheck(fin)
 			})
 			return
 		}
-		changed, untracked, cerr := treeChanges(ctx, dir)
+		moved, changed, untracked, cerr := checkoutIntact(ctx, dir, a.result)
 		fin := row
 		fin.State, fin.FinishedAt = ledger.CheckFinished, time.Now().UTC()
 		fin.PID, fin.Group, fin.ProcessStartedAt = res.Process.PID, res.Process.Group, res.Process.StartedAt
 		fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = res.Exit, res.Signal, res.TimedOut, res.Killed
-		fin.Stable, fin.Truncated, fin.Total = cerr == nil && len(changed) == 0, res.Truncated, res.Total
+		fin.Stable, fin.Truncated, fin.Total = cerr == nil && !moved && len(changed) == 0, res.Truncated, res.Total
 		fin.Log = bytes.Clone(log.Bytes())
 		sum := sha256.Sum256(fin.Log)
 		fin.LogSHA256 = hex.EncodeToString(sum[:])
 		fin.Tail = string(res.Tail)
-		words := checkWords(ch, res, changed, cerr)
-		_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-			if err := tx.PutCheck(fin); err != nil {
-				return err
-			}
-			return tx.Event("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable, "changed": changed, "untracked": untracked, "duration": res.Duration.String(), "error": words})
+		words := checkWords(ch, res, moved, changed, cerr)
+		_ = e.transition(context.Background(), r, one("check.finished", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "stable": fin.Stable, "changed": changed, "untracked": untracked, "duration": res.Duration.String(), "error": words}), func(tx LedgerTx) error {
+			return tx.PutCheck(fin)
 		})
 		if words != "" {
 			e.accept(r, a, false, "check "+ch.ID, words)
@@ -160,7 +169,7 @@ func (e *Engine) verify(r *run, a *attempt) {
 }
 
 // checkWords says why a check failed, "" for a pass.
-func checkWords(ch Check, res proc.Result, changed []string, cerr error) string {
+func checkWords(ch Check, res proc.Result, moved bool, changed []string, cerr error) string {
 	switch {
 	case res.Err != "" && !res.TimedOut && !res.Canceled:
 		return "could not run: " + session.CleanMessage(res.Err)
@@ -170,8 +179,17 @@ func checkWords(ch Check, res proc.Result, changed []string, cerr error) string 
 		return "cancelled"
 	case res.Exit != 0:
 		return fmt.Sprintf("exited %d%s", res.Exit, tailWords(res.Tail))
-	case cerr != nil:
-		return "the checkout could not be compared after the check: " + session.CleanMessage(cerr.Error())
+	}
+	return intactWords(moved, changed, cerr)
+}
+
+// intactWords says what a command did to the checkout, "" for nothing.
+func intactWords(moved bool, changed []string, err error) string {
+	switch {
+	case err != nil:
+		return "left a checkout that could not be compared: " + session.CleanMessage(err.Error())
+	case moved:
+		return "moved the checkout to another commit"
 	case len(changed) > 0:
 		list := changed
 		if len(list) > 10 {
@@ -182,23 +200,68 @@ func checkWords(ch Check, res proc.Result, changed []string, cerr error) string 
 	return ""
 }
 
-// treeChanges reports the tracked paths a check changed in the checkout
-// (content, mode or link target, as git sees them) and the untracked paths
-// it left.
-func treeChanges(ctx context.Context, dir string) (changed, untracked []string, err error) {
-	_, changes, truncated, err := gitcli.Porcelain(ctx, dir)
+// checkoutIntact compares the checkout at dir with the commit as git
+// would store it: HEAD still the commit, and every tracked path's
+// content, mode and link target as the commit's tree has them, read
+// through an index of its own (read-tree, add -u, write-tree) that
+// carries no flag a command could set to hide a change. It reports
+// whether HEAD moved, the tracked paths that differ, and the untracked
+// paths left (ignored ones aside).
+func checkoutIntact(ctx context.Context, dir, commit string) (moved bool, changed, untracked []string, err error) {
+	head, err := headCommit(ctx, dir)
 	if err != nil {
-		return nil, nil, err
+		return false, nil, nil, err
 	}
-	for _, c := range changes {
-		if c.Status == "?" {
-			untracked = append(untracked, c.Path)
-		} else {
-			changed = append(changed, c.Path)
+	if head != commit {
+		return true, nil, nil, nil
+	}
+	f, err := os.CreateTemp("", "conductor-index-")
+	if err != nil {
+		return false, nil, nil, err
+	}
+	index := f.Name()
+	f.Close()
+	os.Remove(index) // git makes it
+	defer os.Remove(index)
+	env := map[string]string{"GIT_INDEX_FILE": index}
+	if _, err := gitcli.RunEnv(ctx, dir, env, "read-tree", commit); err != nil {
+		return false, nil, nil, err
+	}
+	if _, err := gitcli.RunEnv(ctx, dir, env, "add", "-u"); err != nil {
+		return false, nil, nil, err
+	}
+	tree, err := gitcli.RunEnv(ctx, dir, env, "write-tree")
+	if err != nil {
+		return false, nil, nil, err
+	}
+	want, err := gitcli.Run(ctx, dir, "rev-parse", commit+"^{tree}")
+	if err != nil {
+		return false, nil, nil, err
+	}
+	if strings.TrimSpace(tree) != strings.TrimSpace(want) {
+		out, err := gitcli.RunEnv(ctx, dir, env, "diff", "--cached", "--name-only", "-z", commit)
+		if err != nil {
+			return false, nil, nil, err
+		}
+		changed = splitNUL(out)
+		if len(changed) == 0 {
+			changed = []string{"(the tree differs)"}
 		}
 	}
-	if truncated {
-		changed = append(changed, "…")
+	out, err := gitcli.RunEnv(ctx, dir, env, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return false, changed, nil, err
 	}
-	return changed, untracked, nil
+	return false, changed, splitNUL(out), nil
+}
+
+// splitNUL splits a -z listing into its paths.
+func splitNUL(out string) []string {
+	var paths []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }

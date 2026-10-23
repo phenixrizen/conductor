@@ -22,8 +22,9 @@ import (
 // dispatches its tasks as attempts: a fresh member session in a worktree of
 // its own, made at the result the task starts from, with its task in a
 // file. The member submits a result (SubmitResult); the controller decides
-// it (verify). Every transition is written to the ledger before the side
-// effect it precedes.
+// it (verify). Every change of state is written to the ledger before the
+// side effect it precedes (transition): a dispatch, a session, a typed line
+// or a check follows its row, never the other way round.
 
 // Bounds of a managed run.
 const (
@@ -31,7 +32,8 @@ const (
 	maxAttemptsPerTask = 3
 	// maxTaskFile bounds .conductor/task.md and task.json.
 	maxTaskFile = 64 << 10
-	// taskDir is the directory of an attempt's task files, in its worktree.
+	// taskDir is the directory of an attempt's task files, in its working
+	// directory. A path with that component anywhere is Conductor's.
 	taskDir = ".conductor"
 )
 
@@ -92,9 +94,10 @@ var (
 	ErrStaleAttempt  = errors.New("the attempt is not the task's active one")
 	ErrNotRunning    = errors.New("the attempt is not running")
 	ErrCommitMissing = errors.New("the worktree has no commit to submit")
+	ErrOffBranch     = errors.New("the worktree is not on the attempt's branch")
 	ErrNotFromInput  = errors.New("the result does not descend from the task's inputs")
 	ErrReviewChanged = errors.New("a review submits no commit: its tree must be the candidate's")
-	ErrReservedPath  = errors.New("the result tree holds a path under .conductor/, which is Conductor's")
+	ErrReservedPath  = errors.New("the result tree holds a path with a .conductor directory, which is Conductor's")
 	ErrSubmodules    = errors.New("the result tree holds a submodule, which managed runs do not take")
 	ErrBadResult     = errors.New("bad result")
 	ErrTaskNotFound  = errors.New("no such task in the run")
@@ -224,6 +227,10 @@ type attempt struct {
 	promptedAt time.Time
 	closedAt   time.Time
 	reminded   bool
+	// sessionEnded says the session ended while a result was being taken
+	// (submitting or verifying): a submission refused then fails the
+	// attempt instead of leaving it running with no session to watch.
+	sessionEnded bool
 }
 
 // input is a result a task starts from or has at hand.
@@ -324,6 +331,205 @@ func (r *run) taskStates() []TaskState {
 	return out
 }
 
+// taskStateOf is t as reported. The caller holds e.mu.
+func (r *run) taskStateOf(t *task) TaskState {
+	return r.taskStates()[slices.Index(r.tasks, t)]
+}
+
+// The rows changed since the last transition, marked by every change of
+// state and drained by the next transition's snapshot (transition). The
+// caller holds e.mu.
+
+func (r *run) markTask(t *task) {
+	if r.changedTasks == nil {
+		r.changedTasks = map[*task]struct{}{}
+	}
+	r.changedTasks[t] = struct{}{}
+}
+
+func (r *run) markAttempt(a *attempt) {
+	if r.changedAttempts == nil {
+		r.changedAttempts = map[*attempt]struct{}{}
+	}
+	r.changedAttempts[a] = struct{}{}
+}
+
+func (r *run) markRun() { r.runChanged = true }
+
+// snapshot is what one transition writes: the rows of what changed, as
+// they were when it was taken.
+type snapshot struct {
+	run      *ledger.RunRow
+	tasks    []ledger.TaskRow
+	attempts []ledger.AttemptRow
+	ts       []*task
+	as       []*attempt
+}
+
+// drain takes the rows changed since the last transition, in the run's
+// order, and clears the marks. The caller holds e.mu.
+func (r *run) drain() snapshot {
+	var s snapshot
+	if r.runChanged {
+		row := r.runRow(r.crewJSON)
+		s.run = &row
+		r.runChanged = false
+	}
+	for _, t := range r.tasks {
+		if _, ok := r.changedTasks[t]; ok {
+			s.tasks = append(s.tasks, r.taskRow(t))
+			s.ts = append(s.ts, t)
+		}
+		for _, a := range t.attempts {
+			if _, ok := r.changedAttempts[a]; ok {
+				s.attempts = append(s.attempts, r.attemptRow(a))
+				s.as = append(s.as, a)
+			}
+		}
+	}
+	clear(r.changedTasks)
+	clear(r.changedAttempts)
+	return s
+}
+
+// write puts the snapshot's rows: the run before its tasks, the tasks
+// before their attempts.
+func (s snapshot) write(tx LedgerTx) error {
+	if s.run != nil {
+		if err := tx.PutRun(*s.run); err != nil {
+			return err
+		}
+	}
+	for _, row := range s.tasks {
+		if err := tx.PutTask(row); err != nil {
+			return err
+		}
+	}
+	for _, row := range s.attempts {
+		if err := tx.PutAttempt(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// undo marks the snapshot's rows changed again, for the next transition,
+// after a commit that failed. The caller holds e.mu.
+func (s snapshot) undo(r *run) {
+	if s.run != nil {
+		r.markRun()
+	}
+	for _, t := range s.ts {
+		r.markTask(t)
+	}
+	for _, a := range s.as {
+		r.markAttempt(a)
+	}
+}
+
+// event is one event of a transition.
+type event struct {
+	kind    string
+	payload map[string]any
+}
+
+// transition records one transition of r in the ledger: under r.txMu the
+// rows changed since the last one are snapshotted under e.mu (drain), with
+// the events the caller builds there, and the commit follows without e.mu;
+// more, when given, writes rows of its own (a check's). Transitions of a
+// run commit in the order their snapshots were taken, each carrying the
+// state as it was then, so a later commit never carries an older state.
+// On failure the rows are marked changed again, for the next transition,
+// and the error is the caller's to act on: the side effect that waits on
+// the commit does not happen.
+func (e *Engine) transition(ctx context.Context, r *run, events func() []event, more func(LedgerTx) error) error {
+	if e.ledger == nil {
+		return ErrNoLedger
+	}
+	r.txMu.Lock()
+	defer r.txMu.Unlock()
+	e.mu.Lock()
+	snap := r.drain()
+	var evs []event
+	if events != nil {
+		evs = events()
+	}
+	e.mu.Unlock()
+	rev, err := e.ledger.Transition(ctx, r.id, func(tx LedgerTx) error {
+		if err := snap.write(tx); err != nil {
+			return err
+		}
+		if more != nil {
+			if err := more(tx); err != nil {
+				return err
+			}
+		}
+		for _, ev := range evs {
+			if err := tx.Event(ev.kind, ev.payload); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	e.mu.Lock()
+	if err != nil {
+		snap.undo(r)
+	} else {
+		r.revision = rev
+		r.touch()
+	}
+	e.mu.Unlock()
+	return err
+}
+
+// one is a transition of one event.
+func one(kind string, payload map[string]any) func() []event {
+	return func() []event { return []event{{kind, payload}} }
+}
+
+// afterTransition takes a transition's outcome for the dispatch that
+// waits on it: committed, the ready tasks are dispatched; failed, the
+// run's dispatch pauses until a person looks, and the run log says why.
+// The caller does not hold e.mu.
+func (e *Engine) afterTransition(r *run, err error) {
+	e.mu.Lock()
+	if err != nil {
+		e.pauseDispatch(r, err)
+	} else {
+		e.pump(r)
+	}
+	e.mu.Unlock()
+	if err != nil {
+		_ = e.transition(context.Background(), r, one("run.paused", map[string]any{"paused": true, "why": session.CleanMessage(err.Error())}), nil)
+	}
+}
+
+// pauseDispatch pauses the run's dispatch after the ledger refused a
+// transition: nothing starts until a person unpauses it. The caller holds
+// e.mu.
+func (e *Engine) pauseDispatch(r *run, err error) {
+	if !r.paused {
+		r.paused = true
+		r.markRun()
+	}
+	r.note(session.ActivityError, "dispatch paused: the ledger could not record the run's state: %v", err)
+}
+
+// settleRun derives the run's outcome once every task is terminal and,
+// the first time it is, says so and reports the end. The caller holds
+// e.mu.
+func (e *Engine) settleRun(r *run) {
+	if r.outcome != "" {
+		return
+	}
+	r.settle()
+	if r.outcome != "" {
+		r.markRun()
+		r.note(session.ActivityStatus, "every task is done: the run %s", r.outcome)
+		e.noteEndLater(r)
+	}
+}
+
 // settle derives the run's outcome once every task is terminal: succeeded
 // when all succeeded, cancelled when one was cancelled and none failed,
 // failed otherwise; "" while a task is not terminal. The caller holds e.mu.
@@ -391,12 +597,17 @@ func (r *run) ready() {
 				waiting = append(waiting, n)
 			}
 		}
-		if len(waiting) == 0 {
-			t.state, t.reason = ledger.TaskReady, ""
-		} else if r.blockedForGood(t) {
-			t.reason = "needs " + strings.Join(waiting, ", ") + ", which will not succeed"
-		} else {
-			t.reason = "needs " + strings.Join(waiting, ", ")
+		state, reason := ledger.TaskReady, ""
+		switch {
+		case len(waiting) == 0:
+		case r.blockedForGood(t):
+			state, reason = ledger.TaskBlocked, "needs "+strings.Join(waiting, ", ")+", which will not succeed"
+		default:
+			state, reason = ledger.TaskBlocked, "needs "+strings.Join(waiting, ", ")
+		}
+		if state != t.state || reason != t.reason {
+			t.state, t.reason = state, reason
+			r.markTask(t)
 		}
 	}
 }
@@ -460,7 +671,8 @@ func (r *run) startCommit(t *task) string {
 // pump dispatches the ready tasks, in plan order, while the run takes
 // them: fewer than maxActiveAttempts in flight, the member free, the task
 // within its attempts, the run neither stopping nor paused. The caller
-// holds e.mu; the dispatches run on goroutines of their own.
+// holds e.mu, and has committed the state the dispatch rests on; the
+// dispatches run on goroutines of their own.
 func (e *Engine) pump(r *run) {
 	if !r.managed || r.stopping || r.paused || r.ctx.Err() != nil {
 		return
@@ -479,6 +691,8 @@ func (e *Engine) pump(r *run) {
 		}
 		if len(t.attempts) >= maxAttemptsPerTask+t.extra {
 			t.state, t.reason = ledger.TaskFailed, fmt.Sprintf("%d attempts made; retry it to allow one more", len(t.attempts))
+			r.markTask(t)
+			e.settleRun(r)
 			continue
 		}
 		ctx, cancel := context.WithCancel(r.ctx)
@@ -486,16 +700,11 @@ func (e *Engine) pump(r *run) {
 		t.attempts = append(t.attempts, a)
 		t.state, t.reason = ledger.TaskRunning, ""
 		r.active++
+		r.markTask(t)
+		r.markAttempt(a)
 		r.starts.Add(1)
 		r.note(session.ActivityStatus, "task %s: attempt %d reserved for %s", t.def.ID, a.n, m.def.Name)
 		go e.dispatch(ctx, r, a)
-	}
-	if r.outcome == "" {
-		r.settle()
-		if r.outcome != "" {
-			r.note(session.ActivityStatus, "every task is done: the run %s", r.outcome)
-			e.noteEndLater(r)
-		}
 	}
 }
 
@@ -518,9 +727,13 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 	}
 	e.mu.Lock()
 	r.base = base
-	crew := r.crewJSON
+	r.markRun()
+	for _, t := range r.tasks {
+		r.markTask(t)
+	}
+	n := len(r.tasks)
 	e.mu.Unlock()
-	if err := e.created(ctx, r, crew); err != nil {
+	if err := e.transition(ctx, r, one("run.created", map[string]any{"base": base, "tasks": n}), nil); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -529,38 +742,31 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 	return nil
 }
 
-// recordStop writes a managed run's stop: its attempts stopped, its tasks,
-// its row. The caller does not hold e.mu.
-func (e *Engine) recordStop(r *run) {
-	e.mu.Lock()
-	var rows []ledger.AttemptRow
-	var trows []ledger.TaskRow
+// stopAttempts ends the attempts in flight as stopped, for a stop. The
+// caller holds e.mu; recordStop writes it.
+func (e *Engine) stopAttempts(r *run) {
 	for _, t := range r.tasks {
-		trows = append(trows, r.taskRow(t))
-		for _, a := range t.attempts {
-			if a.state == ledger.AttemptStopped {
-				rows = append(rows, r.attemptRow(a))
-			}
+		if a := t.active(); a != nil {
+			e.closeAttempt(r, a, ledger.AttemptStopped, a.state, "the run was stopped")
 		}
 	}
-	runRow := r.runRow(r.crewJSON)
-	e.mu.Unlock()
-	_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-		for _, ar := range rows {
-			if err := tx.PutAttempt(ar); err != nil {
-				return err
+	r.markRun()
+}
+
+// recordStop writes a managed run's stop: its attempts stopped, its
+// tasks, its row. The caller does not hold e.mu.
+func (e *Engine) recordStop(r *run) {
+	_ = e.transition(context.Background(), r, func() []event {
+		n := 0
+		for _, t := range r.tasks {
+			for _, a := range t.attempts {
+				if a.state == ledger.AttemptStopped {
+					n++
+				}
 			}
 		}
-		for _, tr := range trows {
-			if err := tx.PutTask(tr); err != nil {
-				return err
-			}
-		}
-		if err := tx.PutRun(runRow); err != nil {
-			return err
-		}
-		return tx.Event("run.stopped", map[string]any{"attempts": len(rows)})
-	})
+		return []event{{"run.stopped", map[string]any{"attempts": n}}}
+	}, nil)
 }
 
 // watchAttempt marks a's member ended when its session ends and, when the
@@ -585,8 +791,9 @@ func (e *Engine) watchAttempt(r *run, a *attempt, local *session.Local) {
 // closeAttempt ends a, with its state, stage and error, lets its member
 // and the run's count go, and settles its task: failed with attempts
 // left goes back to ready, else the task fails and its dependents are
-// blocked for good. The caller holds e.mu.
-func (r *run) closeAttempt(a *attempt, state, stage, errText string) {
+// blocked for good; stopped leaves it ready for a continuation. The
+// caller holds e.mu, and writes the transition before any dispatch.
+func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) {
 	if !a.closedAt.IsZero() {
 		return
 	}
@@ -610,8 +817,33 @@ func (r *run) closeAttempt(a *attempt, state, stage, errText string) {
 			t.state, t.reason = ledger.TaskFailed, fmt.Sprintf("attempt %d %s at %s: %s", a.n, state, stage, errText)
 		}
 	}
+	r.markAttempt(a)
+	r.markTask(t)
 	r.ready()
 	r.note(session.ActivityStatus, "task %s: attempt %d %s%s", t.def.ID, a.n, state, suffix(stage, errText))
+	e.settleRun(r)
+}
+
+// unreserve takes back an attempt nothing was made for (no place among
+// the sessions, or the ledger refused its row): it is removed, and the
+// task is ready again with why. One closed meanwhile (cancelled, stopped)
+// was accounted for by what closed it. The caller holds e.mu.
+func (r *run) unreserve(a *attempt, reason string) {
+	if !a.closedAt.IsZero() {
+		return
+	}
+	t := a.t
+	a.closedAt = time.Now().UTC()
+	a.cancel()
+	if i := slices.Index(t.attempts, a); i >= 0 {
+		t.attempts = slices.Delete(t.attempts, i, i+1)
+	}
+	delete(r.changedAttempts, a)
+	r.active--
+	if t.state == ledger.TaskRunning {
+		t.state, t.reason = ledger.TaskReady, reason
+	}
+	r.markTask(t)
 }
 
 func suffix(stage, errText string) string {
@@ -626,37 +858,15 @@ func suffix(stage, errText string) string {
 	return ""
 }
 
-// stopAttempts ends the attempts in flight as stopped, for a stop. The
-// caller holds e.mu.
-func (r *run) stopAttempts() {
-	for _, t := range r.tasks {
-		if a := t.active(); a != nil {
-			r.closeAttempt(a, ledger.AttemptStopped, a.state, "the run was stopped")
-		}
-	}
-}
-
-// transition writes one transition of r to the ledger and keeps its
-// revision. It never holds e.mu: the caller does not either.
-func (e *Engine) transition(ctx context.Context, r *run, fn func(LedgerTx) error) error {
-	if e.ledger == nil {
-		return ErrNoLedger
-	}
-	rev, err := e.ledger.Transition(ctx, r.id, fn)
-	if err != nil {
-		return err
-	}
-	e.mu.Lock()
-	r.revision = rev
-	r.touch()
-	e.mu.Unlock()
-	return nil
-}
-
 // attemptRow is a as the ledger keeps it. The caller holds e.mu.
 func (r *run) attemptRow(a *attempt) ledger.AttemptRow {
+	state := a.state
+	if state == ledger.AttemptSubmitting {
+		// A result being taken: running until it is recorded.
+		state = ledger.AttemptRunning
+	}
 	return ledger.AttemptRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Member: a.m.def.Name, SessionID: a.sessionID, Worktree: a.worktree, Branch: a.branch,
-		StartCommit: a.start, ResultCommit: a.result, State: a.state, Stage: a.stage, Error: a.err,
+		StartCommit: a.start, ResultCommit: a.result, State: state, Stage: a.stage, Error: a.err,
 		ReservedAt: a.reservedAt, LaunchedAt: a.launchedAt, PromptedAt: a.promptedAt, ClosedAt: a.closedAt}
 }
 
@@ -684,29 +894,6 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 	return row
 }
 
-// created writes a managed run's first transition: its row, its tasks and
-// the run.created event. A failure is the launch's: the run is aborted.
-func (e *Engine) created(ctx context.Context, r *run, crewJSON string) error {
-	e.mu.Lock()
-	row := r.runRow(crewJSON)
-	tasks := make([]ledger.TaskRow, 0, len(r.tasks))
-	for _, t := range r.tasks {
-		tasks = append(tasks, r.taskRow(t))
-	}
-	e.mu.Unlock()
-	return e.transition(ctx, r, func(tx LedgerTx) error {
-		if err := tx.PutRun(row); err != nil {
-			return err
-		}
-		for _, t := range tasks {
-			if err := tx.PutTask(t); err != nil {
-				return err
-			}
-		}
-		return tx.Event("run.created", map[string]any{"base": row.Base, "tasks": len(tasks)})
-	})
-}
-
 // dispatch makes a's worktree and session and types its task line, each
 // step recorded before it is taken: the member's previous session let go,
 // the place among the sessions reserved, the attempt reserved in the
@@ -725,19 +912,12 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		} else if ctx.Err() != nil {
 			state = ledger.AttemptCancelled
 		}
-		r.closeAttempt(a, state, stage, session.CleanMessage(err.Error()))
-		row, trow := r.attemptRow(a), r.taskRow(t)
-		e.pump(r)
+		e.closeAttempt(r, a, state, stage, session.CleanMessage(err.Error()))
 		e.mu.Unlock()
-		_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-			if err := tx.PutAttempt(row); err != nil {
-				return err
-			}
-			if err := tx.PutTask(trow); err != nil {
-				return err
-			}
-			return tx.Event("attempt.failed", map[string]any{"task": t.def.ID, "attempt": a.n, "stage": stage, "error": row.Error})
-		})
+		terr := e.transition(context.Background(), r, func() []event {
+			return []event{{"attempt.failed", map[string]any{"task": t.def.ID, "attempt": a.n, "stage": stage, "error": a.err, "state": a.state}}}
+		}, nil)
+		e.afterTransition(r, terr)
 	}
 	// The member's previous session, idle since its task: let go, so that
 	// its place is free for this one.
@@ -746,9 +926,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	e.mu.Unlock()
 	if prev != "" {
 		if l, ok := e.lookup(prev); ok && !l.Info().Status.Ended() {
-			_ = e.transition(ctx, r, func(tx LedgerTx) error {
-				return tx.Event("session.released", map[string]any{"member": m.def.Name, "session": prev, "for": t.def.ID})
-			})
+			_ = e.transition(ctx, r, one("session.released", map[string]any{"member": m.def.Name, "session": prev, "for": t.def.ID}), nil)
 			stopLocal(l)
 			select {
 			case <-l.Ended():
@@ -762,10 +940,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		// Refused: nothing was made, and the attempt is not spent. The
 		// task waits as ready for the next pump.
 		e.mu.Lock()
-		t.attempts = t.attempts[:len(t.attempts)-1]
-		r.active--
-		a.cancel()
-		t.state, t.reason = ledger.TaskReady, "waiting for a place among the server's sessions: "+session.CleanMessage(err.Error())
+		r.unreserve(a, "waiting for a place among the server's sessions: "+session.CleanMessage(err.Error()))
 		r.note(session.ActivityStatus, "task %s: no place for attempt %d yet: %v", t.def.ID, a.n, err)
 		e.mu.Unlock()
 		return
@@ -775,24 +950,18 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	e.mu.Lock()
 	a.worktree = filepath.Join(r.cwd, worktreesDir, r.id, fmt.Sprintf("%s.%d", t.def.ID, a.n))
 	a.branch = fmt.Sprintf("crew/%s/%s.%d", r.id, t.def.ID, a.n)
-	row := r.attemptRow(a)
-	inputs := slices.Clone(a.inputs)
+	r.markAttempt(a)
 	e.mu.Unlock()
-	if err := e.transition(ctx, r, func(tx LedgerTx) error {
-		if err := tx.PutAttempt(row); err != nil {
-			return err
-		}
-		return tx.Event("attempt.reserved", map[string]any{"task": t.def.ID, "attempt": a.n, "member": m.def.Name, "start": a.start, "inputs": len(inputs)})
-	}); err != nil {
+	if err := e.transition(ctx, r, func() []event {
+		return []event{{"attempt.reserved", map[string]any{"task": t.def.ID, "attempt": a.n, "member": m.def.Name, "start": a.start, "inputs": len(a.inputs)}}}
+	}, nil); err != nil {
 		// The ledger refused the intent: nothing is made, and the run's
 		// dispatch pauses until a person looks.
 		e.mu.Lock()
-		t.attempts = t.attempts[:len(t.attempts)-1]
-		r.active--
-		a.cancel()
-		t.state, t.reason = ledger.TaskReady, "the ledger could not record the attempt: "+session.CleanMessage(err.Error())
-		r.paused = true
+		r.unreserve(a, "the ledger could not record the attempt: "+session.CleanMessage(err.Error()))
 		r.note(session.ActivityError, "dispatch paused: the ledger could not record task %s's attempt %d: %v", t.def.ID, a.n, err)
+		r.paused = true
+		r.markRun()
 		e.mu.Unlock()
 		return
 	}
@@ -816,7 +985,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail("worktree", err)
 		return
 	} else if tracked {
-		fail("worktree", fmt.Errorf("the commit %s tracks %s/, which is Conductor's: the task files cannot be written", short(a.start), taskDir))
+		fail("worktree", fmt.Errorf("the commit %s tracks %s/ in the working directory, which is Conductor's: the task files cannot be written", short(a.start), taskDir))
 		return
 	}
 	e.gitMu.Lock()
@@ -843,8 +1012,9 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	m.state.Branch, m.state.Worktree = a.branch, a.worktree
 	m.base = a.start
 	e.mu.Unlock()
-	// The task files, through a root at the worktree: a .conductor the
-	// commit made a symbolic link is refused.
+	// The task files, through a root at the working directory: a
+	// .conductor that is not a directory of ours, or a task file that is
+	// there already, is refused.
 	md, js, err := e.taskFile(r, a)
 	if err == nil {
 		err = writeTaskFiles(a.worktree, r.prefix, md, js)
@@ -853,12 +1023,10 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail("task file", err)
 		return
 	}
-	_ = e.transition(ctx, r, func(tx LedgerTx) error {
-		return tx.Event("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
-	})
+	_ = e.transition(ctx, r, one("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start}), nil)
 	// The setup, in the worktree, before the member starts.
 	for _, ch := range r.setup {
-		if err := e.runSetup(ctx, r, a, cwd, ch); err != nil {
+		if err := e.runSetup(ctx, r, a, cwd, ch, "attempt.setup"); err != nil {
 			fail("setup "+ch.ID, err)
 			return
 		}
@@ -877,8 +1045,8 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	m.state.SessionID, m.state.Started, m.state.Status, m.state.Ended, m.state.Err = id, &started, MemberStarting, nil, ""
 	m.state.Task, m.state.Attempt = t.def.ID, a.n
 	e.bySession.Store(id, sessionMember{r: r, m: m, a: a})
+	r.markAttempt(a)
 	r.note(session.ActivityStatus, "task %s: attempt %d started as %s", t.def.ID, a.n, m.def.Name)
-	row = r.attemptRow(a)
 	stopping := r.stopping
 	e.mu.Unlock()
 	go e.watchAttempt(r, a, local)
@@ -887,12 +1055,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail("launch", ErrRunStopped)
 		return
 	}
-	_ = e.transition(ctx, r, func(tx LedgerTx) error {
-		if err := tx.PutAttempt(row); err != nil {
-			return err
-		}
-		return tx.Event("attempt.launched", map[string]any{"task": t.def.ID, "attempt": a.n, "session": id})
-	})
+	_ = e.transition(ctx, r, one("attempt.launched", map[string]any{"task": t.def.ID, "attempt": a.n, "session": id}), nil)
 	// The line: typed once the session is ready, as a role prompt is.
 	if err := e.promptWith(ctx, r, m, local, taskLine(t.def, a.n)); err != nil {
 		if r.ctx.Err() != nil {
@@ -903,26 +1066,19 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		return
 	}
 	e.mu.Lock()
-	if a.closedAt.IsZero() {
+	if a.closedAt.IsZero() && a.state == ledger.AttemptLaunched {
 		a.promptedAt, a.state = time.Now().UTC(), ledger.AttemptRunning
+		r.markAttempt(a)
 	}
-	row = r.attemptRow(a)
 	e.mu.Unlock()
-	_ = e.transition(ctx, r, func(tx LedgerTx) error {
-		if err := tx.PutAttempt(row); err != nil {
-			return err
-		}
-		return tx.Event("attempt.prompted", map[string]any{"task": t.def.ID, "attempt": a.n})
-	})
+	_ = e.transition(ctx, r, one("attempt.prompted", map[string]any{"task": t.def.ID, "attempt": a.n}), nil)
 }
 
-// runSetup runs one setup command in an attempt's worktree and records
-// how it went.
-func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, ch Check) error {
+// runSetup runs one setup command in dir (an attempt's working directory,
+// or the checks' checkout) and records how it went under the event kind.
+func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, ch Check, kind string) error {
 	res := e.runCommand(ctx, dir, ch, io.Discard, nil)
-	_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-		return tx.Event("attempt.setup", map[string]any{"task": a.t.def.ID, "attempt": a.n, "setup": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "error": res.Err, "duration": res.Duration.String()})
-	})
+	_ = e.transition(context.Background(), r, one(kind, map[string]any{"task": a.t.def.ID, "attempt": a.n, "setup": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "error": res.Err, "duration": res.Duration.String()}), nil)
 	switch {
 	case res.Err != "" && !res.TimedOut:
 		return fmt.Errorf("%s could not run: %s", ch.ID, res.Err)
@@ -953,9 +1109,10 @@ func short(commit string) string {
 	return commit
 }
 
-// treeHasPath reports whether the commit's tree holds path.
+// treeHasPath reports whether the commit's tree holds path, named from
+// the repository's root whatever directory git runs in.
 func treeHasPath(ctx context.Context, repo, commit, path string) (bool, error) {
-	out, err := gitcli.Run(ctx, repo, "ls-tree", "-d", "--name-only", commit, "--", path)
+	out, err := gitcli.Run(ctx, repo, "ls-tree", "-d", "--full-tree", "--name-only", commit, "--", path)
 	if err != nil {
 		return false, err
 	}
@@ -986,40 +1143,40 @@ func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.Activit
 	}
 }
 
-// managedEnded takes the end of an attempt's session before its result: the
-// attempt fails at its stage. The caller does not hold e.mu.
+// managedEnded takes the end of an attempt's session: before its result,
+// the attempt fails at its stage; while a result is being taken, the end
+// is remembered, and a submission refused then fails the attempt. The
+// caller does not hold e.mu.
 func (e *Engine) managedEnded(r *run, a *attempt) {
 	e.mu.Lock()
-	if !a.closedAt.IsZero() || a.state == ledger.AttemptVerifying || a.state == ledger.AttemptSubmitting {
+	if !a.closedAt.IsZero() {
+		e.mu.Unlock()
+		return
+	}
+	if a.state == ledger.AttemptSubmitting || a.state == ledger.AttemptVerifying {
+		a.sessionEnded = true
 		e.mu.Unlock()
 		return
 	}
 	stage := a.state
-	r.closeAttempt(a, ledger.AttemptFailed, stage, "the session ended before a result was submitted")
-	row, trow := r.attemptRow(a), r.taskRow(a.t)
-	e.pump(r)
+	e.closeAttempt(r, a, ledger.AttemptFailed, stage, "the session ended before a result was submitted")
 	e.mu.Unlock()
-	_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-		if err := tx.PutAttempt(row); err != nil {
-			return err
-		}
-		if err := tx.PutTask(trow); err != nil {
-			return err
-		}
-		return tx.Event("attempt.failed", map[string]any{"task": a.t.def.ID, "attempt": a.n, "stage": stage, "error": row.Error})
-	})
+	err := e.transition(context.Background(), r, func() []event {
+		return []event{{"attempt.failed", map[string]any{"task": a.t.def.ID, "attempt": a.n, "stage": stage, "error": a.err, "state": a.state}}}
+	}, nil)
+	e.afterTransition(r, err)
 }
 
 // SubmitResult takes the result the session submits for its attempt: the
-// attempt must be its task's active, running one; the worktree clean apart
-// from the task files; HEAD on the attempt's branch, descending from every
-// input (a review's equal to its candidate); the result tree without a
-// path under .conductor/ or a submodule. The result is recorded, and the
-// task is verified (its checks, in a checkout of their own) and decided by
-// the controller: a task with no checks succeeds at once. A second submit
-// of the same commit while the first is verified answers as the first;
-// another is refused. The attempt and result are returned with the state
-// the task is in.
+// attempt must be its task's active, running one; the worktree on the
+// attempt's branch and clean apart from the task files; HEAD descending
+// from every input (a review's equal to its candidate); the result tree
+// without a .conductor directory or a submodule. The result is recorded,
+// and the task is verified (its checks, in a checkout of their own) and
+// decided by the controller: a task with no checks succeeds at once. A
+// second submit of the same commit while the first is verified answers as
+// the first; another is refused. The attempt and result are returned with
+// the state the task is in.
 func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result) (TaskState, error) {
 	v, ok := e.bySession.Load(sessionID)
 	if !ok {
@@ -1043,7 +1200,7 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 	case ledger.AttemptSubmitting, ledger.AttemptVerifying:
 		// The same result again: the first answer stands.
 		if a.submitted != nil && (res.Commit == "" || res.Commit == a.result) {
-			st := r.taskStates()[slices.Index(r.tasks, t)]
+			st := r.taskStateOf(t)
 			e.mu.Unlock()
 			return st, nil
 		}
@@ -1055,17 +1212,27 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 		return TaskState{}, fmt.Errorf("%w: it is %s", ErrNotRunning, a.state)
 	}
 	a.state = ledger.AttemptSubmitting
-	worktree, start, inputs := a.worktree, a.start, slices.Clone(a.inputs)
+	worktree, branch, start, inputs := a.worktree, a.branch, a.start, slices.Clone(a.inputs)
 	e.mu.Unlock()
+	// back refuses the result: the attempt runs on, unless its session
+	// ended meanwhile, which fails it.
 	back := func(err error) (TaskState, error) {
 		e.mu.Lock()
 		if a.state == ledger.AttemptSubmitting {
 			a.state = ledger.AttemptRunning
 		}
+		ended := a.sessionEnded
 		e.mu.Unlock()
+		if ended {
+			e.managedEnded(r, a)
+		}
 		return TaskState{}, err
 	}
-	// The tree: clean apart from the task files.
+	// The tree: on the attempt's branch, clean apart from the task files.
+	ref, err := gitcli.Run(ctx, worktree, "symbolic-ref", "-q", "HEAD")
+	if err != nil || strings.TrimSpace(ref) != "refs/heads/"+branch {
+		return back(fmt.Errorf("%w: HEAD is %s, the branch is %s", ErrOffBranch, strings.TrimSpace(ref), branch))
+	}
 	_, changes, _, err := gitcli.Porcelain(ctx, worktree)
 	if err != nil {
 		return back(fmt.Errorf("reading the worktree: %w", err))
@@ -1123,7 +1290,8 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 			return back(ErrSubmodules)
 		}
 	}
-	// Recorded, then decided.
+	// Recorded, then decided: the states move with the commit, and move
+	// back when it fails.
 	e.mu.Lock()
 	if t.active() != a || a.state != ledger.AttemptSubmitting {
 		e.mu.Unlock()
@@ -1134,26 +1302,33 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 	if t.def.Kind == TaskReview {
 		a.result = ""
 	}
-	a.state = ledger.AttemptVerifying
-	t.state = ledger.TaskVerifying
-	row, trow := r.attemptRow(a), r.taskRow(t)
+	a.state, t.state = ledger.AttemptVerifying, ledger.TaskVerifying
+	r.markAttempt(a)
+	r.markTask(t)
 	r.note(session.ActivityStatus, "task %s: attempt %d submitted %s", t.def.ID, a.n, resultWords(t.def.Kind, head, res))
 	e.mu.Unlock()
-	if err := e.transition(ctx, r, func(tx LedgerTx) error {
-		if err := tx.PutAttempt(row); err != nil {
-			return err
+	if err := e.transition(ctx, r, func() []event {
+		return []event{{"result.submitted", map[string]any{"task": t.def.ID, "attempt": a.n, "commit": a.result, "verdict": res.Verdict, "summary": res.Summary}}}
+	}, nil); err != nil {
+		e.mu.Lock()
+		if a.closedAt.IsZero() && a.state == ledger.AttemptVerifying {
+			a.state, t.state = ledger.AttemptSubmitting, ledger.TaskRunning
+			a.submitted, a.result = nil, ""
+			r.markAttempt(a)
+			r.markTask(t)
+			r.note(session.ActivityError, "task %s: attempt %d's result was not recorded: %v", t.def.ID, a.n, err)
 		}
-		if err := tx.PutTask(trow); err != nil {
-			return err
-		}
-		return tx.Event("result.submitted", map[string]any{"task": t.def.ID, "attempt": a.n, "commit": a.result, "verdict": res.Verdict, "summary": res.Summary})
-	}); err != nil {
+		e.mu.Unlock()
 		return back(err)
 	}
-	r.checks.Add(1)
-	go e.verify(r, a)
+	// Verified on a goroutine the run's stop waits for, registered under
+	// the lock a stop takes first: a stop under way takes the attempt.
 	e.mu.Lock()
-	st := r.taskStates()[slices.Index(r.tasks, t)]
+	if a.closedAt.IsZero() && !r.stopping {
+		r.checks.Add(1)
+		go e.verify(r, a)
+	}
+	st := r.taskStateOf(t)
 	e.mu.Unlock()
 	return st, nil
 }
@@ -1180,10 +1355,11 @@ func isAncestor(ctx context.Context, dir, a, b string) (bool, error) {
 	return false, err
 }
 
-// treeReserved reports whether the commit's tree holds a path under
-// .conductor/, and whether it holds a gitlink (a submodule).
+// treeReserved reports whether the commit's tree holds a path with a
+// .conductor directory anywhere in it, and whether it holds a gitlink (a
+// submodule).
 func treeReserved(ctx context.Context, dir, commit string) (reserved, links bool, err error) {
-	out, err := gitcli.Run(ctx, dir, "ls-tree", "-r", "-z", commit)
+	out, err := gitcli.Run(ctx, dir, "ls-tree", "-r", "-z", "--full-tree", commit)
 	if err != nil {
 		return false, false, err
 	}
@@ -1191,22 +1367,23 @@ func treeReserved(ctx context.Context, dir, commit string) (reserved, links bool
 		if line == "" {
 			continue
 		}
-		meta, path, ok := strings.Cut(line, "\t")
+		meta, p, ok := strings.Cut(line, "\t")
 		if !ok {
 			continue
 		}
 		if strings.HasPrefix(meta, "160000 ") {
 			links = true
 		}
-		if path == taskDir || strings.HasPrefix(path, taskDir+"/") {
+		if slices.Contains(strings.Split(p, "/"), taskDir) {
 			reserved = true
 		}
 	}
 	return reserved, links, nil
 }
 
-// accept records the decision on a's result: succeeded with the result,
-// or failed at a stage. The caller does not hold e.mu.
+// accept records the decision on a's result, succeeded with the result or
+// failed at a stage, and dispatches what follows once it is recorded. The
+// caller does not hold e.mu.
 func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 	t := a.t
 	e.mu.Lock()
@@ -1215,53 +1392,31 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 		e.mu.Unlock()
 		return
 	}
-	{
-		if ok {
-			res := a.submitted
-			t.result = &taskResult{attempt: a.n, commit: a.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
-			r.closeAttempt(a, ledger.AttemptSucceeded, "", "")
-		} else {
-			r.closeAttempt(a, ledger.AttemptFailed, stage, errText)
-		}
+	if ok {
+		res := a.submitted
+		t.result = &taskResult{attempt: a.n, commit: a.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
+		e.closeAttempt(r, a, ledger.AttemptSucceeded, "", "")
+	} else {
+		e.closeAttempt(r, a, ledger.AttemptFailed, stage, errText)
 	}
-	rows := []ledger.TaskRow{r.taskRow(t)}
-	for _, other := range r.tasks {
-		if other != t {
-			rows = append(rows, r.taskRow(other))
-		}
-	}
-	row := r.attemptRow(a)
-	e.pump(r)
-	runRow := r.runRow(r.crewJSON)
-	outcome := r.outcome
 	e.mu.Unlock()
-	kind := "task.succeeded"
-	if !ok {
-		kind = "attempt.failed"
-	}
-	_ = e.transition(context.Background(), r, func(tx LedgerTx) error {
-		if err := tx.PutAttempt(row); err != nil {
-			return err
+	err := e.transition(context.Background(), r, func() []event {
+		kind := "task.succeeded"
+		if !ok {
+			kind = "attempt.failed"
 		}
-		for _, tr := range rows {
-			if err := tx.PutTask(tr); err != nil {
-				return err
-			}
+		evs := []event{{kind, map[string]any{"task": t.def.ID, "attempt": a.n, "stage": stage, "error": errText, "commit": a.result, "state": a.state}}}
+		if r.outcome != "" {
+			evs = append(evs, event{"run.finished", map[string]any{"outcome": r.outcome}})
 		}
-		if outcome != "" {
-			if err := tx.PutRun(runRow); err != nil {
-				return err
-			}
-			if err := tx.Event("run.finished", map[string]any{"outcome": outcome}); err != nil {
-				return err
-			}
-		}
-		return tx.Event(kind, map[string]any{"task": t.def.ID, "attempt": a.n, "stage": stage, "error": errText, "commit": a.result})
-	})
+		return evs
+	}, nil)
+	e.afterTransition(r, err)
 }
 
 // PauseRun pauses a managed run's dispatch: attempts in flight go on,
-// none starts. UnpauseRun dispatches what is ready.
+// none starts. Unpaused, it dispatches what is ready, once the pause is
+// recorded.
 func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
@@ -1278,16 +1433,20 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 		return ErrRunStopped
 	}
 	r.paused = paused
+	r.markRun()
 	if paused {
 		r.note(session.ActivityStatus, "dispatch paused")
 	} else {
 		r.note(session.ActivityStatus, "dispatch resumed")
-		e.pump(r)
 	}
 	e.mu.Unlock()
-	return e.transition(ctx, r, func(tx LedgerTx) error {
-		return tx.Event("run.paused", map[string]any{"paused": paused})
-	})
+	err := e.transition(ctx, r, one("run.paused", map[string]any{"paused": paused}), nil)
+	if err == nil && !paused {
+		e.mu.Lock()
+		e.pump(r)
+		e.mu.Unlock()
+	}
+	return err
 }
 
 // CancelTask cancels a task: its attempt in flight is ended (its session
@@ -1314,45 +1473,33 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 	var sessionID string
 	if a != nil {
 		sessionID = a.sessionID
-		r.closeAttempt(a, ledger.AttemptCancelled, a.state, "cancelled")
+		e.closeAttempt(r, a, ledger.AttemptCancelled, a.state, "cancelled")
 	} else {
 		t.state, t.reason = ledger.TaskCancelled, "cancelled"
+		r.markTask(t)
 		r.ready()
-	}
-	rows := []ledger.TaskRow{}
-	for _, other := range r.tasks {
-		rows = append(rows, r.taskRow(other))
-	}
-	var row *ledger.AttemptRow
-	if a != nil {
-		ar := r.attemptRow(a)
-		row = &ar
+		e.settleRun(r)
 	}
 	r.note(session.ActivityStatus, "task %s cancelled", taskID)
-	e.pump(r)
 	e.mu.Unlock()
 	if sessionID != "" {
 		if l, ok := e.lookup(sessionID); ok {
 			stopLocal(l)
 		}
 	}
-	return e.transition(ctx, r, func(tx LedgerTx) error {
-		if row != nil {
-			if err := tx.PutAttempt(*row); err != nil {
-				return err
-			}
+	err := e.transition(ctx, r, func() []event {
+		evs := []event{{"task.cancelled", map[string]any{"task": taskID}}}
+		if r.outcome != "" {
+			evs = append(evs, event{"run.finished", map[string]any{"outcome": r.outcome}})
 		}
-		for _, tr := range rows {
-			if err := tx.PutTask(tr); err != nil {
-				return err
-			}
-		}
-		return tx.Event("task.cancelled", map[string]any{"task": taskID})
-	})
+		return evs
+	}, nil)
+	e.afterTransition(r, err)
+	return err
 }
 
 // RetryTask gives a failed or cancelled task one more attempt: it is ready
-// again, dispatched as the run takes it.
+// again, dispatched as the run takes it, once the retry is recorded.
 func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
@@ -1373,23 +1520,17 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 		t.extra++
 	}
 	t.state, t.reason = ledger.TaskBlocked, ""
-	r.outcome = ""
+	r.markTask(t)
+	if r.outcome != "" {
+		r.outcome = ""
+		r.markRun()
+	}
 	r.ready()
 	r.note(session.ActivityStatus, "task %s: retried, one more attempt allowed", taskID)
-	e.pump(r)
-	rows := []ledger.TaskRow{}
-	for _, other := range r.tasks {
-		rows = append(rows, r.taskRow(other))
-	}
 	e.mu.Unlock()
-	return e.transition(ctx, r, func(tx LedgerTx) error {
-		for _, tr := range rows {
-			if err := tx.PutTask(tr); err != nil {
-				return err
-			}
-		}
-		return tx.Event("task.retried", map[string]any{"task": taskID})
-	})
+	err := e.transition(ctx, r, one("task.retried", map[string]any{"task": taskID}), nil)
+	e.afterTransition(r, err)
+	return err
 }
 
 // AttemptOf reports the task and attempt a session is, in a managed run.

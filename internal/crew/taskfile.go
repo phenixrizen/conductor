@@ -177,7 +177,17 @@ func writeTaskFiles(worktree, prefix string, md, js []byte) error {
 	case err != nil:
 		return err
 	}
-	for name, b := range map[string][]byte{".gitignore": []byte("*\n"), "task.md": md, "task.json": js} {
+	files := map[string][]byte{".gitignore": []byte("*\n"), "task.md": md, "task.json": js}
+	for name := range files {
+		// A fresh worktree has none; one there (tracked, a link) is not
+		// written over.
+		if _, err := root.Lstat(path.Join(taskDir, name)); err == nil {
+			return fmt.Errorf("%s/%s exists in the worktree already: the task file is not written over it", taskDir, name)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	for name, b := range files {
 		if err := root.WriteFile(path.Join(taskDir, name), b, 0o644); err != nil {
 			return err
 		}

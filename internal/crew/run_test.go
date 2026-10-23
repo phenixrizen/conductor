@@ -62,6 +62,7 @@ type fakeLauncher struct {
 	mu           sync.Mutex
 	calls        []launchCall
 	reserveFails error            // when set, every Reserve returns it
+	reserveHold  chan struct{}    // when set, Reserve waits for it to close, or for its context
 	fail         map[string]error // member name -> the error its launch returns
 	block        map[string]bool  // member name -> its launch waits for ctx to end
 	procs        map[string]*sessiontest.FakeProc
@@ -82,13 +83,21 @@ func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 	return e, fl
 }
 
-// Reserve always has a place, unless reserveFails is set.
+// Reserve always has a place, unless reserveFails is set; with
+// reserveHold set it waits for the channel to close, or for the context.
 func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error) {
 	f.mu.Lock()
-	fail := f.reserveFails
+	fail, hold := f.reserveFails, f.reserveHold
 	f.mu.Unlock()
 	if fail != nil {
 		return nil, fail
+	}
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	return &session.Reservation{}, nil
 }

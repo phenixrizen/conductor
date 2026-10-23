@@ -2124,17 +2124,23 @@ before anything is made: refused at the cap, the task waits as `ready` and
 nothing is spent.
 
 A result is the attempt's commit (a review's its verdict): the worktree must
-be clean apart from `.conductor/`, `HEAD` must descend from every input (a
-review's `HEAD` must be the candidate's), and the result tree may hold no path
-under `.conductor/` and no submodule; otherwise the submit is refused with
-why, and the attempt goes on. A work task's checks then run in a detached
-checkout of the result commit (`<worktree>.check`), one at a time across the
-server (`checks.maxConcurrent`), each recorded before it starts and after it
-ends with its exit, timing, log (at most 1 MiB, its SHA-256 and a tail) and
-whether it left tracked content as it found it; a check that cannot run,
-exits non-zero, times out or changes tracked files fails the attempt at that
-check, and the rest do not run. A review, or a task with no checks, succeeds
-at once. Every transition is written to the ledger before the side effect it
+be on the attempt's branch and clean apart from `.conductor/`, `HEAD` must
+descend from every input (a review's `HEAD` must be the candidate's), and the
+result tree may hold no `.conductor` directory anywhere and no submodule;
+otherwise the submit is refused with why, and the attempt goes on. A work
+task's checks then run in a detached checkout of the result commit
+(`<worktree>.check`), after the crew's `setup` there (what the worker had,
+the checks have; a setup that changes tracked content fails the attempt),
+one at a time across the server (`checks.maxConcurrent`), each recorded
+before it starts and after it ends with its exit, timing, log (at most 1 MiB,
+its SHA-256 and a tail) and whether it left the checkout as it found it:
+after each check the checkout is compared with the commit as git would store
+it (content, mode and link target of every tracked path, through an index of
+its own that no flag of the checkout's can hide a change from, and `HEAD`
+still the commit); a check that cannot run, exits non-zero, times out, moves
+the checkout or changes tracked files fails the attempt at that check, and
+the rest do not run; untracked outputs are listed with it. A review, or a
+task with no checks, succeeds at once. Every transition is written to the ledger before the side effect it
 precedes (`runs/managed.sqlite`); the run's `managed.revision` follows. The
 routes an agent submits with come with the next row (#334).
 
