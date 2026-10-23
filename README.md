@@ -1288,7 +1288,13 @@ the same data, the server concludes what was left open, the run reads as
 interrupted, and **Continue** (the resume route) makes a new run that keeps
 every result that stood, verifies again a result that was being checked,
 takes up the rest, and leaves an attempt whose launch was never known for a
-person to retry.
+person to retry. The members pass each other what the next task needs to
+know beyond a result as messages, typed into the recipient's session once it
+has its task and read from its inbox; a member that something stops says so
+(the task shows as blocked, and the session asks the people watching); and a
+member saves checkpoints as it goes, so an attempt that ends without a
+result, or a continuation, starts from the last one rather than from
+scratch.
 
 **The timeline and the charts.** A **Timeline** tab beside the graph draws
 one bar per member from its start to its end or now, amber where its session
@@ -1343,9 +1349,10 @@ a view link, that link on a third line, `view <url>`.
 (`--mcp-config`) and Codex (`-c mcp_servers.conductor.…`), every launch
 registers `conductor mcp`, a stdio server with the skill's commands as tools:
 `report`, `set_state`, `ask` (with choices), `form_crew`, `add_member`,
-`run_status`, `link`, and for an attempt at a task of a managed run
-`task_context` and `task_result` (`conductor task context` and `conductor
-task result` on the command line); outside a session the tools say so and do
+`run_status`, `link`, and for a member of a managed run `task_context`,
+`task_result`, `message_send`, `inbox_read`, `inbox_ack`, `task_blocked` and
+`task_checkpoint` (`conductor task context|result|send|inbox|ack|blocked|
+checkpoint` on the command line); outside a session the tools say so and do
 nothing.
 `agents.mcp: false` (`CONDUCTOR_AGENT_MCP=0`) turns the registration off.
 The server's launches register it; `conductor host` does not yet, and the

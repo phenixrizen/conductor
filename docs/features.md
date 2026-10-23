@@ -2946,6 +2946,52 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   while a check runs, started again on the same data, the record
   interrupted, the continuation verifying the candidate again and the
   dependent starting from it, the old run naming the new, the pages.
+- **Members of a managed run exchange durable messages (#344,
+  2026-10-23).** Row 9 of the agent harness (#334), in the same PR as rows
+  5–8. A member sends another a message (`POST /api/sessions/{id}/
+  messages`, the MCP tool `message_send`, `conductor task send --to`):
+  kept in the ledger (schema version 3: a `messages` table, with the
+  checkpoint column of row 10; a version 2 database is brought to it) and
+  typed into the recipient's session as one line, `Message from <from>
+  (#n): …`, after its task line through the handoff queue once its attempt
+  has one (`deliverMessages`, `handoff.seq`; a member not started yet gets
+  it then; a continuation carries what was not delivered); the recipient
+  reads its inbox (`GET …/inbox`, `inbox_read`, `conductor task inbox`)
+  and acknowledges (`POST …/inbox/ack`, `inbox_ack`, `conductor task
+  ack`), keeping at most 50 not acknowledged (`429 inbox_full`). A handoff
+  reported in a managed run is a message to the member it names. The run
+  log and the events (`message.sent`, `message.delivered`,
+  `message.acked`) say so; `GET /api/runs/{run}/messages` lists them. The
+  skill's "Messages, blockers and checkpoints" section says how. Tests:
+  `crew/messages_test.go` (typed after the task line and recorded
+  delivered, the inbox and its acknowledgement, the refusals, the full
+  inbox, a handoff as a message, a continuation carrying a message),
+  `api/messages_test.go`, `cli/task_test.go`, `mcp_test.go`, the skill
+  test, and Playwright `tasks-messages.spec.ts` (the chatty worker's
+  message reaching the writer once it has its task, read from its inbox).
+- **A member reports a blocker and saves a checkpoint (#344,
+  2026-10-23).** Row 10 of the agent harness (#334), in the same PR. An
+  attempt reports what blocks it (`POST /api/sessions/{id}/task/blocked`,
+  `task_blocked`, `conductor task blocked --reason --message`): the task
+  carries the blocker (`blocker {reason, message, by, at}`; the Tasks view
+  says "attempt n blocked by lead: reason"), the session asks the message
+  as the agent's own question, and a `working` or `done` report of the
+  attempt (`OnActivity` → `unblock`), or its result, clears it
+  (`task.blocked`, `task.unblocked`). An attempt saves a checkpoint (`POST
+  …/task/checkpoint`, `task_checkpoint`, `conductor task checkpoint
+  --done --remaining --notes`): what is done, what remains and notes, tied
+  to the commit its worktree is at, kept on the attempt and in the ledger
+  (`attempts.checkpoint`, `task.checkpoint`); the task's next attempt reads
+  it in its task file ("Where the last attempt got to"), and an attempt
+  after one that ended without a result, or a continuation's first attempt
+  at the task, starts at the checkpoint's commit (`startCommit`), so a
+  crashed session's work is not lost. The Tasks view shows an attempt's
+  checkpoint. Tests: `crew/checkpoints_test.go` (the blocker shown,
+  cleared by a working report and by a result, refused on an ended
+  attempt; the checkpoint kept in the row, the next attempt starting there
+  with the section in its task file, a continuation's first attempt too),
+  `api/messages_test.go`, `cli/task_test.go`, and the chatty worker's
+  checkpoint in `tasks-messages.spec.ts`.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

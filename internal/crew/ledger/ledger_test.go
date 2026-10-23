@@ -64,7 +64,7 @@ func TestOpenMakesTheSchema(t *testing.T) {
 		tables = append(tables, n)
 	}
 	rows.Close()
-	if want := "attempts checks commands events runs schema_version tasks"; strings.Join(tables, " ") != want {
+	if want := "attempts checks commands events messages runs schema_version tasks"; strings.Join(tables, " ") != want {
 		t.Fatalf("tables %v", tables)
 	}
 	newRun(t, l, "team-00000001")
@@ -823,8 +823,10 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
-	if _, err := l.db.Exec("ALTER TABLE attempts DROP COLUMN result"); err != nil {
-		t.Fatal(err)
+	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "DROP TABLE messages"} {
+		if _, err := l.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := l.db.Exec("UPDATE schema_version SET version = 1"); err != nil {
 		t.Fatal(err)
@@ -846,7 +848,10 @@ func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 		if err := tx.PutTask(TaskRow{RunID: "team-00000001", ID: "build", Member: "lead", Kind: "work", State: TaskRunning}); err != nil {
 			return err
 		}
-		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now(), Result: `{"summary":"built"}`}); err != nil {
+		if err := tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 1, Member: "lead", State: AttemptVerifying, ReservedAt: tx.Now(), Result: `{"summary":"built"}`, Checkpoint: `{"done":"half"}`}); err != nil {
+			return err
+		}
+		if err := tx.PutMessage(MessageRow{RunID: "team-00000001", Seq: 1, From: "lead", To: "docs", Text: "hello", CreatedAt: tx.Now()}); err != nil {
 			return err
 		}
 		return tx.Event("result.submitted", nil)
@@ -854,8 +859,19 @@ func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 		t.Fatal(err)
 	}
 	attempts, err := again.Attempts(ctx, "team-00000001")
-	if err != nil || len(attempts) != 1 || attempts[0].Result != `{"summary":"built"}` {
+	if err != nil || len(attempts) != 1 || attempts[0].Result != `{"summary":"built"}` || attempts[0].Checkpoint != `{"done":"half"}` {
 		t.Fatalf("attempts after the migration: %+v %v", attempts, err)
+	}
+	if msgs, err := again.Messages(ctx, "team-00000001"); err != nil || len(msgs) != 1 || msgs[0].From != "lead" || msgs[0].To != "docs" || msgs[0].Text != "hello" || !msgs[0].DeliveredAt.IsZero() {
+		t.Fatalf("messages after the migration: %+v %v", msgs, err)
+	}
+	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		return tx.PutMessage(MessageRow{RunID: "team-00000001", Seq: 1, From: "lead", To: "docs", Text: "hello", CreatedAt: tx.Now(), DeliveredAt: tx.Now()})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if msgs, _ := again.Messages(ctx, "team-00000001"); msgs[0].DeliveredAt.IsZero() {
+		t.Fatalf("the delivery was not kept: %+v", msgs)
 	}
 	if _, err := again.Transition(ctx, "team-00000001", func(tx *Tx) error {
 		return tx.PutAttempt(AttemptRow{RunID: "team-00000001", TaskID: "build", N: 2, Member: "lead", State: AttemptReserved, ReservedAt: tx.Now(), Result: strings.Repeat("x", MaxResult+1)})

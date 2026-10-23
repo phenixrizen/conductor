@@ -100,6 +100,17 @@
         "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
       },
       {
+        "id": "worker-chatty",
+        "name": "Worker, chatty (e2e stub)",
+        "description": "The CLI worker that saves a checkpoint before it submits and sends the member writer a message after, for the messages and checkpoints spec.",
+        "command": ["@BASH@", "@STUB@"],
+        "allowArgs": true,
+        "env": { "STUB_IDENTITY": "claude", "STUB_REPORT": "plain", "STUB_WORKER": "cli", "STUB_CHECKPOINT": "1", "STUB_MESSAGE_TO": "writer" },
+        "adapter": "claude",
+        "signal": { "kind": "hook" },
+        "session": { "startArgs": ["--session-id", "{id}"], "idFrom": "hook", "resumeArgs": ["--resume", "{id}"], "idPattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+      },
+      {
         "id": "worker-cli",
         "name": "Worker, CLI (e2e stub)",
         "description": "The worker that reads and submits with conductor task context and conductor task result instead of the tools.",

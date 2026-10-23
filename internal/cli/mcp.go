@@ -112,6 +112,16 @@ func mcpTools() []mcpTool {
 				"verdict":  map[string]any{"type": "string", "enum": []string{"approved", "needs_changes"}, "description": "a review's verdict"},
 				"findings": map[string]any{"type": "array", "maxItems": 50, "items": map[string]any{"type": "object", "properties": map[string]any{"severity": map[string]any{"type": "string", "enum": []string{"blocker", "major", "minor", "nit"}}, "path": str("the file"), "line": map[string]any{"type": "integer"}, "message": str("what to change")}, "required": []string{"severity", "message"}}, "description": "a review's findings"},
 			})},
+		{Name: "message_send", Description: "In a managed run, send another member a message: kept with the run and typed into that member's session as one line (\"Message from <you> (#n): …\") once its attempt has its task; a member not started yet gets it then. A member keeps at most 50 messages not acknowledged. Use it for what the next task needs to know beyond your result; a result is still submitted with task_result.",
+			InputSchema: obj(map[string]any{"to": str("the member's name"), "text": str("the message, at most 4000 characters")}, "to", "text")},
+		{Name: "inbox_read", Description: "In a managed run, your messages from the other members, in order: each with its sequence number, who sent it and whether it was typed into your session. Pass after to read past what you have seen.",
+			InputSchema: obj(map[string]any{"after": map[string]any{"type": "integer", "minimum": 0, "description": "the last sequence number read; 0 for all"}})},
+		{Name: "inbox_ack", Description: "In a managed run, acknowledge your messages up to a sequence number: they count no more against your inbox.",
+			InputSchema: obj(map[string]any{"upTo": map[string]any{"type": "integer", "minimum": 1}}, "upTo")},
+		{Name: "task_blocked", Description: "In a managed run, say what stops your attempt at its task: a missing credential, a decision, something to be done by hand. The people watching see the task as blocked with the reason, and your session asks them the message (else the reason) as your question; reporting working or done, or submitting, clears it.",
+			InputSchema: obj(map[string]any{"reason": str("what blocks you, one line of at most 500 characters"), "message": str("what you need from the people watching, at most 4000 characters")}, "reason")},
+		{Name: "task_checkpoint", Description: "In a managed run, save where your attempt got to, tied to the commit your worktree is at (commit first): what is done, what remains, notes. The next attempt at the task reads it in its task file, and one after an attempt that ends without a result starts at that commit, so the work is not lost.",
+			InputSchema: obj(map[string]any{"done": str("what is done, at most 4000 characters"), "remaining": str("what remains"), "notes": str("anything the next attempt should know")}, "done", "remaining")},
 	}
 }
 
@@ -278,12 +288,12 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return "", err
 		}
 		return "reported", nil
-	case "form_crew", "add_member", "run_status", "link", "task_context", "task_result":
+	case "form_crew", "add_member", "run_status", "link", "task_context", "task_result", "message_send", "inbox_read", "inbox_ack", "task_blocked", "task_checkpoint":
 		c, err := crewClientFromEnv(s.getenv)
 		if err != nil {
 			return "", errNotInSession
 		}
-		if strings.HasPrefix(name, "task_") {
+		if strings.HasPrefix(name, "task_") || strings.HasPrefix(name, "message_") || strings.HasPrefix(name, "inbox_") {
 			c.prefix = "task"
 		}
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -348,9 +358,68 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			}
 			task, _ := out["task"].(map[string]any)
 			return fmt.Sprintf("submitted: task %v is %v", task["id"], task["state"]), nil
+		case "message_send":
+			out, err := c.call(cctx, http.MethodPost, "/messages", body)
+			if err != nil {
+				return "", err
+			}
+			m, _ := out["message"].(map[string]any)
+			return fmt.Sprintf("sent #%v to %v; it is typed into %v's session once that one has its task", m["seq"], m["to"], m["to"]), nil
+		case "inbox_read":
+			path := "/inbox"
+			if a, ok := body["after"].(float64); ok && a > 0 {
+				path = fmt.Sprintf("/inbox?after=%d", int64(a))
+			}
+			out, err := c.call(cctx, http.MethodGet, path, nil)
+			if err != nil {
+				return "", err
+			}
+			return inboxText(out), nil
+		case "inbox_ack":
+			out, err := c.call(cctx, http.MethodPost, "/inbox/ack", body)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("acknowledged %v", out["acked"]), nil
+		case "task_blocked":
+			out, err := c.call(cctx, http.MethodPost, "/task/blocked", body)
+			if err != nil {
+				return "", err
+			}
+			task, _ := out["task"].(map[string]any)
+			return fmt.Sprintf("task %v shows as blocked; your session asks the people watching. Report working, or submit, once you go on.", task["id"]), nil
+		case "task_checkpoint":
+			out, err := c.call(cctx, http.MethodPost, "/task/checkpoint", body)
+			if err != nil {
+				return "", err
+			}
+			a, _ := out["attempt"].(map[string]any)
+			cp, _ := a["checkpoint"].(map[string]any)
+			return fmt.Sprintf("checkpoint saved at %v", cp["commit"]), nil
 		}
 	}
 	return "", unknownTool(name)
+}
+
+// inboxText lists an inbox reply's messages, one a line.
+func inboxText(out map[string]any) string {
+	msgs, _ := out["messages"].([]any)
+	if len(msgs) == 0 {
+		return "no messages"
+	}
+	var b strings.Builder
+	for _, x := range msgs {
+		m, _ := x.(map[string]any)
+		state := "waiting to be typed into your session"
+		if m["deliveredAt"] != nil {
+			state = "typed into your session"
+		}
+		if m["ackedAt"] != nil {
+			state = "acknowledged"
+		}
+		fmt.Fprintf(&b, "#%v from %v (%s): %v\n", m["seq"], m["from"], state, m["text"])
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // membersText lists a run's members as printMembers does, as text.

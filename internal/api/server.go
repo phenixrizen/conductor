@@ -534,6 +534,13 @@ func (s *Server) Handler() http.Handler {
 	// An attempt's session reads its task and submits its result.
 	mux.HandleFunc("GET /api/sessions/{id}/task", s.handleSessionTask)
 	mux.HandleFunc("POST /api/sessions/{id}/task/result", s.handleSessionTaskResult)
+	// Messages between members, a blocker, a checkpoint (rows 9 and 10).
+	mux.HandleFunc("POST /api/sessions/{id}/messages", s.handleSessionMessages)
+	mux.HandleFunc("GET /api/sessions/{id}/inbox", s.handleSessionInbox)
+	mux.HandleFunc("POST /api/sessions/{id}/inbox/ack", s.handleSessionInboxAck)
+	mux.HandleFunc("POST /api/sessions/{id}/task/blocked", s.handleSessionTaskBlocked)
+	mux.HandleFunc("POST /api/sessions/{id}/task/checkpoint", s.handleSessionTaskCheckpoint)
+	mux.HandleFunc("GET /api/runs/{run}/messages", s.requireAdmin(s.handleRunMessages))
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
 	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.launching(s.handleRevokeRunLink))

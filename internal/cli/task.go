@@ -21,6 +21,13 @@ const taskUsage = `Usage:
   conductor task result [--summary TEXT] [--commit SHA] [--issue TEXT]...
                         [--verdict approved|needs_changes] [--finding "SEVERITY[:PATH[:LINE]] MESSAGE"]...
                         [--file result.json|-]  submit this attempt's result, once
+  conductor task send --to MEMBER TEXT...     send another member a message (typed into its session once it has its task)
+  conductor task inbox [--after N] [--json]    your messages from the other members, after a sequence number
+  conductor task ack N                         acknowledge your messages up to N
+  conductor task blocked --reason TEXT [--message TEXT]
+                                               say what stops your attempt; the people watching see it and are asked
+  conductor task checkpoint --done TEXT --remaining TEXT [--notes TEXT]
+                                               save where you got to, tied to your worktree's commit (commit first)
 
 In a managed run, the session is one attempt at one task (CONDUCTOR_TASK).
 A work task's result is its commit (HEAD unless --commit names it): commit
@@ -55,7 +62,9 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return 0, nil
 	}
 	sub, rest := args[0], args[1:]
-	if sub != "context" && sub != "result" {
+	switch sub {
+	case "context", "result", "send", "inbox", "ack", "blocked", "checkpoint":
+	default:
 		fmt.Fprint(stderr, taskUsage)
 		return 2, fmt.Errorf("task: unknown command %q", sub)
 	}
@@ -70,6 +79,13 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	var issues, findings multiFlag
 	fs.Var(&issues, "issue", "result: an issue left or doubtful (repeatable)")
 	fs.Var(&findings, "finding", `result: a review's finding, "SEVERITY[:PATH[:LINE]] MESSAGE" (repeatable)`)
+	to := fs.String("to", "", "send: the member the message goes to")
+	after := fs.Int64("after", 0, "inbox: the last sequence number read")
+	reason := fs.String("reason", "", "blocked: what stops you, one line")
+	message := fs.String("message", "", "blocked: what you need from the people watching")
+	done := fs.String("done", "", "checkpoint: what is done")
+	remaining := fs.String("remaining", "", "checkpoint: what remains")
+	notes := fs.String("notes", "", "checkpoint: anything the next attempt should know")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, taskUsage, "\nFlags:\n")
 		fs.PrintDefaults()
@@ -80,8 +96,15 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		}
 		return 2, err
 	}
-	if fs.NArg() > 0 {
-		return 2, fmt.Errorf("task %s takes no argument: %q", sub, fs.Arg(0))
+	switch sub {
+	case "send", "ack":
+		if fs.NArg() == 0 {
+			return 2, fmt.Errorf("task %s needs %s", sub, map[string]string{"send": "the text", "ack": "a sequence number"}[sub])
+		}
+	default:
+		if fs.NArg() > 0 {
+			return 2, fmt.Errorf("task %s takes no argument: %q", sub, fs.Arg(0))
+		}
 	}
 	c, err := crewClientFromEnv(os.Getenv)
 	if err != nil {
@@ -91,6 +114,70 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	switch sub {
 	case "context":
 		return taskContext(ctx, c, *page, *asJSON, stdout)
+	case "send":
+		if *to == "" {
+			return 2, errors.New("task send: --to names the member")
+		}
+		out, err := c.call(ctx, http.MethodPost, "/messages", map[string]any{"to": *to, "text": strings.Join(fs.Args(), " ")})
+		if err != nil {
+			return 1, err
+		}
+		m, _ := out["message"].(map[string]any)
+		fmt.Fprintf(stdout, "sent #%v to %v\n", m["seq"], m["to"])
+		return 0, nil
+	case "inbox":
+		path := "/inbox"
+		if *after > 0 {
+			path += "?after=" + strconv.FormatInt(*after, 10)
+		}
+		out, err := c.call(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return 1, err
+		}
+		if *asJSON {
+			b, err := json.MarshalIndent(out["messages"], "", "  ")
+			if err != nil {
+				return 1, err
+			}
+			fmt.Fprintln(stdout, string(b))
+			return 0, nil
+		}
+		fmt.Fprintln(stdout, inboxText(out))
+		return 0, nil
+	case "ack":
+		n, err := strconv.ParseInt(fs.Arg(0), 10, 64)
+		if err != nil || n < 1 {
+			return 2, fmt.Errorf("task ack: a sequence number from 1, not %q", fs.Arg(0))
+		}
+		out, err := c.call(ctx, http.MethodPost, "/inbox/ack", map[string]any{"upTo": n})
+		if err != nil {
+			return 1, err
+		}
+		fmt.Fprintf(stdout, "acknowledged %v\n", out["acked"])
+		return 0, nil
+	case "blocked":
+		if *reason == "" {
+			return 2, errors.New("task blocked: --reason says what stops you")
+		}
+		out, err := c.call(ctx, http.MethodPost, "/task/blocked", map[string]any{"reason": *reason, "message": *message})
+		if err != nil {
+			return 1, err
+		}
+		task, _ := out["task"].(map[string]any)
+		fmt.Fprintf(stdout, "task %v shows as blocked; report working, or submit, once you go on\n", task["id"])
+		return 0, nil
+	case "checkpoint":
+		if *done == "" || *remaining == "" {
+			return 2, errors.New("task checkpoint: --done and --remaining say where you got to")
+		}
+		out, err := c.call(ctx, http.MethodPost, "/task/checkpoint", map[string]any{"done": *done, "remaining": *remaining, "notes": *notes})
+		if err != nil {
+			return 1, err
+		}
+		a, _ := out["attempt"].(map[string]any)
+		cp, _ := a["checkpoint"].(map[string]any)
+		fmt.Fprintf(stdout, "checkpoint saved at %v\n", cp["commit"])
+		return 0, nil
 	default:
 		var res crew.Result
 		if *file != "" {

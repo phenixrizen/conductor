@@ -34,8 +34,9 @@ when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 
 With Conductor's MCP server registered (Claude Code and Codex get it at
 launch), the same reports and crew actions are tools: report, set_state,
-ask, form_crew, add_member, run_status, link, task_context and
-task_result. Call those when you have them; the commands below do the same.
+ask, form_crew, add_member, run_status, link, task_context, task_result,
+message_send, inbox_read, inbox_ack, task_blocked and task_checkpoint.
+Call those when you have them; the commands below do the same.
 
 ## When to report
 
@@ -143,6 +144,32 @@ the end of your turn finishes nothing; only a submitted result does.
   file. A refused submit says why (uncommitted changes, the wrong branch,
   a commit not from the inputs): fix it and submit again. The same commit
   submitted twice is taken once.
+
+## Messages, blockers and checkpoints
+
+- What the next task needs to know beyond your result, send its member as
+  a message: it is kept with the run and typed into that member's session
+  once it has its task (a member not started yet gets it then). Read your
+  own with inbox, and acknowledge what you have read; a member keeps at
+  most 50 not acknowledged. In a managed run a handoff is a message too.
+
+      "${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"
+      "${CONDUCTOR_BIN:-conductor}" task inbox
+      "${CONDUCTOR_BIN:-conductor}" task ack 3
+
+- Something stops you that only a person can give (a credential, a
+  decision, a step by hand): say so. The task shows as blocked with the
+  reason, and your session asks the message as your question; report
+  working, or submit, once you go on.
+
+      "${CONDUCTOR_BIN:-conductor}" task blocked --reason "no token for the registry" --message "Set NPM_TOKEN in the worktree's .env, then answer here"
+
+- Before a long step, and before you stop, commit and save a checkpoint:
+  what is done, what remains, notes. The next attempt at the task reads
+  it, and one after an attempt that ends without a result starts at that
+  commit, so the work is not lost.
+
+      "${CONDUCTOR_BIN:-conductor}" task checkpoint --done "handlers and tests" --remaining "the docs" --notes "the docs page is docs/api.md"
 
 ## Rules
 

@@ -1787,6 +1787,12 @@ its run, and on no other.
 | `POST /api/sessions/{id}/crew` | the session's agent token, or admin | an agent forms a crew around its own session (`agents.selfService`, on by default; `403 self_service_off`): body `{name, goal, members, self, isolation?, open?}` (the crew's `cwd`, `where` and `yolo` are the session's own, never in the body; `self` names the member this session becomes, whose `agentId` is the session's agent or empty, meaning that); the crew is saved, its run launched with the session adopted as `self` (`running`, its prompt its own: the members after it start on its next done, handoffs reach it) and the others started as at launch; reply `201 {run, crew, member, url}`, `url` the run's page; the session is tagged with the run and records `formed crew <name>` (a `link` entry with `(open)` when asked, which the workbench offers as a toast); at most 2 per session per hour (`429`); `409 in_a_run` while the session is a member of a run, `409 session_ended`, `400 hosted_session`, `400 invalid_crew` as a launch answers (an impostor among the members included) |
 | `POST /api/sessions/{id}/run/members` | the session's agent token, or admin | add a member (one `crew.Member`) to the session's own run, as `POST /api/runs/{run}/members` does; `201 {run}`; `409 no_run` |
 | `GET /api/sessions/{id}/task` | the session's agent token, or admin | the task of an attempt's session in a managed run (#334, row 6): `{task, markdown, page, pages, bytes}`, `task` the attempt's `task.json` and `markdown` a page of its `task.md` (32 KiB a page, `?page=` from 1, page 1 unless asked; `400 invalid_request` past the last); `404 not_an_attempt` for a session that is no attempt; `409 not_running` for an attempt whose worktree is not made yet; never gated by `agents.selfService` |
+| `POST /api/sessions/{id}/messages` | the session's agent token, or admin | send a message from the session's member to another member of its managed run (#334, row 9): body `{to, text}` (one to 4,000 characters); reply `201 {message}`, `{seq, from, to, text, createdAt, deliveredAt?, ackedAt?}`; the message is typed into the recipient's session as one line, `Message from <from> (#<seq>): <text>`, after its task line, once its attempt has one; `404 no_member`; `429 inbox_full` once the recipient has 50 messages not acknowledged; `400 invalid_request` for an empty text, one too long, or a message to oneself; `409 task_state` on a legacy run |
+| `GET /api/sessions/{id}/inbox` | the session's agent token, or admin | the session's member's messages after `?after=` (a sequence number, 0 unless given), at most 50, in order, delivered or not: `{messages}` |
+| `POST /api/sessions/{id}/inbox/ack` | the session's agent token, or admin | acknowledge the session's member's messages up to a sequence number: body `{upTo}`; reply `{acked}`, how many now; acknowledged messages count no more against the member's inbox |
+| `GET /api/runs/{run}/messages` | admin | a managed run's messages in sequence: `{messages}` |
+| `POST /api/sessions/{id}/task/blocked` | the session's agent token, or admin | report what blocks the session's attempt (#334, row 10): body `{reason, message?}` (a reason of one to 500 characters, a message of at most 4,000); reply `{task}` with its `blocker` (`{reason, message?, by, at}`); the session then asks the message (else the reason) as its own question; a `working` or `done` report of the attempt, or its result, clears the blocker; `409 not_running` for an attempt not running; `404 not_an_attempt` |
+| `POST /api/sessions/{id}/task/checkpoint` | the session's agent token, or admin | save where the session's attempt got to, tied to the commit its worktree is at: body `{done, remaining, notes?}` (each at most 4,000 characters, `done` and `remaining` given); reply `{attempt}` with its `checkpoint` (`{done, remaining, notes?, commit, at}`), kept in the ledger; the task's next attempt reads it in its task file, and one after an attempt that ended without a result, or a continuation's first, starts at that commit; `409 no_commit` for a worktree with none; `409 not_running` |
 | `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`; `400 bad_result` for a result that does not fit the task's kind or its bounds; `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
@@ -2229,6 +2235,32 @@ run>/<task>.<n>` continues the numbering). The run log says what was kept,
 verified again and left for a decision; the continuation is made once
 (`409 already_resumed` names it), and a run still going is not continued
 (`409 run_running`).
+
+**Messages, blockers and checkpoints.** The members of a managed run
+exchange messages (`POST /api/sessions/{id}/messages`, the MCP tool
+`message_send`, `conductor task send`): a message is kept in the ledger
+(`message.sent`) and typed into the recipient's session as one line after
+its task line, through the handoff queue, once the recipient's attempt has
+one (`message.delivered`; a member not started yet gets it then, a
+continuation carries what was not delivered); the recipient reads its
+inbox (`GET …/inbox`, `inbox_read`, `conductor task inbox`) and
+acknowledges what it has read (`POST …/inbox/ack`, `inbox_ack`,
+`conductor task ack`; `message.acked`), and keeps at most 50 messages not
+acknowledged. A handoff reported in a managed run is a message to the
+member it names. An attempt reports a blocker (`POST …/task/blocked`,
+`task_blocked`, `conductor task blocked`): the task carries it
+(`tasks[].blocker`, `task.blocked`), the session asks the message as the
+agent's own question, and a `working` or `done` report of the attempt, or
+its result, clears it (`task.unblocked`). An attempt saves a checkpoint
+(`POST …/task/checkpoint`, `task_checkpoint`, `conductor task
+checkpoint`): what is done, what remains and notes, tied to the commit its
+worktree is at, on the attempt (`attempt.checkpoint`) and in the ledger
+(`task.checkpoint`); the task's next attempt reads it in its task file
+("Where the last attempt got to"), and an attempt after one that ended
+without a result, or a continuation's first attempt at the task, starts at
+the checkpoint's commit, so the work is kept. The ledger's schema is
+version 3 for the checkpoint column and the messages table; a version 2
+database is brought to it as it opens.
 
 The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
 `attempt`, `result` and, in a continuation, `importedFrom`), `paused` and, once every task is terminal, `outcome`

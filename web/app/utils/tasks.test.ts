@@ -39,6 +39,7 @@ describe('taskWords', () => {
     [task({ state: 'ready' }), 'ready to start', 'default'],
     [task({ state: 'ready', reason: 'attempt 1 failed at check go: exited 1' }), 'attempt 1 failed at check go: exited 1; ready to start', 'default'],
     [task({ state: 'running', attempts: 2, attempt: { n: 2, state: 'running' } }), 'attempt 2 running', 'default'],
+    [task({ state: 'running', attempts: 1, attempt: { n: 1, state: 'running' }, blocker: { reason: 'no token', by: 'lead', at: '' } }), 'attempt 1 blocked by lead: no token', 'warning'],
     [task({ state: 'verifying', attempts: 1, attempt: { n: 1, state: 'verifying' } }), 'attempt 1: checking the result', 'default'],
     [task({ state: 'succeeded', result: { attempt: 2, commit: 'abc', summary: 'built it', at: '' } }), 'succeeded by attempt 2: built it', 'success'],
     [task({ state: 'succeeded', kind: 'review', result: { attempt: 1, verdict: 'approved', at: '' } }), 'approved', 'success'],

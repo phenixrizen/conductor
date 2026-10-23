@@ -653,7 +653,15 @@ task_attempt() {
 			git add -- stub-fixed.txt >/dev/null 2>&1 || true
 		fi
 		git "${git_id[@]}" commit -q -m "stub: $member does $task, attempt $n" >/dev/null 2>&1 || true
+		if [[ -n ${STUB_CHECKPOINT:-} ]]; then
+			# Where it got to, tied to the commit just made (STUB_CHECKPOINT=1).
+			"$conductor" task checkpoint --done "stub-$member.txt written" --remaining "nothing" --notes "attempt $n" >/dev/null 2>&1 || true
+		fi
 		task_submit "{\"summary\":\"stub $member did $task, attempt $n\",\"issues\":[\"none\"]}" --summary "stub $member did $task, attempt $n" --issue none
+		if [[ -n ${STUB_MESSAGE_TO:-} ]]; then
+			# A message to the member named (STUB_MESSAGE_TO), as a worker tells the next what it needs to know.
+			"$conductor" task send --to "$STUB_MESSAGE_TO" "stub $member says: $task is submitted, attempt $n" >/dev/null 2>&1 || true
+		fi
 	elif ((n >= 2)); then
 		task_submit '{"verdict":"approved","summary":"fine now"}' --verdict approved --summary "fine now"
 	else

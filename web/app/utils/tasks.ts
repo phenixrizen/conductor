@@ -95,6 +95,7 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
       return { text: `${why}ready to start`, tone: 'default' }
     }
     case 'running':
+      if (t.blocker) return { text: `attempt ${n} blocked by ${t.blocker.by}: ${t.blocker.reason}`, tone: 'warning' }
       return { text: `attempt ${n} running`, tone: 'default' }
     case 'verifying':
       return { text: `attempt ${n}: checking the result`, tone: 'default' }

@@ -169,6 +169,14 @@ func (s *Server) taskError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "stale_revision", err.Error())
 	case errors.Is(err, crew.ErrTooManyCommands):
 		writeError(w, http.StatusConflict, "too_many_commands", err.Error())
+	case errors.Is(err, crew.ErrInboxFull):
+		writeError(w, http.StatusTooManyRequests, "inbox_full", err.Error())
+	case errors.Is(err, crew.ErrBadMessage), errors.Is(err, crew.ErrBadBlocker), errors.Is(err, crew.ErrBadCheckpoint):
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, crew.ErrMemberNotFound):
+		writeError(w, http.StatusNotFound, "no_member", err.Error())
+	case errors.Is(err, crew.ErrNoCommit):
+		writeError(w, http.StatusConflict, "no_commit", err.Error())
 	case errors.Is(err, crew.ErrNoLedger), errors.Is(err, ledger.ErrUnavailable), errors.Is(err, ledger.ErrClosed):
 		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
 	default:
@@ -318,4 +326,156 @@ func (s *Server) handleAcceptTask(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	receipt, err := s.runs.Accept(ctx, runID, adminActor, cmd, taskID)
 	s.writeReceipt(w, runID, receipt, err)
+}
+
+// Messages, blockers and checkpoints (#334, rows 9 and 10): a member's
+// session sends another member a message, reads its inbox and
+// acknowledges it; an attempt's session reports what blocks it and saves
+// where it got to. Each with the session's own token, or the admin's.
+
+// handleSessionMessages sends a message from the session's member: body
+// {to, text}; 201 {message}; 404 no_member; 429 inbox_full once the
+// recipient has 50 not acknowledged; 400 for an empty text or one over
+// 4,000 characters.
+func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.taskSession(w, r, false)
+	if !ok {
+		return
+	}
+	var body struct {
+		To   string `json:"to"`
+		Text string `json:"text"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	ctx, cancel := runContext(r)
+	defer cancel()
+	m, err := s.runs.SendMessage(ctx, d.Info().ID, body.To, body.Text)
+	if err != nil {
+		s.taskError(w, "message", d.Info().ID, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"message": m})
+}
+
+// handleSessionInbox answers the session's member's messages after
+// `?after=` (a sequence number, 0 unless given), at most 50: {messages}.
+func (s *Server) handleSessionInbox(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.taskSession(w, r, false)
+	if !ok {
+		return
+	}
+	var after int64
+	if v := r.URL.Query().Get("after"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_request", "after is a sequence number from 0")
+			return
+		}
+		after = n
+	}
+	msgs, err := s.runs.Inbox(d.Info().ID, after)
+	if err != nil {
+		s.taskError(w, "inbox", d.Info().ID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+}
+
+// handleSessionInboxAck acknowledges the session's member's messages up
+// to a sequence number: body {upTo}; 200 {acked}, how many now.
+func (s *Server) handleSessionInboxAck(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.taskSession(w, r, false)
+	if !ok {
+		return
+	}
+	var body struct {
+		UpTo int64 `json:"upTo"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if body.UpTo < 1 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "upTo is a sequence number from 1")
+		return
+	}
+	ctx, cancel := runContext(r)
+	defer cancel()
+	n, err := s.runs.Ack(ctx, d.Info().ID, body.UpTo)
+	if err != nil {
+		s.taskError(w, "inbox ack", d.Info().ID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"acked": n})
+}
+
+// handleRunMessages answers a managed run's messages: {messages}.
+func (s *Server) handleRunMessages(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run")
+	if !crew.ValidRunID(runID) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "a run id")
+		return
+	}
+	msgs, err := s.runs.MessagesOf(runID)
+	if err != nil {
+		s.taskError(w, "messages", runID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+}
+
+// handleSessionTaskBlocked reports what blocks the session's attempt:
+// body {reason, message?}; 200 {task}; the session then asks the message
+// (else the reason) as its own question.
+func (s *Server) handleSessionTaskBlocked(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.taskSession(w, r, false)
+	if !ok {
+		return
+	}
+	var body struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	ctx, cancel := runContext(r)
+	defer cancel()
+	st, err := s.runs.Blocked(ctx, d.Info().ID, body.Reason, body.Message)
+	if err != nil {
+		s.taskError(w, "blocked", d.Info().ID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"task": st})
+}
+
+// handleSessionTaskCheckpoint saves where the session's attempt got to,
+// tied to its worktree's commit: body {done, remaining, notes?}; 200
+// {attempt}; 409 no_commit when the worktree has none.
+func (s *Server) handleSessionTaskCheckpoint(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.taskSession(w, r, false)
+	if !ok {
+		return
+	}
+	var body struct {
+		Done      string `json:"done"`
+		Remaining string `json:"remaining"`
+		Notes     string `json:"notes"`
+	}
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	ctx, cancel := runContext(r)
+	defer cancel()
+	a, err := s.runs.SaveCheckpoint(ctx, d.Info().ID, body.Done, body.Remaining, body.Notes)
+	if err != nil {
+		s.taskError(w, "checkpoint", d.Info().ID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"attempt": a})
 }

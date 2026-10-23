@@ -430,6 +430,17 @@ export interface RunTask {
   result?: RunTaskResult
   /** A continuation's result taken by reference from the run it continues, as `<run>/<task>/<n>`. */
   importedFrom?: string
+  /** What the attempt in flight says stops it (#334, row 10), until it works on or ends. */
+  blocker?: { reason: string; message?: string; by: string; at: string }
+}
+
+/** Where an attempt got to, as it saved it: tied to its worktree's commit. */
+export interface AttemptCheckpoint {
+  done: string
+  remaining: string
+  notes?: string
+  commit: string
+  at: string
 }
 
 /** One attempt at a task: one member session in one worktree. */
@@ -449,6 +460,8 @@ export interface RunAttempt {
   endedAt?: string
   /** What the attempt submitted, in a task's own read (`runTask`); the run's read leaves it out. */
   submitted?: SubmittedResult
+  /** The attempt's last checkpoint (#334, row 10). */
+  checkpoint?: AttemptCheckpoint
 }
 
 /** A finding of a review. */

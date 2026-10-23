@@ -339,6 +339,9 @@ type run struct {
 	checks   sync.WaitGroup
 	revision int64
 	crewJSON string // the crew as launched, for the ledger's run row
+	// messages are the members' messages to one another (messages.go), in
+	// sequence, a continuation's carried from the run it continues.
+	messages []*message
 	// txMu orders the run's transitions (task.go: transition); the marks
 	// are what changed since the last one, drained by the next.
 	txMu            sync.Mutex
@@ -1288,6 +1291,11 @@ func (e *Engine) OnActivity(sessionID string, entry session.ActivityEntry, state
 	r, m := sm.r, sm.m
 	m.poke()
 	isHandoff := entry.Type == session.ActivityHandoff
+	if !isHandoff && entry.Type == session.ActivityAttention && (state == session.AttentionWorking || state == session.AttentionDone) && sm.a != nil {
+		// A blocker the attempt reported is cleared once it works on, or
+		// says it is done (checkpoints.go).
+		go e.unblock(r, sm.a, state)
+	}
 	if !isHandoff && (entry.Type != session.ActivityAttention || state != session.AttentionDone) {
 		return
 	}

@@ -34,14 +34,33 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 2
+const Version = 3
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
 // result column.
 var migrations = map[int][]string{
 	1: {"ALTER TABLE attempts ADD COLUMN result TEXT NOT NULL DEFAULT ''"},
+	// Version 3 (#334, rows 9 and 10): an attempt's checkpoint, and the
+	// messages the members of a run send one another.
+	2: {"ALTER TABLE attempts ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''", messagesTable},
 }
+
+// messagesTable is the messages table (#334, row 9): one row per message
+// a member sent another, by sequence within the run, with when it was
+// typed into the recipient's session and when the recipient acknowledged
+// it.
+const messagesTable = `CREATE TABLE messages (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		seq INTEGER NOT NULL,
+		from_member TEXT NOT NULL,
+		to_member TEXT NOT NULL,
+		text TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		delivered_at TEXT NOT NULL DEFAULT '',
+		acked_at TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, seq)
+	)`
 
 // LockWait is how long a ledger keeps trying for the owner lock held by
 // another process after Open (awaitLock): a desktop restart overlaps the
@@ -484,6 +503,7 @@ var schema = []string{
 		prompted_at TEXT NOT NULL DEFAULT '',
 		closed_at TEXT NOT NULL DEFAULT '',
 		result TEXT NOT NULL DEFAULT '',
+		checkpoint TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, task_id, n),
 		FOREIGN KEY (run_id, task_id) REFERENCES tasks(run_id, id) ON DELETE CASCADE
 	)`,
@@ -535,4 +555,5 @@ var schema = []string{
 		payload TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, seq)
 	)`,
+	messagesTable,
 }

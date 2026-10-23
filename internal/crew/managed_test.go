@@ -30,6 +30,7 @@ type fakeLedger struct {
 	attempts map[string]ledger.AttemptRow
 	checks   []ledger.CheckRow
 	commands map[string]ledger.CommandRow
+	messages map[string]ledger.MessageRow
 	// failOn names the events whose transaction fails (comma-separated;
 	// "kind[key=value]" matches a payload field too); failOnce clears it
 	// after one failure. blockOn names events whose transaction waits,
@@ -79,12 +80,13 @@ type fakeTx struct {
 	attempts []ledger.AttemptRow
 	checks   []ledger.CheckRow
 	commands []ledger.CommandRow
+	messages []ledger.MessageRow
 	// continued is the run this transaction's run continues, marked at commit.
 	continued string
 }
 
 func newFakeLedger() *fakeLedger {
-	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}}
+	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}, messages: map[string]ledger.MessageRow{}}
 }
 
 func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, error) {
@@ -105,7 +107,21 @@ func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, erro
 			out.Attempts = append(out.Attempts, a)
 		}
 	}
+	for _, m := range l.messages {
+		if m.RunID == runID {
+			out.Messages = append(out.Messages, m)
+		}
+	}
+	slices.SortFunc(out.Messages, func(a, b ledger.MessageRow) int { return int(a.Seq - b.Seq) })
 	return out, true, nil
+}
+
+func (tx *fakeTx) PutMessage(r ledger.MessageRow) error {
+	if len(r.Text) > ledger.MaxMessageText {
+		return errors.New("ledger: the message is too long")
+	}
+	tx.messages = append(tx.messages, r)
+	return nil
 }
 
 func (l *fakeLedger) Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error) {
@@ -205,6 +221,9 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 		row := l.runs[tx.continued]
 		row.ContinuedBy = runID
 		l.runs[tx.continued] = row
+	}
+	for _, m := range tx.messages {
+		l.messages[fmt.Sprintf("%s/%d", m.RunID, m.Seq)] = m
 	}
 	l.events = append(l.events, tx.events...)
 	return l.rev, nil
@@ -720,7 +739,7 @@ func TestDoneAndHandoffFinishNothingInAManagedRun(t *testing.T) {
 	}
 	// A handoff is noted, never typed, and starts no one.
 	e.OnActivity(build.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityHandoff, To: "critic", Message: "look at this", At: time.Now().UTC()}, session.AttentionDone)
-	waitLogged(t, e, run.ID, "noted, not typed", 1, 5*time.Second)
+	waitLogged(t, e, run.ID, "sent as a message", 1, 5*time.Second)
 	if n := len(fl.launched()); n != 1 {
 		t.Fatalf("launched %d", n)
 	}

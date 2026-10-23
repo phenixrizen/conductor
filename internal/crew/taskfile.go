@@ -35,8 +35,11 @@ type TaskFile struct {
 	Previous     *TaskPrevious `json:"previous,omitempty"`
 	// Repair is set when a review asked for changes: the review, the
 	// commit it reviewed (where this attempt starts) and its findings.
-	Repair    *TaskRepair `json:"repair,omitempty"`
-	WrittenAt time.Time   `json:"writtenAt"`
+	Repair *TaskRepair `json:"repair,omitempty"`
+	// Checkpoint is where the task's last attempt got to (checkpoints.go),
+	// when one was saved: what is done, what remains, notes, its commit.
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	WrittenAt  time.Time   `json:"writtenAt"`
 }
 
 // TaskRepair is what a review asked of the task.
@@ -83,6 +86,9 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
 	}
 	if rp := t.repair; rp != nil {
 		f.Repair = &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: append([]Finding(nil), rp.findings...)}
+	}
+	if c := t.checkpoint; c != nil && (a.checkpoint == nil || a.checkpoint != c) {
+		f.Checkpoint = c.api()
 	}
 	e.mu.Unlock()
 	js, err = json.MarshalIndent(f, "", "  ")
@@ -168,6 +174,17 @@ func taskMarkdown(f TaskFile) string {
 			fmt.Fprintf(&b, ": %s\n", strings.TrimSpace(fd.Message))
 		}
 		b.WriteString("\nAddress each finding, or say in your summary why not; the review runs again on your result.\n\n")
+	}
+	if c := f.Checkpoint; c != nil {
+		fmt.Fprintf(&b, "## Where the last attempt got to\n\nIts checkpoint, at the commit %s", c.Commit)
+		if c.Commit == f.Start {
+			b.WriteString(", where this attempt starts")
+		}
+		fmt.Fprintf(&b, ":\n\n- Done: %s\n- Remaining: %s\n", strings.TrimSpace(c.Done), strings.TrimSpace(c.Remaining))
+		if n := strings.TrimSpace(c.Notes); n != "" {
+			fmt.Fprintf(&b, "- Notes: %s\n", n)
+		}
+		b.WriteString("\n")
 	}
 	if p := f.Previous; p != nil {
 		fmt.Fprintf(&b, "## The attempt before\n\nAttempt %d %s", p.Attempt, p.State)

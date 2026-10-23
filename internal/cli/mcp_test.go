@@ -89,7 +89,7 @@ func TestMcpServesTheSkillsCommandsAsTools(t *testing.T) {
 	for _, tl := range tools {
 		names = append(names, tl.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result" {
+	if strings.Join(names, ",") != "report,set_state,ask,form_crew,add_member,run_status,link,task_context,task_result,message_send,inbox_read,inbox_ack,task_blocked,task_checkpoint" {
 		t.Fatalf("tools %v", names)
 	}
 	for _, tl := range tools {

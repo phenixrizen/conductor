@@ -25,6 +25,10 @@ const maxHandoffs = 10
 type handoff struct {
 	from, text string
 	queued     bool
+	// seq is the message the handoff carries in a managed run (messages.go),
+	// 0 for a legacy handoff: entered, the message is recorded delivered;
+	// dropped, it waits for the recipient's next session.
+	seq int64
 }
 
 // oneLine makes one line of what the engine types, a handoff's message or a
@@ -175,6 +179,11 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 		}
 		if why != "" {
 			for _, h := range m.handoffs {
+				if h.seq > 0 {
+					// A message waits for the recipient's next session.
+					r.unqueued(h.seq)
+					continue
+				}
 				r.note(session.ActivityError, "handoff dropped from %s to %s: %s", h.from, m.def.Name, why)
 			}
 			m.handoffs = nil
@@ -199,6 +208,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			r.noteHandoffEnd(h, m.def.Name, res, err)
+			if h.seq > 0 && res.Entered {
+				go e.delivered(r, h.seq)
+			}
 		}})
 		if e.tried != nil {
 			e.tried(m.def.Name, res.Typed)
@@ -213,6 +225,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %v", h.from, m.def.Name, err)
 		case res.Entered:
 			r.noteHandoff(h.from, m.def.Name)
+			if h.seq > 0 {
+				go e.delivered(r, h.seq)
+			}
 		case res.Typed:
 			// A question came up during the pause: the text waits in the
 			// agent's input, and is never typed again.

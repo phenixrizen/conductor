@@ -140,6 +140,9 @@ async function confirm() {
         <span class="truncate text-muted">{{ selectedTask.kind }} · {{ selectedTask.member }}{{ selectedTask.needs?.length ? ` · needs ${selectedTask.needs.join(', ')}` : '' }}</span>
         <UButton icon="i-lucide-x" size="xs" variant="ghost" color="neutral" class="ml-auto" aria-label="Close" data-task-detail-close @click="emit('select', '')" />
       </div>
+      <p v-if="selectedTask.blocker" class="rounded-md bg-warning/10 p-2 text-warning" data-task-blocker>
+        Blocked by {{ selectedTask.blocker.by }}: {{ selectedTask.blocker.reason }}<template v-if="selectedTask.blocker.message"> — {{ selectedTask.blocker.message }}</template>
+      </p>
       <div v-if="selectedTask.result" class="flex flex-col gap-1 rounded-md bg-elevated/40 p-2" data-task-result>
         <div class="font-medium">
           Result
@@ -174,6 +177,9 @@ async function confirm() {
             <UButton v-if="a.sessionId" label="Open" icon="i-lucide-terminal" size="xs" color="neutral" variant="ghost" @click="emit('open', a.sessionId)" />
           </div>
           <p v-if="a.error" class="text-error">{{ a.error }}</p>
+          <p v-if="a.checkpoint" class="text-muted" data-attempt-checkpoint>
+            Checkpoint at <span class="font-mono text-xs" :title="a.checkpoint.commit">{{ short(a.checkpoint.commit) }}</span> · done: {{ a.checkpoint.done }} · remaining: {{ a.checkpoint.remaining }}<template v-if="a.checkpoint.notes"> · {{ a.checkpoint.notes }}</template>
+          </p>
           <template v-if="a.submitted">
             <p v-if="a.submitted.summary" class="whitespace-pre-wrap">{{ a.submitted.summary }}</p>
             <ul v-if="a.submitted.issues?.length" class="list-disc pl-5 text-muted">

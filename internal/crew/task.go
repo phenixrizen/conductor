@@ -64,6 +64,8 @@ type LedgerTx interface {
 	// Continued marks the run from as continued by this transaction's run,
 	// once (continue.go): ledger.ErrContinued when it was already.
 	Continued(from string) error
+	// PutMessage keeps a message a member sent another (messages.go).
+	PutMessage(ledger.MessageRow) error
 }
 
 // Ledger is the managed runs' ledger as the engine writes it: one
@@ -114,7 +116,11 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 	if err != nil {
 		return Loaded{}, true, err
 	}
-	return Loaded{Run: row, Tasks: tasks, Attempts: attempts}, true, nil
+	messages, err := s.l.Messages(ctx, runID)
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages}, true, nil
 }
 
 // UseLedger gives the engine the ledger managed runs are written to. Set
@@ -239,6 +245,14 @@ type task struct {
 	// candidate is a result a continuation verifies again, before any
 	// attempt of its own (reverify).
 	candidate *candidate
+	// blocker is what the attempt in flight says stops it (checkpoints.go),
+	// nil once it works on or the attempt ends.
+	blocker *blocker
+	// checkpoint is the task's latest, from any attempt, this run's or the
+	// run's it continues: the next attempt's task file says where the
+	// last one got to, and an attempt after one that ended without a
+	// result starts there.
+	checkpoint *checkpoint
 }
 
 // repair is what a review asks of the task it reviewed.
@@ -266,14 +280,16 @@ type taskResult struct {
 
 // attempt is one try at a task: one member session in one worktree.
 type attempt struct {
-	t      *task
-	m      *member
-	n      int
-	state  string // ledger.Attempt*
-	stage  string
-	err    string
-	ctx    context.Context // ends when the attempt closes
-	cancel context.CancelFunc
+	t *task
+	m *member
+	// checkpoint is the attempt's last checkpoint (checkpoints.go).
+	checkpoint *checkpoint
+	n          int
+	state      string // ledger.Attempt*
+	stage      string
+	err        string
+	ctx        context.Context // ends when the attempt closes
+	cancel     context.CancelFunc
 
 	sessionID  string
 	worktree   string
@@ -324,6 +340,8 @@ type TaskState struct {
 	// ImportedFrom names the result a continuation took by reference, as
 	// "<run>/<task>/<n>" (continue.go).
 	ImportedFrom string `json:"importedFrom,omitempty"`
+	// Blocker is what the attempt in flight says stops it (checkpoints.go).
+	Blocker *Blocker `json:"blocker,omitempty"`
 }
 
 // AttemptState is an attempt as the run reports it.
@@ -342,6 +360,8 @@ type AttemptState struct {
 	// Submitted is what the attempt submitted, in a task's own read
 	// (Engine.TaskOf); the run's read leaves it out.
 	Submitted *Result `json:"submitted,omitempty"`
+	// Checkpoint is the attempt's last checkpoint (checkpoints.go).
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
 }
 
 // ResultState is a task's accepted result as the run reports it.
@@ -384,6 +404,9 @@ func (r *run) taskStates() []TaskState {
 	out := make([]TaskState, 0, len(r.tasks))
 	for _, t := range r.tasks {
 		st := TaskState{ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, Needs: slices.Clone(t.def.Needs), State: t.state, Reason: t.reason, Attempts: len(t.attempts) + t.prior, ImportedFrom: t.imported}
+		if b := t.blocker; b != nil {
+			st.Blocker = &Blocker{Reason: b.reason, Message: b.message, By: b.by, At: b.at}
+		}
 		if n := len(t.attempts); n > 0 {
 			as := attemptStateOf(t.attempts[n-1])
 			st.Attempt = &as
@@ -411,6 +434,9 @@ func attemptStateOf(a *attempt) AttemptState {
 	if !a.closedAt.IsZero() {
 		at := a.closedAt
 		as.EndedAt = &at
+	}
+	if c := a.checkpoint; c != nil {
+		as.Checkpoint = c.api()
 	}
 	return as
 }
@@ -817,9 +843,18 @@ func (r *run) startCommit(t *task) string {
 		return t.repair.commit
 	}
 	if n := len(t.attempts); n > 0 {
-		if last := t.attempts[n-1]; last.state == ledger.AttemptFailed && last.result != "" {
+		last := t.attempts[n-1]
+		if last.state == ledger.AttemptFailed && last.result != "" {
 			return last.result
 		}
+		if last.result == "" && last.checkpoint != nil && last.checkpoint.commit != "" {
+			// Ended without a result (its session went): its work up to
+			// the checkpoint is kept.
+			return last.checkpoint.commit
+		}
+	} else if t.checkpoint != nil && t.checkpoint.commit != "" {
+		// A continuation's first attempt: where the last one got to.
+		return t.checkpoint.commit
 	}
 	for _, in := range r.inputs(t) {
 		if in.commit != "" {
@@ -958,6 +993,7 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 	}
 	e.endAttempt(r, a, state, stage, errText)
 	t := a.t
+	t.blocker = nil
 	switch state {
 	case ledger.AttemptSucceeded:
 		t.state, t.reason = ledger.TaskSucceeded, ""
@@ -1051,6 +1087,11 @@ func (r *run) attemptRow(a *attempt) ledger.AttemptRow {
 		// findings and a work task's issues outlive the server.
 		if b, err := json.Marshal(a.submitted); err == nil {
 			row.Result = string(b)
+		}
+	}
+	if a.checkpoint != nil {
+		if b, err := json.Marshal(a.checkpoint.api()); err == nil {
+			row.Checkpoint = string(b)
 		}
 	}
 	return row
@@ -1289,6 +1330,9 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail("launch", fmt.Errorf("the ledger could not record the launch: %w", lerr), true)
 		return
 	}
+	// Messages waiting for the member go into its session once it has its
+	// task line (deliverMessages queues them; deliver waits for the prompt).
+	e.deliverMessages(r, m)
 	// The line: typed once the session is ready, as a role prompt is.
 	if err := e.promptWith(ctx, r, m, local, taskLine(t.def, a.n)); err != nil {
 		if r.ctx.Err() != nil {
@@ -1309,6 +1353,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		// marked, and the run's dispatch pauses until a person looks.
 		_ = e.pauseFor(r, err)
 	}
+	m.poke()
 }
 
 // runSetup runs one setup command in dir (an attempt's working directory,
@@ -1366,7 +1411,16 @@ func treeHasPath(ctx context.Context, repo, commit, path string) (bool, error) {
 func (e *Engine) managedActivity(r *run, sm sessionMember, entry session.ActivityEntry, isHandoff bool) {
 	a := sm.a
 	if isHandoff {
-		r.note(session.ActivityStatus, "%s reported a handoff to %s: noted, not typed; a managed run passes work by results", sm.m.def.Name, entry.To)
+		// A handoff is a message to the member it names (messages.go),
+		// typed once that member's attempt has its task line.
+		r.note(session.ActivityStatus, "%s reported a handoff to %s: sent as a message", sm.m.def.Name, entry.To)
+		go func() {
+			if _, err := e.send(context.Background(), r, sm.m, entry.To, entry.Message); err != nil {
+				e.mu.Lock()
+				r.note(session.ActivityError, "the handoff from %s to %s was not sent: %v", sm.m.def.Name, entry.To, err)
+				e.mu.Unlock()
+			}
+		}()
 		return
 	}
 	if a == nil || !a.closedAt.IsZero() || a.state != ledger.AttemptRunning || a.reminded {

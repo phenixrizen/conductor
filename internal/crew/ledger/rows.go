@@ -106,6 +106,24 @@ type AttemptRow struct {
 	// summary, commit, issues, verdict, findings), at most MaxResult
 	// bytes; "" before one is submitted.
 	Result string
+	// Checkpoint is the attempt's last checkpoint as JSON (what is done,
+	// what remains, notes, the commit it is tied to), at most
+	// MaxCheckpoint bytes; "" without one (#334, row 10).
+	Checkpoint string
+}
+
+// MessageRow is one message a member sent another (#334, row 9): its
+// sequence within the run, when it was typed into the recipient's session
+// (DeliveredAt, zero until then) and when the recipient acknowledged it
+// (AckedAt, zero until then).
+type MessageRow struct {
+	RunID       string
+	Seq         int64
+	From, To    string
+	Text        string
+	CreatedAt   time.Time
+	DeliveredAt time.Time
+	AckedAt     time.Time
 }
 
 // CheckRow is one run of a check against an attempt's result: its receipt.
@@ -179,7 +197,12 @@ const (
 // A variable for the tests, as maxRunLogs (MaxRunLogs) is.
 var (
 	maxCommands = 4096
-	maxRunLogs  = int64(MaxRunLogs)
+	// MaxCheckpoint bounds an attempt's checkpoint, MaxMessageText a
+	// message's text, and maxMessages the messages a run keeps.
+	MaxCheckpoint  = 16 << 10
+	MaxMessageText = 4 << 10
+	maxMessages    = 4096
+	maxRunLogs     = int64(MaxRunLogs)
 )
 
 func stamp(t time.Time) string {

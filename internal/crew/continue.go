@@ -32,6 +32,7 @@ type Loaded struct {
 	Run      ledger.RunRow
 	Tasks    []ledger.TaskRow
 	Attempts []ledger.AttemptRow
+	Messages []ledger.MessageRow
 }
 
 // candidate is a result a continuation verifies again: the interrupted
@@ -158,6 +159,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 	err := e.transact(ctx, r, func() tx {
 		r.base, r.paused, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.ID
 		r.markRun()
+		for _, row := range from.Messages {
+			r.messages = append(r.messages, &message{seq: row.Seq, from: row.From, to: row.To, text: row.Text, createdAt: row.CreatedAt, deliveredAt: row.DeliveredAt, ackedAt: row.AckedAt})
+		}
 		for _, t := range r.tasks {
 			row, ok := rows[t.def.ID]
 			if !ok {
@@ -166,6 +170,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 			}
 			t.prior = row.Attempts
 			la, hasLast := last[t.def.ID]
+			if hasLast && la.Checkpoint != "" {
+				t.checkpoint = decodeCheckpoint(la.Checkpoint)
+			}
 			switch row.State {
 			case ledger.TaskSucceeded:
 				ra := byN[t.def.ID+"/"+strconv.Itoa(row.ResultAttempt)]
