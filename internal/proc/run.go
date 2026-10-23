@@ -24,11 +24,12 @@ import (
 const (
 	// MaxTimeout bounds Spec.Timeout.
 	MaxTimeout = 2 * time.Hour
-	// WaitDelay is how long Run waits, once the process has exited, for
-	// the output pipe to close: a child the process left behind holds it
-	// open, and is killed with the group when the delay runs out
-	// (Result.Killed). It is also how long Run waits for a stalled Log
-	// writer before leaving it behind.
+	// WaitDelay is how long Run waits, once the process has exited and its
+	// group is killed, for the output pipe to close: a process that left
+	// the group (setsid) and kept the output holds it open, and is left
+	// alone when the delay runs out. It is also how long Run waits for a
+	// stalled Log writer before leaving it behind, and how long exec waits
+	// for the process to go after its context ends.
 	WaitDelay = 2 * time.Second
 	// DefaultHead and DefaultTail are the bytes of output kept in memory
 	// when Spec says nothing: the first DefaultHead and the last DefaultTail.
@@ -42,6 +43,11 @@ const (
 	// does not keep up: past it the log is cut (Result.LogErr), never the
 	// run held up.
 	logQueue = 256
+	// holdGrace is how long Run gives the output pipe to close once the
+	// process has exited before it takes it for held by a child: the
+	// kernel closes the process's end at its exit, so the pipe closes at
+	// once when nothing else holds it.
+	holdGrace = 250 * time.Millisecond
 )
 
 // Spec is one command to run.
@@ -106,8 +112,8 @@ type Result struct {
 	Duration time.Duration
 	// TimedOut says Timeout passed; Canceled, that the caller's context
 	// ended first (cancelled, or its own deadline); Killed, that something
-	// the process left behind still held its output pipe WaitDelay after
-	// it exited, and the process group was killed then.
+	// the process left behind still held its output pipe when the process
+	// exited, and went with the group.
 	TimedOut, Canceled, Killed bool
 	// Err says why the run did not start, or what went wrong with it beyond
 	// its exit status; "" otherwise. LogErr is the first error writing Log,
@@ -119,10 +125,16 @@ type Result struct {
 // caller's context ending (Canceled).
 var errTimeout = errors.New("proc: timeout")
 
-// Run runs s and reports what became of it. It returns once the process has
-// exited (or was killed at the timeout or the context's end) and its output
-// pipe is closed, or given up on after WaitDelay with the group killed; a
-// Log writer still stalled then is left behind.
+// Run runs s and reports what became of it. The process runs in a process
+// group of its own. When it has exited (on its own, or killed at the
+// timeout or the context's end), and before it is reaped, the whole group
+// is killed: what the process left behind goes with it, its output
+// redirected or not, and the group's id is still the process's own, since
+// an exited process keeps its id until it is reaped, so no other group can
+// have been given it. Run returns once the process is reaped and its output
+// pipe is closed, or given up on after WaitDelay: a process that left the
+// group (setsid) and kept the output is left alone, and Err says so. A Log
+// writer still stalled then is left behind too.
 func Run(ctx context.Context, s Spec) Result {
 	res := Result{Exit: -1}
 	if len(s.Argv) == 0 || s.Argv[0] == "" {
@@ -192,6 +204,10 @@ func Run(ctx context.Context, s Spec) Result {
 		s.Started(res.Process)
 	}
 
+	// The exit is watched without reaping (a pidfd, a kqueue), so that the
+	// group can be killed while the exited process still holds its id.
+	exited, wait := watchExit(cmd)
+
 	mem := &capture{headMax: head, tailMax: tail}
 	var sink io.Writer = mem
 	var lg *logSink
@@ -199,14 +215,24 @@ func Run(ctx context.Context, s Spec) Result {
 		lg = newLogSink(s.Log, logLimit)
 		sink = io.MultiWriter(mem, lg)
 	}
-	drained := make(chan struct{})
+	eof := make(chan struct{})
 	go func() {
-		defer close(drained)
+		defer close(eof)
 		io.Copy(sink, r)
 	}()
 
-	err = cmd.Wait() // the process; the pipe is read on, by the goroutine
+	<-exited
 	res.Duration = time.Since(started)
+	// The pipe closes with the process, at once, unless a child it left
+	// behind holds it: that child goes with the group now.
+	held := false
+	select {
+	case <-eof:
+	case <-time.After(holdGrace):
+		held = true
+	}
+	killGroup(cmd)
+	err = wait()
 	if cmd.ProcessState != nil {
 		res.Exit, res.Signal = exitStatus(cmd.ProcessState)
 	}
@@ -215,18 +241,14 @@ func Run(ctx context.Context, s Spec) Result {
 		res.Err = err.Error()
 	}
 	classify(ctx, &res)
-	// The output pipe closes when its last holder is gone: the process,
-	// and whatever it started that kept it. One that holds it past
-	// WaitDelay is a child left behind, and the group is killed: a holder
-	// of the pipe is a descendant of the process, so the group is still
-	// theirs and no other's.
 	select {
-	case <-drained:
+	case <-eof:
+		res.Killed = held
 	case <-time.After(WaitDelay):
-		killGroup(cmd)
-		res.Killed = true
-		r.Close() // ends the read, and the goroutine
-		<-drained
+		// A holder that left the group: not ours to kill any more.
+		r.Close()
+		<-eof
+		res.Err = "proc: a process that left the group still holds the output; it is left alone"
 	}
 	r.Close()
 	res.Head, res.Tail, res.Total, res.Truncated = mem.bytes()

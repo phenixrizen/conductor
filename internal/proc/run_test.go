@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -95,28 +96,70 @@ func TestRunKillsTheGroupAtTheTimeout(t *testing.T) {
 
 func TestRunCancelIsNotATimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-	}()
-	res := Run(ctx, Spec{Argv: []string{"sleep", "30"}, Dir: t.TempDir(), Timeout: time.Minute})
+	defer cancel()
+	// Cancelled once the process exists, so the kill is what ends it.
+	res := Run(ctx, Spec{Argv: []string{"sleep", "30"}, Dir: t.TempDir(), Timeout: time.Minute, Started: func(Process) { go cancel() }})
 	if !res.Canceled || res.TimedOut || res.Exit != -1 || res.Signal != "killed" || res.Duration > 5*time.Second {
 		t.Fatalf("%+v", res)
 	}
 }
 
-// What the leader leaves behind, holding its pipe or not, is killed once
-// the wait is over, after exit 0 and after exit 3 alike.
+// What the leader leaves behind goes with the group when the leader exits,
+// after exit 0 and after exit 3 alike: a child holding the output pipe
+// (Killed says so), and one that redirected its output (killed all the
+// same, unseen).
 func TestRunEndsWhatTheLeaderLeaves(t *testing.T) {
 	for _, exit := range []int{0, 3} {
 		res := sh(t, time.Minute, "sleep 30 & echo $!; exit "+strconv.Itoa(exit))
-		if res.Exit != exit || !res.Killed || res.TimedOut || res.Err != "" {
-			t.Fatalf("exit %d: %+v", exit, res)
+		if res.Exit != exit || !res.Killed || res.TimedOut || res.Err != "" || res.Duration > 5*time.Second {
+			t.Fatalf("exit %d, a child with the pipe: %+v", exit, res)
 		}
 		if pid := pidIn(t, res.Head); !gone(t, pid, 3*time.Second) {
 			t.Fatalf("exit %d: the sleep %d outlived the run", exit, pid)
 		}
+		res = sh(t, time.Minute, "sleep 30 >/dev/null 2>&1 & echo $!; exit "+strconv.Itoa(exit))
+		if res.Exit != exit || res.Killed || res.TimedOut || res.Err != "" || res.Duration > 5*time.Second {
+			t.Fatalf("exit %d, a child without the pipe: %+v", exit, res)
+		}
+		if pid := pidIn(t, res.Head); !gone(t, pid, 3*time.Second) {
+			t.Fatalf("exit %d: the redirected sleep %d outlived the run", exit, pid)
+		}
 	}
+}
+
+// The helper leaves its process group (setsid), says its pid, and sleeps
+// holding the output it inherited: a child a command could leave behind
+// that the group's kill cannot reach.
+func TestHelperLeavesTheGroup(t *testing.T) {
+	if os.Getenv("PROC_HELPER") != "setsid" {
+		t.Skip("a helper")
+	}
+	if _, err := syscall.Setsid(); err != nil {
+		fmt.Println("error:", err)
+		os.Exit(2)
+	}
+	fmt.Println(os.Getpid())
+	os.WriteFile("ready", nil, 0o600) // the leader waits for this before it exits
+	time.Sleep(30 * time.Second)
+	os.Exit(0)
+}
+
+// A child that left the group and kept the output is given WaitDelay, then
+// left alone, and the result says so; the run does not wait on it.
+func TestRunLeavesAloneAChildThatLeftTheGroup(t *testing.T) {
+	start := time.Now()
+	res := sh(t, time.Minute, `"$0" -test.run='^TestHelperLeavesTheGroup$' & while [ ! -f ready ]; do sleep 0.05; done; exit 0`, func(s *Spec) {
+		s.Argv = append(s.Argv, os.Args[0])
+		s.Env = map[string]string{"PROC_HELPER": "setsid"}
+	})
+	if res.Exit != 0 || res.Killed || !strings.Contains(res.Err, "left the group") || time.Since(start) > WaitDelay+5*time.Second {
+		t.Fatalf("after %v: %+v", time.Since(start), res)
+	}
+	pid := pidIn(t, res.Head)
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("the child that left the group was killed: %v", err)
+	}
+	syscall.Kill(pid, syscall.SIGKILL)
 }
 
 func TestRunKeepsHeadAndTail(t *testing.T) {
