@@ -2669,6 +2669,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   gone. On the rail the same two stack in the foot above the expand button.
   Your name is a small dialog (`[data-name-dialog]`, its input still labelled
   "Your name"); `WorkbenchTokenGate` stays the layout's, opened by the menu.
+- **A run's record is never pruned while the engine holds the run (#335,
+  2026-10-22).** `Records.Save` journals a run from its launch on and, on
+  every save, prunes the oldest records past 500 by start time without
+  asking whether a run is live: a long run's record, the oldest, was
+  deleted and written again two seconds later, and a server that ended in
+  between had no record of it. `prune` now leaves out the records of the
+  runs the engine holds and never counts them (`Records.held`, set by
+  `RecordEnds` from the engine's `held` set, a lock-free map written in
+  `add` and `forget`); the check takes no engine lock, since the save a
+  forget makes (`journalForgotten`) prunes under it. Go, race:
+  `TestAHeldRunsRecordSurvivesThePrune`, with that save run inline under
+  the lock.
 - **A bounded runner for commands Conductor runs outside a PTY (#338,
   2026-10-22).** `internal/proc.Run(ctx, Spec)`: an argv array, never a
   shell line; an absolute directory; a required timeout (at most two hours)
