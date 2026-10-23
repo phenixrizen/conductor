@@ -517,24 +517,18 @@ func (m Member) Validate() error {
 	return nil
 }
 
-// Launchable reports why c cannot be launched as it is: it has no members, or
-// it runs on a host, which the server cannot launch a session on. The error
-// matches ErrInvalid.
-func (c Crew) Launchable() error { return c.launchable(false) }
-
 // launchable is Launchable with managed crews allowed when managed says
 // so: the engine, which dispatches their tasks (#334, row 5), allows them;
 // the API does not until an agent can read its task and submit its
-// result (row 6).
-func (c Crew) launchable(managed bool) error {
+// Launchable reports why the crew cannot be launched as a run: no members,
+// or a crew that runs on a host. A crew with tasks launches as a managed
+// run (#334): the API checks the server's switch and ledger before it.
+func (c Crew) Launchable() error {
 	if len(c.Members) == 0 {
 		return invalidf("the crew has no members")
 	}
 	if c.Where != WhereServer {
 		return invalidf("the crew runs on a host: only a crew that runs on the server can be launched")
-	}
-	if c.Managed() && !managed {
-		return invalidf("a crew with tasks cannot be launched yet: managed runs are not available in this Conductor")
 	}
 	return nil
 }

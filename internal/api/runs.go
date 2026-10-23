@@ -217,7 +217,8 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", why)
 			return
 		}
-	} else if err := c.Launchable(); err != nil {
+	}
+	if err := c.Launchable(); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}

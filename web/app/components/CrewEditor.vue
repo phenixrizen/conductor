@@ -201,7 +201,7 @@ function refused(message: string) {
       </UFormField>
     </div>
 
-    <UFormField label="Coordination" name="coordination" :ui="{ help: 'mt-1 text-xs' }" :help="managed ? 'Each attempt at a task works in a worktree of its own, made at the results it needs; the checks decide a result, never a quiet terminal. A crew with tasks cannot be launched in this Conductor yet.' : ''">
+    <UFormField label="Coordination" name="coordination" :ui="{ help: 'mt-1 text-xs' }" :help="managed ? 'Each attempt at a task works in a worktree of its own, made at the results it needs; the checks decide a result, never a quiet terminal. Launched, it runs as a managed run: the run page shows the tasks.' : ''">
       <USelect v-model="coordination" :items="coordinationItems" aria-label="Coordination" class="w-full" data-crew-coordination />
     </UFormField>
 

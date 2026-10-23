@@ -202,7 +202,6 @@ const launchBlocked = computed(() => {
   if (!d.members.length) return 'Add a member first'
   if (d.where !== 'server') return 'Only a crew that runs on the server can be launched'
   if (invalid.value) return 'Fix the fields marked in red first'
-  if (d.tasks) return 'A crew with tasks cannot be launched in this Conductor yet'
   return ''
 })
 const subtitle = computed(() => {

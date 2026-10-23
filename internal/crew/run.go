@@ -565,7 +565,7 @@ func (e *Engine) prepare(ctx context.Context, c Crew) (prefix string, err error)
 			return "", fmt.Errorf("%w: %v", ErrNoLedger, err)
 		}
 	}
-	if err := c.launchable(true); err != nil {
+	if err := c.Launchable(); err != nil {
 		return "", err
 	}
 	if c.Isolation != IsolationWorktree {

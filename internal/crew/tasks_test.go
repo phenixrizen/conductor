@@ -37,9 +37,8 @@ func TestValidateAcceptsACrewWithTasks(t *testing.T) {
 	if !c.Managed() || testCrew(immediate("lead", "x")).Managed() {
 		t.Fatal("Managed is wrong")
 	}
-	// Launching is refused until a run can dispatch tasks (#334, rows 5 and 6).
-	err := c.Launchable()
-	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "cannot be launched yet") {
+	// A crew with tasks launches, as a managed run (#334, row 6).
+	if err := c.Launchable(); err != nil {
 		t.Fatalf("launchable: %v", err)
 	}
 	if err := testCrew(immediate("lead", "x")).Launchable(); err != nil {
