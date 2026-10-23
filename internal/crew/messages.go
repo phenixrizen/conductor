@@ -286,6 +286,45 @@ func (e *Engine) delivered(r *run, seq int64) {
 	}
 }
 
+// untyped records that the line was not typed after all: the recipient's
+// session ended under it, or refused it, before any of it went in. The
+// typing record is withdrawn, so that a continuation does not hold the
+// message uncertain, and with the session gone (requeue) the message waits
+// for the recipient's next session, queued there as its dispatch asks. The
+// caller does not hold e.mu.
+func (e *Engine) untyped(r *run, seq int64, requeue bool) {
+	to := ""
+	err := e.transact(context.Background(), r, func() tx {
+		m := r.messageBySeq(seq)
+		if m == nil || !m.deliveredAt.IsZero() || m.typingAt.IsZero() {
+			return tx{}
+		}
+		m.typingAt = time.Time{}
+		if requeue {
+			m.queued, to = false, m.to
+		}
+		w := ev("message.untyped", map[string]any{"seq": m.seq, "from": m.from, "to": m.to})
+		w.more = func(ltx LedgerTx) error { return ltx.PutMessage(r.messageRow(m)) }
+		return w
+	}, nil)
+	if err != nil {
+		e.afterTransact(r, err)
+		return
+	}
+	if to == "" {
+		return
+	}
+	// The recipient's next session may be up already (its dispatch asked
+	// before this record): the message is queued into it now, else when
+	// that dispatch asks.
+	e.mu.Lock()
+	m := r.member(to)
+	e.mu.Unlock()
+	if m != nil {
+		e.deliverMessages(r, m)
+	}
+}
+
 // unqueued takes a message back out of the queue it waited in without
 // being typed (the recipient's session ended, the run stopped): it waits
 // for the recipient's next session. The caller holds e.mu.

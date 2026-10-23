@@ -132,6 +132,10 @@ func TestAContinuationCarriesRepairsAllowancesImportsAndMessages(t *testing.T) {
 	}
 	first := commitResult(t, e, b, "built.txt", "yes\n", "built")
 	first = waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	// docs starts at build's result and the writer's message is typed into it: delivered, recorded so, before anything withdraws it.
+	waitMessages(t, e, run.ID, "the writer's message delivered", func(ms []Message) bool {
+		return slices.ContainsFunc(ms, func(m Message) bool { return m.To == "writer" && m.DeliveredAt != nil })
+	})
 	// The run pauses; the review asks for changes; the repair waits unlaunched; the server ends.
 	if err := e.PauseRun(ctx, run.ID, true); err != nil {
 		t.Fatal(err)
@@ -370,5 +374,77 @@ func TestAWithdrawalClearsTheCheckpointAndTheRecoveredRecord(t *testing.T) {
 		t.Fatalf("docs' second attempt starts at %s, the repair is %s (the old checkpoint %+v)", d2.Attempt.Start, repaired.Result.Commit, withdrawn.Attempt)
 	}
 	_ = session.ActivityStatus
+	stopRun(t, e, run.ID)
+}
+
+// A message's line that the recipient's session refuses as it ends, the
+// typing recorded and the line never in, is recorded as not typed and
+// waits for the recipient's next session, typed there after its task
+// line; nothing holds it uncertain (seen in CI's run of the review's
+// continuation test).
+func TestAMessageWhoseLineWasNotTypedWaitsForTheRecipientsNextSession(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	ctx := context.Background()
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	d := waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	dl, dp := fl.attemptSession(t, d)
+	if line := waitTyped(t, dp, 10*time.Second); !strings.Contains(line, "Conductor task") {
+		t.Fatalf("docs' first line: %q", line)
+	}
+	// The typing record held in its commit; docs' session ends under it.
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "message.typing", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
+	if _, err := e.SendMessage(ctx, b.Attempt.SessionID, "writer", "for the writer"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-l.blocked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the typing did not reach its commit")
+	}
+	dp.End(0)
+	select {
+	case <-dl.Ended():
+	case <-time.After(10 * time.Second):
+		t.Fatal("docs' session did not end")
+	}
+	l.mu.Lock()
+	l.blockOn = ""
+	l.mu.Unlock()
+	close(l.release)
+	// Recorded as not typed, then typed into docs' second attempt after its task line, and delivered.
+	d2 := waitTaskWhere(t, e, run.ID, "docs", "at its second attempt", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	_, dp2 := fl.attemptSession(t, d2)
+	deadline := time.Now().Add(10 * time.Second)
+	var lines []string
+	for {
+		lines = append(lines, typed(dp2)...)
+		if slices.ContainsFunc(lines, func(s string) bool { return strings.Contains(s, "for the writer") }) {
+			if !strings.Contains(lines[0], "Conductor task") {
+				t.Fatalf("the message came before the task line: %q", lines)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the message was not typed into the second attempt: %q", lines)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	waitMessages(t, e, run.ID, "delivered", func(ms []Message) bool { return len(ms) == 1 && ms[0].DeliveredAt != nil && !ms[0].Uncertain })
+	kinds := l.kinds(run.ID)
+	untyped, last := slices.Index(kinds, "message.untyped"), 0
+	for i, k := range kinds {
+		if k == "message.typing" {
+			last = i
+		}
+	}
+	if untyped < 0 || untyped > last || slices.Index(kinds, "message.typing") > untyped {
+		t.Fatalf("the records: %q", kinds)
+	}
 	stopRun(t, e, run.ID)
 }

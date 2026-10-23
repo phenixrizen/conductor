@@ -3001,7 +3001,8 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   texts cleaned (`session.CleanMessage`) and bounded in bytes before they
   are kept or typed; the delivery intent recorded before a message is
   typed (`message.typing`), an uncertain delivery not typed again after a
-  restart; a continuation carrying repairs and allowances (`tasks.repair`,
+  restart, a line the recipient's end cut off before it went in recorded as
+  not typed (`message.untyped`) and typed into the next session; a continuation carrying repairs and allowances (`tasks.repair`,
   `tasks.extra`), every message under its own rows, and an import's source
   and summary through later continuations; delivery going on past the
   queue's room; a recovered record dropping a withdrawn result

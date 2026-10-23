@@ -214,8 +214,11 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			r.noteHandoffEnd(h, m.def.Name, res, err)
-			if h.seq > 0 && res.Entered {
+			switch {
+			case h.seq > 0 && res.Entered:
 				go e.delivered(r, h.seq)
+			case h.seq > 0 && !res.Typed:
+				go e.untyped(r, h.seq, gone(r, l, err))
 			}
 		}})
 		if e.tried != nil {
@@ -227,6 +230,9 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			r.note(session.ActivityStatus, "handoff from %s to %s waits for %s to take its input: it is entered once it has", h.from, m.def.Name, m.def.Name)
 		case err != nil && !res.Typed:
 			r.note(session.ActivityError, "handoff dropped from %s to %s: %v", h.from, m.def.Name, err)
+			if h.seq > 0 {
+				go e.untyped(r, h.seq, gone(r, l, err))
+			}
 		case err != nil:
 			r.note(session.ActivityError, "handoff from %s to %s typed without its Enter: %v", h.from, m.def.Name, err)
 		case res.Entered:
@@ -251,6 +257,14 @@ func (e *Engine) deliver(r *run, m *member, l *session.Local) {
 			waitWake(r, m, l)
 		}
 	}
+}
+
+// gone says the session l a line was not typed into is no longer one to
+// type into: it ended, the submission said so, or the run is stopping. A
+// message dropped so waits for the recipient's next session; one a live
+// session refused is dropped as a handoff is, and noted.
+func gone(r *run, l *session.Local, err error) bool {
+	return isClosed(l.Ended()) || errors.Is(err, session.ErrSessionEnded) || r.ctx.Err() != nil
 }
 
 // noteHandoffEnd notes how the handoff h to the member named to ended once

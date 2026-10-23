@@ -2252,8 +2252,10 @@ exchange messages (`POST /api/sessions/{id}/messages`, the MCP tool
 (`message.sent`) and typed into the recipient's session as one line after
 its task line, through the handoff queue, once the recipient's attempt has
 one: the intent is recorded before the line (`message.typing`), the
-delivery once the line is entered (`message.delivered`); a member not
-started yet gets it then; a continuation carries every message under its
+delivery once the line is entered (`message.delivered`), and a line not
+typed after all, the recipient's session ended under it, is recorded so
+(`message.untyped`) and the message waits for the recipient's next
+session; a member not started yet gets it then; a continuation carries every message under its
 own rows, and one set out to be typed and not entered before the server
 ended is not typed again (`uncertain` in the inbox, said in the run log),
 since whether it reached the terminal cannot be told; the recipient reads its
