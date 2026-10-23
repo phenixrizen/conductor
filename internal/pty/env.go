@@ -2,6 +2,7 @@ package pty
 
 import (
 	"os"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -11,6 +12,10 @@ var baseAllow = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TZ
 
 // blocked lists variables that are never forwarded even when allowlisted.
 var blocked = []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"}
+
+// Blocked reports whether name is a variable never forwarded to a child
+// (blocked): a loader that would change what a program runs.
+func Blocked(name string) bool { return slices.Contains(blocked, name) }
 
 // BuildEnv returns the environment for a child process. It copies a fixed
 // allowlist plus LC_* from the parent, adds `extraAllow` names, applies the

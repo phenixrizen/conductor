@@ -2710,6 +2710,42 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   forget makes (`journalForgotten`) prunes under it. Go, race:
   `TestAHeldRunsRecordSurvivesThePrune`, with that save run inline under
   the lock.
+- **A bounded runner for commands Conductor runs outside a PTY (#338,
+  2026-10-22).** `internal/proc.Run(ctx, Spec)`: an argv array, never a
+  shell line; an absolute directory; a required timeout (at most two hours)
+  past which the process group is killed, as the probes kill theirs; the
+  environment a session gets (`pty.BuildEnv`: the allowlist and the
+  caller's `Allow`, `CONDUCTOR_*` and the blocked loaders out, a
+  `CONDUCTOR_*` or loader name in `Env` refused before the start), then
+  `TERM=dumb` and `NO_COLOR=1`; stdin from nothing; stdout and stderr
+  together through a pipe of Conductor's own, the first 64 KiB and the
+  last 16 KiB kept in memory with the total and `Truncated`, an optional
+  log of the first 1 MiB, a dropped line and the last 256 KiB, written on
+  a goroutine of its own so a writer that blocks holds nothing up (the log
+  is cut, and `LogErr` says so); `Started` called with the pid, the group
+  and the start time once the process exists and before any output is
+  read; the result's exit code or signal, `TimedOut` (the run's own
+  deadline) told from `Canceled` (the caller's context, however it ended),
+  and `Killed` when a child the process left behind still held its pipe
+  when the process exited. The group is killed when its leader has exited
+  and before it is reaped (a `waitid` without reaping on Linux, a kqueue
+  on macOS say so; a process gone before the watch was set up counts as
+  exited; a watch that cannot be set up, or fails while the process runs,
+  ends the command at once rather than invent an exit, named in `Err`):
+  the exited process keeps its pid, and so the group's id,
+  until it is reaped, so the group is still its own and no other's, and
+  what the process left behind goes with it, its output redirected or not.
+  No signal to the group is sent once the reaping has begun, and a cancel
+  in flight finishes before it; the process itself is killed with the
+  group, so a command that joined another group is still ended at the
+  timeout. A child that left the group (setsid) and kept the output is
+  given 2 s, then left alone, named in `Err`. `golang.org/x/sys` becomes a
+  direct dependency for the two notifications (it was indirect already).
+  No callers yet: the managed-run checks (#334, row 5) are the first. Go,
+  race: exits and a signal, a bad spec refused, the group killed at the
+  timeout, a cancel told from a timeout, a leftover killed after exit 0 and
+  exit 3, head and tail and the log over 1 MiB, the environment stripped,
+  `Started`'s pid.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's
