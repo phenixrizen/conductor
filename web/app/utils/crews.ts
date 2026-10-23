@@ -45,22 +45,28 @@ export interface DraftCheck extends CrewCheck {
   pending?: string
 }
 
-/** A task in the editor: a key that stays while it is renamed or moved, and its needs as the keys of the tasks it needs, so a rename never touches them. */
+/**
+ * A task in the editor: a key that stays while it is renamed or moved, its needs as the keys of the tasks it needs, and its member as the key of
+ * the draft member it belongs to, so a rename never touches them; `member` follows that member's name (tasksFollowMembers), through a blank or a
+ * duplicate on the way, and stays as the last name when the member is gone (a problem the rules name).
+ */
 export interface DraftTask extends Omit<CrewTask, 'needs' | 'checks'> {
   key: number
   needKeys: number[]
+  memberKey?: number
   checks?: DraftCheck[]
 }
 
 let taskKeys = 0
 
 /** The tasks of a saved crew as the editor holds them: keyed, their needs by key. */
-export function draftTasks(tasks: readonly CrewTask[]): DraftTask[] {
+export function draftTasks(tasks: readonly CrewTask[], members: ReadonlyArray<Pick<DraftMember, 'name' | 'key'>> = []): DraftTask[] {
   const keyed = tasks.map((t) => ({ t, key: ++taskKeys }))
   const keyOf = new Map(keyed.map(({ t, key }) => [t.id, key]))
   return keyed.map(({ t, key }) => ({
     id: t.id,
     member: t.member,
+    memberKey: members.find((m) => m.name === t.member)?.key,
     kind: t.kind,
     instructions: t.instructions,
     key,
@@ -258,16 +264,23 @@ export function taskRowProblems(t: Pick<CrewTask, 'id'>, c: TaskShape): string[]
 }
 
 /** A new task for the editor: done by `member`, its id from the member's name, not one of `taken`. */
-export function draftTask(member: string, taken: readonly string[] = []): DraftTask {
-  const base = member.replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 40) || 'task'
+export function draftTask(member: string | Pick<DraftMember, 'name' | 'key'>, taken: readonly string[] = []): DraftTask {
+  const name = typeof member === 'string' ? member : member.name
+  const base = name.replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 40) || 'task'
   let id = base
   for (let i = 2; taken.includes(id); i++) id = `${base.slice(0, 40 - `-${i}`.length)}-${i}`
-  return { id, member, kind: 'work', instructions: '', key: ++taskKeys, needKeys: [] }
+  const out: DraftTask = { id, member: name, kind: 'work', instructions: '', key: ++taskKeys, needKeys: [] }
+  if (typeof member !== 'string') out.memberKey = member.key
+  return out
 }
 
-/** The tasks after a member is renamed: those it does follow the new name. */
-export function tasksRenamed<T extends Pick<CrewTask, 'member'>>(tasks: readonly T[], from: string, to: string): T[] {
-  return tasks.map((t) => (t.member === from ? { ...t, member: to } : t))
+/** The tasks with each one's member as its draft member is named now, by key: a rename, a blank or a duplicate on the way loses no assignment. A task whose member is gone keeps the last name. */
+export function tasksFollowMembers(tasks: readonly DraftTask[], members: ReadonlyArray<Pick<DraftMember, 'name' | 'key'>>): DraftTask[] {
+  const nameOf = new Map(members.map((m) => [m.key, m.name]))
+  return tasks.map((t) => {
+    const name = t.memberKey === undefined ? undefined : nameOf.get(t.memberKey)
+    return name === undefined || name === t.member ? t : { ...t, member: name }
+  })
 }
 
 /** A start condition as one value of the Starts select: `immediately`, `manual` or `after:<member>`. */
@@ -318,7 +331,8 @@ export function draftMember(m: CrewMember): DraftMember {
 
 export function toDraft(c: CrewInput & { id?: string }): DraftCrew {
   const input = toCrewInput(c)
-  return { ...input, id: c.id, members: c.members.map(draftMember), tasks: input.tasks ? draftTasks(input.tasks) : undefined }
+  const members = c.members.map(draftMember)
+  return { ...input, id: c.id, members, tasks: input.tasks ? draftTasks(input.tasks, members) : undefined }
 }
 
 /** The extra arguments typed for a member, split as the Launch dialog splits them; undefined when there are none. */

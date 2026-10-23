@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewStart, SessionInfo } from '~/composables/useSessions'
-import { draftMember, memberNameFrom, tasksRenamed, type DraftCrew, type DraftMember } from '~/utils/crews'
+import { draftMember, memberNameFrom, tasksFollowMembers, type DraftCrew, type DraftMember } from '~/utils/crews'
 import { startSentence } from '~/utils/crewWords'
 import { withStart } from '~/utils/crewGraph'
 import { isActive } from '~/utils/attention'
@@ -94,26 +94,9 @@ function set<K extends keyof DraftCrew>(key: K, value: DraftCrew[K]) {
   crew.value = { ...crew.value, [key]: value }
 }
 
-/** A member's name as its tasks still carry it while its own is blank (cleared to be retyped), by member key: the tasks follow the name typed next. */
-const namedAs = new Map<number, string>()
-
-/** The members as the table hands them back; in a crew with tasks, a renamed member's tasks follow its name, through a blank. */
+/** The members as the table hands them back; in a crew with tasks, each task's member follows its draft member's name, by key. */
 function setMembers(next: DraftMember[]) {
-  const before = new Map(crew.value.members.map((m) => [m.key, m.name]))
-  let tasks = crew.value.tasks
-  if (tasks) {
-    for (const m of next) {
-      const old = before.get(m.key)
-      if (old === undefined || old === m.name) continue
-      if (!m.name) {
-        if (old) namedAs.set(m.key, old)
-        continue
-      }
-      const from = old || namedAs.get(m.key)
-      if (from) tasks = tasksRenamed(tasks, from, m.name)
-      namedAs.delete(m.key)
-    }
-  }
+  const tasks = crew.value.tasks ? tasksFollowMembers(crew.value.tasks, next) : undefined
   crew.value = { ...crew.value, members: next, tasks }
 }
 

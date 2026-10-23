@@ -57,6 +57,16 @@ test('a crew with tasks: a cycle blocks Save, a quoted argument is one element, 
   await leadName.fill('lead')
   await expect(tasks.nth(0).locator('[data-task-member]')).toContainText('lead')
   await expect(save).not.toHaveAttribute('data-save-problem', /./)
+  // The reviewer renamed through a duplicate (lead, taken) to leader and back: each task keeps its own member.
+  const reviewerName = members.nth(1).getByLabel(/^Name of/)
+  await reviewerName.fill('lead')
+  await expect(save).toBeDisabled()
+  await reviewerName.fill('leader')
+  await expect(tasks.nth(1).locator('[data-task-member]')).toContainText('leader')
+  await expect(tasks.nth(0).locator('[data-task-member]')).toContainText('lead')
+  await reviewerName.fill('reviewer')
+  await expect(tasks.nth(1).locator('[data-task-member]')).toContainText('reviewer')
+  await expect(save).toBeEnabled()
 
   // A cycle: build needs review, which needs build. Save is blocked, and
   // the row says why.

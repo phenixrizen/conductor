@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewInfo, CrewMember, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, draftTask, tasksRenamed } from './crews'
+import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, draftTask, tasksFollowMembers } from './crews'
 import type { TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
@@ -530,9 +530,29 @@ describe('tasks in the editor', () => {
     expect(draftTask('builder', ['builder']).id).toBe('builder-2')
     expect(draftTask('a.b', []).id).toBe('a-b')
   })
-  it('renames the member of the tasks it does', () => {
-    const tasks = [{ id: 'a', member: 'old', kind: 'work' as const, instructions: '' }, { id: 'b', member: 'other', kind: 'work' as const, instructions: '' }]
-    expect(tasksRenamed(tasks, 'old', 'new').map((t) => t.member)).toEqual(['new', 'other'])
+  it('a task follows its member by key: through a duplicate name, a blank, and keeps the last name of one gone', () => {
+    const dev = { name: 'dev', key: 1 }
+    const dev2 = { name: 'dev2', key: 2 }
+    const a = { ...draftTask(dev), id: 'a' }
+    const b = { ...draftTask(dev2), id: 'b' }
+    expect([a.memberKey, b.memberKey]).toEqual([1, 2])
+    // dev2 → dev (a duplicate for a moment) → dev3: a stays dev's.
+    let tasks = tasksFollowMembers([a, b], [dev, { ...dev2, name: 'dev' }])
+    expect(tasks.map((t) => t.member)).toEqual(['dev', 'dev'])
+    tasks = tasksFollowMembers(tasks, [dev, { ...dev2, name: 'dev3' }])
+    expect(tasks.map((t) => t.member)).toEqual(['dev', 'dev3'])
+    // Cleared and retyped as another name.
+    tasks = tasksFollowMembers(tasks, [{ ...dev, name: '' }, { ...dev2, name: 'dev3' }])
+    expect(tasks[0]!.member).toBe('')
+    tasks = tasksFollowMembers(tasks, [{ ...dev, name: 'builder' }, { ...dev2, name: 'dev3' }])
+    expect(tasks[0]!.member).toBe('builder')
+    // The member gone: the task keeps the last name, which the rules flag.
+    tasks = tasksFollowMembers(tasks, [{ ...dev2, name: 'dev3' }])
+    expect(tasks[0]!.member).toBe('builder')
+    expect(taskProblems({ isolation: 'worktree', members: [{ name: 'dev3', start: { when: 'task' } }], tasks })).toContain('Task a: builder is not a member')
+    // A saved crew's tasks get their members' keys.
+    const d = toDraft({ ...info, isolation: 'worktree', tasks: [{ id: 'x', member: info.members[0]!.name, kind: 'work', instructions: 'X.' }] })
+    expect(d.tasks![0]!.memberKey).toBe(d.members[0]!.key)
   })
   it('reads a task start', () => {
     expect(startFrom('task')).toEqual({ when: 'task' })

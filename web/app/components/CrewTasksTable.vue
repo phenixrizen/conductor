@@ -29,14 +29,26 @@ const cell = {
   menu: 'col-start-3 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
 }
 
-const memberItems = computed(() => props.members.filter((m) => m.name).map((m) => ({ label: m.name, value: m.name })))
+// A member is picked by its key, so its tasks follow its name; a task whose member is gone shows the last name, as not a member.
+const memberItems = computed(() => props.members.filter((m) => m.name).map((m) => ({ label: m.name, value: memberValue(m) })))
+function memberValue(m: { name: string; key?: number }): string {
+  return m.key === undefined ? m.name : `#${m.key}`
+}
+function memberOf(t: DraftTask): string {
+  const m = t.memberKey === undefined ? undefined : props.members.find((x) => x.key === t.memberKey)
+  return m ? memberValue(m) : t.member
+}
+function pickMember(i: number, value: string) {
+  const m = value.startsWith('#') ? props.members.find((x) => x.key === Number(value.slice(1))) : undefined
+  update(i, m ? { member: m.name, memberKey: m.key } : { member: value, memberKey: undefined })
+}
 const kindItems = [
   { label: 'work', value: 'work', icon: 'i-lucide-hammer' },
   { label: 'review', value: 'review', icon: 'i-lucide-search-check' },
 ]
 
 function membersFor(t: DraftTask) {
-  if (!t.member || props.members.some((m) => m.name === t.member)) return memberItems.value
+  if (!t.member || memberOf(t) !== t.member || props.members.some((m) => m.key === undefined && m.name === t.member)) return memberItems.value
   return [...memberItems.value, { label: `${t.member} (not a member)`, value: t.member }]
 }
 
@@ -78,7 +90,7 @@ function move(i: number, delta: number) {
 }
 
 function add() {
-  const member = props.members.find((m) => m.name)?.name ?? ''
+  const member = props.members.find((m) => m.name) ?? ''
   tasks.value = [...tasks.value, draftTask(member, tasks.value.map((t) => t.id))]
 }
 
@@ -133,7 +145,7 @@ watch(
       <div v-for="(t, i) in tasks" :key="t.key" class="flex flex-col gap-2 border-b border-default px-4 py-2.5 last:border-b-0" data-crew-task :data-task-id="t.id">
         <div class="grid items-start" :class="cols">
           <UInput :class="cell.id" :model-value="t.id" placeholder="id" maxlength="40" autocapitalize="off" spellcheck="false" :aria-label="`Id of ${who(t, i)}`" :ui="{ base: 'font-mono font-medium' }" class="w-full" @update:model-value="update(i, { id: String($event) })" />
-          <USelect :class="cell.member" :model-value="t.member" :items="membersFor(t)" placeholder="Member" :aria-label="`Member of ${who(t, i)}`" class="w-full" data-task-member @update:model-value="update(i, { member: String($event) })" />
+          <USelect :class="cell.member" :model-value="memberOf(t)" :items="membersFor(t)" placeholder="Member" :aria-label="`Member of ${who(t, i)}`" class="w-full" data-task-member @update:model-value="pickMember(i, String($event))" />
           <USelect :class="cell.kind" :model-value="t.kind" :items="kindItems" :aria-label="`Kind of ${who(t, i)}`" class="w-full" data-task-kind @update:model-value="setKind(i, $event as 'work' | 'review')" />
           <USelect :class="cell.needs" :model-value="t.needKeys" :items="needsFor(t)" multiple placeholder="nothing" :aria-label="`What ${who(t, i)} needs`" class="w-full" data-task-needs @update:model-value="update(i, { needKeys: $event as number[] })" />
           <UTextarea
