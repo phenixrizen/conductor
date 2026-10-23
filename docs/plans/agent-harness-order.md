@@ -96,6 +96,11 @@ quiet terminal and a `submit_ok` finish nothing.
    verification with its paths, since the checks would have read code the
    receipt does not name; untracked and ignored files are a check's
    permitted outputs. The receipt records `stable` from those comparisons.
+   A result commit whose tree holds a gitlink (a submodule, mode 160000) is
+   refused at submit (`submodules_unsupported`): the hardened git runner
+   passes `--ignore-submodules=dirty` to every diff and status, so a tracked
+   file changed inside a submodule would pass the comparison; submodules can
+   come later with a recursive rule.
    A failing check fails the attempt; the next one starts from that result
    commit with the log tail in its task file. A review that ran succeeds
    whatever its verdict; `needs_changes` reopens its subject (a fresh attempt
@@ -122,7 +127,9 @@ quiet terminal and a `submit_ok` finish nothing.
    payload); later `messages` and `checkpoints`. Intents commit before side
    effects (`dispatch` before `Launch`, `deliver` before a typed line,
    `check_started` before exec, an acting command before it acts) and facts
-   after observations; a commit runs outside the engine's lock. A failed
+   after observations (`check_running`, with the process's pid, group and
+   start time, the moment the runner reports it started); a commit runs
+   outside the engine's lock. A failed
    commit undoes the intent and refuses new intents until a commit lands;
    `PRAGMA quick_check` at open, a failure or a newer schema opens read-only
    and managed launches answer 503 `ledger_unavailable`. The snapshot
@@ -155,9 +162,12 @@ quiet terminal and a `submit_ok` finish nothing.
    verifying in a fresh verification checkout (`<task>.<n>.check.2`), never
    the old one, and dispatches the rest. A check's process group can outlive
    an owner killed outright (a SIGKILL skips the context's kill), so the
-   `check_started` row records the pid, process group and start time,
-   recovery reports whether such a process still exists and never kills a
-   recorded pid (pids are reused), and the old checkout is left to it.
+   `check_running` row, written the moment the runner reports the process
+   started (`Spec.Started`), records its pid, process group and start time;
+   a crash between the process's start and that row leaves the check
+   uncertain, a process possibly alive; recovery reports whether a recorded
+   process still exists and never kills a recorded pid (pids are reused),
+   and the old checkout is left to it.
    Uncertain boundaries (a dispatch with no `launched`, a typed line with no
    `entered`, a command that acts) wait for a person; nothing is retried on
    its own.
@@ -172,9 +182,11 @@ quiet terminal and a `submit_ok` finish nothing.
     MaxOutput, Log})`: a process-group kill as the probes have, the
     environment from `pty.BuildEnv` with `CONDUCTOR_*` and tokens stripped,
     `TERM=dumb`, stdin null, 64 KiB of head and 16 KiB of tail in memory, a
-    1 MiB log with a SHA-256, and the process's pid, group and start time
-    in the result for the receipt; `checks.maxConcurrent` (default 1). Checks
-    run natively as the user; the editor and the docs say so.
+    1 MiB log with a SHA-256; a `Started func(Process)` callback on `Spec`
+    reporting the pid, process group and start time as soon as the process
+    exists (the `check_running` row), and the same in the result;
+    `checks.maxConcurrent` (default 1). Checks run natively as the user; the
+    editor and the docs say so.
 12. **Run outcome.** `state` keeps its four values; a managed run adds
     `outcome: succeeded | failed | cancelled` once every task is terminal,
     and `finished` no longer waits for idle sessions to end (#154's outcome).
@@ -277,8 +289,8 @@ before anything is made; the worktree at the input commit; a dependent
 seeing the producer's tree; dirty, stale and mismatched refusals; a file
 changed and restored in the worker's checkout during a check leaving the
 receipt true to the result commit; a tracked file changed by a check failing
-the verification with its path while an untracked output does not; `done`
-completing nothing; handoffs not typed; a session end failing its attempt;
+the verification with its path while an untracked output does not; a
+result commit holding a gitlink refused; `done` completing nothing; handoffs not typed; a session end failing its attempt;
 Stop draining checks; `AddWorktreeAt` in `worktree_test.go`; and in
 `internal/api`, against the real registry at `MaxSessions`: a replacement
 of the member's idle session launches at a cap of one, and a genuinely
@@ -317,7 +329,8 @@ task never relaunched; a candidate that was verifying re-verified in a
 fresh checkout with no session; an owner killed outright while a check runs
 (its process outliving the owner, as a subprocess test shows): the check
 interrupted at the next start, the survivor reported and not killed, the
-re-verification in a fresh checkout; a second resume refused; a member
+re-verification in a fresh checkout; a crash between a check's start and
+its `check_running` row leaving the check uncertain; a second resume refused; a member
 resume of a managed run refused after recovery; a predecessor's record and
 rows kept while a continuation cites them; Playwright
 `tasks-resume.spec.ts` on its own server restarted on the same data, token
