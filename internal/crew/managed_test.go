@@ -29,6 +29,7 @@ type fakeLedger struct {
 	tasks    map[string]ledger.TaskRow
 	attempts map[string]ledger.AttemptRow
 	checks   []ledger.CheckRow
+	commands map[string]ledger.CommandRow
 	// failOn names the events whose transaction fails (comma-separated;
 	// "kind[key=value]" matches a payload field too); failOnce clears it
 	// after one failure. blockOn names events whose transaction waits,
@@ -77,10 +78,48 @@ type fakeTx struct {
 	tasks    []ledger.TaskRow
 	attempts []ledger.AttemptRow
 	checks   []ledger.CheckRow
+	commands []ledger.CommandRow
 }
 
 func newFakeLedger() *fakeLedger {
-	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}}
+	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}}
+}
+
+func (l *fakeLedger) Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	row, ok := l.commands[runID+"/"+actor+"/"+id]
+	return row, ok, nil
+}
+
+// Command and Settle act on the transaction's copy of the commands,
+// applied with its rows when it commits.
+func (tx *fakeTx) Command(actor, id, intent, fingerprint string) (ledger.CommandRow, bool, error) {
+	tx.l.mu.Lock()
+	prior, ok := tx.l.commands[tx.runID+"/"+actor+"/"+id]
+	tx.l.mu.Unlock()
+	if ok {
+		if prior.Intent != intent || prior.Fingerprint != fingerprint {
+			return ledger.CommandRow{}, false, ledger.ErrCommandConflict
+		}
+		return prior, true, nil
+	}
+	tx.commands = append(tx.commands, ledger.CommandRow{RunID: tx.runID, Actor: actor, ID: id, Intent: intent, Fingerprint: fingerprint, Status: ledger.CommandAccepted, CreatedAt: time.Now().UTC()})
+	return ledger.CommandRow{}, false, nil
+}
+
+func (tx *fakeTx) Settle(actor, id, status string, receipt any) error {
+	b, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	for i := range tx.commands {
+		if tx.commands[i].Actor == actor && tx.commands[i].ID == id {
+			tx.commands[i].Status, tx.commands[i].Receipt = status, string(b)
+			return nil
+		}
+	}
+	return fmt.Errorf("fake ledger: no command %s of %s in the transaction", id, actor)
 }
 
 func (l *fakeLedger) Available() error {
@@ -125,6 +164,9 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 		l.attempts[fmt.Sprintf("%s/%s/%d", a.RunID, a.TaskID, a.N)] = a
 	}
 	l.checks = append(l.checks, tx.checks...)
+	for _, c := range tx.commands {
+		l.commands[c.RunID+"/"+c.Actor+"/"+c.ID] = c
+	}
 	l.events = append(l.events, tx.events...)
 	return l.rev, nil
 }
@@ -1332,12 +1374,11 @@ func TestAReviewsFindingsAreKeptInTheLedger(t *testing.T) {
 	rev := waitAttempt(t, e, run.ID, "review", ledger.AttemptRunning)
 	findings := []Finding{{Severity: "major", Path: "built.txt", Line: 1, Message: "says yes without saying why"}}
 	submit(t, e, rev.Attempt.SessionID, Result{Verdict: VerdictNeedsChanges, Summary: "one thing", Findings: findings})
-	done := waitTask(t, e, run.ID, "review", ledger.TaskSucceeded, 1)
-	if done.Result == nil || len(done.Result.Findings) != 1 || done.Result.Findings[0].Message != findings[0].Message {
-		t.Fatalf("the review's result: %+v", done.Result)
-	}
-	if b := taskOf(t, e, run.ID, "build").Result; b == nil || !slices.Equal(b.Issues, []string{"no tests yet"}) {
-		t.Fatalf("build's issues: %+v", b)
+	// The review's verdict reopens build (row 6): the review waits again with
+	// its result withdrawn, and build's second attempt carries the findings.
+	waitTaskWhere(t, e, run.ID, "build", "at attempt 2", func(ts TaskState) bool { return ts.Attempts == 2 })
+	if rv := taskOf(t, e, run.ID, "review"); rv.State != ledger.TaskBlocked || rv.Result != nil || rv.Attempt == nil || rv.Attempt.State != ledger.AttemptSucceeded {
+		t.Fatalf("the review after its verdict: %+v", rv)
 	}
 	row := l.attemptRow(t, run.ID, "review", 1)
 	var kept Result

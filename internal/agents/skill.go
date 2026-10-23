@@ -34,8 +34,8 @@ when CONDUCTOR_NOTIFY_URL and CONDUCTOR_NOTIFY_TOKEN are set.
 
 With Conductor's MCP server registered (Claude Code and Codex get it at
 launch), the same reports and crew actions are tools: report, set_state,
-ask, form_crew, add_member, run_status and link. Call those when you have
-them; the commands below do the same.
+ask, form_crew, add_member, run_status, link, task_context and
+task_result. Call those when you have them; the commands below do the same.
 
 ## When to report
 
@@ -114,9 +114,41 @@ people watching.
       "${CONDUCTOR_BIN:-conductor}" crew add member.json
       "${CONDUCTOR_BIN:-conductor}" crew link --label "for the PR"
 
+## Your task
+
+In a managed run (CONDUCTOR_TASK is set), this session is one attempt at
+one task: read it, do it, and submit the result once. A done, a handoff or
+the end of your turn finishes nothing; only a submitted result does.
+
+- Read the task: its goal, where it starts, its inputs, findings to
+  address and how it is checked, in .conductor/task.md of your working
+  directory (CONDUCTOR_TASK_FILE), with the task_context tool, or:
+
+      "${CONDUCTOR_BIN:-conductor}" task context
+
+- A work task: commit your work on the branch you are on (the worktree
+  must be clean apart from .conductor/), then submit the commit with a
+  summary and the issues you know of, with the task_result tool or:
+
+      "${CONDUCTOR_BIN:-conductor}" task result --summary "what you did" --issue "what is left"
+
+- A review: do not commit. Submit a verdict, approved or needs_changes,
+  with findings (severity blocker, major, minor or nit; path and line
+  when it is about a place):
+
+      "${CONDUCTOR_BIN:-conductor}" task result --verdict needs_changes --finding "major internal/api/users.go:42 the handler ignores the error"
+
+- Conductor runs the task's checks against your commit; a check that
+  fails starts a fresh attempt at your commit with the log in its task
+  file. A refused submit says why (uncommitted changes, the wrong branch,
+  a commit not from the inputs): fix it and submit again. The same commit
+  submitted twice is taken once.
+
 ## Rules
 
 - Never call notify or crew outside a Conductor session; the commands exit silently there.
+- task context and task result work in an attempt of a managed run; elsewhere
+  they say so and exit 1.
 - Keep a message to one short line, at most 500 characters. A URL is at most
   2048 bytes, a member name at most 40 characters.
 - Do not report every tool call or file edit: Conductor's hooks report those

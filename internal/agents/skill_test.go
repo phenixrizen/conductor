@@ -41,6 +41,13 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" crew status`,
 		`"${CONDUCTOR_BIN:-conductor}" crew add member.json`,
 		`"${CONDUCTOR_BIN:-conductor}" crew link --label "for the PR"`,
+		// The managed run's task (#334, row 6): read, submit a work result,
+		// submit a review; a done finishes nothing.
+		`"${CONDUCTOR_BIN:-conductor}" task context`,
+		`"${CONDUCTOR_BIN:-conductor}" task result --summary "what you did" --issue "what is left"`,
+		`"${CONDUCTOR_BIN:-conductor}" task result --verdict needs_changes --finding "major internal/api/users.go:42 the handler ignores the error"`,
+		"A done, a handoff or\nthe end of your turn finishes nothing; only a submitted result does.",
+		"task_context and\ntask_result",
 		"ever call notify or crew outside a Conductor session; the commands exit silently there",
 		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
 	} {

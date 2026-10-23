@@ -33,7 +33,19 @@ type TaskFile struct {
 	Inputs       []TaskInput   `json:"inputs,omitempty"`
 	Checks       []Check       `json:"checks,omitempty"`
 	Previous     *TaskPrevious `json:"previous,omitempty"`
-	WrittenAt    time.Time     `json:"writtenAt"`
+	// Repair is set when a review asked for changes: the review, the
+	// commit it reviewed (where this attempt starts) and its findings.
+	Repair    *TaskRepair `json:"repair,omitempty"`
+	WrittenAt time.Time   `json:"writtenAt"`
+}
+
+// TaskRepair is what a review asked of the task.
+type TaskRepair struct {
+	Review   string    `json:"review"`
+	Attempt  int       `json:"attempt"`
+	Commit   string    `json:"commit"`
+	Summary  string    `json:"summary,omitempty"`
+	Findings []Finding `json:"findings"`
 }
 
 // TaskInput is a result the task starts from or has at hand.
@@ -67,6 +79,9 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
 	if a.n > 1 && a.n-2 < len(t.attempts) {
 		p := t.attempts[a.n-2]
 		f.Previous = &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
+	}
+	if rp := t.repair; rp != nil {
+		f.Repair = &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: append([]Finding(nil), rp.findings...)}
 	}
 	e.mu.Unlock()
 	js, err = json.MarshalIndent(f, "", "  ")
@@ -134,6 +149,24 @@ func taskMarkdown(f TaskFile) string {
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
+	}
+	if rp := f.Repair; rp != nil {
+		fmt.Fprintf(&b, "## Findings to address\n\nReview %q (attempt %d) asked for changes to the commit %s, where this attempt starts", rp.Review, rp.Attempt, rp.Commit)
+		if s := strings.TrimSpace(rp.Summary); s != "" {
+			fmt.Fprintf(&b, ": %s", s)
+		}
+		b.WriteString(".\n\n")
+		for _, fd := range rp.Findings {
+			fmt.Fprintf(&b, "- %s", fd.Severity)
+			if fd.Path != "" {
+				fmt.Fprintf(&b, " %s", fd.Path)
+				if fd.Line > 0 {
+					fmt.Fprintf(&b, ":%d", fd.Line)
+				}
+			}
+			fmt.Fprintf(&b, ": %s\n", strings.TrimSpace(fd.Message))
+		}
+		b.WriteString("\nAddress each finding, or say in your summary why not; the review runs again on your result.\n\n")
 	}
 	if p := f.Previous; p != nil {
 		fmt.Fprintf(&b, "## The attempt before\n\nAttempt %d %s", p.Attempt, p.State)

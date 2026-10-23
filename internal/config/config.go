@@ -202,6 +202,22 @@ type Crews struct {
 	Managed *bool `json:"managed,omitempty"`
 }
 
+// Checks is the checks section of the config: the checks a managed run
+// runs against a result.
+type Checks struct {
+	// MaxConcurrent bounds the checks running at once across the server's
+	// managed runs: 1 by default (a go test beside four agents on a laptop).
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+}
+
+// CheckConcurrency is Checks.MaxConcurrent, 1 when unset.
+func (c *Config) CheckConcurrency() int {
+	if c.Checks.MaxConcurrent > 0 {
+		return c.Checks.MaxConcurrent
+	}
+	return 1
+}
+
 type Agents struct {
 	// SelfService lets an agent form a crew around its own session, add
 	// members to its run, read its run and mint a view link to itself
@@ -618,6 +634,8 @@ type Config struct {
 	Agents Agents `json:"agents"`
 	// Crews is the crews section: whether a crew with tasks may run (#334).
 	Crews Crews `json:"crews"`
+	// Checks is the checks section (Checks).
+	Checks Checks `json:"checks"`
 	// Switchyard, when enabled, makes this server a coordinator of hosted
 	// sessions that launches nothing (conductor switchyard).
 	Switchyard Switchyard `json:"switchyard"`
@@ -867,6 +885,11 @@ func applyEnv(cfg *Config, getenv func(string) string) error {
 	case "0", "false":
 		off := false
 		cfg.Crews.Managed = &off
+	}
+	if v := getenv("CONDUCTOR_CHECKS_MAX_CONCURRENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 64 {
+			cfg.Checks.MaxConcurrent = n
+		}
 	}
 	switch getenv("CONDUCTOR_AGENT_SELF_SERVICE") {
 	case "1", "true":

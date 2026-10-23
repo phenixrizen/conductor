@@ -599,6 +599,68 @@ report_done() {
 # holds reports whether branch $1 has stub-$2.txt, the file member $2 commits.
 holds() { git cat-file -e "$1:stub-$2.txt" 2>/dev/null; }
 
+# The stub as a worker of a managed run (STUB_WORKER=cli or mcp): the task
+# line Conductor types names the task and the attempt; the stub reads the
+# task (conductor task context, or the task_context tool of conductor mcp
+# on stdio), does it, and submits the result (conductor task result, or
+# task_result). A work task commits stub-<member>.txt, and stub-fixed.txt
+# too once a finding or an attempt before asks for a change; a review says
+# needs_changes with one finding on its first attempt and approved after.
+# What it reads and what the server answered go into the transcript.
+
+# mcp_call runs one tool through conductor mcp and prints its reply line.
+mcp_call() {
+	printf '%s\n%s\n%s\n' \
+		'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"stub","version":"1"}}}' \
+		'{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" |
+		"$conductor" mcp 2>/dev/null | grep -F '"id":3' | head -1
+}
+
+# task_read prints the task as the stub reads it (the CLI's text, or the
+# tool's reply line, JSON-escaped: the words looked for survive both).
+task_read() {
+	case ${STUB_WORKER:-} in
+	mcp) mcp_call task_context '{}' ;;
+	*) "$conductor" task context 2>&1 ;;
+	esac
+}
+
+# task_submit submits a result: $1 is the JSON body for the tool, the rest
+# the flags for the CLI. Prints the reply and records it.
+task_submit() {
+	local body=$1 reply
+	shift
+	case ${STUB_WORKER:-} in
+	mcp) reply=$(mcp_call task_result "$body") ;;
+	*) reply=$("$conductor" task result "$@" 2>&1) ;;
+	esac
+	printf 'submit: %s\n' "${reply:0:300}" >>"$transcript"
+	printf 'stub: submit -> %s\n' "${reply:0:200}"
+}
+
+# task_attempt does the attempt the line names: $1 task or review, $2 the
+# task id, $3 the attempt number.
+task_attempt() {
+	local kind=$1 task=$2 n=$3 ctx
+	ctx=$(task_read)
+	printf 'task: %s %s attempt %s: read %s bytes\n' "$kind" "$task" "$n" "${#ctx}" >>"$transcript"
+	if [[ $kind == task ]]; then
+		printf 'attempt %s of %s by %s\n' "$n" "$task" "$member" >>"stub-$member.txt"
+		git add -- "stub-$member.txt" >/dev/null 2>&1 || true
+		if [[ $ctx == *"Findings to address"* || $ctx == *"The attempt before"* || $n -ge 2 ]]; then
+			printf 'fixed in attempt %s\n' "$n" >stub-fixed.txt
+			git add -- stub-fixed.txt >/dev/null 2>&1 || true
+		fi
+		git "${git_id[@]}" commit -q -m "stub: $member does $task, attempt $n" >/dev/null 2>&1 || true
+		task_submit "{\"summary\":\"stub $member did $task, attempt $n\",\"issues\":[\"none\"]}" --summary "stub $member did $task, attempt $n" --issue none
+	elif ((n >= 2)); then
+		task_submit '{"verdict":"approved","summary":"fine now"}' --verdict approved --summary "fine now"
+	else
+		task_submit "{\"verdict\":\"needs_changes\",\"summary\":\"one thing\",\"findings\":[{\"severity\":\"major\",\"path\":\"stub-$member.txt\",\"line\":1,\"message\":\"add stub-fixed.txt\"}]}" --verdict needs_changes --summary "one thing" --finding "major:stub-$member.txt:1 add stub-fixed.txt"
+	fi
+}
+
 # trust_dialog draws the folder-trust question as Codex 0.161 does (1. Trust
 # and continue, highlighted; 2. Quit) and waits for Enter; arrows move the
 # selection and redraw, Esc quits, anything else is ignored. Enter on the
@@ -904,6 +966,12 @@ answer() {
 	printf '%s\n' "${line:0:200}" >>"$transcript"
 	title_working
 	report_working
+	if [[ -n ${STUB_WORKER:-} && -n ${CONDUCTOR_TASK:-} && $line =~ ^Conductor\ (task|review)\ \"([a-z0-9_-]+)\",\ attempt\ ([0-9]+): ]]; then
+		task_attempt "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+		title_ready done
+		report_done "task $CONDUCTOR_TASK attempt ${CONDUCTOR_ATTEMPT:-?}: submitted" "$line"
+		return
+	fi
 	if [[ $line =~ ^stub\ tools\ (codex|copilot|agy|goose)$ ]]; then
 		tool_replay "${BASH_REMATCH[1]}"
 	fi

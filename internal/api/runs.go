@@ -202,7 +202,22 @@ func (s *Server) handleLaunchCrew(w http.ResponseWriter, r *http.Request) {
 		s.crewStoreError(w, r.PathValue("id"), err)
 		return
 	}
-	if err := c.Launchable(); err != nil {
+	if c.Managed() {
+		// A managed run needs the server's ledger, as its owner, and the
+		// crews.managed switch on (the engine checks the ledger again).
+		if !s.cfg.ManagedCrews() {
+			writeError(w, http.StatusConflict, "managed_off", "crews with tasks are off on this server (crews.managed)")
+			return
+		}
+		if s.ledger == nil {
+			writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", "the ledger could not be opened; see the server's log")
+			return
+		}
+		if ro, why := s.ledger.ReadOnly(); ro {
+			writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", why)
+			return
+		}
+	} else if err := c.Launchable(); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return
 	}

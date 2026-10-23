@@ -173,6 +173,9 @@ const (
 // crew/<run>/<task>.<n>, where the dot tells the attempt apart.
 var taskIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
 
+// ValidTaskID reports whether id is shaped as a task id.
+func ValidTaskID(id string) bool { return taskIDPattern.MatchString(id) }
+
 // MaxEncoded bounds a crew: its file, as the store writes it (store.Encode).
 // Validate holds every crew to it, so the crew a create or an update sends is
 // held to it too; the request body itself may be larger (the API takes up to

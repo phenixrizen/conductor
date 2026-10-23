@@ -1769,6 +1769,11 @@ its run, and on no other.
 | `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
 | `GET /api/runs/{run}/commands/{command}` | admin | a command's receipt from the managed runs' ledger (#334): `{command: {id, intent, status, receipt?, createdAt}}`, `status` one of `accepted`, `done`, `failed`, `uncertain`; `404 not_found` for a run or command unknown, or one that is not the admin's; `400 invalid_request` for a command id that is not 1 to 32 of letters, digits, `.`, `_`, `~` and `-`. A read: it never acts, so a client that lost a reply looks here before it sends again |
+| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`); `404 not_found` for an unknown run or task; `400 invalid_request` for an id that is not shaped as one |
+| `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's dispatch (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
+| `POST /api/runs/{run}/tasks/{task}/cancel` | admin | cancel a task: its attempt in flight ends (its session stopped once the cancel is recorded), the task is `cancelled`, what needs it is blocked for good, and the run ends when every task is terminal; body `{commandId, expectedRevision?}`; `200 {receipt}` with the task; `409 task_state` with the receipt for a task already succeeded, failed or cancelled |
+| `POST /api/runs/{run}/tasks/{task}/retry` | admin | allow a failed or cancelled task one more attempt: it is `blocked` or `ready` again (a repair it carries stays), the run open again; `200 {receipt}`; `409 task_state` with the receipt otherwise |
+| `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installable, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installable` is true for an adapter with a file to install into (`POST …/install` can do something); `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
@@ -1781,6 +1786,8 @@ its run, and on no other.
 | `POST /api/sessions/{id}/resume` | admin | resume an ended server session (no body), while it is listed: a new session with the same agent, name, working directory, arguments, environment and yolo choice, launched with its agent's `resumeArgs` for the stored `agentSession`, right after the command, when the agent has a `session` recipe and the session was `resumable` (`resumed: true`), and plainly otherwise, with a `notice`: `<agent> has no session recipe: started anew`, or `nothing to resume yet (the agent had no turn): started anew`; reply `201 {session, resumed, notice?}`, the new session's `Info` with `resumedFrom`; a crew member's session is resumed as its member, as `POST /api/runs/{run}/members/{name}/resume` does; `404` when unknown; `400 hosted_session` for a hosted session; `409 still_running`; `409 already_resumed` when a running session holds that agent session; `400 invalid_agent` when its agent is no longer in the catalog; `400 invalid_cwd` when its working directory no longer passes the check; otherwise as `POST /api/sessions` answers |
 | `POST /api/sessions/{id}/crew` | the session's agent token, or admin | an agent forms a crew around its own session (`agents.selfService`, on by default; `403 self_service_off`): body `{name, goal, members, self, isolation?, open?}` (the crew's `cwd`, `where` and `yolo` are the session's own, never in the body; `self` names the member this session becomes, whose `agentId` is the session's agent or empty, meaning that); the crew is saved, its run launched with the session adopted as `self` (`running`, its prompt its own: the members after it start on its next done, handoffs reach it) and the others started as at launch; reply `201 {run, crew, member, url}`, `url` the run's page; the session is tagged with the run and records `formed crew <name>` (a `link` entry with `(open)` when asked, which the workbench offers as a toast); at most 2 per session per hour (`429`); `409 in_a_run` while the session is a member of a run, `409 session_ended`, `400 hosted_session`, `400 invalid_crew` as a launch answers (an impostor among the members included) |
 | `POST /api/sessions/{id}/run/members` | the session's agent token, or admin | add a member (one `crew.Member`) to the session's own run, as `POST /api/runs/{run}/members` does; `201 {run}`; `409 no_run` |
+| `GET /api/sessions/{id}/task` | the session's agent token, or admin | the task of an attempt's session in a managed run (#334, row 6): `{task, markdown, page, pages, bytes}`, `task` the attempt's `task.json` and `markdown` a page of its `task.md` (32 KiB a page, `?page=` from 1, page 1 unless asked; `400 invalid_request` past the last); `404 not_an_attempt` for a session that is no attempt; `409 not_running` for an attempt whose worktree is not made yet; never gated by `agents.selfService` |
+| `POST /api/sessions/{id}/task/result` | the session's agent token only | submit the attempt's result: body `{summary?, commit?, issues?, verdict?, findings?}` (a work task: the commit, HEAD when not given, with a summary of at most 4,000 characters and at most 20 issues; a review: the verdict, `approved` or `needs_changes`, with at most 50 findings `{severity, path?, line?, message}`); reply `201 {task}` once recorded (the task `verifying`, or `succeeded` when it has no checks), `200 {task}` for the same commit submitted again while the first is verified; `409` with why otherwise, the attempt running on: `dirty_worktree` (the paths in the message), `off_branch`, `commit_mismatch` (the worktree is not at the commit named), `not_from_input`, `review_changed`, `reserved_path`, `submodules`, `stale_attempt` (not the task's active attempt, or another commit while one is verified), `not_running`; `400 bad_result` for a result that does not fit the task's kind or its bounds; `403 agent_only` for the workbench token, as a result is always the agent's own; `404 not_an_attempt` |
 | `GET /api/sessions/{id}/run` | the session's agent token, or admin | the session's run with the last 50 log entries, and the session's member name: `{run, member}`; `404 no_run` |
 | `POST /api/sessions/{id}/links/agent` | the session's agent token, or admin | a view-only link to the session for an agent to hand out (a PR, a message): body `{ttlSeconds?, label?}`, the TTL two hours unless given, a day at most (`400`); reply as `POST /api/sessions/{id}/links`; at most 5 per session per day (`429`); recorded in the session's activity |
 | `GET /api/sessions/{id}/links` | admin | share links of a session (`{links, published?, republish?}`), each with `active` viewers; with a switchyard configured, `published` says the session is published there now, and `republish: true` that the publication the switchyard ended has not been made again, which the next link does (the Share dialog makes a link anew then, and in place of one it made here while the session was not published, once it is); for a session published to a rendezvous, the links minted there too, with `remote: true` and no `active` (their viewers are counted there); a rendezvous restart that re-registered the session drops those records; an ended session lists none |
@@ -2149,7 +2156,48 @@ the ledger refuses is undone or, where it cannot be, pauses the run's
 dispatch and says so in the run log. The run's `managed.revision` follows
 each commit. A submitted result is kept whole in the attempt's row (its
 summary, issues, verdict and findings), so a review's findings outlive the
-server. The routes an agent submits with come with the next row (#334).
+server.
+
+An agent reads its task and submits its result through its session's task
+routes (`GET /api/sessions/{id}/task`, `POST /api/sessions/{id}/task/result`
+above), the MCP tools `task_context` and `task_result`, or `conductor task
+context` and `conductor task result`, all with the session's own token; the
+skill's "Your task" section says so. A review whose verdict is `needs_changes`
+reopens the task it reviewed: the task has no result again, its next attempt
+starts at the commit reviewed with the review's findings in its task file (a
+repair, `task.json`'s `repair` and "Findings to address" in `task.md`), and
+what rested on the result is withdrawn, transitively: the review, and every
+task that needed the reopened one, is `blocked` again with its result
+dropped, an attempt of theirs in flight is `cancelled` at stage `withdrawn`
+(its session stopped once that is recorded), and neither a withdrawn attempt
+nor a withdrawn result counts against its task's attempts; a task that had
+failed or been cancelled stays so. The review runs again on the repair. A
+task reopened with no attempt left fails instead, keeping the repair: a retry
+allows one more attempt, which starts at the reviewed commit with the
+findings. The run log says what was reopened and withdrawn, and the events
+`task.reopened`, `task.withdrawn` and `attempt.withdrawn` are recorded with
+the review's result.
+
+**Commands with receipts.** A person's change to a managed run (pause,
+unpause, cancel, retry, accept) is a command: the client mints a `commandId`
+(1 to 32 of letters, digits, `.`, `_`, `~` and `-`), the run keeps the
+outcome under the admin and that id in the same transaction as the change,
+and the receipt comes back as `{receipt: {commandId, intent, revision,
+repeat?, status, error?, refusal?, task?, paused?}}`: `status` is `done` or
+`failed` (with `error` and `refusal`, for a command the run's state refused,
+such as a cancel of a task already finished: `refusal` is the code the
+answer carries, `task_state`, `run_stopped` or `not_found`, on the first
+answer and on every repeat), `task` the task as it stands after the command,
+`paused` whether the run's dispatch is, and `revision` the run's ledger
+revision after it. The same id sent again with the same content answers with
+the same receipt and `repeat: true`, never a second change, also for a
+failed one; the same id with other content is `409 command_conflict`.
+`expectedRevision`, when given, refuses the command with `409 stale_revision`
+once the run's `managed.revision` has moved on, and nothing is kept. A run
+keeps 4,096 commands (`409 too_many_commands`); `GET
+/api/runs/{run}/commands/{command}` reads a receipt without acting; a legacy
+run takes no command (`409 task_state`). The engine's own `PauseRun`,
+`CancelTask` and `RetryTask` make the same changes without a receipt.
 
 The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
 `attempt` and `result`), `paused` and, once every task is terminal, `outcome`

@@ -1316,7 +1316,10 @@ a view link, that link on a third line, `view <url>`.
 (`--mcp-config`) and Codex (`-c mcp_servers.conductor.…`), every launch
 registers `conductor mcp`, a stdio server with the skill's commands as tools:
 `report`, `set_state`, `ask` (with choices), `form_crew`, `add_member`,
-`run_status` and `link`; outside a session the tools say so and do nothing.
+`run_status`, `link`, and for an attempt at a task of a managed run
+`task_context` and `task_result` (`conductor task context` and `conductor
+task result` on the command line); outside a session the tools say so and do
+nothing.
 `agents.mcp: false` (`CONDUCTOR_AGENT_MCP=0`) turns the registration off.
 The server's launches register it; `conductor host` does not yet, and the
 other agents get the skill's commands alone.
@@ -1560,6 +1563,8 @@ file must run `compinit` before that line.
 | `agents.selfService` | `CONDUCTOR_AGENT_SELF_SERVICE` (`1`/`true` on, `0`/`false` off) | `true` | an agent may form a crew around its own session, add members to its run, read its run and mint a view-only link to itself, with its session's own token (see [Agents that form crews](#crews)) |
 | `agents.mcp` | `CONDUCTOR_AGENT_MCP` (`1`/`true` on, `0`/`false` off) | `true` | register `conductor mcp` with agents that take an MCP server at launch (Claude Code, Codex), so the skill's reports and crew actions are tools |
 | `agents.installSkill` | `CONDUCTOR_AGENT_INSTALL_SKILL` (`1`/`true` on, `0`/`false` off) | `true` | a launch puts the Conductor skill in the agent's skills directory, in the server user's home, once per agent per server start (see [The Conductor skill](#events-and-hooks)) |
+| `crews.managed` | `CONDUCTOR_CREWS_MANAGED` (`1`/`true` on, `0`/`false` off) | `true` | a crew with tasks may launch as a managed run (#334); off, such a launch answers `409 managed_off` while managed runs' records stay readable |
+| `checks.maxConcurrent` | `CONDUCTOR_CHECKS_MAX_CONCURRENT` (1 to 64) | `1` | how many of the managed runs' checks run at once across the server: a `go test` beside four agents on a laptop is one at a time |
 | `yolo` | `CONDUCTOR_YOLO` (`1`/`true` on, `0`/`false` off) | `false` | launch every agent with its yolo recipe, skipping its permission prompts, unless a launch or a crew says otherwise; `conductor serve --yolo` turns it on (see [Yolo](#yolo)) |
 | `paths.browse` | `CONDUCTOR_PATHS_BROWSE` | `roots` | what `GET /api/paths` may list: `roots` (the allowed roots alone) or `any` (every directory the server's user can read, asked for with `scope=any`); the desktop app sets `any` for its own server, whose Settings picker chooses the roots and the data directory |
 | `reach.mode` | `CONDUCTOR_REACH` | `auto` | how the server finds out it can be reached from outside its network: `auto` asks a STUN server for the public address and, once there is a TLS listener, maps its port on the router (UPnP IGD, PCP or NAT-PMP, renewed and deleted on shutdown; plain http is never mapped); `manual` asks for the address only, for a port you forwarded yourself; `off` asks nothing. `GET /api/reach` reports the result; the Share dialog says what a link reaches |

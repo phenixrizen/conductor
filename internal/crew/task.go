@@ -51,13 +51,16 @@ const (
 	maxFindingPath = 1024
 )
 
-// LedgerTx is a transition's writer: ledger.Tx, or a test's fake.
+// LedgerTx is a transaction's writer: ledger.Tx, or a test's fake.
 type LedgerTx interface {
 	Event(kind string, payload any) error
 	PutRun(ledger.RunRow) error
 	PutTask(ledger.TaskRow) error
 	PutAttempt(ledger.AttemptRow) error
 	PutCheck(ledger.CheckRow) error
+	// Command and Settle keep a command's receipt (commands.go).
+	Command(actor, id, intent, fingerprint string) (prior ledger.CommandRow, found bool, err error)
+	Settle(actor, id, status string, receipt any) error
 }
 
 // Ledger is the managed runs' ledger as the engine writes it: one
@@ -68,6 +71,8 @@ type LedgerTx interface {
 type Ledger interface {
 	Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (revision int64, err error)
 	Available() error
+	// Receipt reads a command's receipt (commands.go).
+	Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error)
 }
 
 // SQLLedger is the ledger package's as a Ledger.
@@ -84,6 +89,10 @@ func (s sqlLedger) Available() error {
 		return errors.New(why)
 	}
 	return nil
+}
+
+func (s sqlLedger) Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error) {
+	return s.l.Receipt(ctx, runID, actor, id)
 }
 
 // UseLedger gives the engine the ledger managed runs are written to. Set
@@ -195,6 +204,19 @@ type task struct {
 	attempts []*attempt
 	result   *taskResult
 	extra    int // attempts granted past the bound (RetryTask)
+	// repair is set when a review of the task said needs_changes: the next
+	// attempt starts at the commit reviewed, with the findings in its task
+	// file; cleared once the task has a result again.
+	repair *repair
+}
+
+// repair is what a review asks of the task it reviewed.
+type repair struct {
+	review   string
+	attempt  int // the review's attempt
+	commit   string
+	summary  string
+	findings []Finding
 }
 
 // taskResult is a task's accepted result.
@@ -280,6 +302,9 @@ type AttemptState struct {
 	Error     string     `json:"error,omitempty"`
 	StartedAt *time.Time `json:"startedAt,omitempty"`
 	EndedAt   *time.Time `json:"endedAt,omitempty"`
+	// Submitted is what the attempt submitted, in a task's own read
+	// (Engine.TaskOf); the run's read leaves it out.
+	Submitted *Result `json:"submitted,omitempty"`
 }
 
 // ResultState is a task's accepted result as the run reports it.
@@ -323,16 +348,7 @@ func (r *run) taskStates() []TaskState {
 	for _, t := range r.tasks {
 		st := TaskState{ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, Needs: slices.Clone(t.def.Needs), State: t.state, Reason: t.reason, Attempts: len(t.attempts)}
 		if n := len(t.attempts); n > 0 {
-			a := t.attempts[n-1]
-			as := AttemptState{N: a.n, SessionID: a.sessionID, Worktree: a.worktree, Branch: a.branch, Start: a.start, Result: a.result, State: a.state, Stage: a.stage, Error: a.err}
-			if !a.launchedAt.IsZero() {
-				at := a.launchedAt
-				as.StartedAt = &at
-			}
-			if !a.closedAt.IsZero() {
-				at := a.closedAt
-				as.EndedAt = &at
-			}
+			as := attemptStateOf(t.attempts[n-1])
 			st.Attempt = &as
 		}
 		if res := t.result; res != nil {
@@ -346,6 +362,20 @@ func (r *run) taskStates() []TaskState {
 // taskStateOf is t as reported. The caller holds e.mu.
 func (r *run) taskStateOf(t *task) TaskState {
 	return r.taskStates()[slices.Index(r.tasks, t)]
+}
+
+// attemptStateOf is a as reported. The caller holds e.mu.
+func attemptStateOf(a *attempt) AttemptState {
+	as := AttemptState{N: a.n, SessionID: a.sessionID, Worktree: a.worktree, Branch: a.branch, Start: a.start, Result: a.result, State: a.state, Stage: a.stage, Error: a.err}
+	if !a.launchedAt.IsZero() {
+		at := a.launchedAt
+		as.StartedAt = &at
+	}
+	if !a.closedAt.IsZero() {
+		at := a.closedAt
+		as.EndedAt = &at
+	}
+	return as
 }
 
 // The rows changed since the last transition, marked by every change of
@@ -744,6 +774,9 @@ func (r *run) inputs(t *task) []input {
 // attempt when that failed a check (the work is kept; the task file says
 // what failed), else its first need's result, else the run's base.
 func (r *run) startCommit(t *task) string {
+	if t.repair != nil && t.repair.commit != "" {
+		return t.repair.commit
+	}
 	if n := len(t.attempts); n > 0 {
 		if last := t.attempts[n-1]; last.state == ledger.AttemptFailed && last.result != "" {
 			return last.result
@@ -875,15 +908,7 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 	if !a.closedAt.IsZero() {
 		return
 	}
-	a.state, a.stage, a.err, a.closedAt = state, stage, errText, time.Now().UTC()
-	a.provisional = false // closed, it is an attempt made, whatever it got to
-	if state == ledger.AttemptCancelled {
-		// Its context ends once the cancel is committed (pendingCancels).
-		r.pendingCancels = append(r.pendingCancels, a.cancel)
-	} else {
-		a.cancel()
-	}
-	r.active--
+	e.endAttempt(r, a, state, stage, errText)
 	t := a.t
 	switch state {
 	case ledger.AttemptSucceeded:
@@ -901,11 +926,32 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 			t.state, t.reason = ledger.TaskFailed, fmt.Sprintf("attempt %d %s at %s: %s", a.n, state, stage, errText)
 		}
 	}
-	r.markAttempt(a)
 	r.markTask(t)
 	r.ready()
 	r.note(session.ActivityStatus, "task %s: attempt %d %s%s", t.def.ID, a.n, state, suffix(stage, errText))
+	// A review that asks for changes reopens the task it reviewed next
+	// (accept → reopen), which settles the run then: settled here, the run
+	// would end for a moment on a result about to be withdrawn.
+	if state == ledger.AttemptSucceeded && t.def.Kind == TaskReview && a.submitted != nil && a.submitted.Verdict == VerdictNeedsChanges {
+		return
+	}
 	e.settleRun(r)
+}
+
+// endAttempt ends a with its state, stage and error, and lets the run's
+// count go: a close's bookkeeping, without settling the task. The caller
+// holds e.mu.
+func (e *Engine) endAttempt(r *run, a *attempt, state, stage, errText string) {
+	a.state, a.stage, a.err, a.closedAt = state, stage, errText, time.Now().UTC()
+	a.provisional = false // closed, it is an attempt made, whatever it got to
+	if state == ledger.AttemptCancelled {
+		// Its context ends once the cancel is committed (pendingCancels).
+		r.pendingCancels = append(r.pendingCancels, a.cancel)
+	} else {
+		a.cancel()
+	}
+	r.active--
+	r.markAttempt(a)
 }
 
 // unreserve takes back an attempt nothing was made for (no place among
@@ -1331,21 +1377,21 @@ func (e *Engine) managedEnded(r *run, a *attempt) {
 // and the task is verified (its checks, in a checkout of their own) and
 // decided by the controller: a task with no checks succeeds at once. A
 // second submit of the same commit while the first is verified answers as
-// the first; another is refused. The attempt and result are returned with
-// the state the task is in.
-func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result) (TaskState, error) {
+// the first (repeat); another is refused. The task is returned as it is
+// then.
+func (e *Engine) Submit(ctx context.Context, sessionID string, res Result) (TaskState, bool, error) {
 	v, ok := e.bySession.Load(sessionID)
 	if !ok {
-		return TaskState{}, ErrNotAnAttempt
+		return TaskState{}, false, ErrNotAnAttempt
 	}
 	sm := v.(sessionMember)
 	r, a := sm.r, sm.a
 	if a == nil {
-		return TaskState{}, ErrNotAnAttempt
+		return TaskState{}, false, ErrNotAnAttempt
 	}
 	t := a.t
 	if err := res.validate(t.def.Kind); err != nil {
-		return TaskState{}, err
+		return TaskState{}, false, err
 	}
 	// The first look waits for a transaction in flight (a first submit's
 	// commit), so a second submit answers on the committed state.
@@ -1354,7 +1400,7 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 	if e.runs[r.id] != r || t.active() != a {
 		e.mu.Unlock()
 		r.txMu.Unlock()
-		return TaskState{}, ErrStaleAttempt
+		return TaskState{}, false, ErrStaleAttempt
 	}
 	switch a.state {
 	case ledger.AttemptSubmitting, ledger.AttemptVerifying:
@@ -1363,17 +1409,17 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 			st := r.taskStateOf(t)
 			e.mu.Unlock()
 			r.txMu.Unlock()
-			return st, nil
+			return st, true, nil
 		}
 		e.mu.Unlock()
 		r.txMu.Unlock()
-		return TaskState{}, ErrStaleAttempt
+		return TaskState{}, false, ErrStaleAttempt
 	case ledger.AttemptRunning:
 	default:
 		state := a.state
 		e.mu.Unlock()
 		r.txMu.Unlock()
-		return TaskState{}, fmt.Errorf("%w: it is %s", ErrNotRunning, state)
+		return TaskState{}, false, fmt.Errorf("%w: it is %s", ErrNotRunning, state)
 	}
 	a.state = ledger.AttemptSubmitting
 	a.submitSeq++
@@ -1384,7 +1430,7 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 	// back refuses the result: the attempt runs on, unless its session
 	// ended meanwhile, which fails it. It puts back this submission's
 	// state alone, never a later one's.
-	back := func(err error) (TaskState, error) {
+	back := func(err error) (TaskState, bool, error) {
 		e.mu.Lock()
 		if a.state == ledger.AttemptSubmitting && a.submitSeq == mine {
 			a.state = ledger.AttemptRunning
@@ -1394,7 +1440,7 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 		if ended {
 			e.managedEnded(r, a)
 		}
-		return TaskState{}, err
+		return TaskState{}, false, err
 	}
 	// The tree: on the attempt's branch, clean apart from the task files.
 	ref, err := gitcli.Run(ctx, worktree, "symbolic-ref", "-q", "HEAD")
@@ -1488,7 +1534,7 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 		return back(err)
 	}
 	if stale {
-		return TaskState{}, ErrStaleAttempt
+		return TaskState{}, false, ErrStaleAttempt
 	}
 	// Verified on a goroutine the run's stop waits for, registered under
 	// the lock a stop takes first: a stop under way takes the attempt.
@@ -1499,7 +1545,13 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 	}
 	st := r.taskStateOf(t)
 	e.mu.Unlock()
-	return st, nil
+	return st, false, nil
+}
+
+// SubmitResult is Submit without the repeat flag.
+func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result) (TaskState, error) {
+	st, _, err := e.Submit(ctx, sessionID, res)
+	return st, err
 }
 
 func resultWords(kind, commit string, res Result) string {
@@ -1565,10 +1617,17 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 			// failed, and the task stays ready for a continuation.
 			return tx{}
 		}
+		var reopened *task
+		var reopenEvents []event
+		var res *Result
 		if ok {
-			res := a.submitted
+			res = a.submitted
 			t.result = &taskResult{attempt: a.n, commit: a.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
+			t.repair = nil
 			e.closeAttempt(r, a, ledger.AttemptSucceeded, "", "")
+			if t.def.Kind == TaskReview && res.Verdict == VerdictNeedsChanges {
+				reopened, reopenEvents = e.reopen(r, t, a, res)
+			}
 		} else {
 			e.closeAttempt(r, a, ledger.AttemptFailed, stage, errText)
 		}
@@ -1577,6 +1636,9 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 			kind = "attempt.failed"
 		}
 		out := ev(kind, map[string]any{"task": t.def.ID, "attempt": a.n, "stage": stage, "error": errText, "commit": a.result, "state": a.state})
+		if reopened != nil {
+			out.events = append(out.events, reopenEvents...)
+		}
 		if r.outcome != "" {
 			out.events = append(out.events, event{"run.finished", map[string]any{"outcome": r.outcome}})
 		}
@@ -1585,36 +1647,95 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 	e.afterTransact(r, err)
 }
 
+// reopen takes a review's needs_changes to the task it reviewed: the task
+// has no result again, its next attempt starts at the commit reviewed with
+// the findings in its task file (a repair), and what rested on the result
+// is withdrawn: the review goes back to blocked, to run again on the new
+// result, as does whatever else needed the task. A task with no attempt
+// left fails instead, keeping the repair for a retry. The caller holds
+// e.mu, in a transaction's change.
+func (e *Engine) reopen(r *run, review *task, a *attempt, res *Result) (*task, []event) {
+	if len(review.def.Needs) == 0 {
+		return nil, nil
+	}
+	sub := r.task(review.def.Needs[0])
+	if sub == nil || sub.state != ledger.TaskSucceeded || sub.result == nil {
+		return nil, nil
+	}
+	sub.repair = &repair{review: review.def.ID, attempt: a.n, commit: sub.result.commit, summary: res.Summary, findings: slices.Clone(res.Findings)}
+	sub.result = nil
+	why := fmt.Sprintf("review %s asked for changes: %d findings", review.def.ID, len(res.Findings))
+	if len(sub.attempts) >= maxAttemptsPerTask+sub.extra {
+		sub.state, sub.reason = ledger.TaskFailed, fmt.Sprintf("review %s asked for changes and no attempt is left; retry it to allow one more", review.def.ID)
+		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%d findings), and no attempt is left", sub.def.ID, review.def.ID, len(res.Findings))
+	} else {
+		sub.state, sub.reason = ledger.TaskReady, why
+		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%d findings); attempt %d starts at the reviewed commit", sub.def.ID, review.def.ID, len(res.Findings), len(sub.attempts)+1)
+	}
+	r.markTask(sub)
+	events := []event{{"task.reopened", map[string]any{"task": sub.def.ID, "review": review.def.ID, "attempt": a.n, "findings": len(res.Findings), "state": sub.state}}}
+	events = append(events, e.withdraw(r, sub, "needs "+sub.def.ID+", reopened by review "+review.def.ID)...)
+	r.ready()
+	e.settleRun(r)
+	return sub, events
+}
+
+// withdraw takes back what rested on sub's result, as a review reopened
+// it: every task that needs sub, and what needs those, is blocked again
+// with its result dropped; an attempt in flight on the withdrawn result
+// ends (cancelled, its session stopped once that is durable), and neither
+// it nor a result made on it counts against its task. A task that failed
+// or was cancelled stays so. The caller holds e.mu, in a transaction.
+func (e *Engine) withdraw(r *run, sub *task, why string) []event {
+	var events []event
+	for _, t := range r.tasks {
+		if t == sub || !slices.Contains(t.def.Needs, sub.def.ID) {
+			continue
+		}
+		switch {
+		case t.active() != nil:
+			a := t.active()
+			if a.sessionID != "" {
+				r.pendingStops = append(r.pendingStops, a.sessionID)
+			}
+			e.endAttempt(r, a, ledger.AttemptCancelled, "withdrawn", why)
+			t.extra++
+			r.note(session.ActivityStatus, "task %s: attempt %d withdrawn: %s", t.def.ID, a.n, why)
+			events = append(events, event{"attempt.withdrawn", map[string]any{"task": t.def.ID, "attempt": a.n, "needs": sub.def.ID}})
+		case t.state == ledger.TaskSucceeded:
+			t.result = nil
+			t.extra++
+			r.note(session.ActivityStatus, "task %s: its result is withdrawn: %s", t.def.ID, why)
+			events = append(events, event{"task.withdrawn", map[string]any{"task": t.def.ID, "needs": sub.def.ID}})
+		case t.state == ledger.TaskReady:
+		default:
+			continue
+		}
+		t.state, t.reason = ledger.TaskBlocked, why
+		r.markTask(t)
+		events = append(events, e.withdraw(r, t, "needs "+t.def.ID+", withdrawn")...)
+	}
+	return events
+}
+
 // PauseRun pauses a managed run's dispatch: attempts in flight go on,
 // none starts. Unpaused, it dispatches what is ready, once the pause is
-// recorded.
+// recorded. Pause is the same with a receipt.
 func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error {
+	r, err := e.managedRun(runID)
+	if err != nil {
+		return err
+	}
 	e.mu.Lock()
-	r, ok := e.runs[runID]
-	if !ok {
-		e.mu.Unlock()
-		return ErrRunNotFound
-	}
-	if !r.managed {
-		e.mu.Unlock()
-		return fmt.Errorf("%w: a legacy run is not paused", ErrTaskState)
-	}
-	if r.stoppedAt != nil {
-		e.mu.Unlock()
+	stopped := r.stoppedAt != nil
+	e.mu.Unlock()
+	if stopped {
 		return ErrRunStopped
 	}
-	e.mu.Unlock()
 	var was bool
-	err := e.transact(ctx, r, func() tx {
+	err = e.transact(ctx, r, func() tx {
 		was = r.paused
-		r.paused = paused
-		r.markRun()
-		if paused {
-			r.note(session.ActivityStatus, "dispatch paused")
-		} else {
-			r.note(session.ActivityStatus, "dispatch resumed")
-		}
-		return ev("run.paused", map[string]any{"paused": paused})
+		return tx{events: r.setPaused(paused)}
 	}, func() {
 		// Not recorded: as it was, so a dispatch never rests on a pause
 		// or an unpause the ledger does not have.
@@ -1629,89 +1750,35 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 
 // CancelTask cancels a task: its attempt in flight is ended (its session
 // stopped), the task is cancelled, and the tasks that need it are blocked
-// for good.
+// for good. Cancel is the same with a receipt.
 func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
-	e.mu.Lock()
-	r, ok := e.runs[runID]
-	if !ok {
-		e.mu.Unlock()
-		return ErrRunNotFound
+	r, t, err := e.taskIn(runID, taskID, cancellable)
+	if err != nil {
+		return err
 	}
-	t := r.task(taskID)
-	if t == nil {
-		e.mu.Unlock()
-		return ErrTaskNotFound
-	}
-	switch t.state {
-	case ledger.TaskSucceeded, ledger.TaskFailed, ledger.TaskCancelled:
-		e.mu.Unlock()
-		return fmt.Errorf("%w: it is %s", ErrTaskState, t.state)
-	}
-	e.mu.Unlock()
-	err := e.transact(ctx, r, func() tx {
-		switch t.state {
-		case ledger.TaskSucceeded, ledger.TaskFailed, ledger.TaskCancelled:
+	err = e.transact(ctx, r, func() tx {
+		if cancellable(t) != nil {
 			return tx{} // ended meanwhile
 		}
-		if a := t.active(); a != nil {
-			if a.sessionID != "" {
-				// Stopped by the commit that makes the cancel durable: this
-				// one, or a later one that carries it.
-				r.pendingStops = append(r.pendingStops, a.sessionID)
-			}
-			e.closeAttempt(r, a, ledger.AttemptCancelled, a.state, "cancelled")
-		} else {
-			t.state, t.reason = ledger.TaskCancelled, "cancelled"
-			r.markTask(t)
-			r.ready()
-			e.settleRun(r)
-		}
-		r.note(session.ActivityStatus, "task %s cancelled", taskID)
-		out := ev("task.cancelled", map[string]any{"task": taskID})
-		if r.outcome != "" {
-			out.events = append(out.events, event{"run.finished", map[string]any{"outcome": r.outcome}})
-		}
-		return out
+		return tx{events: e.cancelTask(r, t)}
 	}, nil)
 	e.afterTransact(r, err)
 	return err
 }
 
 // RetryTask gives a failed or cancelled task one more attempt: it is ready
-// again, dispatched as the run takes it, once the retry is recorded.
+// again, dispatched as the run takes it, once the retry is recorded. Retry
+// is the same with a receipt.
 func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
-	e.mu.Lock()
-	r, ok := e.runs[runID]
-	if !ok {
-		e.mu.Unlock()
-		return ErrRunNotFound
+	r, t, err := e.taskIn(runID, taskID, retryable)
+	if err != nil {
+		return err
 	}
-	t := r.task(taskID)
-	if t == nil {
-		e.mu.Unlock()
-		return ErrTaskNotFound
-	}
-	if t.state != ledger.TaskFailed && t.state != ledger.TaskCancelled {
-		e.mu.Unlock()
-		return fmt.Errorf("%w: it is %s", ErrTaskState, t.state)
-	}
-	e.mu.Unlock()
-	err := e.transact(ctx, r, func() tx {
-		if t.state != ledger.TaskFailed && t.state != ledger.TaskCancelled {
+	err = e.transact(ctx, r, func() tx {
+		if retryable(t) != nil {
 			return tx{} // changed meanwhile
 		}
-		if len(t.attempts) >= maxAttemptsPerTask+t.extra {
-			t.extra++
-		}
-		t.state, t.reason = ledger.TaskBlocked, ""
-		r.markTask(t)
-		if r.outcome != "" {
-			r.outcome = ""
-			r.markRun()
-		}
-		r.ready()
-		r.note(session.ActivityStatus, "task %s: retried, one more attempt allowed", taskID)
-		return ev("task.retried", map[string]any{"task": taskID})
+		return tx{events: e.retryTask(r, t)}
 	}, nil)
 	e.afterTransact(r, err)
 	return err

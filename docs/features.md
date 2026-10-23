@@ -2826,6 +2826,49 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   engine with a fake ledger and fake sessions (`managed_test.go`), the
   registry's reservations, the web run-state mirror. Not here: the agent's
   routes and tools, the run page, recovery (rows 6–8).
+- **An agent reads its task and submits its result; a review's findings
+  lead to a bounded repair (#344, 2026-10-23).** Row 6 of the agent harness
+  (#334), in the same PR as row 5. An attempt's session reads its task and
+  submits its result with its own token: `GET /api/sessions/{id}/task`
+  (`task.md` in pages of 32 KiB, with `task.json`) and `POST
+  /api/sessions/{id}/task/result` (`201` once recorded, `200` for the same
+  commit again, `409` with why and the attempt running on; the workbench
+  token is refused, a result is always the agent's); the MCP tools
+  `task_context` and `task_result`, `conductor task context|result`
+  (`--summary`, `--issue`, `--commit`, `--verdict`, `--finding
+  "SEVERITY[:PATH[:LINE]] MESSAGE"`, `--file` for strict JSON; loud outside
+  a session, unlike `crew`), and the skill's "Your task" section. A review's
+  `needs_changes` reopens the task it reviewed (`Engine.reopen`): the task
+  has no result, its next attempt starts at the reviewed commit with the
+  findings in its task file (`task.json`'s `repair`, "Findings to address"
+  in `task.md`), and what rested on the result is withdrawn transitively
+  (`withdraw`): the review and every dependent blocked again, their results
+  dropped, an attempt in flight cancelled at stage `withdrawn` with its
+  session stopped once recorded, none of it counted against the tasks; with
+  no attempt left the task fails keeping the repair for a retry. Commands
+  with receipts (`internal/crew/commands.go`): `POST /api/runs/{run}/pause|
+  unpause` and `…/tasks/{task}/cancel|retry|accept` take `{commandId,
+  expectedRevision?}` and answer `{receipt}` written in the change's own
+  transaction (the same id again is the same receipt, `repeat: true`, also
+  for a failure; other content `409 command_conflict`; a stale revision
+  `409 stale_revision` and nothing kept); `Engine.PauseRun`, `CancelTask`
+  and `RetryTask` share the changes; Accept takes a failed task's last
+  submitted commit as its result. `GET /api/runs/{run}/tasks/{task}` gives
+  every attempt with what it submitted. The API's launch gate is lifted:
+  a crew with tasks launches when `crews.managed` is on and the ledger is
+  the server's (`409 managed_off`, `503 ledger_unavailable`);
+  `checks.maxConcurrent` (`CONDUCTOR_CHECKS_MAX_CONCURRENT`, 1) bounds the
+  checks running at once. The e2e stub is a worker (`STUB_WORKER=mcp|cli`,
+  catalog ids `worker` and `worker-cli`): it reads the task through
+  `conductor mcp` on stdio or the CLI, commits `stub-<member>.txt` (and
+  `stub-fixed.txt` once a finding or an attempt before asks), reviews
+  `needs_changes` once then `approved`. Tests: the engine's review gate,
+  withdrawals, receipts and Accept (`commands_test.go`), the routes
+  (`api/tasks_test.go`, the launch gate included), `conductor task` and the
+  tools (`cli/task_test.go`, `mcp_test.go`), the skill, and Playwright
+  `tasks.spec.ts` (a check failing once, the repair, the dependent at the
+  accepted commit, the run's outcome, no start by a done) and
+  `tasks-review.spec.ts` (a review's needs_changes and the approved repair).
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

@@ -150,21 +150,29 @@ func TestCrewCommandsAreSilentOutsideASession(t *testing.T) {
 // The skill teaches every crew subcommand there is, with the binary the
 // session names, and the completion table agrees on the subcommands.
 func TestSkillNamesEveryCrewCommand(t *testing.T) {
-	var words []string
-	for _, c := range completionSpec() {
-		if c.name == "crew" {
-			words = c.words
+	for _, tc := range []struct {
+		name  string
+		usage string
+	}{{"crew", crewUsage}, {"task", taskUsage}} {
+		var words []string
+		for _, c := range completionSpec() {
+			if c.name == tc.name {
+				words = c.words
+			}
 		}
-	}
-	if len(words) == 0 {
-		t.Fatal("no crew words in the completion table")
-	}
-	for _, w := range words {
-		if !strings.Contains(agents.Skill, `"${CONDUCTOR_BIN:-conductor}" crew `+w) {
-			t.Errorf("the skill does not teach crew %s", w)
+		if len(words) == 0 {
+			t.Fatalf("no %s words in the completion table", tc.name)
 		}
-		if !strings.Contains(crewUsage, "conductor crew "+w) {
-			t.Errorf("the usage does not list crew %s", w)
+		for _, w := range words {
+			if !strings.Contains(agents.Skill, `"${CONDUCTOR_BIN:-conductor}" `+tc.name+" "+w) {
+				t.Errorf("the skill does not teach %s %s", tc.name, w)
+			}
+			if !strings.Contains(tc.usage, "conductor "+tc.name+" "+w) {
+				t.Errorf("the usage does not list %s %s", tc.name, w)
+			}
+			if !strings.Contains(usage, "conductor "+tc.name+" ") {
+				t.Errorf("conductor's usage does not list %s", tc.name)
+			}
 		}
 	}
 }

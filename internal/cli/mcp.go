@@ -102,6 +102,16 @@ func mcpTools() []mcpTool {
 		{Name: "run_status", Description: "This session's run and its members, with their states.", InputSchema: obj(map[string]any{})},
 		{Name: "link", Description: "A view-only link to this session, for a pull request or a message; a day at most.",
 			InputSchema: obj(map[string]any{"ttlSeconds": map[string]any{"type": "integer"}, "label": str("what it is for")})},
+		{Name: "task_context", Description: "Your task, when this session is an attempt at a task of a managed run (CONDUCTOR_TASK is set): the goal, the task, where it starts and its inputs, findings to address, how it is checked and how to submit. The same text is .conductor/task.md in your working directory. Long tasks come in pages of 32 KiB: page 1 unless given.",
+			InputSchema: obj(map[string]any{"page": map[string]any{"type": "integer", "minimum": 1, "description": "the page to read"}})},
+		{Name: "task_result", Description: "Submit your attempt's result, once. A work task: commit your work first (the worktree must be clean apart from .conductor/), then give a summary, the issues you know of, and the commit (HEAD unless given). A review: do not commit; give the verdict, approved or needs_changes, with findings {severity: blocker|major|minor|nit, path, line, message}. Conductor checks the commit and decides the task; a refusal says what to fix before you submit again. The same commit submitted twice is taken once. A done or a handoff does not finish a task; only this does.",
+			InputSchema: obj(map[string]any{
+				"summary":  str("what you did, one paragraph, at most 4000 characters"),
+				"commit":   str("the result commit, the full id; HEAD when not given"),
+				"issues":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 20, "description": "what is left or doubtful, one line each"},
+				"verdict":  map[string]any{"type": "string", "enum": []string{"approved", "needs_changes"}, "description": "a review's verdict"},
+				"findings": map[string]any{"type": "array", "maxItems": 50, "items": map[string]any{"type": "object", "properties": map[string]any{"severity": map[string]any{"type": "string", "enum": []string{"blocker", "major", "minor", "nit"}}, "path": str("the file"), "line": map[string]any{"type": "integer"}, "message": str("what to change")}, "required": []string{"severity", "message"}}, "description": "a review's findings"},
+			})},
 	}
 }
 
@@ -268,10 +278,13 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return "", err
 		}
 		return "reported", nil
-	case "form_crew", "add_member", "run_status", "link":
+	case "form_crew", "add_member", "run_status", "link", "task_context", "task_result":
 		c, err := crewClientFromEnv(s.getenv)
 		if err != nil {
 			return "", errNotInSession
+		}
+		if strings.HasPrefix(name, "task_") {
+			c.prefix = "task"
 		}
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
@@ -314,6 +327,27 @@ func (s *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 				return "", err
 			}
 			return fmt.Sprint(out["url"]), nil
+		case "task_context":
+			path := "/task"
+			if p, ok := body["page"].(float64); ok && p >= 1 {
+				path = fmt.Sprintf("/task?page=%d", int(p))
+			}
+			out, err := c.call(cctx, http.MethodGet, path, nil)
+			if err != nil {
+				return "", err
+			}
+			text, _ := out["markdown"].(string)
+			if pages, _ := out["pages"].(float64); pages > 1 {
+				text += fmt.Sprintf("\n\n(page %v of %v: call task_context with the next page for the rest)", out["page"], int(pages))
+			}
+			return text, nil
+		case "task_result":
+			out, err := c.call(cctx, http.MethodPost, "/task/result", body)
+			if err != nil {
+				return "", err
+			}
+			task, _ := out["task"].(map[string]any)
+			return fmt.Sprintf("submitted: task %v is %v", task["id"], task["state"]), nil
 		}
 	}
 	return "", unknownTool(name)

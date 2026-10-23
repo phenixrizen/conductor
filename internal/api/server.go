@@ -342,6 +342,7 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			// legacy runs work.
 			s.runs.UseLedger(crew.SQLLedger(s.ledger))
 		}
+		s.runs.SetCheckConcurrency(cfg.CheckConcurrency())
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
@@ -523,6 +524,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/runs/{run}/members/{name}/resume", s.launching(s.handleResumeRunMember))
 	mux.HandleFunc("POST /api/runs/{run}/broadcast", s.launching(s.handleBroadcast))
 	mux.HandleFunc("GET /api/runs/{run}/commands/{command}", s.requireAdmin(s.handleGetCommand))
+	// Managed runs: the tasks, and the commands with receipts (tasks.go).
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}", s.requireAdmin(s.handleGetTask))
+	mux.HandleFunc("POST /api/runs/{run}/pause", s.requireAdmin(s.handlePauseRun))
+	mux.HandleFunc("POST /api/runs/{run}/unpause", s.requireAdmin(s.handleUnpauseRun))
+	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
+	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/retry", s.requireAdmin(s.handleRetryTask))
+	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/accept", s.requireAdmin(s.handleAcceptTask))
+	// An attempt's session reads its task and submits its result.
+	mux.HandleFunc("GET /api/sessions/{id}/task", s.handleSessionTask)
+	mux.HandleFunc("POST /api/sessions/{id}/task/result", s.handleSessionTaskResult)
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
 	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.launching(s.handleRevokeRunLink))
