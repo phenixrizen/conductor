@@ -131,10 +131,12 @@ var errTimeout = errors.New("proc: timeout")
 // is killed: what the process left behind goes with it, its output
 // redirected or not, and the group's id is still the process's own, since
 // an exited process keeps its id until it is reaped, so no other group can
-// have been given it. Run returns once the process is reaped and its output
-// pipe is closed, or given up on after WaitDelay: a process that left the
-// group (setsid) and kept the output is left alone, and Err says so. A Log
-// writer still stalled then is left behind too.
+// have been given it; no signal to the group is sent once the reaping has
+// begun (lifecycle). The process itself is killed with the group, should it
+// have joined another group. Run returns once the process is reaped and its
+// output pipe is closed, or given up on after WaitDelay: a process that
+// left the group (setsid) and kept the output is left alone, and Err says
+// so. A Log writer still stalled then is left behind too.
 func Run(ctx context.Context, s Spec) Result {
 	res := Result{Exit: -1}
 	if len(s.Argv) == 0 || s.Argv[0] == "" {
@@ -187,7 +189,9 @@ func Run(ctx context.Context, s Spec) Result {
 	cmd.Stdin = nil
 	cmd.Env = environment(s.Allow, s.Env)
 	cmd.Stdout, cmd.Stderr = w, w
-	attr(cmd)
+	cmd.WaitDelay = WaitDelay
+	g := &lifecycle{}
+	attr(cmd, g)
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -200,13 +204,30 @@ func Run(ctx context.Context, s Spec) Result {
 	w.Close() // the process holds the write end now
 	res.Started = started
 	res.Process = Process{PID: cmd.Process.Pid, Group: group(cmd), StartedAt: started}
+	// The exit is watched without reaping, so that the group can be killed
+	// while the exited process still holds its id. Without a watch the
+	// command is ended now, while that holds for certain.
+	exited, wait, werr := watchExit(cmd, g)
+	if werr != nil {
+		g.signal(cmd)
+		if err := g.reap(cmd); err != nil {
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				res.Err = err.Error()
+			}
+		}
+		r.Close()
+		res.Duration = time.Since(started)
+		if cmd.ProcessState != nil {
+			res.Exit, res.Signal = exitStatus(cmd.ProcessState)
+		}
+		res.Err = "proc: the exit could not be watched, so the command was ended: " + werr.Error()
+		classify(ctx, &res)
+		return res
+	}
 	if s.Started != nil {
 		s.Started(res.Process)
 	}
-
-	// The exit is watched without reaping (a pidfd, a kqueue), so that the
-	// group can be killed while the exited process still holds its id.
-	exited, wait := watchExit(cmd)
 
 	mem := &capture{headMax: head, tailMax: tail}
 	var sink io.Writer = mem
@@ -231,7 +252,7 @@ func Run(ctx context.Context, s Spec) Result {
 	case <-time.After(holdGrace):
 		held = true
 	}
-	killGroup(cmd)
+	g.signal(cmd)
 	err = wait()
 	if cmd.ProcessState != nil {
 		res.Exit, res.Signal = exitStatus(cmd.ProcessState)

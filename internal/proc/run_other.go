@@ -3,24 +3,30 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 )
 
-func attr(*exec.Cmd) {}
+type lifecycle struct{}
+
+func (*lifecycle) signal(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	return cmd.Process.Kill()
+}
+
+func (*lifecycle) reap(cmd *exec.Cmd) error { return cmd.Wait() }
+
+func attr(cmd *exec.Cmd, g *lifecycle) { cmd.Cancel = func() error { return g.signal(cmd) } }
 
 func group(cmd *exec.Cmd) int { return cmd.Process.Pid }
 
 func exitStatus(state *os.ProcessState) (int, string) { return state.ExitCode(), "" }
 
-func killGroup(*exec.Cmd) {}
+var watchFails = false
 
-func watchExit(cmd *exec.Cmd) (<-chan struct{}, func() error) {
-	exited := make(chan struct{})
-	var err error
-	go func() {
-		err = cmd.Wait()
-		close(exited)
-	}()
-	return exited, func() error { <-exited; return err }
+func watchExit(*exec.Cmd, *lifecycle) (<-chan struct{}, func() error, error) {
+	return nil, nil, errors.New("proc: no exit watch on this platform")
 }

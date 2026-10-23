@@ -1,28 +1,27 @@
 package proc
 
 import (
+	"errors"
+
 	"golang.org/x/sys/unix"
 )
 
-// watchPID calls exited once the process has exited, before it is reaped:
-// a pidfd becomes readable then. False when the kernel has no pidfd
-// (before 5.3).
-func watchPID(pid int, exited func()) (stop func(), ok bool) {
-	fd, err := unix.PidfdOpen(pid, 0)
-	if err != nil {
-		return nil, false
-	}
+// watchPID calls exited once the process has exited and before it is
+// reaped: waitid with WNOWAIT returns then and leaves the process to be
+// reaped. ECHILD says the process is not a child to wait for: it has
+// exited and been reaped, or was never ours.
+func watchPID(pid int, exited func()) (stop func(), err error) {
 	done := make(chan struct{})
 	go func() {
-		defer unix.Close(fd)
+		var info unix.Siginfo
 		for {
-			n, err := unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, -1)
-			if n > 0 || (err != nil && err != unix.EINTR) {
+			err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+			if err == nil || !errors.Is(err, unix.EINTR) {
 				break
 			}
 		}
 		exited()
 		<-done
 	}()
-	return func() { close(done) }, true
+	return func() { close(done) }, nil
 }

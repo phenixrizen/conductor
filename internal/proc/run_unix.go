@@ -3,22 +3,53 @@
 package proc
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"sync"
 	"syscall"
 )
 
-// attr starts the command in a process group of its own and kills the whole
-// group when its context ends (the timeout, or the caller's), before the
-// process is reaped, so its group is still its own.
-func attr(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+// lifecycle orders the signals to the process and its group against the
+// reaping of the process: a signal to the group by its number is safe only
+// while the process, exited or not, still holds its pid, which it does
+// until it is reaped, so no signal is sent once reap has begun, and reap
+// waits for a signal in flight.
+type lifecycle struct {
+	mu     sync.Mutex
+	reaped bool
+}
+
+// signal kills the process's group, and the process itself should it have
+// joined another group (Setpgid makes a group; it does not keep the process
+// in it). os.ErrProcessDone once the process is reaped, or before it exists.
+func (g *lifecycle) signal(cmd *exec.Cmd) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reaped || cmd.Process == nil {
+		return os.ErrProcessDone
 	}
+	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
+}
+
+// reap waits for the process (exec reaps it), after which no signal is sent.
+func (g *lifecycle) reap(cmd *exec.Cmd) error {
+	g.mu.Lock()
+	g.reaped = true
+	g.mu.Unlock()
+	return cmd.Wait()
+}
+
+// attr starts the command in a process group of its own and, when its
+// context ends (the timeout, or the caller's), kills the group and the
+// process through the lifecycle, so never after the reaping.
+func attr(cmd *exec.Cmd, g *lifecycle) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return g.signal(cmd) }
 }
 
 // group is the command's process group: its own pid (Setpgid).
@@ -36,33 +67,36 @@ func exitStatus(state *os.ProcessState) (int, string) {
 	return ws.ExitStatus(), ""
 }
 
-// killGroup kills the command's process group. Run calls it once the
-// process has exited and before it is reaped: the exited process keeps its
-// pid, and so the group's id, until then, so the group is still its own.
-func killGroup(cmd *exec.Cmd) {
-	if cmd.Process != nil {
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-}
+// errExited says the process had exited before its exit could be watched:
+// it is then a zombie, unreaped, its group's id still its own.
+var errExited = errors.New("proc: exited already")
 
-// watchExit reports the process's exit without reaping it, through the
-// platform's notification (watchPID), and gives the wait that reaps it
-// after. Without a notification (an old kernel), the exit is learned by
-// reaping, and the group is killed right after: the one moment its id is
-// not held.
-func watchExit(cmd *exec.Cmd) (<-chan struct{}, func() error) {
+// watchFails, when set, makes every exit watch fail: the tests' way to the
+// path a watch that cannot be set up takes.
+var watchFails = false
+
+// watchExit reports the process's exit without reaping it (watchPID: a
+// waitid without reaping on Linux, a kqueue on macOS) and gives the wait
+// that reaps it after. A process gone before the watch was set up counts
+// as exited. A watch that cannot be set up is an error: Run then ends the
+// command rather than guess at its exit, since a signal to the group after
+// the reaping could reach another's.
+func watchExit(cmd *exec.Cmd, g *lifecycle) (<-chan struct{}, func() error, error) {
 	exited := make(chan struct{})
-	if stop, ok := watchPID(cmd.Process.Pid, func() { close(exited) }); ok {
-		return exited, func() error {
-			err := cmd.Wait()
-			stop()
-			return err
-		}
+	if watchFails {
+		return nil, nil, errors.New("the watch was made to fail")
 	}
-	var err error
-	go func() {
-		err = cmd.Wait()
+	stop, err := watchPID(cmd.Process.Pid, func() { close(exited) })
+	switch {
+	case errors.Is(err, errExited):
 		close(exited)
-	}()
-	return exited, func() error { <-exited; return err }
+		return exited, func() error { return g.reap(cmd) }, nil
+	case err != nil:
+		return nil, nil, err
+	}
+	return exited, func() error {
+		err := g.reap(cmd)
+		stop()
+		return err
+	}, nil
 }

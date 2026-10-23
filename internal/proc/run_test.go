@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -304,5 +305,71 @@ func TestRunCallsStartedBeforeReadingOutput(t *testing.T) {
 	})
 	if res.Exit != 0 || string(res.Head) != "early\n" || w.seen != 1 {
 		t.Fatalf("seen %d: %+v", w.seen, res)
+	}
+}
+
+// The helper joins its parent's process group, says so, and sleeps: a
+// command that left the group Run made for it, which the group's kill
+// cannot reach.
+func TestHelperChangesGroup(t *testing.T) {
+	if os.Getenv("PROC_HELPER") != "setpgid" {
+		t.Skip("a helper")
+	}
+	pgid, err := syscall.Getpgid(os.Getppid())
+	if err == nil {
+		err = syscall.Setpgid(0, pgid)
+	}
+	if err != nil {
+		fmt.Println("error:", err)
+		os.Exit(2)
+	}
+	fmt.Println("left")
+	time.Sleep(30 * time.Second)
+	os.Exit(0)
+}
+
+// A command that joined another group is still ended at the timeout: the
+// process itself is killed with the group it left.
+func TestRunEndsALeaderThatChangedGroup(t *testing.T) {
+	start := time.Now()
+	res := Run(context.Background(), Spec{Argv: []string{os.Args[0], "-test.run=^TestHelperChangesGroup$"}, Dir: t.TempDir(), Timeout: time.Second, Env: map[string]string{"PROC_HELPER": "setpgid"}})
+	if !res.TimedOut || res.Signal != "killed" || !strings.HasPrefix(string(res.Head), "left") || time.Since(start) > 10*time.Second {
+		t.Fatalf("after %v: %+v", time.Since(start), res)
+	}
+	if !gone(t, res.Process.PID, 3*time.Second) {
+		t.Fatalf("the leader %d outlived the run", res.Process.PID)
+	}
+}
+
+// A watch that cannot be set up ends the command at once rather than
+// guess at its exit, and the result says so.
+func TestRunEndsTheCommandWhenTheExitCannotBeWatched(t *testing.T) {
+	watchFails = true
+	t.Cleanup(func() { watchFails = false })
+	res := sh(t, time.Minute, "sleep 30")
+	if !strings.Contains(res.Err, "could not be watched") || res.Signal != "killed" || res.TimedOut || res.Canceled || res.Started.IsZero() {
+		t.Fatalf("%+v", res)
+	}
+	if !gone(t, res.Process.PID, 3*time.Second) {
+		t.Fatalf("the process %d outlived the run", res.Process.PID)
+	}
+}
+
+// Once the reaping has begun, a cancel sends nothing: the process's number
+// may be another's.
+func TestASignalAfterTheReapIsNotSent(t *testing.T) {
+	g := &lifecycle{}
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.reap(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.signal(cmd); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("a signal after the reap: %v", err)
+	}
+	if err := (&lifecycle{}).signal(exec.Command("true")); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("a signal before the start: %v", err)
 	}
 }

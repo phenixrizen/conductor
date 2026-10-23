@@ -2,4 +2,8 @@
 
 package proc
 
-func watchPID(int, func()) (func(), bool) { return nil, false }
+import "errors"
+
+func watchPID(int, func()) (func(), error) {
+	return nil, errors.New("proc: no exit watch on this platform")
+}

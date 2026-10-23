@@ -2687,13 +2687,18 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   deadline) told from `Canceled` (the caller's context, however it ended),
   and `Killed` when a child the process left behind still held its pipe
   when the process exited. The group is killed when its leader has exited
-  and before it is reaped (a pidfd on Linux, a kqueue on macOS say so):
-  the exited process keeps its pid, and so the group's id, until it is
-  reaped, so the group is still its own and no other's, and what the
-  process left behind goes with it, its output redirected or not. A child
-  that left the group (setsid) and kept the output is given 2 s, then left
-  alone, named in `Err`. `golang.org/x/sys` becomes a direct dependency for
-  the two notifications (it was indirect already).
+  and before it is reaped (a `waitid` without reaping on Linux, a kqueue
+  on macOS say so; a process gone before the watch was set up counts as
+  exited; a watch that cannot be set up ends the command at once, named
+  in `Err`): the exited process keeps its pid, and so the group's id,
+  until it is reaped, so the group is still its own and no other's, and
+  what the process left behind goes with it, its output redirected or not.
+  No signal to the group is sent once the reaping has begun, and a cancel
+  in flight finishes before it; the process itself is killed with the
+  group, so a command that joined another group is still ended at the
+  timeout. A child that left the group (setsid) and kept the output is
+  given 2 s, then left alone, named in `Err`. `golang.org/x/sys` becomes a
+  direct dependency for the two notifications (it was indirect already).
   No callers yet: the managed-run checks (#334, row 5) are the first. Go,
   race: exits and a signal, a bad spec refused, the group killed at the
   timeout, a cancel told from a timeout, a leftover killed after exit 0 and
