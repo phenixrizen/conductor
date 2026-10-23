@@ -215,7 +215,10 @@ func (t *Tx) PutCheck(r CheckRow) error {
 	if err != nil {
 		return err
 	}
-	if len(r.Log) > 0 && !r.LogDropped {
+	if r.LogDropped {
+		r.Log = nil // dropped is dropped: no bytes behind the mark
+	}
+	if len(r.Log) > 0 {
 		var kept int64
 		if err := t.tx.QueryRowContext(t.ctx, `SELECT COALESCE(SUM(LENGTH(log)), 0) FROM checks WHERE run_id = ? AND NOT (task_id = ? AND n = ? AND id = ? AND k = ?)`,
 			t.runID, r.TaskID, r.N, r.ID, r.K).Scan(&kept); err != nil {

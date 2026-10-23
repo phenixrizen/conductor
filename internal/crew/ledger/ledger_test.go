@@ -740,4 +740,21 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 	if c := put("c65", 2, 1); c.LogDropped || len(c.Log) != 1 {
 		t.Fatalf("the freed byte: %+v", c)
 	}
+	// A row marked dropped stores no bytes, whatever it carries.
+	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		return tx.PutCheck(CheckRow{RunID: "team-00000001", TaskID: "build", N: 1, ID: "c64", K: 1, Argv: []string{"true"}, State: CheckFinished, StartedAt: tx.Now(), Log: make([]byte, unit), LogDropped: true, LogSHA256: "abc", Tail: "tail"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checks, _ := l.Checks(ctx, "team-00000001", "build", 1, true)
+	var total int
+	for _, c := range checks {
+		total += len(c.Log)
+		if c.ID == "c64" && (!c.LogDropped || c.Log != nil) {
+			t.Fatalf("a dropped row with bytes: %+v", c)
+		}
+	}
+	if total > 64*unit {
+		t.Fatalf("%d bytes of logs kept, past the budget", total)
+	}
 }
