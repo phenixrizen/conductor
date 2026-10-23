@@ -336,11 +336,11 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		s.runs.RecordEnds(records, func(runID string, err error) { log.Warn("run record not saved", "run", runID, "err", err) }, s.track)
 		s.ledger = openLedger(context.Background(), st, log)
 		if s.ledger != nil {
-			if ro, _ := s.ledger.ReadOnly(); !ro {
-				// The engine writes managed runs to it; read-only, or none,
-				// managed launches are refused and legacy runs work.
-				s.runs.UseLedger(crew.SQLLedger(s.ledger))
-			}
+			// The engine writes managed runs to it; while it is read-only
+			// (another server holds the owner lock, for a while after a
+			// restart), or with none, managed launches are refused and
+			// legacy runs work.
+			s.runs.UseLedger(crew.SQLLedger(s.ledger))
 		}
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)

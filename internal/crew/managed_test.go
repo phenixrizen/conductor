@@ -29,6 +29,8 @@ type fakeLedger struct {
 	attempts map[string]ledger.AttemptRow
 	checks   []ledger.CheckRow
 	failOn   string
+	// unavailable, when set, is what Available returns.
+	unavailable error
 }
 
 type fakeEvent struct {
@@ -48,6 +50,12 @@ type fakeTx struct {
 
 func newFakeLedger() *fakeLedger {
 	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}}
+}
+
+func (l *fakeLedger) Available() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.unavailable
 }
 
 func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (int64, error) {
@@ -784,6 +792,24 @@ func TestAManagedLaunchNeedsALedger(t *testing.T) {
 	if runs := e.List(); len(runs) != 0 {
 		t.Fatalf("a run was kept: %+v", runs)
 	}
+	// One not available (read-only while another server holds the owner
+	// lock) refuses with why.
+	l := newFakeLedger()
+	l.unavailable = errors.New("waiting for the owner lock: another server holds it")
+	e.UseLedger(l)
+	_, _, err := e.LaunchNamed(ctx, repoCrew(dir, work("build", "lead")), "")
+	if !errors.Is(err, ErrNoLedger) || !strings.Contains(err.Error(), "another server holds") {
+		t.Fatalf("with a ledger not available: %v", err)
+	}
+	l.mu.Lock()
+	l.unavailable = nil
+	l.mu.Unlock()
+	run, release, err := e.LaunchNamed(ctx, repoCrew(dir, work("build", "lead")), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopRun(t, e, run.ID)
 }
 
 func TestRunStateOfAManagedRunFollowsItsOutcome(t *testing.T) {

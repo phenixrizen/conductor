@@ -56,8 +56,12 @@ type LedgerTx interface {
 
 // Ledger is the managed runs' ledger as the engine writes it: one
 // transition at a time, committed before the side effect it precedes.
+// Available says whether it takes transitions now: a ledger that is
+// read-only (another server holds the owner lock, for a while after a
+// restart) refuses a managed launch with why.
 type Ledger interface {
 	Transition(ctx context.Context, runID string, fn func(LedgerTx) error) (revision int64, err error)
+	Available() error
 }
 
 // SQLLedger is the ledger package's as a Ledger.
@@ -69,9 +73,16 @@ func (s sqlLedger) Transition(ctx context.Context, runID string, fn func(LedgerT
 	return s.l.Transition(ctx, runID, func(tx *ledger.Tx) error { return fn(tx) })
 }
 
+func (s sqlLedger) Available() error {
+	if ro, why := s.l.ReadOnly(); ro {
+		return errors.New(why)
+	}
+	return nil
+}
+
 // UseLedger gives the engine the ledger managed runs are written to. Set
-// it before the first launch; without one a managed launch is refused
-// (ErrNoLedger).
+// it before the first launch; without one, or with one not available, a
+// managed launch is refused (ErrNoLedger).
 func (e *Engine) UseLedger(l Ledger) { e.ledger = l }
 
 // Errors of a managed run.

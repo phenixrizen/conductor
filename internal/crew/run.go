@@ -538,8 +538,13 @@ func (e *Engine) prepare(ctx context.Context, c Crew) (prefix string, err error)
 	if err := c.validateWithID(); err != nil {
 		return "", err
 	}
-	if c.Managed() && e.ledger == nil {
-		return "", ErrNoLedger
+	if c.Managed() {
+		if e.ledger == nil {
+			return "", ErrNoLedger
+		}
+		if err := e.ledger.Available(); err != nil {
+			return "", fmt.Errorf("%w: %v", ErrNoLedger, err)
+		}
 	}
 	if err := c.launchable(true); err != nil {
 		return "", err
