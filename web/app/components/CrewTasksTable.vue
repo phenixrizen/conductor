@@ -1,0 +1,194 @@
+<script setup lang="ts">
+import type { CrewCheck, CrewTask } from '~/composables/useSessions'
+import { TASK_LIMITS, draftTask, taskRowProblems, type DraftMember, type TaskShape } from '~/utils/crews'
+
+/**
+ * The tasks of a managed crew (#334): who does what, after which results,
+ * checked how. A row is a task: its id, its member, its kind, the tasks it
+ * needs, its instructions, its checks (a popover); the foot holds the setup
+ * commands run in every new attempt worktree. The server's rules are shown
+ * as they would be refused (taskRowProblems); the server still decides.
+ */
+const tasks = defineModel<CrewTask[]>({ default: () => [] })
+const setup = defineModel<CrewCheck[] | undefined>('setup', { default: undefined })
+const props = defineProps<{ members: DraftMember[]; isolation: 'none' | 'worktree' }>()
+
+const shape = computed<TaskShape>(() => ({ tasks: tasks.value, setup: setup.value, isolation: props.isolation, members: props.members }))
+
+// Every cell keeps its place in the one-column-per-field layout of a wide
+// table and moves to a card layout when the table is narrow. Full class
+// names: Tailwind scans them.
+const cols = 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_1.5rem] gap-x-2.5 gap-y-2 @min-[64rem]:grid-cols-[8rem_8rem_6.5rem_11rem_minmax(10rem,1fr)_7rem_1.5rem]'
+const cell = {
+  id: 'col-start-1 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
+  member: 'col-start-2 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
+  kind: 'col-start-1 row-start-2 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
+  needs: 'col-start-2 row-start-2 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
+  instructions: 'col-start-1 col-span-2 row-start-3 @min-[64rem]:col-start-auto @min-[64rem]:col-span-1 @min-[64rem]:row-start-auto',
+  checks: 'col-start-1 col-span-2 row-start-4 @min-[64rem]:col-start-auto @min-[64rem]:col-span-1 @min-[64rem]:row-start-auto',
+  menu: 'col-start-3 row-start-1 @min-[64rem]:col-start-auto @min-[64rem]:row-start-auto',
+}
+
+const memberItems = computed(() => props.members.filter((m) => m.name).map((m) => ({ label: m.name, value: m.name })))
+const kindItems = [
+  { label: 'work', value: 'work', icon: 'i-lucide-hammer' },
+  { label: 'review', value: 'review', icon: 'i-lucide-search-check' },
+]
+
+function membersFor(t: CrewTask) {
+  if (!t.member || props.members.some((m) => m.name === t.member)) return memberItems.value
+  return [...memberItems.value, { label: `${t.member} (not a member)`, value: t.member }]
+}
+
+function needsFor(t: CrewTask) {
+  return tasks.value.filter((x) => x.id && x.id !== t.id).map((x) => ({ label: x.id, value: x.id }))
+}
+
+function who(t: CrewTask, i: number): string {
+  return t.id || `task ${i + 1}`
+}
+
+function update(i: number, patch: Partial<CrewTask>) {
+  tasks.value = tasks.value.map((t, j) => (j === i ? { ...t, ...patch } : t))
+}
+
+/** Renames a task; the tasks that need it follow the new id. */
+function rename(i: number, id: string) {
+  const old = tasks.value[i]?.id
+  tasks.value = tasks.value.map((t, j) => {
+    if (j === i) return { ...t, id }
+    if (old && t.needs?.includes(old)) return { ...t, needs: t.needs.map((n) => (n === old ? id : n)) }
+    return t
+  })
+}
+
+function setKind(i: number, kind: 'work' | 'review') {
+  // A review has no checks: they go with the switch.
+  update(i, kind === 'review' ? { kind, checks: undefined } : { kind })
+}
+
+/** Removes a task; the tasks that needed it no longer do. */
+function remove(i: number) {
+  const gone = tasks.value[i]?.id
+  tasks.value = tasks.value.filter((_, j) => j !== i).map((t) => (gone && t.needs?.includes(gone) ? { ...t, needs: t.needs.filter((n) => n !== gone) } : t))
+}
+
+function move(i: number, delta: number) {
+  const to = i + delta
+  if (to < 0 || to >= tasks.value.length) return
+  const next = tasks.value.slice()
+  const [t] = next.splice(i, 1)
+  next.splice(to, 0, t!)
+  tasks.value = next
+}
+
+function add() {
+  const member = props.members.find((m) => m.name)?.name ?? ''
+  tasks.value = [...tasks.value, draftTask(member, tasks.value.map((t) => t.id))]
+}
+
+function problem(t: CrewTask): string {
+  return taskRowProblems(t, shape.value)[0]?.replace(/^(Task [^:,]*|A task)[:,] ?/, '') ?? ''
+}
+
+function checksWords(t: CrewTask): string {
+  const n = t.checks?.length ?? 0
+  if (t.kind === 'review') return 'verdict'
+  return n ? `${n} ${n === 1 ? 'check' : 'checks'}` : 'no checks'
+}
+
+function menu(t: CrewTask, i: number) {
+  return [
+    [
+      { label: 'Move up', icon: 'i-lucide-arrow-up', disabled: i === 0, onSelect: () => move(i, -1) },
+      { label: 'Move down', icon: 'i-lucide-arrow-down', disabled: i === tasks.value.length - 1, onSelect: () => move(i, 1) },
+    ],
+    [{ label: 'Remove task', icon: 'i-lucide-trash-2', color: 'error' as const, onSelect: () => remove(i) }],
+  ]
+}
+
+const focused = ref<number | null>(null)
+const setupShown = ref(false)
+watch(
+  () => setup.value?.length,
+  (n) => {
+    if (n) setupShown.value = true
+  },
+  { immediate: true },
+)
+</script>
+
+<template>
+  <div class="flex flex-col gap-3" data-crew-tasks-section>
+    <div class="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+      <span class="text-sm font-semibold text-highlighted">Tasks</span>
+      <span class="min-w-0 text-[12.5px] text-muted">each member does its tasks as their needs are met, in a worktree of its own; the checks decide a result</span>
+    </div>
+    <div class="@container overflow-hidden rounded-lg ring ring-default" data-crew-tasks>
+      <div class="hidden border-b border-default bg-muted px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted @min-[64rem]:grid" :class="cols" aria-hidden="true">
+        <span>Id</span>
+        <span>Member</span>
+        <span>Kind</span>
+        <span>Needs</span>
+        <span>Instructions</span>
+        <span>Checks</span>
+        <span />
+      </div>
+
+      <div v-for="(t, i) in tasks" :key="i" class="flex flex-col gap-2 border-b border-default px-4 py-2.5 last:border-b-0" data-crew-task :data-task-id="t.id">
+        <div class="grid items-start" :class="cols">
+          <UInput :class="cell.id" :model-value="t.id" placeholder="id" maxlength="40" autocapitalize="off" spellcheck="false" :aria-label="`Id of ${who(t, i)}`" :ui="{ base: 'font-mono font-medium' }" class="w-full" @update:model-value="rename(i, String($event))" />
+          <USelect :class="cell.member" :model-value="t.member" :items="membersFor(t)" placeholder="Member" :aria-label="`Member of ${who(t, i)}`" class="w-full" data-task-member @update:model-value="update(i, { member: String($event) })" />
+          <USelect :class="cell.kind" :model-value="t.kind" :items="kindItems" :aria-label="`Kind of ${who(t, i)}`" class="w-full" data-task-kind @update:model-value="setKind(i, $event as 'work' | 'review')" />
+          <USelect :class="cell.needs" :model-value="t.needs ?? []" :items="needsFor(t)" multiple placeholder="nothing" :aria-label="`What ${who(t, i)} needs`" class="w-full" data-task-needs @update:model-value="update(i, { needs: ($event as string[]).length ? ($event as string[]) : undefined })" />
+          <UTextarea
+            :class="cell.instructions"
+            :model-value="t.instructions"
+            :rows="focused === i ? 4 : 1"
+            :autoresize="focused === i"
+            :maxrows="16"
+            :maxlength="TASK_LIMITS.instructions"
+            :placeholder="t.kind === 'review' ? 'What to look for; the result reviewed is in the task file' : 'What to do; the goal and the inputs are in the task file'"
+            :aria-label="`Instructions for ${who(t, i)}`"
+            class="w-full"
+            :ui="{ base: focused === i ? 'resize-none' : 'resize-none overflow-hidden whitespace-nowrap text-ellipsis' }"
+            @update:model-value="update(i, { instructions: String($event) })"
+            @focus="focused = i"
+            @blur="focused = focused === i ? null : focused"
+          />
+          <div :class="cell.checks" class="flex h-8 items-center">
+            <UPopover v-if="t.kind !== 'review'" :content="{ align: 'start' }">
+              <UButton :label="checksWords(t)" icon="i-lucide-shield-check" color="neutral" variant="outline" size="xs" :aria-label="`Checks of ${who(t, i)}`" data-task-checks />
+              <template #content>
+                <div class="w-[32rem] max-w-[calc(100vw-2rem)] p-3">
+                  <p class="mb-2 text-xs text-muted">Run against the result's commit, in a checkout of their own; every one must pass. Argv, never a shell line.</p>
+                  <CrewCheckList :model-value="t.checks ?? []" what="check" @update:model-value="update(i, { checks: $event.length ? $event : undefined })" />
+                </div>
+              </template>
+            </UPopover>
+            <span v-else class="text-xs text-muted">{{ checksWords(t) }}</span>
+          </div>
+          <div :class="cell.menu" class="flex h-8 items-center justify-end">
+            <UDropdownMenu :items="menu(t, i)" :content="{ align: 'end' }">
+              <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :aria-label="`${who(t, i)}: more`" data-task-menu />
+            </UDropdownMenu>
+          </div>
+        </div>
+        <span v-if="problem(t)" class="text-xs leading-snug text-error" data-task-error>{{ problem(t) }}</span>
+      </div>
+
+      <div v-if="!tasks.length" class="px-4 py-3 text-sm text-muted">No tasks yet: add one per thing a member delivers.</div>
+    </div>
+    <div class="flex flex-wrap gap-x-4 gap-y-1">
+      <UButton label="Add task" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="!members.length || tasks.length >= TASK_LIMITS.tasks" data-add-task @click="add" />
+      <UButton v-if="!setupShown" label="Setup commands" icon="i-lucide-wrench" color="secondary" variant="link" size="sm" class="px-0" data-show-setup @click="setupShown = true" />
+    </div>
+    <div v-if="setupShown" class="flex flex-col gap-2 rounded-lg ring ring-default p-3" data-crew-setup>
+      <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+        <span class="text-sm font-semibold text-highlighted">Setup</span>
+        <span class="text-[12.5px] text-muted">run in every new attempt worktree before its member starts (a dependency install): a fresh worktree holds tracked files alone. They run on this machine with your permissions, as the checks do.</span>
+      </div>
+      <CrewCheckList :model-value="setup ?? []" what="setup command" @update:model-value="setup = $event.length ? $event : undefined" />
+    </div>
+  </div>
+</template>

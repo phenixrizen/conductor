@@ -99,6 +99,11 @@ var (
 	ErrRunRunning     = errors.New("the run is still running: stop it first")
 	// ErrRunResumed is what a RunResumedError is (errors.Is).
 	ErrRunResumed = errors.New("the run was resumed already")
+	// ErrManaged says the run is a managed one (a crew with tasks, #334),
+	// which the start, add and resume paths of a legacy run do not serve:
+	// a managed run dispatches its own tasks, and continues after a restart
+	// through the ledger, not through a member resumed in its old worktree.
+	ErrManaged = errors.New("the run is managed: its tasks are dispatched by the run, and a member is never started, added or resumed by hand")
 	// errNotReady is awaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )
@@ -203,6 +208,14 @@ type Managed struct {
 	Revision int64 `json:"revision"`
 }
 
+// managed reports whether the run is a managed one, from its members: a
+// crew with tasks starts every member by its tasks (StartTask), and a crew
+// without starts none that way (Crew.Validate); a record of a managed run
+// carries Managed too.
+func (r Run) managed() bool {
+	return r.Managed != nil || slices.ContainsFunc(r.Members, func(m MemberState) bool { return m.Start.When == StartTask })
+}
+
 // Engine launches crews and runs their runs. It never holds its lock while
 // it starts, types into or stops a session.
 type Engine struct {
@@ -282,6 +295,8 @@ type sessionMember struct {
 
 // run is a launch of a crew. Engine.mu guards what changes after it is made.
 type run struct {
+	// managed says the run is a managed one (a crew with tasks, #334).
+	managed                                       bool
 	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool
@@ -520,6 +535,9 @@ func (e *Engine) ResumeRun(ctx context.Context, runID string) (*Run, error) {
 		e.mu.Unlock()
 		return nil, ErrRunNotFound
 	}
+	if old.managed {
+		return nil, ErrManaged
+	}
 	switch {
 	case old.stopping && !old.stopDone:
 		e.mu.Unlock()
@@ -568,6 +586,9 @@ type kept struct{ agentSession, sessionID, worktree, branch, base string }
 // already (ResumedBy) and marks the record with the new run; a run the
 // engine holds is resumed as it is (ResumeRun), never from its record.
 func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
+	if rec.managed() {
+		return nil, ErrManaged
+	}
 	if _, ok := e.Get(rec.ID); ok {
 		return nil, ErrRunRunning
 	}
@@ -721,7 +742,7 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 func (e *Engine) add(c Crew, prefix, label string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
-		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true}
+		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed()}
 	r.chat = session.NewChatRoom(func(m session.ChatMessage) {
 		if e.OnRunChat != nil {
 			e.OnRunChat(r.id, m)
@@ -1236,6 +1257,9 @@ func (e *Engine) StartMember(ctx context.Context, runID, name string) error {
 		e.mu.Unlock()
 		return ErrRunNotFound
 	}
+	if r.managed {
+		return ErrManaged
+	}
 	m := r.member(name)
 	var err error
 	switch {
@@ -1269,6 +1293,9 @@ func (e *Engine) AddMember(ctx context.Context, runID string, m Member) error {
 	if !ok {
 		e.mu.Unlock()
 		return ErrRunNotFound
+	}
+	if r.managed {
+		return ErrManaged
 	}
 	if err := r.admit(m); err != nil {
 		e.mu.Unlock()
@@ -1781,6 +1808,9 @@ func (e *Engine) ResumeMember(ctx context.Context, runID, name, resume string) (
 	if !ok {
 		e.mu.Unlock()
 		return "", ErrRunNotFound
+	}
+	if r.managed {
+		return "", ErrManaged
 	}
 	m := r.member(name)
 	var err error

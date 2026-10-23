@@ -294,7 +294,8 @@ export interface BroadcastResult {
 
 /** When a crew member starts in a run. */
 export interface CrewStart {
-  when: 'immediately' | 'after' | 'manual'
+  /** `task`: in a crew with tasks, the run starts the member for each of its tasks as their needs are met; required there, refused elsewhere. */
+  when: 'immediately' | 'after' | 'manual' | 'task'
   /** Only with `after`: the member whose first `done` starts this one. Following these never goes round in a cycle. */
   member?: string
 }
@@ -310,6 +311,32 @@ export interface CrewMember {
   /** At most 32, of at most 4096 bytes each and 8 KiB in all. */
   args?: string[]
   start: CrewStart
+}
+
+/** A command the controller runs (#334): against a task's result (`CrewTask.checks`) or in every new attempt worktree (`CrewInfo.setup`). An argv array, never a shell line. */
+export interface CrewCheck {
+  /** `^[a-z0-9][a-z0-9_-]{0,39}$`, unique among a task's checks. */
+  id: string
+  /** The program and its arguments: at most 32 of 4096 bytes, 8 KiB in all. */
+  argv: string[]
+  /** 1 to 3600; 600 when missing. */
+  timeoutSeconds?: number
+}
+
+/** A task of a managed crew (#334): a member does it once the tasks it needs have results, in a worktree of its own, and submits a result the checks decide. */
+export interface CrewTask {
+  /** `^[a-z0-9][a-z0-9_-]{0,39}$`, unique in the crew: an attempt's branch is `crew/<run>/<task>.<n>`. */
+  id: string
+  /** The member who does it. */
+  member: string
+  /** `work` submits a commit; `review` reviews one work task's result and submits a verdict, with no checks of its own. */
+  kind: 'work' | 'review'
+  /** At most 8000 characters; written into the attempt's task file, never typed. */
+  instructions: string
+  /** The tasks whose results it starts from, with no cycle; a review's one work task. */
+  needs?: string[]
+  /** At most 8, none for a review. */
+  checks?: CrewCheck[]
 }
 
 /** A saved crew in full, as GET /api/crews/{id} answers it and the crew routes reply. */
@@ -331,6 +358,10 @@ export interface CrewInfo {
   yolo?: boolean
   /** At most 12. The whole crew is at most 1 MiB as its file. */
   members: CrewMember[]
+  /** At most 128; present, the crew is managed (#334): every member starts by its tasks and `isolation` is `worktree`. */
+  tasks?: CrewTask[]
+  /** At most 8 commands run in every new attempt worktree before its member starts; only with tasks. */
+  setup?: CrewCheck[]
   createdAt: string
   updatedAt: string
 }

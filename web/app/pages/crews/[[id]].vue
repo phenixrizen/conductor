@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 
@@ -184,7 +184,7 @@ const nameMissing = computed(() => !draft.value?.name.trim())
 const invalid = computed(() => {
   const d = draft.value
   if (!d) return true
-  return nameMissing.value || d.members.some((m, i) => memberNameError(m.name, d.members.filter((_, j) => j !== i).map((x) => x.name)) || !m.agentId)
+  return nameMissing.value || d.members.some((m, i) => memberNameError(m.name, d.members.filter((_, j) => j !== i).map((x) => x.name)) || !m.agentId) || taskProblems(d).length > 0
 })
 /** What stops a launch from the crew page; the server still decides (a 409 answers). */
 const launchBlocked = computed(() => {
@@ -194,6 +194,7 @@ const launchBlocked = computed(() => {
   if (!d.members.length) return 'Add a member first'
   if (d.where !== 'server') return 'Only a crew that runs on the server can be launched'
   if (invalid.value) return 'Fix the fields marked in red first'
+  if (d.tasks) return 'A crew with tasks cannot be launched in this Conductor yet'
   return ''
 })
 const subtitle = computed(() => {

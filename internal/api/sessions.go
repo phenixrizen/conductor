@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -71,6 +72,24 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		s.noteIdentity(local, agent)
 	}
 	writeJSON(w, http.StatusCreated, local.Info())
+}
+
+// crewInject is what a crew member's process learns of its place from the
+// environment: its crew, run and member, and, for an attempt at a task of
+// a managed run (#334), the task, the attempt's number and the task file
+// the attempt reads (.conductor/task.md in its worktree). Hints, never
+// authority: the server knows which attempt a session is.
+func crewInject(ref *session.CrewRef) map[string]string {
+	if ref == nil {
+		return nil
+	}
+	env := map[string]string{"CONDUCTOR_CREW": ref.CrewID, "CONDUCTOR_RUN": ref.RunID, "CONDUCTOR_MEMBER": ref.Member}
+	if ref.Task != "" {
+		env["CONDUCTOR_TASK"] = ref.Task
+		env["CONDUCTOR_ATTEMPT"] = strconv.Itoa(ref.Attempt)
+		env["CONDUCTOR_TASK_FILE"] = filepath.Join(".conductor", "task.md")
+	}
+	return env
 }
 
 // createLocalSession starts a server session: the agent looked up in the
@@ -256,12 +275,8 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		inject["CONDUCTOR_SKILL"] = skill
 	}
 	s.installSkillAtLaunch(agent.Adapter, hooksDir)
-	if crewRef != nil {
-		// BuildEnv keeps CONDUCTOR_* out of env: these travel with Inject's.
-		inject["CONDUCTOR_CREW"] = crewRef.CrewID
-		inject["CONDUCTOR_RUN"] = crewRef.RunID
-		inject["CONDUCTOR_MEMBER"] = crewRef.Member
-	}
+	// BuildEnv keeps CONDUCTOR_* out of env: a crew's travel with Inject's.
+	maps.Copy(inject, crewInject(crewRef))
 	// The agent's envPassthrough adds to the server-wide list; the clone keeps
 	// one launch from growing the list another launch reads.
 	passthrough := append(slices.Clone(s.cfg.EnvPassthrough), agent.EnvPassthrough...)
