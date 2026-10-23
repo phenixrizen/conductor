@@ -97,11 +97,16 @@ quiet terminal and a `submit_ok` finish nothing.
    content must equal the result tree, compared by content and never
    through the index or its stat cache (a check could mark a file
    assume-unchanged or skip-worktree and then edit it, and `git diff` would
-   call the tree clean): HEAD unchanged, and every path of `git ls-tree -r
-   HEAD` hashed from the checkout (`git hash-object --stdin-paths` under the
-   hardened configuration, no filters) with the tree's blob and mode, a
-   missing, changed or re-moded file failing the verification with its
-   paths, since the checks would have read code the receipt does not name.
+   call the tree clean): HEAD unchanged, and every entry of `git ls-tree -r
+   HEAD` compared with the checkout by type: a file hashed as `git add`
+   would hash it at that path (`git hash-object --path`, the path's
+   built-in conversions applied, since the hardened runner leaves
+   `autocrlf` and `eol` attributes active and a CRLF checkout of an LF blob
+   is unchanged content; external filters stay off), a symbolic link by its
+   target text (mode 120000, `readlink`, never followed), and the mode
+   compared as well; a missing, changed, re-moded or dangling entry fails
+   the verification with its paths, since the checks would have read code
+   the receipt does not name.
    Untracked and ignored files are a check's permitted outputs, listed in
    the receipt with their hashes, since a later check may read them. The
    receipt records `stable` from those comparisons.
@@ -300,8 +305,11 @@ changed and restored in the worker's checkout during a check leaving the
 receipt true to the result commit; a tracked file changed by a check failing
 the verification with its path while an untracked output does not and is
 listed; a file marked assume-unchanged or skip-worktree and then edited by
-a check failing the verification with its path; a result tree holding a
-`.conductor/` path refused before anything downstream is dispatched; a
+a check failing the verification with its path; an unchanged tracked
+symbolic link passing and a changed or dangling one failing; a checkout
+under `core.autocrlf=true` and one with an `eol=crlf` attribute passing
+unchanged; a result tree holding a `.conductor/` path refused before
+anything downstream is dispatched; a
 result commit holding a gitlink refused; `done` completing nothing; handoffs not typed; a session end failing its attempt;
 Stop draining checks; `AddWorktreeAt` in `worktree_test.go`; and in
 `internal/api`, against the real registry at `MaxSessions`: a replacement
