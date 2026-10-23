@@ -1,4 +1,5 @@
 import type { ChatMessage, ActivityEntry, Attention, AttentionKind, AttentionOption, Role } from '~/utils/protocol'
+import type { Receipt } from '~/utils/tasks'
 import { toCrewInput, toCrewMember } from '~/utils/crews'
 import type { TouchedReply } from '~/utils/touchedIndex'
 
@@ -427,6 +428,8 @@ export interface RunTask {
   attempt?: RunAttempt
   /** The result that stands, once an attempt succeeded. */
   result?: RunTaskResult
+  /** A continuation's result taken by reference from the run it continues, as `<run>/<task>/<n>`. */
+  importedFrom?: string
 }
 
 /** One attempt at a task: one member session in one worktree. */
@@ -444,6 +447,25 @@ export interface RunAttempt {
   error?: string
   startedAt?: string
   endedAt?: string
+  /** What the attempt submitted, in a task's own read (`runTask`); the run's read leaves it out. */
+  submitted?: SubmittedResult
+}
+
+/** A finding of a review. */
+export interface Finding {
+  severity: 'blocker' | 'major' | 'minor' | 'nit'
+  path?: string
+  line?: number
+  message: string
+}
+
+/** What an attempt submitted: a work task's commit, summary and issues, or a review's verdict and findings. */
+export interface SubmittedResult {
+  summary?: string
+  commit?: string
+  issues?: string[]
+  verdict?: 'approved' | 'needs_changes'
+  findings?: Finding[]
 }
 
 /** A task's accepted result: a work task's commit and summary, or a review's verdict and findings. */
@@ -451,8 +473,9 @@ export interface RunTaskResult {
   attempt: number
   commit?: string
   summary?: string
+  issues?: string[]
   verdict?: 'approved' | 'needs_changes'
-  findings?: Array<{ severity: 'blocker' | 'major' | 'minor' | 'nit'; path?: string; line?: number; message: string }>
+  findings?: Finding[]
   at: string
 }
 
@@ -665,6 +688,17 @@ export function useSessions() {
      */
     broadcastRun: (runId: string, body: { text: string; members?: string[]; byName?: string }) =>
       request<BroadcastResult>(`/api/runs/${encodeURIComponent(runId)}/broadcast`, { method: 'POST', body }),
+    /** A managed run's task with every attempt, each with what it submitted (#334). */
+    runTask: (runId: string, taskId: string) => request<{ task: RunTask; attempts: RunAttempt[] }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}`),
+    /**
+     * Pauses or resumes a managed run's dispatch, as a command with a receipt (docs/protocol.md, "Commands with receipts"): the same
+     * `commandId` again answers with the same receipt; `expectedRevision` refuses the command once the run moved on (409 `stale_revision`).
+     */
+    pauseRun: (runId: string, paused: boolean, body: { commandId: string; expectedRevision?: number }) =>
+      request<{ receipt: Receipt }>(`/api/runs/${encodeURIComponent(runId)}/${paused ? 'pause' : 'unpause'}`, { method: 'POST', body }),
+    /** Cancels, retries or accepts a task of a managed run, as a command with a receipt; a refusal is a 409 carrying the receipt. */
+    taskCommand: (runId: string, taskId: string, command: 'cancel' | 'retry' | 'accept', body: { commandId: string; expectedRevision?: number }) =>
+      request<{ receipt: Receipt }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/${command}`, { method: 'POST', body }),
     /** A run's share links, each with the viewers attached through it to the sessions of its members. */
     listRunLinks: (runId: string) => request<{ links: ShareLink[] }>(`/api/runs/${encodeURIComponent(runId)}/links`).then((r) => r.links ?? []),
     /** The run's links, whether a member is published to the switchyard now, and whether a member's publication there was ended, which a run link made now makes again. */

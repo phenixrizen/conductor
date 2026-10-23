@@ -2,10 +2,13 @@
 import { ConnectionMode, MarkerType, useVueFlow, VueFlow, type Connection, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
-import type { CrewStart } from '~/composables/useSessions'
+import type { CrewStart, RunTask } from '~/composables/useSessions'
 import type { MemberStatus } from '~/utils/crews'
 import { connectError, crewGraph, type GraphDirection, type GraphMember, type HandoffSeen } from '~/utils/crewGraph'
+import { taskLayout, taskListRows } from '~/utils/taskGraph'
+import { taskDot, taskWords } from '~/utils/tasks'
 import type { MemberNodeData } from '~/components/CrewGraphNode.vue'
+import type { TaskNodeData } from '~/components/CrewGraphTaskNode.vue'
 import type { CrewEdgeData } from '~/components/CrewGraphEdge.vue'
 
 /**
@@ -33,13 +36,21 @@ const props = withDefaults(
     fill?: boolean
     /** The agents' names by id, said on each node under the member's name. */
     agentNames?: Record<string, string>
+    /** A managed run's tasks (#334): with any, the graph has a Tasks mode, one node per task and an edge for each need. */
+    tasks?: RunTask[]
+    paused?: boolean
+    /** The task selected in Tasks mode. */
+    selectedTask?: string
   }>(),
-  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false, agentNames: () => ({}) },
+  { editable: false, runId: '', stopped: false, selected: '', now: 0, fill: false, agentNames: () => ({}), tasks: () => [], paused: false, selectedTask: '' },
 )
 const emit = defineEmits<{
   select: [name: string]
   open: [name: string]
   start: [name: string]
+  /** Tasks mode: a task clicked, and one opened (Enter, a double click, Open). */
+  selectTask: [id: string]
+  openTask: [id: string]
   /** `to` now starts after `from`, or on its own again (start given). */
   setStart: [name: string, start: CrewStart]
   remove: [name: string]
@@ -48,12 +59,12 @@ const emit = defineEmits<{
 }>()
 
 const STORAGE_KEY = 'conductor.crewGraph'
-function readPrefs(): { direction: GraphDirection; handoffs: boolean } {
+function readPrefs(): { direction: GraphDirection; handoffs: boolean; members: boolean } {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as { direction?: unknown; handoffs?: unknown }
-    return { direction: raw.direction === 'TB' ? 'TB' : 'LR', handoffs: raw.handoffs !== false }
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') as { direction?: unknown; handoffs?: unknown; members?: unknown }
+    return { direction: raw.direction === 'TB' ? 'TB' : 'LR', handoffs: raw.handoffs !== false, members: raw.members === true }
   } catch {
-    return { direction: 'LR', handoffs: true }
+    return { direction: 'LR', handoffs: true, members: false }
   }
 }
 const prefs = ref(readPrefs())
@@ -76,19 +87,48 @@ const { setNodes, setEdges, fitView } = useVueFlow({ id: flowId })
 
 const graph = computed(() => crewGraph(props.members, { direction: prefs.value.direction, states: props.states, handoffs: props.editable || !prefs.value.handoffs ? [] : props.handoffs }))
 
-const flowNodes = computed<Node<MemberNodeData>[]>(() =>
-  graph.value.nodes.map((n) => ({
-    id: n.id,
-    type: 'member',
-    position: { x: n.x, y: n.y },
-    data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, agentName: props.agentNames[n.member.agentId] ?? '' },
-    connectable: props.editable,
-    draggable: false,
-    selected: n.id === props.selected,
-  })),
+// A managed run's graph shows its tasks unless the person switched to the members; a run without tasks has members alone.
+const tasksMode = computed(() => props.tasks.length > 0 && !prefs.value.members)
+const modeItems = [
+  { label: 'Tasks', value: 'tasks', icon: 'i-lucide-list-checks' },
+  { label: 'Members', value: 'members', icon: 'i-lucide-users' },
+]
+const mode = computed({
+  get: () => (tasksMode.value ? 'tasks' : 'members'),
+  set: (v: string) => (prefs.value.members = v === 'members'),
+})
+const taskGraph = computed(() => taskLayout(props.tasks, prefs.value.direction))
+const taskRows = computed(() => taskListRows(taskGraph.value))
+function agentOf(member: string): string {
+  return props.members.find((m) => m.name === member)?.agentId ?? ''
+}
+function taskWordsOf(t: RunTask) {
+  return taskWords(t, { stoppedAt: props.stopped ? 'stopped' : undefined, paused: props.paused })
+}
+
+const flowNodes = computed<Node<MemberNodeData | TaskNodeData>[]>(() =>
+  tasksMode.value
+    ? taskGraph.value.nodes.map((n) => ({
+        id: n.id,
+        type: 'task',
+        position: { x: n.x, y: n.y },
+        data: { node: n, direction: prefs.value.direction, stopped: props.stopped, paused: props.paused, agentId: agentOf(n.task.member) },
+        connectable: false,
+        draggable: false,
+        selected: n.id === props.selectedTask,
+      }))
+    : graph.value.nodes.map((n) => ({
+        id: n.id,
+        type: 'member',
+        position: { x: n.x, y: n.y },
+        data: { node: n, direction: prefs.value.direction, editable: props.editable, runId: props.runId, stopped: props.stopped, agentName: props.agentNames[n.member.agentId] ?? '' },
+        connectable: props.editable,
+        draggable: false,
+        selected: n.id === props.selected,
+      })),
 )
 const flowEdges = computed<Edge<CrewEdgeData>[]>(() =>
-  graph.value.edges.map((e) => ({
+  (tasksMode.value ? taskGraph.value.edges : graph.value.edges).map((e) => ({
     id: e.id,
     type: 'crew',
     source: e.from,
@@ -125,7 +165,7 @@ watch(
   { immediate: true },
 )
 watch(
-  () => [props.members.length, prefs.value.direction, wide.value] as const,
+  () => [props.members.length, props.tasks.length, tasksMode.value, prefs.value.direction, wide.value] as const,
   () => nextTick(() => fitView({ padding: 0.2 })),
   { flush: 'post' },
 )
@@ -158,19 +198,30 @@ function onConnectStart(p: { nodeId?: string | null }) {
 }
 
 function onNodeClick(e: NodeMouseEvent) {
-  emit('select', e.node.id)
+  if (tasksMode.value) emit('selectTask', e.node.id)
+  else emit('select', e.node.id)
 }
 function onNodeDoubleClick(e: NodeMouseEvent) {
-  emit('open', e.node.id)
+  if (tasksMode.value) emit('openTask', e.node.id)
+  else emit('open', e.node.id)
 }
 
-const legend = [
+const memberLegend = [
   { dot: 'bg-success', label: 'running' },
   { dot: 'bg-warning', label: 'needs input' },
   { dot: 'bg-info', label: 'starting' },
   { dot: 'bg-neutral-400', label: 'ended' },
   { dot: 'bg-transparent ring-1 ring-neutral-400', label: 'pending' },
 ]
+const taskLegend = [
+  { dot: taskDot('running'), label: 'an attempt runs' },
+  { dot: taskDot('verifying'), label: 'checking a result' },
+  { dot: taskDot('succeeded'), label: 'done' },
+  { dot: taskDot('failed'), label: 'failed' },
+  { dot: taskDot('ready'), label: 'ready, or cancelled' },
+  { dot: taskDot('blocked'), label: 'waiting for a result' },
+]
+const legend = computed(() => (tasksMode.value ? taskLegend : memberLegend))
 </script>
 
 <template>
@@ -187,7 +238,8 @@ const legend = [
         data-graph-direction
         @click="prefs.direction = prefs.direction === 'LR' ? 'TB' : 'LR'"
       />
-      <USwitch v-if="!editable" v-model="prefs.handoffs" label="Handoffs" size="xs" data-graph-handoffs />
+      <UTabs v-if="tasks.length" v-model="mode" :items="modeItems" :content="false" size="xs" color="neutral" data-graph-mode-switch />
+      <USwitch v-if="!editable && !tasksMode" v-model="prefs.handoffs" label="Handoffs" size="xs" data-graph-handoffs />
       <span v-if="editable && wide" class="ml-1.5 text-xs text-muted" data-graph-hint>Drag from a member's right edge onto another to make it wait. One "after" each; loops can't be drawn.</span>
       <UPopover v-if="!editable" :content="{ align: 'end' }">
         <UButton label="Legend" icon="i-lucide-info" size="xs" color="neutral" variant="ghost" class="ml-auto" />
@@ -197,10 +249,16 @@ const legend = [
               <dt class="size-2 rounded-full" :class="l.dot" />
               <dd>{{ l.label }}</dd>
             </template>
-            <dt class="h-px w-4 bg-(--ui-text-muted)" />
-            <dd>starts when the member it points from is done</dd>
-            <dt class="h-px w-4 border-t border-dashed border-(--ui-info)" />
-            <dd>handoffs in this run, with their count</dd>
+            <template v-if="tasksMode">
+              <dt class="h-px w-4 border-t border-dotted border-(--ui-primary)" />
+              <dd>needs the result of the task it points from</dd>
+            </template>
+            <template v-else>
+              <dt class="h-px w-4 bg-(--ui-text-muted)" />
+              <dd>starts when the member it points from is done</dd>
+              <dt class="h-px w-4 border-t border-dashed border-(--ui-info)" />
+              <dd>handoffs in this run, with their count</dd>
+            </template>
           </dl>
         </template>
       </UPopover>
@@ -209,7 +267,28 @@ const legend = [
     <p v-if="!members.length" class="rounded-md border border-dashed border-accented p-6 text-center text-sm text-muted" data-graph-empty>No members yet.</p>
     <p v-else-if="members.length === 1 && !editable" class="text-xs text-muted" data-graph-solo>One member: nothing waits on anything.</p>
 
-    <CrewGraphList v-if="!wide" :graph="graph" :editable="editable" :stopped="stopped" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
+    <!-- A phone in Tasks mode: the tasks as a list, one after the tasks it needs. -->
+    <ol v-if="!wide && tasksMode" class="flex flex-col gap-1.5" data-graph-task-list>
+      <li v-for="n in taskRows" :key="n.id" :style="{ paddingLeft: `${n.depth * 16}px` }" :data-graph-task-row="n.id" :data-depth="n.depth">
+        <div
+          class="flex flex-col gap-1 rounded-md border px-2.5 py-2"
+          :class="selectedTask === n.id ? 'border-primary bg-primary/5' : 'border-default bg-elevated/30'"
+          role="button"
+          tabindex="0"
+          @click="emit('selectTask', n.id)"
+          @keydown.enter.prevent="emit('openTask', n.id)"
+        >
+          <div class="flex items-center gap-2">
+            <UIcon :name="n.task.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer'" class="size-4 flex-none text-muted" />
+            <span class="truncate font-mono text-sm font-semibold">{{ n.id }}</span>
+            <span class="size-2 flex-none rounded-full" :class="taskDot(n.task.state)" aria-hidden="true" />
+            <span class="ml-auto truncate text-xs text-muted">{{ n.task.member }}</span>
+          </div>
+          <span class="truncate text-xs" :class="n.warning ? 'text-warning' : 'text-muted'">{{ n.warning ?? taskWordsOf(n.task).text }}</span>
+        </div>
+      </li>
+    </ol>
+    <CrewGraphList v-else-if="!wide" :graph="graph" :editable="editable" :stopped="stopped" :run-id="runId" :selected="selected" @open="emit('open', $event)" @start="emit('start', $event)" @select="emit('select', $event)" />
     <div v-else class="relative overflow-hidden rounded-md border border-default bg-elevated/30" :class="fill ? 'min-h-72 flex-1' : 'h-96'" data-graph-canvas>
       <VueFlow
         :id="flowId"
@@ -235,6 +314,9 @@ const legend = [
         <Controls :show-interactive="false" position="bottom-right" />
         <template #node-member="p">
           <CrewGraphNode v-bind="p" @open="emit('open', $event)" @start="emit('start', $event)" @set-start="(name, when) => emit('setStart', name, { when })" @remove="emit('remove', $event)" />
+        </template>
+        <template #node-task="p">
+          <CrewGraphTaskNode v-bind="p" @open="emit('openTask', $event)" />
         </template>
         <template #edge-crew="p">
           <CrewGraphEdge v-bind="p" @disconnect="emit('setStart', $event, { when: 'immediately' })" />
@@ -264,7 +346,8 @@ const legend = [
 .vue-flow__edge:focus .vue-flow__edge-path {
   stroke: var(--ui-primary);
 }
-.vue-flow__node-member {
+.vue-flow__node-member,
+.vue-flow__node-task {
   padding: 0;
   border: 0;
   background: transparent;

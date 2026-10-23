@@ -2869,6 +2869,48 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   `tasks.spec.ts` (a check failing once, the repair, the dependent at the
   accepted commit, the run's outcome, no start by a done) and
   `tasks-review.spec.ts` (a review's needs_changes and the approved repair).
+- **The run page shows tasks, their checks and results, and what to do next
+  (#344, 2026-10-23).** Row 7 of the agent harness (#334), in the same PR as
+  rows 5 and 6. A managed run's page has a **Tasks** tab first
+  (`?view=tasks`; a legacy run asked for it gets the grid): one row per task
+  in the crew's order (`RunTasks.vue`) with its state dot and badge, kind,
+  member, attempt, what it does in words (`taskWords`: what it waits for,
+  which attempt runs or checks, how it ended, why a ready task does not
+  start), its result commit, and its actions (Open the attempt's session,
+  Retry, Accept anyway…, Cancel…, Copy branch; `taskActions` says which
+  apply); the selected task, kept in the URL as `?task=`, opens its result
+  (summary, issues, findings) and every attempt with what it submitted
+  (`GET /api/runs/{run}/tasks/{task}`). Cancel and Accept anyway ask first.
+  Every command carries a receipt (`utils/tasks.ts`: the browser mints the
+  id, a reply lost to the network is asked for once more with the same id,
+  a refusal's words come from the receipt; `useTaskCommands` for the toasts).
+  The header says `3/7 tasks`, `1 failed`, `2 running`, `1 checking` and
+  `paused` instead of the member counts, and has a Pause / Resume button for
+  the dispatch (a receipt too). The grid's tiles say the member's task
+  (`build #2`). The graph gains a **Tasks | Members** switch on a managed run
+  (Tasks unless switched; the choice kept with the graph's preferences): one
+  node per task (`CrewGraphTaskNode.vue`: kind, id, state, member, attempt,
+  words, Open) in columns by depth (`utils/taskGraph.ts`, the crew graph's
+  geometry; a need the run has no task for, or a cycle, is a root with a
+  warning), a dotted `needs` edge in the brand colour from each task to the
+  tasks that need it (`data-graph-edge-kind="needs"`), the legend for both;
+  a phone gets the tasks as a list, one after the tasks it needs. The palette:
+  the run page's group gains a row per task (Enter shows it in the Tasks
+  view; → opens its session, retries, accepts or cancels, the last two asked)
+  and a Pause / Resume row; a run row's detail says `2/5 tasks · 1 failed ·
+  paused` and offers Open the tasks. The web client gains `runTask`,
+  `pauseRun` and `taskCommand`, `ApiError` the whole reply (`body`) for a
+  refusal's receipt. Tests: vitest `tasks.test.ts` (counts, badges, words,
+  actions, the id, the retry-once wrapper and the refusal) and
+  `taskGraph.test.ts` (depths, warnings, layout both ways, edges, the list
+  order); Playwright `tasks.spec.ts` gains the page: the rows and their
+  states, the commit against `git rev-parse crew/<run>/build.2`, the header's
+  `2/2 tasks`, the detail's attempts with the failed check and what was
+  submitted, the tile's `build #2`, the graph's two task nodes and one needs
+  edge and the switch to the members, the palette's task row; and a crew
+  whose check always fails: `1 failed`, Pause and Resume with the badge,
+  Accept anyway through the dialog finishing the run with attempt 3's commit
+  and the dependent starting from it.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

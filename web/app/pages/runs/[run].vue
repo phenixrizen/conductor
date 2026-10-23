@@ -3,7 +3,8 @@ import type { RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ChatMessage } from '~/utils/protocol'
 import { scopeItems } from '~/utils/chat'
 import { broadcastByName, broadcastSelection, broadcastSummary, crewFeed, memberStatus, runCounts, skipWords, takeViewLink } from '~/utils/crews'
-import { stopQuestion } from '~/utils/actions'
+import { stopQuestion, type Action } from '~/utils/actions'
+import { taskActions, taskWords } from '~/utils/tasks'
 import { rowPrompt } from '~/utils/sidebarActions'
 import { sessionRow } from '~/utils/sidebar'
 import type { PaletteItem } from '~/composables/usePalette'
@@ -73,16 +74,25 @@ interface Tile {
   session?: SessionInfo
 }
 
-/** One tile per member in the run's order, then any session of the run the last read did not know yet. */
+/**
+ * One tile per member in the run's order, then any session of the run the last read did not know yet. A managed run's member has one
+ * session per attempt over time: its tile is its latest, and the earlier attempts' sessions get no tile of their own.
+ */
 const tiles = computed<Tile[]>(() => {
   const out: Tile[] = []
   const seen = new Set<string>()
+  const names = new Set<string>()
   for (const m of run.value?.members ?? []) {
     const s = sessions.value.find((x) => (m.sessionId ? x.id === m.sessionId : x.crew?.member === m.name))
     if (s) seen.add(s.id)
+    names.add(m.name)
     out.push({ name: m.name, member: m, session: s })
   }
-  for (const s of sessions.value) if (!seen.has(s.id)) out.push({ name: s.crew?.member ?? s.name, session: s })
+  for (const s of sessions.value) {
+    if (seen.has(s.id)) continue
+    if (run.value?.managed && s.crew?.member && names.has(s.crew.member)) continue
+    out.push({ name: s.crew?.member ?? s.name, session: s })
+  }
   return out
 })
 
@@ -125,11 +135,12 @@ const memberOf = computed(() => {
 })
 const feed = computed(() => crewFeed(events.entries.value, run.value?.log ?? [], memberOf.value))
 
-// The view: the tile grid, or the graph of the members and their handoffs. The choice is this browser's.
+// The view: the tile grid, the graph of the members and their handoffs (a managed run's tasks and their needs), the timeline, or a
+// managed run's tasks. The choice is this browser's.
 const VIEW_KEY = 'conductor.runView'
-type RunView = 'grid' | 'graph' | 'timeline'
+type RunView = 'grid' | 'graph' | 'timeline' | 'tasks'
 function isView(v: unknown): v is RunView {
-  return v === 'grid' || v === 'graph' || v === 'timeline'
+  return v === 'grid' || v === 'graph' || v === 'timeline' || v === 'tasks'
 }
 function readView(): RunView {
   // ?view= (#303) names the view a link opens on; else this browser's last choice.
@@ -155,11 +166,32 @@ watch(view, (v) => {
     /* storage refused: the choice lasts the page */
   }
 })
-const viewItems = [
+const viewItems = computed(() => [
+  ...(run.value?.managed ? [{ label: 'Tasks', value: 'tasks', icon: 'i-lucide-list-checks' }] : []),
   { label: 'Grid', value: 'grid', icon: 'i-lucide-layout-grid' },
   { label: 'Graph', value: 'graph', icon: 'i-lucide-git-fork' },
   { label: 'Timeline', value: 'timeline', icon: 'i-lucide-chart-gantt' },
-]
+])
+/** The view shown: Tasks is a managed run's alone, so a legacy run asked for it gets the grid. */
+const shownView = computed(() => (view.value === 'tasks' && !run.value?.managed ? 'grid' : view.value))
+
+// The task selected in the Tasks view (`?task=`), in the URL so a link opens on it (#334, row 7).
+const selectedTask = computed(() => (typeof route.query.task === 'string' ? route.query.task : ''))
+function selectTask(id: string, show = false) {
+  const query: Record<string, string | undefined> = { ...(route.query as Record<string, string>), task: id || undefined }
+  if (show) {
+    query.view = 'tasks'
+    view.value = 'tasks'
+  }
+  router.replace({ query })
+}
+/** A task opened from the graph: its attempt's session when it has one, else the task in the Tasks view. */
+function openTask(id: string) {
+  const t = run.value?.tasks?.find((x) => x.id === id)
+  if (t?.attempt?.sessionId) router.push(`/sessions/${t.attempt.sessionId}`)
+  else selectTask(id, true)
+}
+const taskCommands = useTaskCommands(() => runId.value)
 const states = computed(() => new Map((run.value?.members ?? []).map((m) => [m.name, memberStatus(run.value!, m, live.sessions.value)])))
 
 // The run's chat (design 2e): one thread for everyone on the run, over a quiet connection to a live member; a message may also
@@ -209,7 +241,9 @@ function transportFor(s: SessionInfo) {
 
 function footer(t: Tile): { where: string; diff: string } {
   const m = t.member
-  const where = m?.branch || t.session?.branch || (run.value?.isolation === 'worktree' ? '' : 'shared cwd')
+  const branch = m?.branch || t.session?.branch || (run.value?.isolation === 'worktree' ? '' : 'shared cwd')
+  // A managed run's member is on a task: `build #2 · crew/<run>/build.2`.
+  const where = m?.task ? `${m.task} #${m.attempt}${branch ? ` · ${branch}` : ''}` : branch
   const diff = m?.diff ? `+${m.diff.added} −${m.diff.removed}` : ''
   return { where, diff }
 }
@@ -277,7 +311,7 @@ watch(() => admin.token.value, load)
 // This page's group in the command palette (#302): the header's buttons, the view, the chat, then the members as rows, the one
 // asking first. The broadcast takes its line in the row and says who gets it and who is skipped, as the bar does.
 const palette = usePalette()
-const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void> }>('header')
+const header = useTemplateRef<{ openAdd: () => void; share: () => void; stopNow: () => Promise<void>; resume: () => Promise<void>; togglePause: () => Promise<void> }>('header')
 const identity = useIdentity()
 async function paletteBroadcast(text: string) {
   const line = text.trim()
@@ -297,10 +331,29 @@ palette.registerPage(() => {
   const title = r.label || r.name
   const sel = selection.value
   const views: Array<[RunView, string, string]> = [
+    ...(r.managed ? [['tasks', 'View the tasks', 'i-lucide-list-checks'] as [RunView, string, string]] : []),
     ['grid', 'View as a grid', 'i-lucide-layout-grid'],
     ['graph', 'View as a graph', 'i-lucide-git-fork'],
     ['timeline', 'View as a timeline', 'i-lucide-chart-gantt'],
   ]
+  // A managed run's tasks, one row each: Enter shows the task; → offers its attempt's session and its commands (asked as the rows ask).
+  const taskRows: PaletteItem[] = (r.tasks ?? []).map((t) => {
+    const a = taskActions(t, r)
+    const actions: Action[] = []
+    if (a.open) actions.push({ id: 'open-attempt', kind: 'page', target: t.id, label: "Open the attempt's session", icon: 'i-lucide-terminal', run: () => router.push(`/sessions/${t.attempt!.sessionId}`) })
+    if (a.retry) actions.push({ id: 'retry', kind: 'page', target: t.id, label: 'Retry', icon: 'i-lucide-rotate-ccw', run: () => void taskCommands.send(t, 'retry') })
+    if (a.accept) actions.push({ id: 'accept', kind: 'page', target: t.id, label: 'Accept anyway…', icon: 'i-lucide-check', ask: taskCommands.question(t, 'accept'), run: () => void taskCommands.send(t, 'accept') })
+    if (a.cancel) actions.push({ id: 'cancel', kind: 'page', target: t.id, label: 'Cancel…', icon: 'i-lucide-x', color: 'error', ask: taskCommands.question(t, 'cancel'), run: () => void taskCommands.send(t, 'cancel') })
+    return {
+      key: `page:task:${t.id}`,
+      label: t.id,
+      detail: `${t.kind} · ${t.member} · ${taskWords(t, r).text}`,
+      icon: t.kind === 'review' ? 'i-lucide-search-check' : 'i-lucide-hammer',
+      state: t.state === 'running' || t.state === 'verifying' ? ('running' as const) : t.state === 'failed' ? ('needs' as const) : t.state === 'succeeded' || t.state === 'cancelled' ? ('exited' as const) : ('idle' as const),
+      run: () => selectTask(t.id, true),
+      actions,
+    }
+  })
   const members: PaletteItem[] = [...tiles.value]
     .sort((a, b) => Number(b.session?.attention?.state === 'needs_input') - Number(a.session?.attention?.state === 'needs_input'))
     .map((t) => {
@@ -341,10 +394,12 @@ palette.registerPage(() => {
       { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: stopped || !!r.record, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
       { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
+      ...(r.managed && !stopped && !r.record ? [{ key: 'page:pause', label: r.paused ? 'Resume the dispatch' : 'Pause the dispatch', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
       { key: 'page:chat', label: `Open the run's chat${runChatUnread.value ? ` · ${runChatUnread.value} unread` : ''}`, icon: 'i-lucide-message-circle', run: () => (runChatOpen.value = true) },
       ...(stopped
         ? [{ key: 'page:resume', label: 'Resume as new run', icon: 'i-lucide-history', run: () => header.value?.resume() }]
         : [{ key: 'page:stop', label: 'Stop run…', icon: 'i-lucide-square', kbds: ['X'], disabled: !!r.record, ask: stopQuestion({ kind: 'run', name: title }), run: () => header.value?.stopNow() }]),
+      ...taskRows,
       ...members,
   ]
   return { label: title, rows }
@@ -387,7 +442,7 @@ palette.registerPage(() => {
         <div class="flex flex-none items-center px-3 pt-3">
           <UTabs v-model="view" :items="viewItems" :content="false" size="xs" color="neutral" data-run-view />
         </div>
-        <div v-if="view === 'graph'" class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-run-graph>
+        <div v-if="shownView === 'graph'" class="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" data-run-graph>
           <CrewGraph
             :members="run?.members ?? []"
             :states="states"
@@ -396,13 +451,21 @@ palette.registerPage(() => {
             :stopped="!!run?.stoppedAt"
             :selected="selectedMember"
             :now="now"
+            :tasks="run?.tasks ?? []"
+            :paused="!!run?.paused"
+            :selected-task="selectedTask"
             fill
             @select="selectedMember = $event"
             @open="openMember"
             @start="startMember"
+            @select-task="selectTask($event)"
+            @open-task="openTask"
           />
         </div>
-        <div v-else-if="view === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
+        <div v-else-if="shownView === 'tasks' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-tasks-view>
+          <RunTasks :run="run" :selected="selectedTask" :now="now" @select="selectTask($event, true)" @open="router.push(`/sessions/${$event}`)" />
+        </div>
+        <div v-else-if="shownView === 'timeline' && run" class="min-h-0 flex-1 overflow-y-auto p-3" data-run-timeline-view>
           <RunTimeline :run="run" :sessions="sessions" :feed="events.entries.value" :now="now" />
         </div>
         <div v-else ref="grid" class="min-h-0 flex-1 p-3" :class="narrow ? 'overflow-y-auto' : 'overflow-hidden'">

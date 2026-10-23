@@ -8,7 +8,9 @@ import { relativeTime } from '~/utils/sessions'
  * with a small label and, in the editor, a button that deletes it (the
  * member then starts immediately). A dashed, animated edge is the handoffs
  * from one member to another in this run: a count badge, and the last
- * message and its time on hover.
+ * message and its time on hover. A dotted edge in the brand colour is a
+ * task's need of the result of the task it points from (the tasks graph of
+ * a managed run).
  */
 export interface CrewEdgeData {
   edge: GraphEdge
@@ -34,7 +36,8 @@ const path = computed(() =>
 )
 const e = computed(() => props.data.edge)
 const handoff = computed(() => e.value.kind === 'handoff')
-const stroke = computed(() => (handoff.value ? 'var(--ui-info)' : 'var(--ui-text-muted)'))
+const needs = computed(() => e.value.kind === 'needs')
+const stroke = computed(() => (handoff.value ? 'var(--ui-info)' : needs.value ? 'var(--ui-primary)' : 'var(--ui-text-muted)'))
 </script>
 
 <template>
@@ -42,7 +45,7 @@ const stroke = computed(() => (handoff.value ? 'var(--ui-info)' : 'var(--ui-text
     :id="id"
     :path="path[0]"
     :marker-end="markerEnd"
-    :style="{ stroke, strokeWidth: handoff ? 1.5 : 1.25, strokeDasharray: handoff ? '6 4' : undefined }"
+    :style="{ stroke, strokeWidth: handoff ? 1.5 : 1.25, strokeDasharray: handoff ? '6 4' : needs ? '2 3' : undefined }"
     :class="handoff && 'conductor-handoff-edge'"
     :data-graph-edge="`${e.from}-${e.to}`"
     :data-graph-edge-kind="e.kind"
@@ -60,8 +63,8 @@ const stroke = computed(() => (handoff.value ? 'var(--ui-info)' : 'var(--ui-text
         </template>
       </UPopover>
       <span v-else class="flex items-center gap-0.5 rounded bg-default/90 px-1 text-[10px] text-muted">
-        when done
-        <UButton v-if="data.editable" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="-mr-1 size-4 p-0" :aria-label="`${e.to} no longer starts after ${e.from}`" data-graph-edge-delete @click="emit('disconnect', e.to)" />
+        {{ needs ? 'needs' : 'when done' }}
+        <UButton v-if="data.editable && !needs" icon="i-lucide-x" size="xs" color="neutral" variant="ghost" class="-mr-1 size-4 p-0" :aria-label="`${e.to} no longer starts after ${e.from}`" data-graph-edge-delete @click="emit('disconnect', e.to)" />
       </span>
     </div>
   </EdgeLabelRenderer>

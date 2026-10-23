@@ -661,7 +661,8 @@ every session that is done** and **Clear the new-event badges** sit under
 **>**. On a session page **S** shares it and **X** asks to stop it
 (**Alt+X** in its terminal); **G S** opens Settings in the desktop app
 (**Alt+,**). A link can name a view: `?tab=files|chat|activity|people`
-on a session page, `?view=grid|graph|timeline` on a run page,
+on a session page, `?view=grid|graph|timeline|tasks` on a run page (`&task=`
+names the task shown),
 `?filter=all|needs|running` on the Yard. **Alt+Q** leaves a terminal's
 focus on the Yard and the Roundhouse everywhere (Alt+Esc too, except on
 Windows, which keeps that one for its windows); the shortcuts modal
@@ -1253,7 +1254,11 @@ diff, Start now or Resume where they apply), solid edges labelled "when done"
 for "starts after X is done" and dashed, moving edges for the handoffs delivered in this run,
 with a count and the last message on hover. Roots sit on the left (or on top:
 the direction and the handoff switch are remembered by the browser), a click
-selects, a double click or Enter opens the member's session. The crew editor
+selects, a double click or Enter opens the member's session. A managed run's
+graph has a **Tasks | Members** switch and shows the tasks unless switched:
+one node per task (kind, id, state, member, attempt, what it does now, Open)
+in columns by what it needs, with a dotted `needs` edge from each task to the
+tasks that need its result. The crew editor
 has the same graph as a second mode of the members section: drag from a
 member's right handle to another's left and that one starts after it; the ×
 on an edge removes the rule (the member starts at launch); a node's menu
@@ -1262,6 +1267,23 @@ drawn dashed. A member waits for at most one
 other, so a second parent, a self edge and a cycle are refused with a word
 on why. On a phone the graph is a list indented by depth with the same
 badges, and the Crews table shows each crew's shape in miniature.
+
+**The tasks.** A managed run (a crew with tasks, see
+[Crews](#crews)) has a **Tasks** tab first: one row per task with its state,
+kind, member, attempt, what it does in words (what it waits for, which
+attempt runs or is checked, how it ended, why a ready task does not start),
+its result commit and its actions: **Open** the attempt's session, **Retry** a
+failed or cancelled task (one more attempt), **Accept anyway** a failed task's
+last submitted commit as its result (asked first), **Cancel** a task (asked
+first), **Copy branch**. A row opens the task: its result (summary, issues, a
+review's findings) and every attempt with where it started, what it submitted
+and what failed it. The header says `3/7 tasks`, `1 failed`, `2 running`,
+`1 checking` and `paused`, and **Pause** holds the dispatch (attempts in
+flight go on, no task starts) until **Resume**. Every one of these is a
+command with a receipt: the browser mints an id, a reply lost to the network
+is asked for once more with the same id and answered as the first, and a
+refusal says why. The palette lists the tasks under the page's group, each
+with the same actions.
 
 **The timeline and the charts.** A **Timeline** tab beside the graph draws
 one bar per member from its start to its end or now, amber where its session

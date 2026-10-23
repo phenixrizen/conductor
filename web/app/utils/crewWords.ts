@@ -201,7 +201,8 @@ export function runWhen(iso: string, now = Date.now(), time = true): string {
  */
 export function runResumable(r: RunInfo, live: boolean): boolean {
   if (r.record) return !r.resumedBy && (r.state === 'stopped' || r.state === 'finished' || r.state === 'interrupted')
-  return !live && !!r.stoppedAt && !r.resumedBy
+  // A managed run is continued once it stopped or ended with an outcome (#334, row 8); a legacy run resumed once stopped.
+  return !live && (!!r.stoppedAt || (!!r.managed && !!r.outcome)) && !r.resumedBy
 }
 
 export function runTook(run: Pick<RunInfo, 'startedAt' | 'stoppedAt' | 'members' | 'state'>, live: boolean, now = Date.now()): string {

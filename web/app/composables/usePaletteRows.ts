@@ -1,4 +1,5 @@
 import type { CrewSummary, RunInfo, SessionInfo } from '~/composables/useSessions'
+import { taskCounts } from '~/utils/tasks'
 import { usePalette, type PaletteItem } from '~/composables/usePalette'
 import type { LaunchPrefill } from '~/composables/useLaunchModal'
 import { sameQuestions } from '~/utils/needsCursor'
@@ -371,8 +372,11 @@ export function usePaletteRows(ctx: PaletteContext) {
       more.push({ id: 'add-agent', kind: 'run', target: r.id, label: 'Add agent…', icon: 'i-lucide-user-plus', run: () => go(`/runs/${encodeURIComponent(r.id)}`) })
     }
     if (r && !live) more.push({ id: 'resume-run', kind: 'run', target: r.id, label: 'Resume as new run', icon: 'i-lucide-history', run: () => void resumeRun(r) })
+    if (r && live && r.managed) more.push({ id: 'tasks', kind: 'run', target: r.id, label: 'Open the tasks', icon: 'i-lucide-list-checks', run: () => go(`/runs/${encodeURIComponent(r.id)}?view=tasks`) })
     const asking = block.members.filter((m) => m.state === 'needs').map((m) => m.session.name)
-    const detail = [blockSubtitle(block), asking.length ? `${asking.join(', ')} ${asking.length === 1 ? 'asks' : 'ask'}` : '', `${block.members.filter((m) => m.state === 'running' || m.state === 'idle').length} running`, block.members.some((m) => m.state === 'exited') ? `${block.members.filter((m) => m.state === 'exited').length} exited` : '']
+    // A managed run says its tasks: `2/5 tasks · 1 failed · paused`.
+    const tc = r?.managed ? taskCounts(r.tasks) : null
+    const detail = [blockSubtitle(block), tc ? `${tc.done}/${tc.total} tasks${tc.failed ? ` · ${tc.failed} failed` : ''}${r?.paused ? ' · paused' : ''}` : '', asking.length ? `${asking.join(', ')} ${asking.length === 1 ? 'asks' : 'ask'}` : '', `${block.members.filter((m) => m.state === 'running' || m.state === 'idle').length} running`, block.members.some((m) => m.state === 'exited') ? `${block.members.filter((m) => m.state === 'exited').length} exited` : '']
       .filter(Boolean)
       .join(' · ')
     return {
