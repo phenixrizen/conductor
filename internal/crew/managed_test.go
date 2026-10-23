@@ -1744,3 +1744,87 @@ func TestARefusedReservationLeavesNoRowBehind(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+func TestARunWithAChangeTheLedgerHasNotTakenIsNotEvicted(t *testing.T) {
+	old := maxRuns
+	maxRuns = 1
+	t.Cleanup(func() { maxRuns = old })
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	_, p := fl.attemptSession(t, a)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	l.mu.Lock()
+	l.failOn = "task.succeeded,run.paused"
+	l.mu.Unlock()
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitLogged(t, e, run.ID, "dispatch paused", 1, 10*time.Second)
+	// Every task terminal and the session gone, but the acceptance not
+	// committed: a launch at the bound must not evict the run.
+	p.End(0)
+	waitTrue(t, "the session ended", func() bool { return memberState(t, e, run.ID, "lead").Status == MemberEnded })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	other, release, err := e.LaunchNamed(ctx, testCrew(immediate("lead", "hello")), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.Get(run.ID); !ok {
+		t.Fatal("the run was evicted with its acceptance uncommitted")
+	}
+	// Committed, nothing holds it: the next launch may take its place.
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	if err := e.PauseRun(context.Background(), run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	stopRun(t, e, other.ID)
+	another, release2, err := e.LaunchNamed(ctx, testCrew(immediate("lead", "hello again")), "")
+	release2()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.Get(run.ID); ok {
+		t.Fatal("the finished, committed run was kept past the bound")
+	}
+	stopRun(t, e, another.ID)
+}
+
+func TestACancelledChecksProcessRunsUntilTheCancelIsDurable(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "slow", Argv: []string{"sh", "-c", "sleep 30"}, TimeoutSeconds: 60}}
+	run := launchManaged(t, e, repoCrew(dir, build))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
+	commitAll(t, a.Attempt.Worktree, "built")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
+	waitTrue(t, "the check running", func() bool { return l.count(run.ID, "check.running") == 1 })
+	l.mu.Lock()
+	l.failOn = "task.cancelled,run.paused"
+	l.mu.Unlock()
+	if err := e.CancelTask(context.Background(), run.ID, "build"); err == nil {
+		t.Fatal("a cancel the ledger refused was reported taken")
+	}
+	// Not durable: the check runs on.
+	time.Sleep(500 * time.Millisecond)
+	if n := l.count(run.ID, "check.finished"); n != 0 {
+		t.Fatalf("the check ended before the cancel was durable (%d finished)", n)
+	}
+	l.mu.Lock()
+	l.failOn = ""
+	l.mu.Unlock()
+	if err := e.PauseRun(context.Background(), run.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitTrue(t, "the check interrupted once the cancel was durable", func() bool { return l.count(run.ID, "check.finished") == 1 })
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskCancelled {
+		t.Fatalf("the task: %+v", ts)
+	}
+	stopRun(t, e, run.ID)
+}

@@ -239,6 +239,9 @@ type attempt struct {
 	// (submitting or verifying): a submission refused then fails the
 	// attempt instead of leaving it running with no session to watch.
 	sessionEnded bool
+	// submitSeq numbers the submissions taken, so a refused one puts back
+	// its own state and never a later one's.
+	submitSeq int
 }
 
 // input is a result a task starts from or has at hand.
@@ -364,6 +367,11 @@ func (r *run) markAttempt(a *attempt) {
 }
 
 func (r *run) markRun() { r.runChanged = true }
+
+// dirty reports whether a change waits for a commit. The caller holds e.mu.
+func (r *run) dirty() bool {
+	return r.runChanged || len(r.changedTasks) > 0 || len(r.changedAttempts) > 0
+}
 
 // snapshot is what one transition writes: the rows of what changed, as
 // they were when it was taken.
@@ -510,7 +518,12 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		r.endPending = false
 		e.noteEndLater(r)
 	}
-	// The sessions whose attempts' end this commit made durable.
+	// The attempts whose cancel this commit made durable: their contexts
+	// end (a check or a setup under way with them) and their sessions go.
+	for _, cancel := range r.pendingCancels {
+		cancel()
+	}
+	r.pendingCancels = nil
 	stops := r.pendingStops
 	r.pendingStops = nil
 	e.mu.Unlock()
@@ -864,7 +877,12 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 	}
 	a.state, a.stage, a.err, a.closedAt = state, stage, errText, time.Now().UTC()
 	a.provisional = false // closed, it is an attempt made, whatever it got to
-	a.cancel()
+	if state == ledger.AttemptCancelled {
+		// Its context ends once the cancel is committed (pendingCancels).
+		r.pendingCancels = append(r.pendingCancels, a.cancel)
+	} else {
+		a.cancel()
+	}
 	r.active--
 	t := a.t
 	switch state {
@@ -984,13 +1002,18 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	defer r.starts.Done()
 	t, m := a.t, a.m
-	fail := func(stage string, err error) {
+	// fail closes the attempt at its stage; with stop, its session goes
+	// once the close is committed (pendingStops).
+	fail := func(stage string, err error, stop bool) {
 		terr := e.transact(context.Background(), r, func() tx {
 			state := ledger.AttemptFailed
 			if r.ctx.Err() != nil {
 				state = ledger.AttemptStopped
 			} else if ctx.Err() != nil {
 				state = ledger.AttemptCancelled
+			}
+			if stop && a.sessionID != "" {
+				r.pendingStops = append(r.pendingStops, a.sessionID)
 			}
 			e.closeAttempt(r, a, state, stage, session.CleanMessage(err.Error()))
 			return ev("attempt.failed", map[string]any{"task": t.def.ID, "attempt": a.n, "stage": stage, "error": a.err, "state": a.state})
@@ -1068,7 +1091,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	}
 	// The worktree, at the start commit, under the repository's lock.
 	if err := checkWorktreesDir(r.cwd); err != nil {
-		fail("worktree", err)
+		fail("worktree", err, false)
 		return
 	}
 	e.gitMu.Lock()
@@ -1083,30 +1106,30 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		e.mu.Unlock()
 	}
 	if tracked, err := treeHasPath(ctx, r.cwd, a.start, path.Join(filepath.ToSlash(r.prefix), taskDir)); err != nil {
-		fail("worktree", err)
+		fail("worktree", err, false)
 		return
 	} else if tracked {
-		fail("worktree", fmt.Errorf("the commit %s tracks %s/ in the working directory, which is Conductor's: the task files cannot be written", short(a.start), taskDir))
+		fail("worktree", fmt.Errorf("the commit %s tracks %s/ in the working directory, which is Conductor's: the task files cannot be written", short(a.start), taskDir), false)
 		return
 	}
 	e.gitMu.Lock()
 	err = AddWorktreeAt(ctx, r.cwd, a.worktree, a.branch, a.start)
 	e.gitMu.Unlock()
 	if err != nil {
-		fail("worktree", err)
+		fail("worktree", err, false)
 		return
 	}
 	if head, err := headCommit(ctx, a.worktree); err != nil || head != a.start {
-		fail("worktree", fmt.Errorf("the worktree is at %s, not %s", short(head), short(a.start)))
+		fail("worktree", fmt.Errorf("the worktree is at %s, not %s", short(head), short(a.start)), false)
 		return
 	}
 	if err := checkNoLinks(a.worktree, r.prefix); err != nil {
-		fail("worktree", err)
+		fail("worktree", err, false)
 		return
 	}
 	cwd := filepath.Join(a.worktree, r.prefix)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		fail("worktree", err)
+		fail("worktree", err, false)
 		return
 	}
 	e.mu.Lock()
@@ -1121,19 +1144,19 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		err = writeTaskFiles(a.worktree, r.prefix, md, js)
 	}
 	if err != nil {
-		fail("task file", err)
+		fail("task file", err, false)
 		return
 	}
 	if err := e.transact(ctx, r, func() tx {
 		return ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
 	}, nil); err != nil {
-		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err))
+		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err), false)
 		return
 	}
 	// The setup, in the worktree, before the member starts.
 	for _, ch := range r.setup {
 		if err := e.runSetup(ctx, r, a, cwd, ch, "attempt.setup"); err != nil {
-			fail("setup "+ch.ID, err)
+			fail("setup "+ch.ID, err, false)
 			return
 		}
 	}
@@ -1141,7 +1164,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: fmt.Sprintf("%s · %s #%d", m.def.Name, t.def.ID, a.n), Cwd: cwd, Args: slices.Clone(m.def.Args),
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: t.def.ID, Attempt: a.n}, Yolo: r.yolo, Reservation: res})
 	if err != nil {
-		fail("launch", err)
+		fail("launch", err, false)
 		return
 	}
 	id := local.Info().ID
@@ -1164,14 +1187,12 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// Closed before its session is stopped, so the stage is the launch's,
 	// not the watcher's "session ended".
 	if stopping {
-		fail("launch", ErrRunStopped)
-		stopLocal(local)
+		fail("launch", ErrRunStopped, true)
 		return
 	}
 	if lerr != nil {
 		// The session is not in the ledger: it does not get its task.
-		fail("launch", fmt.Errorf("the ledger could not record the launch: %w", lerr))
-		stopLocal(local)
+		fail("launch", fmt.Errorf("the ledger could not record the launch: %w", lerr), true)
 		return
 	}
 	// The line: typed once the session is ready, as a role prompt is.
@@ -1179,8 +1200,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		if r.ctx.Err() != nil {
 			err = ErrRunStopped
 		}
-		fail("prompt", err)
-		stopLocal(local)
+		fail("prompt", err, true)
 		return
 	}
 	if err := e.transact(ctx, r, func() tx {
@@ -1356,14 +1376,17 @@ func (e *Engine) SubmitResult(ctx context.Context, sessionID string, res Result)
 		return TaskState{}, fmt.Errorf("%w: it is %s", ErrNotRunning, state)
 	}
 	a.state = ledger.AttemptSubmitting
+	a.submitSeq++
+	mine := a.submitSeq
 	worktree, branch, start, inputs := a.worktree, a.branch, a.start, slices.Clone(a.inputs)
 	e.mu.Unlock()
 	r.txMu.Unlock()
 	// back refuses the result: the attempt runs on, unless its session
-	// ended meanwhile, which fails it.
+	// ended meanwhile, which fails it. It puts back this submission's
+	// state alone, never a later one's.
 	back := func(err error) (TaskState, error) {
 		e.mu.Lock()
-		if a.state == ledger.AttemptSubmitting {
+		if a.state == ledger.AttemptSubmitting && a.submitSeq == mine {
 			a.state = ledger.AttemptRunning
 		}
 		ended := a.sessionEnded
