@@ -76,9 +76,10 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
 	for _, in := range a.inputs {
 		f.Inputs = append(f.Inputs, TaskInput{Task: in.task, Attempt: in.attempt, Commit: in.commit, Branch: in.branch, Summary: in.summary, Verdict: in.verdict})
 	}
-	if a.n > 1 && a.n-2 < len(t.attempts) {
-		p := t.attempts[a.n-2]
-		f.Previous = &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
+	for _, p := range t.attempts {
+		if p.n == a.n-1 {
+			f.Previous = &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
+		}
 	}
 	if rp := t.repair; rp != nil {
 		f.Repair = &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: append([]Finding(nil), rp.findings...)}

@@ -2199,8 +2199,39 @@ keeps 4,096 commands (`409 too_many_commands`); `GET
 run takes no command (`409 task_state`). The engine's own `PauseRun`,
 `CancelTask` and `RetryTask` make the same changes without a receipt.
 
+**After the server's end, a continuation.** When the server starts and
+takes the ledger's owner lock, it concludes what the last server left open
+(the ledger's recovery): an attempt reserved and not launched is
+`uncertain`, one launched, running, submitting or verifying `interrupted`,
+a check under way `interrupted`, a command accepted and not settled
+`uncertain`, and a run that was running `interrupted`. Then every managed
+run whose record lags the ledger (a snapshot cut short by the server's
+end) or has none is written again as the ledger has it (`crew.Recovered`):
+its state (`interrupted` when the recovery found it running), each task as
+its row and its last attempt say (a task whose attempt was interrupted is
+`ready` with why, one whose attempt is uncertain `failed` with why), the
+members' sessions ended; it reads so, read-only, until it is continued. `POST /api/runs/{run}/resume` on a managed run
+(interrupted, stopped, or finished with an outcome; the engine's or its
+record) makes its continuation (`crew.ContinueRun`): a new run of the crew
+as launched, from the same base, named in the old run's `resumedBy` (the
+ledger's `continuedBy`) and naming it in `resumedFrom`. Each task is taken
+up as its rows say: a result that stood is kept by reference (`tasks[].
+importedFrom`, `<run>/<task>/<n>`; no attempt is made, a dependent starts
+from it and its task file names the old run's branch); a task failed or
+cancelled stays so; a work task whose attempt was interrupted, or stopped
+with the run, while its result was being verified gets an attempt of its
+own, with no session, that verifies the same commit again (`result.reverified`; the attempt is
+not counted against the task); a task whose last attempt's launch is
+uncertain is `failed` with why until a retry, since nothing is retried on
+its own; the rest is ready or blocked as its needs say, and the attempts
+spent before count against every task and number the next (`crew/<new
+run>/<task>.<n>` continues the numbering). The run log says what was kept,
+verified again and left for a decision; the continuation is made once
+(`409 already_resumed` names it), and a run still going is not continued
+(`409 run_running`).
+
 The run reports `tasks` (each with its `state`, `reason`, `attempts`, latest
-`attempt` and `result`), `paused` and, once every task is terminal, `outcome`
+`attempt`, `result` and, in a continuation, `importedFrom`), `paused` and, once every task is terminal, `outcome`
 (`succeeded` when all succeeded, `cancelled` when one was cancelled and none
 failed, `failed` otherwise): the run is `finished` then, its idle sessions
 kept for a look until a stop; a managed run is not finished by its sessions

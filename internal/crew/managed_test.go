@@ -79,10 +79,33 @@ type fakeTx struct {
 	attempts []ledger.AttemptRow
 	checks   []ledger.CheckRow
 	commands []ledger.CommandRow
+	// continued is the run this transaction's run continues, marked at commit.
+	continued string
 }
 
 func newFakeLedger() *fakeLedger {
 	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}}
+}
+
+func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	row, ok := l.runs[runID]
+	if !ok {
+		return Loaded{}, false, nil
+	}
+	out := Loaded{Run: row}
+	for _, t := range l.tasks {
+		if t.RunID == runID {
+			out.Tasks = append(out.Tasks, t)
+		}
+	}
+	for _, a := range l.attempts {
+		if a.RunID == runID {
+			out.Attempts = append(out.Attempts, a)
+		}
+	}
+	return out, true, nil
 }
 
 func (l *fakeLedger) Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error) {
@@ -106,6 +129,17 @@ func (tx *fakeTx) Command(actor, id, intent, fingerprint string) (ledger.Command
 	}
 	tx.commands = append(tx.commands, ledger.CommandRow{RunID: tx.runID, Actor: actor, ID: id, Intent: intent, Fingerprint: fingerprint, Status: ledger.CommandAccepted, CreatedAt: time.Now().UTC()})
 	return ledger.CommandRow{}, false, nil
+}
+
+func (tx *fakeTx) Continued(from string) error {
+	tx.l.mu.Lock()
+	row, ok := tx.l.runs[from]
+	tx.l.mu.Unlock()
+	if !ok || row.ContinuedBy != "" {
+		return fmt.Errorf("%w: %s", ledger.ErrContinued, from)
+	}
+	tx.continued = from
+	return nil
 }
 
 func (tx *fakeTx) Settle(actor, id, status string, receipt any) error {
@@ -166,6 +200,11 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 	l.checks = append(l.checks, tx.checks...)
 	for _, c := range tx.commands {
 		l.commands[c.RunID+"/"+c.Actor+"/"+c.ID] = c
+	}
+	if tx.continued != "" {
+		row := l.runs[tx.continued]
+		row.ContinuedBy = runID
+		l.runs[tx.continued] = row
 	}
 	l.events = append(l.events, tx.events...)
 	return l.rev, nil

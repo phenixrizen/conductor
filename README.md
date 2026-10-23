@@ -1283,7 +1283,12 @@ flight go on, no task starts) until **Resume**. Every one of these is a
 command with a receipt: the browser mints an id, a reply lost to the network
 is asked for once more with the same id and answered as the first, and a
 refusal says why. The palette lists the tasks under the page's group, each
-with the same actions.
+with the same actions. A managed run outlives the server: started again on
+the same data, the server concludes what was left open, the run reads as
+interrupted, and **Continue** (the resume route) makes a new run that keeps
+every result that stood, verifies again a result that was being checked,
+takes up the rest, and leaves an attempt whose launch was never known for a
+person to retry.
 
 **The timeline and the charts.** A **Timeline** tab beside the graph draws
 one bar per member from its start to its end or now, amber where its session

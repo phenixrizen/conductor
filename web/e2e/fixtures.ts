@@ -28,6 +28,11 @@ export interface Run {
   stoppedAt?: string
   members: RunMember[]
   log: Array<{ at: string; type: string; message?: string }>
+  /** The run this one resumed or continued, and the run that resumed or continued this one. */
+  resumedFrom?: string
+  resumedBy?: string
+  /** A record of a run the server no longer holds, read-only. */
+  record?: boolean
   /** A managed run (a crew with tasks): its ledger revision, its tasks, whether its dispatch is paused, and its outcome once every task is terminal. */
   managed?: { revision: number }
   paused?: boolean

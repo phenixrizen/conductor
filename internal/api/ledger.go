@@ -20,7 +20,7 @@ import (
 // the owner lock, the filesystem has no locks, the database is damaged or
 // newer) is logged, and managed launches answer 503 from then on; the
 // legacy runs are untouched by it.
-func openLedger(ctx context.Context, st *store.Store, log logger) *ledger.Ledger {
+func openLedger(ctx context.Context, st *store.Store, records *crew.Records, log logger) *ledger.Ledger {
 	ld, err := ledger.Open(filepath.Join(st.Dir(), "runs"))
 	if err != nil {
 		// The directory or the file itself: the server runs its legacy
@@ -35,17 +35,19 @@ func openLedger(ctx context.Context, st *store.Store, log logger) *ledger.Ledger
 		log.Warn("managed runs are off: the ledger is read-only", "why", why)
 		ld.OnOwned(func() {
 			log.Info("the ledger's owner lock was taken: managed runs are on")
-			recoverLedger(context.Background(), ld, log)
+			recoverLedger(context.Background(), ld, records, log)
 		})
 		return ld
 	}
-	recoverLedger(ctx, ld, log)
+	recoverLedger(ctx, ld, records, log)
 	return ld
 }
 
-// recoverLedger concludes what the last owner left open (ledger.Recover)
-// and logs each run touched.
-func recoverLedger(ctx context.Context, ld *ledger.Ledger, log logger) {
+// recoverLedger concludes what the last owner left open (ledger.Recover),
+// logs each run touched, and writes each one's record as the ledger now
+// has it (crew.Recovered): interrupted, its attempts concluded, so the
+// run reads so until it is continued.
+func recoverLedger(ctx context.Context, ld *ledger.Ledger, records *crew.Records, log logger) {
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	recovered, err := ld.Recover(rctx)
@@ -54,6 +56,42 @@ func recoverLedger(ctx context.Context, ld *ledger.Ledger, log logger) {
 	}
 	for _, r := range recovered {
 		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks, "commands", r.Commands)
+	}
+	syncRecords(rctx, ld, records, log)
+}
+
+// syncRecords writes the record of every managed run the ledger has whose
+// record lags the ledger (a snapshot cut short by the last server's end,
+// or none at all), as the ledger has it (crew.Recovered): what the API
+// answers for a run it no longer holds is then the ledger's state.
+func syncRecords(ctx context.Context, ld *ledger.Ledger, records *crew.Records, log logger) {
+	if records == nil {
+		return
+	}
+	rows, err := ld.Runs(ctx)
+	if err != nil {
+		log.Warn("the managed runs could not be listed for their records", "err", err)
+		return
+	}
+	for _, row := range rows {
+		rec, ok, err := records.Get(row.ID)
+		if err != nil {
+			continue
+		}
+		if ok && rec.Managed != nil && rec.Managed.Revision >= row.Revision {
+			continue
+		}
+		from, found, err := crew.SQLLedger(ld).Load(ctx, row.ID)
+		if err != nil || !found {
+			log.Warn("a managed run's record stays as it was", "run", row.ID, "err", err)
+			continue
+		}
+		if !ok {
+			rec = crew.Run{}
+		}
+		if err := records.Save(crew.Recovered(rec, from)); err != nil {
+			log.Warn("a managed run's record could not be written", "run", row.ID, "err", err)
+		}
 	}
 }
 

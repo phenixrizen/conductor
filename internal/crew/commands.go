@@ -306,7 +306,7 @@ func (e *Engine) cancelTask(r *run, t *task) []event {
 // or ready again (a repair it carries stays), the run open. The caller
 // holds e.mu, in a transaction.
 func (e *Engine) retryTask(r *run, t *task) []event {
-	if len(t.attempts) >= maxAttemptsPerTask+t.extra {
+	if len(t.attempts)+t.prior >= maxAttemptsPerTask+t.extra {
 		t.extra++
 	}
 	t.state, t.reason = ledger.TaskBlocked, ""

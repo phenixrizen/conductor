@@ -2911,6 +2911,41 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   whose check always fails: `1 failed`, Pause and Resume with the badge,
   Accept anyway through the dialog finishing the run with attempt 3's commit
   and the dependent starting from it.
+- **A managed run continues after a restart without repeating finished
+  work (#344, 2026-10-23).** Row 8 of the agent harness (#334), in the same
+  PR as rows 5–7. The server, taking the ledger's owner lock at start,
+  concludes what the last one left open (`ledger.Recover`) and writes the
+  record of every managed run whose record lags the ledger or is missing
+  as the ledger has it (`crew.Recovered`, `syncRecords`: the run
+  interrupted when the recovery found it running, each task as its row and
+  its last attempt say, the sessions ended), so the run reads right until
+  it is continued. `POST
+  /api/runs/{run}/resume` on a managed run, held or recorded, makes a
+  continuation (`Engine.ContinueRun`, `internal/crew/continue.go`): a new
+  run of the crew as launched from the same base, the old named in
+  `resumedFrom` and naming the new in `resumedBy` (the ledger's
+  `continuedFrom`/`continuedBy`, written in the continuation's first
+  transaction), each task taken up as its rows say: a result that stood
+  kept by reference (`importedFrom`, no attempt, a dependent's task file
+  naming the old run's branch), a failed or cancelled task as it was, a
+  work task interrupted or stopped while its result was being verified
+  given a session-less attempt that verifies the same commit again
+  (`reverify`/`dispatchCandidate`, `result.reverified`, not counted), a
+  task whose attempt's launch is uncertain failed with why until a retry,
+  the rest ready or blocked; the attempts spent before count against the
+  tasks (`task.prior`) and number the next attempt, so branches never
+  collide. The web continues a managed run from its header (Continue) once
+  it stopped or ended with an outcome, and says what was kept and what a
+  continuation takes up. Tests: `crew/continue_test.go` (results kept with
+  the old branch as input, fresh attempts numbered after the interrupted
+  one, the rows naming each other, the candidate verified again without a
+  session, the uncertain launch waiting for a retry, the refusals, the
+  recovered record), `api/continue_test.go` (the resume route continuing
+  a stopped managed run once, the live run refused), vitest for the
+  words, and Playwright `tasks-resume.spec.ts`: a server of its own ended
+  while a check runs, started again on the same data, the record
+  interrupted, the continuation verifying the candidate again and the
+  dependent starting from it, the old run naming the new, the pages.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

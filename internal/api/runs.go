@@ -590,7 +590,14 @@ func (s *Server) resumeRecord(w http.ResponseWriter, ctx context.Context, id str
 		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{"code": "already_resumed", "message": "the run was resumed already, as " + by, "run": by}})
 		return true
 	}
-	run, err := s.runs.ResumeRecord(ctx, rec)
+	var run *crew.Run
+	if rec.Managed != nil {
+		// A managed run's record is a cache of the ledger, which the
+		// continuation reads (#334, row 8).
+		run, err = s.runs.ContinueRun(ctx, id, rec.Label)
+	} else {
+		run, err = s.runs.ResumeRecord(ctx, rec)
+	}
 	if err != nil {
 		s.runError(w, "resume run from its record", id, err)
 		return true
@@ -653,6 +660,11 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := runContext(r)
 	defer cancel()
 	run, err := s.runs.ResumeRun(ctx, id)
+	if errors.Is(err, crew.ErrManaged) {
+		// A managed run is continued (#334, row 8): its results kept, the
+		// rest dispatched again.
+		run, err = s.runs.ContinueRun(ctx, id, "")
+	}
 	if errors.Is(err, crew.ErrRunNotFound) && s.records != nil {
 		// A run the engine no longer holds is resumed from its record,
 		// once: the record then names the continuation, as a held run does.

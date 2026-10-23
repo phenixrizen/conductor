@@ -863,3 +863,33 @@ func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T)
 		t.Fatalf("a result over the bound: %v", err)
 	}
 }
+
+// A continuation names the run it continues once: the old run's row takes
+// continued_by in the new run's transition, and a second continuation, or
+// one of a run with no row, is refused.
+func TestAContinuationIsNamedOnce(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	for _, id := range []string{"team-00000001", "team-00000002", "team-00000003"} {
+		if _, err := l.Transition(ctx, id, func(tx *Tx) error {
+			return tx.PutRun(RunRow{ID: id, CrewID: "team", Crew: "{}", State: RunRunning, CreatedAt: tx.Now()})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := l.Transition(ctx, "team-00000002", func(tx *Tx) error { return tx.Continued("team-00000001") }); err != nil {
+		t.Fatal(err)
+	}
+	if row, _, _ := l.Run(ctx, "team-00000001"); row.ContinuedBy != "team-00000002" {
+		t.Fatalf("continued_by %q", row.ContinuedBy)
+	}
+	if _, err := l.Transition(ctx, "team-00000003", func(tx *Tx) error { return tx.Continued("team-00000001") }); !errors.Is(err, ErrContinued) {
+		t.Fatalf("a second continuation: %v", err)
+	}
+	if _, err := l.Transition(ctx, "team-00000003", func(tx *Tx) error { return tx.Continued("team-00000009") }); !errors.Is(err, ErrContinued) {
+		t.Fatalf("a run with no row: %v", err)
+	}
+	if row, _, _ := l.Run(ctx, "team-00000001"); row.ContinuedBy != "team-00000002" {
+		t.Fatalf("continued_by after the refusals: %q", row.ContinuedBy)
+	}
+}

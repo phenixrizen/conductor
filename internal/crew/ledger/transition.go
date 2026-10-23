@@ -179,6 +179,24 @@ func (t *Tx) PutRun(r RunRow) error {
 	return err
 }
 
+// ErrContinued says the run named has been continued already, or has no
+// row: a continuation is made once.
+var ErrContinued = errors.New("ledger: the run was continued already")
+
+// Continued marks the run from as continued by this transition's run: its
+// continued_by, set once; ErrContinued when it is set already or the run
+// has no row. The one write a transition makes to another run's row.
+func (t *Tx) Continued(from string) error {
+	res, err := t.tx.ExecContext(t.ctx, "UPDATE runs SET continued_by = ? WHERE id = ? AND continued_by = ''", t.runID, from)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("%w: %s", ErrContinued, from)
+	}
+	return nil
+}
+
 // PutTask puts a task's row, new or changed.
 func (t *Tx) PutTask(r TaskRow) error {
 	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO tasks (run_id, id, member, kind, state, reason, attempts, result_attempt, result_commit, verdict, imported_from)

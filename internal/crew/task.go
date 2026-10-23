@@ -61,6 +61,9 @@ type LedgerTx interface {
 	// Command and Settle keep a command's receipt (commands.go).
 	Command(actor, id, intent, fingerprint string) (prior ledger.CommandRow, found bool, err error)
 	Settle(actor, id, status string, receipt any) error
+	// Continued marks the run from as continued by this transaction's run,
+	// once (continue.go): ledger.ErrContinued when it was already.
+	Continued(from string) error
 }
 
 // Ledger is the managed runs' ledger as the engine writes it: one
@@ -73,6 +76,9 @@ type Ledger interface {
 	Available() error
 	// Receipt reads a command's receipt (commands.go).
 	Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error)
+	// Load reads a run with its tasks and attempts, for a continuation
+	// (continue.go); ok is false for a run the ledger has no row of.
+	Load(ctx context.Context, runID string) (from Loaded, ok bool, err error)
 }
 
 // SQLLedger is the ledger package's as a Ledger.
@@ -93,6 +99,22 @@ func (s sqlLedger) Available() error {
 
 func (s sqlLedger) Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error) {
 	return s.l.Receipt(ctx, runID, actor, id)
+}
+
+func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error) {
+	row, ok, err := s.l.Run(ctx, runID)
+	if err != nil || !ok {
+		return Loaded{}, ok, err
+	}
+	tasks, err := s.l.Tasks(ctx, runID)
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	attempts, err := s.l.Attempts(ctx, runID)
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	return Loaded{Run: row, Tasks: tasks, Attempts: attempts}, true, nil
 }
 
 // UseLedger gives the engine the ledger managed runs are written to. Set
@@ -208,6 +230,15 @@ type task struct {
 	// attempt starts at the commit reviewed, with the findings in its task
 	// file; cleared once the task has a result again.
 	repair *repair
+	// prior counts the attempts spent in the runs this one continues
+	// (continue.go): they number the attempts and count against the task.
+	prior int
+	// imported names the result a continuation took by reference, as
+	// "<run>/<task>/<n>"; "" for a result made in this run.
+	imported string
+	// candidate is a result a continuation verifies again, before any
+	// attempt of its own (reverify).
+	candidate *candidate
 }
 
 // repair is what a review asks of the task it reviewed.
@@ -228,6 +259,9 @@ type taskResult struct {
 	verdict  string
 	findings []Finding
 	at       time.Time
+	// branch is the result attempt's, when the attempt is not this run's
+	// (imported): a dependent's task file names it.
+	branch string
 }
 
 // attempt is one try at a task: one member session in one worktree.
@@ -287,6 +321,9 @@ type TaskState struct {
 	Attempts int           `json:"attempts"`
 	Attempt  *AttemptState `json:"attempt,omitempty"` // the latest
 	Result   *ResultState  `json:"result,omitempty"`
+	// ImportedFrom names the result a continuation took by reference, as
+	// "<run>/<task>/<n>" (continue.go).
+	ImportedFrom string `json:"importedFrom,omitempty"`
 }
 
 // AttemptState is an attempt as the run reports it.
@@ -346,7 +383,7 @@ func (r *run) task(id string) *task {
 func (r *run) taskStates() []TaskState {
 	out := make([]TaskState, 0, len(r.tasks))
 	for _, t := range r.tasks {
-		st := TaskState{ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, Needs: slices.Clone(t.def.Needs), State: t.state, Reason: t.reason, Attempts: len(t.attempts)}
+		st := TaskState{ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, Needs: slices.Clone(t.def.Needs), State: t.state, Reason: t.reason, Attempts: len(t.attempts) + t.prior, ImportedFrom: t.imported}
 		if n := len(t.attempts); n > 0 {
 			as := attemptStateOf(t.attempts[n-1])
 			st.Attempt = &as
@@ -761,9 +798,11 @@ func (r *run) inputs(t *task) []input {
 		if need == nil || need.result == nil {
 			continue
 		}
-		var branch string
-		if need.result.attempt > 0 && need.result.attempt <= len(need.attempts) {
-			branch = need.attempts[need.result.attempt-1].branch
+		branch := need.result.branch
+		for _, a := range need.attempts {
+			if a.n == need.result.attempt {
+				branch = a.branch
+			}
 		}
 		out = append(out, input{task: n, attempt: need.result.attempt, commit: need.result.commit, summary: need.result.summary, branch: branch, verdict: need.result.verdict})
 	}
@@ -808,17 +847,26 @@ func (e *Engine) pump(r *run) {
 			continue
 		}
 		m := r.member(t.def.Member)
-		if m == nil || r.activeAttempt(m) != nil {
+		if m == nil {
 			continue
 		}
-		if len(t.attempts) >= maxAttemptsPerTask+t.extra {
-			t.state, t.reason = ledger.TaskFailed, fmt.Sprintf("%d attempts made; retry it to allow one more", len(t.attempts))
+		if t.candidate != nil {
+			// A continuation's result to verify again: no session, so the
+			// member's own attempt elsewhere does not matter.
+			e.reverify(r, t, m)
+			continue
+		}
+		if r.activeAttempt(m) != nil {
+			continue
+		}
+		if len(t.attempts)+t.prior >= maxAttemptsPerTask+t.extra {
+			t.state, t.reason = ledger.TaskFailed, fmt.Sprintf("%d attempts made; retry it to allow one more", len(t.attempts)+t.prior)
 			r.markTask(t)
 			e.settleRun(r)
 			continue
 		}
 		ctx, cancel := context.WithCancel(r.ctx)
-		a := &attempt{t: t, m: m, n: len(t.attempts) + 1, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t), provisional: true}
+		a := &attempt{t: t, m: m, n: len(t.attempts) + t.prior + 1, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: r.startCommit(t), provisional: true}
 		t.attempts = append(t.attempts, a)
 		t.state, t.reason = ledger.TaskRunning, ""
 		r.active++
@@ -920,7 +968,7 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 		// (row 8) takes it up again.
 		t.state, t.reason = ledger.TaskReady, fmt.Sprintf("attempt %d stopped with the run", a.n)
 	default:
-		if len(t.attempts) < maxAttemptsPerTask+t.extra && state == ledger.AttemptFailed {
+		if len(t.attempts)+t.prior < maxAttemptsPerTask+t.extra && state == ledger.AttemptFailed {
 			t.state, t.reason = ledger.TaskReady, fmt.Sprintf("attempt %d failed at %s: %s", a.n, stage, errText)
 		} else {
 			t.state, t.reason = ledger.TaskFailed, fmt.Sprintf("attempt %d %s at %s: %s", a.n, state, stage, errText)
@@ -1016,7 +1064,7 @@ func (r *run) taskRow(t *task) ledger.TaskRow {
 			n++
 		}
 	}
-	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n}
+	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n + t.prior, ImportedFrom: t.imported}
 	if t.result != nil {
 		row.ResultAttempt, row.ResultCommit, row.Verdict = t.result.attempt, t.result.commit, t.result.verdict
 	}
@@ -1031,7 +1079,7 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 	} else if r.outcome != "" {
 		state = ledger.RunFinished
 	}
-	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, CreatedAt: r.startedAt}
+	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, CreatedAt: r.startedAt, ContinuedFrom: r.resumedFrom, ContinuedBy: r.resumedBy}
 	if state != ledger.RunRunning {
 		row.ClosedAt = time.Now().UTC()
 	}
@@ -1665,7 +1713,7 @@ func (e *Engine) reopen(r *run, review *task, a *attempt, res *Result) (*task, [
 	sub.repair = &repair{review: review.def.ID, attempt: a.n, commit: sub.result.commit, summary: res.Summary, findings: slices.Clone(res.Findings)}
 	sub.result = nil
 	why := fmt.Sprintf("review %s asked for changes: %d findings", review.def.ID, len(res.Findings))
-	if len(sub.attempts) >= maxAttemptsPerTask+sub.extra {
+	if len(sub.attempts)+sub.prior >= maxAttemptsPerTask+sub.extra {
 		sub.state, sub.reason = ledger.TaskFailed, fmt.Sprintf("review %s asked for changes and no attempt is left; retry it to allow one more", review.def.ID)
 		r.note(session.ActivityStatus, "task %s: review %s asked for changes (%d findings), and no attempt is left", sub.def.ID, review.def.ID, len(res.Findings))
 	} else {
