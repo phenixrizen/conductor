@@ -68,10 +68,17 @@ func TestLinkLinePassesAgainOnAnAnsweredPing(t *testing.T) {
 }
 
 // firstWithin and firstPing are the bounds of the hosts that meet a link's
-// first viewer: room for a loopback data channel to open and its hello to
-// be answered within one ping's wait.
+// first viewer. The join's ping must outlast the test's own steps between
+// the join and the pong's release (a loopback data channel opening, a
+// hello answered, an attach, a quiet spell), which take seconds on a loaded
+// machine under the race detector: the stub holds the pong for as long as
+// the test wants, so the bound is not what a test waits on, and a miss
+// within it is what none of these tests mean (the join's ping missed, a
+// first line is refused at once instead of waiting). A spell with no link
+// held lapses the host's vouching by connLive.lapse, not by waiting the
+// bound out.
 const (
-	firstWithin = 3 * time.Second
+	firstWithin = 30 * time.Second
 	firstPing   = time.Second
 )
 
@@ -89,6 +96,10 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 	}
 	a, viewer := liveHostBounds(t, srv.url, 0, session.Options{SubmitPause: 20 * time.Millisecond, FileView: "control", FileEdit: "off", Log: discardLog}, firstWithin, firstPing)
 	first := <-srv.conns
+	// The host's writer is up before any viewer joins: the join's ping
+	// goes on it (pingNow), and none goes while the control loop has not
+	// made it yet, which the server's accept does not wait for.
+	untilLive(t, a)
 	switch when {
 	case "reconnect":
 		_ = viewer("aaaaaaaaaaaaaaaa", "l0")
@@ -118,6 +129,15 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
+		// Two more ticks of keepHearing: the one it may have been in as the
+		// link went (a link held read, its ping reserved late) is done, and
+		// one that began after found no link held and reserved none; then
+		// the pings under way have their pongs, so none completes after the
+		// lapse and vouches again; then the spell passes: the last answered
+		// ping ages past the bound.
+		untilTicks(t, a, a.ticks.Load()+2)
+		untilPingsDone(t, a.live.Load())
+		a.live.Load().lapse()
 		untilVouches(t, a, false)
 		srv.pongs.Store(pongHold)
 	}
@@ -129,6 +149,49 @@ func firstLinkViewer(t *testing.T, when string) (*agent, *stubServer, *submitVie
 }
 
 var firstCases = []string{"start", "reconnect", "idle"}
+
+// untilTicks waits until keepHearing has done n ticks.
+func untilTicks(t *testing.T, a *agent, n int64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for a.ticks.Load() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("keepHearing did %d ticks, waiting for %d", a.ticks.Load(), n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// untilPingsDone waits until no ping of l waits for its pong.
+func untilPingsDone(t *testing.T, l *connLive) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		l.mu.Lock()
+		n := l.underWay
+		l.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d pings still under way", n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// untilLive waits until the host's control writer is up, with the
+// connection's liveness it pings on.
+func untilLive(t *testing.T, a *agent) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for a.live.Load() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the host's control writer did not come up")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 // A viewer joining through a link attaches on its link's credential alone:
 // after the host's start, a reconnect and a spell with no link held, its
@@ -240,6 +303,7 @@ func TestTheJoinsPingIsUnderWayBeforeTheFirstRequest(t *testing.T) {
 	srv := newStubServer(t)
 	a, proc, _ := liveHostParts(t, srv.url, 0, session.Options{FileEdit: "off", Log: discardLog}, firstWithin, firstPing)
 	<-srv.conns
+	untilLive(t, a)
 	release := make(chan struct{})
 	hold := func() { <-release }
 	a.beforePing.Store(&hold)

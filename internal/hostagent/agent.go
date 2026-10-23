@@ -412,6 +412,11 @@ type agent struct {
 	// out (pingOn).
 	beforeAnswer atomic.Pointer[func()]
 	beforePing   atomic.Pointer[func()]
+	// ticks counts keepHearing's ticks done, each counted after its ping
+	// is reserved, or not: two more ticks after a link went means one
+	// began after it went and reserved none (tests wait on that before
+	// they lapse the vouching).
+	ticks atomic.Int64
 }
 
 // inputDeadline is when keystrokes arriving now must be written by (a
