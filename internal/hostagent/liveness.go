@@ -168,6 +168,18 @@ func (l *connLive) answer(sent time.Duration) {
 	l.pingDone(sent, true)
 }
 
+// lapse ages the latest answered ping past any bound, as a spell with no
+// link held does in time: the host vouches no more until a ping is
+// answered (tests).
+func (l *connLive) lapse() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.hasAnswer {
+		l.answered -= 24 * time.Hour
+	}
+	l.change()
+}
+
 // end notes the connection ended: nothing of it vouches from now on, and
 // whoever waits on its pings stops.
 func (l *connLive) end() {
