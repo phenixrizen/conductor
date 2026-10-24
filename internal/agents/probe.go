@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -44,10 +45,15 @@ type ProbeResult struct {
 }
 
 const (
-	probeTimeout   = 3 * time.Second
 	probeMaxOutput = 4096
 	probeMaxLine   = 200
 )
+
+// probeTimeout bounds a probe: the program is killed past it. A variable
+// so that the tests of what a probe reads can give a loaded machine more
+// (a shell, a pipe and a sort take longer to start under the race
+// detector on a busy Mac than the 3 s a real probe gets; #281).
+var probeTimeout = 3 * time.Second
 
 // RunProbe runs the agent's command (its program resolved, then the rest
 // of its argv: an agent run as `npx codex` or `bash stub.sh` keeps those)
@@ -84,7 +90,7 @@ func RunProbe(ctx context.Context, command []string, p Probe, env map[string]str
 	switch {
 	case ctx.Err() != nil:
 		// Killed at the deadline (or the asker's), whatever the exit says.
-		res.Ran, res.Error = false, "timeout: the program did not answer within 3 s"
+		res.Ran, res.Error = false, fmt.Sprintf("timeout: the program did not answer within %d s", int(probeTimeout/time.Second))
 		return res
 	case err == nil, errors.As(err, &exit):
 		// A non-zero exit is still an answer.
