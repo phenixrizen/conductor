@@ -248,6 +248,11 @@ func (s *Local) leftInChatLocked(id, reason string) {
 	if id == "" {
 		return
 	}
+	if s.own.ID == id {
+		// The agent's own question, kept: shown again at its turn's done, its
+		// card stays answerable; dropOwnLocked says when it goes for good.
+		return
+	}
 	if _, asked := s.askedInChat[id]; !asked {
 		return
 	}
@@ -258,6 +263,16 @@ func (s *Local) leftInChatLocked(id, reason string) {
 	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "withdrawn", Ref: id, Text: reason, By: ChatBy{ID: "", Name: "Conductor", Role: RoleControl}}
 	key := s.keepChat(m)
 	s.chatLeft = append(s.chatLeft, chatLeft{key: key, m: m})
+}
+
+// leftReasonLocked is why a question would leave without an answer through
+// Conductor as things stand: keys typed in the terminal reached it, or the
+// agent moved on. The caller holds s.mu.
+func (s *Local) leftReasonLocked(id string) string {
+	if s.consumed == id {
+		return ChatLeftTerminal
+	}
+	return ChatLeftAgent
 }
 
 // chatLeft is a withdrawn line kept under the lock, told by tellChatLeft.

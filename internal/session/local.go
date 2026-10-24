@@ -651,7 +651,7 @@ func (s *Local) markEnded(status Status) {
 	// Nor is anything kept to show again: the agent's own question goes
 	// with it, shown or set aside, and so do a claim on it, its
 	// consumption and the screen's baseline.
-	s.dropOwnLocked()
+	s.dropOwnLocked(ChatLeftAgent)
 	s.claims, s.consumed = nil, ""
 	s.shotWait, s.shotRows = "", nil
 	s.settleLocked(s.info.Attention)
@@ -1894,7 +1894,7 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		case s.ownAside && inTurn && !ask && state != AttentionNone:
 			// Set aside still: another state in its turn.
 		default:
-			s.dropOwnLocked()
+			s.dropOwnLocked(ChatLeftAgent)
 		}
 		s.mu.Unlock()
 		if state != AttentionNone {
@@ -2080,7 +2080,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// Kept from now, asked in the turn now running; the one kept
 		// before, if any, goes (its next question).
 		att.ask = true
+		prev := s.own.ID
 		s.own, s.ownAside, s.ownTurn = att, false, s.turn.Load()
+		if prev != "" && prev != att.ID {
+			s.leftInChatLocked(prev, ChatLeftAgent)
+		}
 	case own.ID == "" || source == SourceSubmit || s.heldOver.ID == own.ID:
 		// None kept; or the hold of the turn takes its place, holding it
 		// over (heldOver, above) or leaving it set aside; or held over
@@ -2091,8 +2095,15 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	default:
 		// A state after its turn's done (the agent at work in a new turn,
 		// another wait), a clear, or a question a reply or a person's
-		// keys reached: it goes for good.
-		s.dropOwnLocked()
+		// keys reached: it goes for good. A reply under way writes its own
+		// answered line (resolve); keys typed answered it in the terminal.
+		reason := ChatLeftAgent
+		if s.claimedLocked(own.ID) {
+			reason = ""
+		} else if s.consumed == own.ID {
+			reason = ChatLeftTerminal
+		}
+		s.dropOwnLocked(reason)
 	}
 	s.info.Attention = att
 	s.settleLocked(att)
@@ -3070,8 +3081,14 @@ func (s *Local) beginTurn() {
 // dropOwnLocked forgets the agent's own question the session keeps (own):
 // it shows again nowhere. The attention showing is the caller's to change.
 // The caller holds s.mu.
-func (s *Local) dropOwnLocked() {
+func (s *Local) dropOwnLocked(reason string) {
+	id := s.own.ID
 	s.own, s.ownAside, s.ownTurn = Attention{}, false, 0
+	// Gone for good without an answer through Conductor: its card in the chat
+	// says why (#358); nothing when the answer's own line follows (reason "").
+	if reason != "" {
+		s.leftInChatLocked(id, reason)
+	}
 }
 
 // questionClaim is the structured answer being written to a question
@@ -3186,7 +3203,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string) {
 	s.info.LastAnswer = result
 	s.keepResultLocked(id, result)
 	if s.own.ID == id {
-		s.dropOwnLocked()
+		s.dropOwnLocked("")
 	}
 	if s.consumed == id {
 		s.consumed = ""
@@ -3283,11 +3300,7 @@ func (s *Local) forgetLocked(id string) {
 	if id == "" {
 		return
 	}
-	reason := ChatLeftAgent
-	if s.consumed == id {
-		reason = ChatLeftTerminal
-	}
-	s.leftInChatLocked(id, reason)
+	s.leftInChatLocked(id, s.leftReasonLocked(id))
 	delete(s.claims, id)
 	if s.consumed == id {
 		s.consumed = ""
@@ -3304,9 +3317,10 @@ func (s *Local) forgetLocked(id string) {
 // and tells the change (notifyChange) once it has let it go.
 func (s *Local) withdrawShownLocked(source string) {
 	att := s.info.Attention
+	reason := s.leftReasonLocked(att.ID)
 	s.forgetLocked(att.ID)
 	if att.ID != "" && att.ID == s.own.ID {
-		s.dropOwnLocked()
+		s.dropOwnLocked(reason)
 	}
 	s.info.Attention = Attention{State: AttentionNone, Source: source}
 	if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
@@ -3790,7 +3804,7 @@ func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, start
 		s.noteDialogAnswered(onScreen.words)
 	}
 	if person && s.own.ID != "" && s.ownAside {
-		s.dropOwnLocked()
+		s.dropOwnLocked(ChatLeftTerminal)
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {
