@@ -3,6 +3,7 @@ package api
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/phenixrizen/conductor/internal/agents"
@@ -103,7 +104,8 @@ func TestLaunchRegistersTheMCPServerUnlessOff(t *testing.T) {
 		got = append(got, a.(string))
 	}
 	bin, _ := agents.Binary()
-	if n := len(got); n < 4 || got[n-4] != "-c" || got[n-3] != "mcp_servers.conductor.command=\""+bin+"\"" || got[n-2] != "-c" || got[n-1] != `mcp_servers.conductor.args=["mcp"]` {
+	// The command and args, then the variables Codex hands the server (#354).
+	if n := len(got); n < 6 || got[n-6] != "-c" || got[n-5] != "mcp_servers.conductor.command=\""+bin+"\"" || got[n-4] != "-c" || got[n-3] != `mcp_servers.conductor.args=["mcp"]` || got[n-2] != "-c" || !strings.HasPrefix(got[n-1], "mcp_servers.conductor.env_vars=[") || !strings.Contains(got[n-1], `"CONDUCTOR_NOTIFY_TOKEN"`) {
 		t.Fatalf("codex command %q", got)
 	}
 	off := false

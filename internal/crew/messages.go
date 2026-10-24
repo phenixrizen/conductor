@@ -86,13 +86,27 @@ func messageText(m *message) string {
 	return strings.TrimSpace(fmt.Sprintf("Message from %s (#%d): %s", m.from, m.seq, oneLine.Replace(m.text)))
 }
 
-// prompted reports whether the member's attempt in flight has had its
-// task line: a message is typed after it, never before. The caller holds
-// e.mu.
+// prompted reports whether the member's session has had its task line: a
+// message is typed after it, never before. The attempt in flight decides
+// when there is one; with none (its task succeeded, failed or was
+// cancelled), the member's session, still alive and idle for inspection,
+// takes a message when the attempt it ran was prompted, as an attempt's
+// session is (#352: a message sent after the recipient's task succeeded
+// waited for a next session that never came). The caller holds e.mu.
 func (r *run) prompted(m *member) bool {
 	for _, t := range r.tasks {
 		if a := t.active(); a != nil && a.m == m {
 			return !a.promptedAt.IsZero()
+		}
+	}
+	if m.state.SessionID == "" {
+		return false
+	}
+	for _, t := range r.tasks {
+		for _, a := range t.attempts {
+			if a.m == m && a.sessionID == m.state.SessionID && !a.promptedAt.IsZero() {
+				return true
+			}
 		}
 	}
 	return false
@@ -182,8 +196,13 @@ func (e *Engine) send(ctx context.Context, r *run, from *member, to, text string
 	if m == nil {
 		return Message{}, ErrInboxFull
 	}
+	// The message as sent, read under e.mu before its delivery starts: a
+	// recipient that takes it at once (#352) records it delivered meanwhile.
+	e.mu.Lock()
+	out := m.api()
+	e.mu.Unlock()
 	e.deliverMessages(r, toM)
-	return m.api(), nil
+	return out, nil
 }
 
 // shortText is text cut to a note's length.

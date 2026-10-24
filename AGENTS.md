@@ -65,8 +65,18 @@ issue, one branch, one pull request, and CI is the only gate.
 - Blocked or handing off: push, leave one PR comment saying what is left,
   and unassign yourself.
 - Work the owner asks for directly gets an issue first (search for an
-  existing one). A product defect found on the way gets its own issue,
-  unless this change caused it or cannot ship without the fix.
+  existing one).
+- **A bug in the stream you are working is fixed in that stream, never
+  filed and left.** The stream is the whole piece of work, not the PR in
+  front of you: every PR of a multi-PR stream (the harness's twelve rows),
+  and a by-hand or live check of it. A bug the stream's own code caused,
+  found by any of its PRs, its reviews or its checks, is fixed before the
+  stream is called done: in the PR that found it, or in a fix PR of the
+  stream right after it. A check that finds bugs is not finished when it
+  files them. (2026-10-24: the harness's live check found five defects in
+  the harness and filed them as #351 to #355 instead of fixing them.)
+- A product defect outside the stream, one the stream's code did not
+  cause and does not need, gets its own issue, and the owner decides when.
 - A test that fails in the PR's own checks is fixed in that PR and named in
   its body under its own heading; no issue. A flake seen once that blocks
   nothing goes as one line into the single standing flaky-tests issue
