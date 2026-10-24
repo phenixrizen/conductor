@@ -195,6 +195,8 @@ export function agentPayload(f: AgentForm, prev?: AgentInfo): AgentInput {
     trustAnswers: prev?.trustAnswers,
     questions: prev?.questions,
     session: prev?.session,
+    // A copy with its probe off would be probed again by a later save that left it out (Codex's review of #291).
+    probe: prev?.probe,
   }
 }
 

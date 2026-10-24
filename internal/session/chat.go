@@ -244,17 +244,17 @@ const answerWordsMax = 200
 
 // answerWords is what the chat's answered line says the reply answered
 // the question q with (#364): the label of the choice whose keys it typed,
-// for any question; or, for the agent's own question only (SourceAPI, the
-// ask tool, whose answer is a message to the agent), the text typed with
+// for any question; or, for the agent's own question only (Asked: the ask
+// tool's, whose answer is a message to the agent), the text typed with
 // its Enter dropped. A line typed at a prompt on the screen (a bell, an
-// OSC, a pattern, a dialog's own field) is never repeated: the terminal
-// may not echo it, a password's prompt for one, and the chat goes to
-// every viewer. A digit that is no choice's keys says nothing (the
-// choices shown need not be the screen's numbering), as do keys that say
-// nothing readable (an Enter alone, an arrow, a control key): the line
-// says only who answered then.
+// OSC, a pattern, a dialog's own field, a hook's or the API's needs_input
+// about one) is never repeated: the terminal may not echo it, a password's
+// prompt for one, and the chat goes to every viewer. A digit that is no
+// choice's keys says nothing (the choices shown need not be the screen's
+// numbering), as do keys that say nothing readable (an Enter alone, an
+// arrow, a control key): the line says only who answered then.
 func answerWords(q Attention, r reply) string {
-	own := q.Source == SourceAPI
+	own := q.Asked()
 	if r.line != "" {
 		if !own {
 			return ""

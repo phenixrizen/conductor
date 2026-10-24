@@ -914,9 +914,11 @@ func TestAnswerWordsNameTheChoiceOrTheLine(t *testing.T) {
 	choices := []Option{{Label: "Yes, trust", Input: "y\r"}, {Label: "No", Input: "n\r"}}
 	numbered := []Option{{Label: "Yes", Input: "1"}, {Label: "Yes, always", Input: "2"}, {Label: "No", Input: "3"}}
 	sparse := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
-	own := func(o []Option) Attention { return Attention{State: AttentionNeedsInput, Source: SourceAPI, Options: o} }
+	own := func(o []Option) Attention { return Attention{State: AttentionNeedsInput, Source: SourceAPI, Options: o, ask: true} }
 	screen := func(o []Option) Attention { return Attention{State: AttentionNeedsInput, Source: SourceQuestion, Options: o} }
 	bell := Attention{State: AttentionNeedsInput, Source: SourceBell}
+	// A hook's or the API's needs_input about a prompt on the screen: the API's source, but not the agent's own question.
+	reported := Attention{State: AttentionNeedsInput, Source: SourceAPI, Kind: KindPrompt}
 	for _, c := range []struct {
 		name string
 		q    Attention
@@ -931,6 +933,8 @@ func TestAnswerWordsNameTheChoiceOrTheLine(t *testing.T) {
 		{"a line typed at the agent's own question", own(nil), reply{keys: []byte("the blue one\r")}, "the blue one"},
 		{"a reply box's line to the agent's own question", own(nil), reply{line: "Postgres"}, "Postgres"},
 		{"a line typed at a prompt on the screen", bell, reply{keys: []byte("hunter2\r")}, ""},
+		{"a line typed at a prompt a hook reported", reported, reply{keys: []byte("hunter2\r")}, ""},
+		{"a reply box's line to a prompt a hook reported", reported, reply{line: "hunter2"}, ""},
 		{"a reply box's line to a dialog", screen(choices), reply{line: "something else"}, ""},
 		{"an Enter alone", own(choices), reply{keys: []byte("\r")}, ""},
 		{"an arrow", own(choices), reply{keys: []byte("\x1b[A")}, ""},
@@ -953,8 +957,8 @@ func TestATypedAnswerIsInTheChatsLine(t *testing.T) {
 	}()
 	sink := newChanSink(false)
 	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, sink)
-	// The agent's own question (the ask tool), which a typed line answers; a dialog on the screen takes its choices only.
-	s.SetAttentionFull(AttentionNeedsInput, "Which database?", SourceAPI, KindPrompt, nil)
+	// The agent's own question (the ask tool: Ask), which a typed line answers; a dialog on the screen takes its choices only.
+	s.Ask("Which database?", SourceAPI, KindPrompt, nil)
 	q := waitControl(sink, chatOf(proto.ChatKindQuestion))
 	if q == nil {
 		t.Fatal("no question in the chat")

@@ -166,6 +166,8 @@ export interface AgentInput {
   trustAnswers?: AgentAnswer[]
   questions?: AgentQuestion[]
   session?: SessionRecipe
+  /** `false` turns the identity probe off; left out, a saved agent of its own is probed (a copy keeps its source's; #291). */
+  probe?: boolean
 }
 
 /** One answer to an agent's startup question: the label a page shows and the keys that pick it. */
