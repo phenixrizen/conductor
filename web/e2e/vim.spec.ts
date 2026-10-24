@@ -425,13 +425,11 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
   }
 })
 
-// Characters typed in insert mode show at once (the local echo); Neovim, slow here (its config busy-waits 300 ms on each), dies before
-// it has them. The tab keeps them: the text Neovim last held with what was typed laid over it, and its changes that come after its end
-// reconciled with it rather than written over it.
+// Characters typed in insert mode show at once (the local echo); Neovim, stopped here (SIGSTOP, so it reads none of them), dies
+// before it has them. The tab keeps them: the text Neovim last held with what was typed laid over it, and its changes that come
+// after its end reconciled with it rather than written over it. (#281: a Neovim merely slowed by its config had taken the first
+// character before the kill on a loaded box, and the banner said `yz`; stopped, it takes none, whatever the box does.)
 test('a Neovim lost while typed characters wait for it keeps them in its tab', async ({ page, api, state }) => {
-  const config = join(state.home, '.config', 'nvim')
-  mkdirSync(config, { recursive: true })
-  writeFileSync(join(config, 'init.lua'), "local uv = vim.uv or vim.loop\nvim.api.nvim_create_autocmd('InsertCharPre', { callback = function() local t = uv.hrtime() while uv.hrtime() - t < 3e8 do end end })\n")
   const cwd = join(state.root, 'files-vim-lost-typed')
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
@@ -457,17 +455,18 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
     const pid = Number(await message.textContent())
     await page.keyboard.type('A')
     await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // Stopped, Neovim reads nothing more: the characters typed now wait for it, shown by the local echo alone, until it is killed.
+    process.kill(pid, 'SIGSTOP')
     await page.keyboard.type('xyz')
-    await expect(lines).toContainText('alphaxyz', { timeout: 250 })
+    await expect(lines).toContainText('alphaxyz', { timeout: 5_000 })
     process.kill(pid, 'SIGKILL')
     await expect(area.locator('[data-nvim-lost]')).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
     await page.waitForTimeout(1000)
     await expect(lines).toContainText('alphaxyz')
-    // And the banner says which characters Neovim may never have had.
+    // And the banner says which characters Neovim never had.
     await expect(area.locator('[data-nvim-unconfirmed]')).toHaveText('xyz')
     await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible()
   } finally {
-    rmSync(join(config, 'init.lua'), { force: true })
     await api.stopSession(s.id)
   }
 })
