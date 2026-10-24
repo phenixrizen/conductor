@@ -4903,7 +4903,9 @@ func (s *Local) CloseAll(reason error) {
 		s.closeNvims(sub)
 	}
 	waitClosed(all)
-	s.WaitEditors()
+	// The editors get the shutdown's short wait, then are ended: the
+	// server must be gone before the app's own grace runs out.
+	s.endEditorsWithin(all, nvimShutdownWait)
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

@@ -305,10 +305,7 @@ func TestAStopUnderAnAttemptsLineLeavesItsContinuationUnpaused(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// The record now fails, as a transaction on a cancelled context does.
-	l.mu.Lock()
-	l.failOn, l.failOnce = "attempt.prompted", true
-	l.mu.Unlock()
+	// The record now fails with the cancellation, as a transaction on a context that is done does (the fake ledger's).
 	close(l.release)
 	if err := <-stopped; err != nil {
 		t.Fatal(err)
@@ -336,5 +333,66 @@ func TestAStopUnderAnAttemptsLineLeavesItsContinuationUnpaused(t *testing.T) {
 	if d.Attempts != 2 {
 		t.Fatalf("docs in the continuation: %+v", d)
 	}
+	stopRun(t, e, next.ID)
+}
+
+// A refusal that is no cancellation, under a stop, is the ledger failing
+// for real: the stopped run is paused as ever, its continuation starts
+// paused for a person to look at, and dispatches once unpaused (Codex's
+// review of #367).
+func TestARealLedgerFailureUnderAStopStillPauses(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	build := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "attempt.prompted", make(chan struct{}, 1), make(chan struct{})
+	l.mu.Unlock()
+	commitResult(t, e, build, "built.txt", "yes\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	select {
+	case <-l.blocked:
+	case <-time.After(15 * time.Second):
+		t.Fatal("docs' line was not recorded within 15 s")
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- e.Stop(context.Background(), run.ID) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		e.mu.Lock()
+		cancelled := e.runs[run.ID].ctx.Err() != nil
+		e.mu.Unlock()
+		if cancelled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stop did not cancel the run within 10 s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The disk fails as the record lands: no cancellation, a real refusal.
+	l.mu.Lock()
+	l.failOn, l.failOnce = "attempt.prompted", true
+	l.mu.Unlock()
+	close(l.release)
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := e.Get(run.ID); !got.Paused {
+		t.Fatalf("a real ledger failure under the stop left the run unpaused: %+v", got)
+	}
+	next, err := e.ContinueRun(context.Background(), run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.Paused {
+		t.Fatalf("the continuation of a run paused by a real failure starts unpaused: %+v", next)
+	}
+	if err := e.PauseRun(context.Background(), next.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	waitTaskWhere(t, e, next.ID, "docs", "at attempt 2, running, once unpaused", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
 	stopRun(t, e, next.ID)
 }

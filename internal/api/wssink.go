@@ -204,14 +204,15 @@ func errorCodeFor(reason error) string {
 // ended; write, when set, is called before each frame the writer writes, and
 // an error it returns fails that write; ended, when set, is called on the
 // writer's goroutine once Pump has returned, before the read loop's waits
-// end; relay, when set, is called as the read loop hands a frame to the host
-// (true) and as that hand-over returns (false), so a test can tell a frame
-// waiting for room in the host's queue from the clock (#281).
+// end; waited, when set, is the host connection's OnWait (signal.HostConn):
+// called as a viewer's frame takes its place in line for room in the host's
+// queue, so a test knows a frame waits without guessing it from the clock
+// (#281).
 type viewerSeam struct {
-	read  func(written <-chan struct{})
-	write func() error
-	ended func()
-	relay func(entered bool)
+	read   func(written <-chan struct{})
+	write  func() error
+	ended  func()
+	waited func()
 }
 
 // seamSink is a sink whose writes fail when the seam says so.

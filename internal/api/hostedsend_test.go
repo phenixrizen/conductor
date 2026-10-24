@@ -477,8 +477,8 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 			e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
 			var failing atomic.Bool
 			readAgain := make(chan struct{}, 1)
-			// inRelay is 1 while the read loop is in RelayToHost with a frame.
-			var inRelay atomic.Int32
+			// waited is told as a frame of the viewer's takes its place in line for room in the host's queue.
+			waited := make(chan struct{}, 1)
 			seam := &viewerSeam{
 				write: writeFails(&failing),
 				read: func(<-chan struct{}) {
@@ -489,11 +489,10 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 						}
 					}
 				},
-				relay: func(entered bool) {
-					if entered {
-						inRelay.Store(1)
-					} else {
-						inRelay.Store(0)
+				waited: func() {
+					select {
+					case waited <- struct{}{}:
+					default:
 					}
 				},
 			}
@@ -515,12 +514,11 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 			// turn, until the server stops reading it: the host's queue
 			// (its viewers' lane) fills once the host's socket buffers have,
 			// and the read loop then waits in RelayToHost with a frame in
-			// hand, which the seam shows (relay: entered and not returned).
-			// One in there for a whole second is waiting, not relaying,
-			// which takes microseconds. (Sends unchanged for 300 ms was
-			// taken for the wait before, and a sender a loaded machine
-			// stalled had the viewer closed while every frame had reached
-			// the host; #281.)
+			// hand, which the host connection says as the frame takes its
+			// place in line (OnWait, the seam's waited). (Sends unchanged
+			// for 300 ms was taken for the wait before, and a sender a
+			// loaded machine stalled had the viewer closed while every
+			// frame had reached the host; #281.)
 			var sent atomic.Int64
 			go func() {
 				for i := 0; ; i++ {
@@ -536,18 +534,10 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 					sent.Add(1)
 				}
 			}()
-			waiting := time.Time{}
-			for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-				if inRelay.Load() == 0 {
-					waiting = time.Time{}
-				} else if waiting.IsZero() {
-					waiting = time.Now()
-				} else if time.Since(waiting) >= time.Second {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatal("no frame of the viewer's waited for room in the host's queue")
-				}
+			select {
+			case <-waited:
+			case <-time.After(60 * time.Second):
+				t.Fatal("no frame of the viewer's waited for room in the host's queue")
 			}
 			v.c.CloseNow()
 			failing.Store(true)

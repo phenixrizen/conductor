@@ -662,13 +662,7 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 				continue
 			}
 			s.relayed.add(len(f.Payload))
-			if s.viewerSeam != nil && s.viewerSeam.relay != nil {
-				s.viewerSeam.relay(true)
-			}
 			err := hs.RelayToHost(v, f)
-			if s.viewerSeam != nil && s.viewerSeam.relay != nil {
-				s.viewerSeam.relay(false)
-			}
 			if err != nil {
 				switch {
 				case errors.Is(err, session.ErrReadOnly):

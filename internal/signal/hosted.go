@@ -137,6 +137,10 @@ type HostConn struct {
 	// server's own came in: the next it takes after the server's own. Only
 	// Next touches it, and Next has one caller, the writer.
 	held *Outbound
+	// OnWait, when set, is called under mu as a viewer's message takes its
+	// place in line for room (enter): a test's signal that a frame waits,
+	// which no clock can give it (#281). It must not block.
+	OnWait func()
 }
 
 // roomWaiter is a viewer's message in the line for room in a host's queue:
@@ -341,6 +345,9 @@ func (c *HostConn) enter(o Outbound) *roomWaiter {
 	}
 	me := &roomWaiter{n: n}
 	c.waiting = append(c.waiting, me)
+	if c.OnWait != nil {
+		c.OnWait()
+	}
 	return me
 }
 

@@ -226,6 +226,11 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 			return 0, errors.New("ledger: disk full (injected)")
 		}
 	}
+	// A transaction whose context ended meanwhile is refused with that
+	// error, as database/sql refuses a commit on a context that is done.
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("ledger: %w", err)
+	}
 	l.rev++
 	for _, r := range tx.runs {
 		l.runs[r.ID] = r

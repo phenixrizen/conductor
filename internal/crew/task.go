@@ -666,12 +666,15 @@ func (e *Engine) pauseFor(r *run, err error) error {
 // pauseDispatch pauses the run's dispatch after the ledger refused a
 // transaction: nothing starts until a person unpauses it; it reports
 // whether it paused. A transaction the run's own stop cancelled (the
-// run's context ended under it: an attempt's line recorded as the stop
+// refusal is the cancellation: an attempt's line recorded as the stop
 // lands) pauses nothing: nothing dispatches in a run that stops, and the
 // pause would be written into its row for its continuation to inherit,
-// which then never dispatched (#367). The caller holds e.mu.
+// which then never dispatched (#367). A refusal that is no cancellation,
+// the stop under way or not, pauses as ever: the ledger failed for real,
+// and the continuation of a run that stopped so starts paused, for a
+// person to look at (Codex's review of #367). The caller holds e.mu.
 func (e *Engine) pauseDispatch(r *run, err error) bool {
-	if r.ctx.Err() != nil {
+	if r.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		r.note(session.ActivityStatus, "the ledger did not record the run's state as it stopped: %v", err)
 		return false
 	}
