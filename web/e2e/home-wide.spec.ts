@@ -4,10 +4,11 @@ import { fileURLToPath } from 'node:url'
 import { Api, expect, test, type Session } from './fixtures'
 import { renderConfig, startServer, stopServer, type Started } from './server'
 
-// A server with nothing on it yet (#359): at desktop width the home and the
-// sessions list both leave for the Yard, whose welcome is not the sidebar's
-// empty line; below lg the list is the home screen, and a window grown past
-// lg while on it leaves too.
+// A server with nothing on it yet (#359): at desktop width the home shows
+// its welcome, which is not the sidebar's empty line, and the sessions list
+// leaves for the home; below lg the list is the home screen, and a window
+// grown past lg while on it leaves too. With a session, a fresh visit lands
+// on it: the home waits for the sessions to be read before saying nothing.
 
 test.describe.configure({ mode: 'serial' })
 
@@ -17,7 +18,7 @@ test.afterAll(async () => {
   if (server) await stopServer(server.pid)
 })
 
-test('the empty home is the Yard with its welcome at desktop width, the list below it, and the list leaves when the window grows', async ({ state, browser }) => {
+test('the empty home shows its welcome at desktop width, the list below it, and the list leaves for the home when the window grows', async ({ state, browser }) => {
   test.setTimeout(120_000)
   const here = dirname(fileURLToPath(import.meta.url))
   const root = join(state.root, 'home-wide')
@@ -33,8 +34,8 @@ test('the empty home is the Yard with its welcome at desktop width, the list bel
   await page.addInitScript((token) => localStorage.setItem('conductor.workbenchToken', token), server.token)
 
   await page.goto('/')
-  await expect(page).toHaveURL(/\/yard$/, { timeout: 30_000 })
-  const welcome = page.locator('[data-yard-welcome]')
+  await expect(page).toHaveURL(/\/$/, { timeout: 30_000 })
+  const welcome = page.locator('[data-welcome]')
   await expect(welcome).toBeVisible()
   await expect(welcome.getByRole('button', { name: 'Launch agent' })).toBeVisible()
   await expect(welcome.getByRole('button', { name: 'Load the example crews' })).toBeVisible()
@@ -45,10 +46,10 @@ test('the empty home is the Yard with its welcome at desktop width, the list bel
   await page.goto('/')
   await expect(page).toHaveURL(/\/sessions$/, { timeout: 30_000 })
 
-  // Grown past lg while on the list: the sidebar is the list now, so the page leaves for the Yard.
+  // Grown past lg while on the list: the sidebar is the list now, so the page leaves for the home and its welcome.
   await page.setViewportSize({ width: 1440, height: 900 })
-  await expect(page).toHaveURL(/\/yard$/, { timeout: 30_000 })
-  await expect(page.locator('[data-yard-welcome]')).toBeVisible()
+  await expect(page).toHaveURL(/\/$/, { timeout: 30_000 })
+  await expect(page.locator('[data-welcome]')).toBeVisible({ timeout: 30_000 })
 
   // With a session on the server, a fresh visit lands on it, not on the Yard: the home waits for the sessions to be read.
   const api = new Api(server)

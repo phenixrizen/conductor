@@ -18,12 +18,11 @@ const target = computed(() => {
   return g.needs[0] ?? g.running[0] ?? null
 })
 watch(
-  [target, wide, attention.loaded],
-  ([t, w, loaded]) => {
-    // At lg and up this page always leaves: the sidebar is the list, so staying would show it twice (#359); to the Yard
-    // only once the sessions have been read, since an empty store before that says nothing.
-    if (w && t) navigateTo(`/sessions/${t.id}`, { replace: true })
-    else if (w && loaded) navigateTo('/yard', { replace: true })
+  [target, wide],
+  ([t, w]) => {
+    // At lg and up this page always leaves: the sidebar is the list, so staying would show it twice (#359). The home
+    // decides what shows then: the session worth looking at, else its welcome.
+    if (w) navigateTo(t ? `/sessions/${t.id}` : '/', { replace: true })
   },
   { immediate: true },
 )

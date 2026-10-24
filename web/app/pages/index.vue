@@ -17,16 +17,16 @@ const target = computed(() => {
 })
 
 watch(
-  [target, wide, attention.loaded],
-  ([t, w, loaded]) => {
+  [target, wide],
+  ([t, w]) => {
     if (!w) navigateTo('/sessions', { replace: true })
     else if (t) navigateTo(`/sessions/${t.id}`, { replace: true })
-    // Wide with nothing to open, once the sessions have been read (an empty store before that says nothing): the home is
-    // the Yard, whose empty state is not the sidebar's (#359).
-    else if (loaded) navigateTo('/yard', { replace: true })
   },
   { immediate: true },
 )
+
+/** Wide with nothing to open, once the sessions have been read (an empty store before that says nothing): the welcome, which is not the sidebar's empty line (#359). The page stays, so that nothing moves under an open dialog. */
+const welcome = computed(() => wide.value && attention.loaded.value && !target.value && !attention.sessions.value.length)
 
 onMounted(() => {
   if (!admin.hasToken.value) admin.needsToken.value = true
@@ -46,7 +46,8 @@ onMounted(() => {
 
     <template #body>
       <UAlert v-if="attention.error.value" color="warning" variant="subtle" icon="i-lucide-triangle-alert" :title="attention.error.value" class="mb-4" :actions="[{ label: 'Set token', onClick: () => (admin.needsToken.value = true) }]" />
-      <div class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8 text-center">
+      <WelcomeCard v-if="welcome" />
+      <div v-else class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8 text-center">
         <UIcon name="i-lucide-terminal" class="size-10" />
         <p class="text-sm">No active sessions. Launch an agent here or run <code>conductor host</code> from your machine.</p>
         <UButton label="Launch agent" icon="i-lucide-play" @click="launch.show()" />
