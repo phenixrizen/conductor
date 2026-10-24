@@ -976,7 +976,7 @@ func (s *Local) resolveLine(sub Submission, st submitState) {
 	if sub.By != nil {
 		by, name = sub.By.ID, sub.By.Name
 	}
-	s.resolve(sub.Question, token, by, name)
+	s.resolve(sub.Question, token, by, name, reply{line: sub.Text})
 }
 
 // landEnter waits for a submission's Enter whose write had begun when its

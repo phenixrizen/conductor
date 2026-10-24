@@ -91,7 +91,7 @@ export interface ChatMessage {
   ref?: string
   to?: string
   on?: string
-  /** `answered` names, in `ref`, the question `by` answered; `withdrawn` one that left without an answer through Conductor, `text` saying why: `terminal` (keys typed there answered it) or `agent` (it moved on). */
+  /** `answered` names, in `ref`, the question `by` answered, `text` what with when the owner knows (the choice's label, or the line typed; #364); `withdrawn` one that left without an answer through Conductor, `text` saying why: `terminal` (keys typed there answered it) or `agent` (it moved on). */
   event?: 'join' | 'leave' | 'answered' | 'withdrawn'
   /** The sender's own id of the post, echoed. */
   nonce?: string

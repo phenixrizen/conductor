@@ -4,7 +4,7 @@ import type { ScopeItem } from '~/utils/chat'
 import type { ChatMessage } from '~/utils/protocol'
 import { MODE_CHOICE, choiceKey } from '~/utils/attention'
 import { avatarTone } from '~/utils/avatar'
-import { answeredQuestions, chatTime, linkify, markerLine, systemLine } from '~/utils/chat'
+import { chatAnswers, chatTime, linkify, markerLine, systemLine } from '~/utils/chat'
 import { agentInitials, initials } from '~/utils/sessions'
 import { quoteLocation, relocationWords, type Relocation } from '~/utils/quote'
 
@@ -18,11 +18,27 @@ import { quoteLocation, relocationWords, type Relocation } from '~/utils/quote'
  * `on <member>` chip says which member the sender was looking at. The
  * agent's question is a row of its own, amber-tinted, its choices as
  * buttons a controller answers with (`canAnswer`) until a line says it was
- * answered.
+ * answered; then, and for anyone who cannot answer, the choices stay as
+ * plain text, the one picked marked, and a typed answer under them (#364).
  */
 const props = withDefaults(defineProps<{ messages: ChatMessage[]; pending: PendingChat[]; canSendToAgent: boolean; sendTargets?: ScopeItem[]; canAnswer?: boolean }>(), { sendTargets: undefined, canAnswer: false })
 const emit = defineEmits<{ sendToAgent: [ref: string]; sendTo: [ref: string, to: string]; retry: [nonce: string]; answer: [m: ChatMessage, index: number] }>()
-const answered = computed(() => answeredQuestions(props.messages))
+const answers = computed(() => chatAnswers(props.messages))
+/** Whether the question's choice i is the one answered with: its label is what the answered line says. */
+function picked(m: ChatMessage, i: number): boolean {
+  const a = answers.value.get(m.id)
+  return a?.how === 'answered' && !!a.text && m.options?.[i]?.label === a.text
+}
+/** The answer typed rather than picked: what the answered line says when it is no choice's label. */
+function typedAnswer(m: ChatMessage): string {
+  const a = answers.value.get(m.id)
+  if (a?.how !== 'answered' || !a.text) return ''
+  return m.options?.some((o) => o.label === a.text) ? '' : a.text
+}
+function answeredBy(m: ChatMessage): string {
+  const a = answers.value.get(m.id)
+  return a?.how === 'answered' ? a.by : ''
+}
 // A comment on lines of a file (design round 12, F7): the card shows the lines; where the page has an editor, Open goes there and a
 // note says when the lines moved or changed since.
 const quotes = useChatQuotes()
@@ -90,7 +106,7 @@ onMounted(() => {
             <span class="font-mono text-[11px] text-muted">{{ chatTime(m.at) }}</span>
           </div>
           <p class="whitespace-pre-wrap break-words text-sm">{{ m.text }}</p>
-          <div v-if="m.options?.length && canAnswer && !answered.has(m.id)" class="flex flex-wrap gap-1.5">
+          <div v-if="m.options?.length && canAnswer && !answers.has(m.id)" class="flex flex-wrap gap-1.5">
             <UButton
               v-for="(o, i) in m.options"
               :key="i"
@@ -106,6 +122,20 @@ onMounted(() => {
               <template v-if="choiceKey(o, i)" #leading><UKbd :value="String(choiceKey(o, i))" size="sm" class="opacity-70" /></template>
             </UButton>
           </div>
+          <!-- The choices as text once the question takes no answer, or for a viewer: the one picked is marked (#364). -->
+          <div v-else-if="m.options?.length" class="flex flex-wrap gap-1.5" data-chat-choices>
+            <span
+              v-for="(o, i) in m.options"
+              :key="i"
+              class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px]"
+              :class="picked(m, i) ? 'border-warning/50 bg-warning/15 font-medium text-warning' : 'border-default text-muted'"
+              :data-chat-choice="i + 1"
+              :data-chat-chosen="picked(m, i) || undefined"
+            >
+              <UIcon v-if="picked(m, i)" name="i-lucide-check" class="size-3 flex-none" aria-hidden="true" />{{ o.label }}
+            </span>
+          </div>
+          <p v-if="typedAnswer(m)" class="whitespace-pre-wrap break-words text-xs text-muted" data-chat-answer><span class="font-semibold text-highlighted">{{ answeredBy(m) }}</span> answered: {{ typedAnswer(m) }}</p>
         </div>
       </div>
       <div v-else class="group flex gap-2.5" :data-chat-message="m.id" data-chat-kind="message">

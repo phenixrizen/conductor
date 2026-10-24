@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -210,7 +211,7 @@ func (s *Local) askInChat(att Attention) (ChatMessage, string) {
 // one asked last (another question may have shown over a held turn since,
 // and gone, the first restored by the hold's end). The caller holds s.mu;
 // nothing when no question was asked in the chat.
-func (s *Local) answeredInChat(id, by, byName string) (ChatMessage, string, bool) {
+func (s *Local) answeredInChat(id, by, byName, answer string) (ChatMessage, string, bool) {
 	ref := id
 	if ref == "" {
 		ref = s.question
@@ -221,12 +222,63 @@ func (s *Local) answeredInChat(id, by, byName string) (ChatMessage, string, bool
 	if byName == "" {
 		byName = "Conductor"
 	}
-	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "answered", Ref: ref, By: ChatBy{ID: by, Name: byName, Role: RoleControl}}
+	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "answered", Ref: ref, Text: answer, By: ChatBy{ID: by, Name: byName, Role: RoleControl}}
 	if s.question == ref {
 		s.question = ""
 	}
 	delete(s.askedInChat, ref)
 	return m, s.keepChat(m), true
+}
+
+// reply is what a person's reply to a question typed, for the words the
+// chat's answered line gives (answerWords): a choice's keys (keys), or the
+// line a reply box submitted (line).
+type reply struct {
+	keys []byte
+	line string
+}
+
+// answerWordsMax bounds the words the chat's answered line gives, in runes:
+// a typed line can be long, and the line names the answer, not the whole.
+const answerWordsMax = 200
+
+// answerWords is what the chat's answered line says the reply answered
+// with (#364): the label of the choice whose keys it typed; the choice a
+// digit picked from a numbered list; else the text typed, its Enter
+// dropped; "" when the keys say nothing readable (an Enter alone, an
+// arrow, a control key), when the line says only who answered.
+func answerWords(options []Option, r reply) string {
+	if r.line != "" {
+		return clipWords(r.line)
+	}
+	k := string(r.keys)
+	for _, o := range options {
+		if o.Input != "" && o.Input == k {
+			return o.Label
+		}
+	}
+	if len(r.keys) == 1 && r.keys[0] >= '1' && r.keys[0] <= '9' {
+		// A digit picks a line of a numbered list; one past the list said nothing.
+		if n := int(r.keys[0] - '1'); n < len(options) {
+			return options[n].Label
+		}
+		return ""
+	}
+	text := strings.TrimRight(k, "\r\n")
+	if text == "" || !utf8.ValidString(text) || strings.ContainsFunc(text, unicode.IsControl) {
+		return ""
+	}
+	return clipWords(text)
+}
+
+// clipWords cuts text to answerWordsMax runes, with an ellipsis when it cut.
+func clipWords(text string) string {
+	text = strings.TrimSpace(text)
+	if utf8.RuneCountInString(text) <= answerWordsMax {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:answerWordsMax]) + "…"
 }
 
 // The reasons a question's line in the chat gives for leaving without an
