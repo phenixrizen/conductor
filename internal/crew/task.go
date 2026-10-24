@@ -872,7 +872,10 @@ func (r *run) inputs(t *task) []input {
 
 // startCommit is where t's next attempt starts: the result of its last
 // attempt when that failed a check (the work is kept; the task file says
-// what failed), else its first need's result, else the run's base.
+// what failed), where the last attempt started when its result could not
+// be checked out (a link out of the tree, a commit git would not check
+// out: no tree to build on), else its first need's result, else the
+// run's base.
 func (r *run) startCommit(t *task) string {
 	if t.repair != nil && t.repair.commit != "" {
 		return t.repair.commit
@@ -889,6 +892,9 @@ func (r *run) startCommit(t *task) string {
 	}
 	if n := len(t.attempts); n > 0 {
 		last := t.attempts[n-1]
+		if last.state == ledger.AttemptFailed && last.result != "" && last.stage == "checkout" && last.start != "" {
+			return last.start
+		}
 		if last.state == ledger.AttemptFailed && last.result != "" {
 			return last.result
 		}

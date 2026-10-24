@@ -279,6 +279,9 @@ func startFrom(r *run, t *task, a *attempt) string {
 		if p.checkpoint != nil && p.checkpoint.commit == a.start {
 			return fmt.Sprintf("attempt %d's checkpoint", p.n)
 		}
+		if p.stage == "checkout" && p.start == a.start {
+			return fmt.Sprintf("where attempt %d started: its result could not be checked out", p.n)
+		}
 	}
 	if t.checkpoint != nil && t.checkpoint.commit == a.start {
 		return "the checkpoint the last attempt saved"
