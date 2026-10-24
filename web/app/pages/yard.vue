@@ -46,7 +46,8 @@ const answered = computed(() =>
     .sort((a, b) => (b.lastAnswer?.at ?? '').localeCompare(a.lastAnswer?.at ?? ''))
     .slice(0, 8),
 )
-const showQueue = computed(() => waiting.value.length > 0 || answered.value.length > 0)
+// The queue shows only while something needs input (#360); the answered rows ride along inside it then.
+const showQueue = computed(() => waiting.value.length > 0)
 
 // Queue keyboard selection (J / K, Enter to type a reply).
 const queueSel = ref(0)
