@@ -933,4 +933,27 @@ func TestACancelledTransactionIsRefusedWithItsContextsError(t *testing.T) {
 			t.Fatalf("run %d: a cancelled transaction's error is %v, not the context's", i, err)
 		}
 	}
+	// Cancelled inside fn, before any statement after it: the statements' refusals, whatever database/sql says, are the context's too.
+	for i := range 20 {
+		ctx, cancel := context.WithCancel(context.Background())
+		_, err := l.Transition(ctx, "r", func(t *Tx) error {
+			cancel()
+			return t.Event("x", nil)
+		})
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("run %d: a transaction cancelled in fn fails with %v, not the context's error", i, err)
+		}
+	}
+	// A real failure stands as itself, the context done or not.
+	ctx, cancel := context.WithCancel(context.Background())
+	l.beforeCommit = func() error {
+		cancel()
+		return errors.New("disk full")
+	}
+	_, err := l.Transition(ctx, "r", func(*Tx) error { return nil })
+	l.beforeCommit = nil
+	if err == nil || errors.Is(err, context.Canceled) || err.Error() != "disk full" {
+		t.Fatalf("a real failure under a done context reads as %v", err)
+	}
 }

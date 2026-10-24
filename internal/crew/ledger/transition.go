@@ -69,27 +69,31 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 	}
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	defer tx.Rollback()
 	t := &Tx{ctx: ctx, tx: tx, runID: runID, now: time.Now().UTC()}
+	// Every error of the transaction, fn's and the statements' as the
+	// commit's, is told as the context's once the context has ended:
+	// database/sql's rollback of a cancelled transaction races each step,
+	// which then says sql.ErrTxDone (Codex's review of #367).
 	if err := fn(t); err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	res, err := tx.ExecContext(ctx, "UPDATE runs SET revision = revision + 1 WHERE id = ?", runID)
 	if err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return 0, ErrNoRun
 	}
 	var rev int64
 	if err := tx.QueryRowContext(ctx, "SELECT revision FROM runs WHERE id = ?", runID).Scan(&rev); err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	if l.beforeCommit != nil {
 		if err := l.beforeCommit(); err != nil {
-			return 0, err
+			return 0, cancelledAs(ctx, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
