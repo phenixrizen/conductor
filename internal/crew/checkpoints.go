@@ -127,10 +127,14 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 		if id, err := l.TryAskID(ask, session.SourceAPI, "", nil); err == nil && id != "" {
 			e.mu.Lock()
 			still := a.t.blocker == mine && a.closedAt.IsZero()
-			mine.asked = id
+			if still {
+				mine.asked = id
+			}
 			e.mu.Unlock()
 			if !still {
-				e.withdrawBlocker(mine)
+				// Cleared already: its question goes now, by the id at hand
+				// (the blocker, detached, is not written again).
+				go l.WithdrawQuestion(id)
 			}
 		}
 	}

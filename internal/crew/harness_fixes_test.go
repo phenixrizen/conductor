@@ -183,3 +183,28 @@ func TestAContinuationStartsAReviewsDependentAtTheReviewedCommit(t *testing.T) {
 	}
 	stopRun(t, e, next.ID)
 }
+
+// A blocker reported twice with the same words keeps its question's id, so
+// the attempt's result still takes the question away (Codex's review of
+// #353).
+func TestABlockerReportedTwiceStillLeavesWithTheResult(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	l, _ := fl.attemptSession(t, b)
+	for range 2 {
+		if _, err := e.Blocked(context.Background(), b.Attempt.SessionID, "style", "Which heading style?"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asked := waitAttention(t, l, "the blocker's question", func(a session.Attention) bool {
+		return a.State == session.AttentionNeedsInput && a.Message == "Which heading style?"
+	})
+	commitResult(t, e, b, "built.txt", "yes\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	waitAttention(t, l, "the question withdrawn", func(a session.Attention) bool {
+		return a.State != session.AttentionNeedsInput || a.ID != asked.ID
+	})
+	stopRun(t, e, run.ID)
+}

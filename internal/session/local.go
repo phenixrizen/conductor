@@ -1625,22 +1625,8 @@ func (s *Local) WithdrawQuestion(id string) {
 	if id == "" {
 		return
 	}
-	s.mu.Lock()
-	if s.info.Attention.ID != id {
-		// Not the question shown: only the agent's own kept aside, if it is
-		// that one, goes; the question shown (another one, a dialog asked
-		// over it) stays as it is (Codex's review of #353).
-		dropped := s.own.ID == id
-		if dropped {
-			s.dropOwnLocked(ChatLeftAgent)
-		}
-		s.mu.Unlock()
-		if dropped {
-			s.notifyChange()
-		}
-		return
-	}
-	s.mu.Unlock()
+	// One critical section looks where the question is and takes it from
+	// there (setAttentionLooked's only): shown, kept aside or held over.
 	_ = s.setAttentionLooked(AttentionNone, "", SourceAPI, "", nil, 0, anyTurn, 0, "", attentionOpt{only: id})
 }
 
@@ -1833,9 +1819,24 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		return ErrRateLimited
 	}
 	if len(opts) > 0 && opt.asked == nil && (opt.only == "" || s.info.Attention.ID != opt.only) {
-		// A change for one question (WithdrawQuestion), which is no longer
-		// the one shown: nothing to change.
+		// A change for one question (WithdrawQuestion) that is not the one
+		// shown: under this same lock, the agent's own kept aside and the
+		// question the hold of the turn holds over go if they are that one
+		// (the hold's end would show it again otherwise), and the question
+		// shown stays as it is (Codex's review of #353).
+		changed := false
+		if opt.only != "" && s.own.ID == opt.only {
+			s.dropOwnLocked(ChatLeftAgent)
+			changed = true
+		}
+		if opt.only != "" && s.heldOver.ID == opt.only {
+			s.heldOver = Attention{}
+			changed = true
+		}
 		s.mu.Unlock()
+		if changed {
+			s.notifyChange()
+		}
 		return nil
 	}
 	// The plan the change names (#289), learnt now, past the bucket, under
@@ -2077,9 +2078,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			// from here, as asked in this turn.
 			s.info.Attention.ask = true
 			s.own, s.ownAside, s.ownTurn = s.info.Attention, false, s.turn.Load()
-			if opt.asked != nil {
-				*opt.asked = s.own.ID
-			}
+		}
+		if ask && opt.asked != nil && s.own.ID == cur.ID {
+			// The same question asked again, the agent's own already or
+			// from now: its id is the ask's (TryAskID).
+			*opt.asked = cur.ID
 		}
 		// The same question, now with its plan named (the dialog's footer
 		// read on a later look): set on it.

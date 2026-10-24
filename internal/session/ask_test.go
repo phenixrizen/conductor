@@ -1460,3 +1460,38 @@ func TestWithdrawingAQuestionTakesOnlyThatOne(t *testing.T) {
 		t.Fatalf("the dialog named by its id stays: %+v", got)
 	}
 }
+
+// The same question asked again names the same id (a blocker reported
+// twice), and a question the hold of the turn holds over is withdrawn with
+// the agent's own copy, so the hold's end does not show it again (Codex's
+// review of #353).
+func TestWithdrawingAQuestionReachesTheOneHeldOver(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	id, err := s.TryAskID("Which heading style?", SourceAPI, "", nil)
+	if err != nil || id == "" {
+		t.Fatalf("TryAskID: %q %v", id, err)
+	}
+	again, err := s.TryAskID("Which heading style?", SourceAPI, "", nil)
+	if err != nil || again != id {
+		t.Fatalf("the same question asked again: %q, want %q (%v)", again, id, err)
+	}
+	// The hold of the turn takes its place: the question is held over, and the agent's own.
+	go holdNow(s)
+	heldShows(t, s)
+	s.mu.Lock()
+	held, own := s.heldOver.ID, s.own.ID
+	s.mu.Unlock()
+	if held != id || own != id {
+		t.Fatalf("held over %q, own %q, want %q", held, own, id)
+	}
+	s.WithdrawQuestion(id)
+	s.mu.Lock()
+	held, own = s.heldOver.ID, s.own.ID
+	s.mu.Unlock()
+	if held != "" || own != "" {
+		t.Fatalf("after the withdrawal: held over %q, own %q", held, own)
+	}
+	if a := s.Info().Attention; a.Source != SourceSubmit {
+		t.Fatalf("the hold no longer shows: %+v", a)
+	}
+}
