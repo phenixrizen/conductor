@@ -23,6 +23,7 @@ export function useQuickReply() {
   const admin = useWorkbenchToken()
   const sending = useState<Set<string>>('quickReplySending', () => new Set())
   const store = useAttentionStore()
+  const typedAnswers = useTypedAnswers()
 
   function mark(id: string, on: boolean) {
     const next = new Set(sending.value)
@@ -62,7 +63,8 @@ export function useQuickReply() {
   }
 
   function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<void> {
-    return over(session, opts.token, { question: opts.question, text }, opts.server)
+    // The line taken, this browser shows it under the question to its own person: the owner repeats no typed line (#364).
+    return over(session, opts.token, { question: opts.question, text }, opts.server).then(() => typedAnswers.remember(opts.question, text))
   }
 
   /**

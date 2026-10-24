@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/phenixrizen/conductor/internal/proto"
 )
@@ -230,61 +229,23 @@ func (s *Local) answeredInChat(id, by, byName, answer string) (ChatMessage, stri
 	return m, s.keepChat(m), true
 }
 
-// reply is what a person's reply to a question typed, for the words the
-// chat's answered line gives (answerWords): a choice's keys (keys), or the
-// line a reply box submitted (line).
-type reply struct {
-	keys []byte
-	line string
-}
-
-// answerWordsMax bounds the words the chat's answered line gives, in runes:
-// a typed line can be long, and the line names the answer, not the whole.
-const answerWordsMax = 200
-
 // answerWords is what the chat's answered line says the reply answered
-// the question q with (#364): the label of the choice whose keys it typed,
-// for any question; or, for the agent's own question only (Asked: the ask
-// tool's, whose answer is a message to the agent), the text typed with
-// its Enter dropped. A line typed at a prompt on the screen (a bell, an
-// OSC, a pattern, a dialog's own field, a hook's or the API's needs_input
-// about one) is never repeated: the terminal may not echo it, a password's
-// prompt for one, and the chat goes to every viewer. A digit that is no
-// choice's keys says nothing (the choices shown need not be the screen's
-// numbering), as do keys that say nothing readable (an Enter alone, an
-// arrow, a control key): the line says only who answered then.
-func answerWords(q Attention, r reply) string {
-	own := q.Asked()
-	if r.line != "" {
-		if !own {
-			return ""
-		}
-		return clipWords(r.line)
-	}
-	k := string(r.keys)
-	for _, o := range q.Options {
+// the question with (#364): the label of the choice whose keys it typed
+// (keys), for any question. A line typed, at a prompt on the screen or at
+// the agent's own question, is never repeated: the agent may ask for a
+// credential (the skill says to), the terminal may not echo it, and the
+// chat goes to every viewer; the browser that typed it shows it to its
+// own person. A digit that is no choice's keys says nothing (the choices
+// shown need not be the screen's numbering), as do keys that say nothing
+// readable: the line says only who answered then.
+func answerWords(options []Option, keys []byte) string {
+	k := string(keys)
+	for _, o := range options {
 		if o.Input != "" && o.Input == k {
 			return o.Label
 		}
 	}
-	if !own {
-		return ""
-	}
-	text := strings.TrimRight(k, "\r\n")
-	if text == "" || !utf8.ValidString(text) || strings.ContainsFunc(text, unicode.IsControl) {
-		return ""
-	}
-	return clipWords(text)
-}
-
-// clipWords cuts text to answerWordsMax runes, with an ellipsis when it cut.
-func clipWords(text string) string {
-	text = strings.TrimSpace(text)
-	if utf8.RuneCountInString(text) <= answerWordsMax {
-		return text
-	}
-	runes := []rune(text)
-	return string(runes[:answerWordsMax]) + "…"
+	return ""
 }
 
 // The reasons a question's line in the chat gives for leaving without an

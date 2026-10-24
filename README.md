@@ -317,9 +317,11 @@ or feed.
 
 When the agent needs input, its question is in the chat too, from the
 agent, with its choices as buttons; a controller answers there as from the
-quick-reply bar, and a line says who answered and with what ("Answered by
-Nate: Keep both"); the question keeps its choices as text, the one picked
-marked, and a typed answer under them. In a run's chat a member's question
+quick-reply bar, and a line says who answered and which choice ("Answered
+by Nate: Keep both"); the question keeps its choices as text, the one
+picked marked. A line you typed as an answer is shown under the question
+to you alone, never sent to the other viewers: the agent may have asked
+for a credential. In a run's chat a member's question
 comes on the member's name ("on core") and an answer from there goes to
 that member.
 

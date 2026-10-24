@@ -29,15 +29,10 @@ function picked(m: ChatMessage, i: number): boolean {
   const a = answers.value.get(m.id)
   return a?.how === 'answered' && !!a.text && m.options?.[i]?.label === a.text
 }
-/** The answer typed rather than picked: what the answered line says when it is no choice's label. */
+// A line this browser typed as the answer, shown to its own person alone: the owner repeats no typed line in the chat (#364).
+const typed = useTypedAnswers()
 function typedAnswer(m: ChatMessage): string {
-  const a = answers.value.get(m.id)
-  if (a?.how !== 'answered' || !a.text) return ''
-  return m.options?.some((o) => o.label === a.text) ? '' : a.text
-}
-function answeredBy(m: ChatMessage): string {
-  const a = answers.value.get(m.id)
-  return a?.how === 'answered' ? a.by : ''
+  return typed.of(m.id)
 }
 // A comment on lines of a file (design round 12, F7): the card shows the lines; where the page has an editor, Open goes there and a
 // note says when the lines moved or changed since.
@@ -135,7 +130,7 @@ onMounted(() => {
               <UIcon v-if="picked(m, i)" name="i-lucide-check" class="size-3 flex-none" aria-hidden="true" />{{ o.label }}
             </span>
           </div>
-          <p v-if="typedAnswer(m)" class="whitespace-pre-wrap break-words text-xs text-muted" data-chat-answer><span class="font-semibold text-highlighted">{{ answeredBy(m) }}</span> answered: {{ typedAnswer(m) }}</p>
+          <p v-if="typedAnswer(m)" class="whitespace-pre-wrap break-words text-xs text-muted" data-chat-answer><span class="font-semibold text-highlighted">You</span> answered: {{ typedAnswer(m) }}</p>
         </div>
       </div>
       <div v-else class="group flex gap-2.5" :data-chat-message="m.id" data-chat-kind="message">

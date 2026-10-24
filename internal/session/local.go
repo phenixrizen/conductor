@@ -2947,7 +2947,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			s.typedKeys(sub, data, typedEnter)
 		}
 		if token != 0 {
-			s.resolve(question, token, sub.ID, sub.Name, reply{keys: data})
+			s.resolve(question, token, sub.ID, sub.Name, data)
 		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
@@ -3183,7 +3183,7 @@ func (s *Local) release(id string, token uint64) {
 // of the turn shown again when one stands; one held over goes without
 // showing again. The agent's own question kept (own) goes with it. An
 // input entry with the question records the answer.
-func (s *Local) resolve(id string, token uint64, by, byName string, r reply) {
+func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte) {
 	s.mu.Lock()
 	if s.claims[id] != (questionClaim{id: id, token: token}) {
 		s.mu.Unlock()
@@ -3224,7 +3224,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string, r reply) {
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
-	answered, answeredID, told := s.answeredInChat(id, by, byName, answerWords(q, r))
+	answered, answeredID, told := s.answeredInChat(id, by, byName, answerWords(q.Options, keys))
 	s.mu.Unlock()
 	if told {
 		s.chatHook(answeredID, answered)

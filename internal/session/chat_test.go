@@ -905,51 +905,40 @@ func TestChatQuoteIsBoundedAndTypedWithItsLocation(t *testing.T) {
 }
 
 // The chat's answered line says what the reply answered with (#364): the
-// label of the choice whose keys it typed, for any question; the text
-// typed, cut when long, for the agent's own question only (a line typed at
-// a prompt on the screen may be a secret the terminal does not echo, and
-// the chat goes to every viewer); nothing for a digit that is no choice's
-// keys, or for keys that say nothing readable.
-func TestAnswerWordsNameTheChoiceOrTheLine(t *testing.T) {
+// label of the choice whose keys it typed, for any question; never a line
+// typed (the agent may ask for a credential, the terminal may not echo it,
+// and the chat goes to every viewer), nor a digit that is no choice's keys
+// (the choices shown need not be the screen's numbering).
+func TestAnswerWordsNameTheChoiceOnly(t *testing.T) {
 	choices := []Option{{Label: "Yes, trust", Input: "y\r"}, {Label: "No", Input: "n\r"}}
 	numbered := []Option{{Label: "Yes", Input: "1"}, {Label: "Yes, always", Input: "2"}, {Label: "No", Input: "3"}}
 	sparse := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
-	own := func(o []Option) Attention { return Attention{State: AttentionNeedsInput, Source: SourceAPI, Options: o, ask: true} }
-	screen := func(o []Option) Attention { return Attention{State: AttentionNeedsInput, Source: SourceQuestion, Options: o} }
-	bell := Attention{State: AttentionNeedsInput, Source: SourceBell}
-	// A hook's or the API's needs_input about a prompt on the screen: the API's source, but not the agent's own question.
-	reported := Attention{State: AttentionNeedsInput, Source: SourceAPI, Kind: KindPrompt}
 	for _, c := range []struct {
-		name string
-		q    Attention
-		r    reply
-		want string
+		name    string
+		options []Option
+		keys    []byte
+		want    string
 	}{
-		{"a choice's keys at a dialog", screen(choices), reply{keys: []byte("n\r")}, "No"},
-		{"a choice's keys at the agent's own question", own(choices), reply{keys: []byte("y\r")}, "Yes, trust"},
-		{"a digit that is a choice's keys", screen(numbered), reply{keys: []byte("2")}, "Yes, always"},
-		{"a digit that is no choice's keys", screen(sparse), reply{keys: []byte("2")}, ""},
-		{"a digit past the list", screen(numbered), reply{keys: []byte("7")}, ""},
-		{"a line typed at the agent's own question", own(nil), reply{keys: []byte("the blue one\r")}, "the blue one"},
-		{"a reply box's line to the agent's own question", own(nil), reply{line: "Postgres"}, "Postgres"},
-		{"a line typed at a prompt on the screen", bell, reply{keys: []byte("hunter2\r")}, ""},
-		{"a line typed at a prompt a hook reported", reported, reply{keys: []byte("hunter2\r")}, ""},
-		{"a reply box's line to a prompt a hook reported", reported, reply{line: "hunter2"}, ""},
-		{"a reply box's line to a dialog", screen(choices), reply{line: "something else"}, ""},
-		{"an Enter alone", own(choices), reply{keys: []byte("\r")}, ""},
-		{"an arrow", own(choices), reply{keys: []byte("\x1b[A")}, ""},
-		{"a control key", own(nil), reply{keys: []byte{0x03}}, ""},
-		{"a long line is cut", own(nil), reply{line: strings.Repeat("x", 250)}, strings.Repeat("x", 200) + "…"},
+		{"a choice's keys", choices, []byte("n\r"), "No"},
+		{"a digit that is a choice's keys", numbered, []byte("2"), "Yes, always"},
+		{"a digit that is no choice's keys", sparse, []byte("2"), ""},
+		{"a digit past the list", numbered, []byte("7"), ""},
+		{"a line typed into the terminal", choices, []byte("hunter2\r"), ""},
+		{"a line typed at a question without choices", nil, []byte("the blue one\r"), ""},
+		{"a reply box's line", nil, nil, ""},
+		{"an Enter alone", choices, []byte("\r"), ""},
+		{"an arrow", choices, []byte("\x1b[A"), ""},
 	} {
-		if got := answerWords(c.q, c.r); got != c.want {
+		if got := answerWords(c.options, c.keys); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
 }
 
-// A line typed into a reply box answers a question with its text, which
-// the chat's answered line gives (#364).
-func TestATypedAnswerIsInTheChatsLine(t *testing.T) {
+// A line typed into a reply box answers the agent's own question; the
+// chat's answered line says who answered and never the line (#364: it
+// may be a credential the agent asked for).
+func TestATypedAnswerIsNotInTheChatsLine(t *testing.T) {
 	s, p := newLocalWith(t, Options{})
 	go func() {
 		for range p.input {
@@ -968,7 +957,10 @@ func TestATypedAnswerIsInTheChatsLine(t *testing.T) {
 		t.Fatalf("the reply: %+v %v", res, err)
 	}
 	a := waitControl(sink, func(m map[string]any) bool { return m["t"] == proto.CtlChat && m["event"] == "answered" })
-	if a == nil || a["ref"] != q["id"] || a["text"] != "Postgres, the managed one" {
+	if a == nil || a["ref"] != q["id"] || a["by"].(map[string]any)["name"] != "Nate" {
 		t.Fatalf("answered %v", a)
+	}
+	if _, has := a["text"]; has {
+		t.Fatalf("the answered line repeats the line typed: %v", a["text"])
 	}
 }
