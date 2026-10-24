@@ -197,6 +197,10 @@ func (s *Local) askInChat(att Attention) (ChatMessage, string) {
 	}
 	q := ChatMessage{ID: id, At: at, Scope: proto.ChatScopeSession, Kind: proto.ChatKindQuestion, By: ChatBy{ID: "agent", Name: s.info.AgentID, Role: RoleAgent}, Text: text, Options: append([]Option(nil), att.Options...)}
 	s.question = q.ID
+	if s.askedInChat == nil {
+		s.askedInChat = map[string]struct{}{}
+	}
+	s.askedInChat[q.ID] = struct{}{}
 	return q, s.keepChat(q)
 }
 
@@ -221,7 +225,58 @@ func (s *Local) answeredInChat(id, by, byName string) (ChatMessage, string, bool
 	if s.question == ref {
 		s.question = ""
 	}
+	delete(s.askedInChat, ref)
 	return m, s.keepChat(m), true
+}
+
+// The reasons a question's line in the chat gives for leaving without an
+// answer through Conductor (#358): keys typed in the terminal answered it,
+// or the agent moved on.
+const (
+	ChatLeftTerminal = "terminal"
+	ChatLeftAgent    = "agent"
+)
+
+// leftInChatLocked keeps the line that says the question named id, asked in
+// the chat, left without an answer through Conductor: answered by keys typed
+// in the terminal (reason ChatLeftTerminal) or withdrawn as the agent moved
+// on (ChatLeftAgent). The chat's card then offers its choices no longer
+// (#358). Nothing for a question the chat never showed. The caller holds
+// s.mu; the line waits in chatLeft for notifyChange, which tells it outside
+// the lock, after the ring has it and before the next question's line.
+func (s *Local) leftInChatLocked(id, reason string) {
+	if id == "" {
+		return
+	}
+	if _, asked := s.askedInChat[id]; !asked {
+		return
+	}
+	delete(s.askedInChat, id)
+	if s.question == id {
+		s.question = ""
+	}
+	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "withdrawn", Ref: id, Text: reason, By: ChatBy{ID: "", Name: "Conductor", Role: RoleControl}}
+	key := s.keepChat(m)
+	s.chatLeft = append(s.chatLeft, chatLeft{key: key, m: m})
+}
+
+// chatLeft is a withdrawn line kept under the lock, told by tellChatLeft.
+type chatLeft struct {
+	key string
+	m   ChatMessage
+}
+
+// tellChatLeft tells the withdrawn lines kept since the last time, to the
+// session's viewers and its run's chat. The caller does not hold s.mu.
+func (s *Local) tellChatLeft() {
+	s.mu.Lock()
+	left := s.chatLeft
+	s.chatLeft = nil
+	s.mu.Unlock()
+	for _, l := range left {
+		s.chatHook(l.key, l.m)
+		s.tellRun(l.m)
+	}
 }
 
 // tellRun copies a line of the session's chat into its run's chat, on this

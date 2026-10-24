@@ -82,15 +82,17 @@ export function linkify(text: string): ChatSegment[] {
 }
 
 /** "Jane joined · control", "Jane left", "Answered by Nate". */
-export function systemLine(m: Pick<ChatMessage, 'by' | 'event'>): string {
+export function systemLine(m: Pick<ChatMessage, 'by' | 'event' | 'text'>): string {
   if (m.event === 'answered') return `Answered by ${m.by.name}`
+  // A question that left without an answer through Conductor (#358): keys typed in the terminal answered it, or the agent moved on.
+  if (m.event === 'withdrawn') return m.text === 'terminal' ? 'Answered in the terminal' : 'Withdrawn: the agent moved on'
   return m.event === 'leave' ? `${m.by.name} left` : `${m.by.name} joined · ${m.by.role}`
 }
 
-/** The questions answered so far: the refs of the `answered` lines. A question not among them still takes an answer. */
+/** The questions that take no answer any more: the refs of the `answered` lines and of the `withdrawn` ones (answered in the terminal, or the agent moved on; #358). A question not among them still takes an answer. */
 export function answeredQuestions(messages: readonly Pick<ChatMessage, 'kind' | 'event' | 'ref'>[]): ReadonlySet<string> {
   const out = new Set<string>()
-  for (const m of messages) if (m.kind === 'system' && m.event === 'answered' && m.ref) out.add(m.ref)
+  for (const m of messages) if (m.kind === 'system' && (m.event === 'answered' || m.event === 'withdrawn') && m.ref) out.add(m.ref)
   return out
 }
 

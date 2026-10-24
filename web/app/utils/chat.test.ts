@@ -91,6 +91,19 @@ describe('chat lines', () => {
     expect(done.has('q2')).toBe(false)
   })
 
+  it('takes a question that left without an answer through Conductor as answered too, and says why (#358)', () => {
+    expect(systemLine({ by: { id: '', name: 'Conductor', role: 'control' }, event: 'withdrawn', text: 'terminal' })).toBe('Answered in the terminal')
+    expect(systemLine({ by: { id: '', name: 'Conductor', role: 'control' }, event: 'withdrawn', text: 'agent' })).toBe('Withdrawn: the agent moved on')
+    const list = [
+      msg({ id: 'q1', kind: 'question', by: { id: 'agent', name: 'claude', role: 'agent' }, text: 'Which colour?' }),
+      msg({ id: 'q2', kind: 'question', by: { id: 'agent', name: 'claude', role: 'agent' }, text: 'Second round?' }),
+      msg({ id: 'w1', kind: 'system', event: 'withdrawn', ref: 'q1', text: 'terminal' }),
+    ]
+    const done = answeredQuestions(list)
+    expect(done.has('q1')).toBe(true)
+    expect(done.has('q2')).toBe(false)
+  })
+
   it("offers a run chat's composer chat only, then each member, the ones that cannot take a line disabled with why", () => {
     const states = new Map<string, MemberStatus>([
       ['core', 'running'],

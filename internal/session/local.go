@@ -234,6 +234,9 @@ type Local struct {
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
 	question string
+	// askedInChat is the set of questions the chat shows a card for (askInChat), until their answered or withdrawn line (#358); chatLeft the withdrawn lines not yet told. Guarded by mu.
+	askedInChat map[string]struct{}
+	chatLeft    []chatLeft
 	// claim is the structured answer being written to a question (CLAIMED:
 	// a reply naming it, claimLocked), its id and the claim's token, fresh
 	// for every claim (claimSeq); the empty claim while none stands. The
@@ -769,6 +772,8 @@ func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
 
 // notifyChange hands a fresh Info snapshot to the OnChange hook.
 func (s *Local) notifyChange() {
+	// A question's withdrawn line (#358) goes first: its card loses its choices as the state that replaced the question is told.
+	s.tellChatLeft()
 	if s.opts.OnChange != nil {
 		s.opts.OnChange(s.Info())
 	}
@@ -3278,6 +3283,11 @@ func (s *Local) forgetLocked(id string) {
 	if id == "" {
 		return
 	}
+	reason := ChatLeftAgent
+	if s.consumed == id {
+		reason = ChatLeftTerminal
+	}
+	s.leftInChatLocked(id, reason)
 	delete(s.claims, id)
 	if s.consumed == id {
 		s.consumed = ""
