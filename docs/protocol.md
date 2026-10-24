@@ -1127,8 +1127,10 @@ the program reads, and nothing after it is begun. The other viewers and
 the output go on meanwhile. An `nvim_open` gives Neovim 15 s to start and
 show the file (one still busy then is ended, and its editor says `closed`),
 and one whose connection goes meanwhile ends the Neovim it started; a
-connection's editors end as it goes without holding it, each given 10 s to
-leave before it is ended, and a server or host that stops waits for them.
+connection's editors end as it goes without holding it, each given 30 s to
+leave before it is ended (Neovim removes its swap file last as it leaves, so
+only a kill leaves one; a kill after the wait is logged with the file), and a
+server or host that stops waits for them.
 
 Session `Info` carries `crew{runId, crewId, member}` for a member of a crew
 run (see Crew runs), and no `crew` otherwise.
