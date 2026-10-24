@@ -20,7 +20,8 @@ const target = computed(() => {
 watch(
   [target, wide],
   ([t, w]) => {
-    if (w && t) navigateTo(`/sessions/${t.id}`, { replace: true })
+    // At lg and up this page always leaves: the sidebar is the list, so staying would show it twice (#359).
+    if (w) navigateTo(t ? `/sessions/${t.id}` : '/yard', { replace: true })
   },
   { immediate: true },
 )

@@ -20,7 +20,8 @@ watch(
   [target, wide],
   ([t, w]) => {
     if (!w) navigateTo('/sessions', { replace: true })
-    else if (t) navigateTo(`/sessions/${t.id}`, { replace: true })
+    // Wide with nothing to open, the home is the Yard, whose empty state is not the sidebar's (#359).
+    else navigateTo(t ? `/sessions/${t.id}` : '/yard', { replace: true })
   },
   { immediate: true },
 )
