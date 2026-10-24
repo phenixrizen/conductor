@@ -203,7 +203,9 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	ectx, cancel := context.WithCancel(context.Background())
 	id := newNvimID()
 	e := &nvimEditor{id: id, path: target, cancel: cancel, endWait: s.nvimEndWait}
-	e.late = func() { s.log.Warn("neovim did not end within the wait; cancelled", "editor", id, "file", target, "wait", s.nvimEndWait) }
+	e.late = func() {
+		s.log.Warn("neovim did not end within the wait; cancelled", "editor", id, "file", target, "wait", s.nvimEndWait)
+	}
 	sub.nvimMu.Lock()
 	// Registered only while the connection is there: closeNvims, as it
 	// goes, marks its editors closed under this lock, and ends each one it
