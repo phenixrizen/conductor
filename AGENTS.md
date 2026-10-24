@@ -22,6 +22,10 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
 - Keep per-connection bounds (read limits, queues, in-flight file requests).
 - UI components come from Nuxt UI; use the brand palette in `web/app/app.config.ts`
   and `docs/design/brand.md`. The junction mark is artwork, never a status light.
+- Names follow the railroad: Conductor is the application, Yardmaster the
+  agent harness (a crew with tasks runs as its managed run), Brakeman the
+  sidekick agent to come, Switchman the task router to come. Docs, UI text
+  and issues use these names.
 - Do not commit `internal/web/dist` contents (only `.gitkeep`), `web/.nuxt` or
   `web/.output`. Commit `web/package-lock.json`.
 - **Windows and WSL: the person configures no networking, ever.** Never ask

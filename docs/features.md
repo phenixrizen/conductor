@@ -3007,6 +3007,57 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   and summary through later continuations; delivery going on past the
   queue's room; a recovered record dropping a withdrawn result
   (`review_fixes_test.go`).
+- **Yardmaster by hand: real crews on WSL and the Mac, and the Windows app's
+  RC (#350, 2026-10-24).** Row 11 of the agent harness, named Yardmaster
+  (#334). Three crews ran on the WSL box (Claude Code 2.1.309 and 2.1.310 on
+  Opus 5.5, Codex 0.163.0; main at 2e88f38) and one on the Mac (Codex 0.163.0
+  in every seat, since Claude Code there is not signed in), each a `build`
+  work task with checks, a Codex `review` of it and a dependent `docs` task,
+  in a scratch repository both agents trust, yolo on, driven through the API
+  with the workbench token and read through the run page in headless Chromium.
+  The first WSL crew finished in 2.5 minutes with every task succeeded: the
+  builder read the checks from its task file and wrote the CHANGELOG the
+  second check wanted before submitting (a check the task file names never
+  fails once), the writer reported its blocker, messaged the reviewer, saved a
+  checkpoint and submitted, and the Tasks view, the task detail, the graph and
+  the grid said so. The second: a check that fails its first run (a script
+  outside the worktree) failed attempt 1 and attempt 2 passed from attempt 1's
+  commit; a task whose check always fails spent its three attempts (the agent
+  wrote "Accepting it anyway is a decision for a person"); Pause answered a
+  receipt, the same id again the same receipt with `repeat`, a stale revision
+  `409 stale_revision`; Retry while paused made the task ready and its attempt
+  waited; Unpause ran it; Accept anyway took attempt 4's commit and turned the
+  run's outcome from failed to succeeded. Codex's "Update available" dialog
+  held the reviewer's task line until Escape dismissed it as a person would,
+  and the line and a waiting message went in. The third: the reviewer's
+  needs_changes reopened `build` with its finding and withdrew the finished
+  docs result; during the repair attempt the server was killed and started
+  again on the same data within a second: the run read interrupted with the
+  attempt so marked, Continue made a continuation that dispatched the repair
+  as attempt 3 of 3 at the reviewed commit with the finding in its task file,
+  and the review asked for changes a second time (NOTES.md began with `# Notes`,
+  not `reviewed`): build had no attempt left, the run ended failed with the
+  task's words saying "retry it to allow one more", Retry gave attempt 4, which
+  fixed the line, the review approved on its third attempt, docs ran a third
+  time from the approved commit and the run succeeded. Claude Code's own safeguard paused one builder session
+  ("Session paused", two numbered choices); it showed as needing input and the
+  digit pressed in its terminal continued it on Opus 4.8. On the Mac every task
+  succeeded; the Codex writer used the CLI forms (`conductor task
+  blocked|send|checkpoint|result`); the ledger's files are 0600 on APFS; the
+  Codex builder ran the first-run check itself, so it passed at the server.
+  Found and filed, none stopping a run: #351 (a task that needs a review
+  starts at the run's base, the input commit empty), #352 (a message to a
+  member with no attempt in flight is never typed though its session lives),
+  #353 (a blocker's question stays asked after the result), #354 (Codex starts
+  `conductor mcp` without the session's variables, so every Conductor tool
+  fails under Codex and it falls back to the CLI; `mcp_servers.conductor.env_vars`
+  fixes it, proven with `codex exec`), #355 (a failed check's output reaches
+  neither the attempt's words nor the next task file, and the start commit is
+  labelled the run's base). v0.7.0-rc.16 was published as a prerelease for the
+  Windows app pass, which waits for the app's restart. Docs: the railroad
+  names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
+  `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
+  architecture's crew-runs section gains the managed run.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

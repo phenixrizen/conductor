@@ -3,6 +3,15 @@
 Conductor is one Go binary plus an embedded Nuxt single-page app. It runs in two
 roles.
 
+The names follow the railroad. **Conductor** is the application, where people
+direct and supervise the work. **Yardmaster** is the agent harness: it manages
+the agents' execution, crews, tools, lifecycle and coordination, the managed
+runs of #334. **Brakeman**, to come (#356), is the sidekick agent that watches
+the work, anticipates problems, summarizes progress and assists the people: an
+agent powered by Yardmaster with privileged access to the operation's
+telemetry, not a part of the harness. **Switchman**, to come, routes tasks
+between agents, crews and people.
+
 ## Server-hosted sessions
 
 ```mermaid
@@ -212,6 +221,39 @@ worktree, resuming its agent's own session through the agent's session recipe
 when it can. Runs live in memory, as sessions do;
 run links are share-store links scoped to a run (`Link.RunID`), which the
 server resolves to the run's member sessions through `Engine.MemberOf`.
+
+A crew with tasks launches a **managed run**, Yardmaster's (#334): the same
+engine with its truth in the ledger (`internal/crew/ledger`, one SQLite database per data
+directory) instead of memory. `task.go` dispatches each task as an attempt
+once the tasks it needs have results: a reservation among the server's
+sessions, a worktree at the commit the task starts from (its first need's
+result, or the run's base) on the branch `crew/<run>/<task>.<n>`, the task
+written into it as `.conductor/task.md` and `task.json`, the crew's `setup`
+run there, then the member's session through the same `Launcher` and one
+typed line saying where the task is and how to submit. The attempt's
+session submits its result with its own token (`POST
+/api/sessions/{id}/task/result`, the `task_result` tool or `conductor task
+result`): the commit at its HEAD, refused while the tree is dirty or the
+commit does not descend from every input. `verify.go` then runs the task's
+checks against that commit in a detached checkout through `internal/proc`
+(argv, a timeout, the process group ended with the run, the output's head and
+tail), one at a time across the server, and the checkout compared with the
+commit after each; a failing check fails the attempt and the next one starts
+from that commit with what failed in its task file. A review's `needs_changes`
+reopens the task it reviewed and withdraws, transitively, whatever rested on
+the result. Every transition is one ledger transaction committed before the
+side effect it precedes (the reservation before the worktree, the launch
+before the session, the typing before the line, a check before its process),
+so a crash leaves intents the next start concludes: `ledger.Recover` marks
+what was open, the records are rewritten from the ledger, and
+`continue.go` makes a continuation of an interrupted run that keeps the
+results that stood, verifies a candidate again and dispatches the rest, the
+attempts spent before counting against the tasks. A person's commands (pause,
+retry, cancel, accept) are `commands.go`'s receipts, written in the change's
+own transaction, so a repeated command answers the same receipt. `messages.go`
+carries the members' durable messages, typed after the recipient's task line,
+and `checkpoints.go` an attempt's blocker and checkpoints, where the next
+attempt starts after a session is lost.
 
 ## Switchyard
 

@@ -1,5 +1,9 @@
 # The agent harness: the order of work (#334)
 
+The harness is named **Yardmaster** (the owner, 2026-10-24): Conductor is the
+application, Yardmaster the harness, Brakeman the sidekick agent to come
+(#356), Switchman the task router to come.
+
 Codex's specification is `agent-harness.md` beside this file; its errata say
 where the code differs from it. This is the order, in the shape of the
 streams before it: one issue and one PR per row, each cut from `main` once
