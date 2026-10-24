@@ -132,7 +132,12 @@ func taskVia(t *testing.T, e *testEnv, runID, taskID, what string, ok func(task 
 			return found
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("task %s not %s after 20 s: %v", taskID, what, found)
+			// The run as a whole, for the reason: paused, stopped, its outcome, and the tail of its log.
+			var tail []any
+			if log, _ := r["log"].([]any); len(log) > 0 {
+				tail = log[max(0, len(log)-8):]
+			}
+			t.Fatalf("task %s not %s after 20 s: %v\nrun state=%v paused=%v outcome=%v members=%v\nlog tail: %v", taskID, what, found, r["state"], r["paused"], r["outcome"], r["members"], tail)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

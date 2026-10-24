@@ -391,8 +391,7 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 	if err != nil {
 		_ = e.transact(context.Background(), r, func() tx {
 			r.unreserve(a, "the ledger could not record the attempt: "+session.CleanMessage(err.Error()))
-			e.pauseDispatch(r, err)
-			return ev("run.paused", map[string]any{"paused": true, "why": session.CleanMessage(err.Error())})
+			return pausedTx(e.pauseDispatch(r, err), err)
 		}, nil)
 		return
 	}
