@@ -491,7 +491,15 @@ func TestAnEditorOpenEndsWithItsContextWhileNeovimStarts(t *testing.T) {
 	if n := s.nvimCount.Load(); n != 0 {
 		t.Fatalf("%d editors counted after the open failed", n)
 	}
-	if pid := nvimPid(pidFile); pid == 0 || !gone(pid, 5*time.Second) {
+	// The fake may not have written its pid when the open ran out (a loaded
+	// machine): one that got that far is waited for and must be gone; one
+	// that never wrote it was ended before it could, or never started, and
+	// a pid of 0 is no Neovim running (#281).
+	pid := nvimPid(pidFile)
+	for deadline := time.Now().Add(2 * time.Second); pid == 0 && time.Now().Before(deadline); pid = nvimPid(pidFile) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pid != 0 && !gone(pid, 5*time.Second) {
 		t.Fatalf("Neovim (pid %d) still runs after its open ended", pid)
 	}
 }
