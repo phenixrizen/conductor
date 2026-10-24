@@ -1392,3 +1392,32 @@ func TestKeysWhileAnOwnQuestionWaitsAsideTellTheChatAtOnce(t *testing.T) {
 		t.Fatalf("the reason told: %v", got)
 	}
 }
+
+// An agent's clear while its own question waits aside under a held turn
+// lets the question go, and the chat's withdrawn line is told at once,
+// though that path records no change (#358, Codex's second round).
+func TestAnOwnQuestionLetGoUnderAHoldTellsTheChat(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	reportState(t, s, AttentionWorking, "")
+	if _, aside := keeps(s); !aside {
+		t.Fatal("the question is not set aside")
+	}
+	// The hold blocks until the turn is let go, as the other tests take it.
+	go holdNow(s)
+	heldShows(t, s)
+	watcher := newChanSink(false)
+	if _, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "watcher"}, watcher); err != nil {
+		t.Fatal(err)
+	}
+	reportState(t, s, AttentionNone, "")
+	if kept, _ := keeps(s); kept {
+		t.Fatal("the question is kept after the clear")
+	}
+	got := waitControl(watcher, func(m map[string]any) bool {
+		return chatOf(proto.ChatKindSystem)(m) && m["event"] == "withdrawn" && m["ref"] == q.ID
+	})
+	if got == nil {
+		t.Fatalf("the withdrawn line was not told; the chat %+v", s.ChatHistory())
+	}
+}

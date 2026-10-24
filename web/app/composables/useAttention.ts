@@ -331,7 +331,9 @@ export function useAttention() {
     stopEvents = events.onEvent(reactToEvent)
     stream()
     pollTimer = window.setInterval(() => {
-      if (!store.value.connected && document.visibilityState === 'visible') poll()
+      // While the stream is down, or open but without its first snapshot yet (a stall before it), the list is read
+      // directly, so that a page waiting for the sessions to be read (#359) is not left waiting.
+      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible') poll()
     }, 3000)
     watch(
       () => admin.token.value,

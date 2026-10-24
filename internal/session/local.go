@@ -1900,6 +1900,8 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			s.dropOwnLocked(ChatLeftAgent)
 		}
 		s.mu.Unlock()
+		// The question let go above leaves a withdrawn line (#358) this path tells no other way.
+		s.tellChatLeft()
 		if state != AttentionNone {
 			label := message
 			if label == "" {
