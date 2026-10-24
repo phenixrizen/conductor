@@ -368,7 +368,7 @@ func TestMCPForEachAdapter(t *testing.T) {
 	dir := t.TempDir()
 	want := map[string][]string{
 		"claude": {"--mcp-config", filepath.Join(dir, "claude-mcp.json")},
-		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`},
+		"codex":  {"-c", `mcp_servers.conductor.command="/opt/conductor"`, "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv},
 	}
 	for _, a := range All() {
 		got := MCPFor(a.ID, dir)
@@ -389,5 +389,19 @@ func TestMCPForEachAdapter(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(hooks, "claude-mcp.json"))
 	if err != nil || !strings.Contains(string(b), `"command": "/opt/conductor"`) || !strings.Contains(string(b), `"mcp"`) {
 		t.Fatalf("claude-mcp.json: %v\n%s", err, b)
+	}
+}
+
+// Codex starts its MCP server with an environment of its own, so the
+// adapter names every variable the server needs to find its session: the
+// notify URL, token and session id among them (#354).
+func TestCodexPassesTheSessionsVariablesToItsMCPServer(t *testing.T) {
+	for _, v := range []string{"CONDUCTOR_SESSION_ID", "CONDUCTOR_NOTIFY_URL", "CONDUCTOR_NOTIFY_TOKEN", "CONDUCTOR_RUN", "CONDUCTOR_MEMBER", "CONDUCTOR_TASK", "CONDUCTOR_ATTEMPT"} {
+		if !strings.Contains(codexMCPEnv, `"`+v+`"`) {
+			t.Errorf("Codex's MCP server is not given %s", v)
+		}
+	}
+	if strings.Contains(codexMCPEnv, "=") {
+		t.Error("a value went into the override: names only")
 	}
 }

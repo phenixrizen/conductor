@@ -37,6 +37,10 @@ var (
 type blocker struct {
 	reason, message, by string
 	at                  time.Time
+	// asked is the id of the question the blocker put to the session
+	// (session's Attention.ID) and session the session's id, so that the
+	// question is withdrawn when the blocker clears (#353).
+	asked, session string
 }
 
 // Blocker is a blocker as the run reports it.
@@ -113,9 +117,33 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 		ask = reason
 	}
 	if l, ok := e.lookup(a.sessionID); ok {
-		_ = l.TryAsk(ask, session.SourceAPI, "", nil)
+		if l.TryAsk(ask, session.SourceAPI, "", nil) == nil {
+			// The question the blocker asked, to withdraw when it clears.
+			if att := l.Info().Attention; att.State == session.AttentionNeedsInput && att.Source == session.SourceAPI {
+				e.mu.Lock()
+				if b := a.t.blocker; b != nil && a.closedAt.IsZero() {
+					b.asked, b.session = att.ID, a.sessionID
+				}
+				e.mu.Unlock()
+			}
+		}
 	}
 	return st, nil
+}
+
+// withdrawBlocker takes away the question blocker b put to its session, if
+// that question still shows: a cleared blocker, its task working on or
+// ended, leaves no "needs you" behind (#353). It runs apart from e.mu.
+func (e *Engine) withdrawBlocker(b *blocker) {
+	if b == nil || b.asked == "" || b.session == "" {
+		return
+	}
+	id, sid := b.asked, b.session
+	go func() {
+		if l, ok := e.lookup(sid); ok {
+			l.WithdrawQuestion(id)
+		}
+	}()
 }
 
 // unblock clears the attempt's task's blocker, as the attempt works on or
@@ -127,11 +155,13 @@ func (e *Engine) unblock(r *run, a *attempt, state session.AttentionState) {
 	if !blocked {
 		return
 	}
+	var cleared *blocker
 	err := e.transact(context.Background(), r, func() tx {
 		t := a.t
 		if t.blocker == nil || !a.closedAt.IsZero() {
 			return tx{}
 		}
+		cleared = t.blocker
 		t.blocker = nil
 		r.markTask(t)
 		r.note(session.ActivityStatus, "task %s: %s is no longer blocked (%s)", t.def.ID, a.m.def.Name, state)
@@ -139,7 +169,9 @@ func (e *Engine) unblock(r *run, a *attempt, state session.AttentionState) {
 	}, nil)
 	if err != nil {
 		e.afterTransact(r, err)
+		return
 	}
+	e.withdrawBlocker(cleared)
 }
 
 // SaveCheckpoint keeps where the session's attempt got to, tied to its

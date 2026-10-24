@@ -168,7 +168,7 @@ func (e *Engine) verify(r *run, a *attempt) {
 		fin.Log = bytes.Clone(log.Bytes())
 		sum := sha256.Sum256(fin.Log)
 		fin.LogSHA256 = hex.EncodeToString(sum[:])
-		fin.Tail = string(res.Tail)
+		fin.Tail = string(lastOutput(res, checkTail))
 		words := checkWords(ch, res, moved, changed, cerr)
 		// The check's outcome is evidence: not recorded, the result is not
 		// taken on it.
@@ -195,11 +195,11 @@ func checkWords(ch Check, res proc.Result, moved bool, changed []string, cerr er
 	case res.Err != "" && !res.TimedOut && !res.Canceled:
 		return "could not run: " + session.CleanMessage(res.Err)
 	case res.TimedOut:
-		return fmt.Sprintf("timed out after %s%s", checkTimeout(ch), tailWords(res.Tail))
+		return fmt.Sprintf("timed out after %s%s", checkTimeout(ch), tailWords(lastOutput(res, checkTail)))
 	case res.Canceled:
 		return "cancelled"
 	case res.Exit != 0:
-		return fmt.Sprintf("exited %d%s", res.Exit, tailWords(res.Tail))
+		return fmt.Sprintf("exited %d%s", res.Exit, tailWords(lastOutput(res, checkTail)))
 	}
 	return intactWords(moved, changed, cerr)
 }
@@ -319,4 +319,19 @@ func splitNUL(out string) []string {
 		}
 	}
 	return paths
+}
+
+// lastOutput is the last n bytes of what the process printed, whether or
+// not its output outgrew the head proc.Result keeps first: a short output
+// is all in Head and Tail is empty then, which left a failed check's words
+// and its recorded tail empty (#355).
+func lastOutput(res proc.Result, n int) []byte {
+	all := res.Tail
+	if !res.Truncated {
+		all = append(append([]byte(nil), res.Head...), res.Tail...)
+	}
+	if len(all) > n {
+		all = all[len(all)-n:]
+	}
+	return all
 }

@@ -844,13 +844,19 @@ func (r *run) inputs(t *task) []input {
 		if need == nil || need.result == nil {
 			continue
 		}
-		branch := need.result.branch
+		branch, commit := need.result.branch, need.result.commit
 		for _, a := range need.attempts {
 			if a.n == need.result.attempt {
 				branch = a.branch
+				if commit == "" && need.def.Kind == TaskReview {
+					// A review submits no commit: its result is its verdict
+					// on its candidate, the commit its attempt started at,
+					// which is what a task needing it starts from (#351).
+					commit = a.start
+				}
 			}
 		}
-		out = append(out, input{task: n, attempt: need.result.attempt, commit: need.result.commit, summary: need.result.summary, branch: branch, verdict: need.result.verdict})
+		out = append(out, input{task: n, attempt: need.result.attempt, commit: commit, summary: need.result.summary, branch: branch, verdict: need.result.verdict})
 	}
 	return out
 }
@@ -1024,6 +1030,7 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 	}
 	e.endAttempt(r, a, state, stage, errText)
 	t := a.t
+	e.withdrawBlocker(t.blocker)
 	t.blocker = nil
 	switch state {
 	case ledger.AttemptSucceeded:
@@ -1403,9 +1410,9 @@ func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, c
 	case res.Err != "" && !res.TimedOut:
 		return fmt.Errorf("%s could not run: %s", ch.ID, res.Err)
 	case res.TimedOut:
-		return fmt.Errorf("%s timed out after %s%s", ch.ID, checkTimeout(ch), tailWords(res.Tail))
+		return fmt.Errorf("%s timed out after %s%s", ch.ID, checkTimeout(ch), tailWords(lastOutput(res, checkTail)))
 	case res.Exit != 0:
-		return fmt.Errorf("%s exited %d%s", ch.ID, res.Exit, tailWords(res.Tail))
+		return fmt.Errorf("%s exited %d%s", ch.ID, res.Exit, tailWords(lastOutput(res, checkTail)))
 	}
 	return nil
 }

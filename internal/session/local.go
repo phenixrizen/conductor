@@ -1616,6 +1616,15 @@ func (s *Local) TryAsk(message, source, kind string, options []Option) error {
 	return s.setAttention(AttentionNeedsInput, message, source, kind, options, spendToken|agentAsks)
 }
 
+// WithdrawQuestion takes the question named id away, as the agent's own
+// clear does, while it is the question shown or the agent's own kept
+// aside; any other question, one asked since, stays. For what asked on the
+// agent's behalf and no longer stands: a crew task's blocker, cleared as
+// its task works on or ends (#353).
+func (s *Local) WithdrawQuestion(id string) {
+	_ = s.setAttentionLooked(AttentionNone, "", SourceAPI, "", nil, 0, anyTurn, 0, "", id)
+}
+
 // attentionRules say how setAttention applies a change.
 type attentionRules uint32
 
@@ -1745,7 +1754,7 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 // question asks approval for, when the change names one (#289): learnt
 // once the change is past the bucket, and set on the question shown, or
 // on the dialog of that approval already showing.
-func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string) error {
+func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string, only ...string) error {
 	if !state.Valid() {
 		return nil
 	}
@@ -1780,6 +1789,12 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		s.mu.Unlock()
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
+	}
+	if len(only) > 0 && (only[0] == "" || s.info.Attention.ID != only[0] && s.own.ID != only[0]) {
+		// A change for one question (WithdrawQuestion), which is no longer
+		// the one shown nor the agent's own kept aside: nothing to change.
+		s.mu.Unlock()
+		return nil
 	}
 	// The plan the change names (#289), learnt now, past the bucket, under
 	// the lock the change takes: a question's alone, and nothing when the
