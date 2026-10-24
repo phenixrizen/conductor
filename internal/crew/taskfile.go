@@ -15,24 +15,28 @@ import (
 // TaskFile is .conductor/task.json: an attempt's task as a tool reads it.
 // task.md says the same for the agent to read.
 type TaskFile struct {
-	Run          string        `json:"run"`
-	Crew         string        `json:"crew"`
-	CrewName     string        `json:"crewName"`
-	Goal         string        `json:"goal"`
-	Task         string        `json:"task"`
-	Attempt      int           `json:"attempt"`
-	MaxAttempts  int           `json:"maxAttempts"`
-	Member       string        `json:"member"`
-	Role         string        `json:"role,omitempty"`
-	Kind         string        `json:"kind"`
-	Instructions string        `json:"instructions"`
-	Worktree     string        `json:"worktree"`
-	Branch       string        `json:"branch"`
-	Prefix       string        `json:"prefix,omitempty"`
-	Start        string        `json:"start"`
-	Inputs       []TaskInput   `json:"inputs,omitempty"`
-	Checks       []Check       `json:"checks,omitempty"`
-	Previous     *TaskPrevious `json:"previous,omitempty"`
+	Run          string `json:"run"`
+	Crew         string `json:"crew"`
+	CrewName     string `json:"crewName"`
+	Goal         string `json:"goal"`
+	Task         string `json:"task"`
+	Attempt      int    `json:"attempt"`
+	MaxAttempts  int    `json:"maxAttempts"`
+	Member       string `json:"member"`
+	Role         string `json:"role,omitempty"`
+	Kind         string `json:"kind"`
+	Instructions string `json:"instructions"`
+	Worktree     string `json:"worktree"`
+	Branch       string `json:"branch"`
+	Prefix       string `json:"prefix,omitempty"`
+	Start        string `json:"start"`
+	// StartFrom says what the start commit is, in words: the run's base, a
+	// task's result, the commit a review approved, the attempt before's
+	// result, a checkpoint, or the commit a review asked changes of (#355).
+	StartFrom string        `json:"startFrom,omitempty"`
+	Inputs    []TaskInput   `json:"inputs,omitempty"`
+	Checks    []Check       `json:"checks,omitempty"`
+	Previous  *TaskPrevious `json:"previous,omitempty"`
 	// Repair is set when a review asked for changes: the review, the
 	// commit it reviewed (where this attempt starts) and its findings.
 	Repair *TaskRepair `json:"repair,omitempty"`
@@ -84,6 +88,7 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
 			f.Previous = &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
 		}
 	}
+	f.StartFrom = startFrom(r, t, a)
 	if rp := t.repair; rp != nil {
 		f.Repair = &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: append([]Finding(nil), rp.findings...)}
 	}
@@ -116,10 +121,8 @@ func taskMarkdown(f TaskFile) string {
 	}
 	fmt.Fprintf(&b, "## Instructions\n\n%s\n\n", strings.TrimSpace(f.Instructions))
 	fmt.Fprintf(&b, "## Where you are\n\nYour worktree is `%s`, on the branch `%s`, at the commit %s", f.Worktree, f.Branch, f.Start)
-	if len(f.Inputs) > 0 && f.Inputs[0].Commit == f.Start {
-		fmt.Fprintf(&b, " (task %q's result)", f.Inputs[0].Task)
-	} else {
-		b.WriteString(" (the run's base)")
+	if f.StartFrom != "" {
+		fmt.Fprintf(&b, " (%s)", f.StartFrom)
 	}
 	b.WriteString(".")
 	if f.Prefix != "" {
@@ -253,4 +256,44 @@ func crewAsLaunched(c Crew) string {
 		return ""
 	}
 	return string(b)
+}
+
+// startFrom says in words what a's start commit is (TaskFile.StartFrom,
+// #355): the commit a review asked changes of; the attempt before's result
+// or checkpoint; an input's result, or the commit a review approved; the
+// run's base; "" for none of those. The caller holds e.mu.
+func startFrom(r *run, t *task, a *attempt) string {
+	if a.start == "" {
+		return ""
+	}
+	if rp := t.repair; rp != nil && rp.commit == a.start {
+		return fmt.Sprintf("the commit review %q asked changes of", rp.review)
+	}
+	for _, p := range t.attempts {
+		if p.n != a.n-1 {
+			continue
+		}
+		if p.result == a.start {
+			return fmt.Sprintf("attempt %d's result", p.n)
+		}
+		if p.checkpoint != nil && p.checkpoint.commit == a.start {
+			return fmt.Sprintf("attempt %d's checkpoint", p.n)
+		}
+	}
+	if t.checkpoint != nil && t.checkpoint.commit == a.start {
+		return "the checkpoint the last attempt saved"
+	}
+	for _, in := range a.inputs {
+		if in.commit != a.start {
+			continue
+		}
+		if in.verdict != "" {
+			return fmt.Sprintf("the commit review %q reviewed, verdict %s", in.task, in.verdict)
+		}
+		return fmt.Sprintf("task %q's result", in.task)
+	}
+	if a.start == r.base {
+		return "the run's base"
+	}
+	return ""
 }

@@ -226,6 +226,11 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 					at = time.Now().UTC()
 				}
 				t.result = &taskResult{attempt: row.ResultAttempt, commit: row.ResultCommit, summary: res.Summary, issues: res.Issues, verdict: res.Verdict, findings: res.Findings, at: at, branch: ra.Branch}
+				if t.def.Kind == TaskReview {
+					// The review's candidate, the source attempt's start: a
+					// dependent starts there in the continuation too (#351).
+					t.result.reviewed = ra.StartCommit
+				}
 				if t.result.verdict == "" {
 					t.result.verdict = row.Verdict
 				}

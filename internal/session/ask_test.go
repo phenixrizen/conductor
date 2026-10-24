@@ -1421,3 +1421,77 @@ func TestAnOwnQuestionLetGoUnderAHoldTellsTheChat(t *testing.T) {
 		t.Fatalf("the withdrawn line was not told; the chat %+v", s.ChatHistory())
 	}
 }
+
+// A question withdrawn by its id (a crew task's blocker cleared, #353)
+// goes only if it is that question: the agent's own kept aside under a
+// question shown since is dropped and the question shown stays, its
+// choices with it; a question that is not the one named is untouched.
+// TryAskID names the question its ask put up (Codex's review of #353).
+func TestWithdrawingAQuestionTakesOnlyThatOne(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	id, err := s.TryAskID("Which heading style?", SourceAPI, "", nil)
+	if err != nil || id == "" || s.Info().Attention.ID != id {
+		t.Fatalf("TryAskID: %q %v, shown %+v", id, err, s.Info().Attention)
+	}
+	// Work sets it aside, and a dialog shows over it.
+	reportState(t, s, AttentionWorking, "")
+	if _, aside := keeps(s); !aside {
+		t.Fatal("the question is not set aside")
+	}
+	s.SetAttentionFull(AttentionNeedsInput, "Allow Bash?", SourceAPI, KindPermission, []Option{{Label: "Yes", Input: "1"}, {Label: "No", Input: "2"}})
+	dialog := s.Info().Attention
+	if dialog.ID == id || dialog.State != AttentionNeedsInput {
+		t.Fatalf("the dialog: %+v", dialog)
+	}
+	s.WithdrawQuestion(id)
+	if got := s.Info().Attention; got.ID != dialog.ID || got.State != AttentionNeedsInput || len(got.Options) != 2 {
+		t.Fatalf("withdrawing the question set aside took the dialog: %+v", got)
+	}
+	if kept, _ := keeps(s); kept {
+		t.Fatal("the question set aside is still kept")
+	}
+	// Another id leaves the dialog; its own id takes it.
+	s.WithdrawQuestion("not-this-one")
+	if got := s.Info().Attention; got.ID != dialog.ID {
+		t.Fatalf("an unrelated id took the dialog: %+v", got)
+	}
+	s.WithdrawQuestion(dialog.ID)
+	if got := s.Info().Attention; got.State == AttentionNeedsInput {
+		t.Fatalf("the dialog named by its id stays: %+v", got)
+	}
+}
+
+// The same question asked again names the same id (a blocker reported
+// twice), and a question the hold of the turn holds over is withdrawn with
+// the agent's own copy, so the hold's end does not show it again (Codex's
+// review of #353).
+func TestWithdrawingAQuestionReachesTheOneHeldOver(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	id, err := s.TryAskID("Which heading style?", SourceAPI, "", nil)
+	if err != nil || id == "" {
+		t.Fatalf("TryAskID: %q %v", id, err)
+	}
+	again, err := s.TryAskID("Which heading style?", SourceAPI, "", nil)
+	if err != nil || again != id {
+		t.Fatalf("the same question asked again: %q, want %q (%v)", again, id, err)
+	}
+	// The hold of the turn takes its place: the question is held over, and the agent's own.
+	go holdNow(s)
+	heldShows(t, s)
+	s.mu.Lock()
+	held, own := s.heldOver.ID, s.own.ID
+	s.mu.Unlock()
+	if held != id || own != id {
+		t.Fatalf("held over %q, own %q, want %q", held, own, id)
+	}
+	s.WithdrawQuestion(id)
+	s.mu.Lock()
+	held, own = s.heldOver.ID, s.own.ID
+	s.mu.Unlock()
+	if held != "" || own != "" {
+		t.Fatalf("after the withdrawal: held over %q, own %q", held, own)
+	}
+	if a := s.Info().Attention; a.Source != SourceSubmit {
+		t.Fatalf("the hold no longer shows: %+v", a)
+	}
+}

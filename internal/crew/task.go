@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -276,12 +277,20 @@ type taskResult struct {
 	// branch is the result attempt's, when the attempt is not this run's
 	// (imported): a dependent's task file names it.
 	branch string
+	// reviewed is a review's candidate, the commit its result attempt
+	// started at: a review submits no commit, and a task needing it starts
+	// there (#351), a continuation's too (imported with the result).
+	reviewed string
 }
 
 // attempt is one try at a task: one member session in one worktree.
 type attempt struct {
-	t *task
-	m *member
+	// askMu serializes the questions its blockers ask of its session
+	// (Blocked): a report superseded by a later one neither asks nor
+	// withdraws what the later one owns (Codex's review of #353).
+	askMu sync.Mutex
+	t     *task
+	m     *member
 	// checkpoint is the attempt's last checkpoint (checkpoints.go).
 	checkpoint *checkpoint
 	n          int
@@ -844,13 +853,19 @@ func (r *run) inputs(t *task) []input {
 		if need == nil || need.result == nil {
 			continue
 		}
-		branch := need.result.branch
+		branch, commit := need.result.branch, need.result.commit
 		for _, a := range need.attempts {
 			if a.n == need.result.attempt {
 				branch = a.branch
 			}
 		}
-		out = append(out, input{task: n, attempt: need.result.attempt, commit: need.result.commit, summary: need.result.summary, branch: branch, verdict: need.result.verdict})
+		if commit == "" {
+			// A review submits no commit: its result is its verdict on its
+			// candidate, which is what a task needing it starts from and
+			// descends from (#351).
+			commit = need.result.reviewed
+		}
+		out = append(out, input{task: n, attempt: need.result.attempt, commit: commit, summary: need.result.summary, branch: branch, verdict: need.result.verdict})
 	}
 	return out
 }
@@ -1024,6 +1039,7 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 	}
 	e.endAttempt(r, a, state, stage, errText)
 	t := a.t
+	e.withdrawBlocker(a, t.blocker)
 	t.blocker = nil
 	switch state {
 	case ledger.AttemptSucceeded:
@@ -1403,9 +1419,9 @@ func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, c
 	case res.Err != "" && !res.TimedOut:
 		return fmt.Errorf("%s could not run: %s", ch.ID, res.Err)
 	case res.TimedOut:
-		return fmt.Errorf("%s timed out after %s%s", ch.ID, checkTimeout(ch), tailWords(res.Tail))
+		return fmt.Errorf("%s timed out after %s%s", ch.ID, checkTimeout(ch), tailWords(lastOutput(res, checkTail)))
 	case res.Exit != 0:
-		return fmt.Errorf("%s exited %d%s", ch.ID, res.Exit, tailWords(res.Tail))
+		return fmt.Errorf("%s exited %d%s", ch.ID, res.Exit, tailWords(lastOutput(res, checkTail)))
 	}
 	return nil
 }
@@ -1759,6 +1775,9 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 		if ok {
 			res = a.submitted
 			t.result = &taskResult{attempt: a.n, commit: a.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
+			if t.def.Kind == TaskReview {
+				t.result.reviewed = a.start
+			}
 			t.repair = nil
 			e.closeAttempt(r, a, ledger.AttemptSucceeded, "", "")
 			if t.def.Kind == TaskReview && res.Verdict == VerdictNeedsChanges {

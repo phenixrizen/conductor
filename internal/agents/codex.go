@@ -128,12 +128,18 @@ func codexAdapter() Adapter {
 		ConfigDirEnv: "CODEX_HOME",
 		// Codex takes an MCP server as config overrides: [mcp_servers.<name>]
 		// command and args (its config.toml; verified against codex mcp add).
+		// It starts a stdio MCP server with a minimal environment of its own
+		// (HOME, PATH, TERM and a few more), not the session's, so the
+		// server would not know its session and every Conductor tool failed
+		// (#354): env_vars names the variables Codex copies from its own
+		// environment into the server's. Names only: the token's value
+		// never goes on argv or into a file.
 		MCP: func(hooksDir string) []string {
 			bin, err := binPath()
 			if err != nil {
 				return nil
 			}
-			return []string{"-c", "mcp_servers.conductor.command=" + tomlString(bin), "-c", `mcp_servers.conductor.args=["mcp"]`}
+			return []string{"-c", "mcp_servers.conductor.command=" + tomlString(bin), "-c", `mcp_servers.conductor.args=["mcp"]`, "-c", "mcp_servers.conductor.env_vars=" + codexMCPEnv}
 		},
 		Status: func(home string) (bool, string) {
 			return statusOf(home, codexConfig, codexSteps("")...)
@@ -150,3 +156,7 @@ func codexAdapter() Adapter {
 		Events: []string{"needs_input", "working", "done", "tool_use"},
 	}
 }
+
+// codexMCPEnv is the TOML list of the variables Codex passes on to
+// Conductor's MCP server (#354): every CONDUCTOR_* one a session sets.
+const codexMCPEnv = `["CONDUCTOR_SESSION_ID","CONDUCTOR_NOTIFY_URL","CONDUCTOR_NOTIFY_TOKEN","CONDUCTOR_BIN","CONDUCTOR_CREW","CONDUCTOR_RUN","CONDUCTOR_MEMBER","CONDUCTOR_TASK","CONDUCTOR_ATTEMPT","CONDUCTOR_TASK_FILE","CONDUCTOR_AGENT","CONDUCTOR_SKILL"]`

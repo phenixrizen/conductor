@@ -37,6 +37,10 @@ var (
 type blocker struct {
 	reason, message, by string
 	at                  time.Time
+	// asked is the id of the question the blocker put to the session
+	// (session's Attention.ID) and session the session's id, so that the
+	// question is withdrawn when the blocker clears (#353).
+	asked, session string
 }
 
 // Blocker is a blocker as the run reports it.
@@ -90,12 +94,14 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 		return TaskState{}, err
 	}
 	var st TaskState
+	var mine *blocker
 	err = e.transact(ctx, r, func() tx {
 		if !a.closedAt.IsZero() || a.state != ledger.AttemptRunning {
 			return tx{}
 		}
 		t := a.t
-		t.blocker = &blocker{reason: reason, message: message, by: a.m.def.Name, at: time.Now().UTC()}
+		mine = &blocker{reason: reason, message: message, by: a.m.def.Name, at: time.Now().UTC(), session: a.sessionID}
+		t.blocker = mine
 		r.markTask(t)
 		r.note(session.ActivityStatus, "task %s: %s is blocked: %s", t.def.ID, a.m.def.Name, reason)
 		st = r.taskStateOf(t)
@@ -113,9 +119,83 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 		ask = reason
 	}
 	if l, ok := e.lookup(a.sessionID); ok {
-		_ = l.TryAsk(ask, session.SourceAPI, "", nil)
+		// The question this ask put up, by its id (read with the ask, so
+		// another asked meanwhile is never taken for it), kept on this
+		// blocker to withdraw when it clears; a blocker cleared before the
+		// id is kept (a result, a working report in between) withdraws it
+		// at once (Codex's review of #353).
+		if blockedBeforeAsk != nil {
+			blockedBeforeAsk()
+		}
+		a.askMu.Lock()
+		defer a.askMu.Unlock()
+		e.mu.Lock()
+		current := a.t.blocker == mine && a.closedAt.IsZero()
+		e.mu.Unlock()
+		// A report superseded by a later one, or a blocker cleared already,
+		// asks nothing: the question is the current blocker's to ask.
+		if current {
+			if id, err := l.TryAskID(ask, session.SourceAPI, "", nil); err == nil && id != "" {
+				e.mu.Lock()
+				still := a.t.blocker == mine && a.closedAt.IsZero()
+				if still {
+					mine.asked = id
+				}
+				e.mu.Unlock()
+				if !still {
+					// Cleared while it asked: its question goes now, by the
+					// id at hand, before another blocker of this attempt
+					// asks (askMu); the detached blocker is not written.
+					l.WithdrawQuestion(id)
+				}
+			}
+		}
 	}
 	return st, nil
+}
+
+// blockedBeforeAsk, when set, runs in Blocked between the blocker's record
+// and its question: a test holds a report there while a later one lands.
+var blockedBeforeAsk func()
+
+// withdrawBeforeLock, when set, runs as a cleared blocker's withdrawal
+// begins, before it takes the attempt's askMu: a test holds it there.
+var withdrawBeforeLock func()
+
+// withdrawAfter, when set, runs as a cleared blocker's withdrawal ends.
+var withdrawAfter func()
+
+// withdrawBlocker takes away the question blocker b put to a's session, if
+// that question still shows: a cleared blocker, its task working on or
+// ended, leaves no "needs you" behind (#353). It runs apart from e.mu, on
+// a's askMu, after any blocker's ask under way, and withdraws nothing a
+// blocker of the attempt has since taken for its own (the same question
+// asked again keeps its id; Codex's review of #353).
+func (e *Engine) withdrawBlocker(a *attempt, b *blocker) {
+	if a == nil || b == nil || b.asked == "" || b.session == "" {
+		return
+	}
+	id, sid := b.asked, b.session
+	before, after := withdrawBeforeLock, withdrawAfter
+	go func() {
+		if after != nil {
+			defer after()
+		}
+		if before != nil {
+			before()
+		}
+		a.askMu.Lock()
+		defer a.askMu.Unlock()
+		e.mu.Lock()
+		owned := a.t.blocker != nil && a.t.blocker.asked == id
+		e.mu.Unlock()
+		if owned {
+			return
+		}
+		if l, ok := e.lookup(sid); ok {
+			l.WithdrawQuestion(id)
+		}
+	}()
 }
 
 // unblock clears the attempt's task's blocker, as the attempt works on or
@@ -127,11 +207,13 @@ func (e *Engine) unblock(r *run, a *attempt, state session.AttentionState) {
 	if !blocked {
 		return
 	}
+	var cleared *blocker
 	err := e.transact(context.Background(), r, func() tx {
 		t := a.t
 		if t.blocker == nil || !a.closedAt.IsZero() {
 			return tx{}
 		}
+		cleared = t.blocker
 		t.blocker = nil
 		r.markTask(t)
 		r.note(session.ActivityStatus, "task %s: %s is no longer blocked (%s)", t.def.ID, a.m.def.Name, state)
@@ -139,7 +221,9 @@ func (e *Engine) unblock(r *run, a *attempt, state session.AttentionState) {
 	}, nil)
 	if err != nil {
 		e.afterTransact(r, err)
+		return
 	}
+	e.withdrawBlocker(a, cleared)
 }
 
 // SaveCheckpoint keeps where the session's attempt got to, tied to its
