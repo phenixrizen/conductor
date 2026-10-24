@@ -3194,6 +3194,17 @@ func (s *Local) resolve(id string, token uint64, by, byName string) {
 			// shows again.
 			now := time.Now().UTC()
 			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
+		} else if heldSource(q.Source) && s.statusSeen && s.lastStatus == StatusWorking && !s.info.Status.Ended() {
+			// A dialog answered while the program's status says it works:
+			// Codex writes working as its overlay closes, before the answer
+			// is taken or after it; read before, the status was kept out by
+			// the dialog on the screen (unlessOnScreen) and is not written
+			// again (readStatus), so working shows at the answer, as the
+			// status's, recorded below (statusReconciled) as it is when the
+			// answer comes after (#281).
+			now := time.Now().UTC()
+			s.info.Attention = Attention{State: AttentionWorking, Source: SourceStatus, Since: &now}
+			s.statusReconciled = true
 		}
 		s.settleLocked(s.info.Attention)
 		s.signalAttention()
@@ -3206,6 +3217,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string) {
 		s.tellRun(answered)
 	}
 	s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: q.Message})
+	s.recordStatusReconciled()
 	s.notifyChange()
 }
 
@@ -3311,6 +3323,16 @@ func (s *Local) withdrawShownLocked(source string) {
 		now := time.Now().UTC()
 		s.info.Attention = Attention{State: AttentionNeedsInput, Message: statusWords(s.statusKind), Source: SourceStatus, Kind: statusKindOf(s.statusKind), Since: &now, ID: NewID()}
 		s.statusReconciled = true
+	} else if source == SourceScreen && heldSource(att.Source) && s.statusSeen && s.lastStatus == StatusWorking && !s.info.Status.Ended() {
+		// The screen moved on from a question the session held while the
+		// program's status says it works: read as the question showed and
+		// kept out by the dialog on the screen (unlessOnScreen), and not
+		// written again (readStatus). Working shows now, as the status's,
+		// recorded by the caller (statusReconciled); Codex writes it as its
+		// overlay closes, before or after the screen shows it gone (#281).
+		now := time.Now().UTC()
+		s.info.Attention = Attention{State: AttentionWorking, Source: SourceStatus, Since: &now}
+		s.statusReconciled = true
 	}
 	s.settleLocked(s.info.Attention)
 	s.signalAttention()
@@ -3343,8 +3365,15 @@ func (s *Local) recordStatusReconciled() {
 	att, done := s.info.Attention, s.statusReconciled
 	s.statusReconciled = false
 	s.mu.Unlock()
-	if done && att.State == AttentionNeedsInput && att.Source == SourceStatus {
+	if !done || att.Source != SourceStatus {
+		return
+	}
+	switch att.State {
+	case AttentionNeedsInput:
 		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
+	case AttentionWorking:
+		// Labelled as a working change is (setAttentionLooked): by its state.
+		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking)
 	}
 }
 

@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -307,8 +308,10 @@ func screenAsks(a Attention) bool {
 // A question the session holds on the screen (Codex's approval, read by the
 // catalog's pattern) is untouched by the statuses read while it shows, as
 // under a Working title: a blocked status is kept out by the dialog's better
-// words, a working one by the dialog on the screen; the dialog gone, the
-// screen's withdrawal stands, nothing re-raised with the status working.
+// words, a working one by the dialog on the screen. The dialog gone (a key
+// typed in the terminal answered it), the program's last word stands:
+// working, as the status's, with its entry (#281: Codex writes it as its
+// overlay closes, and never again).
 func TestStatusesLeaveAQuestionHeldOnTheScreen(t *testing.T) {
 	const settle = 200 * time.Millisecond
 	s, p := newLocalWith(t, titled(settle, Options{}))
@@ -317,11 +320,58 @@ func TestStatusesLeaveAQuestionHeldOnTheScreen(t *testing.T) {
 	att := waitAttention(t, s, screenAsks)
 	out(p, codexStatus(StatusBlocked, "permission"), codexStatus(StatusWorking, ""), codexStatus(StatusBlocked, "permission"), codexStatus(StatusWorking, ""))
 	stays(t, s, settle+100*time.Millisecond, "the approval under statuses", func(a Attention) bool { return screenAsks(a) && a.ID == att.ID })
+	before := len(entries(s))
 	p.outW.Write([]byte(approvalGone("✔ You approved codex to run curl this time\r\n› ")))
-	if a := waitAttention(t, s, none); a.Source != SourceScreen {
-		t.Fatalf("the dialog withdrawn: %+v", a)
+	if a := waitAttention(t, s, statusWorks); a.Since == nil {
+		t.Fatalf("working after the dialog, without its time: %+v", a)
 	}
-	stays(t, s, 200*time.Millisecond, "nothing after the dialog with the status working", none)
+	stays(t, s, 200*time.Millisecond, "working after the dialog with the status working", statusWorks)
+	if got := entries(s); len(got) != before+1 || got[len(got)-1] != string(AttentionWorking) {
+		t.Fatalf("entries after the dialog: %v (had %d)", got, before)
+	}
+}
+
+// A Codex approval answered through Conductor (a row's choice, the chat's),
+// the program's status written as its overlay closes: before the answer is
+// taken or after it, working follows the answer either way, with its entry
+// (#281, codexworking.spec.ts:300, which failed when the status came first).
+// Here it comes first, kept out by the dialog on the screen, and the answer
+// takes it up; the dialog leaving the screen then changes nothing.
+func TestAWorkingStatusReadUnderADialogShowsOnceTheDialogIsAnswered(t *testing.T) {
+	var mu sync.Mutex
+	var states []AttentionState
+	s, p := newLocalWith(t, titled(200*time.Millisecond, Options{OnActivity: func(_ string, e ActivityEntry, st AttentionState) {
+		if e.Type == ActivityAttention {
+			mu.Lock()
+			states = append(states, st)
+			mu.Unlock()
+		}
+	}}))
+	go func() {
+		for range p.input {
+		}
+	}()
+	out(p, codexTurnBegins, codexStatus(StatusWorking, ""))
+	p.outW.Write([]byte(approvalDialog("ls -la")))
+	att := waitAttention(t, s, screenAsks)
+	out(p, codexStatus(StatusBlocked, "permission"), codexStatus(StatusWorking, ""))
+	stays(t, s, 100*time.Millisecond, "the approval under the status", func(a Attention) bool { return screenAsks(a) && a.ID == att.ID })
+	sink := newChanSink(false)
+	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, sink)
+	if err := s.AnswerInput(t.Context(), sub, att.ID, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if a := waitAttention(t, s, statusWorks); a.Since == nil {
+		t.Fatalf("working at the answer, without its time: %+v", a)
+	}
+	p.outW.Write([]byte(approvalGone("✔ You approved codex to run ls -la\r\n› ")))
+	stays(t, s, 300*time.Millisecond, "working once the dialog left", statusWorks)
+	mu.Lock()
+	got := append([]AttentionState(nil), states...)
+	mu.Unlock()
+	if n := len(got); n < 2 || got[n-1] != AttentionWorking || got[n-2] != AttentionNeedsInput {
+		t.Fatalf("the states told: %v", got)
+	}
 }
 
 // The agent's own question (Ask) under a working status is set aside as under
