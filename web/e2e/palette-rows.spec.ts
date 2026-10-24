@@ -286,11 +286,13 @@ test('a session row’s actions: the copies say so, Open Files/Chat/Activity/Peo
   await a('field').click()
   await expect(page.locator(`[data-palette-row="session:${s.id}"] [data-palette-field] input`)).toBeFocused()
   await closePalette(page)
-  const before = (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.length
   a = await act('e2e rows gone', gone.id)
   await a('resume').click()
-  await expect.poll(async () => (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.length, { timeout: 30_000 }).toBe(before + 1)
-  const made = (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.find((x) => x.name === 'e2e rows gone' && x.id !== gone.id)
+  // The new session itself, by its name: the list's length is no measure of it, since the server sweeps sessions that ended a
+  // while ago at any time (#281: on CI, with ninety sessions from the specs before, the count fell by eight as this waited).
+  const resumed = async () => (await api.ok<{ sessions: Session[] }>('GET', '/api/sessions')).sessions.find((x) => x.name === 'e2e rows gone' && x.id !== gone.id)
+  await expect.poll(async () => (await resumed())?.id ?? '', { timeout: 30_000, message: 'Resume makes a new session under the old name' }).toMatch(/^[0-9a-f]{16}$/)
+  const made = await resumed()
   if (made) sessions.push(made.id)
 })
 
