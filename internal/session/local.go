@@ -1622,7 +1622,36 @@ func (s *Local) TryAsk(message, source, kind string, options []Option) error {
 // agent's behalf and no longer stands: a crew task's blocker, cleared as
 // its task works on or ends (#353).
 func (s *Local) WithdrawQuestion(id string) {
-	_ = s.setAttentionLooked(AttentionNone, "", SourceAPI, "", nil, 0, anyTurn, 0, "", id)
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.info.Attention.ID != id {
+		// Not the question shown: only the agent's own kept aside, if it is
+		// that one, goes; the question shown (another one, a dialog asked
+		// over it) stays as it is (Codex's review of #353).
+		dropped := s.own.ID == id
+		if dropped {
+			s.dropOwnLocked(ChatLeftAgent)
+		}
+		s.mu.Unlock()
+		if dropped {
+			s.notifyChange()
+		}
+		return
+	}
+	s.mu.Unlock()
+	_ = s.setAttentionLooked(AttentionNone, "", SourceAPI, "", nil, 0, anyTurn, 0, "", attentionOpt{only: id})
+}
+
+// TryAskID is TryAsk that says which question it put up: the id of the
+// agent's own question the ask keeps, read under the change's lock, so
+// that a question asked by another meanwhile is never taken for it; ""
+// when the ask kept none.
+func (s *Local) TryAskID(message, source, kind string, options []Option) (string, error) {
+	var id string
+	err := s.setAttentionLooked(AttentionNeedsInput, message, source, kind, options, spendToken|agentAsks, anyTurn, 0, "", attentionOpt{asked: &id})
+	return id, err
 }
 
 // attentionRules say how setAttention applies a change.
@@ -1754,7 +1783,20 @@ func (s *Local) setAttentionRead(state AttentionState, message, source, kind str
 // question asks approval for, when the change names one (#289): learnt
 // once the change is past the bucket, and set on the question shown, or
 // on the dialog of that approval already showing.
-func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string, only ...string) error {
+// attentionOpt narrows a change of setAttentionLooked: only, the question
+// it applies to (WithdrawQuestion: nothing changes unless that is the one
+// shown); asked, where the id of the agent's own question the change keeps
+// is written, under the change's lock (TryAskID).
+type attentionOpt struct {
+	only  string
+	asked *string
+}
+
+func (s *Local) setAttentionLooked(state AttentionState, message, source, kind string, options []Option, rules attentionRules, turn, look uint64, plan string, opts ...attentionOpt) error {
+	var opt attentionOpt
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	if !state.Valid() {
 		return nil
 	}
@@ -1790,9 +1832,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		countDrop(&s.dropped, log, ActivityAttention)
 		return ErrRateLimited
 	}
-	if len(only) > 0 && (only[0] == "" || s.info.Attention.ID != only[0] && s.own.ID != only[0]) {
+	if len(opts) > 0 && opt.asked == nil && (opt.only == "" || s.info.Attention.ID != opt.only) {
 		// A change for one question (WithdrawQuestion), which is no longer
-		// the one shown nor the agent's own kept aside: nothing to change.
+		// the one shown: nothing to change.
 		s.mu.Unlock()
 		return nil
 	}
@@ -2035,6 +2077,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 			// from here, as asked in this turn.
 			s.info.Attention.ask = true
 			s.own, s.ownAside, s.ownTurn = s.info.Attention, false, s.turn.Load()
+			if opt.asked != nil {
+				*opt.asked = s.own.ID
+			}
 		}
 		// The same question, now with its plan named (the dialog's footer
 		// read on a later look): set on it.
@@ -2108,6 +2153,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		att.ask = true
 		prev := s.own.ID
 		s.own, s.ownAside, s.ownTurn = att, false, s.turn.Load()
+		if opt.asked != nil {
+			*opt.asked = att.ID
+		}
 		if prev != "" && prev != att.ID {
 			s.leftInChatLocked(prev, ChatLeftAgent)
 		}

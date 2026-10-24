@@ -94,12 +94,14 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 		return TaskState{}, err
 	}
 	var st TaskState
+	var mine *blocker
 	err = e.transact(ctx, r, func() tx {
 		if !a.closedAt.IsZero() || a.state != ledger.AttemptRunning {
 			return tx{}
 		}
 		t := a.t
-		t.blocker = &blocker{reason: reason, message: message, by: a.m.def.Name, at: time.Now().UTC()}
+		mine = &blocker{reason: reason, message: message, by: a.m.def.Name, at: time.Now().UTC(), session: a.sessionID}
+		t.blocker = mine
 		r.markTask(t)
 		r.note(session.ActivityStatus, "task %s: %s is blocked: %s", t.def.ID, a.m.def.Name, reason)
 		st = r.taskStateOf(t)
@@ -117,14 +119,18 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 		ask = reason
 	}
 	if l, ok := e.lookup(a.sessionID); ok {
-		if l.TryAsk(ask, session.SourceAPI, "", nil) == nil {
-			// The question the blocker asked, to withdraw when it clears.
-			if att := l.Info().Attention; att.State == session.AttentionNeedsInput && att.Source == session.SourceAPI {
-				e.mu.Lock()
-				if b := a.t.blocker; b != nil && a.closedAt.IsZero() {
-					b.asked, b.session = att.ID, a.sessionID
-				}
-				e.mu.Unlock()
+		// The question this ask put up, by its id (read with the ask, so
+		// another asked meanwhile is never taken for it), kept on this
+		// blocker to withdraw when it clears; a blocker cleared before the
+		// id is kept (a result, a working report in between) withdraws it
+		// at once (Codex's review of #353).
+		if id, err := l.TryAskID(ask, session.SourceAPI, "", nil); err == nil && id != "" {
+			e.mu.Lock()
+			still := a.t.blocker == mine && a.closedAt.IsZero()
+			mine.asked = id
+			e.mu.Unlock()
+			if !still {
+				e.withdrawBlocker(mine)
 			}
 		}
 	}

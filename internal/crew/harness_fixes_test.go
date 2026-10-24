@@ -150,3 +150,36 @@ func waitAttention(t *testing.T, l *session.Local, what string, ok func(session.
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A run stopped after its review approved, continued: the review's result
+// is imported, and the task needing it starts at the reviewed commit in
+// the continuation too, its result held to descend from it (Codex's review
+// of #351: an imported review had no attempt to take its start from).
+func TestAContinuationStartsAReviewsDependentAtTheReviewedCommit(t *testing.T) {
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), review("check", "reviewer", "build"), work("docs", "writer", "check")))
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	commitResult(t, e, b, "built.txt", "yes\n", "built")
+	commit := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Result.Commit
+	rev := waitAttempt(t, e, run.ID, "check", ledger.AttemptRunning)
+	submit(t, e, rev.Attempt.SessionID, Result{Verdict: VerdictApproved, Summary: "fine"})
+	waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	if err := e.Stop(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := e.ContinueRun(context.Background(), run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := waitTaskWhere(t, e, next.ID, "docs", "at attempt 2, running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if d.Attempt.Start != commit {
+		t.Fatalf("docs starts at %s in the continuation, the reviewed commit is %s", d.Attempt.Start, commit)
+	}
+	if _, f := taskFileOf(t, d); len(f.Inputs) != 1 || f.Inputs[0].Commit != commit {
+		t.Fatalf("docs' input in the continuation: %+v", f.Inputs)
+	}
+	stopRun(t, e, next.ID)
+}

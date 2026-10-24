@@ -276,6 +276,10 @@ type taskResult struct {
 	// branch is the result attempt's, when the attempt is not this run's
 	// (imported): a dependent's task file names it.
 	branch string
+	// reviewed is a review's candidate, the commit its result attempt
+	// started at: a review submits no commit, and a task needing it starts
+	// there (#351), a continuation's too (imported with the result).
+	reviewed string
 }
 
 // attempt is one try at a task: one member session in one worktree.
@@ -848,13 +852,13 @@ func (r *run) inputs(t *task) []input {
 		for _, a := range need.attempts {
 			if a.n == need.result.attempt {
 				branch = a.branch
-				if commit == "" && need.def.Kind == TaskReview {
-					// A review submits no commit: its result is its verdict
-					// on its candidate, the commit its attempt started at,
-					// which is what a task needing it starts from (#351).
-					commit = a.start
-				}
 			}
+		}
+		if commit == "" {
+			// A review submits no commit: its result is its verdict on its
+			// candidate, which is what a task needing it starts from and
+			// descends from (#351).
+			commit = need.result.reviewed
 		}
 		out = append(out, input{task: n, attempt: need.result.attempt, commit: commit, summary: need.result.summary, branch: branch, verdict: need.result.verdict})
 	}
@@ -1766,6 +1770,9 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 		if ok {
 			res = a.submitted
 			t.result = &taskResult{attempt: a.n, commit: a.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
+			if t.def.Kind == TaskReview {
+				t.result.reviewed = a.start
+			}
 			t.repair = nil
 			e.closeAttempt(r, a, ledger.AttemptSucceeded, "", "")
 			if t.def.Kind == TaskReview && res.Verdict == VerdictNeedsChanges {
