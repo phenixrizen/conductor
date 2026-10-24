@@ -124,22 +124,39 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 		// blocker to withdraw when it clears; a blocker cleared before the
 		// id is kept (a result, a working report in between) withdraws it
 		// at once (Codex's review of #353).
-		if id, err := l.TryAskID(ask, session.SourceAPI, "", nil); err == nil && id != "" {
-			e.mu.Lock()
-			still := a.t.blocker == mine && a.closedAt.IsZero()
-			if still {
-				mine.asked = id
-			}
-			e.mu.Unlock()
-			if !still {
-				// Cleared already: its question goes now, by the id at hand
-				// (the blocker, detached, is not written again).
-				go l.WithdrawQuestion(id)
+		if blockedBeforeAsk != nil {
+			blockedBeforeAsk()
+		}
+		a.askMu.Lock()
+		defer a.askMu.Unlock()
+		e.mu.Lock()
+		current := a.t.blocker == mine && a.closedAt.IsZero()
+		e.mu.Unlock()
+		// A report superseded by a later one, or a blocker cleared already,
+		// asks nothing: the question is the current blocker's to ask.
+		if current {
+			if id, err := l.TryAskID(ask, session.SourceAPI, "", nil); err == nil && id != "" {
+				e.mu.Lock()
+				still := a.t.blocker == mine && a.closedAt.IsZero()
+				if still {
+					mine.asked = id
+				}
+				e.mu.Unlock()
+				if !still {
+					// Cleared while it asked: its question goes now, by the
+					// id at hand, before another blocker of this attempt
+					// asks (askMu); the detached blocker is not written.
+					l.WithdrawQuestion(id)
+				}
 			}
 		}
 	}
 	return st, nil
 }
+
+// blockedBeforeAsk, when set, runs in Blocked between the blocker's record
+// and its question: a test holds a report there while a later one lands.
+var blockedBeforeAsk func()
 
 // withdrawBlocker takes away the question blocker b put to its session, if
 // that question still shows: a cleared blocker, its task working on or

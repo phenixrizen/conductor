@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -284,8 +285,12 @@ type taskResult struct {
 
 // attempt is one try at a task: one member session in one worktree.
 type attempt struct {
-	t *task
-	m *member
+	// askMu serializes the questions its blockers ask of its session
+	// (Blocked): a report superseded by a later one neither asks nor
+	// withdraws what the later one owns (Codex's review of #353).
+	askMu sync.Mutex
+	t     *task
+	m     *member
 	// checkpoint is the attempt's last checkpoint (checkpoints.go).
 	checkpoint *checkpoint
 	n          int

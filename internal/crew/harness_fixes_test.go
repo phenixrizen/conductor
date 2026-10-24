@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -204,6 +205,53 @@ func TestABlockerReportedTwiceStillLeavesWithTheResult(t *testing.T) {
 	commitResult(t, e, b, "built.txt", "yes\n", "built")
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
 	waitAttention(t, l, "the question withdrawn", func(a session.Attention) bool {
+		return a.State != session.AttentionNeedsInput || a.ID != asked.ID
+	})
+	stopRun(t, e, run.ID)
+}
+
+// Two overlapping reports of the same blocker: the first, held after its
+// record until the second has asked and kept its question, asks nothing
+// and withdraws nothing; the question stays the second's, and the result
+// takes it away (Codex's review of #353).
+func TestASupersededBlockerReportLeavesTheCurrentQuestion(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	l, _ := fl.attemptSession(t, b)
+	reached, release := make(chan struct{}), make(chan struct{})
+	// Only the first report is held: sync.Once would make the second wait for it.
+	var first0 atomic.Bool
+	blockedBeforeAsk = func() {
+		if first0.CompareAndSwap(false, true) {
+			close(reached)
+			<-release
+		}
+	}
+	t.Cleanup(func() { blockedBeforeAsk = nil })
+	first := make(chan error, 1)
+	go func() {
+		_, err := e.Blocked(context.Background(), b.Attempt.SessionID, "style", "Which heading style?")
+		first <- err
+	}()
+	<-reached
+	if _, err := e.Blocked(context.Background(), b.Attempt.SessionID, "style", "Which heading style?"); err != nil {
+		t.Fatal(err)
+	}
+	asked := waitAttention(t, l, "the second report's question", func(a session.Attention) bool {
+		return a.State == session.AttentionNeedsInput && a.Message == "Which heading style?"
+	})
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if a := l.Info().Attention; a.State != session.AttentionNeedsInput || a.ID != asked.ID {
+		t.Fatalf("the superseded report took the current question: %+v", a)
+	}
+	commitResult(t, e, b, "built.txt", "yes\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	waitAttention(t, l, "the question withdrawn with the result", func(a session.Attention) bool {
 		return a.State != session.AttentionNeedsInput || a.ID != asked.ID
 	})
 	stopRun(t, e, run.ID)
