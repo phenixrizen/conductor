@@ -17,11 +17,13 @@ const target = computed(() => {
 })
 
 watch(
-  [target, wide],
-  ([t, w]) => {
+  [target, wide, attention.loaded],
+  ([t, w, loaded]) => {
     if (!w) navigateTo('/sessions', { replace: true })
-    // Wide with nothing to open, the home is the Yard, whose empty state is not the sidebar's (#359).
-    else navigateTo(t ? `/sessions/${t.id}` : '/yard', { replace: true })
+    else if (t) navigateTo(`/sessions/${t.id}`, { replace: true })
+    // Wide with nothing to open, once the sessions have been read (an empty store before that says nothing): the home is
+    // the Yard, whose empty state is not the sidebar's (#359).
+    else if (loaded) navigateTo('/yard', { replace: true })
   },
   { immediate: true },
 )

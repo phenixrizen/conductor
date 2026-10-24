@@ -1857,6 +1857,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// where a reply would be taken for an answer the program has.
 	inTurn := own.ID != "" && s.turn.Load() == s.ownTurn && !s.turnEnded
 	reached := own.ID != "" && (s.claimedLocked(own.ID) || s.consumed == own.ID)
+	// Read here, before forgetLocked lets the question's consumption go: why its
+	// card says it left, should the change below let it go for good (#358).
+	ownConsumed := own.ID != "" && s.consumed == own.ID
 	if s.held != nil && source != SourceSubmit && !heldSource(source) {
 		// The session's turn is held for a typed text (holdTyped): the hold
 		// is what shows, until a person types into the terminal, but for a
@@ -2095,12 +2098,10 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	default:
 		// A state after its turn's done (the agent at work in a new turn,
 		// another wait), a clear, or a question a reply or a person's
-		// keys reached: it goes for good. A reply under way writes its own
-		// answered line (resolve); keys typed answered it in the terminal.
+		// keys reached: it goes for good, its card saying why (a reply
+		// under way resolves nothing once the question has left).
 		reason := ChatLeftAgent
-		if s.claimedLocked(own.ID) {
-			reason = ""
-		} else if s.consumed == own.ID {
+		if ownConsumed {
 			reason = ChatLeftTerminal
 		}
 		s.dropOwnLocked(reason)
@@ -3799,6 +3800,9 @@ func (s *Local) answeredLeft() string {
 // the dialog and not the text.
 func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, startup, enter, person bool) {
 	s.mu.Lock()
+	// The agent's own question let go here leaves a withdrawn line (#358) that
+	// no state change follows: told once the lock is let go.
+	defer s.tellChatLeft()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
 		s.noteDialogAnswered(onScreen.words)

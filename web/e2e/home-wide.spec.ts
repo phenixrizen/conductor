@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, test } from './fixtures'
+import { Api, expect, test, type Session } from './fixtures'
 import { renderConfig, startServer, stopServer, type Started } from './server'
 
 // A server with nothing on it yet (#359): at desktop width the home and the
@@ -49,5 +49,14 @@ test('the empty home is the Yard with its welcome at desktop width, the list bel
   await page.setViewportSize({ width: 1440, height: 900 })
   await expect(page).toHaveURL(/\/yard$/, { timeout: 30_000 })
   await expect(page.locator('[data-yard-welcome]')).toBeVisible()
+
+  // With a session on the server, a fresh visit lands on it, not on the Yard: the home waits for the sessions to be read.
+  const api = new Api(server)
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e home target' })
+  await page.goto('/')
+  await expect(page).toHaveURL(new RegExp(`/sessions/${s.id}$`), { timeout: 30_000 })
+  await page.goto('/sessions')
+  await expect(page).toHaveURL(new RegExp(`/sessions/${s.id}$`), { timeout: 30_000 })
+  await api.stopSession(s.id)
   await context.close()
 })

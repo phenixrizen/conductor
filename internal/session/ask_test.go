@@ -1347,3 +1347,48 @@ func TestAClaimLetGoIsNotTheClaimMadeAgain(t *testing.T) {
 		t.Fatalf("an answer was recorded: %+v", a)
 	}
 }
+
+// The agent's own question that keys typed in the terminal reached (the
+// held text entered, its choice picked: consumed), then let go for good by
+// its working report, leaves the chat saying the terminal answered it
+// (#358): the consumption is read before the question is forgotten.
+func TestAnOwnQuestionTheTerminalAnsweredLeavesTheChatSayingSo(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	s.mu.Lock()
+	s.consumeLocked(q.ID)
+	s.mu.Unlock()
+	reportState(t, s, AttentionWorking, "")
+	left := waitChat(t, s, func(m ChatMessage) bool { return m.Event == "withdrawn" && m.Ref == q.ID })
+	if left.Text != ChatLeftTerminal {
+		t.Fatalf("the reason: %+v", left)
+	}
+}
+
+// A person's keys while the agent's own question waits aside let it go, and
+// the chat's withdrawn line is told at once, though no state changes (#358).
+func TestKeysWhileAnOwnQuestionWaitsAsideTellTheChatAtOnce(t *testing.T) {
+	s, _, _ := asking(t, Options{})
+	q := askOwn(t, s, "Which database?", dbChoices...)
+	reportState(t, s, AttentionWorking, "")
+	if _, aside := keeps(s); !aside {
+		t.Fatal("the question is not set aside")
+	}
+	watcher := newChanSink(false)
+	if _, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "watcher"}, watcher); err != nil {
+		t.Fatal(err)
+	}
+	owner := ownerOf(t, s)
+	if err := s.Input(owner, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	got := waitControl(watcher, func(m map[string]any) bool {
+		return chatOf(proto.ChatKindSystem)(m) && m["event"] == "withdrawn" && m["ref"] == q.ID
+	})
+	if got == nil {
+		t.Fatalf("the withdrawn line was not told; the chat %+v", s.ChatHistory())
+	}
+	if got["text"] != ChatLeftTerminal {
+		t.Fatalf("the reason told: %v", got)
+	}
+}
