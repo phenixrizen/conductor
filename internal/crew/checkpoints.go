@@ -158,15 +158,40 @@ func (e *Engine) Blocked(ctx context.Context, sessionID, reason, message string)
 // and its question: a test holds a report there while a later one lands.
 var blockedBeforeAsk func()
 
-// withdrawBlocker takes away the question blocker b put to its session, if
+// withdrawBeforeLock, when set, runs as a cleared blocker's withdrawal
+// begins, before it takes the attempt's askMu: a test holds it there.
+var withdrawBeforeLock func()
+
+// withdrawAfter, when set, runs as a cleared blocker's withdrawal ends.
+var withdrawAfter func()
+
+// withdrawBlocker takes away the question blocker b put to a's session, if
 // that question still shows: a cleared blocker, its task working on or
-// ended, leaves no "needs you" behind (#353). It runs apart from e.mu.
-func (e *Engine) withdrawBlocker(b *blocker) {
-	if b == nil || b.asked == "" || b.session == "" {
+// ended, leaves no "needs you" behind (#353). It runs apart from e.mu, on
+// a's askMu, after any blocker's ask under way, and withdraws nothing a
+// blocker of the attempt has since taken for its own (the same question
+// asked again keeps its id; Codex's review of #353).
+func (e *Engine) withdrawBlocker(a *attempt, b *blocker) {
+	if a == nil || b == nil || b.asked == "" || b.session == "" {
 		return
 	}
 	id, sid := b.asked, b.session
+	before, after := withdrawBeforeLock, withdrawAfter
 	go func() {
+		if after != nil {
+			defer after()
+		}
+		if before != nil {
+			before()
+		}
+		a.askMu.Lock()
+		defer a.askMu.Unlock()
+		e.mu.Lock()
+		owned := a.t.blocker != nil && a.t.blocker.asked == id
+		e.mu.Unlock()
+		if owned {
+			return
+		}
 		if l, ok := e.lookup(sid); ok {
 			l.WithdrawQuestion(id)
 		}
@@ -198,7 +223,7 @@ func (e *Engine) unblock(r *run, a *attempt, state session.AttentionState) {
 		e.afterTransact(r, err)
 		return
 	}
-	e.withdrawBlocker(cleared)
+	e.withdrawBlocker(a, cleared)
 }
 
 // SaveCheckpoint keeps where the session's attempt got to, tied to its

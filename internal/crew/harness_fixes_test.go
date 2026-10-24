@@ -256,3 +256,69 @@ func TestASupersededBlockerReportLeavesTheCurrentQuestion(t *testing.T) {
 	})
 	stopRun(t, e, run.ID)
 }
+
+// A cleared blocker's withdrawal held back while the same blocker is
+// reported again: the question, the same one with the same id, is the new
+// blocker's own, and the late withdrawal leaves it (Codex's review of
+// #353).
+func TestALateWithdrawalLeavesTheQuestionANewBlockerTookOver(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, _ := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	l, _ := fl.attemptSession(t, b)
+	if _, err := e.Blocked(context.Background(), b.Attempt.SessionID, "style", "Which heading style?"); err != nil {
+		t.Fatal(err)
+	}
+	asked := waitAttention(t, l, "the blocker's question", func(a session.Attention) bool {
+		return a.State == session.AttentionNeedsInput && a.Message == "Which heading style?"
+	})
+	reached, release := make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	withdrawBeforeLock = func() {
+		if held.CompareAndSwap(false, true) {
+			close(reached)
+			<-release
+		}
+	}
+	withdrawn := make(chan struct{}, 4)
+	withdrawAfter = func() { withdrawn <- struct{}{} }
+	t.Cleanup(func() { withdrawBeforeLock, withdrawAfter = nil, nil })
+	// A working report clears the blocker; its withdrawal is held back.
+	e.OnActivity(b.Attempt.SessionID, session.ActivityEntry{Type: session.ActivityAttention, At: time.Now().UTC()}, session.AttentionWorking)
+	waitTaskWhere(t, e, run.ID, "build", "unblocked", func(ts TaskState) bool { return ts.Blocker == nil })
+	<-reached
+	// Reported again: the same question, kept by the new blocker.
+	if _, err := e.Blocked(context.Background(), b.Attempt.SessionID, "style", "Which heading style?"); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	cur := e.runs[run.ID].task("build").blocker
+	ownedID := ""
+	if cur != nil {
+		ownedID = cur.asked
+	}
+	e.mu.Unlock()
+	if ownedID == "" {
+		t.Fatal("the new blocker keeps no question")
+	}
+	close(release)
+	select {
+	case <-withdrawn:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the late withdrawal did not run")
+	}
+	e.mu.Lock()
+	still := e.runs[run.ID].task("build").blocker
+	e.mu.Unlock()
+	if still == nil {
+		t.Fatal("the new blocker is gone")
+	}
+	// The question the new blocker owns is still shown.
+	if got := l.Info().Attention; got.State != session.AttentionNeedsInput || got.ID != ownedID {
+		t.Fatalf("the late withdrawal took the new blocker's question %s (first %s): %+v", ownedID, asked.ID, got)
+	}
+	commitResult(t, e, b, "built.txt", "yes\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	stopRun(t, e, run.ID)
+}

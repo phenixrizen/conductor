@@ -1039,7 +1039,7 @@ func (e *Engine) closeAttempt(r *run, a *attempt, state, stage, errText string) 
 	}
 	e.endAttempt(r, a, state, stage, errText)
 	t := a.t
-	e.withdrawBlocker(t.blocker)
+	e.withdrawBlocker(a, t.blocker)
 	t.blocker = nil
 	switch state {
 	case ledger.AttemptSucceeded:
