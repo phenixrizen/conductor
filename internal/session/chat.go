@@ -197,6 +197,10 @@ func (s *Local) askInChat(att Attention) (ChatMessage, string) {
 	}
 	q := ChatMessage{ID: id, At: at, Scope: proto.ChatScopeSession, Kind: proto.ChatKindQuestion, By: ChatBy{ID: "agent", Name: s.info.AgentID, Role: RoleAgent}, Text: text, Options: append([]Option(nil), att.Options...)}
 	s.question = q.ID
+	if s.askedInChat == nil {
+		s.askedInChat = map[string]struct{}{}
+	}
+	s.askedInChat[q.ID] = struct{}{}
 	return q, s.keepChat(q)
 }
 
@@ -206,7 +210,7 @@ func (s *Local) askInChat(att Attention) (ChatMessage, string) {
 // one asked last (another question may have shown over a held turn since,
 // and gone, the first restored by the hold's end). The caller holds s.mu;
 // nothing when no question was asked in the chat.
-func (s *Local) answeredInChat(id, by, byName string) (ChatMessage, string, bool) {
+func (s *Local) answeredInChat(id, by, byName, answer string) (ChatMessage, string, bool) {
 	ref := id
 	if ref == "" {
 		ref = s.question
@@ -217,11 +221,96 @@ func (s *Local) answeredInChat(id, by, byName string) (ChatMessage, string, bool
 	if byName == "" {
 		byName = "Conductor"
 	}
-	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "answered", Ref: ref, By: ChatBy{ID: by, Name: byName, Role: RoleControl}}
+	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "answered", Ref: ref, Text: answer, By: ChatBy{ID: by, Name: byName, Role: RoleControl}}
 	if s.question == ref {
 		s.question = ""
 	}
+	delete(s.askedInChat, ref)
 	return m, s.keepChat(m), true
+}
+
+// answerWords is what the chat's answered line says the reply answered
+// the question with (#364): the label of the choice whose keys it typed
+// (keys), for any question. A line typed, at a prompt on the screen or at
+// the agent's own question, is never repeated: the agent may ask for a
+// credential (the skill says to), the terminal may not echo it, and the
+// chat goes to every viewer; the browser that typed it shows it to its
+// own person. A digit that is no choice's keys says nothing (the choices
+// shown need not be the screen's numbering), as do keys that say nothing
+// readable: the line says only who answered then.
+func answerWords(options []Option, keys []byte) string {
+	k := string(keys)
+	for _, o := range options {
+		if o.Input != "" && o.Input == k {
+			return o.Label
+		}
+	}
+	return ""
+}
+
+// The reasons a question's line in the chat gives for leaving without an
+// answer through Conductor (#358): keys typed in the terminal answered it,
+// or the agent moved on.
+const (
+	ChatLeftTerminal = "terminal"
+	ChatLeftAgent    = "agent"
+)
+
+// leftInChatLocked keeps the line that says the question named id, asked in
+// the chat, left without an answer through Conductor: answered by keys typed
+// in the terminal (reason ChatLeftTerminal) or withdrawn as the agent moved
+// on (ChatLeftAgent). The chat's card then offers its choices no longer
+// (#358). Nothing for a question the chat never showed. The caller holds
+// s.mu; the line waits in chatLeft for notifyChange, which tells it outside
+// the lock, after the ring has it and before the next question's line.
+func (s *Local) leftInChatLocked(id, reason string) {
+	if id == "" {
+		return
+	}
+	if s.own.ID == id {
+		// The agent's own question, kept: shown again at its turn's done, its
+		// card stays answerable; dropOwnLocked says when it goes for good.
+		return
+	}
+	if _, asked := s.askedInChat[id]; !asked {
+		return
+	}
+	delete(s.askedInChat, id)
+	if s.question == id {
+		s.question = ""
+	}
+	m := ChatMessage{ID: NewID(), At: time.Now().UTC(), Scope: proto.ChatScopeSession, Kind: proto.ChatKindSystem, Event: "withdrawn", Ref: id, Text: reason, By: ChatBy{ID: "", Name: "Conductor", Role: RoleControl}}
+	key := s.keepChat(m)
+	s.chatLeft = append(s.chatLeft, chatLeft{key: key, m: m})
+}
+
+// leftReasonLocked is why a question would leave without an answer through
+// Conductor as things stand: keys typed in the terminal reached it, or the
+// agent moved on. The caller holds s.mu.
+func (s *Local) leftReasonLocked(id string) string {
+	if s.consumed == id {
+		return ChatLeftTerminal
+	}
+	return ChatLeftAgent
+}
+
+// chatLeft is a withdrawn line kept under the lock, told by tellChatLeft.
+type chatLeft struct {
+	key string
+	m   ChatMessage
+}
+
+// tellChatLeft tells the withdrawn lines kept since the last time, to the
+// session's viewers and its run's chat. The caller does not hold s.mu.
+func (s *Local) tellChatLeft() {
+	s.mu.Lock()
+	left := s.chatLeft
+	s.chatLeft = nil
+	s.mu.Unlock()
+	for _, l := range left {
+		s.chatHook(l.key, l.m)
+		s.tellRun(l.m)
+	}
 }
 
 // tellRun copies a line of the session's chat into its run's chat, on this

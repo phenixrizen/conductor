@@ -107,10 +107,17 @@ function chatAnswer(m: ChatMessage, index: number) {
 }
 /** Sends a reply to a question over the terminal's connection, once per question; a refusal (answered already, not connected) is said in a toast. */
 const replied = repliedQuestions()
+const typedAnswers = useTypedAnswers()
 function answerQuestion(reply: QuestionReply) {
   if (!terminal.value) return toast.add(replyFailure(new ReplyError('not_connected', 'not connected')))
   const t = terminal.value
-  replied.once(reply.question, () => t.answer(reply)).catch((e: unknown) => toast.add(replyFailure(e)))
+  replied
+    .once(reply.question, () => t.answer(reply))
+    // A line typed as the answer, once sent: this browser shows it under the question to its own person (#364).
+    .then((sent) => {
+      if (sent && 'text' in reply && reply.text) typedAnswers.remember(reply.question, reply.text)
+    })
+    .catch((e: unknown) => toast.add(replyFailure(e)))
 }
 function onRequestError(err: { code: string; message: string; requestId: string }) {
   if (chat.fail(err.requestId, err.message)) return

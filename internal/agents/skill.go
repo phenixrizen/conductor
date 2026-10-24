@@ -2,7 +2,9 @@ package agents
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Skill is the Conductor skill, a SKILL.md: it tells an agent working in a
@@ -227,6 +229,54 @@ func InstallSkill(agentID, home, hooksDir string) (path string, changed bool, er
 	path = filepath.Join(home, filepath.FromSlash(a.SkillPath))
 	touched, err := install(home, skillStep(hooksDir, a.SkillPath))
 	return path, len(touched) > 0, err
+}
+
+// ConfigDirOf is the configuration directory of its own the agent of adapter
+// agentID runs with, given the environment of its process (getenv): the
+// absolute path its Adapter.ConfigDirEnv names, else "" (no such adapter or
+// variable, not set, or relative, which the agent takes from its working
+// directory and a launch leaves alone).
+func ConfigDirOf(agentID string, getenv func(string) string) string {
+	a, ok := Get(agentID)
+	if !ok || a.ConfigDirEnv == "" || getenv == nil {
+		return ""
+	}
+	dir := getenv(a.ConfigDirEnv)
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	return filepath.Clean(dir)
+}
+
+// InstallSkillIn puts the Conductor skill where the agent of adapter agentID
+// reads skills under dir, a configuration directory of its own in place of
+// its directory under home (ConfigDirOf; #291): the skill's path there is its
+// path under home without that first directory (.claude/skills/conductor/
+// SKILL.md becomes skills/conductor/SKILL.md). dir is made when it is
+// missing, 0700, as the agent makes it on its first run. The results are
+// InstallSkill's; "", false, nil for an adapter that reads no skills or has
+// no such directory, and for a dir that is not absolute.
+func InstallSkillIn(agentID, dir, hooksDir string) (path string, changed bool, err error) {
+	a, ok := Get(agentID)
+	if !ok || a.SkillPath == "" || a.ConfigDirEnv == "" || !filepath.IsAbs(dir) {
+		return "", false, nil
+	}
+	rel := skillTail(a.SkillPath)
+	path = filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return path, false, err
+	}
+	touched, err := install(dir, skillStep(hooksDir, rel))
+	return path, len(touched) > 0, err
+}
+
+// skillTail is rel without its first element, the agent's directory under
+// home: what lies under the configuration directory that stands in for it.
+func skillTail(rel string) string {
+	if _, tail, ok := strings.Cut(rel, "/"); ok {
+		return tail
+	}
+	return rel
 }
 
 // skillStep is the step that makes the file rel under home a copy of the

@@ -62,9 +62,14 @@ test('the folder picker browses the server, outside the roots too, and fills the
   await picker.locator('[data-dir-picker-use]').click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expect(page.getByLabel('Default working directory', { exact: true })).toHaveValue(state.repo)
-  // The page uses the whole width: two columns of cards at this size.
+  // One column that reads top to bottom (#366): at most 48rem wide, each card below the one before it, and the save bar in
+  // the panel's footer, in reach wherever the page is scrolled.
   const grid = await page.locator('[data-settings-grid]').boundingBox()
-  expect(grid!.width).toBeGreaterThan(1000)
+  expect(grid!.width).toBeLessThanOrEqual(768)
+  const cards = await page.locator('[data-settings-grid] > *').evaluateAll((els) => els.map((e) => ({ top: e.getBoundingClientRect().top, bottom: e.getBoundingClientRect().bottom })))
+  expect(cards.length).toBeGreaterThan(3)
+  for (let i = 1; i < cards.length; i++) expect(cards[i]!.top).toBeGreaterThanOrEqual(cards[i - 1]!.bottom)
+  await expect(page.locator('[data-settings-save-bar]')).toBeInViewport()
   // The app card ends with the sponsor credit (the Sponsor Kit's 1c).
   const about = page.locator('[data-about-card]')
   await expect(about.locator('[data-about-row="app"]')).toHaveText('e2e')

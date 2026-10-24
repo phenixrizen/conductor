@@ -787,8 +787,12 @@ func TestAQuestionGoesIntoTheChatAndItsAnswerFollows(t *testing.T) {
 	if a == nil || a["ref"] != q["id"] || a["by"].(map[string]any)["name"] != "Nate" || a["kind"] != proto.ChatKindSystem {
 		t.Fatalf("answered %v", a)
 	}
+	// The line says what was answered with: the choice whose keys the reply typed (#364).
+	if a["text"] != "Yes, trust" {
+		t.Fatalf("the answered line's words %v", a["text"])
+	}
 	last := room.History()[len(room.History())-1]
-	if last.Event != "answered" || last.On != "review" || last.Ref != runQ.ID {
+	if last.Event != "answered" || last.On != "review" || last.Ref != runQ.ID || last.Text != "Yes, trust" {
 		t.Fatalf("the run's answered line %+v", last)
 	}
 	// A question without a message says the session waits; the same question twice is one line.
@@ -897,5 +901,66 @@ func TestChatQuoteIsBoundedAndTypedWithItsLocation(t *testing.T) {
 	}
 	if acc := <-typed; !bytes.Contains(acc, []byte("internal/api/users.go:14-27")) || !bytes.Contains(acc, []byte("> line 0")) || !bytes.Contains(acc, []byte("why this?")) {
 		t.Fatalf("typed %q", acc)
+	}
+}
+
+// The chat's answered line says what the reply answered with (#364): the
+// label of the choice whose keys it typed, for any question; never a line
+// typed (the agent may ask for a credential, the terminal may not echo it,
+// and the chat goes to every viewer), nor a digit that is no choice's keys
+// (the choices shown need not be the screen's numbering).
+func TestAnswerWordsNameTheChoiceOnly(t *testing.T) {
+	choices := []Option{{Label: "Yes, trust", Input: "y\r"}, {Label: "No", Input: "n\r"}}
+	numbered := []Option{{Label: "Yes", Input: "1"}, {Label: "Yes, always", Input: "2"}, {Label: "No", Input: "3"}}
+	sparse := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
+	for _, c := range []struct {
+		name    string
+		options []Option
+		keys    []byte
+		want    string
+	}{
+		{"a choice's keys", choices, []byte("n\r"), "No"},
+		{"a digit that is a choice's keys", numbered, []byte("2"), "Yes, always"},
+		{"a digit that is no choice's keys", sparse, []byte("2"), ""},
+		{"a digit past the list", numbered, []byte("7"), ""},
+		{"a line typed into the terminal", choices, []byte("hunter2\r"), ""},
+		{"a line typed at a question without choices", nil, []byte("the blue one\r"), ""},
+		{"a reply box's line", nil, nil, ""},
+		{"an Enter alone", choices, []byte("\r"), ""},
+		{"an arrow", choices, []byte("\x1b[A"), ""},
+	} {
+		if got := answerWords(c.options, c.keys); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A line typed into a reply box answers the agent's own question; the
+// chat's answered line says who answered and never the line (#364: it
+// may be a credential the agent asked for).
+func TestATypedAnswerIsNotInTheChatsLine(t *testing.T) {
+	s, p := newLocalWith(t, Options{})
+	go func() {
+		for range p.input {
+		}
+	}()
+	sink := newChanSink(false)
+	sub, _ := s.AttachWith(AttachOptions{Role: RoleControl, Name: "Nate", Cols: 80, Rows: 24}, sink)
+	// The agent's own question (the ask tool: Ask), which a typed line answers; a dialog on the screen takes its choices only.
+	s.Ask("Which database?", SourceAPI, KindPrompt, nil)
+	q := waitControl(sink, chatOf(proto.ChatKindQuestion))
+	if q == nil {
+		t.Fatal("no question in the chat")
+	}
+	res, err := s.Submit(context.Background(), Submission{Text: "Postgres, the managed one", By: sub, Question: q["id"].(string)})
+	if err != nil || !res.Entered {
+		t.Fatalf("the reply: %+v %v", res, err)
+	}
+	a := waitControl(sink, func(m map[string]any) bool { return m["t"] == proto.CtlChat && m["event"] == "answered" })
+	if a == nil || a["ref"] != q["id"] || a["by"].(map[string]any)["name"] != "Nate" {
+		t.Fatalf("answered %v", a)
+	}
+	if _, has := a["text"]; has {
+		t.Fatalf("the answered line repeats the line typed: %v", a["text"])
 	}
 }

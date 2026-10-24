@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { chooseDistro, decode, INSTALL_SCRIPT, parseList, parseWslconfigNetworking, windowsPathToWsl } from '../src/wsl'
-import { wslAvailable, WslLauncher } from '../src/launcher-wsl'
+import { SHELL_PATH_WAIT, wslAvailable, WslLauncher } from '../src/launcher-wsl'
 
 const LIST = '  NAME            STATE           VERSION\r\n* Ubuntu-24.04    Running         2\r\n  Debian          Stopped         1\r\n'
 
@@ -79,6 +79,36 @@ describe('wsl', () => {
     await l.prepare()
     expect(l.shellPath()).toBe('')
     expect(l.linuxEnv({}, false, '').CONDUCTOR_PATH).toBeUndefined()
+  })
+  it('a shell that prints nothing in time is asked again with more time, and again before a start of the server (#363)', async () => {
+    // An interactive zsh that loads nvm takes seconds; one that printed nothing within the wait is asked once more with twice
+    // the time, and a start of the server asks again while nothing was read, so that one slow start does not leave every
+    // session without the agents under nvm.
+    const waits: number[] = []
+    let asked = 0
+    const slow = async (args: string[], timeoutMs?: number) => {
+      if (args.some((a) => a.includes('__HOME__'))) return { ok: true, out: '__HOME__/home/me\n__SHELL__/usr/bin/zsh\n' }
+      if (args.some((a) => a.includes('__CONDUCTOR_PATH__'))) {
+        waits.push(timeoutMs ?? 0)
+        asked++
+        return asked >= 3 ? { ok: true, out: '__CONDUCTOR_PATH__/home/me/.nvm/versions/node/v22/bin:/usr/bin\n' } : { ok: false, out: '' }
+      }
+      return { ok: true, out: '' }
+    }
+    const lines: string[] = []
+    const l = new WslLauncher({ source: 'C:\\x\\conductor-linux', distro: 'Ubuntu', version: 'v1', windowsHome: false, log: (s) => lines.push(s), run: slow })
+    await l.prepare()
+    expect(waits).toEqual([SHELL_PATH_WAIT, SHELL_PATH_WAIT * 2])
+    expect(l.shellPath()).toBe('')
+    expect(lines.filter((s) => s.includes('printed no PATH within'))).toHaveLength(2)
+    expect(lines.some((s) => s.includes("the login shell's PATH stands"))).toBe(true)
+    // The server's start asks again, and the answer stands: the next start asks no more.
+    await l.beforeStart()
+    expect(waits).toHaveLength(3)
+    expect(l.shellPath()).toBe('/home/me/.nvm/versions/node/v22/bin:/usr/bin:/home/me/.local/bin:/home/me/go/bin:/usr/local/bin:/bin')
+    expect(l.linuxEnv({}, false, '').CONDUCTOR_PATH).toBe(l.shellPath())
+    await l.beforeStart()
+    expect(waits).toHaveLength(3)
   })
 })
 

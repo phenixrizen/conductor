@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/proto"
 )
 
 // newClaudeSession is a session of Claude Code's, 120 by 40 as its dialogs
@@ -437,4 +439,69 @@ func TestAClaudeDialogQuotedInTheTranscriptAsksNothing(t *testing.T) {
 	if a := s.Info().Attention; a.Source != SourceAPI || a.Options != nil {
 		t.Fatalf("a quoted dialog was asked: %+v", a)
 	}
+}
+
+// A question answered by keys typed in the terminal leaves the chat with a
+// line that says so (#358): its card offers its choices no longer, since the
+// answer never went through Conductor.
+func TestAQuestionAnsweredInTheTerminalLeavesTheChatSayingSo(t *testing.T) {
+	s, p, sub := newClaudeSession(t)
+	p.outW.Write(drawn(claudeAsk))
+	first := waitAttention(t, s, asked)
+	if _, ok := findChat(s, func(m ChatMessage) bool { return m.Kind == proto.ChatKindQuestion && m.ID == first.ID }); !ok {
+		t.Fatalf("the question has no card in the chat: %+v", s.ChatHistory())
+	}
+	if err := s.Input(sub, []byte("1")); err != nil {
+		t.Fatal(err)
+	}
+	nextWrite(t, p)
+	working(p, 1200*time.Millisecond)
+	left := waitChat(t, s, func(m ChatMessage) bool {
+		return m.Kind == proto.ChatKindSystem && m.Event == "withdrawn" && m.Ref == first.ID
+	})
+	if left.Text != ChatLeftTerminal {
+		t.Fatalf("the reason: %+v", left)
+	}
+	if _, twice := findChat(s, func(m ChatMessage) bool { return m.Event == "withdrawn" && m.Ref == first.ID && m.ID != left.ID }); twice {
+		t.Fatalf("said twice: %+v", s.ChatHistory())
+	}
+}
+
+// A question the agent moves on from without an answer leaves the chat the
+// same way, with the agent as the reason (#358).
+func TestAQuestionTheAgentMovesOnFromLeavesTheChat(t *testing.T) {
+	s, p, _ := newClaudeSession(t)
+	p.outW.Write(drawn(claudeAsk))
+	first := waitAttention(t, s, asked)
+	working(p, 1200*time.Millisecond)
+	left := waitChat(t, s, func(m ChatMessage) bool {
+		return m.Kind == proto.ChatKindSystem && m.Event == "withdrawn" && m.Ref == first.ID
+	})
+	if left.Text != ChatLeftAgent {
+		t.Fatalf("the reason: %+v", left)
+	}
+}
+
+// findChat is the first line of the session's chat ok accepts.
+func findChat(s *Local, ok func(ChatMessage) bool) (ChatMessage, bool) {
+	for _, m := range s.ChatHistory() {
+		if ok(m) {
+			return m, true
+		}
+	}
+	return ChatMessage{}, false
+}
+
+// waitChat waits for a line of the session's chat ok accepts.
+func waitChat(t *testing.T, s *Local, ok func(ChatMessage) bool) ChatMessage {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if m, found := findChat(s, ok); found {
+			return m
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("no such chat line; the chat: %+v", s.ChatHistory())
+	return ChatMessage{}
 }

@@ -124,7 +124,8 @@ func codexAdapter() Adapter {
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, codexSteps(hooksDir)...)
 		},
-		SkillPath: codexSkill,
+		SkillPath:    codexSkill,
+		ConfigDirEnv: "CODEX_HOME",
 		// Codex takes an MCP server as config overrides: [mcp_servers.<name>]
 		// command and args (its config.toml; verified against codex mcp add).
 		MCP: func(hooksDir string) []string {

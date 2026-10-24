@@ -274,8 +274,14 @@ func TestAWaitRaisedWhileCodexWorksGivesWay(t *testing.T) {
 					t.Fatalf("entries %q", got)
 				}
 				if name == "the agent's question" {
+					// Asked in the chat; a question the wait's end let go for good
+					// has its withdrawn line after it (#358), one kept aside none.
 					chat := s.ChatHistory()
-					if len(chat) == 0 || chat[len(chat)-1].Kind != proto.ChatKindQuestion || chat[len(chat)-1].Text != asked.Message {
+					var found bool
+					for _, m := range chat {
+						found = found || (m.Kind == proto.ChatKindQuestion && m.Text == asked.Message)
+					}
+					if !found {
 						t.Fatalf("the chat %+v", chat)
 					}
 				}

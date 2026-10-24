@@ -1540,6 +1540,7 @@ func TestCatalogRoutesNeedTheWorkbenchToken(t *testing.T) {
 		{"DELETE", "/api/catalog/cat", nil},
 		{"POST", "/api/catalog/check", map[string]any{"command": []string{"sh"}}},
 		{"POST", "/api/catalog/cat/unhide", nil},
+		{"POST", "/api/catalog/cat/clone", agentBody("intruder")},
 	}
 	for _, r := range routes {
 		for _, token := range []string{"", "wrong", "test-host-token"} {
@@ -1727,7 +1728,7 @@ func TestCatalogEditingNeedsAStore(t *testing.T) {
 	for _, r := range []struct {
 		method, path string
 		body         any
-	}{{"POST", "/api/catalog", agentBody("x")}, {"DELETE", "/api/catalog/cat", nil}, {"POST", "/api/catalog/cat/unhide", nil}} {
+	}{{"POST", "/api/catalog", agentBody("x")}, {"DELETE", "/api/catalog/cat", nil}, {"POST", "/api/catalog/cat/unhide", nil}, {"POST", "/api/catalog/cat/clone", agentBody("x")}} {
 		resp, out := ro.do(r.method, r.path, adminToken, r.body)
 		if resp.StatusCode != http.StatusServiceUnavailable || out["error"].(map[string]any)["code"] != "store_unavailable" {
 			t.Errorf("%s %s: %d %v", r.method, r.path, resp.StatusCode, out)

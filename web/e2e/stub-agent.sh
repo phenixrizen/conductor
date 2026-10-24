@@ -114,7 +114,8 @@
 # The agent's session: --session-id ID names it, --resume ID (or a leading
 # `resume ID`) continues it; without either a fresh id is made. The
 # transcript lives in $HOME/.stub-sessions/<id>.txt, so a resumed session
-# prints what was typed into it before.
+# prints what was typed into it before; with CLAUDE_CONFIG_DIR set it begins
+# with "env: CLAUDE_CONFIG_DIR=<dir>" (a copy of the agent, #291).
 set -euo pipefail
 
 identity=${STUB_IDENTITY:-stub}
@@ -233,6 +234,12 @@ title_id="ffffffff-${id:9}"
 transcripts=${HOME:-/tmp}/.stub-sessions
 mkdir -p "$transcripts"
 transcript=$transcripts/$id.txt
+# A configuration directory of the agent's own (a copy of Claude Code under
+# its CLAUDE_CONFIG_DIR, #291) is noted in the transcript, so a spec can see
+# that the copy's environment reached the agent.
+if [[ -n ${CLAUDE_CONFIG_DIR:-} ]]; then
+	printf 'env: CLAUDE_CONFIG_DIR=%s\n' "$CLAUDE_CONFIG_DIR" >>"$transcript"
+fi
 
 # json_str prints $1 as a JSON string.
 json_str() {

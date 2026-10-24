@@ -66,12 +66,14 @@ interface AttentionStore {
   sessions: Map<string, SessionInfo>
   connected: boolean
   started: boolean
+  /** The first snapshot of the sessions has been applied: an empty map means no sessions, not none read yet (#359). */
+  loaded: boolean
   error: string
 }
 
 /** The live session store behind useAttention, for readers that must not start it (useEvents). */
 export function useAttentionStore() {
-  return useState<AttentionStore>('attentionStore', () => ({ sessions: new Map(), connected: false, started: false, error: '' }))
+  return useState<AttentionStore>('attentionStore', () => ({ sessions: new Map(), connected: false, started: false, loaded: false, error: '' }))
 }
 
 /**
@@ -128,6 +130,8 @@ export function useAttention() {
   const needsInput = computed(() => needingInput(sessions.value))
   const count = computed(() => needsInput.value.length)
   const connected = computed(() => store.value.connected)
+  /** Whether a snapshot of the sessions has been read: a page that leaves when there is nothing waits for it (#359). */
+  const loaded = computed(() => store.value.loaded)
   const error = computed(() => store.value.error)
 
   function bump() {
@@ -141,6 +145,7 @@ export function useAttention() {
     const next = new Map(list.map((s) => [s.id, liveSession(s)]))
     react(store.value.sessions, next)
     store.value.sessions = next
+    store.value.loaded = true
     bump()
     events.retain(new Set(next.keys()))
     events.settle()
@@ -326,7 +331,9 @@ export function useAttention() {
     stopEvents = events.onEvent(reactToEvent)
     stream()
     pollTimer = window.setInterval(() => {
-      if (!store.value.connected && document.visibilityState === 'visible') poll()
+      // While the stream is down, or open but without its first snapshot yet (a stall before it), the list is read
+      // directly, so that a page waiting for the sessions to be read (#359) is not left waiting.
+      if ((!store.value.connected || !store.value.loaded) && document.visibilityState === 'visible') poll()
     }, 3000)
     watch(
       () => admin.token.value,
@@ -359,7 +366,7 @@ export function useAttention() {
     runs.apply(run)
   }
 
-  return { sessions, needsInput, count, connected, error, start, stop, refresh: poll, runs: runList, runNames, runOf, refreshRun, applyRun }
+  return { sessions, needsInput, count, connected, loaded, error, start, stop, refresh: poll, runs: runList, runNames, runOf, refreshRun, applyRun }
 }
 
 /** Tab title prefix and favicon dot while sessions need input. Call once, in app.vue. */

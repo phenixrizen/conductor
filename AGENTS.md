@@ -53,6 +53,10 @@ issue, one branch, one pull request, and CI is the only gate.
 - Open a draft PR at the first commit. `Fixes #N` finishes the issue;
   `Part of #N` leaves it open. Say in the PR body which agent or person made
   it, with a session link when there is one.
+- Keep the Project board current: an issue goes on it when it is filed
+  (Backlog, or Ready), moves to In progress when its branch is cut and to
+  In review when its PR is pushed; Done follows the merge by itself. New
+  issues do not land on the board on their own.
 - Before every push run the checks for each affected surface
   (`docs/checks.md`). Report a check that did not run as not run, never as
   passed. Mark the PR ready when it is complete and green.

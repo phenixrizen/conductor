@@ -99,7 +99,8 @@ func claudeAdapter() Adapter {
 		Install: func(home, hooksDir string) ([]string, error) {
 			return install(home, claudeSteps(hooksDir)...)
 		},
-		SkillPath: claudeSkill,
+		SkillPath:    claudeSkill,
+		ConfigDirEnv: "CLAUDE_CONFIG_DIR",
 		MCP: func(hooksDir string) []string {
 			return []string{"--mcp-config", filepath.Join(hooksDir, "claude-mcp.json")}
 		},

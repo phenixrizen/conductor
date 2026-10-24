@@ -2,7 +2,7 @@
 import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
-import { switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
+import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
 
 // The desktop app's settings: what its shell starts the server with. In a
 // browser against a server configured by its file, the page says so.
@@ -11,6 +11,8 @@ const api = useSessions()
 const toast = useToast()
 const serverHost = useServerHost()
 
+/** The cards' spacing: a title close to its content (#366). */
+const cardUi = { header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }
 const settings = ref<DesktopSettings | null>(null)
 const form = reactive<DesktopSettings>({ dataDir: '', allowedRoots: [], defaultCwd: '', yolo: false, reach: 'auto', closeToTray: true, wslDistro: '', wslWindowsHome: false, switchyardEnabled: true, switchyardServer: '', switchyardToken: '', switchyardName: '' })
 const saving = ref(false)
@@ -91,7 +93,9 @@ async function save() {
   // settings are copied into the form nothing differs any more (#214).
   const restarting = restarts.value
   try {
-    const next = await b.settings.set({ ...form })
+    // A plain copy: the form is reactive, and a Vue proxy cannot cross the
+    // bridge ("An object could not be cloned", #348).
+    const next = await b.settings.set(plainCopy(form))
     settings.value = next
     Object.assign(form, next)
     // The app says what became of it: the server restarted, or the settings
@@ -102,6 +106,8 @@ async function save() {
     await load()
   } catch (e) {
     error.value = (e as Error).message
+    // The alert sits at the top of a long page: say it where the button is too (#348).
+    toast.add({ title: 'Not saved', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
     saving.value = false
   }
@@ -176,11 +182,12 @@ usePalette().registerPage(() => {
       </UDashboardNavbar>
     </template>
     <template #body>
-      <div v-if="!desktop.isDesktop.value" class="grid w-full items-start gap-6 xl:grid-cols-2">
+      <!-- One column that reads top to bottom (#366): two left a blank beside every short card. -->
+      <div v-if="!desktop.isDesktop.value" class="mx-auto flex w-full max-w-3xl flex-col gap-5">
         <UAlert color="neutral" variant="subtle" icon="i-lucide-info" title="This server is configured by its file" description="These settings belong to the desktop app, which starts a server of its own. A server you run yourself takes its configuration file and CONDUCTOR_* variables (see the README)." />
         <AboutCard />
       </div>
-      <div v-else class="flex w-full flex-col gap-6" data-desktop-settings>
+      <div v-else class="mx-auto flex w-full max-w-3xl flex-col gap-5" data-desktop-settings>
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-settings-error />
         <UAlert
           v-if="desktop.serverState.value"
@@ -191,9 +198,9 @@ usePalette().registerPage(() => {
           :description="desktop.serverState.value.lastError || (desktop.serverState.value.version ? `conductor ${desktop.serverState.value.version}` : '')"
           data-server-state
         />
-        <div class="grid items-start gap-6 xl:grid-cols-2" data-settings-grid>
-        <UCard v-if="ice" data-ice-status>
-          <template #header><h2 class="font-semibold">WebRTC from WSL</h2></template>
+        <div class="flex flex-col gap-5" data-settings-grid>
+        <UCard v-if="ice" :ui="cardUi" data-ice-status>
+          <template #header><SettingsCardTitle title="WebRTC from WSL" description="What the app forwards so a shared session connects from inside the distribution." /></template>
           <div class="flex flex-col gap-3 text-sm">
             <p v-if="ice.forwarding">
               The app forwards UDP port <code>{{ ice.port }}</code> on <code>{{ ice.publicIp }}</code> into the distribution at <code>{{ ice.wslAddress }}</code>, so a shared session connects peer to peer through your router only. WSL's own networking is left as it is.
@@ -207,8 +214,8 @@ usePalette().registerPage(() => {
           </div>
         </UCard>
 
-        <UCard data-switchyard-settings>
-          <template #header><h2 class="font-semibold">Switchyard</h2></template>
+        <UCard :ui="cardUi" data-switchyard-settings>
+          <template #header><SettingsCardTitle title="Switchyard" description="Share links that work from anywhere, through a switchyard." /></template>
           <div class="flex flex-col gap-4">
             <USwitch v-model="form.switchyardEnabled" label="Publish sessions to a switchyard" description="So a share link works from anywhere." data-switchyard-enabled />
             <p class="text-sm text-muted">
@@ -226,8 +233,8 @@ usePalette().registerPage(() => {
           </div>
         </UCard>
 
-        <UCard>
-          <template #header><h2 class="font-semibold">Where agents work</h2></template>
+        <UCard :ui="cardUi">
+          <template #header><SettingsCardTitle title="Where agents work" description="The folders sessions may run in, and where the server keeps its data." /></template>
           <div class="flex flex-col gap-4">
             <p v-if="desktop.bridge.value?.platform === 'win32'" class="text-sm text-muted" data-wsl-paths>
               The server runs inside your WSL distribution, so these are its paths (such as <code class="font-mono">/home/&lt;user&gt;/code</code>); the folder picker browses the distribution. Windows folders need the switch under "How agents run" and live under <code class="font-mono">/mnt</code>.
@@ -247,8 +254,8 @@ usePalette().registerPage(() => {
           </div>
         </UCard>
 
-        <UCard>
-          <template #header><h2 class="font-semibold">How agents run</h2></template>
+        <UCard :ui="cardUi">
+          <template #header><SettingsCardTitle title="How agents run" description="Permission prompts, reach from outside your network, and the WSL distribution." /></template>
           <div class="flex flex-col gap-4">
             <UFormField label="Yolo" description="Launch every agent with its yolo recipe, skipping its permission prompts (Codex's drops its sandbox). Only for roots you would let an agent change unasked.">
               <USwitch v-model="form.yolo" label="Skip permission prompts" data-yolo-switch />
@@ -268,8 +275,8 @@ usePalette().registerPage(() => {
           </div>
         </UCard>
 
-        <UCard v-if="agents.length">
-          <template #header><h2 class="font-semibold">Agents on this machine</h2></template>
+        <UCard v-if="agents.length" :ui="cardUi">
+          <template #header><SettingsCardTitle title="Agents on this machine" description="What the server finds on its PATH; a restart reads the PATH again." /></template>
           <ul class="flex flex-col gap-1.5 text-sm">
             <li v-for="a in agents" :key="a.id" class="flex items-center gap-2" :data-agent="a.id">
               <span class="font-medium">{{ a.name }}</span>
@@ -285,13 +292,14 @@ usePalette().registerPage(() => {
         </AboutCard>
         </div>
 
-        <div class="flex items-center gap-3" data-settings-save-bar>
-          <UButton :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty" data-save-settings @click="save" />
-          <span v-if="restarts" class="text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
-        </div>
-
-
         <DirPickerModal v-if="picker" v-model:open="pickerOpen" :start="picker.start" :title="picker.title" anywhere :roots="form.allowedRoots" :expect="picker.expect" @pick="onPick" />
+      </div>
+    </template>
+    <!-- The save bar is the panel's footer: in reach wherever the page is scrolled (#366). -->
+    <template v-if="desktop.isDesktop.value" #footer>
+      <div class="flex items-center gap-3 border-t border-default px-4 py-3 sm:px-6" data-settings-save-bar>
+        <UButton :label="restarts ? 'Save and restart the server' : 'Save'" icon="i-lucide-save" :loading="saving" :disabled="!dirty" data-save-settings @click="save" />
+        <span v-if="restarts" class="text-xs text-muted">Changing where or how agents run restarts the server; running sessions end.</span>
       </div>
     </template>
   </UDashboardPanel>

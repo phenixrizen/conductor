@@ -21,8 +21,8 @@ const rows = computed(() => {
 </script>
 
 <template>
-  <UCard data-about-card>
-    <template #header><h2 class="font-semibold">The app</h2></template>
+  <UCard :ui="{ header: 'px-4 py-3 sm:px-5', body: 'p-4 sm:p-5' }" data-about-card>
+    <template #header><SettingsCardTitle title="The app" description="Versions, license and the window." /></template>
     <div class="flex flex-col gap-4">
       <slot />
       <dl class="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">

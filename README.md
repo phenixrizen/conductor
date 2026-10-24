@@ -317,9 +317,13 @@ or feed.
 
 When the agent needs input, its question is in the chat too, from the
 agent, with its choices as buttons; a controller answers there as from the
-quick-reply bar, and a line says who answered ("Answered by Nate"). In a
-run's chat a member's question comes on the member's name ("on core") and
-an answer from there goes to that member.
+quick-reply bar, and a line says who answered and which choice ("Answered
+by Nate: Keep both"); the question keeps its choices as text, the one
+picked marked. A line you typed as an answer is shown under the question
+to you alone, never sent to the other viewers: the agent may have asked
+for a credential. In a run's chat a member's question
+comes on the member's name ("on core") and an answer from there goes to
+that member.
 
 Where the inspector has no room, the header's **Chat** button carries the
 count and opens the chat as a sheet: on a phone from the bottom, two thirds
@@ -1520,7 +1524,10 @@ the Linux binary and the app runs it inside your WSL 2 distribution
 (`wsl --install` once, restart, open the distribution to make your user).
 The agents must be installed inside the distribution: the app asks your own
 shell there (`$SHELL -ilc`, so nvm's, npm's and `~/.local/bin`'s programs
-count) for its PATH and starts the server with it; a `claude`, `codex` or
+count) for its PATH and starts the server with it (a shell that prints
+nothing in time is asked again, and again at the server's next start, so
+Restart server in Settings repairs a start that was left with the plain
+login shell's PATH); a `claude`, `codex` or
 `npm` that Windows put on the PATH under `/mnt/c` is named on the Agents
 page as found on Windows, not used. The settings' directories are the
 distribution's own (`/home/<user>/…`), and the folder picker browses the server's own folders, so it lists the distribution's and never a Windows path;
@@ -1714,7 +1721,12 @@ original, and a key the config file adds later does not reach the entry. An
 agent in the config file that replaces a built-in replaces it whole. Hiding an
 agent removes it from the launch dialog and lists it under **Hidden** on the
 Agents page, where **Restore** brings it back as it was; sessions already
-running are not affected. The config file is never written. The server
+running are not affected. **Clone** makes a copy of an agent with its whole
+configuration (its hooks, trust answers, startup questions, session recipe
+and stored values included) under a name and ID of its own, so that, say, a
+second Claude Code account runs beside the first under its own
+`CLAUDE_CONFIG_DIR`; a copy launched with that variable set also gets the
+Conductor skill under that directory. The config file is never written. The server
 refuses to start when `catalog.json` cannot be parsed or holds an invalid
 agent, rather than overwrite it. The form checks the command against the
 server's `PATH`, and an agent whose program is missing there can still be

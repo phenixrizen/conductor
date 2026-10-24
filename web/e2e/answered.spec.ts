@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test'
-import { expect, member, test, type Api, type Session } from './fixtures'
+import { expect, member, showView, test, type Api, type Session } from './fixtures'
 
 // Two people answer the same question: Codex's command approval, with the
 // next approval queued behind it (the stub's `stub approvals a|b`). Nate
@@ -383,8 +383,21 @@ test('keys typed in the terminal leave the question until the agent moves on; a 
     await priya.goto(`/join/${token}`)
     await priya.getByRole('button', { name: 'Join session' }).click()
     await expect(priya.locator('[data-transport-state]').first()).toHaveAttribute('data-transport-state', 'open', { timeout: 15_000 })
-    await expect(priya.locator('[data-chat-aside] [data-chat] [data-chat-system]').filter({ hasText: 'Answered by Nate' })).toBeVisible({ timeout: 15_000 })
+    await expect(priya.locator('[data-chat-aside] [data-chat] [data-chat-system]').filter({ hasText: 'Answered by Nate: Postgres' })).toBeVisible({ timeout: 15_000 })
     await expect(priya.locator('[data-quick-reply]')).toBeHidden()
+
+    // A line typed as an answer stays with the browser that typed it (#364): Nate's chat shows it to him; Priya's says who
+    // answered, never the line (the agent may have asked for a credential).
+    await api.ok('POST', `/api/sessions/${s.id}/attention`, { state: 'needs_input', message: 'Which branch?' })
+    await expect(bar).toContainText('Which branch?', { timeout: 15_000 })
+    await bar.getByRole('textbox').fill('feature-secret')
+    await bar.getByRole('button', { name: 'Send' }).click()
+    await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
+    await showView(page, 'chat')
+    await expect(page.locator('[data-chat] [data-chat-answer]')).toContainText('You answered: feature-secret', { timeout: 15_000 })
+    await expect(priya.locator('[data-chat-aside] [data-chat] [data-chat-system]').filter({ hasText: 'Answered by Nate' })).toHaveCount(2, { timeout: 15_000 })
+    await expect(priya.locator('[data-chat-aside] [data-chat] [data-chat-answer]')).toHaveCount(0)
+    await expect(priya.locator('[data-chat-aside] [data-chat]')).not.toContainText('feature-secret')
   } finally {
     await guestCtx?.close()
     await api.stopSession(s.id)

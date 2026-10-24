@@ -23,6 +23,7 @@ export function useQuickReply() {
   const admin = useWorkbenchToken()
   const sending = useState<Set<string>>('quickReplySending', () => new Set())
   const store = useAttentionStore()
+  const typedAnswers = useTypedAnswers()
 
   function mark(id: string, on: boolean) {
     const next = new Set(sending.value)
@@ -31,12 +32,13 @@ export function useQuickReply() {
     sending.value = next
   }
 
-  async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, reply: QuestionReply, server?: string): Promise<void> {
+  /** over sends the reply on a short control connection; whether it went (false: this tab is sending already, or the question was replied to from here). */
+  async function over(session: Pick<SessionInfo, 'id' | 'kind'>, token: string | undefined, reply: QuestionReply, server?: string): Promise<boolean> {
     // One reply per question from here: a second click on one already answered from this tab is not sent; one refused may be
     // tried again (repliedQuestions).
-    if (sending.value.has(session.id)) return
+    if (sending.value.has(session.id)) return false
     try {
-      await replied.once(reply.question, async () => {
+      return await replied.once(reply.question, async () => {
         mark(session.id, true)
         const t: TerminalTransport = create({ sessionId: session.id, token: token ?? admin.token.value, kind: session.kind, forceRelay: true, server })
         try {
@@ -57,12 +59,16 @@ export function useQuickReply() {
     }
   }
 
-  function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<void> {
+  function send(session: Pick<SessionInfo, 'id' | 'kind'>, input: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<boolean> {
     return over(session, opts.token, { question: opts.question, input }, opts.server)
   }
 
-  function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<void> {
-    return over(session, opts.token, { question: opts.question, text }, opts.server)
+  async function reply(session: Pick<SessionInfo, 'id' | 'kind'>, text: string, opts: { token?: string; server?: string; question?: string } = {}): Promise<boolean> {
+    // The line sent, this browser shows it under the question to its own person: the owner repeats no typed line (#364). One
+    // not sent (a reply under way from here, a duplicate) is not remembered.
+    const sent = await over(session, opts.token, { question: opts.question, text }, opts.server)
+    if (sent) typedAnswers.remember(opts.question, text)
+    return sent
   }
 
   /**

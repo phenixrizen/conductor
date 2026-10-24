@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { AGENT_ID_PATTERN, MASK, agentPayload, commandCheck, commandOf, formErrors, formFromAgent, signalOut, siteError, yoloOut } from './agentForm'
+import { AGENT_ID_PATTERN, MASK, agentPayload, cloneId, commandCheck, commandOf, formErrors, formForClone, formFromAgent, signalOut, siteError, yoloOut } from './agentForm'
 import { slugId } from './argv'
 
 function counter() {
@@ -63,6 +63,30 @@ describe('formFromAgent and agentPayload', () => {
     const f = { ...formFromAgent(undefined, counter()), command: ['aider'], pendingCommand: '--model "gpt 5"' }
     expect(commandOf(f)).toEqual(['aider', '--model', 'gpt 5'])
     expect(agentPayload({ ...f, name: 'A', id: 'a' }).command).toEqual(['aider', '--model', 'gpt 5'])
+  })
+})
+
+describe('formForClone and cloneId', () => {
+  it('fills the form from the agent copied, under a new name and a free id, the stored values as masked rows', () => {
+    const f = formForClone(keyed, ['keyed', 'keyed-copy'], counter())
+    expect(f.name).toBe('Keyed (copy)')
+    expect(f.id).toBe('keyed-copy-2')
+    expect(f.env.map((r) => [r.key, r.masked])).toEqual([
+      ['API_KEY', true],
+      ['REGION', true],
+      ['HTTP_PROXY', false],
+    ])
+    expect(f.command).toEqual(['aider', '--model', 'x'])
+    // The clone route's body: the masked values mean the source's, and the fields the form has no control for are the source's.
+    expect(agentPayload(f, keyed)).toMatchObject({ id: 'keyed-copy-2', name: 'Keyed (copy)', env: { API_KEY: MASK, REGION: MASK }, envPassthrough: ['HTTP_PROXY'], adapter: 'claude', cwd: '/srv', icon: 'i-lucide-sparkles' })
+  })
+  it("suggests an id of the server's shape whatever the length of the source's", () => {
+    expect(cloneId('claude', [])).toBe('claude-copy')
+    expect(cloneId('claude', ['claude-copy', 'claude-copy-2'])).toBe('claude-copy-3')
+    const id = cloneId('a'.repeat(32), [])
+    expect(id).toBe('a'.repeat(27) + '-copy')
+    expect(AGENT_ID_PATTERN.test(id)).toBe(true)
+    expect(cloneId('abc' + '-'.repeat(29), [])).toBe('abc-copy')
   })
 })
 
@@ -172,13 +196,16 @@ describe('the yolo recipe', () => {
     trustAnswers: [{ label: 'Yes', input: '\r' }],
     questions: [{ prompt: 'Hooks\\s*need\\s*review', answers: [{ label: 'Trust all and continue', input: '2\r' }] }],
     session: { startArgs: ['--session-id', '{id}'], resumeArgs: ['--session-id', '{id}'], idPattern: '^x$' },
+    probe: false,
   }
 
-  it('round-trips a recipe, and carries the trust prompt and the session recipe the form has no control for', () => {
+  it('round-trips a recipe, and carries the trust prompt, the session recipe and the probe switch the form has no control for', () => {
     const f = formFromAgent(copilot, counter())
     expect(f.yoloArgs).toEqual(['--yolo'])
     expect(f.yoloEnv.map((r) => [r.key, r.value])).toEqual([['COPILOT_ALLOW_ALL', 'true']])
-    expect(agentPayload(f, copilot)).toMatchObject({ yolo: copilot.yolo, trustPrompt: 'Do you trust', trustAnswers: copilot.trustAnswers, questions: copilot.questions, session: copilot.session })
+    // probe: false stays with the agent across a save (a copy with its probe off would be probed again otherwise; #291).
+    expect(agentPayload(f, copilot)).toMatchObject({ yolo: copilot.yolo, trustPrompt: 'Do you trust', trustAnswers: copilot.trustAnswers, questions: copilot.questions, session: copilot.session, probe: false })
+    expect(agentPayload(f, { ...copilot, probe: undefined })).not.toHaveProperty('probe', false)
   })
 
   it('saves {} for no recipe, and nothing for empty fields, which keeps a built-in recipe', () => {

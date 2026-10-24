@@ -98,7 +98,7 @@ function who(v: ViewerInfo) {
 
 const liveLinks = computed(() => props.links.filter((l) => !l.revoked))
 const here = computed(() => props.viewers.length || props.session.viewers)
-const peopleSub = computed(() => `${here.value} here now · ${liveLinks.value.length} ${liveLinks.value.length === 1 ? 'link' : 'links'}`)
+const peopleSub = computed(() => `${here.value} here now · ${liveLinks.value.length} share ${liveLinks.value.length === 1 ? 'link' : 'links'}`)
 
 function expiry(l: ShareLink) {
   if (!l.expiresAt) return 'never expires'
@@ -208,10 +208,11 @@ const items = computed(() =>
 
           <section class="flex flex-col gap-2.5">
             <h3 class="flex items-center text-[11px] font-semibold uppercase tracking-wider text-muted">
-              Links
+              Share links
               <UButton label="New link" icon="i-lucide-plus" size="xs" variant="link" color="secondary" class="ml-auto normal-case tracking-normal" @click="emit('newLink')" />
             </h3>
-            <p v-if="!liveLinks.length" class="text-xs text-muted">No share links yet.</p>
+            <!-- What a link is, said where the list is empty (#365). -->
+            <p v-if="!liveLinks.length" class="text-xs text-muted" data-share-links-empty>No share links yet. A link lets someone watch this session from their browser, or take control of it, until it expires or you revoke it.</p>
             <div v-for="l in liveLinks" :key="l.id" class="flex flex-col gap-1 rounded-md border border-default px-3 py-2.5">
               <div class="flex items-center gap-2">
                 <span class="text-sm font-medium truncate">{{ l.label || 'unlabelled' }}</span>

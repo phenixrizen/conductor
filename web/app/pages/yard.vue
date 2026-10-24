@@ -46,7 +46,8 @@ const answered = computed(() =>
     .sort((a, b) => (b.lastAnswer?.at ?? '').localeCompare(a.lastAnswer?.at ?? ''))
     .slice(0, 8),
 )
-const showQueue = computed(() => waiting.value.length > 0 || answered.value.length > 0)
+// The queue shows only while something needs input (#360); the answered rows ride along inside it then.
+const showQueue = computed(() => waiting.value.length > 0)
 
 // Queue keyboard selection (J / K, Enter to type a reply).
 const queueSel = ref(0)
@@ -307,6 +308,8 @@ usePalette().registerPage(() => {
           <FilesPane :request="requestFile" :cwd="focused.cwd" :raw-url="rawUrl" :activity="focusActivity" class="flex-1 min-h-0" @open="openFile" @open-diff="openDiff" @open-commit-diff="openCommitDiff" />
         </aside>
       </div>
+      <!-- Nothing at all yet: the first-run welcome, which is not the sidebar's empty line (#359). -->
+      <WelcomeCard v-else-if="!attention.sessions.value.length" />
       <div v-else-if="!active.length" class="flex-1 flex flex-col items-center justify-center gap-3 text-muted p-8">
         <UIcon name="i-lucide-layout-grid" class="size-10" />
         <p class="text-sm">No active sessions. Launch an agent or start one with <code>conductor host</code>.</p>

@@ -456,8 +456,12 @@ test("the agent's question is in the chat with its choices; answered there, a li
   await expect(question.locator('[data-chat-option="3"]')).toContainText('Keep both')
   await question.locator('[data-chat-option="3"]').click()
   await expect.poll(() => transcript(state.home, s), { timeout: 15_000, message: 'the choice was typed' }).toContain('Keep both\n')
-  await expect(chat.locator('[data-chat-system]').last()).toContainText('Answered by Nate', { timeout: 15_000 })
+  // The line says what was answered with; the choices stay as text, the one picked marked (#364).
+  await expect(chat.locator('[data-chat-system]').last()).toContainText('Answered by Nate: Keep both', { timeout: 15_000 })
   await expect(question.locator('[data-chat-option]')).toHaveCount(0)
+  await expect(question.locator('[data-chat-choice]')).toHaveCount(3)
+  await expect(question.locator('[data-chat-chosen]')).toHaveText('Keep both')
+  await expect(question.locator('[data-chat-answer]')).toHaveCount(0)
   await expect.poll(async () => (await api.session(s.id)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
   await expect(page.locator('[data-quick-reply]')).toBeHidden()
 
@@ -508,7 +512,8 @@ test("the agent's question is in the chat with its choices; answered there, a li
   await asked.locator('[data-chat-option="2"]').click()
   const core = await api.session(coreId)
   await expect.poll(() => transcript(state.home, core), { timeout: 20_000, message: 'core got the choice' }).toContain('release')
-  await expect(runChat.locator('[data-chat-system]').last()).toContainText('Answered by Nate', { timeout: 15_000 })
+  await expect(runChat.locator('[data-chat-system]').last()).toContainText('Answered by Nate: release', { timeout: 15_000 })
   await expect(asked.locator('[data-chat-option]')).toHaveCount(0)
+  await expect(asked.locator('[data-chat-chosen]')).toHaveText('release')
   await expect.poll(async () => (await api.session(coreId)).attention?.state, { timeout: 15_000 }).not.toBe('needs_input')
 })

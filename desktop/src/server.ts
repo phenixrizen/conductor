@@ -18,6 +18,10 @@ export interface SupervisorOptions {
   launcher: Launcher
   args: string[]
   env: () => Record<string, string>
+  /** Runs before each start of the server, before env(): the app reads the shell's PATH again while it has none (#363). */
+  beforeStart?: () => Promise<void>
+  /** How long beforeStart may take (60 s): one that does not settle by then is left behind and the start goes on without it. */
+  prepareMs?: number
   log: (kind: 'main' | 'server', line: string) => void
   /** How long the handshake may take (60 s: WSL may have to boot). */
   handshakeMs?: number
@@ -38,11 +42,26 @@ export interface SupervisorOptions {
  * its health, restarts it with backoff when it dies or stops answering, and gives up after too many failures in a row. The admin
  * token travels in the environment it builds and in the handshake, never on disk.
  */
+/** The start was stopped (stop) while it prepared, before the server spawned: nothing runs, and nothing is restarted. */
+export class StartStopped extends Error {
+  constructor() {
+    super('the server was stopped before it started')
+    this.name = 'StartStopped'
+  }
+}
+
 export class ServerSupervisor extends EventEmitter {
   status: ServerStatus = { state: 'stopped', url: '', failures: 0 }
   handshake: Handshake | null = null
   private child: ChildProcess | null = null
   private wanted = false
+  /**
+   * Each start is numbered, and the newest start's promise kept (current): a start superseded while it prepared, by a stop or by
+   * another start (Restart server during a slow shell read, #363), spawns nothing; it reports the newer start's outcome, or
+   * StartStopped (Codex's review: two servers from overlapping starts, and a stop that saw no child yet and let the start go on).
+   */
+  private generation = 0
+  private current: Promise<Handshake> | null = null
   private stopping: Promise<void> | null = null
   private healthTimer: NodeJS.Timeout | null = null
   private restartTimer: NodeJS.Timeout | null = null
@@ -57,7 +76,7 @@ export class ServerSupervisor extends EventEmitter {
   /** start runs the server until stop; it resolves with the first handshake, or rejects when the first start fails. */
   async start(): Promise<Handshake> {
     this.wanted = true
-    return this.spawnOnce()
+    return this.run()
   }
 
   private setState(state: ServerState, extra: Partial<ServerStatus> = {}) {
@@ -65,8 +84,44 @@ export class ServerSupervisor extends EventEmitter {
     this.emit('state', this.status)
   }
 
+  /** run is a start, kept as the newest (current) for a start it supersedes. */
+  private run(): Promise<Handshake> {
+    const p = this.spawnOnce()
+    this.current = p
+    return p
+  }
+
+  /**
+   * prepare runs beforeStart within prepareMs: one that fails is logged, one that does not settle in time (a shell that ignores
+   * its signal) is left behind with a line in the log, and the start goes on with what the app has.
+   */
+  private async prepare(): Promise<void> {
+    const before = this.o.beforeStart
+    if (!before) return
+    const wait = this.o.prepareMs ?? 60_000
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        this.o.log('main', `the start's preparation did not finish within ${Math.round(wait / 1000)} s; starting without it`)
+        resolve()
+      }, wait)
+    })
+    try {
+      await Promise.race([before().catch((e) => this.o.log('main', `the start's preparation failed: ${(e as Error).message}`)), deadline])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   private async spawnOnce(): Promise<Handshake> {
     this.setState('starting')
+    const gen = ++this.generation
+    await this.prepare()
+    if (gen !== this.generation && this.current) {
+      // Started again while this one prepared (a restart): that start spawns, and this one is its outcome.
+      return this.current
+    }
+    if (!this.wanted) throw new StartStopped()
     const env = this.o.env()
     const child = this.o.launcher.spawn(this.o.args, env)
     this.child = child
@@ -146,7 +201,9 @@ export class ServerSupervisor extends EventEmitter {
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null
       if (!this.wanted) return
-      this.spawnOnce().catch(() => this.scheduleRestart(this.status.lastError ?? 'start failed'))
+      this.run().catch((e) => {
+        if (!(e instanceof StartStopped)) this.scheduleRestart(this.status.lastError ?? 'start failed')
+      })
     }, wait)
   }
 

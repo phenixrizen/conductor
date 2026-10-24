@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from './protocol'
 import type { MemberStatus } from './crews'
-import { SHEET_SNAPS, answeredQuestions, canSendToAgent, chatBytes, chatThreadKey, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, scopeItems, systemLine } from './chat'
+import { SHEET_SNAPS, answeredQuestions, canSendToAgent, chatAnswers, chatBytes, chatThreadKey, chatCounter, chatNonce, chatTime, chatTimeSeconds, chatTooLong, cleanChatText, linkify, markerLine, mergeMessage, scopeItems, systemLine } from './chat'
 
 const msg = (over: Partial<ChatMessage>): ChatMessage => ({ t: 'chat', id: 'a', at: '2026-10-06T08:32:40Z', scope: 'session', kind: 'message', by: { id: 'x', name: 'Nate', role: 'control' }, text: 'hi', ...over })
 
@@ -85,6 +85,38 @@ describe('chat lines', () => {
       msg({ id: 'q2', kind: 'question', by: { id: 'agent', name: 'codex', role: 'agent' }, text: 'Which?' }),
       msg({ id: 'a1', kind: 'system', event: 'answered', ref: 'q1' }),
       msg({ id: 'j', kind: 'system', event: 'join' }),
+    ]
+    const done = answeredQuestions(list)
+    expect(done.has('q1')).toBe(true)
+    expect(done.has('q2')).toBe(false)
+  })
+
+  it('says what a question was answered with, and what became of each (#364)', () => {
+    const nate = { id: 'x', name: 'Nate', role: 'control' as const }
+    expect(systemLine({ by: nate, event: 'answered', text: 'Keep both' })).toBe('Answered by Nate: Keep both')
+    expect(systemLine({ by: nate, event: 'answered', text: '' })).toBe('Answered by Nate')
+    const list = [
+      msg({ id: 'q1', kind: 'question', by: { id: 'agent', name: 'codex', role: 'agent' }, text: 'Which?', options: [{ label: 'A', input: '1' }, { label: 'B', input: '2' }] }),
+      msg({ id: 'q2', kind: 'question', by: { id: 'agent', name: 'codex', role: 'agent' }, text: 'Trust?' }),
+      msg({ id: 'q3', kind: 'question', by: { id: 'agent', name: 'codex', role: 'agent' }, text: 'Still open?' }),
+      msg({ id: 'a1', kind: 'system', event: 'answered', ref: 'q1', text: 'B', by: nate }),
+      msg({ id: 'w2', kind: 'system', event: 'withdrawn', ref: 'q2', text: 'terminal' }),
+      // A second line about a question changes nothing: the first stands.
+      msg({ id: 'a1b', kind: 'system', event: 'answered', ref: 'q1', text: 'A', by: nate }),
+    ]
+    const a = chatAnswers(list)
+    expect(a.get('q1')).toEqual({ how: 'answered', by: 'Nate', text: 'B' })
+    expect(a.get('q2')).toEqual({ how: 'terminal' })
+    expect(a.has('q3')).toBe(false)
+  })
+
+  it('takes a question that left without an answer through Conductor as answered too, and says why (#358)', () => {
+    expect(systemLine({ by: { id: '', name: 'Conductor', role: 'control' }, event: 'withdrawn', text: 'terminal' })).toBe('Answered in the terminal')
+    expect(systemLine({ by: { id: '', name: 'Conductor', role: 'control' }, event: 'withdrawn', text: 'agent' })).toBe('Withdrawn: the agent moved on')
+    const list = [
+      msg({ id: 'q1', kind: 'question', by: { id: 'agent', name: 'claude', role: 'agent' }, text: 'Which colour?' }),
+      msg({ id: 'q2', kind: 'question', by: { id: 'agent', name: 'claude', role: 'agent' }, text: 'Second round?' }),
+      msg({ id: 'w1', kind: 'system', event: 'withdrawn', ref: 'q1', text: 'terminal' }),
     ]
     const done = answeredQuestions(list)
     expect(done.has('q1')).toBe(true)

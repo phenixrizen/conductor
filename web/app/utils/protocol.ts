@@ -91,8 +91,8 @@ export interface ChatMessage {
   ref?: string
   to?: string
   on?: string
-  /** `answered` names, in `ref`, the question `by` answered. */
-  event?: 'join' | 'leave' | 'answered'
+  /** `answered` names, in `ref`, the question `by` answered, `text` the label of the choice picked when it was one (never a line typed: it may be a credential; #364); `withdrawn` one that left without an answer through Conductor, `text` saying why: `terminal` (keys typed there answered it) or `agent` (it moved on). */
+  event?: 'join' | 'leave' | 'answered' | 'withdrawn'
   /** The sender's own id of the post, echoed. */
   nonce?: string
   /** A question's choices (at most 6), typed as the attention's are. */

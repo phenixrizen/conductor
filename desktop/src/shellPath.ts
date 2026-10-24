@@ -22,11 +22,15 @@ export function mergePaths(loginPath: string, processPath: string, home: string,
   return out.join(':')
 }
 
+/** How long the user's shell has to print its PATH (loginShellPath): an interactive zsh that loads nvm takes seconds. */
+export const LOGIN_SHELL_WAIT = 15_000
+
 /**
- * loginShellPath asks the user's login shell for its PATH (an app started from a dock or a launcher has a bare one, and the agents
- * live where the shell's profile points), within timeoutMs; '' when the shell does not answer.
+ * loginShellPath asks the user's login shell, interactively, for its PATH (an app started from a dock or a launcher has a bare one,
+ * and the agents live where the shell's profile and rc files point), within timeoutMs; '' when the shell does not answer. The app
+ * asks again before a start of the server while it got none (#363).
  */
-export function loginShellPath(shell: string, timeoutMs = 5000, runner = execFile): Promise<string> {
+export function loginShellPath(shell: string, timeoutMs = LOGIN_SHELL_WAIT, runner = execFile): Promise<string> {
   if (!shell) return Promise.resolve('')
   return new Promise((resolve) => {
     let settled = false
@@ -37,7 +41,8 @@ export function loginShellPath(shell: string, timeoutMs = 5000, runner = execFil
       }
     }
     try {
-      const child = runner(shell, ['-ilc', `printf '%s%s\\n' ${MARKER} "$PATH"`], { timeout: timeoutMs, env: { ...process.env, TERM: 'dumb' } }, (err, stdout) => {
+      // SIGKILL at the timeout: a shell that ignores SIGTERM would never settle this (Codex's review of #363).
+      const child = runner(shell, ['-ilc', `printf '%s%s\\n' ${MARKER} "$PATH"`], { timeout: timeoutMs, killSignal: 'SIGKILL', env: { ...process.env, TERM: 'dumb' } }, (err, stdout) => {
         if (err && !stdout) return done('')
         done(extractPath(String(stdout)))
       })

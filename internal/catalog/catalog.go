@@ -746,6 +746,10 @@ func (c Catalog) Clone() Catalog {
 // config, or saved from the Agents page; "" when the catalog has no such agent.
 func (c Catalog) Source(id string) Source { return c.sources[id] }
 
+// Copy returns a copy of a that shares no slice, map or pointer with it, for
+// a package that takes an agent apart (a copy of one, internal/api).
+func (a Agent) Copy() Agent { return a.clone() }
+
 // clone returns a copy of a that shares no slice, map or pointer with it.
 func (a Agent) clone() Agent {
 	a.Command = slices.Clone(a.Command)

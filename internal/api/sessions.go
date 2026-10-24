@@ -290,6 +290,10 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		return nil, newAPIError(http.StatusBadRequest, "invalid_cwd", "working directory does not exist")
 	}
 	procEnv := pty.BuildEnv(pty.ParentEnv(), passthrough, env, inject)
+	// An agent whose environment moves its configuration directory (a copy
+	// of Claude Code under a CLAUDE_CONFIG_DIR of its own, #291) reads its
+	// skills there: the skill goes there too.
+	s.installSkillInConfigDir(agent.Adapter, agents.ConfigDirOf(agent.Adapter, pty.Lookup(procEnv)), hooksDir)
 	proc, err := pty.Start(pty.Spec{
 		Argv:    argv,
 		Dir:     cwd,
@@ -560,6 +564,35 @@ func (s *Server) installSkillAtLaunch(adapter, hooksDir string) {
 	case path == "":
 	case errors.Is(err, agents.ErrByHand):
 		s.log.Info("the agent's skills directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter, "path", path)
+	case err != nil:
+		s.log.Warn("skill install failed", "adapter", adapter, "path", path, "err", err)
+	case changed:
+		s.log.Info("skill installed", "adapter", adapter, "path", path)
+	}
+}
+
+// installSkillInConfigDir puts the Conductor skill under dir, the
+// configuration directory of its own the adapter's agent is launched with
+// (agents.ConfigDirOf; "" for none), once per adapter and directory since the
+// server started, as installSkillAtLaunch does for the home. Nothing here
+// stops the launch.
+func (s *Server) installSkillInConfigDir(adapter, dir, hooksDir string) {
+	if adapter == "" || dir == "" || !s.cfg.InstallSkill() {
+		return
+	}
+	key := adapter + "\x00" + dir
+	s.skillMu.Lock()
+	done := s.skillDone[key]
+	s.skillDone[key] = true
+	s.skillMu.Unlock()
+	if done {
+		return
+	}
+	path, changed, err := agents.InstallSkillIn(adapter, dir, hooksDir)
+	switch {
+	case path == "":
+	case errors.Is(err, agents.ErrByHand):
+		s.log.Info("the agent's configuration directory holds a SKILL.md of the user's own, which stays; conductor skill prints Conductor's", "adapter", adapter, "path", path)
 	case err != nil:
 		s.log.Warn("skill install failed", "adapter", adapter, "path", path, "err", err)
 	case changed:

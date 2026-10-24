@@ -504,6 +504,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/catalog/check", s.launching(s.handleCheckCommand))
 	mux.HandleFunc("DELETE /api/catalog/{id}", s.launching(s.handleDeleteAgent))
 	mux.HandleFunc("POST /api/catalog/{id}/unhide", s.launching(s.handleUnhideAgent))
+	mux.HandleFunc("POST /api/catalog/{id}/clone", s.launching(s.handleCloneAgent))
 	mux.HandleFunc("GET /api/crews", s.launching(s.handleListCrews))
 	mux.HandleFunc("GET /api/crews/{id}", s.launching(s.handleGetCrew))
 	mux.HandleFunc("POST /api/crews", s.launching(s.handleCreateCrew))

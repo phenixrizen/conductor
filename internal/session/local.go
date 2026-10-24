@@ -234,6 +234,9 @@ type Local struct {
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
 	question string
+	// askedInChat is the set of questions the chat shows a card for (askInChat), until their answered or withdrawn line (#358); chatLeft the withdrawn lines not yet told. Guarded by mu.
+	askedInChat map[string]struct{}
+	chatLeft    []chatLeft
 	// claim is the structured answer being written to a question (CLAIMED:
 	// a reply naming it, claimLocked), its id and the claim's token, fresh
 	// for every claim (claimSeq); the empty claim while none stands. The
@@ -648,7 +651,7 @@ func (s *Local) markEnded(status Status) {
 	// Nor is anything kept to show again: the agent's own question goes
 	// with it, shown or set aside, and so do a claim on it, its
 	// consumption and the screen's baseline.
-	s.dropOwnLocked()
+	s.dropOwnLocked(ChatLeftAgent)
 	s.claims, s.consumed = nil, ""
 	s.shotWait, s.shotRows = "", nil
 	s.settleLocked(s.info.Attention)
@@ -769,6 +772,8 @@ func (s *Local) Activity() []ActivityEntry { return s.activity.Snapshot() }
 
 // notifyChange hands a fresh Info snapshot to the OnChange hook.
 func (s *Local) notifyChange() {
+	// A question's withdrawn line (#358) goes first: its card loses its choices as the state that replaced the question is told.
+	s.tellChatLeft()
 	if s.opts.OnChange != nil {
 		s.opts.OnChange(s.Info())
 	}
@@ -1852,6 +1857,9 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	// where a reply would be taken for an answer the program has.
 	inTurn := own.ID != "" && s.turn.Load() == s.ownTurn && !s.turnEnded
 	reached := own.ID != "" && (s.claimedLocked(own.ID) || s.consumed == own.ID)
+	// Read here, before forgetLocked lets the question's consumption go: why its
+	// card says it left, should the change below let it go for good (#358).
+	ownConsumed := own.ID != "" && s.consumed == own.ID
 	if s.held != nil && source != SourceSubmit && !heldSource(source) {
 		// The session's turn is held for a typed text (holdTyped): the hold
 		// is what shows, until a person types into the terminal, but for a
@@ -1889,9 +1897,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		case s.ownAside && inTurn && !ask && state != AttentionNone:
 			// Set aside still: another state in its turn.
 		default:
-			s.dropOwnLocked()
+			s.dropOwnLocked(ChatLeftAgent)
 		}
 		s.mu.Unlock()
+		// The question let go above leaves a withdrawn line (#358) this path tells no other way.
+		s.tellChatLeft()
 		if state != AttentionNone {
 			label := message
 			if label == "" {
@@ -2075,7 +2085,11 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 		// Kept from now, asked in the turn now running; the one kept
 		// before, if any, goes (its next question).
 		att.ask = true
+		prev := s.own.ID
 		s.own, s.ownAside, s.ownTurn = att, false, s.turn.Load()
+		if prev != "" && prev != att.ID {
+			s.leftInChatLocked(prev, ChatLeftAgent)
+		}
 	case own.ID == "" || source == SourceSubmit || s.heldOver.ID == own.ID:
 		// None kept; or the hold of the turn takes its place, holding it
 		// over (heldOver, above) or leaving it set aside; or held over
@@ -2086,8 +2100,13 @@ func (s *Local) setAttentionLooked(state AttentionState, message, source, kind s
 	default:
 		// A state after its turn's done (the agent at work in a new turn,
 		// another wait), a clear, or a question a reply or a person's
-		// keys reached: it goes for good.
-		s.dropOwnLocked()
+		// keys reached: it goes for good, its card saying why (a reply
+		// under way resolves nothing once the question has left).
+		reason := ChatLeftAgent
+		if ownConsumed {
+			reason = ChatLeftTerminal
+		}
+		s.dropOwnLocked(reason)
 	}
 	s.info.Attention = att
 	s.settleLocked(att)
@@ -2928,7 +2947,7 @@ func (s *Local) input(ctx context.Context, sub *Subscription, question string, d
 			s.typedKeys(sub, data, typedEnter)
 		}
 		if token != 0 {
-			s.resolve(question, token, sub.ID, sub.Name)
+			s.resolve(question, token, sub.ID, sub.Name, data)
 		}
 	}
 	landed, err := s.writeProc(ctx, data, o)
@@ -3065,8 +3084,14 @@ func (s *Local) beginTurn() {
 // dropOwnLocked forgets the agent's own question the session keeps (own):
 // it shows again nowhere. The attention showing is the caller's to change.
 // The caller holds s.mu.
-func (s *Local) dropOwnLocked() {
+func (s *Local) dropOwnLocked(reason string) {
+	id := s.own.ID
 	s.own, s.ownAside, s.ownTurn = Attention{}, false, 0
+	// Gone for good without an answer through Conductor: its card in the chat
+	// says why (#358); nothing when the answer's own line follows (reason "").
+	if reason != "" {
+		s.leftInChatLocked(id, reason)
+	}
 }
 
 // questionClaim is the structured answer being written to a question
@@ -3158,7 +3183,7 @@ func (s *Local) release(id string, token uint64) {
 // of the turn shown again when one stands; one held over goes without
 // showing again. The agent's own question kept (own) goes with it. An
 // input entry with the question records the answer.
-func (s *Local) resolve(id string, token uint64, by, byName string) {
+func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte) {
 	s.mu.Lock()
 	if s.claims[id] != (questionClaim{id: id, token: token}) {
 		s.mu.Unlock()
@@ -3181,7 +3206,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string) {
 	s.info.LastAnswer = result
 	s.keepResultLocked(id, result)
 	if s.own.ID == id {
-		s.dropOwnLocked()
+		s.dropOwnLocked("")
 	}
 	if s.consumed == id {
 		s.consumed = ""
@@ -3199,7 +3224,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string) {
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
-	answered, answeredID, told := s.answeredInChat(id, by, byName)
+	answered, answeredID, told := s.answeredInChat(id, by, byName, answerWords(q.Options, keys))
 	s.mu.Unlock()
 	if told {
 		s.chatHook(answeredID, answered)
@@ -3278,6 +3303,7 @@ func (s *Local) forgetLocked(id string) {
 	if id == "" {
 		return
 	}
+	s.leftInChatLocked(id, s.leftReasonLocked(id))
 	delete(s.claims, id)
 	if s.consumed == id {
 		s.consumed = ""
@@ -3294,9 +3320,10 @@ func (s *Local) forgetLocked(id string) {
 // and tells the change (notifyChange) once it has let it go.
 func (s *Local) withdrawShownLocked(source string) {
 	att := s.info.Attention
+	reason := s.leftReasonLocked(att.ID)
 	s.forgetLocked(att.ID)
 	if att.ID != "" && att.ID == s.own.ID {
-		s.dropOwnLocked()
+		s.dropOwnLocked(reason)
 	}
 	s.info.Attention = Attention{State: AttentionNone, Source: source}
 	if s.held != nil && att.Source != SourceSubmit && !s.info.Status.Ended() {
@@ -3775,12 +3802,15 @@ func (s *Local) answeredLeft() string {
 // the dialog and not the text.
 func (s *Local) rawKeys(data []byte, maybe [][]byte, onScreen *dialogView, startup, enter, person bool) {
 	s.mu.Lock()
+	// The agent's own question let go here leaves a withdrawn line (#358) that
+	// no state change follows: told once the lock is let go.
+	defer s.tellChatLeft()
 	defer s.mu.Unlock()
 	if onScreen != nil && onScreen.picks(onScreen.answers, data, maybe) {
 		s.noteDialogAnswered(onScreen.words)
 	}
 	if person && s.own.ID != "" && s.ownAside {
-		s.dropOwnLocked()
+		s.dropOwnLocked(ChatLeftTerminal)
 	}
 	att := s.info.Attention
 	if att.State != AttentionNeedsInput || att.ID == "" {

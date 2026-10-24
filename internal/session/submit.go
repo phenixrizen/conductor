@@ -976,7 +976,8 @@ func (s *Local) resolveLine(sub Submission, st submitState) {
 	if sub.By != nil {
 		by, name = sub.By.ID, sub.By.Name
 	}
-	s.resolve(sub.Question, token, by, name)
+	// A line's text is never repeated in the chat (answerWords): the line resolves the question by whom alone.
+	s.resolve(sub.Question, token, by, name, nil)
 }
 
 // landEnter waits for a submission's Enter whose write had begun when its

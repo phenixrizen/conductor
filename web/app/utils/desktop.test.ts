@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
+import { reactive } from 'vue'
+import { plainCopy, desktopBridge, noticeWords, PLAIN_SWITCHYARD, SWITCHYARD_EXTRA, SWITCHYARD_SHAPE, switchyardProblem, tokenFromFragment, withoutTokenFragment, restartWords, updateBusyWords, updateFailedWords, updateGoneWords, updateReadyWords } from './desktop'
 
 describe('desktop bridge', () => {
   it('is absent in a browser', () => {
@@ -97,5 +98,16 @@ describe('the update the desktop app downloaded (#290)', () => {
     expect(restartWords('0.7.0-rc.12', 3)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. The 3 sessions running on this computer end.')
     // Not counted is never none.
     expect(restartWords('0.7.0-rc.12', -1)).toBe('Conductor quits to install 0.7.0-rc.12, and its server stops. The sessions running on this computer, if any, end: they could not be counted.')
+  })
+})
+
+describe('plainCopy', () => {
+  it('turns a reactive form into a value the bridge can clone (#348)', () => {
+    const form = reactive({ allowedRoots: ['/home/me', '/srv'], defaultCwd: '/home/me', yolo: false, nested: { a: [1, 2] } })
+    expect(() => structuredClone(form)).toThrow()
+    const plain = plainCopy(form)
+    expect(() => structuredClone(plain)).not.toThrow()
+    expect(plain).toEqual({ allowedRoots: ['/home/me', '/srv'], defaultCwd: '/home/me', yolo: false, nested: { a: [1, 2] } })
+    expect(plain).not.toBe(form)
   })
 })

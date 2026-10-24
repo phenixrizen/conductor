@@ -162,8 +162,11 @@ test("the trust question's answers are choices on the page and in the chat; type
   // The chat's Yes types the trusting keys: the stub trusts, the prompt runs, the chat says who answered.
   await question.locator('[data-chat-option="1"]').click()
   await expect.poll(async () => logged(await api.run(run.id), "typed solo's prompt"), { timeout: 30_000 }).toBe(true)
-  await expect(chat.locator('[data-chat-system]').last()).toContainText('Answered by Nate', { timeout: 15_000 })
+  await expect(chat.locator('[data-chat-system]').last()).toContainText('Answered by Nate: ', { timeout: 15_000 })
   await expect(question.locator('[data-chat-option]')).toHaveCount(0)
+  // The choices stay as text, the trusting one marked (#364).
+  await expect(question.locator('[data-chat-choice]')).toHaveCount(2)
+  await expect(question.locator('[data-chat-chosen]')).toHaveCount(1)
   const toml = join(state.home, '.codex', 'config.toml')
   await expect.poll(() => (existsSync(toml) ? readFileSync(toml, 'utf8') : ''), { timeout: 15_000 }).toContain('trust_level = "trusted"')
   r = await api.run(run.id)
