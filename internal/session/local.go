@@ -230,6 +230,12 @@ type Local struct {
 	// nvimCount is the editors open on the session (nvim.go), every
 	// connection's together.
 	nvimCount atomic.Int32
+	// editors are the editors open on the session, every connection's,
+	// from their open to their forget (forgetNvim): the shutdown ends them
+	// (endEditorsBy), those of a connection that went before it included,
+	// which its subscription no longer names. Guarded by editorsMu.
+	editorsMu sync.Mutex
+	editors   map[*nvimEditor]struct{}
 	chat      chatRing // guarded by mu
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
@@ -3219,6 +3225,17 @@ func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte)
 			// shows again.
 			now := time.Now().UTC()
 			s.info.Attention = Attention{State: AttentionNeedsInput, Message: HeldWords, Source: SourceSubmit, Since: &now, ID: NewID()}
+		} else if heldSource(q.Source) && s.statusSeen && s.lastStatus == StatusWorking && !s.info.Status.Ended() {
+			// A dialog answered while the program's status says it works:
+			// Codex writes working as its overlay closes, before the answer
+			// is taken or after it; read before, the status was kept out by
+			// the dialog on the screen (unlessOnScreen) and is not written
+			// again (readStatus), so working shows at the answer, as the
+			// status's, recorded below (statusReconciled) as it is when the
+			// answer comes after (#281).
+			now := time.Now().UTC()
+			s.info.Attention = Attention{State: AttentionWorking, Source: SourceStatus, Since: &now}
+			s.statusReconciled = true
 		}
 		s.settleLocked(s.info.Attention)
 		s.signalAttention()
@@ -3231,6 +3248,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string, keys []byte)
 		s.tellRun(answered)
 	}
 	s.Record(ActivityEntry{Type: ActivityInput, By: by, ByName: byName, Message: q.Message})
+	s.recordStatusReconciled()
 	s.notifyChange()
 }
 
@@ -3338,6 +3356,16 @@ func (s *Local) withdrawShownLocked(source string) {
 		now := time.Now().UTC()
 		s.info.Attention = Attention{State: AttentionNeedsInput, Message: statusWords(s.statusKind), Source: SourceStatus, Kind: statusKindOf(s.statusKind), Since: &now, ID: NewID()}
 		s.statusReconciled = true
+	} else if source == SourceScreen && heldSource(att.Source) && s.statusSeen && s.lastStatus == StatusWorking && !s.info.Status.Ended() {
+		// The screen moved on from a question the session held while the
+		// program's status says it works: read as the question showed and
+		// kept out by the dialog on the screen (unlessOnScreen), and not
+		// written again (readStatus). Working shows now, as the status's,
+		// recorded by the caller (statusReconciled); Codex writes it as its
+		// overlay closes, before or after the screen shows it gone (#281).
+		now := time.Now().UTC()
+		s.info.Attention = Attention{State: AttentionWorking, Source: SourceStatus, Since: &now}
+		s.statusReconciled = true
 	}
 	s.settleLocked(s.info.Attention)
 	s.signalAttention()
@@ -3370,8 +3398,15 @@ func (s *Local) recordStatusReconciled() {
 	att, done := s.info.Attention, s.statusReconciled
 	s.statusReconciled = false
 	s.mu.Unlock()
-	if done && att.State == AttentionNeedsInput && att.Source == SourceStatus {
+	if !done || att.Source != SourceStatus {
+		return
+	}
+	switch att.State {
+	case AttentionNeedsInput:
 		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: att.Message}, AttentionNeedsInput)
+	case AttentionWorking:
+		// Labelled as a working change is (setAttentionLooked): by its state.
+		s.recordOwn(ActivityEntry{At: time.Now().UTC(), Type: ActivityAttention, Message: string(AttentionWorking)}, AttentionWorking)
 	}
 }
 
@@ -4889,7 +4924,11 @@ func (s *Local) Retire() {
 // returns once their transports have closed,
 // those of the clients that had ended already included, together, as
 // DisconnectLink's do.
-func (s *Local) CloseAll(reason error) {
+// CloseAllBy closes every connection with reason and ends the session's
+// editors: they may leave on their own until deadline, shared by every
+// session a shutdown closes, then are ended through their contexts
+// (endEditorsBy).
+func (s *Local) CloseAllBy(reason error, deadline time.Time) {
 	var all []*Subscription
 	s.mu.Lock()
 	s.hub.Each(func(sub *Subscription) {
@@ -4904,7 +4943,15 @@ func (s *Local) CloseAll(reason error) {
 		s.closeNvims(sub)
 	}
 	waitClosed(all)
-	s.WaitEditors()
+	// The editors get the shutdown's short wait, then are ended: the
+	// server must be gone before the app's own grace runs out.
+	s.endEditorsBy(deadline)
+}
+
+// CloseAll is CloseAllBy with the shutdown's own wait for the editors
+// (EditorShutdownWait from now).
+func (s *Local) CloseAll(reason error) {
+	s.CloseAllBy(reason, time.Now().Add(EditorShutdownWait))
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

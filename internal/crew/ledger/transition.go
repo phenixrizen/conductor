@@ -69,33 +69,50 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 	}
 	tx, err := l.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	defer tx.Rollback()
 	t := &Tx{ctx: ctx, tx: tx, runID: runID, now: time.Now().UTC()}
+	// Every error of the transaction, fn's and the statements' as the
+	// commit's, is told as the context's once the context has ended:
+	// database/sql's rollback of a cancelled transaction races each step,
+	// which then says sql.ErrTxDone (Codex's review of #367).
 	if err := fn(t); err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	res, err := tx.ExecContext(ctx, "UPDATE runs SET revision = revision + 1 WHERE id = ?", runID)
 	if err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return 0, ErrNoRun
 	}
 	var rev int64
 	if err := tx.QueryRowContext(ctx, "SELECT revision FROM runs WHERE id = ?", runID).Scan(&rev); err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	if l.beforeCommit != nil {
 		if err := l.beforeCommit(); err != nil {
-			return 0, err
+			return 0, cancelledAs(ctx, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	return rev, nil
+}
+
+// cancelledAs is err as the transaction's caller should see it: the
+// context's own error when the context ended under the transaction,
+// whatever database/sql said of it (its rollback of a cancelled
+// transaction races the commit, which then says sql.ErrTxDone), so that a
+// stop is told from a store that failed (Codex's review of #367); err
+// itself otherwise.
+func cancelledAs(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil && (errors.Is(err, sql.ErrTxDone) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return fmt.Errorf("ledger: %w", cerr)
+	}
+	return err
 }
 
 // Event records an event of the run, next in its sequence, with payload as

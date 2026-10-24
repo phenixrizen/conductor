@@ -21,7 +21,19 @@ func script(t *testing.T, body string) string {
 
 var claudeProbe = Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*(\d+\.\d+\.\d+)\s*\(Claude Code\)`), Verified: true}
 
+// slowProbes gives the probes of a test the time a loaded machine may need
+// to start a shell, a pipe and a sort: the product's 3 s bound is not what
+// these tests prove, and under the full race run on a busy Mac the stub did
+// not answer within it (#281). The package's tests run one at a time.
+func slowProbes(t *testing.T) {
+	t.Helper()
+	was := probeTimeout
+	probeTimeout = 30 * time.Second
+	t.Cleanup(func() { probeTimeout = was })
+}
+
 func TestRunProbeIdentifies(t *testing.T) {
+	slowProbes(t)
 	p := script(t, `[ "$1" = --version ] && echo "2.1.287 (Claude Code)"`)
 	res := RunProbe(context.Background(), []string{p}, claudeProbe, nil)
 	if !res.Ran || !res.Identified || res.Version != "2.1.287" || res.Output != "" || res.Error != "" {
@@ -30,6 +42,7 @@ func TestRunProbeIdentifies(t *testing.T) {
 }
 
 func TestRunProbeRejectsAnotherProgram(t *testing.T) {
+	slowProbes(t)
 	goose := Probe{Args: []string{"--version"}, Match: regexp.MustCompile(`(?m)^\s*goose\s+v?(\d+\.\d+\.\d+)`), Reject: regexp.MustCompile(`(?m)^\s*goose version:\s*v`)}
 	p := script(t, `echo "goose version: v3.22.1"`)
 	res := RunProbe(context.Background(), []string{p}, goose, nil)
@@ -58,6 +71,7 @@ func TestRunProbeTimesOutAHang(t *testing.T) {
 }
 
 func TestRunProbeBoundsOutputAndReadsStderr(t *testing.T) {
+	slowProbes(t)
 	p := script(t, `head -c 100000 /dev/zero | tr '\0' 'x'; echo; echo "2.1.287 (Claude Code)" >&2`)
 	res := RunProbe(context.Background(), []string{p}, claudeProbe, nil)
 	if !res.Ran || res.Identified {
@@ -73,6 +87,7 @@ func TestRunProbeBoundsOutputAndReadsStderr(t *testing.T) {
 }
 
 func TestRunProbeRunsNoShellAndASpartanEnvironment(t *testing.T) {
+	slowProbes(t)
 	p := script(t, `echo "args=$# first=$1"; echo "HOME=$HOME CONDUCTOR_X=${CONDUCTOR_X:-unset} MINE=${MINE:-unset} TERM=$TERM"`)
 	probe := Probe{Args: []string{"--version", "; echo injected"}, Match: regexp.MustCompile(`args=(\d+) first=--version`)}
 	t.Setenv("CONDUCTOR_X", "secret")
@@ -88,6 +103,7 @@ func TestRunProbeRunsNoShellAndASpartanEnvironment(t *testing.T) {
 }
 
 func TestRunProbeKeepsTheCommandsOwnArguments(t *testing.T) {
+	slowProbes(t)
 	stub := script(t, `[ "$1" = agent.sh ] && [ "$2" = --version ] && echo "2.1.287 (Claude Code)"`)
 	res := RunProbe(context.Background(), []string{stub, "agent.sh"}, claudeProbe, nil)
 	if !res.Identified || res.Version != "2.1.287" {

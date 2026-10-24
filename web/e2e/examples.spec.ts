@@ -38,13 +38,21 @@ test('the todo app launches and opens its run page, a tile per member', async ({
   await expect(grid.locator('[data-member="tester"] [data-session-tile]')).toBeVisible({ timeout: 60_000 })
 })
 
+// The chain from the launch to the handoff runs three starts one after another (lead; core and cli; tester) and the tester's own
+// wait for core's commit, each with a bound of its own in the mechanism: a start types its prompt once the member's screen has been
+// quiet, or after readyCap (60 s, internal/crew/run.go) at the latest, and the stub waits STUB_MERGE_WAIT_S (60 s) for a branch it
+// is told to wait for. The chain takes about five seconds on CI; its bound is the sum of those (#281: the 90 s it had was no
+// mechanism's, and a machine loaded by another suite beside this one ran past it).
+const HANDOFF_BOUND = 3 * 60_000 + 60_000
+
 test('each prompt runs without a person, the members start in order, the handoff is delivered and the merges succeed', async ({ page, api, state }) => {
+  test.setTimeout(HANDOFF_BOUND + 120_000)
   let run: Run = await api.run(runId)
   await expect
     .poll(async () => {
       run = await api.run(runId)
       return ['typed lead', 'lead is done: starting core, cli', 'cli is done: starting tester', 'handoff delivered from tester to core'].filter((t) => !logged(run, t))
-    }, { timeout: 90_000, message: 'run log' })
+    }, { timeout: HANDOFF_BOUND, message: 'run log' })
     .toEqual([])
   for (const name of MEMBERS) expect(logged(run, `typed ${name}'s prompt`), `${name}'s prompt`).toBe(true)
   const at = (name: string) => Date.parse(member(run, name).startedAt ?? '')

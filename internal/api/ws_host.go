@@ -72,6 +72,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn := signal.NewHostConn()
+	if s.viewerSeam != nil && s.viewerSeam.waited != nil {
+		conn.OnWait = s.viewerSeam.waited
+	}
 	hs, resumed, err := s.hosts.Register(reg, conn)
 	if err != nil {
 		msg := "registration rejected"

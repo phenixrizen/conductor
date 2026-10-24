@@ -434,35 +434,53 @@ func TestAnApprovalAtTheBottomOfATallWindowIsAsked(t *testing.T) {
 
 // A program that never stops drawing (a spinner) runs out the wait before
 // a submission's Enter; a dialog drawn as it runs out is still found, since
-// the screen is looked at once more, quiet or not, before the Enter.
+// the screen is looked at once more, quiet or not, before the Enter. The
+// dialog is drawn as the submission comes to its Enter (the beforeEnter
+// seam: after the wait, before that look), and the seam waits for the
+// screen to show it; drawn by the clock, 300 ms before the wait's budget
+// ran out, a loaded machine drew it after the look (#281).
 func TestAnApprovalDrawnAsTheLookRunsOutHoldsTheEnter(t *testing.T) {
 	s, p := newLocalWith(t, quiet(Options{Questions: approvalQuestions()}))
 	stop := make(chan struct{})
 	done := make(chan struct{})
-	started := make(chan time.Time)
 	go func() {
 		defer close(done)
-		var start time.Time
-		drawn := false
 		for i := 0; ; i++ {
 			select {
 			case <-stop:
 				return
-			case start = <-started:
 			case <-time.After(40 * time.Millisecond):
 			}
 			p.outW.Write([]byte(fmt.Sprintf("\x1b[10;1H\x1b[K• Working (%d)", i)))
-			if !drawn && !start.IsZero() && time.Since(start) > lookBudget-300*time.Millisecond {
-				p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
-				drawn = true
-			}
 		}
 	}()
+	var stopOnce sync.Once
+	stopSpinner := func() {
+		stopOnce.Do(func() {
+			close(stop)
+			<-done
+		})
+	}
+	defer stopSpinner()
+	var drawn sync.Once
+	hook := func() {
+		drawn.Do(func() {
+			// The spinner ran the wait out; the dialog, on the screen before the look that follows.
+			stopSpinner()
+			p.outW.Write([]byte(approvalDialog("curl -sI https://example.com")))
+			deadline := time.Now().Add(5 * time.Second)
+			for !strings.Contains(s.asked.Text(), "curl -sI https://example.com") {
+				if time.Now().After(deadline) {
+					t.Error("the dialog did not reach the screen within 5 s")
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
+	}
+	s.beforeEnter.Store(&hook)
 	time.Sleep(200 * time.Millisecond) // the spinner is drawing
-	started <- time.Now()
 	res, err := s.Submit(t.Context(), Submission{Text: "over to you", ByName: "crew", UnlessWaiting: true})
-	close(stop)
-	<-done
 	if err != nil || !res.Typed || res.Entered {
 		t.Fatalf("result %+v %v", res, err)
 	}

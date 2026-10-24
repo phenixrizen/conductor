@@ -622,6 +622,9 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 	// that has not failed is closed by the writer as it ends, which letting
 	// the viewer go makes it do.)
 	defer func() {
+		if s.viewerSeam != nil && s.viewerSeam.left != nil {
+			s.viewerSeam.left()
+		}
 		if v.Failed() {
 			c.CloseNow()
 		}
@@ -662,7 +665,8 @@ func (s *Server) serveHostedViewer(ctx context.Context, c *websocket.Conn, raw n
 				continue
 			}
 			s.relayed.add(len(f.Payload))
-			if err := hs.RelayToHost(v, f); err != nil {
+			err := hs.RelayToHost(v, f)
+			if err != nil {
 				switch {
 				case errors.Is(err, session.ErrReadOnly):
 					_ = sink.WriteFrame(proto.NewError(proto.ErrCodeReadOnly, "this link is view-only"))

@@ -477,7 +477,17 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 			e := newTestEnv(t, func(c *config.Config) { c.ViewerRelayKBps = 0 })
 			var failing atomic.Bool
 			readAgain := make(chan struct{}, 1)
+			// waited is told as a frame of the viewer's takes its place in line for room in the host's queue; left as the
+			// read loop returns, that frame dropped.
+			waited := make(chan struct{}, 1)
+			left := make(chan struct{}, 1)
 			seam := &viewerSeam{
+				left: func() {
+					select {
+					case left <- struct{}{}:
+					default:
+					}
+				},
 				write: writeFails(&failing),
 				read: func(<-chan struct{}) {
 					if failing.Load() {
@@ -485,6 +495,12 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 						case readAgain <- struct{}{}:
 						default:
 						}
+					}
+				},
+				waited: func() {
+					select {
+					case waited <- struct{}{}:
+					default:
 					}
 				},
 			}
@@ -503,7 +519,14 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 			v, viewerID := joinRawRelayed(t, e, hc, sessionID)
 			// From here the host reads nothing until the viewer has failed.
 			// The viewer sends numbered frames, whole ones and small ones in
-			// turn, until the server stops reading it.
+			// turn, until the server stops reading it: the host's queue
+			// (its viewers' lane) fills once the host's socket buffers have,
+			// and the read loop then waits in RelayToHost with a frame in
+			// hand, which the host connection says as the frame takes its
+			// place in line (OnWait, the seam's waited). (Sends unchanged
+			// for 300 ms was taken for the wait before, and a sender a
+			// loaded machine stalled had the viewer closed while every
+			// frame had reached the host; #281.)
 			var sent atomic.Int64
 			go func() {
 				for i := 0; ; i++ {
@@ -519,15 +542,24 @@ func TestNothingAViewerSentAfterADroppedFrameReachesTheHost(t *testing.T) {
 					sent.Add(1)
 				}
 			}()
-			for last := int64(-1); last != sent.Load(); {
-				last = sent.Load()
-				time.Sleep(300 * time.Millisecond)
+			select {
+			case <-waited:
+			case <-time.After(60 * time.Second):
+				t.Fatal("no frame of the viewer's waited for room in the host's queue")
 			}
 			v.c.CloseNow()
 			failing.Store(true)
 			env, _ := proto.EncodeRelay(viewerID, proto.Encode(proto.TypeOutput, []byte("o")))
 			if err := hc.Write(t.Context(), websocket.MessageBinary, env); err != nil {
 				t.Fatal(err)
+			}
+			// The host's write to the viewer fails, the viewer's writer ends, and the read loop comes back from the
+			// relay with its waiting frame dropped (ErrViewerGone) and returns: only then does the host read, so no room
+			// it frees can admit that frame (Codex's review of #281).
+			select {
+			case <-left:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the viewer's read loop did not return after the close")
 			}
 			next := 0
 			for {

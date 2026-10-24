@@ -73,3 +73,47 @@ issue, one branch, one pull request, and CI is the only gate.
   (#281), fixed when someone is in that file anyway; no issue per flake.
 - Vulnerabilities go in a GitHub Draft Security Advisory, never in an
   issue, PR, commit message or doc, until the owner decides on disclosure.
+
+## Tests that do not flake
+
+Every flake on the 2026-10-24 list had one of these causes. A test that
+fails now and then is work, not a note: fix it, and if the cause is new,
+add its rule here.
+
+- Wait on the mechanism, never on the clock. A sleep, a wall-time draw
+  ("300 ms before the look's budget ends") or a fixed bound that is nobody's
+  cap is what a loaded machine misses. Poll for the state the test needs,
+  drive the step through a seam the code offers (a fake clock, a hook, a
+  gate), and when a bound is unavoidable make it the sum of the caps the
+  code itself applies, with the test's timeout above it.
+- The product's bound is not the test's. A 3 s probe limit or a 10 s kill
+  wait is right for the product and wrong for a test that only needs the
+  thing to happen: give the test its own wait where the product's is not
+  what is tested, or make the product's bound generous where it only bounds
+  a hang.
+- Order what must be ordered. Keys that must stay unconfirmed go in after
+  the process is stopped (SIGSTOP), not raced against a kill; a status that
+  may arrive before or after an answer must give the same picture either
+  way, in the product, not in the stub's ordering.
+- A pid of 0 is no process; a file not yet written is not evidence. Wait for
+  the pid file, the swap file, the record before judging it.
+- Count only what the test made. A spec that counts sessions, tiles or list
+  rows sees what an earlier spec left behind and what the server's sweeps
+  removed: end the strays first (`stopStrays` in `web/e2e/fixtures.ts`) and
+  look for the thing by its id or name, never by a list's length.
+- A frame that must be dropped, a dialog that must be drawn inside a
+  budget: read the moment off a seam the code exposes (`viewerSeam`,
+  `beforeEnter`) rather than guessing it from a stall or a sleep. A stall
+  long enough to be sure trips the product's own timeouts (the host writer's
+  15 s reset) and fails for a new reason.
+- One Playwright run per worktree at a time: concurrent runs clobber
+  `web/test-results` and fail each other with false timeouts. Reproduce a
+  timing flake by loading the box with something else (a Go race package
+  beside the spec), not with a second Playwright run.
+- A transaction bound to a context that a stop cancels is refused by the
+  stop, not by the store; an engine that reads every refusal as a store
+  failure pauses runs that were only stopped. Check the context before
+  judging the error.
+- Prove a flake fix the way it failed: `go test -race -count=30` (on the
+  Mac too when it flaked there), `npx playwright test <spec> --repeat-each
+  10`, and once more under load.

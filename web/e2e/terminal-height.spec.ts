@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, BrowserContext, Locator, Page } from '@playwright/test'
-import { expect, member, test, type Api, type Run, type Session } from './fixtures'
+import { expect, member, stopStrays, test, type Api, type Run, type Session } from './fixtures'
 
 // A short pane (#189, #201): the terminal fits the rows that show in its pane, never more: its last row and the cursor's row lie
 // inside the pane. In the editor column (the session page, the Yard's focus, a guest's join page), whose slot can be 8rem tall, on a
@@ -194,11 +194,12 @@ for (const where of ['the session page', "the Yard's focus", "a guest's join pag
 
 test("a tile on the wall, a short window: the terminal's last row and the cursor's row show", async ({ page, api, state }) => {
   const { s, cwd } = await shell(api, state.root, 'wall')
+  // The wall holds this tile alone, as wide as the wall: what is measured here is the tile's height. A tile narrowed beside another
+  // is the next test's (#219, #221). A session a spec before this one left running would stand beside it: ended first (#281).
+  await stopStrays(api, sessions)
   await page.setViewportSize(SHORT)
   await page.goto('/yard')
-  // The wall holds this tile alone, as wide as the wall: what is measured here is the tile's height. A tile narrowed beside another
-  // is the next test's (#219, #221).
-  await expect(page.locator('[data-session-tile]'), 'the wall holds this tile alone: another spec left a session running').toHaveCount(1)
+  await expect(page.locator('[data-session-tile]'), 'the wall holds this tile alone').toHaveCount(1)
   await expectRowsInPane(page, api, s.id, cwd, 'a tile on the wall', page.locator(`[data-session-tile][data-session-id="${s.id}"]`))
 })
 
@@ -251,9 +252,10 @@ async function sizeTileTo(page: Page, api: Api, tile: Locator, id: string, targe
 test("a tile on the wall beside a second, narrowed with its cursor above the last row: the cursor's row shows where the cursor is", async ({ page, api, state }) => {
   const { s, cwd } = await shell(api, state.root, 'narrowed')
   await shell(api, state.root, 'beside')
+  await stopStrays(api, sessions)
   await page.setViewportSize({ width: 900, height: 230 })
   await page.goto('/yard')
-  await expect(page.locator('[data-session-tile]'), 'the wall holds the two tiles: another spec left a session running').toHaveCount(2, { timeout: 30_000 })
+  await expect(page.locator('[data-session-tile]'), 'the wall holds the two tiles').toHaveCount(2, { timeout: 30_000 })
   const tile = page.locator(`[data-session-tile][data-session-id="${s.id}"]`)
   await expect(tile.locator('.terminal-host .xterm-screen')).toBeVisible({ timeout: 30_000 })
   await sizeTileTo(page, api, tile, s.id, { cols: 42, rows: 6 }, 2)
