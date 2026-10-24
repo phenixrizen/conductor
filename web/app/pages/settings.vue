@@ -2,7 +2,7 @@
 import { pickerStart, type PickerField } from '~/utils/dirPicker'
 import type { AgentInfo, ReachInfo } from '~/composables/useSessions'
 import { identity, notInstalledBadge } from '~/utils/agents'
-import { switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
+import { plainCopy, switchyardProblem, type DesktopIceStatus, type DesktopSettings } from '~/utils/desktop'
 
 // The desktop app's settings: what its shell starts the server with. In a
 // browser against a server configured by its file, the page says so.
@@ -91,7 +91,9 @@ async function save() {
   // settings are copied into the form nothing differs any more (#214).
   const restarting = restarts.value
   try {
-    const next = await b.settings.set({ ...form })
+    // A plain copy: the form is reactive, and a Vue proxy cannot cross the
+    // bridge ("An object could not be cloned", #348).
+    const next = await b.settings.set(plainCopy(form))
     settings.value = next
     Object.assign(form, next)
     // The app says what became of it: the server restarted, or the settings
@@ -102,6 +104,8 @@ async function save() {
     await load()
   } catch (e) {
     error.value = (e as Error).message
+    // The alert sits at the top of a long page: say it where the button is too (#348).
+    toast.add({ title: 'Not saved', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
     saving.value = false
   }

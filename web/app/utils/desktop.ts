@@ -232,3 +232,12 @@ export function withoutTokenFragment(href: string): string {
   u.hash = rest ? '#' + rest : ''
   return u.toString()
 }
+
+/**
+ * A plain copy of a form for the desktop bridge: Vue's reactive proxies cannot be
+ * cloned across contextBridge or ipcRenderer ("An object could not be cloned",
+ * #348), so what crosses is the JSON value, arrays and nested objects included.
+ */
+export function plainCopy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
