@@ -134,7 +134,15 @@ async function run() {
       log('main', `settings: the paths are inside ${launcher.describe()} now: ${settings.defaultCwd}`)
     }
   }
-  const shellPath = mergePaths(await loginShellPath(process.env.SHELL ?? ''), process.env.PATH ?? '', homedir())
+  // The PATH the person's own shell builds, read interactively (nvm, npm's global bin, where the agents live). A shell that
+  // printed nothing in time is asked again before each start of the server, so that one slow start does not leave the sessions
+  // without those agents (#363); inside WSL the launcher reads it the same way (WslLauncher.readShellPath).
+  let loginPath = process.platform === 'win32' ? '' : await loginShellPath(process.env.SHELL ?? '')
+  const shellPath = () => mergePaths(loginPath, process.env.PATH ?? '', homedir())
+  const beforeStart = async () => {
+    if (launcher instanceof WslLauncher) await launcher.beforeStart()
+    else if (!loginPath) loginPath = await loginShellPath(process.env.SHELL ?? '')
+  }
 
   // WebRTC from inside WSL: in NAT mode (the default, left as it is) the
   // app forwards one UDP port into the distribution and the server
@@ -152,8 +160,9 @@ async function run() {
   const supervisor = new ServerSupervisor({
     launcher,
     args: SERVE_ARGS,
+    beforeStart,
     env: () => {
-      const env = serverEnv(process.env, settings, token, shellPath, userData)
+      const env = serverEnv(process.env, settings, token, shellPath(), userData)
       // Inside a WSL distribution the paths are its own: the server's data
       // beside its binary, the Linux home as the root (and the Windows
       // profile under /mnt when asked).

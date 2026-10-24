@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Launcher } from './launcher'
@@ -37,6 +37,9 @@ export function wslNetworkingMode(home = homedir()): string {
   }
 }
 
+/** How long the person's shell has to print its PATH (readShellPath); a second try gets twice as long. */
+export const SHELL_PATH_WAIT = 15_000
+
 export interface WslLauncherOptions {
   /** The bundled Linux binary, a Windows path. */
   source: string
@@ -73,18 +76,8 @@ export class WslLauncher implements Launcher {
     if (!home.ok || !m) throw new Error(`could not read the home directory inside ${this.o.distro}: ${home.out.trim()}`)
     this.home = m[1]!
     this.shell = /__SHELL__(\/\S*)/.exec(home.out)?.[1] ?? ''
-    // The PATH the person's own shell builds, interactively: where nvm,
-    // npm's global bin and the like put the agents, which the plain login
-    // shell the server starts under (sh, dash on Ubuntu) never sees.
     this.path = ''
-    if (this.shell) {
-      const p = await run(['-d', this.o.distro, '--exec', this.shell, '-ilc', `printf '%s%s\\n' __CONDUCTOR_PATH__ "$PATH"`], 10_000, this.o.exe)
-      const imported = extractPath(p.out)
-      if (imported) {
-        this.path = mergePaths(imported, '', this.home, 'linux')
-        this.o.log(`PATH from ${this.shell} in ${this.o.distro}: ${this.path.split(':').length} entries`)
-      } else this.o.log(`${this.shell} in ${this.o.distro} printed no PATH; the login shell's stands`)
-    }
+    await this.readShellPath()
     const src = windowsPathToWsl(this.o.source)
     const r = await run(['-d', this.o.distro, '--exec', 'sh', '-c', INSTALL_SCRIPT, 'conductor-install', src, this.o.version], 120_000, this.o.exe)
     if (!r.ok) throw new Error(`could not install the server into ${this.o.distro}: ${r.out.trim()}`)
@@ -106,6 +99,36 @@ export class WslLauncher implements Launcher {
   /** shellPath is the PATH the person's own shell gave, merged with the tool directories; '' when it gave none. */
   shellPath(): string {
     return this.path
+  }
+
+  /**
+   * readShellPath asks the person's own shell, interactively, for the PATH it builds: where nvm, npm's global bin and the like put
+   * the agents, which the plain login shell the server starts under (sh, dash on Ubuntu) never sees. An interactive zsh that loads
+   * nvm takes seconds to start, and the first after an update of the app more: a shell that printed nothing within SHELL_PATH_WAIT
+   * is asked once more with twice the time, and a start of the server asks again while nothing was read (beforeStart), so that one
+   * slow start no longer leaves every session of the app's run on the login shell's PATH, where `node` is the distribution's own and
+   * the agents under nvm are missing (#363). The PATH read, merged with the tool directories; '' when the shell gave none.
+   */
+  async readShellPath(): Promise<string> {
+    if (!this.shell) return ''
+    const run = this.o.run ?? runWsl
+    for (const wait of [SHELL_PATH_WAIT, SHELL_PATH_WAIT * 2]) {
+      const p = await run(['-d', this.o.distro, '--exec', this.shell, '-ilc', `printf '%s%s\\n' __CONDUCTOR_PATH__ "$PATH"`], wait, this.o.exe)
+      const imported = extractPath(p.out)
+      if (imported) {
+        this.path = mergePaths(imported, '', this.home, 'linux')
+        this.o.log(`PATH from ${this.shell} in ${this.o.distro}: ${this.path.split(':').length} entries`)
+        return this.path
+      }
+      this.o.log(`${this.shell} in ${this.o.distro} printed no PATH within ${Math.round(wait / 1000)} s`)
+    }
+    this.o.log(`the login shell's PATH stands until the server starts again: agents installed through nvm or npm may be missing`)
+    return ''
+  }
+
+  /** beforeStart asks the shell for its PATH again before a start of the server while none was read (ServerSupervisor). */
+  async beforeStart(): Promise<void> {
+    if (!this.path) await this.readShellPath()
   }
 
   /**

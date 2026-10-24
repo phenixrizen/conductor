@@ -53,8 +53,22 @@ describe('server supervisor', () => {
   it('starts the server, reads its handshake past the shell\'s noise, and stops it by closing stdin', async () => {
     const launcher = new ScriptLauncher(fakeServer({ noise: true }))
     const lines: string[] = []
-    const s = new ServerSupervisor({ launcher, args: ['serve'], env: () => ({ ...process.env, CONDUCTOR_WORKBENCH_TOKEN: 'tok' } as Record<string, string>), log: (k, l) => lines.push(`${k}: ${l}`) })
+    // beforeStart runs before the environment is built, at each start (#363: the shell's PATH read again).
+    const order: string[] = []
+    const s = new ServerSupervisor({
+      launcher,
+      args: ['serve'],
+      beforeStart: async () => {
+        order.push('before')
+      },
+      env: () => {
+        order.push('env')
+        return { ...process.env, CONDUCTOR_WORKBENCH_TOKEN: 'tok' } as Record<string, string>
+      },
+      log: (k, l) => lines.push(`${k}: ${l}`),
+    })
     const h = await s.start()
+    expect(order).toEqual(['before', 'env'])
     expect(h.workbenchToken).toBe('tok')
     expect(s.status.state).toBe('running')
     expect(s.status.url).toBe(h.publicUrl)

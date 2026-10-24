@@ -52,8 +52,10 @@ the workbench takes it and drops it from the address bar.
 There is no Windows build of the server: the installer bundles the Linux
 binary and the shell runs it inside the user's WSL 2 distribution
 (`wsl.exe -d <distro> --exec sh -lc …`, with the PATH the person's own
-shell builds, read once with `$SHELL -ilc` inside the distribution, so
-nvm's and npm's programs are found), after copying it into the
+shell builds, read with `$SHELL -ilc` inside the distribution, so
+nvm's and npm's programs are found; a shell that prints nothing in time
+is asked once more with longer, and again at the server's next start
+while nothing was read), after copying it into the
 distribution's home. The settings' directories are the distribution's
 paths; Windows-shaped ones from an earlier build move to its defaults.
 Without WSL 2 the app shows the setup screen. WSL's default NAT mode is

@@ -18,6 +18,8 @@ export interface SupervisorOptions {
   launcher: Launcher
   args: string[]
   env: () => Record<string, string>
+  /** Runs before each start of the server, before env(): the app reads the shell's PATH again while it has none (#363). */
+  beforeStart?: () => Promise<void>
   log: (kind: 'main' | 'server', line: string) => void
   /** How long the handshake may take (60 s: WSL may have to boot). */
   handshakeMs?: number
@@ -67,6 +69,7 @@ export class ServerSupervisor extends EventEmitter {
 
   private async spawnOnce(): Promise<Handshake> {
     this.setState('starting')
+    await this.o.beforeStart?.()
     const env = this.o.env()
     const child = this.o.launcher.spawn(this.o.args, env)
     this.child = child

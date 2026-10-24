@@ -1520,7 +1520,10 @@ the Linux binary and the app runs it inside your WSL 2 distribution
 (`wsl --install` once, restart, open the distribution to make your user).
 The agents must be installed inside the distribution: the app asks your own
 shell there (`$SHELL -ilc`, so nvm's, npm's and `~/.local/bin`'s programs
-count) for its PATH and starts the server with it; a `claude`, `codex` or
+count) for its PATH and starts the server with it (a shell that prints
+nothing in time is asked again, and again at the server's next start, so
+Restart server in Settings repairs a start that was left with the plain
+login shell's PATH); a `claude`, `codex` or
 `npm` that Windows put on the PATH under `/mnt/c` is named on the Agents
 page as found on Windows, not used. The settings' directories are the
 distribution's own (`/home/<user>/…`), and the folder picker browses the server's own folders, so it lists the distribution's and never a Windows path;
