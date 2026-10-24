@@ -317,9 +317,11 @@ or feed.
 
 When the agent needs input, its question is in the chat too, from the
 agent, with its choices as buttons; a controller answers there as from the
-quick-reply bar, and a line says who answered ("Answered by Nate"). In a
-run's chat a member's question comes on the member's name ("on core") and
-an answer from there goes to that member.
+quick-reply bar, and a line says who answered and with what ("Answered by
+Nate: Keep both"); the question keeps its choices as text, the one picked
+marked, and a typed answer under them. In a run's chat a member's question
+comes on the member's name ("on core") and an answer from there goes to
+that member.
 
 Where the inspector has no room, the header's **Chat** button carries the
 count and opens the chat as a sheet: on a phone from the bottom, two thirds
