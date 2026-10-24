@@ -275,6 +275,78 @@ func TestInstallSkillForEveryAdapterThatReadsSkills(t *testing.T) {
 	}
 }
 
+// An agent launched with its configuration directory moved (Claude Code's
+// CLAUDE_CONFIG_DIR, Codex's CODEX_HOME) reads its skills there: the skill
+// goes under that directory, which is made when missing, at the path it has
+// under the agent's directory in the home; a SKILL.md of the user's own
+// there stays. An adapter without such a directory, an unknown one, a
+// relative directory and an unset variable get nothing (#291).
+func TestInstallSkillInAConfigurationDirectoryOfTheAgentsOwn(t *testing.T) {
+	useBin(t, "/opt/conductor")
+	hooks := t.TempDir()
+	for _, tc := range []struct{ adapter, env, rel string }{
+		{"claude", "CLAUDE_CONFIG_DIR", "skills/conductor/SKILL.md"},
+		{"codex", "CODEX_HOME", "skills/conductor/SKILL.md"},
+	} {
+		t.Run(tc.adapter, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "own")
+			getenv := func(k string) string {
+				if k == tc.env {
+					return dir
+				}
+				return ""
+			}
+			if got := ConfigDirOf(tc.adapter, getenv); got != dir {
+				t.Fatalf("ConfigDirOf: %q, want %q", got, dir)
+			}
+			want := filepath.Join(dir, filepath.FromSlash(tc.rel))
+			path, changed, err := InstallSkillIn(tc.adapter, dir, hooks)
+			if path != want || !changed || err != nil {
+				t.Fatalf("install: %q %v %v, want %q", path, changed, err, want)
+			}
+			if b, err := os.ReadFile(want); err != nil || string(b) != Skill {
+				t.Fatalf("%s: %v\n%s", want, err, b)
+			}
+			if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+				t.Fatalf("the directory made: %v %v", fi, err)
+			}
+			if path, changed, err := InstallSkillIn(tc.adapter, dir, hooks); path != want || changed || err != nil {
+				t.Fatalf("second install: %q %v %v", path, changed, err)
+			}
+			mine := "---\nname: conductor\ndescription: mine\n---\n\nMine.\n"
+			os.WriteFile(want, []byte(mine), 0o600)
+			if path, changed, err := InstallSkillIn(tc.adapter, dir, hooks); path != want || changed || !errors.Is(err, ErrByHand) {
+				t.Fatalf("the user's own: %q %v %v", path, changed, err)
+			}
+			if b, _ := os.ReadFile(want); string(b) != mine {
+				t.Fatalf("the user's skill changed:\n%s", b)
+			}
+			// Unset, or relative: the launch leaves it to the agent.
+			if got := ConfigDirOf(tc.adapter, func(string) string { return "" }); got != "" {
+				t.Fatalf("unset: %q", got)
+			}
+			if got := ConfigDirOf(tc.adapter, func(string) string { return "own" }); got != "" {
+				t.Fatalf("relative: %q", got)
+			}
+			if path, changed, err := InstallSkillIn(tc.adapter, "own", hooks); path != "" || changed || err != nil {
+				t.Fatalf("relative install: %q %v %v", path, changed, err)
+			}
+		})
+	}
+	always := func(string) string { return "/abs/own" }
+	for _, id := range []string{"", "nope", "aider", "goose", "pi"} {
+		if got := ConfigDirOf(id, always); got != "" {
+			t.Fatalf("%q has a configuration directory: %q", id, got)
+		}
+		if path, changed, err := InstallSkillIn(id, t.TempDir(), hooks); path != "" || changed || err != nil {
+			t.Fatalf("%q: %q %v %v", id, path, changed, err)
+		}
+	}
+	if got := ConfigDirOf("claude", nil); got != "" {
+		t.Fatalf("no environment: %q", got)
+	}
+}
+
 // SkillFile names the skill under an absolute hooks dir, and nothing under
 // a relative one or none.
 func TestSkillFile(t *testing.T) {

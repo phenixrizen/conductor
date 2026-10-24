@@ -327,6 +327,144 @@ func (s *Server) unhide(id string) (catalog.Agent, catalog.Catalog, bool, *apiEr
 	return a, cat, ok, nil
 }
 
+// handleCloneAgent makes a copy of the agent {id} under another id (#291):
+// POST /api/catalog/{id}/clone, the body the copy as a client builds it, as
+// POST /api/catalog takes it. What the body leaves out that the Agents page
+// has no control for (adapter, signal, working directory, icon, yolo and
+// session recipes, trust prompt and answers, startup questions, probe) is
+// the source's as the catalog resolves it, so the copy launches as the
+// source does: with its hooks, its trust answers, its Resume; an env value
+// of *** is the source's value for the key, copied and never shown. The copy
+// is a saved agent of its own, which replaces nothing and follows nothing:
+// the id must be free, 409 id_taken otherwise.
+func (s *Server) handleCloneAgent(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "no data directory is configured")
+		return
+	}
+	var req saveAgentRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	saved, aerr := s.cloneAgent(r.Context(), r.PathValue("id"), req.Agent)
+	if aerr != nil {
+		writeAPIError(w, aerr)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"agent": saved})
+}
+
+func (s *Server) cloneAgent(ctx context.Context, from string, a catalog.Agent) (catalogEntry, *apiError) {
+	saved, cat, aerr := s.storeClone(from, a)
+	if aerr != nil {
+		return catalogEntry{}, aerr
+	}
+	return entry(saved, cat, s.base, s.installedNow(ctx), s.identityNow(ctx)), nil
+}
+
+// storeClone saves a, a client's copy of the agent from, filled from the
+// source where it says nothing (copyFromSource), under an id no agent has.
+func (s *Server) storeClone(from string, a catalog.Agent) (catalog.Agent, catalog.Catalog, *apiError) {
+	s.catalogEditMu.Lock()
+	defer s.catalogEditMu.Unlock()
+	src, ok := s.Catalog().Get(from)
+	if !ok {
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusNotFound, "not_found", "no such agent")
+	}
+	if err := copyFromSource(&a, src); err != nil {
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
+	}
+	var probe catalog.Catalog
+	if err := probe.Upsert(a); err != nil {
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
+	}
+	if err := checkAdapter(a); err != nil {
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusBadRequest, "invalid_agent", err.Error())
+	}
+	if s.idTaken(a.ID) {
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusConflict, "id_taken", fmt.Sprintf("an agent with the id %s exists; pick another for the copy", a.ID))
+	}
+	ov := s.overlay
+	ov.Agents = upsertAgent(ov.Agents, a)
+	if err := s.commitOverlay(ov); err != nil {
+		s.log.Error("catalog save failed", "agent", a.ID, "err", err)
+		return catalog.Agent{}, catalog.Catalog{}, newAPIError(http.StatusInternalServerError, "store_failed", "could not save the catalog")
+	}
+	s.log.Info("catalog agent cloned", "agent", a.ID, "from", from)
+	cat := s.Catalog()
+	saved, _ := cat.Get(a.ID)
+	return saved, cat, nil
+}
+
+// idTaken says whether an agent has the id: one the catalog lists, a
+// built-in or configured one (hidden, it keeps its id), a saved one, or an
+// id on the hidden list. The caller holds catalogEditMu.
+func (s *Server) idTaken(id string) bool {
+	if _, ok := s.Catalog().Get(id); ok {
+		return true
+	}
+	if _, ok := s.base.Get(id); ok {
+		return true
+	}
+	return savedAgent(s.overlay.Agents, id).ID == id || slices.Contains(s.overlay.Hidden, id)
+}
+
+// copyFromSource fills what a, a client's copy of src, leaves out: the fields
+// the Agents page has no control for, taken from src as the catalog resolved
+// it, and every env value given as catalog.RedactedValue, which is src's
+// value for the key. A masked key src has no value for is an error, the
+// first by key name.
+func copyFromSource(a *catalog.Agent, src catalog.Agent) error {
+	src = src.Copy()
+	if a.Adapter == "" {
+		a.Adapter = src.Adapter
+	}
+	switch {
+	case a.Signal == nil:
+		a.Signal = src.Signal
+	case a.Signal.WorkingTitle == "" && src.Signal != nil:
+		// The form has no control for the working title (as inherit in the
+		// catalog reads an override saved without one).
+		a.Signal.WorkingTitle = src.Signal.WorkingTitle
+	}
+	if a.Cwd == "" {
+		a.Cwd = src.Cwd
+	}
+	if a.Icon == "" {
+		a.Icon = src.Icon
+	}
+	if a.Yolo == nil {
+		a.Yolo = src.Yolo
+	}
+	if a.TrustPrompt == "" {
+		a.TrustPrompt = src.TrustPrompt
+	}
+	if a.TrustAnswers == nil {
+		a.TrustAnswers = src.TrustAnswers
+	}
+	if a.Questions == nil {
+		a.Questions = src.Questions
+	}
+	if a.Session == nil {
+		a.Session = src.Session
+	}
+	if a.Probe == nil {
+		a.Probe = src.Probe
+	}
+	for _, k := range slices.Sorted(maps.Keys(a.Env)) {
+		if a.Env[k] != catalog.RedactedValue {
+			continue
+		}
+		v, ok := src.Env[k]
+		if !ok || v == catalog.RedactedValue {
+			return fmt.Errorf("env %s: value is redacted, and the agent copied has none for it; set a real value", k)
+		}
+		a.Env[k] = v
+	}
+	return nil
+}
+
 // checkCommandRequest is the body of POST /api/catalog/check.
 type checkCommandRequest struct {
 	Command []string `json:"command"`

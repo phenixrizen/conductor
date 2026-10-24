@@ -212,3 +212,24 @@ export function commandCheck(r: CommandCheckReply, program: string): CommandChec
   if (r.unknown) return { state: 'slow' }
   return { state: 'missing' }
 }
+
+/**
+ * cloneId suggests an id for a copy of the agent `id` (#291): `<id>-copy`, then `-copy-2`, `-copy-3`… past the ids taken, each of the
+ * server's shape (AGENT_ID_PATTERN: the id is cut to make room).
+ */
+export function cloneId(id: string, taken: readonly string[]): string {
+  for (let n = 1; n < 1000; n++) {
+    const suffix = n === 1 ? '-copy' : `-copy-${n}`
+    const candidate = id.slice(0, 32 - suffix.length).replace(/-+$/, '') + suffix
+    if (!taken.includes(candidate)) return candidate
+  }
+  return ''
+}
+
+/** formForClone is the form filled from the agent copied (#291): its settings, the stored values as masked rows, under a new name and id. */
+export function formForClone(source: AgentInfo, taken: readonly string[], uid: () => number): AgentForm {
+  const f = formFromAgent(source, uid)
+  f.name = `${source.name} (copy)`.slice(0, 60)
+  f.id = cloneId(source.id, taken)
+  return f
+}

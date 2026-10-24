@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { agentPayload, commandCheck, commandOf, formErrors, formFromAgent, type AgentForm, type CommandCheck, type Field, type SignalKind } from '~/utils/agentForm'
+import { agentPayload, commandCheck, commandOf, formErrors, formForClone, formFromAgent, type AgentForm, type CommandCheck, type Field, type SignalKind } from '~/utils/agentForm'
 import { slugId } from '~/utils/argv'
 
 /**
- * Add an agent to the catalog, or edit one (`agent` set). Saving replaces the
- * agent with the same ID on the server, so an edit sends the whole agent:
- * fields this form has no control for (working directory, icon, adapter, the
- * tool-events flag, the trust prompt, the session recipe) are carried over
- * from the agent being edited.
+ * Add an agent to the catalog, edit one (`agent` set) or clone one (`clone`
+ * set, #291). Saving replaces the agent with the same ID on the server, so an
+ * edit sends the whole agent: fields this form has no control for (working
+ * directory, icon, adapter, the tool-events flag, the trust prompt, the
+ * session recipe) are carried over from the agent being edited. A clone is
+ * filled from the agent copied, under a new name and ID, and saved through
+ * the clone route, which copies the stored values this form never sees.
  */
 const props = defineProps<{
   agent?: AgentInfo
-  /** IDs already in the catalog, to warn before an add replaces one. */
+  /** The agent to copy: the form starts filled from it, and saving makes a copy under the form's ID. */
+  clone?: AgentInfo
+  /** IDs already in the catalog, to warn before an add replaces one, and to suggest a free one for a copy. */
   takenIds?: string[]
 }>()
 const open = defineModel<boolean>('open', { default: false })
@@ -21,6 +25,8 @@ const emit = defineEmits<{ saved: [agent: AgentInfo] }>()
 
 const api = useSessions()
 const toast = useToast()
+/** The agent whose settings the form shows: the one edited, or the one copied. */
+const source = computed(() => props.agent ?? props.clone)
 
 let nextUid = 0
 const uid = () => nextUid++
@@ -32,11 +38,21 @@ const attempted = ref(false)
 const error = ref('')
 const saving = ref(false)
 const testing = ref(false)
+/** The copy once saved (clone mode): a save after it, a Test launch's say, edits the copy rather than copying again. */
+const made = ref<AgentInfo | undefined>()
 
 function reset() {
-  Object.assign(form, formFromAgent(props.agent, uid))
-  idTouched.value = !!props.agent
-  idLocked.value = !!props.agent
+  if (props.clone) {
+    // A copy: the source's settings under a new name and a free ID, which stays editable until the copy is saved.
+    Object.assign(form, formForClone(props.clone, props.takenIds ?? [], uid))
+    idTouched.value = true
+    idLocked.value = false
+  } else {
+    Object.assign(form, formFromAgent(props.agent, uid))
+    idTouched.value = !!props.agent
+    idLocked.value = !!props.agent
+  }
+  made.value = undefined
   attempted.value = false
   error.value = ''
   scheduleCheck()
@@ -76,6 +92,8 @@ function setId(v: string | number | null | undefined) {
 }
 const idHint = computed(() => (idLocked.value ? 'fixed once saved' : idTouched.value ? undefined : 'from the name'))
 const replacing = computed(() => !idLocked.value && !!form.id && !!props.takenIds?.includes(form.id))
+/** What a taken ID means: an add replaces that agent; a copy is refused under it. */
+const takenWords = computed(() => (props.clone ? 'An agent with this ID exists; pick another for the copy.' : 'An agent with this ID exists; saving replaces it.'))
 
 // Whether the program resolves on the server. Informational: saving never waits for it.
 const check = ref<CommandCheck>({ state: 'idle' })
@@ -93,7 +111,7 @@ function scheduleCheck() {
   check.value = { state: 'pending' }
   checkTimer = setTimeout(async () => {
     try {
-      const r = await api.checkCommand(program, props.agent?.adapter)
+      const r = await api.checkCommand(program, source.value?.adapter)
       if (seq === checkSeq) check.value = commandCheck(r, program)
     } catch {
       if (seq === checkSeq) check.value = { state: 'failed' }
@@ -119,12 +137,12 @@ function removeYoloEnv(rowUid: number) {
 // The hook card needs an adapter to report through; until adapters can be
 // picked here, only an agent that already has one (or already reports by hook)
 // can use it, so editing a built-in never loses its wiring.
-const hookAvailable = computed(() => !!props.agent?.adapter || props.agent?.signal?.kind === 'hook')
+const hookAvailable = computed(() => !!source.value?.adapter || source.value?.signal?.kind === 'hook')
 const signalItems = computed<Array<{ value: SignalKind; label: string; suffix?: string; description: string; icon: string; disabled?: boolean }>>(() => [
   {
     value: 'hook',
     label: 'Hook command',
-    suffix: props.agent?.adapter ? `adapter ${props.agent.adapter}` : undefined,
+    suffix: source.value?.adapter ? `adapter ${source.value.adapter}` : undefined,
     description: hookAvailable.value ? 'The agent reports through its own hooks.' : 'pick an adapter (coming with Events)',
     icon: 'i-lucide-webhook',
     disabled: !hookAvailable.value,
@@ -147,7 +165,9 @@ async function persist(): Promise<AgentInfo | null> {
     return null
   }
   try {
-    const saved = await api.saveAgent(agentPayload(form, props.agent))
+    // A copy goes through the clone route, which fills in the stored values the masked rows stand for; saved once, it is edited.
+    const saved = props.clone && !made.value ? await api.cloneAgent(props.clone.id, agentPayload(form, props.clone)) : await api.saveAgent(agentPayload(form, made.value ?? props.agent))
+    if (props.clone) made.value = saved
     // A rename typed while the request was in flight may have moved the ID (it
     // is not locked yet): lock the ID that was actually saved.
     form.id = saved.id
@@ -195,12 +215,12 @@ async function testLaunch() {
 <template>
   <USlideover
     v-model:open="open"
-    :title="agent ? `Edit ${agent.name}` : 'Add agent'"
-    description="Commands are argv arrays run on the server; nothing goes through a shell."
+    :title="clone ? `Clone ${clone.name}` : agent ? `Edit ${agent.name}` : 'Add agent'"
+    :description="clone ? 'Every setting of the agent copied goes into the copy, its stored values included; change what the form shows.' : 'Commands are argv arrays run on the server; nothing goes through a shell.'"
     :ui="{ content: 'sm:max-w-xl' }"
   >
     <template #body>
-      <div class="flex flex-col gap-5">
+      <div class="flex flex-col gap-5" :data-agent-form="clone ? 'clone' : agent ? 'edit' : 'add'">
         <div class="grid gap-3 sm:grid-cols-2">
           <UFormField label="Name" name="name" required :error="shown.name">
             <UInput v-model="form.name" placeholder="Aider" maxlength="60" autofocus class="w-full" />
@@ -208,7 +228,7 @@ async function testLaunch() {
           <UFormField label="ID" name="id" :hint="idHint" :error="shown.id">
             <UInput :model-value="form.id" placeholder="aider" maxlength="32" :disabled="idLocked" :ui="{ base: 'font-mono' }" class="w-full" @update:model-value="setId" />
           </UFormField>
-          <p v-if="replacing" class="-mt-1 flex items-center gap-1.5 text-sm text-warning sm:col-span-2"><UIcon name="i-lucide-triangle-alert" class="size-4 flex-none" />An agent with this ID exists; saving replaces it.</p>
+          <p v-if="replacing" class="-mt-1 flex items-center gap-1.5 text-sm text-warning sm:col-span-2"><UIcon name="i-lucide-triangle-alert" class="size-4 flex-none" />{{ takenWords }}</p>
         </div>
 
         <UFormField label="Command" name="command" required :error="shown.command">

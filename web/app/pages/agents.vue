@@ -43,16 +43,25 @@ async function refresh() {
 onMounted(refresh)
 watch(() => admin.token.value, refresh)
 
-// Add and edit share one slideover; `editing` is the agent being changed.
+// Add, edit and clone share one slideover; `editing` is the agent being
+// changed, `cloning` the one copied (#291).
 const formOpen = ref(false)
 const editing = ref<AgentInfo | undefined>()
+const cloning = ref<AgentInfo | undefined>()
 
 function addAgent() {
   editing.value = undefined
+  cloning.value = undefined
   formOpen.value = true
 }
 function editAgent(a: AgentInfo) {
   editing.value = a
+  cloning.value = undefined
+  formOpen.value = true
+}
+function cloneAgent(a: AgentInfo) {
+  editing.value = undefined
+  cloning.value = a
   formOpen.value = true
 }
 async function onSaved() {
@@ -132,6 +141,7 @@ usePalette().registerPage(() => ({
     { key: 'page:add', label: 'Add agent', icon: 'i-lucide-plus', run: addAgent },
     { key: 'page:launch', label: 'Launch an agent', icon: 'i-lucide-play', kbds: ['N'], run: () => launch.show() },
     ...agents.value.map((a) => ({ key: `page:edit:${a.id}`, label: `Edit ${a.name}`, detail: a.description || a.command.join(' '), agentId: a.id, run: () => editAgent(a) })),
+    ...agents.value.map((a) => ({ key: `page:clone:${a.id}`, label: `Clone ${a.name}`, detail: 'A copy with its whole configuration, under a name and ID of its own', agentId: a.id, run: () => cloneAgent(a) })),
   ],
 }))
 </script>
@@ -191,6 +201,7 @@ usePalette().registerPage(() => ({
               <div class="mt-3 -mb-1 flex justify-end gap-1">
                 <UButton v-if="a.site" label="Website" icon="i-lucide-external-link" size="xs" color="neutral" variant="ghost" :to="a.site" target="_blank" rel="noopener noreferrer" :aria-label="`${a.name} website`" />
                 <UButton label="Edit" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" :aria-label="`Edit ${a.name}`" @click="editAgent(a)" />
+                <UButton label="Clone" icon="i-lucide-copy" size="xs" color="neutral" variant="ghost" :aria-label="`Clone ${a.name}`" data-agent-clone @click="cloneAgent(a)" />
                 <UButton
                   :label="removalText(removalOf(a), a.name, a.id).button"
                   :icon="removalText(removalOf(a), a.name, a.id).icon"
@@ -228,7 +239,7 @@ usePalette().registerPage(() => ({
         </ul>
       </section>
 
-      <AddAgentSlideover v-model:open="formOpen" :agent="editing" :taken-ids="agents.map((a) => a.id)" @saved="onSaved" />
+      <AddAgentSlideover v-model:open="formOpen" :agent="editing" :clone="cloning" :taken-ids="agents.map((a) => a.id)" @saved="onSaved" />
 
       <UModal v-model:open="hideOpen" :title="hideText?.title ?? 'Hide agent?'" :description="hideText?.description">
         <template v-if="hideError" #body>

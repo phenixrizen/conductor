@@ -73,6 +73,14 @@ type Adapter struct {
 	// from the session's working directory (PlansDir). nil for an agent
 	// that keeps none Conductor knows of.
 	PlansDir func(getenv func(string) string) string
+	// ConfigDirEnv names the environment variable that moves the agent's
+	// own configuration directory, its directory under home, elsewhere
+	// (Claude Code's CLAUDE_CONFIG_DIR for ~/.claude, Codex's CODEX_HOME for
+	// ~/.codex): an agent launched with it set reads its skills there, so a
+	// launch puts the Conductor skill there too (InstallSkillIn; a copy of
+	// an agent under a configuration of its own, #291). Empty for an agent
+	// without one.
+	ConfigDirEnv string
 }
 
 // InstallsSkill reports whether the agent reads skills: its Install, and a

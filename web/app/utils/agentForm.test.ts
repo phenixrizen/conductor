@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AgentInfo } from '~/composables/useSessions'
-import { AGENT_ID_PATTERN, MASK, agentPayload, commandCheck, commandOf, formErrors, formFromAgent, signalOut, siteError, yoloOut } from './agentForm'
+import { AGENT_ID_PATTERN, MASK, agentPayload, cloneId, commandCheck, commandOf, formErrors, formForClone, formFromAgent, signalOut, siteError, yoloOut } from './agentForm'
 import { slugId } from './argv'
 
 function counter() {
@@ -63,6 +63,30 @@ describe('formFromAgent and agentPayload', () => {
     const f = { ...formFromAgent(undefined, counter()), command: ['aider'], pendingCommand: '--model "gpt 5"' }
     expect(commandOf(f)).toEqual(['aider', '--model', 'gpt 5'])
     expect(agentPayload({ ...f, name: 'A', id: 'a' }).command).toEqual(['aider', '--model', 'gpt 5'])
+  })
+})
+
+describe('formForClone and cloneId', () => {
+  it('fills the form from the agent copied, under a new name and a free id, the stored values as masked rows', () => {
+    const f = formForClone(keyed, ['keyed', 'keyed-copy'], counter())
+    expect(f.name).toBe('Keyed (copy)')
+    expect(f.id).toBe('keyed-copy-2')
+    expect(f.env.map((r) => [r.key, r.masked])).toEqual([
+      ['API_KEY', true],
+      ['REGION', true],
+      ['HTTP_PROXY', false],
+    ])
+    expect(f.command).toEqual(['aider', '--model', 'x'])
+    // The clone route's body: the masked values mean the source's, and the fields the form has no control for are the source's.
+    expect(agentPayload(f, keyed)).toMatchObject({ id: 'keyed-copy-2', name: 'Keyed (copy)', env: { API_KEY: MASK, REGION: MASK }, envPassthrough: ['HTTP_PROXY'], adapter: 'claude', cwd: '/srv', icon: 'i-lucide-sparkles' })
+  })
+  it("suggests an id of the server's shape whatever the length of the source's", () => {
+    expect(cloneId('claude', [])).toBe('claude-copy')
+    expect(cloneId('claude', ['claude-copy', 'claude-copy-2'])).toBe('claude-copy-3')
+    const id = cloneId('a'.repeat(32), [])
+    expect(id).toBe('a'.repeat(27) + '-copy')
+    expect(AGENT_ID_PATTERN.test(id)).toBe(true)
+    expect(cloneId('abc' + '-'.repeat(29), [])).toBe('abc-copy')
   })
 })
 

@@ -1719,7 +1719,12 @@ original, and a key the config file adds later does not reach the entry. An
 agent in the config file that replaces a built-in replaces it whole. Hiding an
 agent removes it from the launch dialog and lists it under **Hidden** on the
 Agents page, where **Restore** brings it back as it was; sessions already
-running are not affected. The config file is never written. The server
+running are not affected. **Clone** makes a copy of an agent with its whole
+configuration (its hooks, trust answers, startup questions, session recipe
+and stored values included) under a name and ID of its own, so that, say, a
+second Claude Code account runs beside the first under its own
+`CLAUDE_CONFIG_DIR`; a copy launched with that variable set also gets the
+Conductor skill under that directory. The config file is never written. The server
 refuses to start when `catalog.json` cannot be parsed or holds an invalid
 agent, rather than overwrite it. The form checks the command against the
 server's `PATH`, and an agent whose program is missing there can still be

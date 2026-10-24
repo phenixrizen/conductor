@@ -631,6 +631,8 @@ export function useSessions() {
       request<{ agents: AgentInfo[]; hidden?: string[] }>('/api/catalog').then((r) => ({ agents: r.agents ?? [], hidden: r.hidden ?? [] })),
     /** Adds an agent or replaces the one with the same id (a built-in too); the server saves it in its data directory. */
     saveAgent: (a: AgentInput) => request<{ agent: AgentInfo }>('/api/catalog', { method: 'POST', body: a }).then((r) => r.agent),
+    /** Makes a copy of the agent `from` under the body's id (#291): what the body leaves out that the form has no control for is the source's, and an env value of `***` is the source's value, copied and never shown; 409 `id_taken` for an id an agent has. */
+    cloneAgent: (from: string, a: AgentInput) => request<{ agent: AgentInfo }>(`/api/catalog/${encodeURIComponent(from)}/clone`, { method: 'POST', body: a }).then((r) => r.agent),
     /** Removes the saved override with this id, restoring a built-in it replaced; an agent without one is hidden instead. */
     deleteAgent: (id: string) => request<void>(`/api/catalog/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /** Takes a hidden id off the hidden list and returns its agent, back as it was; undefined when no agent has that id any more. */
