@@ -82,12 +82,14 @@ var nvimEndWait = 30 * time.Second
 // ended with its context to be reaped.
 const nvimReap = 2 * time.Second
 
-// nvimShutdownWait is what the server's shutdown (CloseAll) gives an editor
-// to leave on its own before it is ended through its context: the desktop
-// app kills a server still shutting down after 12 s, and a Neovim in its
-// own process group would outlive that, so nvimEndWait is too long here
-// (Codex's review of #281). A variable so tests can shorten it.
-var nvimShutdownWait = 5 * time.Second
+// EditorShutdownWait is what the server's shutdown (CloseAll) gives an
+// editor to leave on its own before it is ended through its context: the
+// desktop app kills a server still shutting down after 12 s, and a Neovim
+// in its own process group would outlive that, so nvimEndWait is too long
+// there. The wait is one deadline for every session the shutdown closes
+// (CloseAllBy), not one per session (Codex's review of #281). A variable so
+// tests can shorten it.
+var EditorShutdownWait = 5 * time.Second
 
 // nvimStarted, when set, runs as an editor's Neovim has started, before
 // the file is shown: tests make Neovim busy there.
@@ -105,31 +107,33 @@ func (s *Local) WaitEditors() {
 	}
 }
 
-// endEditorsWithin is WaitEditors for the server's shutdown (CloseAll):
-// the editors of subs get wait to leave on their own, then every one still
-// here is ended through its context (its Neovim killed), and a moment is
-// given for them to be reaped, so that no Neovim outlives a server that
-// must be gone before the app's own grace runs out.
-func (s *Local) endEditorsWithin(subs []*Subscription, wait time.Duration) {
-	deadline := time.Now().Add(wait)
+// endEditorsBy is WaitEditors for the server's shutdown (CloseAllBy): the
+// session's editors, every connection's, those of a connection that went
+// before included, may leave on their own until deadline; then every one
+// still here is ended through its context (its Neovim killed), and a
+// moment is given for them to be reaped, so that no Neovim outlives a
+// server that must be gone before the app's own grace runs out.
+func (s *Local) endEditorsBy(deadline time.Time) {
 	for s.nvimCount.Load() > 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if s.nvimCount.Load() == 0 {
 		return
 	}
-	for _, sub := range subs {
-		sub.nvimMu.Lock()
-		for _, e := range sub.nvims {
-			if e.late != nil {
-				e.late()
-			}
-			e.cancel()
-		}
-		sub.nvimMu.Unlock()
+	s.editorsMu.Lock()
+	live := make([]*nvimEditor, 0, len(s.editors))
+	for e := range s.editors {
+		live = append(live, e)
 	}
-	deadline = time.Now().Add(nvimReap)
-	for s.nvimCount.Load() > 0 && time.Now().Before(deadline) {
+	s.editorsMu.Unlock()
+	for _, e := range live {
+		if e.late != nil {
+			e.late()
+		}
+		e.cancel()
+	}
+	reap := time.Now().Add(nvimReap)
+	for s.nvimCount.Load() > 0 && time.Now().Before(reap) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -268,6 +272,12 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	sub.nvims[id] = e
 	s.nvimCount.Add(1)
 	sub.nvimMu.Unlock()
+	s.editorsMu.Lock()
+	if s.editors == nil {
+		s.editors = map[*nvimEditor]struct{}{}
+	}
+	s.editors[e] = struct{}{}
+	s.editorsMu.Unlock()
 	// ctx bounds the start, up to the file shown: its end ends Neovim.
 	stop := context.AfterFunc(ctx, cancel)
 	h := &nvimHandler{s: s, sub: sub, e: e}
@@ -479,6 +489,9 @@ func (s *Local) forgetNvim(sub *Subscription, e *nvimEditor) {
 		s.nvimCount.Add(-1)
 	}
 	sub.nvimMu.Unlock()
+	s.editorsMu.Lock()
+	delete(s.editors, e)
+	s.editorsMu.Unlock()
 }
 
 // nvimHandler turns the editor's reports into frames for the subscription.

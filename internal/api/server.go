@@ -860,12 +860,20 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}
 	}
 	stops.Wait()
+	// The sessions close together, their editors by one deadline: a
+	// hung editor per session, one after another, would outlast the
+	// desktop's grace for the server (Codex's review of #281).
+	editorsBy := time.Now().Add(session.EditorShutdownWait)
+	var closes sync.WaitGroup
 	s.registry.Each(func(d session.Driver) {
 		if local, ok := d.(*session.Local); ok {
-			_ = local.Stop(ctx)
-			local.CloseAll(errShuttingDown)
+			closes.Go(func() {
+				_ = local.Stop(ctx)
+				local.CloseAllBy(errShuttingDown, editorsBy)
+			})
 		}
 	})
+	closes.Wait()
 	// The publications end with their sessions; wait for them to tell the
 	// rendezvous, all at once, as long as ctx allows.
 	s.pubMu.Lock()

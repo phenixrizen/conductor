@@ -912,3 +912,25 @@ func TestAContinuationIsNamedOnce(t *testing.T) {
 		t.Fatalf("continued_by after the refusals: %q", row.ContinuedBy)
 	}
 }
+
+// A transaction whose context ends under it is refused with the context's
+// own error, whatever database/sql said of it: its rollback of a cancelled
+// transaction races the commit, which then says ErrTxDone, and the engine
+// must tell a stop from a store that failed (Codex's review of #367).
+func TestACancelledTransactionIsRefusedWithItsContextsError(t *testing.T) {
+	l := openLedger(t, t.TempDir())
+	newRun(t, l, "r")
+	for i := range 20 {
+		ctx, cancel := context.WithCancel(context.Background())
+		l.beforeCommit = func() error {
+			cancel()
+			return nil
+		}
+		_, err := l.Transition(ctx, "r", func(*Tx) error { return nil })
+		l.beforeCommit = nil
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("run %d: a cancelled transaction's error is %v, not the context's", i, err)
+		}
+	}
+}

@@ -207,12 +207,14 @@ func errorCodeFor(reason error) string {
 // end; waited, when set, is the host connection's OnWait (signal.HostConn):
 // called as a viewer's frame takes its place in line for room in the host's
 // queue, so a test knows a frame waits without guessing it from the clock
-// (#281).
+// (#281); left, when set, is called as the read loop returns, its waits
+// over and a frame it held dropped, before the connection is closed.
 type viewerSeam struct {
 	read   func(written <-chan struct{})
 	write  func() error
 	ended  func()
 	waited func()
+	left   func()
 }
 
 // seamSink is a sink whose writes fail when the seam says so.

@@ -1234,9 +1234,9 @@ func TestAServerShutdownEndsAHungEditorWithinItsGrace(t *testing.T) {
 	s, sub := editableLocal(t)
 	// The fake never leaves on its own (it sleeps); the editor's own wait would be the full nvimEndWait.
 	s.nvimEndWait = 30 * time.Second
-	old := nvimShutdownWait
-	nvimShutdownWait = 500 * time.Millisecond
-	t.Cleanup(func() { nvimShutdownWait = old })
+	old := EditorShutdownWait
+	EditorShutdownWait = 500 * time.Millisecond
+	t.Cleanup(func() { EditorShutdownWait = old })
 	done := make(chan error, 1)
 	go func() {
 		done <- s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"})
@@ -1256,7 +1256,7 @@ func TestAServerShutdownEndsAHungEditorWithinItsGrace(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if took := time.Since(start); took > nvimShutdownWait+nvimReap+3*time.Second {
+	if took := time.Since(start); took > EditorShutdownWait+nvimReap+3*time.Second {
 		t.Fatalf("the shutdown waited %v for a Neovim that would not leave", took)
 	}
 	if !gone(pid, 5*time.Second) {
@@ -1266,5 +1266,71 @@ func TestAServerShutdownEndsAHungEditorWithinItsGrace(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the open did not end with the shutdown")
+	}
+}
+
+// An editor whose connection went just before the shutdown is still the
+// session's to end: its subscription is gone from the hub, its own end
+// waits the full nvimEndWait for a Neovim that will not leave (one busy in
+// a long :sleep takes no quit meanwhile), and the shutdown ends it all the
+// same, within its own wait (Codex's review of #281: the subscription no
+// longer named it).
+func TestAServerShutdownEndsAHungEditorWhoseConnectionWentBefore(t *testing.T) {
+	if !nvim.Available() {
+		t.Skip("nvim is not on PATH; the test needs the real Neovim")
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\n"), 0o644)
+	s, _ := newLocal(t, dir)
+	s.nvimEndWait = 30 * time.Second
+	old := EditorShutdownWait
+	EditorShutdownWait = 500 * time.Millisecond
+	t.Cleanup(func() { EditorShutdownWait = old })
+	sink := newChanSink(false)
+	sub, err := s.AttachWith(AttachOptions{Role: RoleControl, Name: "nate", Owner: true}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := 0
+	if err := s.NvimOpen(context.Background(), sub, proto.NvimOpen{T: proto.CtlNvimOpen, ReqID: "r1", Path: "a.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	evs := nvimEvents(t, sink, &from, proto.NvimLines, 10*time.Second)
+	id := evs[0].ID
+	// Neovim is stopped (SIGSTOP): it takes no quit and leaves on no channel close, as one hung would; only a kill ends it.
+	sub.nvimMu.Lock()
+	ed := sub.nvims[id].ed
+	sub.nvimMu.Unlock()
+	pid := ed.Pid()
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	// The connection goes: its editor ends on a goroutine of its own, waiting nvimEndWait for a Neovim that will not leave.
+	s.Detach(sub)
+	time.Sleep(time.Second)
+	if s.nvimCount.Load() == 0 {
+		t.Fatal("Neovim left on its own within a second: the stopped Neovim did not hold its editor, and the test exercises nothing")
+	}
+	start := time.Now()
+	if err := returnsWithin(t, 10*time.Second, "the shutdown's close", func() error {
+		s.CloseAll(errors.New("shutting down"))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > EditorShutdownWait+nvimReap+3*time.Second {
+		t.Fatalf("the shutdown waited %v for a Neovim whose connection had gone", took)
+	}
+	for deadline := time.Now().Add(5 * time.Second); s.nvimCount.Load() > 0; {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d editors still counted after the shutdown", s.nvimCount.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !gone(pid, 5*time.Second) {
+		t.Fatalf("Neovim (pid %d) outlived the server's shutdown", pid)
 	}
 }

@@ -230,6 +230,12 @@ type Local struct {
 	// nvimCount is the editors open on the session (nvim.go), every
 	// connection's together.
 	nvimCount atomic.Int32
+	// editors are the editors open on the session, every connection's,
+	// from their open to their forget (forgetNvim): the shutdown ends them
+	// (endEditorsBy), those of a connection that went before it included,
+	// which its subscription no longer names. Guarded by editorsMu.
+	editorsMu sync.Mutex
+	editors   map[*nvimEditor]struct{}
 	chat      chatRing // guarded by mu
 	// question is the id of the agent's question in the chat while one
 	// stands (askInChat), for the line that says it was answered.
@@ -4888,7 +4894,11 @@ func (s *Local) Retire() {
 // returns once their transports have closed,
 // those of the clients that had ended already included, together, as
 // DisconnectLink's do.
-func (s *Local) CloseAll(reason error) {
+// CloseAllBy closes every connection with reason and ends the session's
+// editors: they may leave on their own until deadline, shared by every
+// session a shutdown closes, then are ended through their contexts
+// (endEditorsBy).
+func (s *Local) CloseAllBy(reason error, deadline time.Time) {
 	var all []*Subscription
 	s.mu.Lock()
 	s.hub.Each(func(sub *Subscription) {
@@ -4905,7 +4915,13 @@ func (s *Local) CloseAll(reason error) {
 	waitClosed(all)
 	// The editors get the shutdown's short wait, then are ended: the
 	// server must be gone before the app's own grace runs out.
-	s.endEditorsWithin(all, nvimShutdownWait)
+	s.endEditorsBy(deadline)
+}
+
+// CloseAll is CloseAllBy with the shutdown's own wait for the editors
+// (EditorShutdownWait from now).
+func (s *Local) CloseAll(reason error) {
+	s.CloseAllBy(reason, time.Now().Add(EditorShutdownWait))
 }
 
 // Send queues an arbitrary frame to one subscription (used for file responses).

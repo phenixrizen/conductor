@@ -93,9 +93,22 @@ func (l *Ledger) Transition(ctx context.Context, runID string, fn func(*Tx) erro
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, cancelledAs(ctx, err)
 	}
 	return rev, nil
+}
+
+// cancelledAs is err as the transaction's caller should see it: the
+// context's own error when the context ended under the transaction,
+// whatever database/sql said of it (its rollback of a cancelled
+// transaction races the commit, which then says sql.ErrTxDone), so that a
+// stop is told from a store that failed (Codex's review of #367); err
+// itself otherwise.
+func cancelledAs(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil && (errors.Is(err, sql.ErrTxDone) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return fmt.Errorf("ledger: %w", cerr)
+	}
+	return err
 }
 
 // Event records an event of the run, next in its sequence, with payload as

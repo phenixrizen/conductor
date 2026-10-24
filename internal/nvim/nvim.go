@@ -850,6 +850,9 @@ func (e *Editor) SwapChoice(choice string) error {
 // Close ends Neovim without saving: its connection closed, it is let leave
 // for exitWait, then killed, and reaped. Its context's end (Open) ends it
 // sooner.
+// Pid is Neovim's process id: for a test that stops or inspects it.
+func (e *Editor) Pid() int { return e.cmd.Process.Pid }
+
 func (e *Editor) Close() {
 	e.closed.Store(true)
 	e.v.Close()
