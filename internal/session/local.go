@@ -3224,7 +3224,7 @@ func (s *Local) resolve(id string, token uint64, by, byName string, r reply) {
 		s.signalAttention()
 		s.hub.Broadcast(proto.MustControl(attentionMessage(s.attentionLocked())))
 	}
-	answered, answeredID, told := s.answeredInChat(id, by, byName, answerWords(q.Options, r))
+	answered, answeredID, told := s.answeredInChat(id, by, byName, answerWords(q, r))
 	s.mu.Unlock()
 	if told {
 		s.chatHook(answeredID, answered)

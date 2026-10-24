@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Launcher } from '../src/launcher'
-import { ServerSupervisor } from '../src/server'
+import { ServerSupervisor, StartStopped } from '../src/server'
 
 /** A fake server: a node script that prints the handshake (after optional noise), serves /api/health, and exits when stdin closes. */
 function fakeServer(opts: { noise?: boolean; crashAfterMs?: number; silent?: boolean }): string {
@@ -78,6 +78,44 @@ describe('server supervisor', () => {
     await s.stop()
     expect(s.status.state).toBe('stopped')
     await expect(fetch(h.publicUrl + '/api/health')).rejects.toThrow()
+  })
+  it("a stop during the start's preparation spawns nothing (#363, Codex's review)", async () => {
+    const launcher = new ScriptLauncher(fakeServer({}))
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const s = new ServerSupervisor({ launcher, args: [], beforeStart: () => gate, env: () => process.env as Record<string, string>, log: quiet })
+    const started = s.start()
+    started.catch(() => {})
+    await s.stop()
+    release()
+    await expect(started).rejects.toBeInstanceOf(StartStopped)
+    expect(launcher.spawned).toBe(0)
+    expect(s.status.state).toBe('stopped')
+  })
+  it('a restart during the preparation leaves one server, which the first start reports too', async () => {
+    const launcher = new ScriptLauncher(fakeServer({}))
+    let calls = 0
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const s = new ServerSupervisor({ launcher, args: [], beforeStart: () => (++calls === 1 ? gate : Promise.resolve()), env: () => process.env as Record<string, string>, log: quiet })
+    const first = s.start()
+    first.catch(() => {})
+    const second = s.restart()
+    release()
+    const h2 = await second
+    const h1 = await first
+    expect(h1).toBe(h2)
+    expect(launcher.spawned).toBe(1)
+    await s.stop()
+  })
+  it('a preparation that never settles is bounded, and the server starts without it', async () => {
+    const launcher = new ScriptLauncher(fakeServer({}))
+    const lines: string[] = []
+    const s = new ServerSupervisor({ launcher, args: [], beforeStart: () => new Promise<void>(() => {}), prepareMs: 100, env: () => process.env as Record<string, string>, log: (_k, l) => lines.push(l) })
+    const h = await s.start()
+    expect(h.version).toBe('fake')
+    expect(lines.some((l) => l.includes('did not finish within'))).toBe(true)
+    await s.stop()
   })
   it('restarts a server that dies, with backoff, and gives up after too many failures', async () => {
     const launcher = new ScriptLauncher(fakeServer({ crashAfterMs: 150 }))

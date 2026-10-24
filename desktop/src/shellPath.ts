@@ -41,7 +41,8 @@ export function loginShellPath(shell: string, timeoutMs = LOGIN_SHELL_WAIT, runn
       }
     }
     try {
-      const child = runner(shell, ['-ilc', `printf '%s%s\\n' ${MARKER} "$PATH"`], { timeout: timeoutMs, env: { ...process.env, TERM: 'dumb' } }, (err, stdout) => {
+      // SIGKILL at the timeout: a shell that ignores SIGTERM would never settle this (Codex's review of #363).
+      const child = runner(shell, ['-ilc', `printf '%s%s\\n' ${MARKER} "$PATH"`], { timeout: timeoutMs, killSignal: 'SIGKILL', env: { ...process.env, TERM: 'dumb' } }, (err, stdout) => {
         if (err && !stdout) return done('')
         done(extractPath(String(stdout)))
       })

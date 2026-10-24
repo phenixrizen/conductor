@@ -9,7 +9,7 @@ import { registerIpc } from './ipc'
 import { NativeLauncher, type Launcher } from './launcher'
 import { Logs } from './logs'
 import { buildMenu } from './menu'
-import { ServerSupervisor } from './server'
+import { ServerSupervisor, StartStopped } from './server'
 import { defaultSettings, loadSettings, migrateToWsl, noticeOnce, refusedSwitchyardNote, saveSettings, type DesktopSettings } from './settings'
 import { loginShellPath, mergePaths } from './shellPath'
 import { createTray } from './tray'
@@ -355,6 +355,8 @@ async function run() {
   try {
     await supervisor.start()
   } catch (e) {
+    // Stopped while it prepared (the app quitting): nothing to say.
+    if (e instanceof StartStopped) return
     endSplash()
     await dialog.showMessageBox({ type: 'error', title: 'Conductor', message: 'The server did not start', detail: (e as Error).message })
     showLog()

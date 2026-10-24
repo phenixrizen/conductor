@@ -243,25 +243,31 @@ type reply struct {
 const answerWordsMax = 200
 
 // answerWords is what the chat's answered line says the reply answered
-// with (#364): the label of the choice whose keys it typed; the choice a
-// digit picked from a numbered list; else the text typed, its Enter
-// dropped; "" when the keys say nothing readable (an Enter alone, an
-// arrow, a control key), when the line says only who answered.
-func answerWords(options []Option, r reply) string {
+// the question q with (#364): the label of the choice whose keys it typed,
+// for any question; or, for the agent's own question only (SourceAPI, the
+// ask tool, whose answer is a message to the agent), the text typed with
+// its Enter dropped. A line typed at a prompt on the screen (a bell, an
+// OSC, a pattern, a dialog's own field) is never repeated: the terminal
+// may not echo it, a password's prompt for one, and the chat goes to
+// every viewer. A digit that is no choice's keys says nothing (the
+// choices shown need not be the screen's numbering), as do keys that say
+// nothing readable (an Enter alone, an arrow, a control key): the line
+// says only who answered then.
+func answerWords(q Attention, r reply) string {
+	own := q.Source == SourceAPI
 	if r.line != "" {
+		if !own {
+			return ""
+		}
 		return clipWords(r.line)
 	}
 	k := string(r.keys)
-	for _, o := range options {
+	for _, o := range q.Options {
 		if o.Input != "" && o.Input == k {
 			return o.Label
 		}
 	}
-	if len(r.keys) == 1 && r.keys[0] >= '1' && r.keys[0] <= '9' {
-		// A digit picks a line of a numbered list; one past the list said nothing.
-		if n := int(r.keys[0] - '1'); n < len(options) {
-			return options[n].Label
-		}
+	if !own {
 		return ""
 	}
 	text := strings.TrimRight(k, "\r\n")

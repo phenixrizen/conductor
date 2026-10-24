@@ -905,29 +905,39 @@ func TestChatQuoteIsBoundedAndTypedWithItsLocation(t *testing.T) {
 }
 
 // The chat's answered line says what the reply answered with (#364): the
-// label of the choice whose keys it typed, the choice a digit picked from a
-// numbered list, or the text typed, cut when long; nothing for keys that
-// say nothing readable, when the line says only who answered.
+// label of the choice whose keys it typed, for any question; the text
+// typed, cut when long, for the agent's own question only (a line typed at
+// a prompt on the screen may be a secret the terminal does not echo, and
+// the chat goes to every viewer); nothing for a digit that is no choice's
+// keys, or for keys that say nothing readable.
 func TestAnswerWordsNameTheChoiceOrTheLine(t *testing.T) {
 	choices := []Option{{Label: "Yes, trust", Input: "y\r"}, {Label: "No", Input: "n\r"}}
-	numbered := []Option{{Label: "Yes", Input: "\r"}, {Label: "Yes, always", Input: "\x1b[B\r"}, {Label: "No", Input: "\x1b[B\x1b[B\r"}}
+	numbered := []Option{{Label: "Yes", Input: "1"}, {Label: "Yes, always", Input: "2"}, {Label: "No", Input: "3"}}
+	sparse := []Option{{Label: "Skip this update", Input: "\x1b"}, {Label: "Skip until next version", Input: "3"}}
+	own := func(o []Option) Attention { return Attention{State: AttentionNeedsInput, Source: SourceAPI, Options: o} }
+	screen := func(o []Option) Attention { return Attention{State: AttentionNeedsInput, Source: SourceQuestion, Options: o} }
+	bell := Attention{State: AttentionNeedsInput, Source: SourceBell}
 	for _, c := range []struct {
-		name    string
-		options []Option
-		r       reply
-		want    string
+		name string
+		q    Attention
+		r    reply
+		want string
 	}{
-		{"a choice's keys", choices, reply{keys: []byte("n\r")}, "No"},
-		{"a digit on a numbered list", numbered, reply{keys: []byte("2")}, "Yes, always"},
-		{"a digit past the list", numbered, reply{keys: []byte("7")}, ""},
-		{"a line typed into the terminal", choices, reply{keys: []byte("the blue one\r")}, "the blue one"},
-		{"a reply box's line", nil, reply{line: "Postgres"}, "Postgres"},
-		{"an Enter alone", choices, reply{keys: []byte("\r")}, ""},
-		{"an arrow", choices, reply{keys: []byte("\x1b[A")}, ""},
-		{"a control key", nil, reply{keys: []byte{0x03}}, ""},
-		{"a long line is cut", nil, reply{line: strings.Repeat("x", 250)}, strings.Repeat("x", 200) + "…"},
+		{"a choice's keys at a dialog", screen(choices), reply{keys: []byte("n\r")}, "No"},
+		{"a choice's keys at the agent's own question", own(choices), reply{keys: []byte("y\r")}, "Yes, trust"},
+		{"a digit that is a choice's keys", screen(numbered), reply{keys: []byte("2")}, "Yes, always"},
+		{"a digit that is no choice's keys", screen(sparse), reply{keys: []byte("2")}, ""},
+		{"a digit past the list", screen(numbered), reply{keys: []byte("7")}, ""},
+		{"a line typed at the agent's own question", own(nil), reply{keys: []byte("the blue one\r")}, "the blue one"},
+		{"a reply box's line to the agent's own question", own(nil), reply{line: "Postgres"}, "Postgres"},
+		{"a line typed at a prompt on the screen", bell, reply{keys: []byte("hunter2\r")}, ""},
+		{"a reply box's line to a dialog", screen(choices), reply{line: "something else"}, ""},
+		{"an Enter alone", own(choices), reply{keys: []byte("\r")}, ""},
+		{"an arrow", own(choices), reply{keys: []byte("\x1b[A")}, ""},
+		{"a control key", own(nil), reply{keys: []byte{0x03}}, ""},
+		{"a long line is cut", own(nil), reply{line: strings.Repeat("x", 250)}, strings.Repeat("x", 200) + "…"},
 	} {
-		if got := answerWords(c.options, c.r); got != c.want {
+		if got := answerWords(c.q, c.r); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
