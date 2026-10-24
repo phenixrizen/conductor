@@ -62,14 +62,21 @@ type nvimEditor struct {
 	ending sync.Once
 	// endWait is nvimEndWait as the editor opened.
 	endWait time.Duration
+	// late, when set, is told that Neovim had not ended within endWait and
+	// its context was cancelled, which kills it (#281: a swap file may be
+	// left behind then).
+	late func()
 }
 
 // nvimEndWait bounds how long end lets Neovim leave on its own (a quit hook
 // that hangs holds `:qa!` and the exit) before it ends it with its context:
-// as long as the client's own close let it, so that a Neovim slow to leave
-// on a loaded machine still writes its state and removes its swap files.
-// A session takes it as it is made (Local.nvimEndWait); tests shorten it.
-var nvimEndWait = 10 * time.Second
+// as long as the bridge's own close lets it (nvim.exitWait), so that a
+// Neovim slow to leave on a loaded machine still writes its state and
+// removes its swap files; ended sooner, it leaves a swap file the next open
+// of the file stumbles on (#281). Half a minute: a loaded machine makes an
+// exit slow, never a hang. A session takes it as it is made
+// (Local.nvimEndWait); tests shorten it.
+var nvimEndWait = 30 * time.Second
 
 // nvimReap is how long, past nvimEndWait, WaitEditors gives an editor
 // ended with its context to be reaped.
@@ -113,6 +120,9 @@ func (e *nvimEditor) end(discard bool) {
 			select {
 			case <-left:
 			case <-t.C:
+				if e.late != nil {
+					e.late()
+				}
 				e.cancel()
 				<-left
 			}
@@ -193,6 +203,7 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	ectx, cancel := context.WithCancel(context.Background())
 	id := newNvimID()
 	e := &nvimEditor{id: id, path: target, cancel: cancel, endWait: s.nvimEndWait}
+	e.late = func() { s.log.Warn("neovim did not end within the wait; cancelled", "editor", id, "file", target, "wait", s.nvimEndWait) }
 	sub.nvimMu.Lock()
 	// Registered only while the connection is there: closeNvims, as it
 	// goes, marks its editors closed under this lock, and ends each one it
@@ -223,6 +234,11 @@ func (s *Local) NvimOpen(ctx context.Context, sub *Subscription, req proto.NvimO
 	stop := context.AfterFunc(ctx, cancel)
 	h := &nvimHandler{s: s, sub: sub, e: e}
 	ed, err := nvim.Open(ectx, s.info.Cwd, target, h)
+	if err == nil {
+		ed.OnKill = func(after time.Duration) {
+			s.log.Warn("neovim did not leave within the wait and was killed; its swap file may be left behind", "editor", id, "file", target, "wait", after)
+		}
+	}
 	if err == nil && ctx.Err() != nil {
 		// ctx ended as the start finished: the cancel ends Neovim.
 		cancel()

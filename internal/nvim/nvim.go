@@ -137,6 +137,10 @@ type Editor struct {
 	out *os.File
 	// ended is the editor's context's Done: its end cuts reap's waits short.
 	ended <-chan struct{}
+	// OnKill, when set, is told that Neovim had not left within the wait
+	// reap gave it and was killed: a swap file of its buffer may be left
+	// behind then, which its own exit would have removed (#281).
+	OnKill func(after time.Duration)
 
 	h      Handler
 	mu     sync.Mutex
@@ -190,9 +194,12 @@ const (
 )
 
 // exitWait is how long Close lets Neovim leave on its own once its
-// connection is closed, before it is ended (the client's own wait was the
-// same).
-var exitWait = 10 * time.Second
+// connection is closed, before it is killed. It bounds a Neovim that hangs,
+// nothing else: one that is leaving removes its swap files last, and a
+// kill leaves them behind, where the next open of the file stumbles on them
+// (#281: a swap file left after a tab's close on a loaded machine). Half a
+// minute, then: a loaded machine makes an exit slow, never a hang.
+var exitWait = 30 * time.Second
 
 // Open starts Neovim in dir, loads path, and reports to h until Close or
 // Neovim's own exit. ctx ends the process when it ends, and with it what
@@ -363,6 +370,9 @@ func (e *Editor) reap(after time.Duration) {
 			select {
 			case <-exited:
 			case <-t.C:
+				if e.OnKill != nil {
+					e.OnKill(after)
+				}
 				e.kill()
 				<-exited
 			}
