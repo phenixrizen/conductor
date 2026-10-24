@@ -153,6 +153,23 @@ export class Api {
   }
 }
 
+/**
+ * stopStrays ends every session the server still runs that `mine` does not name (#281): one a spec before this one left behind (a
+ * spec that failed between making a session and noting it to stop) would otherwise be met by a spec that counts the sessions it
+ * sees (the wall's tiles), where the leftover's cause is long gone. The sessions ended are waited for, so that nothing of them is
+ * on the wall when the caller looks; their ids are returned for the log.
+ */
+export async function stopStrays(api: Api, mine: readonly string[]): Promise<string[]> {
+  const r = await api.ok<{ sessions?: Session[] } | Session[]>('GET', '/api/sessions')
+  const listed = Array.isArray(r) ? r : (r.sessions ?? [])
+  const strays = listed.filter((s) => !mine.includes(s.id) && (s.status === 'running' || s.status === 'starting' || s.status === 'pending'))
+  for (const s of strays) await api.stopSession(s.id)
+  for (const s of strays) {
+    await expect.poll(async () => (await api.session(s.id)).status, { timeout: 15_000, message: `the stray session ${s.id} (${s.name}) ends` }).toMatch(/^(exited|stopped|ended)$/)
+  }
+  return strays.map((s) => s.id)
+}
+
 /** Whether a line of the run's log contains text. */
 export function logged(run: Run, text: string): boolean {
   return run.log.some((e) => (e.message ?? '').includes(text))
