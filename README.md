@@ -1268,8 +1268,8 @@ other, so a second parent, a self edge and a cycle are refused with a word
 on why. On a phone the graph is a list indented by depth with the same
 badges, and the Crews table shows each crew's shape in miniature.
 
-**The tasks.** A managed run (a crew with tasks, see
-[Crews](#crews)) has a **Tasks** tab first: one row per task with its state,
+**The tasks.** Yardmaster, Conductor's agent harness, runs a crew with tasks
+as a managed run (see [Crews](#crews)); its run page has a **Tasks** tab first: one row per task with its state,
 kind, member, attempt, what it does in words (what it waits for, which
 attempt runs or is checked, how it ended, why a ready task does not start),
 its result commit and its actions: **Open** the attempt's session, **Retry** a
