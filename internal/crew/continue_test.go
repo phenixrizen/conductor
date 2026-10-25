@@ -137,6 +137,10 @@ func TestAContinuationVerifiesACandidateAgainAndWaitsOnAnUncertainLaunch(t *test
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// The first engine is stopped before the ledger is rewritten and the
+	// mark made: a check still going would pass on the mark and record its
+	// outcome over the interrupted row.
+	stopRun(t, e, run.ID)
 	interrupt(l, run.ID, map[string][2]string{
 		"build/1": {ledger.AttemptInterrupted, "verifying: the owner stopped; the candidate is verified again"},
 		"docs/1":  {ledger.AttemptUncertain, "reserved: the owner stopped before the launch was known"},
@@ -180,7 +184,6 @@ func TestAContinuationVerifiesACandidateAgainAndWaitsOnAnUncertainLaunch(t *test
 	commitResult(t, e2, d2, "docs.txt", "d\n", "docs")
 	waitOutcome(t, e2, next.ID, "succeeded")
 	stopRun(t, e2, next.ID)
-	stopRun(t, e, run.ID)
 }
 
 // A run still going is not continued; a run the engine holds stopped is,

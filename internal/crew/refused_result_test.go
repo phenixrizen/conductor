@@ -73,6 +73,10 @@ func TestAContinuedCandidateRefusedBeforeItsChecksHandsTheNextAttemptTheWorksSta
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// The first engine is stopped before the ledger is rewritten and the
+	// mark made: a verifier still going would record its own outcome over
+	// the interrupted row.
+	stopRun(t, e, run.ID)
 	interrupt(l, run.ID, map[string][2]string{
 		"build/1": {ledger.AttemptInterrupted, "verifying: the owner stopped; the candidate is verified again"},
 	})
@@ -97,7 +101,6 @@ func TestAContinuedCandidateRefusedBeforeItsChecksHandsTheNextAttemptTheWorksSta
 		t.Fatalf("attempt 3 starts at %s, not where the work did (%s)", short(a3.Attempt.Start), short(a.Attempt.Start))
 	}
 	stopRun(t, e2, next.ID)
-	stopRun(t, e, run.ID)
 }
 
 // A result that makes the crew's directory a file is refused at checkout:
