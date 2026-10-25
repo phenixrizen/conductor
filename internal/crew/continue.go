@@ -218,6 +218,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 			if hasLast && la.Checkpoint != "" && t.def.Kind == TaskWork {
 				t.checkpoint = decodeCheckpoint(la.Checkpoint)
 			}
+			if hasLast && t.def.Kind == TaskWork && la.State == ledger.AttemptFailed && la.ResultCommit != "" && la.StartCommit != "" && refusedBeforeChecks(la.Stage) {
+				t.refused = &refusal{n: la.N, start: la.StartCommit, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch}
+			}
 			switch row.State {
 			case ledger.TaskSucceeded:
 				ra := refs[t.def.ID]

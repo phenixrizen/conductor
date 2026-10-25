@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/phenixrizen/conductor/internal/crew/ledger"
 )
 
 // TaskFile is .conductor/task.json: an attempt's task as a tool reads it.
@@ -95,6 +97,9 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
 				f.Previous.Result, f.Previous.Branch = p.result, p.branch
 			}
 		}
+	}
+	if rf := t.refused; f.Previous == nil && rf != nil && rf.n == a.n-1 {
+		f.Previous = &TaskPrevious{Attempt: rf.n, State: ledger.AttemptFailed, Stage: rf.stage, Error: rf.err, Result: rf.result, Branch: rf.branch}
 	}
 	f.StartFrom = startFrom(r, t, a)
 	if rp := t.repair; rp != nil {
@@ -293,6 +298,9 @@ func startFrom(r *run, t *task, a *attempt) string {
 		if p.result != "" && refusedBeforeChecks(p.stage) && p.start == a.start {
 			return fmt.Sprintf("where attempt %d started: its result was refused at %s", p.n, p.stage)
 		}
+	}
+	if rf := t.refused; rf != nil && rf.n == a.n-1 && rf.start == a.start {
+		return fmt.Sprintf("where attempt %d started: its result was refused at %s", rf.n, rf.stage)
 	}
 	if t.checkpoint != nil && t.checkpoint.commit == a.start {
 		return "the checkpoint the last attempt saved"

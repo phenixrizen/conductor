@@ -254,6 +254,19 @@ type task struct {
 	// last one got to, and an attempt after one that ended without a
 	// result starts there.
 	checkpoint *checkpoint
+	// refused is, in a continuation, the last attempt of the run it
+	// continues when that attempt's result was refused before its checks
+	// (refusedBeforeChecks): the continuation's first attempt starts where
+	// it started, not at a checkpoint that may hold the refused result,
+	// and its task file names the result.
+	refused *refusal
+}
+
+// refusal is an attempt of an earlier run whose result was refused
+// before its checks.
+type refusal struct {
+	n                                 int
+	start, stage, err, result, branch string
 }
 
 // repair is what a review asks of the task it reviewed.
@@ -904,6 +917,10 @@ func (r *run) startCommit(t *task) string {
 			// checkpoint rested on an input since changed: not used.
 			return last.checkpoint.commit
 		}
+	} else if t.refused != nil {
+		// A continuation's first attempt after a refused result: where
+		// that attempt started.
+		return t.refused.start
 	} else if t.checkpoint != nil && t.checkpoint.commit != "" {
 		// A continuation's first attempt: where the last one got to.
 		return t.checkpoint.commit

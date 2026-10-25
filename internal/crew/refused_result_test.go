@@ -344,3 +344,55 @@ func TestAResultThatAliasesTheCrewsDirectoryIsRefusedWhereCaseFolds(t *testing.T
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A continuation keeps a refusal: the last attempt saved a checkpoint at
+// the result the setup then refused, the run was paused and stopped, and
+// the continuation's first attempt starts where the refused one did, not
+// at that checkpoint, with the refused result named in its task file.
+func TestAContinuationAfterARefusedResultStartsWhereItStarted(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	c := repoCrew(dir, work("build", "lead"))
+	c.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "test ! -e broken.txt"}}}
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	ctx := context.Background()
+	if err := e.PauseRun(ctx, run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "broken.txt"), "x\n")
+	commitAll(t, a.Attempt.Worktree, "breaks the setup")
+	if _, err := e.SaveCheckpoint(ctx, a.Attempt.SessionID, "broke it", "nothing", ""); err != nil {
+		t.Fatal(err)
+	}
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "broken"})
+	// Paused: the refusal starts no attempt, so the failed attempt holds.
+	waitTaskWhere(t, e, run.ID, "build", "attempt 1 failed", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 1 && ts.Attempt.State == ledger.AttemptFailed
+	})
+	if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "setup deps" || row.Checkpoint == "" {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	stopRun(t, e, run.ID)
+	e2, fl2 := newEngine(t)
+	fl2.onLaunch = printOnce
+	e2.UseLedger(l)
+	next, err := e2.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.PauseRun(ctx, next.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	a2 := waitTaskWhere(t, e2, next.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if a2.Attempt.Start != a.Attempt.Start {
+		t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(a2.Attempt.Start), short(a.Attempt.Start))
+	}
+	_, f := taskFileOf(t, a2)
+	if f.StartFrom != "where attempt 1 started: its result was refused at setup deps" || f.Previous == nil || f.Previous.Branch != a.Attempt.Branch || f.Previous.Result == "" {
+		t.Fatalf("attempt 2's task file: starts from %q, the attempt before %+v", f.StartFrom, f.Previous)
+	}
+	stopRun(t, e2, next.ID)
+}
