@@ -1324,7 +1324,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail("worktree", fmt.Errorf("the worktree is at %s, not %s", short(head), short(a.start)), false)
 		return
 	}
-	if err := checkNoLinks(a.worktree, r.prefix); err != nil {
+	if err := checkMemberDir(a.worktree, r.prefix); err != nil {
 		fail("worktree", err, false)
 		return
 	}

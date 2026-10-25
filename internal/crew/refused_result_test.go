@@ -99,3 +99,41 @@ func TestAContinuedCandidateRefusedBeforeItsChecksHandsTheNextAttemptTheWorksSta
 	stopRun(t, e2, next.ID)
 	stopRun(t, e, run.ID)
 }
+
+// A result that makes the crew's directory a file is refused at checkout:
+// no check can run in it and no next attempt can be made through it, so
+// the next attempt starts where the refused one did.
+func TestAResultThatMakesTheCrewsDirectoryAFileIsRefusedAtCheckout(t *testing.T) {
+	dir := newRepo(t)
+	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "web", "app.txt"), "app\n")
+	commitAll(t, dir, "web")
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "ok", Argv: []string{"true"}}}
+	c := repoCrew(dir, build)
+	c.Cwd = filepath.Join(dir, "web")
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if err := os.RemoveAll(filepath.Join(a.Attempt.Worktree, "web")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "web"), "a file\n")
+	commitAll(t, a.Attempt.Worktree, "web is a file now")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "a file"})
+	a2 := waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" || !strings.Contains(row.Error, "is a file, not a directory") {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	if a2.Attempt.Start != a.Attempt.Start {
+		t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(a2.Attempt.Start), short(a.Attempt.Start))
+	}
+	if l.count(run.ID, "check.started") != 0 {
+		t.Fatal("a check ran in a file")
+	}
+	stopRun(t, e, run.ID)
+}
