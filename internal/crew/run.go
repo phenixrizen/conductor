@@ -984,7 +984,7 @@ func (e *Engine) launch(ctx context.Context, r *run, m *member) (*session.Local,
 		cwd = filepath.Join(path, r.prefix)
 		// A directory no commit has a file in is not in the worktree; one
 		// that a commit makes a symbolic link would be made where it points.
-		if err := checkNoLinks(path, r.prefix); err != nil {
+		if err := checkMemberDir(path, r.prefix); err != nil {
 			return nil, err
 		}
 		if err := os.MkdirAll(cwd, 0o755); err != nil {

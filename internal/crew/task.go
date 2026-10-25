@@ -872,7 +872,10 @@ func (r *run) inputs(t *task) []input {
 
 // startCommit is where t's next attempt starts: the result of its last
 // attempt when that failed a check (the work is kept; the task file says
-// what failed), else its first need's result, else the run's base.
+// what failed), where the last attempt started when its result was
+// refused before its checks ran (refusedBeforeChecks: no tree to build
+// on; the task file names the result's branch), else its first need's
+// result, else the run's base.
 func (r *run) startCommit(t *task) string {
 	if t.repair != nil && t.repair.commit != "" {
 		return t.repair.commit
@@ -889,6 +892,9 @@ func (r *run) startCommit(t *task) string {
 	}
 	if n := len(t.attempts); n > 0 {
 		last := t.attempts[n-1]
+		if last.state == ledger.AttemptFailed && last.result != "" && refusedBeforeChecks(last.stage) && last.start != "" {
+			return last.start
+		}
 		if last.state == ledger.AttemptFailed && last.result != "" {
 			return last.result
 		}
@@ -908,6 +914,16 @@ func (r *run) startCommit(t *task) string {
 		}
 	}
 	return r.base
+}
+
+// refusedBeforeChecks reports whether an attempt that failed at stage had
+// its result refused before any check ran: its checkout was refused (a
+// link out of the tree, a commit git would not check out) or the crew's
+// setup failed or changed tracked files there. An attempt made at that
+// result fails the same way before its agent can do anything: the setup
+// runs in its worktree before the launch.
+func refusedBeforeChecks(stage string) bool {
+	return stage == "checkout" || stage == "setup" || strings.HasPrefix(stage, "setup ")
 }
 
 // pump dispatches the ready tasks, in plan order, while the run takes
@@ -1308,7 +1324,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		fail("worktree", fmt.Errorf("the worktree is at %s, not %s", short(head), short(a.start)), false)
 		return
 	}
-	if err := checkNoLinks(a.worktree, r.prefix); err != nil {
+	if err := checkMemberDir(a.worktree, r.prefix); err != nil {
 		fail("worktree", err, false)
 		return
 	}
@@ -1448,7 +1464,8 @@ func short(commit string) string {
 // treeHasPath reports whether the commit's tree holds path, named from
 // the repository's root whatever directory git runs in.
 func treeHasPath(ctx context.Context, repo, commit, path string) (bool, error) {
-	out, err := gitcli.Run(ctx, repo, "ls-tree", "-d", "--full-tree", "--name-only", commit, "--", path)
+	// Literal: "--" ends the options, not pathspec magic.
+	out, err := gitcli.Run(ctx, repo, "ls-tree", "-d", "--full-tree", "--name-only", commit, "--", ":(literal)"+path)
 	if err != nil {
 		return false, err
 	}

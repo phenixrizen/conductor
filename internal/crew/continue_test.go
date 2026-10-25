@@ -137,6 +137,10 @@ func TestAContinuationVerifiesACandidateAgainAndWaitsOnAnUncertainLaunch(t *test
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	// The first engine is stopped before the ledger is rewritten and the
+	// mark made: a check still going would pass on the mark and record its
+	// outcome over the interrupted row.
+	stopRun(t, e, run.ID)
 	interrupt(l, run.ID, map[string][2]string{
 		"build/1": {ledger.AttemptInterrupted, "verifying: the owner stopped; the candidate is verified again"},
 		"docs/1":  {ledger.AttemptUncertain, "reserved: the owner stopped before the launch was known"},
@@ -152,9 +156,9 @@ func TestAContinuationVerifiesACandidateAgainAndWaitsOnAnUncertainLaunch(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	// build: verified again as attempt 2, no session, the candidate its result, not counted against the task.
+	// build: verified again as attempt 2, no session, the candidate its result and attempt 1's start its start, not counted against the task.
 	b := waitTask(t, e2, next.ID, "build", ledger.TaskSucceeded, 2)
-	if b.Attempt == nil || b.Attempt.N != 2 || b.Attempt.SessionID != "" || b.Attempt.Start != candidate || b.Result == nil || b.Result.Commit != candidate || b.Result.Attempt != 2 || b.Result.Summary != "built" || !slices.Equal(b.Result.Issues, []string{"none"}) {
+	if b.Attempt == nil || b.Attempt.N != 2 || b.Attempt.SessionID != "" || b.Attempt.Start != a.Attempt.Start || b.Result == nil || b.Result.Commit != candidate || b.Result.Attempt != 2 || b.Result.Summary != "built" || !slices.Equal(b.Result.Issues, []string{"none"}) {
 		t.Fatalf("build verified again: %+v %+v %+v", b, b.Attempt, b.Result)
 	}
 	if row := l.attemptRow(t, next.ID, "build", 2); row.State != ledger.AttemptSucceeded || row.SessionID != "" || row.ResultCommit != candidate || !strings.Contains(row.Result, "built") {
@@ -180,7 +184,6 @@ func TestAContinuationVerifiesACandidateAgainAndWaitsOnAnUncertainLaunch(t *test
 	commitResult(t, e2, d2, "docs.txt", "d\n", "docs")
 	waitOutcome(t, e2, next.ID, "succeeded")
 	stopRun(t, e2, next.ID)
-	stopRun(t, e, run.ID)
 }
 
 // A run still going is not continued; a run the engine holds stopped is,

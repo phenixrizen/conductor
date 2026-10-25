@@ -124,6 +124,12 @@ add its rule here.
   stop, not by the store; an engine that reads every refusal as a store
   failure pauses runs that were only stopped. Check the context before
   judging the error.
+- Wait for a state that holds, never one passed through. A poll for
+  "attempts == 2" misses an attempt that fails in a millisecond; wait for
+  the thing itself (attempt 2, running) and assert how it got there. A
+  state that only flashes by in a test is often a product bug: here an
+  attempt that failed at once because it was handed a commit known to be
+  broken.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

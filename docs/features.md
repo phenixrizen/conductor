@@ -3058,6 +3058,23 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Yardmaster's live-check defects fixed in the stream (#351 to #355, PR
+  #369, 2026-10-24).** A task that needs a review starts at the commit the
+  review reviewed; a message to a member whose task succeeded is typed into
+  its idle session; a blocker's question leaves with the blocker (only that
+  question, also the copy held over the turn, never a newer blocker's);
+  Codex's `conductor mcp` gets the session's `CONDUCTOR_*` names through
+  `mcp_servers.conductor.env_vars`; a short check failure's last 2 KiB
+  reaches the attempt's words and the next task file, which says what its
+  start commit is. Then main's CI caught one more: an attempt whose result
+  could not be checked out (a link out of the tree) handed that result to
+  the next attempt, which failed at its worktree at once and spent an
+  attempt nobody ran. A result refused before its checks (at checkout, or
+  by the crew's setup, also when a continuation verifies it again) now
+  hands the next attempt where the refused one started, and its task file
+  names the refused result's branch (PR #370). AGENTS.md: a bug in the stream is fixed
+  in the stream; a test waits for a state that holds, never one passed
+  through.
 - **Every palette row does what it says (#332, 2026-10-22).** On the
   session page `showView('chat')` handed to `showChat()`, the header
   button's toggle, so **Open Chat** from the palette (and a session row's

@@ -1080,7 +1080,13 @@ func TestTheSetupRunsInTheChecksCheckoutAndMayChangeNothingTracked(t *testing.T)
 	// The worker's worktree took the change too: commit it as the work.
 	commitAll(t, a2.Attempt.Worktree, "the setup's change and the work")
 	submit(t, e2, a2.Attempt.SessionID, Result{Summary: "built"})
-	waitTaskWhere(t, e2, run2.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	// The next attempt starts where attempt 1 did, not at the refused result.
+	next := waitTaskWhere(t, e2, run2.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if next.Attempt.Start != a2.Attempt.Start {
+		t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(next.Attempt.Start), short(a2.Attempt.Start))
+	}
 	if row := l2.attemptRow(t, run2.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "setup" || row.Error != "the setup changed tracked files: README" {
 		t.Fatalf("after a setup that changes tracked content: %+v", row)
 	}
@@ -1362,9 +1368,28 @@ func TestAResultThatLinksTheCrewsDirectoryAwayFailsItsChecks(t *testing.T) {
 	}
 	commitAll(t, a.Attempt.Worktree, "web is a link now")
 	submit(t, e, a.Attempt.SessionID, Result{Summary: "linked"})
-	waitTaskWhere(t, e, run.ID, "build", "at its next attempt", func(ts TaskState) bool { return ts.Attempts == 2 })
+	// The next attempt starts where attempt 1 did, not at the result that
+	// could not be checked out: built on, it would fail at once at its
+	// worktree and spend an attempt nobody ran.
+	a2 := waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
 	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" {
 		t.Fatalf("attempt 1: %+v", row)
+	}
+	if a2.Attempt.Start != a.Attempt.Start {
+		t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(a2.Attempt.Start), short(a.Attempt.Start))
+	}
+	js, err := os.ReadFile(filepath.Join(a2.Attempt.Worktree, "web", taskDir, "task.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f TaskFile
+	if err := json.Unmarshal(js, &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.StartFrom != "where attempt 1 started: its result was refused at checkout" || f.Previous == nil || f.Previous.Branch != a.Attempt.Branch || f.Previous.Result == "" {
+		t.Fatalf("attempt 2's task file: starts from %q, the attempt before %+v", f.StartFrom, f.Previous)
 	}
 	if l.count(run.ID, "check.started") != 0 {
 		t.Fatal("a check ran through the link")

@@ -36,10 +36,11 @@ type Loaded struct {
 }
 
 // candidate is a result a continuation verifies again: the interrupted
-// attempt's number and commit, and what it submitted.
+// attempt's number, commit and start, and what it submitted.
 type candidate struct {
 	n      int
 	commit string
+	start  string
 	result Result
 }
 
@@ -252,7 +253,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 				case hasLast && (la.State == ledger.AttemptInterrupted || la.State == ledger.AttemptStopped) && t.def.Kind == TaskWork && la.ResultCommit != "" && la.Result != "" && strings.HasPrefix(la.Stage, "verifying"):
 					// Its result was being verified when the server ended or
 					// the run was stopped: verified again, the work kept.
-					t.candidate = &candidate{n: la.N, commit: la.ResultCommit, result: decodeResult(la.Result)}
+					t.candidate = &candidate{n: la.N, commit: la.ResultCommit, start: la.StartCommit, result: decodeResult(la.Result)}
 					t.state, t.reason = ledger.TaskReady, fmt.Sprintf("attempt %d's result %s is verified again", la.N, short(la.ResultCommit))
 					again++
 				default:
@@ -351,15 +352,21 @@ func decodeResult(raw string) Result {
 }
 
 // reverify makes the attempt that verifies t's candidate again: no
-// session, the candidate's commit its start and result, not counted
-// against the task; the verification follows its record
+// session, the candidate's commit its result and the start of the work
+// its start (where a next attempt goes back to when the candidate is
+// refused before its checks, refusedBeforeChecks), not counted against
+// the task; the verification follows its record
 // (dispatchCandidate). The caller holds e.mu, in the pump.
 func (e *Engine) reverify(r *run, t *task, m *member) {
 	c := *t.candidate
 	t.candidate = nil
 	ctx, cancel := context.WithCancel(r.ctx)
 	n := len(t.attempts) + t.prior + 1
-	a := &attempt{t: t, m: m, n: n, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: c.commit, provisional: true,
+	start := c.start
+	if start == "" {
+		start = c.commit
+	}
+	a := &attempt{t: t, m: m, n: n, state: ledger.AttemptReserved, ctx: ctx, cancel: cancel, reservedAt: time.Now().UTC(), inputs: r.inputs(t), start: start, provisional: true,
 		worktree: filepath.Join(r.cwd, worktreesDir, r.id, fmt.Sprintf("%s.%d", t.def.ID, n))}
 	t.attempts = append(t.attempts, a)
 	t.extra++

@@ -60,14 +60,16 @@ func checkTimeout(ch Check) time.Duration {
 	return defaultCheckTimeout * time.Second
 }
 
-// verify decides a's submitted result. A review, or a work task with no
-// checks, succeeds at once. A work task's checks run in a detached
-// checkout of the result commit (<worktree>.check), after the crew's
-// setup there (what the worker had, the checks have; a setup that changes
-// tracked content fails the attempt), one check at a time across the
-// server (checkSlots), each recorded before it starts, with its process
-// once started, and with its outcome when it ends. After each one the
-// checkout is compared with the commit as git would store it
+// verify decides a's submitted result. A review succeeds at once. A work
+// task's result is checked out detached (<worktree>.check), checks or
+// none: a result whose checkout is refused (the crew's directory a link or
+// a file, as this machine's filesystem resolves it) or that the crew's
+// setup refuses would fail every attempt made at it, a dependent's too,
+// before its agent could act. The setup runs there first (what the worker
+// had, the checks have; a setup that changes tracked content fails the
+// attempt), then the checks, one at a time across the server
+// (checkSlots), each recorded before it starts, with its process once
+// started, and with its outcome when it ends. After each one the checkout is compared with the commit as git would store it
 // (checkoutIntact): a check that cannot run, exits non-zero, times out,
 // moves the checkout or changes tracked content fails the attempt at that
 // check, and the rest do not run; untracked outputs are listed with the
@@ -76,7 +78,7 @@ func checkTimeout(ch Check) time.Duration {
 func (e *Engine) verify(r *run, a *attempt) {
 	defer r.checks.Done()
 	t := a.t
-	if t.def.Kind == TaskReview || len(t.def.Checks) == 0 {
+	if t.def.Kind == TaskReview {
 		e.accept(r, a, true, "", "")
 		return
 	}
@@ -95,12 +97,18 @@ func (e *Engine) verify(r *run, a *attempt) {
 	}
 	// The crew's directory in the checkout, as in the worktree: not
 	// through a link the result commits, which would send the checks
-	// elsewhere than the tree compared.
-	if err := checkNoLinks(dir, r.prefix); err != nil {
+	// elsewhere than the tree compared, nor a file, which no check and no
+	// next attempt can work in. A result with no tracked file left there
+	// has none in the checkout: it is made, as an attempt's is.
+	if err := checkMemberDir(dir, r.prefix); err != nil {
 		e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
 		return
 	}
 	cwd := filepath.Join(dir, r.prefix)
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
+		return
+	}
 	for _, ch := range r.setup {
 		if ctx.Err() != nil {
 			return

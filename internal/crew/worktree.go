@@ -316,11 +316,13 @@ func checkWorktreesDir(cwd string) error {
 	return nil
 }
 
-// checkNoLinks refuses a symbolic link on the way from root to root/rel, rel
-// a relative path: a commit may hold one, and a directory made through it
-// would be made wherever it points. It stops at the first part that does not
-// exist, which MkdirAll makes as a directory. The error matches ErrInvalid.
-func checkNoLinks(root, rel string) error {
+// checkMemberDir refuses a symbolic link or a file that is not a directory on
+// the way from root to root/rel, rel a relative path: a commit may hold
+// either; a directory made through a link would be made wherever it points,
+// and none can be made through a file. It stops at the first part that does
+// not exist, which MkdirAll makes as a directory. The error matches
+// ErrInvalid.
+func checkMemberDir(root, rel string) error {
 	path := ""
 	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(rel)), "/") {
 		if part == "" || part == "." {
@@ -336,6 +338,9 @@ func checkNoLinks(root, rel string) error {
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return invalidf("%s in the member's worktree is a symbolic link: the member's directory must stay inside the worktree", quote(filepath.ToSlash(path)))
+		}
+		if !fi.IsDir() {
+			return invalidf("%s in the member's worktree is a file, not a directory: the member's directory must be one", quote(filepath.ToSlash(path)))
 		}
 	}
 	return nil

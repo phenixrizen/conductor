@@ -71,6 +71,11 @@ type TaskPrevious struct {
 	State   string `json:"state"`
 	Stage   string `json:"stage,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Result and Branch name the attempt's result when this one does not
+	// start there (refused before its checks ran): its work, kept on its
+	// branch for what holds up.
+	Result string `json:"result,omitempty"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // taskFile renders a's task files: task.md for the agent, task.json for
@@ -86,6 +91,9 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
 	for _, p := range t.attempts {
 		if p.n == a.n-1 {
 			f.Previous = &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
+			if p.result != "" && p.result != a.start {
+				f.Previous.Result, f.Previous.Branch = p.result, p.branch
+			}
 		}
 	}
 	f.StartFrom = startFrom(r, t, a)
@@ -197,6 +205,9 @@ func taskMarkdown(f TaskFile) string {
 		if p.Error != "" {
 			fmt.Fprintf(&b, ": %s", p.Error)
 		}
+		if p.Result != "" {
+			fmt.Fprintf(&b, ". Its result, the commit %s on the branch %s, is not where you start: take from it what holds up, and fix what was refused", p.Result, p.Branch)
+		}
 		b.WriteString("\n\n")
 	}
 	b.WriteString("## How to finish\n\n")
@@ -278,6 +289,9 @@ func startFrom(r *run, t *task, a *attempt) string {
 		}
 		if p.checkpoint != nil && p.checkpoint.commit == a.start {
 			return fmt.Sprintf("attempt %d's checkpoint", p.n)
+		}
+		if p.result != "" && refusedBeforeChecks(p.stage) && p.start == a.start {
+			return fmt.Sprintf("where attempt %d started: its result was refused at %s", p.n, p.stage)
 		}
 	}
 	if t.checkpoint != nil && t.checkpoint.commit == a.start {
