@@ -139,6 +139,32 @@ not its checkpoint, not as a candidate, not in the task file.
     refused there (`413 too_large`, nothing changed, the attempt goes on)
     when over its limit.
 
+11. **The task file always fits.** Each part can be within its own bound
+    and the whole over `maxTaskFile` (a repair of 60 KB beside 8,000
+    characters of instructions): dispatch fails at "task file" before the
+    agent, for every attempt. The task file is a view of the ledger, so it
+    is cut to fit: it is built in order of need (the task and how to
+    finish, the start, the inputs' commits, the attempt before, the
+    repair's findings, the checkpoint, the inputs' summaries), and what
+    does not fit is cut with a line saying how much and that
+    `task_context` (32 KiB pages) has all of it. A test builds the
+    largest of each part at once.
+12. **A command's receipt is small.** `Receipt.Task` embeds the whole task
+    state (result, issues, findings, checkpoint), which can pass every
+    input's bound and still exceed what `Settle` takes, after the command
+    changed the task with no undo: the command stays `accepted` with no
+    receipt. A receipt keeps what idempotency needs (the command, the
+    task's id, state, attempt and result commit, the run's revision); the
+    rest is read from the run. A test accepts a result and checkpoint at
+    their bounds and repeats the command.
+
+## Two pull requests
+
+Paths 9 to 12 stall a run today whatever withdrawal does, and need no
+schema change: they go first, as their own PR of the stream ("the ledger
+takes every change it is given"). Paths 1 to 8 and the continuation guard
+(path 7) follow as #371 with schema v4 and the rounds 8 and 9 code.
+
 ## Tests
 
 Each fails without its part, `-race -count=30`:
