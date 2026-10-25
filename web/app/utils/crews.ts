@@ -221,10 +221,6 @@ export function taskProblems(c: TaskShape): string[] {
     else if (!names.includes(t.member)) out.push(`${what}: ${t.member ? `${t.member} is not a member` : 'choose its member'}`)
     if (chars(t.instructions) > TASK_LIMITS.instructions) out.push(`${what}: the instructions are at most ${TASK_LIMITS.instructions} characters`)
     if (t.instructions.includes('\0')) out.push(`${what}: the instructions contain NUL`)
-    // The task file never cuts the crew's own text: as its task.json keeps it (JSON, quotes and escapes), it leaves room for the rest.
-    const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
-    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + bytes(JSON.stringify(s)), 0)
-    if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
     const draft = drafts.find((d) => d.id === t.id && d.key !== undefined)
     const checks = draft?.checks ?? t.checks ?? []
     if (checks.length > TASK_LIMITS.checks) out.push(`${what}: at most ${TASK_LIMITS.checks} checks`)
@@ -237,10 +233,9 @@ export function taskProblems(c: TaskShape): string[] {
   }
   for (const t of tasks) {
     const what = t.id ? `Task ${t.id}` : 'A task'
-    for (const [i, n] of (t.needs ?? []).entries()) {
+    for (const n of t.needs ?? []) {
       if (n === t.id) out.push(`${what}: cannot need itself`)
       else if (!ids.includes(n)) out.push(`${what}: needs ${n}, which is not a task`)
-      else if (t.needs!.slice(0, i).includes(n)) out.push(`${what}: needs ${n} twice`)
     }
     if (t.kind === 'review' && (t.needs?.length !== 1 || kinds.get(t.needs[0]!) !== 'work')) out.push(`${what}: a review needs exactly one work task, the one it reviews`)
   }
@@ -272,10 +267,31 @@ export function taskProblems(c: TaskShape): string[] {
   return out
 }
 
-/** The problems of one task's row, for the mark under it: those of taskProblems that name it. */
+/**
+ * Why the server would refuse to save a crew's tasks beyond taskProblems (internal/crew ValidateSave): rules a crew is held to as it is
+ * saved, not as one saved before is launched, so an unchanged crew from before them still launches. A task needs another once, and its
+ * goal, role and instructions as its task.json keeps them (JSON, quotes and escapes) leave room for the rest of a task file, which never
+ * cuts them.
+ */
+export function taskSaveProblems(c: TaskShape): string[] {
+  const out: string[] = []
+  for (const t of plainTasks(c.tasks ?? [])) {
+    const what = t.id ? `Task ${t.id}` : 'A task'
+    const seen = new Set<string>()
+    const twice = new Set<string>()
+    for (const n of t.needs ?? []) (seen.has(n) ? twice : seen).add(n)
+    for (const n of twice) out.push(`${what}: needs ${n} twice`)
+    const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
+    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + bytes(JSON.stringify(s)), 0)
+    if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
+  }
+  return out
+}
+
+/** The problems of one task's row, for the mark under it: those of taskProblems and taskSaveProblems that name it. */
 export function taskRowProblems(t: Pick<CrewTask, 'id'>, c: TaskShape): string[] {
   const what = t.id ? `Task ${t.id}` : 'A task'
-  return taskProblems(c).filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
+  return [...taskProblems(c), ...taskSaveProblems(c)].filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
 }
 
 /** A new task for the editor: done by `member`, its id from the member's name, not one of `taken`. */

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { AgentInfo, CrewInfo, CrewSummary, RunInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
-import { crewKey, defaultCrew, holdViewLink, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems } from '~/utils/crews'
+import { crewKey, defaultCrew, holdViewLink, memberNameError, pageAfterDelete, summaryOf, toDraft, type DraftCrew, taskProblems, taskSaveProblems } from '~/utils/crews'
 import { changedFields, liveRunLine, startedClock } from '~/utils/crewWords'
 import { runLive, runState } from '~/utils/runs'
 
@@ -181,8 +181,8 @@ const tabItems = computed(() => [
 const banners = computed(() => crewLive.value.map((r) => ({ run: r, line: liveRunLine(r, live.sessions.value) })))
 
 const nameMissing = computed(() => !draft.value?.name.trim())
-/** Why the draft cannot be saved, in words; '' when it can. The Save button says it; the server checks the same things. */
-const saveProblem = computed(() => {
+/** Why the draft breaks a rule every crew is held to, saved or launched, in words; '' when it does not. */
+const ruleProblem = computed(() => {
   const d = draft.value
   if (!d) return 'Loading'
   if (nameMissing.value) return 'The crew needs a name'
@@ -193,6 +193,10 @@ const saveProblem = computed(() => {
   }
   return taskProblems(d)[0] ?? ''
 })
+/** Why a save of the draft would be refused by the rules a crew is held to as it is saved only (taskSaveProblems); '' when not. */
+const saveOnlyProblem = computed(() => (draft.value ? (taskSaveProblems(draft.value)[0] ?? '') : ''))
+/** Why the draft cannot be saved, in words; '' when it can. The Save button says it; the server checks the same things. */
+const saveProblem = computed(() => ruleProblem.value || saveOnlyProblem.value)
 const invalid = computed(() => !!saveProblem.value)
 /** What stops a launch from the crew page; the server still decides (a 409 answers). */
 const launchBlocked = computed(() => {
@@ -201,7 +205,8 @@ const launchBlocked = computed(() => {
   if (serverHost.switchyard.value) return 'A switchyard launches nothing'
   if (!d.members.length) return 'Add a member first'
   if (d.where !== 'server') return 'Only a crew that runs on the server can be launched'
-  if (invalid.value) return 'Fix the fields marked in red first'
+  // A launch saves the draft first only when it changed or is new: an unchanged crew saved before the save-only rules launches.
+  if (ruleProblem.value || ((dirty.value || !d.id) && saveOnlyProblem.value)) return 'Fix the fields marked in red first'
   return ''
 })
 const subtitle = computed(() => {

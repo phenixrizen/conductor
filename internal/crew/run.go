@@ -362,8 +362,12 @@ type run struct {
 	// own (a message's, a command's receipt) of changes whose commit was
 	// refused with no undo, kept as the refusal comes (under txMu): the
 	// next commit writes them first, in order (transact).
-	pendingEvents                                 []event
-	pendingMore                                   []func(LedgerTx) error
+	pendingEvents []event
+	pendingMore   []func(LedgerTx) error
+	// committing says a transaction has taken the run's changes and not
+	// yet heard from the ledger: refused, they come back to the run, which
+	// must still be there (dirty).
+	committing                                    bool
 	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.
 	yolo bool

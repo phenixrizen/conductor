@@ -610,3 +610,49 @@ func TestARefusedChangesOwnRowsGoWithItsEvents(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A run holding a refused change's events or rows is not idle, so it is
+// not forgotten (evict) before they are written: a stopped run with a
+// write pending is kept until the next commit takes it.
+func TestARunWithAWritePendingIsNotForgotten(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	stopRun(t, e, run.ID)
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	e.mu.Unlock()
+	idle := func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.idle(r)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !idle() {
+		if time.Now().After(deadline) {
+			t.Fatal("the stopped run is not idle")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ctx := context.Background()
+	l.mu.Lock()
+	l.failOn, l.failOnce = "late", true
+	l.mu.Unlock()
+	if err := e.transact(ctx, r, func() tx {
+		w := ev("late", nil)
+		w.more = func(LedgerTx) error { return nil }
+		return w
+	}, nil); err == nil {
+		t.Fatal("the refused commit was taken")
+	}
+	if idle() {
+		t.Fatal("a run with a write pending is idle: it could be forgotten with it")
+	}
+	if err := e.transact(ctx, r, func() tx { return ev("flush", nil) }, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !idle() || !slices.Contains(l.kinds(run.ID), "late") {
+		t.Fatalf("after the flush: idle %v, events %v", idle(), l.kinds(run.ID))
+	}
+}

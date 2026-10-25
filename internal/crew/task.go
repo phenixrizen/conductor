@@ -499,7 +499,7 @@ func (r *run) markRun() { r.runChanged = true }
 
 // dirty reports whether a change waits for a commit. The caller holds e.mu.
 func (r *run) dirty() bool {
-	return r.runChanged || len(r.changedTasks) > 0 || len(r.changedAttempts) > 0
+	return r.runChanged || len(r.changedTasks) > 0 || len(r.changedAttempts) > 0 || len(r.pendingEvents) > 0 || len(r.pendingMore) > 0 || r.committing
 }
 
 // snapshot is what one transition writes: the rows of what changed, as
@@ -658,10 +658,12 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	if t.more != nil {
 		more = append(more, t.more)
 	}
-	e.mu.Unlock()
 	if len(events) == 0 && len(more) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
+		e.mu.Unlock()
 		return nil
 	}
+	r.committing = true
+	e.mu.Unlock()
 	rev, err := e.ledger.Transition(ctx, r.id, func(ltx LedgerTx) error {
 		if err := snap.write(ltx); err != nil {
 			return err
@@ -679,6 +681,7 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		return nil
 	})
 	e.mu.Lock()
+	r.committing = false
 	if err != nil {
 		snap.undo(r)
 		r.pendingEvents, r.pendingMore = events, more
