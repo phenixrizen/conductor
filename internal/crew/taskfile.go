@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -43,7 +45,24 @@ type TaskFile struct {
 	// Checkpoint is where the task's last attempt got to (checkpoints.go),
 	// when one was saved: what is done, what remains, notes, its commit.
 	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
-	WrittenAt  time.Time   `json:"writtenAt"`
+	// More names the file that has what was cut to keep the task files
+	// within their bound (taskMoreFile), and Cut says what: the inputs'
+	// summaries, the checkpoint, findings, the review's summary.
+	More      string    `json:"more,omitempty"`
+	Cut       []string  `json:"cut,omitempty"`
+	WrittenAt time.Time `json:"writtenAt"`
+}
+
+// taskMoreFile is the task file beside task.md and task.json that has, in
+// full, what was cut from them to keep them within maxTaskFile.
+const taskMoreFile = "task-more.json"
+
+// TaskMore is .conductor/task-more.json: what the task files cut.
+type TaskMore struct {
+	Inputs        []TaskInput `json:"inputs,omitempty"`
+	Checkpoint    *Checkpoint `json:"checkpoint,omitempty"`
+	RepairSummary string      `json:"repairSummary,omitempty"`
+	Findings      []Finding   `json:"findings,omitempty"`
 }
 
 // TaskRepair is what a review asked of the task.
@@ -79,8 +98,9 @@ type TaskPrevious struct {
 }
 
 // taskFile renders a's task files: task.md for the agent, task.json for
-// tools. It takes e.mu.
-func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
+// tools, and, when they would pass maxTaskFile, task-more.json with what
+// was cut from them (fitTaskFile). It takes e.mu.
+func (e *Engine) taskFile(r *run, a *attempt) (md, js, more []byte, err error) {
 	e.mu.Lock()
 	t := a.t
 	f := TaskFile{Run: r.id, Crew: r.crewID, CrewName: r.name, Goal: r.goal, Task: t.def.ID, Attempt: a.n, MaxAttempts: maxAttemptsPerTask + t.extra, Member: a.m.def.Name, Role: a.m.def.Prompt, Kind: t.def.Kind,
@@ -104,18 +124,104 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js []byte, err error) {
 		f.Checkpoint = c.api()
 	}
 	e.mu.Unlock()
-	js, err = json.MarshalIndent(f, "", "  ")
-	if err != nil {
-		return nil, nil, err
+	return fitTaskFile(f)
+}
+
+// fitTaskFile renders f, cutting what is needed least until task.md and
+// task.json are within maxTaskFile: the inputs' summaries, then the
+// checkpoint, then the findings from the last, then the review's summary;
+// what is cut goes, in full, into task-more.json, which task.md names.
+// The rest (the crew's goal, role and instructions, the start, the
+// checks, the attempt before, how to finish) is never cut: the crew's
+// bounds keep it small, so a task file is always written and no attempt
+// fails at it for its size.
+func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
+	var m TaskMore
+	cuts := []func() bool{
+		func() bool {
+			cut := false
+			for i := range f.Inputs {
+				if f.Inputs[i].Summary != "" {
+					in := f.Inputs[i]
+					m.Inputs = append(m.Inputs, TaskInput{Task: in.Task, Attempt: in.Attempt, Summary: in.Summary})
+					f.Inputs[i].Summary, cut = "", true
+				}
+			}
+			if cut {
+				f.Cut = append(f.Cut, "the inputs' summaries")
+			}
+			return cut
+		},
+		func() bool {
+			if f.Checkpoint == nil {
+				return false
+			}
+			m.Checkpoint, f.Checkpoint = f.Checkpoint, nil
+			f.Cut = append(f.Cut, "the last attempt's checkpoint")
+			return true
+		},
+		func() bool {
+			if f.Repair == nil || len(f.Repair.Findings) == 0 {
+				return false
+			}
+			n := len(f.Repair.Findings)
+			last := f.Repair.Findings[n-1]
+			m.Findings = append([]Finding{last}, m.Findings...)
+			f.Repair.Findings = f.Repair.Findings[:n-1]
+			f.Cut = slices.DeleteFunc(f.Cut, func(s string) bool { return strings.HasSuffix(s, "of the review's findings") })
+			f.Cut = append(f.Cut, fmt.Sprintf("the last %d of the review's findings", len(m.Findings)))
+			return true
+		},
+		func() bool {
+			if f.Repair == nil || f.Repair.Summary == "" {
+				return false
+			}
+			m.RepairSummary, f.Repair.Summary = f.Repair.Summary, ""
+			f.Cut = append(f.Cut, "the review's summary")
+			return true
+		},
 	}
-	md = []byte(taskMarkdown(f))
-	if len(md) > maxTaskFile {
-		md = append(md[:maxTaskFile-64], []byte("\n\n(cut here: the task file is at its bound)\n")...)
+	for {
+		if len(f.Cut) > 0 {
+			f.More = taskMoreFile
+		}
+		md = []byte(taskMarkdown(f))
+		js, err = encodeTaskJSON(f)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if len(md) <= maxTaskFile && len(js) <= maxTaskFile {
+			break
+		}
+		cut := false
+		for _, c := range cuts {
+			if cut = c(); cut {
+				break
+			}
+		}
+		if !cut {
+			break // the uncut rest, bounded by the crew's own bounds
+		}
 	}
-	if len(js) > maxTaskFile {
-		return nil, nil, fmt.Errorf("the task's JSON is more than %d bytes", maxTaskFile)
+	if f.More != "" {
+		if more, err = encodeTaskJSON(m); err != nil {
+			return nil, nil, nil, err
+		}
 	}
-	return md, js, nil
+	return md, js, more, nil
+}
+
+// encodeTaskJSON is v as a task file keeps it: indented, and with "<",
+// ">" and "&" as they are (an agent reads it; escaped, each is six bytes).
+func encodeTaskJSON(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }
 
 // taskMarkdown is task.md: what the task is, where the attempt is, what
@@ -210,6 +316,9 @@ func taskMarkdown(f TaskFile) string {
 		}
 		b.WriteString("\n\n")
 	}
+	if f.More != "" {
+		fmt.Fprintf(&b, "## Cut to fit\n\nThis file keeps within %d KiB: %s are in `%s/%s`, in full. Read it.\n\n", maxTaskFile>>10, strings.Join(f.Cut, ", "), taskDir, f.More)
+	}
 	b.WriteString("## How to finish\n\n")
 	if f.Kind == TaskReview {
 		b.WriteString("Do not commit. Review the candidate at HEAD, the input's result. Then submit once: the `task_result` tool with the verdict `approved` or `needs_changes` and your findings (severity blocker, major, minor or nit; path; line; message), or `conductor task result --verdict <verdict> --finding ...`.\n")
@@ -225,7 +334,7 @@ func taskMarkdown(f TaskFile) string {
 // when missing, refused when it exists as anything but a directory (a
 // symbolic link the commit tracks). Its .gitignore keeps the files out of
 // the result.
-func writeTaskFiles(worktree, prefix string, md, js []byte) error {
+func writeTaskFiles(worktree, prefix string, md, js, more []byte) error {
 	root, err := os.OpenRoot(filepath.Join(worktree, prefix))
 	if err != nil {
 		return err
@@ -243,6 +352,9 @@ func writeTaskFiles(worktree, prefix string, md, js []byte) error {
 		return err
 	}
 	files := map[string][]byte{".gitignore": []byte("*\n"), "task.md": md, "task.json": js}
+	if more != nil {
+		files[taskMoreFile] = more
+	}
 	for name := range files {
 		// A fresh worktree has none; one there (tracked, a link) is not
 		// written over.

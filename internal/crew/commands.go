@@ -50,15 +50,49 @@ type Command struct {
 // name, which a repeat answers with again), and the task or the run's
 // pause as they stand.
 type Receipt struct {
-	CommandID string     `json:"commandId"`
-	Intent    string     `json:"intent"`
-	Revision  int64      `json:"revision"`
-	Repeat    bool       `json:"repeat,omitempty"`
-	Status    string     `json:"status"`
-	Error     string     `json:"error,omitempty"`
-	Refusal   string     `json:"refusal,omitempty"`
-	Task      *TaskState `json:"task,omitempty"`
-	Paused    *bool      `json:"paused,omitempty"`
+	CommandID string       `json:"commandId"`
+	Intent    string       `json:"intent"`
+	Revision  int64        `json:"revision"`
+	Repeat    bool         `json:"repeat,omitempty"`
+	Status    string       `json:"status"`
+	Error     string       `json:"error,omitempty"`
+	Refusal   string       `json:"refusal,omitempty"`
+	Task      *ReceiptTask `json:"task,omitempty"`
+	Paused    *bool        `json:"paused,omitempty"`
+}
+
+// ReceiptTask is the task a command changed, as its receipt keeps it: what
+// the command did to it, not the whole task (its result's issues and
+// findings, its checkpoint), which can pass every input's bound and still
+// make a receipt the ledger cannot keep. The run has the rest.
+type ReceiptTask struct {
+	ID       string         `json:"id"`
+	State    string         `json:"state"`
+	Reason   string         `json:"reason,omitempty"`
+	Attempts int            `json:"attempts"`
+	Result   *ReceiptResult `json:"result,omitempty"`
+}
+
+// ReceiptResult is a task's result as a receipt keeps it.
+type ReceiptResult struct {
+	Attempt int    `json:"attempt"`
+	Commit  string `json:"commit,omitempty"`
+}
+
+// maxReceiptReason bounds a receipt's task reason, in characters: a reason
+// can carry a check's last output.
+const maxReceiptReason = 2000
+
+// receiptTask is st as a receipt keeps it.
+func receiptTask(st TaskState) *ReceiptTask {
+	rt := &ReceiptTask{ID: st.ID, State: st.State, Reason: st.Reason, Attempts: st.Attempts}
+	if rs := []rune(rt.Reason); len(rs) > maxReceiptReason {
+		rt.Reason = string(rs[:maxReceiptReason]) + "…"
+	}
+	if st.Result != nil {
+		rt.Result = &ReceiptResult{Attempt: st.Result.Attempt, Commit: st.Result.Commit}
+	}
+	return rt
 }
 
 // Refusals a failed receipt names.
@@ -184,8 +218,7 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 			out.Status, out.Error, out.Refusal = ledger.CommandFailed, cmdErr.Error(), refusalOf(cmdErr)
 		}
 		if t != nil {
-			st := r.taskStateOf(t)
-			out.Task = &st
+			out.Task = receiptTask(r.taskStateOf(t))
 		}
 		paused := r.paused
 		out.Paused = &paused

@@ -35,7 +35,8 @@ import (
 const (
 	maxActiveAttempts  = 4 // attempts in flight per run
 	maxAttemptsPerTask = 3
-	// maxTaskFile bounds .conductor/task.md and task.json.
+	// maxTaskFile bounds .conductor/task.md and task.json, cutting what is
+	// needed least into task-more.json (fitTaskFile).
 	maxTaskFile = 64 << 10
 	// taskDir is the directory of an attempt's task files, in its working
 	// directory. A path with that component anywhere is Conductor's.
@@ -220,6 +221,32 @@ func (r Result) validate(kind string) error {
 			if f.Message == "" || utf8.RuneCountInString(f.Message) > maxFindingText || len(f.Path) > maxFindingPath || f.Line < 0 {
 				return fmt.Errorf("%w: a finding has a message of at most %d characters, a path of at most %d bytes and a line of 1 or more", ErrBadResult, maxFindingText, maxFindingPath)
 			}
+		}
+	}
+	return r.fitsLedger(kind)
+}
+
+// fitsLedger refuses a result the ledger could not keep: its bounds count
+// characters, and JSON can make them several bytes each (a "<" is six).
+// Measured as the attempt's row keeps the result and, for a review that
+// asks for changes, as the task's row keeps the repair it makes (with the
+// largest review id, attempt and commit), so no result taken leaves a row
+// that every later commit fails on.
+func (r Result) fitsLedger(kind string) error {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrBadResult, err)
+	}
+	if len(b) > ledger.MaxResult {
+		return fmt.Errorf("%w: the result is %d bytes as the ledger keeps it, more than %d: shorten it", ErrBadResult, len(b), ledger.MaxResult)
+	}
+	if kind == TaskReview && r.Verdict == VerdictNeedsChanges {
+		b, err := json.Marshal(TaskRepair{Review: strings.Repeat("x", 40), Attempt: 1 << 20, Commit: strings.Repeat("0", 64), Summary: r.Summary, Findings: r.Findings})
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrBadResult, err)
+		}
+		if len(b) > ledger.MaxPayload {
+			return fmt.Errorf("%w: the findings are %d bytes as the ledger keeps them, more than %d: shorten them", ErrBadResult, len(b), ledger.MaxPayload)
 		}
 	}
 	return nil
@@ -559,6 +586,45 @@ type tx struct {
 	more   func(LedgerTx) error
 }
 
+// refusedChange is the error of a change whose commit the ledger refused,
+// with no undo: its state stays ahead, and its events go with it until a
+// pause takes them (pauseDispatch). It is the ledger's error otherwise.
+type refusedChange struct {
+	err    error
+	events []event
+	taken  bool
+}
+
+func (c *refusedChange) Error() string { return c.err.Error() }
+func (c *refusedChange) Unwrap() error { return c.err }
+
+// writable is events as the ledger takes them: an event whose payload
+// encodes to more than ledger.MaxPayload becomes a note of its size (with
+// its task and attempt, when it names them), which always fits.
+func writable(events []event) []event {
+	out, cloned := events, false
+	for i, ev := range events {
+		b, err := json.Marshal(ev.payload)
+		if err == nil && len(b) <= ledger.MaxPayload {
+			continue
+		}
+		if !cloned {
+			out, cloned = slices.Clone(events), true
+		}
+		note := map[string]any{"oversized": len(b)}
+		if err != nil {
+			note = map[string]any{"unencodable": session.CleanMessage(err.Error())}
+		}
+		for _, k := range []string{"task", "attempt", "check"} {
+			if v, ok := ev.payload[k]; ok {
+				note[k] = v
+			}
+		}
+		out[i] = event{ev.kind, note}
+	}
+	return out
+}
+
 // ev is a transaction of one event.
 func ev(kind string, payload map[string]any) tx {
 	return tx{events: []event{{kind, payload}}}
@@ -571,11 +637,17 @@ func ev(kind string, payload map[string]any) tx {
 // changes were made, each carrying the state as it was then, and no other
 // transaction takes a change's rows. On failure the snapshot's rows are
 // marked again for the next transaction (those of earlier failures among
-// them), undo, when given, puts this change's state back under e.mu, and
-// an end pending stays pending; the caller pauses the run's dispatch where
-// the state stays ahead (afterTransact). A change that sets the run's
-// outcome reports the end once committed. Nothing is written for a change
-// that changed nothing.
+// them), undo, when given, puts this change's state back under e.mu and
+// drops its events, and an end pending stays pending; with no undo the
+// error carries the change's events (refusedChange), the caller pauses the
+// run's dispatch where the state stays ahead (afterTransact,
+// pauseDispatch), and that pause takes them to be written by the next
+// commit with its rows (r.pendingEvents), so the ledger never holds a
+// change without what it said; a caller that gives the change up instead
+// (a check not run when its start was not recorded) drops them. Every event is measured as it is made (writable): one
+// the ledger would refuse becomes a bounded note, so no event fails every
+// commit after it. A change that sets the run's outcome reports the end
+// once committed. Nothing is written for a change that changed nothing.
 func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo func()) error {
 	if e.ledger == nil {
 		return ErrNoLedger
@@ -585,8 +657,11 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	t := mutate()
 	snap := r.drain()
+	pending := r.pendingEvents
+	r.pendingEvents = nil
+	events := append(slices.Clip(pending), writable(t.events)...)
 	e.mu.Unlock()
-	if len(t.events) == 0 && t.more == nil && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
+	if len(events) == 0 && t.more == nil && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
 		return nil
 	}
 	rev, err := e.ledger.Transition(ctx, r.id, func(ltx LedgerTx) error {
@@ -598,7 +673,7 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 				return err
 			}
 		}
-		for _, ev := range t.events {
+		for _, ev := range events {
 			if err := ltx.Event(ev.kind, ev.payload); err != nil {
 				return err
 			}
@@ -608,11 +683,14 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	if err != nil {
 		snap.undo(r)
+		r.pendingEvents = pending
 		if undo != nil {
 			undo()
+			e.mu.Unlock()
+			return err
 		}
 		e.mu.Unlock()
-		return err
+		return &refusedChange{err: err, events: events[len(pending):]}
 	}
 	r.revision = rev
 	r.touch()
@@ -683,6 +761,12 @@ func (e *Engine) pauseFor(r *run, err error) error {
 // and the continuation of a run that stopped so starts paused, for a
 // person to look at (Codex's review of #367). The caller holds e.mu.
 func (e *Engine) pauseDispatch(r *run, err error) bool {
+	// The refused change stays ahead: its events go with its rows, once.
+	var refused *refusedChange
+	if errors.As(err, &refused) && !refused.taken {
+		r.pendingEvents = append(r.pendingEvents, refused.events...)
+		refused.taken = true
+	}
 	if r.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		r.note(session.ActivityStatus, "the ledger did not record the run's state as it stopped: %v", err)
 		return false
@@ -1340,9 +1424,9 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	// The task files, through a root at the working directory: a
 	// .conductor that is not a directory of ours, or a task file that is
 	// there already, is refused.
-	md, js, err := e.taskFile(r, a)
+	md, js, more, err := e.taskFile(r, a)
 	if err == nil {
-		err = writeTaskFiles(a.worktree, r.prefix, md, js)
+		err = writeTaskFiles(a.worktree, r.prefix, md, js, more)
 	}
 	if err != nil {
 		fail("task file", err, false)

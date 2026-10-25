@@ -2136,7 +2136,14 @@ is a symbolic link or a file, so no dependent is made at it. The task is
 written as
 `.conductor/task.md` and `.conductor/task.json` in the attempt's working
 directory (with a `.gitignore` of `*`; refused when the commit tracks
-`.conductor/` there, or `.conductor` is not a directory), the crew's `setup`
+`.conductor/` there, or `.conductor` is not a directory), each kept within
+64 KiB: what is needed least is cut (the inputs' summaries, then the
+checkpoint, then findings from the last, then the review's summary) into
+`.conductor/task-more.json` in full, which `task.json`'s `more` and `cut` and
+a "Cut to fit" section of `task.md` name; the crew's own text is never cut,
+so a task file is always written. A result is refused at submission (`400
+bad_result`, nothing changed) when it, or the repair a review's findings
+make, is larger than the ledger keeps as JSON. The crew's `setup`
 commands run in it first, and the session's process receives `CONDUCTOR_TASK`,
 `CONDUCTOR_ATTEMPT` and `CONDUCTOR_TASK_FILE` beside the crew variables. The
 line typed once the session is ready says where the task file is and how to
@@ -2204,7 +2211,10 @@ repeat?, status, error?, refusal?, task?, paused?}}`: `status` is `done` or
 `failed` (with `error` and `refusal`, for a command the run's state refused,
 such as a cancel of a task already finished: `refusal` is the code the
 answer carries, `task_state`, `run_stopped` or `not_found`, on the first
-answer and on every repeat), `task` the task as it stands after the command,
+answer and on every repeat), `task` the task as it stands after the command
+(`{id, state, reason?, attempts, result?: {attempt, commit?}}`, the reason
+at most 2,000 characters; the run has the rest, so a receipt always fits
+what the ledger keeps),
 `paused` whether the run's dispatch is, and `revision` the run's ledger
 revision after it. The same id sent again with the same content answers with
 the same receipt and `repeat: true`, never a second change, also for a
