@@ -3069,8 +3069,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   start commit is. Then main's CI caught one more: an attempt whose result
   could not be checked out (a link out of the tree) handed that result to
   the next attempt, which failed at its worktree at once and spent an
-  attempt nobody ran; the next attempt now starts where the rejected one
-  did, and its task file says so. AGENTS.md: a bug in the stream is fixed
+  attempt nobody ran. A result refused before its checks (at checkout, or
+  by the crew's setup, also when a continuation verifies it again) now
+  hands the next attempt where the refused one started, and its task file
+  names the refused result's branch (PR #370). AGENTS.md: a bug in the stream is fixed
   in the stream; a test waits for a state that holds, never one passed
   through.
 - **Every palette row does what it says (#332, 2026-10-22).** On the

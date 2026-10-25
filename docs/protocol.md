@@ -2125,7 +2125,11 @@ session is stopped first. An attempt is a fresh member session, named
 `<cwd>/.conductor/worktrees/<run>/<task>.<n>` on the branch
 `crew/<run>/<task>.<n>`, made at the commit the task starts from: its first
 need's result commit, the run's base (`HEAD` of `cwd` at launch), or its own
-last attempt's result when that failed a check. The task is written as
+last attempt's result when that failed a check. A result refused before its
+checks ran (its checkout refused, or the crew's `setup` failing or changing
+tracked files there) is no tree to build on: the next attempt starts where
+that attempt started, and its task file names the refused result and its
+branch (`previous.result`, `previous.branch`). The task is written as
 `.conductor/task.md` and `.conductor/task.json` in the attempt's working
 directory (with a `.gitignore` of `*`; refused when the commit tracks
 `.conductor/` there, or `.conductor` is not a directory), the crew's `setup`

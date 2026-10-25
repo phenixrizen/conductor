@@ -872,10 +872,10 @@ func (r *run) inputs(t *task) []input {
 
 // startCommit is where t's next attempt starts: the result of its last
 // attempt when that failed a check (the work is kept; the task file says
-// what failed), where the last attempt started when its result could not
-// be checked out (a link out of the tree, a commit git would not check
-// out: no tree to build on), else its first need's result, else the
-// run's base.
+// what failed), where the last attempt started when its result was
+// refused before its checks ran (refusedBeforeChecks: no tree to build
+// on; the task file names the result's branch), else its first need's
+// result, else the run's base.
 func (r *run) startCommit(t *task) string {
 	if t.repair != nil && t.repair.commit != "" {
 		return t.repair.commit
@@ -892,7 +892,7 @@ func (r *run) startCommit(t *task) string {
 	}
 	if n := len(t.attempts); n > 0 {
 		last := t.attempts[n-1]
-		if last.state == ledger.AttemptFailed && last.result != "" && last.stage == "checkout" && last.start != "" {
+		if last.state == ledger.AttemptFailed && last.result != "" && refusedBeforeChecks(last.stage) && last.start != "" {
 			return last.start
 		}
 		if last.state == ledger.AttemptFailed && last.result != "" {
@@ -914,6 +914,16 @@ func (r *run) startCommit(t *task) string {
 		}
 	}
 	return r.base
+}
+
+// refusedBeforeChecks reports whether an attempt that failed at stage had
+// its result refused before any check ran: its checkout was refused (a
+// link out of the tree, a commit git would not check out) or the crew's
+// setup failed or changed tracked files there. An attempt made at that
+// result fails the same way before its agent can do anything: the setup
+// runs in its worktree before the launch.
+func refusedBeforeChecks(stage string) bool {
+	return stage == "checkout" || stage == "setup" || strings.HasPrefix(stage, "setup ")
 }
 
 // pump dispatches the ready tasks, in plan order, while the run takes
