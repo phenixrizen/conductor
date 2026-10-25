@@ -92,7 +92,11 @@ not its checkpoint, not as a candidate, not in the task file.
    `txMu` while it marks the source `resuming` under `e.mu`, so a change
    under way commits first and every later one sees the mark and refuses;
    the snapshot is loaded after that. A continuation that fails clears the
-   mark.
+   mark. The durable link is monotonic: `PutRun` never clears
+   `continued_by` (`CASE WHEN excluded.continued_by = '' THEN
+   runs.continued_by ELSE excluded.continued_by END`), so a stop's or any
+   other write of the source's row, snapshotted before the link, cannot
+   erase it and let the run be continued twice (on main today it can).
 8. **Version 3 databases: conservative** (the owner, 2026-10-25). The
    migration to 4, in Go in the migration's transaction. The reopened
    subjects of a run's chain are seeded from everything version 3 kept, not
@@ -163,6 +167,9 @@ Each fails without its part, `-race -count=30`:
 - Version 3: an ancestor retried after its continuation (attempts 5 to the
   child's 3): the child's `withdrawn` is at most 3, and its attempt 4 is
   kept through another continuation.
+- A stop of the source gated to commit while its continuation links it:
+  the ledger reloaded still names the continuation, and a second
+  continuation is refused.
 - A continued run refuses a retry (`409 run_continued`); a ledger edited
   to give an ancestor a later attempt is not taken past the row's count.
 - The rounds 8 and 9 tests, kept.
