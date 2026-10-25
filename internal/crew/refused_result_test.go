@@ -184,3 +184,83 @@ func TestAResultWithNoChecksThatBreaksTheCrewsDirectoryIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// A work task with no checks still has its result set up when the crew has
+// a setup: a result the setup refuses is refused, the next attempt starts
+// where the refused one did, and the dependent is not made at it (its
+// setup would fail it, attempt after attempt, before its agent could act).
+func TestAResultWithNoChecksThatBreaksTheSetupIsRefused(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	c := repoCrew(dir, work("build", "lead"), work("docs", "writer", "build"))
+	c.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "test ! -e broken.txt"}}}
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "broken.txt"), "x\n")
+	commitAll(t, a.Attempt.Worktree, "breaks the setup")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "broken"})
+	a2 := waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "setup deps" {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	if a2.Attempt.Start != a.Attempt.Start {
+		t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(a2.Attempt.Start), short(a.Attempt.Start))
+	}
+	if d := taskOf(t, e, run.ID, "docs"); d.State != ledger.TaskBlocked || d.Attempts != 0 {
+		t.Fatalf("docs: %+v", d)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// The crew's directory is looked up in a tree as a literal path: ":web" is
+// not git's pathspec magic for "web".
+func TestTheCrewsDirectoryIsLookedUpLiterally(t *testing.T) {
+	t.Run("a result that makes it a file", func(t *testing.T) {
+		dir := newRepo(t)
+		if err := os.MkdirAll(filepath.Join(dir, ":web"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, ":web", "app.txt"), "app\n")
+		commitAll(t, dir, ":web")
+		e, _, l := managedEngine(t)
+		c := repoCrew(dir, work("build", "lead"))
+		c.Cwd = filepath.Join(dir, ":web")
+		run := launchManaged(t, e, c)
+		a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		web := filepath.Join(a.Attempt.Worktree, ":web")
+		if err := os.RemoveAll(web); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, web, "a file\n")
+		commitAll(t, a.Attempt.Worktree, ":web is a file now")
+		submit(t, e, a.Attempt.SessionID, Result{Summary: "a file"})
+		waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+			return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+		})
+		if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" || !strings.Contains(row.Error, `":web" in the result is a file`) {
+			t.Fatalf("attempt 1: %+v", row)
+		}
+		stopRun(t, e, run.ID)
+	})
+	t.Run("a commit that tracks its .conductor", func(t *testing.T) {
+		dir := newRepo(t)
+		if err := os.MkdirAll(filepath.Join(dir, ":web", taskDir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, ":web", taskDir, "task.md"), "not Conductor's\n")
+		commitAll(t, dir, ":web/.conductor")
+		e, _, l := managedEngine(t)
+		c := repoCrew(dir, work("build", "lead"))
+		c.Cwd = filepath.Join(dir, ":web")
+		run := launchManaged(t, e, c)
+		// The base itself is refused: every attempt fails at its worktree,
+		// and the task with them.
+		waitTaskWhere(t, e, run.ID, "build", "failed", func(ts TaskState) bool { return ts.State == ledger.TaskFailed })
+		if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "worktree" || !strings.Contains(row.Error, "tracks .conductor/") {
+			t.Fatalf("attempt 1: %+v", row)
+		}
+		stopRun(t, e, run.ID)
+	})
+}

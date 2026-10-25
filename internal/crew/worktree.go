@@ -358,7 +358,9 @@ func commitMemberDir(ctx context.Context, repo, commit, rel string) error {
 			continue
 		}
 		sub = path.Join(sub, part)
-		out, err := git(ctx, repo, "ls-tree", "--full-tree", commit, "--", sub)
+		// Literal: "--" ends the options, not pathspec magic (":web" is
+		// "web" without it).
+		out, err := git(ctx, repo, "ls-tree", "--full-tree", commit, "--", ":(literal)"+sub)
 		if err != nil {
 			return err
 		}

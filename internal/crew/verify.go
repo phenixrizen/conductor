@@ -60,14 +60,17 @@ func checkTimeout(ch Check) time.Duration {
 	return defaultCheckTimeout * time.Second
 }
 
-// verify decides a's submitted result. A review, or a work task with no
-// checks, succeeds at once. A work task's checks run in a detached
+// verify decides a's submitted result. A work task's result is first
+// refused when the crew's directory in its tree is a link or a file
+// (commitMemberDir). A review, or a work task with no checks and no crew
+// setup, then succeeds at once. A work task's checks run in a detached
 // checkout of the result commit (<worktree>.check), after the crew's
 // setup there (what the worker had, the checks have; a setup that changes
-// tracked content fails the attempt), one check at a time across the
-// server (checkSlots), each recorded before it starts, with its process
-// once started, and with its outcome when it ends. After each one the
-// checkout is compared with the commit as git would store it
+// tracked content fails the attempt; it runs with no checks too, since a
+// result it refuses fails every attempt made at it), one check at a time
+// across the server (checkSlots), each recorded before it starts, with
+// its process once started, and with its outcome when it ends. After each
+// one the checkout is compared with the commit as git would store it
 // (checkoutIntact): a check that cannot run, exits non-zero, times out,
 // moves the checkout or changes tracked content fails the attempt at that
 // check, and the rest do not run; untracked outputs are listed with the
@@ -89,7 +92,10 @@ func (e *Engine) verify(r *run, a *attempt) {
 			return
 		}
 	}
-	if t.def.Kind == TaskReview || len(t.def.Checks) == 0 {
+	// With no checks the checkout is still made when the crew has a
+	// setup: a result the setup refuses would fail every attempt made at
+	// it, a dependent's too, in its worktree before its agent could act.
+	if t.def.Kind == TaskReview || (len(t.def.Checks) == 0 && len(r.setup) == 0) {
 		e.accept(r, a, true, "", "")
 		return
 	}

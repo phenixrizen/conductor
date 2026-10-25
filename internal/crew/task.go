@@ -1464,7 +1464,8 @@ func short(commit string) string {
 // treeHasPath reports whether the commit's tree holds path, named from
 // the repository's root whatever directory git runs in.
 func treeHasPath(ctx context.Context, repo, commit, path string) (bool, error) {
-	out, err := gitcli.Run(ctx, repo, "ls-tree", "-d", "--full-tree", "--name-only", commit, "--", path)
+	// Literal: "--" ends the options, not pathspec magic.
+	out, err := gitcli.Run(ctx, repo, "ls-tree", "-d", "--full-tree", "--name-only", commit, "--", ":(literal)"+path)
 	if err != nil {
 		return false, err
 	}
