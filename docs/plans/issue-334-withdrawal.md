@@ -84,12 +84,14 @@ not its checkpoint, not as a candidate, not in the task file.
 7. **A continuation** reads `withdrawn` from the task row; the `last` attempt
    it takes (its own run's, or further back along `ContinuedFrom`) is
    ignored at or below it.
-8. **Version 3 databases** (the owner decides; see "Open"). The migration to 4 backfills `withdrawn` per
-   task from what version 3 kept: the highest attempt of the task with
-   stage `withdrawn`, and, for each `task.withdrawn` event, the task's
-   highest attempt closed at or before the event's time. Done in Go in the
-   migration's transaction (it reads `events` and `attempts`), recorded by
-   one `migrated` event per run it changes.
+8. **Version 3 databases: conservative** (the owner, 2026-10-25). The
+   migration to 4, in Go in the migration's transaction: for every run with
+   a `task.reopened` event anywhere in its chain, every task that needs a
+   reopened task, transitively in the saved crew, gets `withdrawn` = its
+   highest attempt, inherited down the chain (a continuation's task takes
+   its ancestor's value when higher), and loses its repair. One `migrated`
+   event per run it changes. It may drop good carried work of attempts made
+   after a reopen; it never reuses withdrawn work.
 
 ## Tests
 
@@ -111,28 +113,18 @@ Each fails without its part, `-race -count=30`:
   dependent starts at the new reviewed commit.
 - Accept anyway after a withdrawal with no submission since: refused; with
   one: that one.
-- A version 3 database with a withdrawn attempt (stage `withdrawn`, a
-  checkpoint) and a `task.withdrawn` event: migrated, continued, nothing
-  of the withdrawn attempts used.
+- Version 3 fixtures, migrated and continued, nothing withdrawn reused: a
+  withdrawn attempt with a checkpoint; ready, failed and cancelled
+  dependents with no marker; a chain with a continuation that made no
+  attempt; an imported review withdrawn and re-run in the middle run of
+  three.
 - The rounds 8 and 9 tests, kept.
 
-## Open
+## Decided
 
-Version 3 kept a marker for only some withdrawals (a withdrawn attempt in
-flight, a succeeded dependent), and continuations chain, so the exact
-history cannot be rebuilt from it. Codex's second review: replay every
-`task.reopened` against the saved graph, along the whole chain. Choices:
-
-- **Conservative (recommended).** For every run with a `task.reopened`
-  event anywhere in its chain, every task that needs a reopened task,
-  transitively, gets `withdrawn` = its highest attempt, inherited down the
-  chain. It can drop good carried work (a checkpoint, a failed result to
-  start from) of attempts made after the reopen, never reuse withdrawn
-  work. Small and testable.
-- **Exact replay.** Order the reopen events against attempt closes per
-  task across the chain. Keeps every good attempt; the larger change.
-- **No migration of history.** Managed runs from v3 stay readable; a
-  continuation of one starts each unfinished task fresh at its inputs.
+Version 3 kept a marker for only some withdrawals, and continuations
+chain, so the exact history cannot be rebuilt. The owner chose the
+conservative backfill (path 8) over exact replay and over no migration.
 
 ## Not here
 
