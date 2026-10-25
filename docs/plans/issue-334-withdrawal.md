@@ -83,7 +83,11 @@ not its checkpoint, not as a candidate, not in the task file.
    when there is none.
 7. **A continuation** reads `withdrawn` from the task row; the `last` attempt
    it takes (its own run's, or further back along `ContinuedFrom`) is
-   ignored at or below it.
+   ignored at or below it, and never numbered above the row's `attempts`
+   (the history the continued run had). A run once continued takes no
+   change of its tasks (retry, cancel, accept, pause or unpause: `409
+   run_continued`): its continuation owns that history, and a retry there
+   would fork it.
 8. **Version 3 databases: conservative** (the owner, 2026-10-25). The
    migration to 4, in Go in the migration's transaction. The reopened
    subjects of a run's chain are seeded from everything version 3 kept, not
@@ -146,6 +150,8 @@ Each fails without its part, `-race -count=30`:
 - Version 3: a reopen whose commit failed and whose rows the pause saved
   (no `task.reopened`): migrated from the review attempt's verdict, nothing
   downstream reused.
+- A continued run refuses a retry (`409 run_continued`); a ledger edited
+  to give an ancestor a later attempt is not taken past the row's count.
 - The rounds 8 and 9 tests, kept.
 
 ## Decided
