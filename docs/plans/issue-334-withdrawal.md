@@ -103,7 +103,13 @@ not its checkpoint, not as a candidate, not in the task file.
    ledger can hold a reopened subject and withdrawn dependents with no
    `task.reopened`. A change with no undo keeps its events pending on the
    run (`r.pendingEvents`), and the next commit writes them first, in
-   order; a change undone drops them, as its state.
+   order; a change undone drops them, as its state. Only writable events
+   are kept: every event is encoded when it is made, and one over
+   `ledger.MaxPayload` is replaced there by a bounded note (`{"kind",
+   "oversized": <bytes>, "task", "attempt"}`), so no event can fail every
+   commit after it. `check.finished` bounds its path lists by bytes as well
+   as count (a list cut short ends with how many more); on main today an
+   oversized one fails the check's own commit.
 
 ## Tests
 
@@ -133,6 +139,10 @@ Each fails without its part, `-race -count=30`:
 - A review's verdict whose commit fails once: the pause's commit carries
   its `task.reopened` and the withdrawals' events (the fake ledger's
   `failOn`); an undone change's events are not written.
+- A check that leaves 50 untracked paths of 1,453 bytes: its
+  `check.finished` commits (cut short, "and N more"), and the attempt's
+  failure, a pause and the stop commit after it; an event made oversized by
+  hand becomes the note.
 - Version 3: a reopen whose commit failed and whose rows the pause saved
   (no `task.reopened`): migrated from the review attempt's verdict, nothing
   downstream reused.
