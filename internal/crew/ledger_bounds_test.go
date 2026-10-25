@@ -139,22 +139,44 @@ func TestAnOversizedEventBecomesANote(t *testing.T) {
 	}
 }
 
-// A check that leaves fifty untracked paths of 1,453 bytes, on the real
+// A check that leaves 150 untracked paths of 606 bytes, on the real
 // ledger: its check.finished commits (the lists cut short), and the task
-// succeeds; before, the event was refused and so was the result.
+// succeeds; before, the event was refused and so was the result. Each
+// path stays short enough that the worktree under macOS's long temporary
+// directory keeps it below the 1,024 bytes of the Mac's PATH_MAX.
 func TestACheckThatLeavesManyLongPathsIsRecorded(t *testing.T) {
 	dir := newRepo(t)
 	e, ld := sqlEngine(t)
 	seg := strings.Repeat("d", 200)
-	long := filepath.Join(seg, seg, seg, seg, seg, seg, strings.Repeat("f", 200)) // 1,406 bytes, and the number
+	long := filepath.Join(seg, seg, strings.Repeat("f", 200)) // 602 bytes, and the number
 	build := work("build", "lead")
-	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", `for i in $(seq 10 59); do mkdir -p "$(dirname "$i$1")" && : > "$i$1"; done`, "sh", "/" + long}}}
+	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", `for i in $(seq 100 249); do mkdir -p "$(dirname "$i$1")" && : > "$i$1"; done`, "sh", "/" + long}}}
 	run := launchManaged(t, e, repoCrew(dir, build))
 	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	commitResult(t, e, a, "built.txt", "b\n", "built")
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
-	if !slices.Contains(sqlKinds(t, ld, run.ID), "check.finished") {
+	// The event keeps its lists, cut short, not the oversized note that
+	// stands in for an event too large.
+	evs, err := ld.Events(context.Background(), run.ID, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fin *ledger.EventRow
+	for i := range evs {
+		if evs[i].Kind == "check.finished" {
+			fin = &evs[i]
+		}
+	}
+	if fin == nil {
 		t.Fatalf("events: %v", sqlKinds(t, ld, run.ID))
+	}
+	var p struct {
+		Untracked      []string
+		UntrackedCount int
+		Oversized      *int
+	}
+	if err := json.Unmarshal([]byte(fin.Payload), &p); err != nil || p.Oversized != nil || p.UntrackedCount != 150 || len(p.Untracked) == 0 || len(p.Untracked) >= 150 {
+		t.Fatalf("check.finished (%v): %d listed of %d, oversized %v", err, len(p.Untracked), p.UntrackedCount, p.Oversized)
 	}
 	stopRun(t, e, run.ID)
 }
