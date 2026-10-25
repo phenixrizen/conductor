@@ -69,17 +69,22 @@ not its checkpoint, not as a candidate, not in the task file.
    it sets `withdrawn`, clears repair, candidate, checkpoint and refusal,
    and recurses, but leaves a failed or cancelled task in its state with its
    `extra`, until a person retries it. A ready or succeeded one is blocked as
-   today.
+   today. One visit per task per withdrawal (a visited set, not the
+   blocked state), so a dense graph of 128 tasks is walked once under
+   `e.mu`; a test counts the visits.
 5. **Imported results.** Dropping a result clears `t.imported`; a new result
-   made in this run has none. A continuation resolves `ImportedFrom` only
-   when it names the row's `ResultAttempt` (else the row's own attempt).
+   made in this run has none. A continuation finds the row's
+   `ResultAttempt` in its own run or along `ContinuedFrom`, and records
+   that reference; a source it cannot find is refused (the task reads
+   failed, "its result's attempt is not in the ledger: retry it"), never
+   made a success with an empty commit as today.
 6. **Accept anyway** takes the last submitted result above `withdrawn`, and
    is refused (`409`, "no attempt since the withdrawal submitted a commit")
    when there is none.
 7. **A continuation** reads `withdrawn` from the task row; the `last` attempt
    it takes (its own run's, or further back along `ContinuedFrom`) is
    ignored at or below it.
-8. **Version 3 databases.** The migration to 4 backfills `withdrawn` per
+8. **Version 3 databases** (the owner decides; see "Open"). The migration to 4 backfills `withdrawn` per
    task from what version 3 kept: the highest attempt of the task with
    stage `withdrawn`, and, for each `task.withdrawn` event, the task's
    highest attempt closed at or before the event's time. Done in Go in the
@@ -110,6 +115,24 @@ Each fails without its part, `-race -count=30`:
   checkpoint) and a `task.withdrawn` event: migrated, continued, nothing
   of the withdrawn attempts used.
 - The rounds 8 and 9 tests, kept.
+
+## Open
+
+Version 3 kept a marker for only some withdrawals (a withdrawn attempt in
+flight, a succeeded dependent), and continuations chain, so the exact
+history cannot be rebuilt from it. Codex's second review: replay every
+`task.reopened` against the saved graph, along the whole chain. Choices:
+
+- **Conservative (recommended).** For every run with a `task.reopened`
+  event anywhere in its chain, every task that needs a reopened task,
+  transitively, gets `withdrawn` = its highest attempt, inherited down the
+  chain. It can drop good carried work (a checkpoint, a failed result to
+  start from) of attempts made after the reopen, never reuse withdrawn
+  work. Small and testable.
+- **Exact replay.** Order the reopen events against attempt closes per
+  task across the chain. Keeps every good attempt; the larger change.
+- **No migration of history.** Managed runs from v3 stay readable; a
+  continuation of one starts each unfinished task fresh at its inputs.
 
 ## Not here
 
