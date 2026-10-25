@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -342,37 +341,6 @@ func checkMemberDir(root, rel string) error {
 		}
 		if !fi.IsDir() {
 			return invalidf("%s in the member's worktree is a file, not a directory: the member's directory must be one", quote(filepath.ToSlash(path)))
-		}
-	}
-	return nil
-}
-
-// commitMemberDir is checkMemberDir for the tree of commit in repo, before
-// anything is checked out: each part of the way to rel is absent or a
-// directory (a submodule's is checked out as one), never a symbolic link or
-// a file. The error matches ErrInvalid when the commit is refused.
-func commitMemberDir(ctx context.Context, repo, commit, rel string) error {
-	sub := ""
-	for part := range strings.SplitSeq(filepath.ToSlash(filepath.Clean(rel)), "/") {
-		if part == "" || part == "." {
-			continue
-		}
-		sub = path.Join(sub, part)
-		// Literal: "--" ends the options, not pathspec magic (":web" is
-		// "web" without it).
-		out, err := git(ctx, repo, "ls-tree", "--full-tree", commit, "--", ":(literal)"+sub)
-		if err != nil {
-			return err
-		}
-		mode, _, _ := strings.Cut(strings.TrimSpace(out), " ")
-		switch mode {
-		case "":
-			return nil
-		case "040000", "160000":
-		case "120000":
-			return invalidf("%s in the result is a symbolic link: the member's directory must stay inside the worktree", quote(sub))
-		default:
-			return invalidf("%s in the result is a file, not a directory: the member's directory must be one", quote(sub))
 		}
 	}
 	return nil

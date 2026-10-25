@@ -171,7 +171,7 @@ func TestAResultWithNoChecksThatBreaksTheCrewsDirectoryIsRefused(t *testing.T) {
 			a2 := waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
 				return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
 			})
-			if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" || !strings.Contains(row.Error, "in the result is a") {
+			if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" || !strings.Contains(row.Error, "in the member's worktree is a") {
 				t.Fatalf("attempt 1: %+v", row)
 			}
 			if a2.Attempt.Start != a.Attempt.Start {
@@ -239,7 +239,7 @@ func TestTheCrewsDirectoryIsLookedUpLiterally(t *testing.T) {
 		waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
 			return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
 		})
-		if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" || !strings.Contains(row.Error, `":web" in the result is a file`) {
+		if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" || !strings.Contains(row.Error, `":web" in the member's worktree is a file`) {
 			t.Fatalf("attempt 1: %+v", row)
 		}
 		stopRun(t, e, run.ID)
@@ -297,4 +297,47 @@ func TestAResultThatEmptiesTheCrewsDirectorySucceeds(t *testing.T) {
 			stopRun(t, e, run.ID)
 		})
 	}
+}
+
+// On a filesystem that does not tell case apart (macOS by default) a
+// result that replaces web/ with a file WEB leaves "web" a file there: the
+// checks' checkout, on this machine's filesystem, refuses it, though git's
+// tree has no "web".
+func TestAResultThatAliasesTheCrewsDirectoryIsRefusedWhereCaseFolds(t *testing.T) {
+	dir := newRepo(t)
+	probe := filepath.Join(dir, "case-probe")
+	writeFile(t, probe, "x\n")
+	_, err := os.Stat(filepath.Join(dir, "CASE-PROBE"))
+	if rmErr := os.Remove(probe); rmErr != nil {
+		t.Fatal(rmErr)
+	}
+	if err != nil {
+		t.Skip("this filesystem tells case apart")
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "web", "app.txt"), "app\n")
+	commitAll(t, dir, "web")
+	e, _, l := managedEngine(t)
+	c := repoCrew(dir, work("build", "lead"), work("docs", "writer", "build"))
+	c.Cwd = filepath.Join(dir, "web")
+	run := launchManaged(t, e, c)
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if err := os.RemoveAll(filepath.Join(a.Attempt.Worktree, "web")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a.Attempt.Worktree, "WEB"), "a file\n")
+	commitAll(t, a.Attempt.Worktree, "web is a file WEB now")
+	submit(t, e, a.Attempt.SessionID, Result{Summary: "aliased"})
+	waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	if d := taskOf(t, e, run.ID, "docs"); d.State != ledger.TaskBlocked || d.Attempts != 0 {
+		t.Fatalf("docs: %+v", d)
+	}
+	stopRun(t, e, run.ID)
 }

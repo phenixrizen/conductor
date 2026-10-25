@@ -60,17 +60,16 @@ func checkTimeout(ch Check) time.Duration {
 	return defaultCheckTimeout * time.Second
 }
 
-// verify decides a's submitted result. A work task's result is first
-// refused when the crew's directory in its tree is a link or a file
-// (commitMemberDir). A review, or a work task with no checks and no crew
-// setup, then succeeds at once. A work task's checks run in a detached
-// checkout of the result commit (<worktree>.check), after the crew's
-// setup there (what the worker had, the checks have; a setup that changes
-// tracked content fails the attempt; it runs with no checks too, since a
-// result it refuses fails every attempt made at it), one check at a time
-// across the server (checkSlots), each recorded before it starts, with
-// its process once started, and with its outcome when it ends. After each
-// one the checkout is compared with the commit as git would store it
+// verify decides a's submitted result. A review succeeds at once. A work
+// task's result is checked out detached (<worktree>.check), checks or
+// none: a result whose checkout is refused (the crew's directory a link or
+// a file, as this machine's filesystem resolves it) or that the crew's
+// setup refuses would fail every attempt made at it, a dependent's too,
+// before its agent could act. The setup runs there first (what the worker
+// had, the checks have; a setup that changes tracked content fails the
+// attempt), then the checks, one at a time across the server
+// (checkSlots), each recorded before it starts, with its process once
+// started, and with its outcome when it ends. After each one the checkout is compared with the commit as git would store it
 // (checkoutIntact): a check that cannot run, exits non-zero, times out,
 // moves the checkout or changes tracked content fails the attempt at that
 // check, and the rest do not run; untracked outputs are listed with the
@@ -79,23 +78,7 @@ func checkTimeout(ch Check) time.Duration {
 func (e *Engine) verify(r *run, a *attempt) {
 	defer r.checks.Done()
 	t := a.t
-	if t.def.Kind == TaskWork {
-		// The crew's directory in the result, checks or none: a link or a
-		// file there leaves a next attempt, or a dependent made at the
-		// result, nothing to start in, and each would fail before its
-		// agent could act.
-		if err := commitMemberDir(a.ctx, r.cwd, a.result, r.prefix); err != nil {
-			if a.ctx.Err() != nil {
-				return
-			}
-			e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
-			return
-		}
-	}
-	// With no checks the checkout is still made when the crew has a
-	// setup: a result the setup refuses would fail every attempt made at
-	// it, a dependent's too, in its worktree before its agent could act.
-	if t.def.Kind == TaskReview || (len(t.def.Checks) == 0 && len(r.setup) == 0) {
+	if t.def.Kind == TaskReview {
 		e.accept(r, a, true, "", "")
 		return
 	}
