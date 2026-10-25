@@ -176,6 +176,36 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		row := byN(src.Attempts, taskID, n)
 		return row, row.N == n
 	}
+	// A task the run made no attempt at (continued while paused, and
+	// stopped again) takes its last attempt from the run it continued,
+	// and so back: attempt numbers run on across continuations, so the
+	// highest is the latest, and with it its checkpoint, its refusal or
+	// its candidate.
+	seen := map[string]bool{from.Run.ID: true}
+	for prevID := from.Run.ContinuedFrom; prevID != "" && !seen[prevID]; {
+		lacking := false
+		for _, row := range from.Tasks {
+			if _, ok := last[row.ID]; !ok && row.Attempts > 0 {
+				lacking = true
+				break
+			}
+		}
+		if !lacking {
+			break
+		}
+		seen[prevID] = true
+		prev, found, err := e.ledger.Load(ctx, prevID)
+		if err != nil || !found {
+			break
+		}
+		sources[prevID] = prev
+		for _, a := range prev.Attempts {
+			if _, ok := last[a.TaskID]; !ok || a.N > last[a.TaskID].N {
+				last[a.TaskID] = a
+			}
+		}
+		prevID = prev.Run.ContinuedFrom
+	}
 	refs := map[string]ledger.AttemptRow{}
 	for _, row := range from.Tasks {
 		if row.State != ledger.TaskSucceeded || row.ResultAttempt == 0 {

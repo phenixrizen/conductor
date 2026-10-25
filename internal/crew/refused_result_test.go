@@ -396,3 +396,70 @@ func TestAContinuationAfterARefusedResultStartsWhereItStarted(t *testing.T) {
 	}
 	stopRun(t, e2, next.ID)
 }
+
+// A refusal outlives a continuation that made no attempt: attempt 1's
+// result fails a check, attempt 2 starts there and its result is refused
+// by the setup while the run is paused; the run is continued, stopped
+// with no attempt, and continued again, and attempt 3 starts where
+// attempt 2 did, attempt 1's result, not the run's base.
+func TestARefusalOutlivesAContinuationThatMadeNoAttempt(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", "test -e ok.txt"}}}
+	c := repoCrew(dir, build)
+	c.Setup = []Check{{ID: "deps", Argv: []string{"sh", "-c", "test ! -e broken.txt"}}}
+	run := launchManaged(t, e, c)
+	a1 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	commitResult(t, e, a1, "half.txt", "half\n", "half")
+	a2 := waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	p := a2.Attempt.Start
+	if row := l.attemptRow(t, run.ID, "build", 1); p != row.ResultCommit || p == a1.Attempt.Start {
+		t.Fatalf("attempt 2 starts at %s, attempt 1's result is %s", short(p), short(row.ResultCommit))
+	}
+	ctx := context.Background()
+	if err := e.PauseRun(ctx, run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a2.Attempt.Worktree, "broken.txt"), "x\n")
+	commitAll(t, a2.Attempt.Worktree, "breaks the setup")
+	submit(t, e, a2.Attempt.SessionID, Result{Summary: "broken"})
+	waitTaskWhere(t, e, run.ID, "build", "attempt 2 failed", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptFailed
+	})
+	stopRun(t, e, run.ID)
+	// Continued paused, and stopped with no attempt made.
+	e2, fl2 := newEngine(t)
+	fl2.onLaunch = printOnce
+	e2.UseLedger(l)
+	mid, err := e2.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ts := taskOf(t, e2, mid.ID, "build"); ts.Attempt != nil {
+		t.Fatalf("the paused continuation made an attempt: %+v", ts.Attempt)
+	}
+	stopRun(t, e2, mid.ID)
+	e3, fl3 := newEngine(t)
+	fl3.onLaunch = printOnce
+	e3.UseLedger(l)
+	next, err := e3.ContinueRun(ctx, mid.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e3.PauseRun(ctx, next.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	a3 := waitTaskWhere(t, e3, next.ID, "build", "attempt 3 running", func(ts TaskState) bool {
+		return ts.Attempt != nil && ts.Attempt.N == 3 && ts.Attempt.State == ledger.AttemptRunning
+	})
+	if a3.Attempt.Start != p {
+		t.Fatalf("attempt 3 starts at %s, not where attempt 2 did (%s)", short(a3.Attempt.Start), short(p))
+	}
+	if _, f := taskFileOf(t, a3); f.StartFrom != "where attempt 2 started: its result was refused at setup deps" || f.Previous == nil || f.Previous.Branch != a2.Attempt.Branch {
+		t.Fatalf("attempt 3's task file: starts from %q, the attempt before %+v", f.StartFrom, f.Previous)
+	}
+	stopRun(t, e3, next.ID)
+}
