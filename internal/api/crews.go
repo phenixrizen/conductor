@@ -201,7 +201,7 @@ func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bo
 	}
 	trimmed := c
 	trimmed.Name = strings.TrimSpace(c.Name)
-	if err := trimmed.Validate(); err != nil {
+	if err := trimmed.ValidateSave(); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_crew", err.Error())
 		return crew.Crew{}, false
 	}

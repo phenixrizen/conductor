@@ -180,7 +180,9 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 			return nil
 		}
 		return w
-	}, nil)
+		// Refused (a repeat, the cap, the ledger), the command is not taken:
+		// no acceptance is written for it later.
+	}, giveUp)
 	switch {
 	case errors.Is(err, errCommandRepeated):
 		prior, found, rerr := e.ledger.Receipt(ctx, runID, actor, cmd.ID)

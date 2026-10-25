@@ -210,6 +210,35 @@ func gitRefuses(name string) bool {
 // within their limits, and the size of c as its file (MaxEncoded), which
 // counts the ID and the times. The first problem found is returned; it
 // matches ErrInvalid, and quotes at most 80 characters of a value.
+// ValidateSave is Validate with the rules a crew is held to as it is
+// saved, not as one saved before is read or a run of it continued (a crew
+// valid when it was saved stays readable and its runs continuable): no
+// task needs another twice, and a task's goal, role and instructions take
+// at most maxTaskText as its task.json keeps them, the part of a task file
+// never cut (fitTaskFile).
+func (c Crew) ValidateSave() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	for _, t := range c.Tasks {
+		for i, n := range t.Needs {
+			if slices.Contains(t.Needs[:i], n) {
+				return invalidf("task %s: needs %s twice", quote(t.ID), quote(n))
+			}
+		}
+		prompt := ""
+		for _, m := range c.Members {
+			if m.Name == t.Member {
+				prompt = m.Prompt
+			}
+		}
+		if n := taskTextBytes(c.Goal, prompt, t.Instructions); n > maxTaskText {
+			return invalidf("task %s: its goal, role and instructions are %d bytes as its task file keeps them, more than %d", quote(t.ID), n, maxTaskText)
+		}
+	}
+	return nil
+}
+
 func (c Crew) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
 		return invalidf("name must not be empty")
@@ -365,17 +394,7 @@ func (c Crew) checkTasks(names []string) error {
 		if strings.ContainsRune(t.Instructions, 0) {
 			return invalidf("task %s: instructions contain NUL", quote(t.ID))
 		}
-		// The task file never cuts the crew's own text (fitTaskFile): as
-		// task.json keeps it, it leaves room for the rest.
-		prompt := ""
-		for _, m := range c.Members {
-			if m.Name == t.Member {
-				prompt = m.Prompt
-			}
-		}
-		if n := taskTextBytes(c.Goal, prompt, t.Instructions); n > maxTaskText {
-			return invalidf("task %s: its goal, role and instructions are %d bytes as its task file keeps them, more than %d", quote(t.ID), n, maxTaskText)
-		}
+
 		if len(t.Checks) > maxChecks {
 			return invalidf("task %s: too many checks (at most %d)", quote(t.ID), maxChecks)
 		}
@@ -394,12 +413,9 @@ func (c Crew) checkTasks(names []string) error {
 		}
 	}
 	for _, t := range c.Tasks {
-		for i, n := range t.Needs {
+		for _, n := range t.Needs {
 			if n == t.ID {
 				return invalidf("task %s: cannot need itself", quote(t.ID))
-			}
-			if slices.Contains(t.Needs[:i], n) {
-				return invalidf("task %s: needs %s twice", quote(t.ID), quote(n))
 			}
 			if !slices.Contains(ids, n) {
 				return invalidf("task %s: needs %s, which is not a task of this crew", quote(t.ID), quote(n))

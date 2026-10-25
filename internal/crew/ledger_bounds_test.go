@@ -226,7 +226,7 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	f := TaskFile{Task: "build", Attempt: 2, MaxAttempts: 3, Member: "lead", Kind: TaskWork,
 		Goal: strings.Repeat("<", maxGoal), Role: strings.Repeat("<", maxPrompt), Instructions: strings.Repeat("<", maxInstructions),
 		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks,
-		Previous: &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 40<<10)},
+		Previous:   &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 40<<10)},
 		Repair:     &TaskRepair{Review: "check", Attempt: 1, Commit: strings.Repeat("c", 40), Summary: strings.Repeat("r", maxSummary), Findings: findings},
 		Checkpoint: &Checkpoint{Done: strings.Repeat("d", maxCheckpointField), Remaining: strings.Repeat("m", maxCheckpointField), Commit: strings.Repeat("e", 40)}}
 	md, js, more, err := fitTaskFile(f)
@@ -417,21 +417,75 @@ func TestARefusedChangesEventsGoWithTheNextCommitWhoeverMakesIt(t *testing.T) {
 func TestACrewIsRefusedWhenItsTaskFileCouldNotFit(t *testing.T) {
 	dir := newRepo(t)
 	twice := repoCrew(dir, work("build", "lead"), work("docs", "lead", "build", "build"))
-	if err := twice.Validate(); err == nil || !strings.Contains(err.Error(), "needs \"build\" twice") {
+	if err := twice.ValidateSave(); err == nil || !strings.Contains(err.Error(), "needs \"build\" twice") {
 		t.Fatalf("a need twice: %v", err)
+	}
+	// Read or continued, a crew saved before is held to the rules it was
+	// saved under.
+	if err := twice.Validate(); err != nil {
+		t.Fatalf("a crew saved before, read: %v", err)
 	}
 	wide := "\U0001D11E"
 	big := repoCrew(dir, work("build", "lead"))
 	big.Goal = strings.Repeat(wide, maxGoal)
 	big.Members[0].Prompt = strings.Repeat(wide, maxPrompt)
 	big.Tasks[0].Instructions = strings.Repeat(wide, maxInstructions)
-	if err := big.Validate(); err == nil || !strings.Contains(err.Error(), "as its task file keeps them") {
+	if err := big.ValidateSave(); err == nil || !strings.Contains(err.Error(), "as its task file keeps them") {
 		t.Fatalf("a task's text past its room: %v", err)
 	}
-	big.Members[0].Prompt = ""
 	if err := big.Validate(); err != nil {
+		t.Fatalf("a crew saved before, read: %v", err)
+	}
+	big.Members[0].Prompt = ""
+	if err := big.ValidateSave(); err != nil {
 		t.Fatalf("within its room: %v", err)
 	}
+	// A run of a crew with a need twice (saved before the rule) starts the
+	// task with that input once.
+	e, _, _ := managedEngine(t)
+	run := launchManaged(t, e, twice)
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	commitResult(t, e, b, "built.txt", "b\n", "built")
+	d := waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	if _, f := taskFileOf(t, d); len(f.Inputs) != 1 {
+		t.Fatalf("docs' inputs: %+v", f.Inputs)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A message's typing record the ledger refuses is not left set: the next
+// delivery records the intent before it types the line.
+func TestARefusedTypingRecordIsMadeAgainBeforeTheLine(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	m, err := e.SendMessage(context.Background(), b.Attempt.SessionID, "writer", "the API is final")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	e.mu.Unlock()
+	l.mu.Lock()
+	l.failOn, l.failOnce = "message.typing", true
+	l.mu.Unlock()
+	if e.typing(r, m.Seq) {
+		t.Fatal("a refused typing record was taken")
+	}
+	e.mu.Lock()
+	set := !r.messageBySeq(m.Seq).typingAt.IsZero()
+	e.mu.Unlock()
+	if set {
+		t.Fatal("the refused typing record is left set")
+	}
+	if !e.typing(r, m.Seq) {
+		t.Fatal("the typing record was not made again")
+	}
+	if n := l.count(run.ID, "message.typing"); n != 1 {
+		t.Fatalf("message.typing events: %d", n)
+	}
+	stopRun(t, e, run.ID)
 }
 
 // Every cut ends: with nothing but the attempt before's error to cut, the
@@ -452,5 +506,55 @@ func TestTheTaskFilesCutsEnd(t *testing.T) {
 	f.Instructions = strings.Repeat("<", 70<<10)
 	if _, _, _, err := fitTaskFile(f); err == nil || !strings.Contains(err.Error(), "with every part cut that can be") {
 		t.Fatalf("an uncuttable task file: %v", err)
+	}
+}
+
+// A command whose taking the ledger refuses is not taken: no acceptance is
+// written for it later, and sent again it is taken once.
+func TestARefusedCommandIsNotAcceptedLater(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("test", "lead", "build")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	ctx := context.Background()
+	l.mu.Lock()
+	l.failOn, l.failOnce = "command.accepted", true
+	l.mu.Unlock()
+	if _, err := e.Pause(ctx, run.ID, "admin", Command{ID: "p1"}, true); err == nil {
+		t.Fatal("a refused command was taken")
+	}
+	if rc, err := e.Pause(ctx, run.ID, "admin", Command{ID: "p1"}, true); err != nil || rc.Status != ledger.CommandDone || rc.Repeat {
+		t.Fatalf("the command again: %+v %v", rc, err)
+	}
+	if n := l.count(run.ID, "command.accepted"); n != 1 {
+		t.Fatalf("command.accepted events: %d", n)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// What happened stays in the ledger when its record is refused once: a
+// launch, and a setup command that ran, are written with the failure
+// that follows.
+func TestALaunchAndASetupThatHappenedKeepTheirEvents(t *testing.T) {
+	for _, kind := range []string{"attempt.launched", "attempt.setup"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			c := repoCrew(dir, work("build", "lead"))
+			c.Setup = []Check{{ID: "deps", Argv: []string{"true"}}}
+			l.mu.Lock()
+			l.failOn, l.failOnce = kind, true
+			l.mu.Unlock()
+			run := launchManaged(t, e, c)
+			waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+				return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+			})
+			kinds := l.kinds(run.ID)
+			i, f := slices.Index(kinds, kind), slices.Index(kinds, "attempt.failed")
+			if i < 0 || f < 0 || i > f {
+				t.Fatalf("%s with the failure after it: %v", kind, kinds)
+			}
+			stopRun(t, e, run.ID)
+		})
 	}
 }

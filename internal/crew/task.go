@@ -918,7 +918,10 @@ func (t *task) active() *attempt {
 // first is the commit its worktree is made at. The caller holds e.mu.
 func (r *run) inputs(t *task) []input {
 	var out []input
-	for _, n := range t.def.Needs {
+	for i, n := range t.def.Needs {
+		if slices.Contains(t.def.Needs[:i], n) {
+			continue // a crew saved before needs could repeat: each once
+		}
 		need := r.task(n)
 		if need == nil || need.result == nil {
 			continue
@@ -1453,7 +1456,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		r.note(session.ActivityStatus, "task %s: attempt %d started as %s", t.def.ID, a.n, m.def.Name)
 		stopping = r.stopping
 		return ev("attempt.launched", map[string]any{"task": t.def.ID, "attempt": a.n, "session": id})
-	}, giveUp)
+	}, nil)
 	go e.watchAttempt(r, a, local)
 	// Closed before its session is stopped, so the stage is the launch's,
 	// not the watcher's "session ended".
@@ -1498,7 +1501,7 @@ func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, c
 	res := e.runCommand(ctx, dir, ch, io.Discard, nil)
 	if err := e.transact(context.Background(), r, func() tx {
 		return ev(kind, map[string]any{"task": a.t.def.ID, "attempt": a.n, "setup": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "error": res.Err, "duration": res.Duration.String()})
-	}, giveUp); err != nil {
+	}, nil); err != nil {
 		return fmt.Errorf("the ledger could not record %s: %w", ch.ID, err)
 	}
 	switch {
