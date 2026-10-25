@@ -127,6 +127,18 @@ not its checkpoint, not as a candidate, not in the task file.
    as count (a list cut short ends with how many more); on main today an
    oversized one fails the check's own commit.
 
+10. **What an agent sends is bounded as the ledger stores it.** A
+    result's findings pass `Result.validate` by characters, but JSON
+    escaping can make the repair a review derives from them larger than
+    `ledger.MaxPayload` (20 findings of 1,000 `<` are about 120 KiB): the
+    ledger refuses the task row, and with no undo every later commit fails
+    on it, the pause and the stop too (on main today). Every row field and
+    event made from an agent's input (the result, the repair it implies, a
+    checkpoint, a blocker, a message) is encoded and measured where it is
+    taken (`SubmitResult`, `SaveCheckpoint`, `Blocked`, `SendMessage`), and
+    refused there (`413 too_large`, nothing changed, the attempt goes on)
+    when over its limit.
+
 ## Tests
 
 Each fails without its part, `-race -count=30`:
@@ -172,6 +184,9 @@ Each fails without its part, `-race -count=30`:
   continuation is refused.
 - A continued run refuses a retry (`409 run_continued`); a ledger edited
   to give an ancestor a later attempt is not taken past the row's count.
+- A review's result of 20 findings of 1,000 `<` on the real ledger:
+  refused at submission with nothing changed; the review submits a smaller
+  one; a pause and the stop commit after.
 - The rounds 8 and 9 tests, kept.
 
 ## Decided
