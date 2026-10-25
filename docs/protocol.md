@@ -2130,7 +2130,10 @@ checks ran (its checkout refused: the crew's directory a symbolic link or a
 file, or a commit git would not check out; or the crew's `setup` failing or
 changing tracked files there) is no tree to build on: the next attempt starts where
 that attempt started, and its task file names the refused result and its
-branch (`previous.result`, `previous.branch`). The task is written as
+branch (`previous.result`, `previous.branch`). A work task's result, with
+checks or none, is refused at checkout when the crew's directory in its tree
+is a symbolic link or a file, so no dependent is made at it. The task is
+written as
 `.conductor/task.md` and `.conductor/task.json` in the attempt's working
 directory (with a `.gitignore` of `*`; refused when the commit tracks
 `.conductor/` there, or `.conductor` is not a directory), the crew's `setup`

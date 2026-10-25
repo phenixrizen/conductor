@@ -76,6 +76,19 @@ func checkTimeout(ch Check) time.Duration {
 func (e *Engine) verify(r *run, a *attempt) {
 	defer r.checks.Done()
 	t := a.t
+	if t.def.Kind == TaskWork {
+		// The crew's directory in the result, checks or none: a link or a
+		// file there leaves a next attempt, or a dependent made at the
+		// result, nothing to start in, and each would fail before its
+		// agent could act.
+		if err := commitMemberDir(a.ctx, r.cwd, a.result, r.prefix); err != nil {
+			if a.ctx.Err() != nil {
+				return
+			}
+			e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
+			return
+		}
+	}
 	if t.def.Kind == TaskReview || len(t.def.Checks) == 0 {
 		e.accept(r, a, true, "", "")
 		return

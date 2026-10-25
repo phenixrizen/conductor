@@ -137,3 +137,50 @@ func TestAResultThatMakesTheCrewsDirectoryAFileIsRefusedAtCheckout(t *testing.T)
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A work task with no checks is refused at checkout too when its result
+// makes the crew's directory a file or a link: a dependent made at that
+// result would fail at its worktree, attempt after attempt, before its
+// agent could act. The next attempt starts where the refused one did, and
+// the dependent waits for a result it can start in.
+func TestAResultWithNoChecksThatBreaksTheCrewsDirectoryIsRefused(t *testing.T) {
+	for _, how := range []string{"file", "link"} {
+		t.Run(how, func(t *testing.T) {
+			dir := newRepo(t)
+			if err := os.MkdirAll(filepath.Join(dir, "web"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(dir, "web", "app.txt"), "app\n")
+			commitAll(t, dir, "web")
+			e, _, l := managedEngine(t)
+			c := repoCrew(dir, work("build", "lead"), work("docs", "writer", "build"))
+			c.Cwd = filepath.Join(dir, "web")
+			run := launchManaged(t, e, c)
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			web := filepath.Join(a.Attempt.Worktree, "web")
+			if err := os.RemoveAll(web); err != nil {
+				t.Fatal(err)
+			}
+			if how == "file" {
+				writeFile(t, web, "a file\n")
+			} else if err := os.Symlink("..", web); err != nil {
+				t.Fatal(err)
+			}
+			commitAll(t, a.Attempt.Worktree, "web is a "+how+" now")
+			submit(t, e, a.Attempt.SessionID, Result{Summary: "broken"})
+			a2 := waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
+				return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
+			})
+			if row := l.attemptRow(t, run.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "checkout" || !strings.Contains(row.Error, "in the result is a") {
+				t.Fatalf("attempt 1: %+v", row)
+			}
+			if a2.Attempt.Start != a.Attempt.Start {
+				t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(a2.Attempt.Start), short(a.Attempt.Start))
+			}
+			if d := taskOf(t, e, run.ID, "docs"); d.State != ledger.TaskBlocked || d.Attempts != 0 {
+				t.Fatalf("docs: %+v", d)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
