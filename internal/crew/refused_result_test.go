@@ -264,3 +264,37 @@ func TestTheCrewsDirectoryIsLookedUpLiterally(t *testing.T) {
 		stopRun(t, e, run.ID)
 	})
 }
+
+// A result that leaves no tracked file in the crew's directory is still a
+// tree to start in: the checks' checkout makes the directory, as an
+// attempt's worktree does, and the setup and the checks run in it.
+func TestAResultThatEmptiesTheCrewsDirectorySucceeds(t *testing.T) {
+	for _, with := range []string{"setup", "check"} {
+		t.Run(with, func(t *testing.T) {
+			dir := newRepo(t)
+			if err := os.MkdirAll(filepath.Join(dir, "web"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(dir, "web", "app.txt"), "app\n")
+			commitAll(t, dir, "web")
+			e, _, _ := managedEngine(t)
+			build := work("build", "lead")
+			c := repoCrew(dir, build)
+			if with == "setup" {
+				c.Setup = []Check{{ID: "deps", Argv: []string{"true"}}}
+			} else {
+				c.Tasks[0].Checks = []Check{{ID: "ok", Argv: []string{"true"}}}
+			}
+			c.Cwd = filepath.Join(dir, "web")
+			run := launchManaged(t, e, c)
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			if err := os.Remove(filepath.Join(a.Attempt.Worktree, "web", "app.txt")); err != nil {
+				t.Fatal(err)
+			}
+			commitAll(t, a.Attempt.Worktree, "web has no tracked file now")
+			submit(t, e, a.Attempt.SessionID, Result{Summary: "emptied"})
+			waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+			stopRun(t, e, run.ID)
+		})
+	}
+}

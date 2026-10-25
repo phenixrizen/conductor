@@ -115,12 +115,17 @@ func (e *Engine) verify(r *run, a *attempt) {
 	// The crew's directory in the checkout, as in the worktree: not
 	// through a link the result commits, which would send the checks
 	// elsewhere than the tree compared, nor a file, which no check and no
-	// next attempt can work in.
+	// next attempt can work in. A result with no tracked file left there
+	// has none in the checkout: it is made, as an attempt's is.
 	if err := checkMemberDir(dir, r.prefix); err != nil {
 		e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
 		return
 	}
 	cwd := filepath.Join(dir, r.prefix)
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		e.accept(r, a, false, "checkout", session.CleanMessage(err.Error()))
+		return
+	}
 	for _, ch := range r.setup {
 		if ctx.Err() != nil {
 			return
