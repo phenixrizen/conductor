@@ -85,13 +85,25 @@ not its checkpoint, not as a candidate, not in the task file.
    it takes (its own run's, or further back along `ContinuedFrom`) is
    ignored at or below it.
 8. **Version 3 databases: conservative** (the owner, 2026-10-25). The
-   migration to 4, in Go in the migration's transaction: for every run with
-   a `task.reopened` event anywhere in its chain, every task that needs a
-   reopened task, transitively in the saved crew, gets `withdrawn` = its
+   migration to 4, in Go in the migration's transaction. The reopened
+   subjects of a run's chain are seeded from everything version 3 kept, not
+   only its events (path 9: a failed commit could save rows without them):
+   a `task.reopened` event, a succeeded review attempt whose result's
+   verdict is `needs_changes` (its subject through the saved crew), and an
+   attempt with stage `withdrawn` (its task's needs). Every task that needs
+   a seeded subject, transitively in the saved crew, gets `withdrawn` = its
    highest attempt, inherited down the chain (a continuation's task takes
    its ancestor's value when higher), and loses its repair. One `migrated`
    event per run it changes. It may drop good carried work of attempts made
    after a reopen; it never reuses withdrawn work.
+
+9. **A failed commit's events.** `transact` drops a change's events when
+   its commit fails; with no undo the state stays ahead, and the next
+   commit (the pause's, `pauseFor`) carries its rows without them, so the
+   ledger can hold a reopened subject and withdrawn dependents with no
+   `task.reopened`. A change with no undo keeps its events pending on the
+   run (`r.pendingEvents`), and the next commit writes them first, in
+   order; a change undone drops them, as its state.
 
 ## Tests
 
@@ -118,6 +130,12 @@ Each fails without its part, `-race -count=30`:
   dependents with no marker; a chain with a continuation that made no
   attempt; an imported review withdrawn and re-run in the middle run of
   three.
+- A review's verdict whose commit fails once: the pause's commit carries
+  its `task.reopened` and the withdrawals' events (the fake ledger's
+  `failOn`); an undone change's events are not written.
+- Version 3: a reopen whose commit failed and whose rows the pause saved
+  (no `task.reopened`): migrated from the review attempt's verdict, nothing
+  downstream reused.
 - The rounds 8 and 9 tests, kept.
 
 ## Decided
