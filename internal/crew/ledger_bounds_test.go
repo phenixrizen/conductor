@@ -558,3 +558,55 @@ func TestALaunchAndASetupThatHappenedKeepTheirEvents(t *testing.T) {
 		})
 	}
 }
+
+// A refused change's rows of its own (a message's, a command's receipt)
+// wait with its events: the next commit writes both, so the ledger never
+// holds the events of a change without its rows.
+func TestARefusedChangesOwnRowsGoWithItsEvents(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "lead", "build")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	e.mu.Unlock()
+	ctx := context.Background()
+	row := ledger.MessageRow{RunID: run.ID, Seq: 77, From: "lead", To: "lead", Text: "kept", CreatedAt: time.Now().UTC()}
+	l.mu.Lock()
+	l.failOn, l.failOnce = "with.row", true
+	l.mu.Unlock()
+	if err := e.transact(ctx, r, func() tx {
+		w := ev("with.row", nil)
+		w.more = func(ltx LedgerTx) error { return ltx.PutMessage(row) }
+		return w
+	}, nil); err == nil {
+		t.Fatal("the refused commit was taken")
+	}
+	if err := e.transact(ctx, r, func() tx { return ev("after", nil) }, nil); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	_, kept := l.messages[fmt.Sprintf("%s/%d", run.ID, row.Seq)]
+	l.mu.Unlock()
+	if !kept || !slices.Contains(l.kinds(run.ID), "with.row") {
+		t.Fatalf("the refused change's row %v, its event %v", kept, l.kinds(run.ID))
+	}
+	// A cancel whose settling is refused once: the receipt is settled by
+	// the commit after, not left accepted.
+	l.mu.Lock()
+	l.failOn, l.failOnce = "command.cancel", true
+	l.mu.Unlock()
+	if _, err := e.Cancel(ctx, run.ID, "admin", Command{ID: "c1"}, "docs"); err == nil {
+		t.Fatal("the refused cancel was taken")
+	}
+	if err := e.transact(ctx, r, func() tx { return ev("after.cancel", nil) }, nil); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	cmdRow := l.commands[run.ID+"/admin/c1"]
+	l.mu.Unlock()
+	if cmdRow.Status != ledger.CommandDone || cmdRow.Receipt == "" {
+		t.Fatalf("the cancel's command: %+v", cmdRow)
+	}
+	stopRun(t, e, run.ID)
+}

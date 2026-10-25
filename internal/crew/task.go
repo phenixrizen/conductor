@@ -632,9 +632,10 @@ func ev(kind string, payload map[string]any) tx {
 // marked again for the next transaction (those of earlier failures among
 // them), undo, when given, puts this change's state back under e.mu and
 // drops its events, and an end pending stays pending; with no undo the
-// state stays ahead and its events are kept with its rows before txMu is
-// let go (r.pendingEvents), for the next commit, whoever's, to write
-// first, so the ledger never holds a change without what it said; the
+// state stays ahead and its events and rows of its own (more) are kept
+// with its rows before txMu is let go (r.pendingEvents, r.pendingMore),
+// for the next commit, whoever's, to write first, so the ledger never
+// holds part of a change; the
 // caller pauses the run's dispatch where it must (afterTransact). A
 // caller that gives the change up when its commit fails (a check not run
 // when its start was not recorded) passes giveUp, and its events go. Every event is measured as it is made (writable): one
@@ -650,19 +651,23 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	t := mutate()
 	snap := r.drain()
-	pending := r.pendingEvents
-	r.pendingEvents = nil
+	pending, pendingMore := r.pendingEvents, r.pendingMore
+	r.pendingEvents, r.pendingMore = nil, nil
 	events := append(slices.Clip(pending), writable(t.events)...)
+	more := slices.Clip(pendingMore)
+	if t.more != nil {
+		more = append(more, t.more)
+	}
 	e.mu.Unlock()
-	if len(events) == 0 && t.more == nil && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
+	if len(events) == 0 && len(more) == 0 && snap.run == nil && len(snap.tasks) == 0 && len(snap.attempts) == 0 {
 		return nil
 	}
 	rev, err := e.ledger.Transition(ctx, r.id, func(ltx LedgerTx) error {
 		if err := snap.write(ltx); err != nil {
 			return err
 		}
-		if t.more != nil {
-			if err := t.more(ltx); err != nil {
+		for _, write := range more {
+			if err := write(ltx); err != nil {
 				return err
 			}
 		}
@@ -676,10 +681,10 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	if err != nil {
 		snap.undo(r)
-		r.pendingEvents = events
+		r.pendingEvents, r.pendingMore = events, more
 		if undo != nil {
 			undo()
-			r.pendingEvents = pending
+			r.pendingEvents, r.pendingMore = pending, pendingMore
 		}
 		e.mu.Unlock()
 		return err
