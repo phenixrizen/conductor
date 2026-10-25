@@ -2138,10 +2138,14 @@ written as
 directory (with a `.gitignore` of `*`; refused when the commit tracks
 `.conductor/` there, or `.conductor` is not a directory), each kept within
 64 KiB: what is needed least is cut (the inputs' summaries, then the
-checkpoint, then findings from the last, then the review's summary) into
-`.conductor/task-more.json` in full, which `task.json`'s `more` and `cut` and
-a "Cut to fit" section of `task.md` name; the crew's own text is never cut,
-so a task file is always written. A result is refused at submission (`400
+checkpoint, then findings from the last, then the review's summary, the
+checks' commands, the inputs after the first, the attempt before's error
+past 2,000 characters) into `.conductor/task-more.json` in full, which
+`task.json`'s `more` and `cut` and a "Cut to fit" section of `task.md` name.
+The crew's own text is never cut: a crew is refused as it is saved when a
+task's goal, role and instructions take more than 40 KiB as `task.json`
+keeps them, or a task needs the same task twice, so a task file always
+fits. A result is refused at submission (`400
 bad_result`, nothing changed) when it, or the repair a review's findings
 make, is larger than the ledger keeps as JSON. The crew's `setup`
 commands run in it first, and the session's process receives `CONDUCTOR_TASK`,

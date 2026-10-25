@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // TaskFile is .conductor/task.json: an attempt's task as a tool reads it.
@@ -59,11 +60,17 @@ const taskMoreFile = "task-more.json"
 
 // TaskMore is .conductor/task-more.json: what the task files cut.
 type TaskMore struct {
-	Inputs        []TaskInput `json:"inputs,omitempty"`
-	Checkpoint    *Checkpoint `json:"checkpoint,omitempty"`
-	RepairSummary string      `json:"repairSummary,omitempty"`
-	Findings      []Finding   `json:"findings,omitempty"`
+	Inputs        []TaskInput   `json:"inputs,omitempty"`
+	Checkpoint    *Checkpoint   `json:"checkpoint,omitempty"`
+	RepairSummary string        `json:"repairSummary,omitempty"`
+	Findings      []Finding     `json:"findings,omitempty"`
+	Checks        []Check       `json:"checks,omitempty"`
+	Previous      *TaskPrevious `json:"previous,omitempty"`
 }
+
+// maxPreviousError is the attempt before's error as a cut task file keeps
+// it, in characters; task-more.json has it whole.
+const maxPreviousError = 2000
 
 // TaskRepair is what a review asked of the task.
 type TaskRepair struct {
@@ -129,13 +136,25 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js, more []byte, err error) {
 
 // fitTaskFile renders f, cutting what is needed least until task.md and
 // task.json are within maxTaskFile: the inputs' summaries, then the
-// checkpoint, then the findings from the last, then the review's summary;
-// what is cut goes, in full, into task-more.json, which task.md names.
-// The rest (the crew's goal, role and instructions, the start, the
-// checks, the attempt before, how to finish) is never cut: the crew's
-// bounds keep it small, so a task file is always written and no attempt
-// fails at it for its size.
+// checkpoint, then the findings from the last, then the review's summary,
+// then the checks' commands, then the inputs after the first (the start's),
+// then the attempt before's error past maxPreviousError; what is cut goes,
+// in full, into task-more.json, which task.md names. The crew's goal, role
+// and instructions are never cut: the crew's validation bounds them
+// (maxTaskText), so a task file always fits and no attempt fails at it for
+// its size; one that does not after every cut is an error, never written.
 func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
+	// What is cut is cut from copies: the caller's slices stay as they are.
+	f.Inputs, f.Checks = slices.Clone(f.Inputs), slices.Clone(f.Checks)
+	if f.Repair != nil {
+		rp := *f.Repair
+		rp.Findings = slices.Clone(rp.Findings)
+		f.Repair = &rp
+	}
+	if f.Previous != nil {
+		p := *f.Previous
+		f.Previous = &p
+	}
 	var m TaskMore
 	cuts := []func() bool{
 		func() bool {
@@ -180,7 +199,47 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 			f.Cut = append(f.Cut, "the review's summary")
 			return true
 		},
+		func() bool {
+			if len(f.Checks) == 0 {
+				return false
+			}
+			m.Checks = f.Checks
+			f.Checks = nil
+			f.Cut = append(f.Cut, fmt.Sprintf("the %d checks' commands", len(m.Checks)))
+			return true
+		},
+		func() bool {
+			if len(f.Inputs) <= 1 {
+				return false
+			}
+			for _, in := range f.Inputs[1:] {
+				// Its summary may be there already, cut before.
+				if i := slices.IndexFunc(m.Inputs, func(x TaskInput) bool { return x.Task == in.Task }); i >= 0 {
+					in.Summary = m.Inputs[i].Summary
+					m.Inputs[i] = in
+				} else {
+					m.Inputs = append(m.Inputs, in)
+				}
+			}
+			f.Cut = append(f.Cut, fmt.Sprintf("the %d inputs after the first (merge their branches too)", len(f.Inputs)-1))
+			f.Inputs = f.Inputs[:1]
+			return true
+		},
+		func() bool {
+			// Once: the cut error is maxPreviousError and a mark, longer
+			// than maxPreviousError itself.
+			if f.Previous == nil || m.Previous != nil || utf8.RuneCountInString(f.Previous.Error) <= maxPreviousError {
+				return false
+			}
+			whole := *f.Previous
+			m.Previous = &whole
+			f.Previous.Error = string([]rune(f.Previous.Error)[:maxPreviousError]) + "…"
+			f.Cut = append(f.Cut, "the rest of the attempt before's error")
+			return true
+		},
 	}
+	// Each cut takes something from the files and says so, once: the
+	// loop ends at the last.
 	for {
 		if len(f.Cut) > 0 {
 			f.More = taskMoreFile
@@ -200,7 +259,7 @@ func fitTaskFile(f TaskFile) (md, js, more []byte, err error) {
 			}
 		}
 		if !cut {
-			break // the uncut rest, bounded by the crew's own bounds
+			return nil, nil, nil, fmt.Errorf("the task files are %d and %d bytes with every part cut that can be, more than %d", len(md), len(js), maxTaskFile)
 		}
 	}
 	if f.More != "" {
@@ -262,6 +321,9 @@ func taskMarkdown(f TaskFile) string {
 			b.WriteString("\nYour worktree starts at the first; merge the branches of the others into it before you submit. Your result must descend from every input.\n")
 		}
 		b.WriteString("\n")
+	}
+	if len(f.Checks) == 0 && slices.ContainsFunc(f.Cut, func(s string) bool { return strings.HasSuffix(s, "checks' commands") }) {
+		b.WriteString("## Checks\n\nAfter you submit, Conductor runs checks in a fresh checkout of your result commit (their commands are in the file named under \"Cut to fit\"). Each must exit 0 without changing tracked files.\n\n")
 	}
 	if len(f.Checks) > 0 {
 		b.WriteString("## Checks\n\nAfter you submit, Conductor runs these in a fresh checkout of your result commit. Each must exit 0 without changing tracked files:\n\n")
@@ -422,4 +484,16 @@ func startFrom(r *run, t *task, a *attempt) string {
 		return "the run's base"
 	}
 	return ""
+}
+
+// taskTextBytes is how many bytes the crew's own text of a task takes in
+// its task.json (encodeTaskJSON): each string as JSON, quotes and escapes
+// included.
+func taskTextBytes(texts ...string) int {
+	n := 0
+	for _, s := range texts {
+		b, _ := encodeTaskJSON(s)
+		n += len(b)
+	}
+	return n
 }

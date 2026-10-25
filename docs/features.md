@@ -3062,10 +3062,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   Found by Codex's reviews of the withdrawal plan, each one a way for a
   managed run to stall on main. A change whose commit failed with no undo
   had its rows carried by the next commit but not its events, so the
-  ledger could hold a reopened review with no `task.reopened`: the refusal
-  now carries the change's events and the pause that keeps the state
-  ahead writes them with the rows (an undone change's, or one given up as
-  a check never run, are dropped). An event the
+  ledger could hold a reopened review with no `task.reopened`: its events
+  are now kept with its rows as the refusal comes, for the next commit to
+  write first, whoever's (an undone change's, or one given up as a check
+  never run, are dropped). An event the
   ledger would refuse for its size failed every commit after it: every
   event is measured as it is made and an oversized one becomes a note of
   its size, and `check.finished`'s path lists are bounded by bytes. A
@@ -3074,9 +3074,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   make a larger repair, is refused at submission with nothing changed,
   where it used to leave a row every later commit failed on. The task
   file is cut to fit (the inputs' summaries, the checkpoint, findings,
-  the review's summary, into `.conductor/task-more.json` in full), so no
-  attempt fails at it for its size, and `task.json` no longer escapes
-  `<`. A command's receipt keeps the task's id, state, reason, attempts
+  the review's summary, the checks' commands, the inputs after the
+  first, the attempt before's error past 2,000 characters, into
+  `.conductor/task-more.json` in full), and a crew whose task's own text
+  would leave no room (over 40 KiB as JSON), or that needs a task twice,
+  is refused as it is saved, so no attempt fails at its task file for its
+  size; `task.json` no longer escapes `<`. A command's receipt keeps the task's id, state, reason, attempts
   and result commit, not the whole task, so Accept anyway of a large
   result settles. Plan: `docs/plans/issue-334-withdrawal.md` (paths 9 to
   12), reviewed ten times by Codex.

@@ -358,9 +358,9 @@ type run struct {
 	// pendingCancels end the contexts of attempts cancelled, once the
 	// cancel is committed: a check or a setup under way runs until then.
 	pendingCancels []context.CancelFunc
-	// pendingEvents are refused changes' events a pause took up
-	// (pauseDispatch): the next commit writes them first, in order, with
-	// the rows it carries (transact).
+	// pendingEvents are the events of changes whose commit was refused
+	// with no undo, kept with their rows as the refusal comes (under txMu):
+	// the next commit writes them first, in order (transact).
 	pendingEvents                                 []event
 	id, crewID, name, label, goal, cwd, isolation string
 	// yolo is the run's yolo choice, fixed when it is made.

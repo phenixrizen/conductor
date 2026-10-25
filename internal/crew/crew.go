@@ -161,8 +161,12 @@ const (
 	// bounds ttlSeconds.
 	maxLinkTTL = 365 * 24 * 3600
 	// The tasks of a managed crew.
-	maxTasks            = 128
-	maxInstructions     = 8000 // characters (runes)
+	maxTasks        = 128
+	maxInstructions = 8000 // characters (runes)
+	// maxTaskText bounds a task's goal, role and instructions together as
+	// its task.json keeps them (taskTextBytes): the part of a task file
+	// never cut, within maxTaskFile with room for the rest.
+	maxTaskText         = 40 << 10
 	maxChecks           = 8    // per task, and setup entries per crew
 	maxCheckTimeout     = 3600 // seconds
 	defaultCheckTimeout = 600
@@ -361,6 +365,17 @@ func (c Crew) checkTasks(names []string) error {
 		if strings.ContainsRune(t.Instructions, 0) {
 			return invalidf("task %s: instructions contain NUL", quote(t.ID))
 		}
+		// The task file never cuts the crew's own text (fitTaskFile): as
+		// task.json keeps it, it leaves room for the rest.
+		prompt := ""
+		for _, m := range c.Members {
+			if m.Name == t.Member {
+				prompt = m.Prompt
+			}
+		}
+		if n := taskTextBytes(c.Goal, prompt, t.Instructions); n > maxTaskText {
+			return invalidf("task %s: its goal, role and instructions are %d bytes as its task file keeps them, more than %d", quote(t.ID), n, maxTaskText)
+		}
 		if len(t.Checks) > maxChecks {
 			return invalidf("task %s: too many checks (at most %d)", quote(t.ID), maxChecks)
 		}
@@ -379,9 +394,12 @@ func (c Crew) checkTasks(names []string) error {
 		}
 	}
 	for _, t := range c.Tasks {
-		for _, n := range t.Needs {
+		for i, n := range t.Needs {
 			if n == t.ID {
 				return invalidf("task %s: cannot need itself", quote(t.ID))
+			}
+			if slices.Contains(t.Needs[:i], n) {
+				return invalidf("task %s: needs %s twice", quote(t.ID), quote(n))
 			}
 			if !slices.Contains(ids, n) {
 				return invalidf("task %s: needs %s, which is not a task of this crew", quote(t.ID), quote(n))

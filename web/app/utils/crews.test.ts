@@ -493,6 +493,17 @@ describe('taskProblems', () => {
       ['a need of itself', (c) => (c.tasks![0]!.needs = ['build']), 'cannot need itself'],
       ['an unknown need', (c) => (c.tasks![0]!.needs = ['ghost']), 'needs ghost, which is not a task'],
       ['a review needing two', (c) => (c.tasks![1]!.needs = ['build', 'build']), 'exactly one work task'],
+      ['a need twice', (c) => c.tasks!.push({ id: 'docs', member: 'builder', kind: 'work', instructions: '', needs: ['build', 'build'] }), 'Task docs: needs build twice'],
+      [
+        "a task's own text past its task file's room",
+        (c) => {
+          const wide = String.fromCodePoint(0x1d11e) // four bytes in UTF-8, as JSON keeps it
+          Object.assign(c, { goal: wide.repeat(2000) })
+          Object.assign(c.members[0]!, { prompt: wide.repeat(4000) })
+          c.tasks![0]!.instructions = wide.repeat(8000)
+        },
+        'Task build: its goal, role and instructions are',
+      ],
       [
         'a cycle',
         (c) => {

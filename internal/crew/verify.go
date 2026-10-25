@@ -134,7 +134,7 @@ func (e *Engine) verify(r *run, a *attempt) {
 			out := ev("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "subject": a.result})
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
 			return out
-		}, nil); err != nil {
+		}, giveUp); err != nil {
 			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check: "+session.CleanMessage(err.Error()))
 			return
 		}
@@ -185,7 +185,7 @@ func (e *Engine) verify(r *run, a *attempt) {
 				"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 			return out
-		}, nil); err != nil {
+		}, giveUp); err != nil {
 			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check's outcome: "+session.CleanMessage(err.Error()))
 			return
 		}

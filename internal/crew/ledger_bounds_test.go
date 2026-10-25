@@ -212,12 +212,21 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 		findings = append(findings, Finding{Severity: "major", Path: fmt.Sprintf("p%d/%s", i, strings.Repeat("x", 1000)), Message: strings.Repeat(lt, maxFindingText)})
 	}
 	var inputs []TaskInput
-	for i := range 8 {
-		inputs = append(inputs, TaskInput{Task: fmt.Sprintf("in%d", i), Attempt: 1, Commit: strings.Repeat("a", 40), Summary: strings.Repeat("s", maxSummary)})
+	for i := range maxTasks - 1 {
+		inputs = append(inputs, TaskInput{Task: fmt.Sprintf("in%d-%s", i, strings.Repeat("i", 30)), Attempt: 3, Commit: strings.Repeat("a", 40), Branch: fmt.Sprintf("crew/run-%s/in%d.3", strings.Repeat("r", 20), i), Summary: strings.Repeat("s", maxSummary)})
+	}
+	var checks []Check
+	for i := range maxChecks {
+		var argv []string
+		for range maxArgs {
+			argv = append(argv, strings.Repeat("a", maxArgsBytes/maxArgs))
+		}
+		checks = append(checks, Check{ID: fmt.Sprintf("c%d", i), Argv: argv, TimeoutSeconds: 600})
 	}
 	f := TaskFile{Task: "build", Attempt: 2, MaxAttempts: 3, Member: "lead", Kind: TaskWork,
 		Goal: strings.Repeat("<", maxGoal), Role: strings.Repeat("<", maxPrompt), Instructions: strings.Repeat("<", maxInstructions),
-		Start: strings.Repeat("b", 40), Inputs: inputs,
+		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks,
+		Previous: &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 40<<10)},
 		Repair:     &TaskRepair{Review: "check", Attempt: 1, Commit: strings.Repeat("c", 40), Summary: strings.Repeat("r", maxSummary), Findings: findings},
 		Checkpoint: &Checkpoint{Done: strings.Repeat("d", maxCheckpointField), Remaining: strings.Repeat("m", maxCheckpointField), Commit: strings.Repeat("e", 40)}}
 	md, js, more, err := fitTaskFile(f)
@@ -248,8 +257,26 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	if keptFindings+len(cut.Findings) != maxFindings || cut.Checkpoint == nil || len(cut.Inputs) != len(inputs) {
 		t.Fatalf("findings %d kept and %d cut; checkpoint cut %v; summaries cut %d", keptFindings, len(cut.Findings), cut.Checkpoint != nil, len(cut.Inputs))
 	}
+	// Every input is in one place or the other, each once, with its commit.
+	for _, in := range inputs[1:] {
+		n := 0
+		for _, c := range cut.Inputs {
+			if c.Task == in.Task && c.Commit == in.Commit && c.Summary == in.Summary {
+				n++
+			}
+		}
+		if n != 1 && !slices.ContainsFunc(kept.Inputs, func(k TaskInput) bool { return k.Task == in.Task }) {
+			t.Fatalf("input %s is not kept once: %d", in.Task, n)
+		}
+	}
+	if len(kept.Checks) > 0 && len(cut.Checks) > 0 || len(kept.Checks)+len(cut.Checks) != len(checks) {
+		t.Fatalf("checks kept %d, cut %d", len(kept.Checks), len(cut.Checks))
+	}
 	if strings.Contains(string(js), "\\"+"u003c") {
 		t.Fatal("task.json escapes <")
+	}
+	if inputs[0].Summary == "" || len(checks[0].Argv) == 0 {
+		t.Fatal("the caller's task file was cut")
 	}
 	// A task file that fits is written whole, with no task-more.json.
 	small := TaskFile{Task: "build", Attempt: 1, MaxAttempts: 3, Member: "lead", Kind: TaskWork, Instructions: "Do it.", Inputs: inputs[:1]}
@@ -330,4 +357,100 @@ func TestAReceiptFitsWhateverTheTaskHolds(t *testing.T) {
 		t.Fatalf("the same command again: %+v %v", again, err)
 	}
 	stopRun(t, e, run.ID)
+}
+
+// A refused change's events are kept with its rows as the refusal comes,
+// under the run's transaction lock: the next commit writes them first,
+// whoever makes it (another task's change before any pause), and a pause
+// that is refused too keeps its own for the commit after.
+func TestARefusedChangesEventsGoWithTheNextCommitWhoeverMakesIt(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	e.mu.Lock()
+	r := e.runs[run.ID]
+	e.mu.Unlock()
+	ctx := context.Background()
+	commit := func(kind string) error {
+		return e.transact(ctx, r, func() tx { return ev(kind, map[string]any{"n": kind}) }, nil)
+	}
+	l.mu.Lock()
+	l.failOn, l.failOnce = "first", true
+	l.mu.Unlock()
+	if err := commit("first"); err == nil {
+		t.Fatal("the refused commit was taken")
+	}
+	l.mu.Lock()
+	l.failOn, l.failOnce = "second", true
+	l.mu.Unlock()
+	if err := commit("second"); err == nil {
+		t.Fatal("the second refused commit was taken")
+	}
+	if err := commit("third"); err != nil {
+		t.Fatal(err)
+	}
+	kinds := l.kinds(run.ID)
+	i1, i2, i3 := slices.Index(kinds, "first"), slices.Index(kinds, "second"), slices.Index(kinds, "third")
+	if i1 < 0 || i2 != i1+1 || i3 != i2+1 {
+		t.Fatalf("the events in order with the commit that took them: %v", kinds)
+	}
+	// A change given up drops its events.
+	l.mu.Lock()
+	l.failOn, l.failOnce = "dropped", true
+	l.mu.Unlock()
+	if err := e.transact(ctx, r, func() tx { return ev("dropped", nil) }, giveUp); err == nil {
+		t.Fatal("the refused commit was taken")
+	}
+	if err := commit("fourth"); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(l.kinds(run.ID), "dropped") {
+		t.Fatalf("a change given up was written: %v", l.kinds(run.ID))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A crew whose task could make a task file with no room left is refused
+// as it is saved: a need twice, and a goal, role and instructions that as
+// JSON leave no room for the rest.
+func TestACrewIsRefusedWhenItsTaskFileCouldNotFit(t *testing.T) {
+	dir := newRepo(t)
+	twice := repoCrew(dir, work("build", "lead"), work("docs", "lead", "build", "build"))
+	if err := twice.Validate(); err == nil || !strings.Contains(err.Error(), "needs \"build\" twice") {
+		t.Fatalf("a need twice: %v", err)
+	}
+	wide := "\U0001D11E"
+	big := repoCrew(dir, work("build", "lead"))
+	big.Goal = strings.Repeat(wide, maxGoal)
+	big.Members[0].Prompt = strings.Repeat(wide, maxPrompt)
+	big.Tasks[0].Instructions = strings.Repeat(wide, maxInstructions)
+	if err := big.Validate(); err == nil || !strings.Contains(err.Error(), "as its task file keeps them") {
+		t.Fatalf("a task's text past its room: %v", err)
+	}
+	big.Members[0].Prompt = ""
+	if err := big.Validate(); err != nil {
+		t.Fatalf("within its room: %v", err)
+	}
+}
+
+// Every cut ends: with nothing but the attempt before's error to cut, the
+// task file is cut once and fits, or is an error, never a loop.
+func TestTheTaskFilesCutsEnd(t *testing.T) {
+	f := TaskFile{Task: "build", Attempt: 2, MaxAttempts: 3, Member: "lead", Kind: TaskWork, Instructions: strings.Repeat("<", maxInstructions),
+		Previous: &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 100<<10)}}
+	md, js, more, err := fitTaskFile(f)
+	if err != nil || len(md) > maxTaskFile || len(js) > maxTaskFile || more == nil {
+		t.Fatalf("md %d, js %d, more %v, %v", len(md), len(js), more != nil, err)
+	}
+	var cut TaskMore
+	if err := json.Unmarshal(more, &cut); err != nil || cut.Previous == nil || len(cut.Previous.Error) != 100<<10 {
+		t.Fatalf("the whole error in task-more.json: %v", err)
+	}
+	// Text no cut can make fit (no crew's validation lets it through): an
+	// error, after each cut once.
+	f.Instructions = strings.Repeat("<", 70<<10)
+	if _, _, _, err := fitTaskFile(f); err == nil || !strings.Contains(err.Error(), "with every part cut that can be") {
+		t.Fatalf("an uncuttable task file: %v", err)
+	}
 }

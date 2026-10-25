@@ -586,17 +586,10 @@ type tx struct {
 	more   func(LedgerTx) error
 }
 
-// refusedChange is the error of a change whose commit the ledger refused,
-// with no undo: its state stays ahead, and its events go with it until a
-// pause takes them (pauseDispatch). It is the ledger's error otherwise.
-type refusedChange struct {
-	err    error
-	events []event
-	taken  bool
-}
-
-func (c *refusedChange) Error() string { return c.err.Error() }
-func (c *refusedChange) Unwrap() error { return c.err }
+// giveUp is the undo of a change its caller gives up when its commit is
+// refused, with no state of its own to put back: its events are dropped
+// with it rather than written by the next commit (transact).
+func giveUp() {}
 
 // writable is events as the ledger takes them: an event whose payload
 // encodes to more than ledger.MaxPayload becomes a note of its size (with
@@ -639,12 +632,12 @@ func ev(kind string, payload map[string]any) tx {
 // marked again for the next transaction (those of earlier failures among
 // them), undo, when given, puts this change's state back under e.mu and
 // drops its events, and an end pending stays pending; with no undo the
-// error carries the change's events (refusedChange), the caller pauses the
-// run's dispatch where the state stays ahead (afterTransact,
-// pauseDispatch), and that pause takes them to be written by the next
-// commit with its rows (r.pendingEvents), so the ledger never holds a
-// change without what it said; a caller that gives the change up instead
-// (a check not run when its start was not recorded) drops them. Every event is measured as it is made (writable): one
+// state stays ahead and its events are kept with its rows before txMu is
+// let go (r.pendingEvents), for the next commit, whoever's, to write
+// first, so the ledger never holds a change without what it said; the
+// caller pauses the run's dispatch where it must (afterTransact). A
+// caller that gives the change up when its commit fails (a check not run
+// when its start was not recorded) passes giveUp, and its events go. Every event is measured as it is made (writable): one
 // the ledger would refuse becomes a bounded note, so no event fails every
 // commit after it. A change that sets the run's outcome reports the end
 // once committed. Nothing is written for a change that changed nothing.
@@ -683,14 +676,13 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 	e.mu.Lock()
 	if err != nil {
 		snap.undo(r)
-		r.pendingEvents = pending
+		r.pendingEvents = events
 		if undo != nil {
 			undo()
-			e.mu.Unlock()
-			return err
+			r.pendingEvents = pending
 		}
 		e.mu.Unlock()
-		return &refusedChange{err: err, events: events[len(pending):]}
+		return err
 	}
 	r.revision = rev
 	r.touch()
@@ -761,12 +753,6 @@ func (e *Engine) pauseFor(r *run, err error) error {
 // and the continuation of a run that stopped so starts paused, for a
 // person to look at (Codex's review of #367). The caller holds e.mu.
 func (e *Engine) pauseDispatch(r *run, err error) bool {
-	// The refused change stays ahead: its events go with its rows, once.
-	var refused *refusedChange
-	if errors.As(err, &refused) && !refused.taken {
-		r.pendingEvents = append(r.pendingEvents, refused.events...)
-		refused.taken = true
-	}
 	if r.ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		r.note(session.ActivityStatus, "the ledger did not record the run's state as it stopped: %v", err)
 		return false
@@ -1083,7 +1069,7 @@ func (e *Engine) startManaged(ctx context.Context, r *run) error {
 			r.markTask(t)
 		}
 		return ev("run.created", map[string]any{"base": base, "tasks": len(r.tasks)})
-	}, nil); err != nil {
+	}, giveUp); err != nil {
 		return err
 	}
 	e.pumpLocked(r)
@@ -1316,7 +1302,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		if l, ok := e.lookup(prev); ok && !l.Info().Status.Ended() {
 			if err := e.transact(ctx, r, func() tx {
 				return ev("session.released", map[string]any{"member": m.def.Name, "session": prev, "for": t.def.ID})
-			}, nil); err != nil {
+			}, giveUp); err != nil {
 				// Not recorded: the session stays, the attempt is not
 				// spent, and the run's dispatch pauses.
 				_ = e.transact(context.Background(), r, func() tx {
@@ -1434,7 +1420,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	}
 	if err := e.transact(ctx, r, func() tx {
 		return ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
-	}, nil); err != nil {
+	}, giveUp); err != nil {
 		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err), false)
 		return
 	}
@@ -1467,7 +1453,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		r.note(session.ActivityStatus, "task %s: attempt %d started as %s", t.def.ID, a.n, m.def.Name)
 		stopping = r.stopping
 		return ev("attempt.launched", map[string]any{"task": t.def.ID, "attempt": a.n, "session": id})
-	}, nil)
+	}, giveUp)
 	go e.watchAttempt(r, a, local)
 	// Closed before its session is stopped, so the stage is the launch's,
 	// not the watcher's "session ended".
@@ -1512,7 +1498,7 @@ func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, c
 	res := e.runCommand(ctx, dir, ch, io.Discard, nil)
 	if err := e.transact(context.Background(), r, func() tx {
 		return ev(kind, map[string]any{"task": a.t.def.ID, "attempt": a.n, "setup": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "error": res.Err, "duration": res.Duration.String()})
-	}, nil); err != nil {
+	}, giveUp); err != nil {
 		return fmt.Errorf("the ledger could not record %s: %w", ch.ID, err)
 	}
 	switch {

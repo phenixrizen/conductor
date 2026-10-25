@@ -142,7 +142,7 @@ export function memberNameFrom(text: string, taken: readonly string[] = []): str
 export const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/
 
 /** The server's bounds on tasks (internal/crew). */
-export const TASK_LIMITS = { tasks: 128, instructions: 8000, checks: 8, timeout: 3600, timeoutDefault: 600, argv: 32, arg: 4096, argvBytes: 8192 } as const
+export const TASK_LIMITS = { tasks: 128, instructions: 8000, checks: 8, timeout: 3600, timeoutDefault: 600, argv: 32, arg: 4096, argvBytes: 8192, taskText: 40 << 10 } as const
 
 /** Why the server would refuse a task or check id, or '' when it is fine. */
 export function taskIdError(id: string, taken: readonly string[] = []): string {
@@ -171,7 +171,11 @@ export function checkProblems(c: DraftCheck, what: string, taken: readonly strin
 }
 
 /** What a crew with tasks and its members look like to the task rules: a saved crew's tasks or the editor's. */
-export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'> & { key?: number }> }
+export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & {
+  goal?: string
+  tasks?: ReadonlyArray<CrewTask | DraftTask>
+  members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'> & { prompt?: string; key?: number }>
+}
 
 /** Characters as the server counts them (runes), not UTF-16 units. */
 const chars = (s: string) => [...s].length
@@ -217,6 +221,10 @@ export function taskProblems(c: TaskShape): string[] {
     else if (!names.includes(t.member)) out.push(`${what}: ${t.member ? `${t.member} is not a member` : 'choose its member'}`)
     if (chars(t.instructions) > TASK_LIMITS.instructions) out.push(`${what}: the instructions are at most ${TASK_LIMITS.instructions} characters`)
     if (t.instructions.includes('\0')) out.push(`${what}: the instructions contain NUL`)
+    // The task file never cuts the crew's own text: as its task.json keeps it (JSON, quotes and escapes), it leaves room for the rest.
+    const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
+    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + bytes(JSON.stringify(s)), 0)
+    if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
     const draft = drafts.find((d) => d.id === t.id && d.key !== undefined)
     const checks = draft?.checks ?? t.checks ?? []
     if (checks.length > TASK_LIMITS.checks) out.push(`${what}: at most ${TASK_LIMITS.checks} checks`)
@@ -229,9 +237,10 @@ export function taskProblems(c: TaskShape): string[] {
   }
   for (const t of tasks) {
     const what = t.id ? `Task ${t.id}` : 'A task'
-    for (const n of t.needs ?? []) {
+    for (const [i, n] of (t.needs ?? []).entries()) {
       if (n === t.id) out.push(`${what}: cannot need itself`)
       else if (!ids.includes(n)) out.push(`${what}: needs ${n}, which is not a task`)
+      else if (t.needs!.slice(0, i).includes(n)) out.push(`${what}: needs ${n} twice`)
     }
     if (t.kind === 'review' && (t.needs?.length !== 1 || kinds.get(t.needs[0]!) !== 'work')) out.push(`${what}: a review needs exactly one work task, the one it reviews`)
   }

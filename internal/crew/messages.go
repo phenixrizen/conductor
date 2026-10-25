@@ -274,7 +274,7 @@ func (e *Engine) typing(r *run, seq int64) bool {
 		w := ev("message.typing", map[string]any{"seq": m.seq, "from": m.from, "to": m.to})
 		w.more = func(ltx LedgerTx) error { return ltx.PutMessage(r.messageRow(m)) }
 		return w
-	}, nil)
+	}, giveUp)
 	if err != nil {
 		e.mu.Lock()
 		r.unqueued(seq)
