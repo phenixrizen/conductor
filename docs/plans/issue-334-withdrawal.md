@@ -87,7 +87,12 @@ not its checkpoint, not as a candidate, not in the task file.
    (the history the continued run had). A run once continued takes no
    change of its tasks (retry, cancel, accept, pause or unpause: `409
    run_continued`): its continuation owns that history, and a retry there
-   would fork it.
+   would fork it. The refusal holds from the moment a continuation is
+   being made, not only once it is: `ContinueRun` takes the source run's
+   `txMu` while it marks the source `resuming` under `e.mu`, so a change
+   under way commits first and every later one sees the mark and refuses;
+   the snapshot is loaded after that. A continuation that fails clears the
+   mark.
 8. **Version 3 databases: conservative** (the owner, 2026-10-25). The
    migration to 4, in Go in the migration's transaction. The reopened
    subjects of a run's chain are seeded from everything version 3 kept, not
@@ -97,7 +102,10 @@ not its checkpoint, not as a candidate, not in the task file.
    attempt with stage `withdrawn` (its task's needs). Every task that needs
    a seeded subject, transitively in the saved crew, gets `withdrawn` = its
    highest attempt, inherited down the chain (a continuation's task takes
-   its ancestor's value when higher), and loses its repair. One `migrated`
+   its ancestor's value when higher, but never above its own row's
+   `attempts`: version 3 let an ancestor be retried after it was
+   continued, and a higher value would discard the child's fresh
+   attempts), and loses its repair. One `migrated`
    event per run it changes. It may drop good carried work of attempts made
    after a reopen; it never reuses withdrawn work.
 
@@ -150,6 +158,11 @@ Each fails without its part, `-race -count=30`:
 - Version 3: a reopen whose commit failed and whose rows the pause saved
   (no `task.reopened`): migrated from the review attempt's verdict, nothing
   downstream reused.
+- A retry gated to land while a continuation is being made is refused,
+  and the continuation's snapshot is the run as it was.
+- Version 3: an ancestor retried after its continuation (attempts 5 to the
+  child's 3): the child's `withdrawn` is at most 3, and its attempt 4 is
+  kept through another continuation.
 - A continued run refuses a retry (`409 run_continued`); a ledger edited
   to give an ancestor a later attempt is not taken past the row's count.
 - The rounds 8 and 9 tests, kept.
