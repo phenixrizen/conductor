@@ -109,6 +109,10 @@ var (
 	ErrRunRunning     = errors.New("the run is still running: stop it first")
 	// ErrRunResumed is what a RunResumedError is (errors.Is).
 	ErrRunResumed = errors.New("the run was resumed already")
+	// ErrRunContinued refuses a change of a managed run's tasks or pause
+	// once a continuation is made of it, or is being made: the
+	// continuation owns that history, and a retry here would fork it.
+	ErrRunContinued = errors.New("the run has been continued: change its continuation instead")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
@@ -311,6 +315,13 @@ type Engine struct {
 	// tried, when set, is called by deliver after each attempt to type a
 	// handoff, with the member and whether it was typed: tests wait on it.
 	tried func(member string, typed bool)
+	// afterVisit, when set, is called by withdraw for each task it visits,
+	// under e.mu: a test counts the visits.
+	afterVisit func(taskID string)
+	// beforeContinue, when set, runs in ContinueRun once the run continued
+	// is marked and before its ledger rows are read: a test lands a
+	// change there.
+	beforeContinue func(runID string)
 }
 
 // sessionMember is the member a session is, and its run.

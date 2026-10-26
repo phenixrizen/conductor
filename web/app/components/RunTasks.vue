@@ -21,7 +21,7 @@ const api = useSessions()
 
 const tasks = computed(() => props.run.tasks ?? [])
 const selectedTask = computed(() => tasks.value.find((t) => t.id === props.selected))
-const live = computed(() => ({ stoppedAt: props.run.stoppedAt, paused: props.run.paused, record: props.run.record }))
+const live = computed(() => ({ stoppedAt: props.run.stoppedAt, paused: props.run.paused, record: props.run.record, resumedBy: props.run.resumedBy }))
 function agentOf(member: string): string {
   return props.run.members.find((m) => m.name === member)?.agentId ?? ''
 }

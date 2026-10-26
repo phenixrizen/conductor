@@ -308,6 +308,18 @@ func TestAnAttemptReadsItsTaskAndSubmitsItsResultAndTheAdminCommandsTheRun(t *te
 	if resp, out := e.do("POST", base+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("stop: %d %v", resp.StatusCode, out)
 	}
+	// Continued, the run takes no command: its continuation owns its tasks.
+	resp, out = e.do("POST", base+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("continue: %d %v", resp.StatusCode, out)
+	}
+	next := out["run"].(map[string]any)["id"].(string)
+	if resp, out := e.do("POST", base+"/tasks/docs/retry", adminToken, map[string]any{"commandId": "c10"}); resp.StatusCode != http.StatusConflict || errCodeOf(out) != "run_continued" || receiptOf(t, out)["refusal"] != "run_continued" {
+		t.Fatalf("a retry of the continued run: %d %v", resp.StatusCode, out)
+	}
+	if resp, out := e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop the continuation: %d %v", resp.StatusCode, out)
+	}
 }
 
 // The launch route takes a crew with tasks once crews.managed is on (the

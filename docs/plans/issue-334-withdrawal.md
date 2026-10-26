@@ -106,10 +106,12 @@ not its checkpoint, not as a candidate, not in the task file.
    attempt with stage `withdrawn` (its task's needs). Every task that needs
    a seeded subject, transitively in the saved crew, gets `withdrawn` = its
    highest attempt, inherited down the chain (a continuation's task takes
-   its ancestor's value when higher, but never above its own row's
-   `attempts`: version 3 let an ancestor be retried after it was
-   continued, and a higher value would discard the child's fresh
-   attempts), and loses its repair. One `migrated`
+   its ancestor's value when higher, but never above the attempts it took
+   from the ancestor, its row's `attempts` less its own attempt rows:
+   version 3 let an ancestor be retried after it was continued, and a
+   higher value would discard the child's fresh attempts; the row's
+   `attempts` alone would withdraw a child's own attempt 4), and loses
+   its repair. One `migrated`
    event per run it changes. It may drop good carried work of attempts made
    after a reopen; it never reuses withdrawn work.
 

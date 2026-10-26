@@ -287,7 +287,34 @@ type task struct {
 	// it started, not at a checkpoint that may hold the refused result,
 	// and its task file names the result.
 	refused *refusal
+	// withdrawn is the number of the last attempt a withdrawal took back
+	// (an input's result withdrawn, withdraw), 0 for none. Nothing from an
+	// attempt numbered so or less is used again: not its result, its
+	// start, its checkpoint, its candidate, nor in the task file.
+	withdrawn int
 }
+
+// lastKept is t's last attempt when a withdrawal has not taken it back,
+// else nil: attempt numbers only grow, so the last is the highest.
+func (t *task) lastKept() *attempt {
+	if n := len(t.attempts); n > 0 && t.attempts[n-1].n > t.withdrawn {
+		return t.attempts[n-1]
+	}
+	return nil
+}
+
+// lastN is the number of t's last attempt, this run's or, with none, the
+// last of the runs this one continues.
+func (t *task) lastN() int {
+	if n := len(t.attempts); n > 0 {
+		return t.attempts[n-1].n
+	}
+	return t.prior
+}
+
+// kept reports whether something from attempt n may be used again: a
+// withdrawal has not taken it back.
+func (t *task) kept(n int) bool { return n > t.withdrawn }
 
 // refusal is an attempt of an earlier run whose result was refused
 // before its checks.
@@ -969,7 +996,8 @@ func (r *run) inputs(t *task) []input {
 // what failed), where the last attempt started when its result was
 // refused before its checks ran (refusedBeforeChecks: no tree to build
 // on; the task file names the result's branch), else its first need's
-// result, else the run's base.
+// result, else the run's base. An attempt a withdrawal took back is not
+// the last (lastKept): its work rested on an input since changed.
 func (r *run) startCommit(t *task) string {
 	if t.repair != nil && t.repair.commit != "" {
 		return t.repair.commit
@@ -984,8 +1012,7 @@ func (r *run) startCommit(t *task) string {
 		}
 		return r.base
 	}
-	if n := len(t.attempts); n > 0 {
-		last := t.attempts[n-1]
+	if last := t.lastKept(); last != nil {
 		if last.state == ledger.AttemptFailed && last.result != "" && refusedBeforeChecks(last.stage) && last.start != "" {
 			return last.start
 		}
@@ -998,11 +1025,11 @@ func (r *run) startCommit(t *task) string {
 			// checkpoint rested on an input since changed: not used.
 			return last.checkpoint.commit
 		}
-	} else if t.refused != nil {
+	} else if t.refused != nil && t.kept(t.refused.n) {
 		// A continuation's first attempt after a refused result: where
 		// that attempt started.
 		return t.refused.start
-	} else if t.checkpoint != nil && t.checkpoint.commit != "" {
+	} else if t.checkpoint != nil && t.checkpoint.commit != "" && t.kept(t.checkpoint.n) {
 		// A continuation's first attempt: where the last one got to.
 		return t.checkpoint.commit
 	}
@@ -1044,6 +1071,9 @@ func (e *Engine) pump(r *run) {
 		m := r.member(t.def.Member)
 		if m == nil {
 			continue
+		}
+		if t.candidate != nil && !t.kept(t.candidate.n) {
+			t.candidate = nil // its input withdrawn since: never verified
 		}
 		if t.candidate != nil {
 			// A continuation's result to verify again: no session, so the
@@ -1266,7 +1296,7 @@ func (r *run) taskRow(t *task) ledger.TaskRow {
 			n++
 		}
 	}
-	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n + t.prior, ImportedFrom: t.imported, Extra: t.extra}
+	row := ledger.TaskRow{RunID: r.id, ID: t.def.ID, Member: t.def.Member, Kind: t.def.Kind, State: t.state, Reason: t.reason, Attempts: n + t.prior, ImportedFrom: t.imported, Extra: t.extra, Withdrawn: t.withdrawn}
 	if rp := t.repair; rp != nil {
 		if b, err := json.Marshal(TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: rp.findings}); err == nil {
 			row.Repair = string(b)
@@ -1890,6 +1920,7 @@ func (e *Engine) accept(r *run, a *attempt, ok bool, stage, errText string) {
 		if ok {
 			res = a.submitted
 			t.result = &taskResult{attempt: a.n, commit: a.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
+			t.imported = "" // made in this run
 			if t.def.Kind == TaskReview {
 				t.result.reviewed = a.start
 			}
@@ -1933,7 +1964,7 @@ func (e *Engine) reopen(r *run, review *task, a *attempt, res *Result) (*task, [
 		return nil, nil
 	}
 	sub.repair = &repair{review: review.def.ID, attempt: a.n, commit: sub.result.commit, summary: res.Summary, findings: slices.Clone(res.Findings)}
-	sub.result = nil
+	sub.result, sub.imported = nil, ""
 	why := fmt.Sprintf("review %s asked for changes: %d findings", review.def.ID, len(res.Findings))
 	if len(sub.attempts)+sub.prior >= maxAttemptsPerTask+sub.extra {
 		sub.state, sub.reason = ledger.TaskFailed, fmt.Sprintf("review %s asked for changes and no attempt is left; retry it to allow one more", review.def.ID)
@@ -1951,16 +1982,29 @@ func (e *Engine) reopen(r *run, review *task, a *attempt, res *Result) (*task, [
 }
 
 // withdraw takes back what rested on sub's result, as a review reopened
-// it: every task that needs sub, and what needs those, is blocked again
-// with its result dropped; an attempt in flight on the withdrawn result
-// ends (cancelled, its session stopped once that is durable), and neither
-// it nor a result made on it counts against its task. A task that failed
-// or was cancelled stays so. The caller holds e.mu, in a transaction.
+// it: every task that needs sub, and what needs those, whatever its state.
+// Each has every attempt so far taken back (withdrawn: its last attempt's
+// number), and its repair, candidate, checkpoint and refusal dropped, all
+// made on the input withdrawn. An attempt in flight on it ends (cancelled,
+// its session stopped once that is durable), and neither it nor a result
+// made on it counts against its task. A task that succeeded loses its
+// result; it and a ready or blocked one are blocked again. A task that
+// failed or was cancelled stays so until a person retries it, which starts
+// it at the new input. Each task is visited once (a dense graph is walked
+// once under e.mu). The caller holds e.mu, in a transaction.
 func (e *Engine) withdraw(r *run, sub *task, why string) []event {
+	return e.withdrawFrom(r, sub, why, map[*task]bool{sub: true})
+}
+
+func (e *Engine) withdrawFrom(r *run, sub *task, why string, seen map[*task]bool) []event {
 	var events []event
 	for _, t := range r.tasks {
-		if t == sub || !slices.Contains(t.def.Needs, sub.def.ID) {
+		if seen[t] || !slices.Contains(t.def.Needs, sub.def.ID) {
 			continue
+		}
+		seen[t] = true
+		if e.afterVisit != nil {
+			e.afterVisit(t.def.ID)
 		}
 		switch {
 		case t.active() != nil:
@@ -1973,20 +2017,22 @@ func (e *Engine) withdraw(r *run, sub *task, why string) []event {
 			r.note(session.ActivityStatus, "task %s: attempt %d withdrawn: %s", t.def.ID, a.n, why)
 			events = append(events, event{"attempt.withdrawn", map[string]any{"task": t.def.ID, "attempt": a.n, "needs": sub.def.ID}})
 		case t.state == ledger.TaskSucceeded:
-			t.result = nil
+			t.result, t.imported = nil, ""
 			t.extra++
 			r.note(session.ActivityStatus, "task %s: its result is withdrawn: %s", t.def.ID, why)
 			events = append(events, event{"task.withdrawn", map[string]any{"task": t.def.ID, "needs": sub.def.ID}})
-		case t.state == ledger.TaskReady:
-		default:
-			continue
 		}
-		// Its checkpoint rested on the input withdrawn: the next attempt
-		// starts from the new result, not from it.
-		t.checkpoint = nil
-		t.state, t.reason = ledger.TaskBlocked, why
+		// Everything it made rested on the input withdrawn: the next
+		// attempt starts from the new result, not from any of it.
+		if n := t.lastN(); n > t.withdrawn {
+			t.withdrawn = n
+		}
+		t.repair, t.candidate, t.checkpoint, t.refused = nil, nil, nil, nil
+		if t.state != ledger.TaskFailed && t.state != ledger.TaskCancelled {
+			t.state, t.reason = ledger.TaskBlocked, why
+		}
 		r.markTask(t)
-		events = append(events, e.withdraw(r, t, "needs "+t.def.ID+", withdrawn")...)
+		events = append(events, e.withdrawFrom(r, t, "needs "+t.def.ID+", withdrawn", seen)...)
 	}
 	return events
 }
@@ -2006,8 +2052,12 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 		return ErrRunStopped
 	}
 	var was bool
+	var refused error
 	err = e.transact(ctx, r, func() tx {
 		was = r.paused
+		if refused = r.continued(); refused != nil {
+			return tx{}
+		}
 		return tx{events: r.setPaused(paused)}
 	}, func() {
 		// Not recorded: as it was, so a dispatch never rests on a pause
@@ -2015,6 +2065,9 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 		r.paused = was
 		r.note(session.ActivityError, "the ledger could not record the %s", map[bool]string{true: "pause", false: "unpause"}[paused])
 	})
+	if err == nil && refused != nil {
+		return refused
+	}
 	if err == nil && !paused {
 		e.pumpLocked(r)
 	}
@@ -2029,13 +2082,17 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 	if err != nil {
 		return err
 	}
+	var refused error
 	err = e.transact(ctx, r, func() tx {
-		if cancellable(t) != nil {
-			return tx{} // ended meanwhile
+		if refused = r.continued(); refused != nil || cancellable(t) != nil {
+			return tx{} // continued or ended meanwhile
 		}
 		return tx{events: e.cancelTask(r, t)}
 	}, nil)
 	e.afterTransact(r, err)
+	if err == nil {
+		return refused
+	}
 	return err
 }
 
@@ -2047,13 +2104,17 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 	if err != nil {
 		return err
 	}
+	var refused error
 	err = e.transact(ctx, r, func() tx {
-		if retryable(t) != nil {
-			return tx{} // changed meanwhile
+		if refused = r.continued(); refused != nil || retryable(t) != nil {
+			return tx{} // continued or changed meanwhile
 		}
 		return tx{events: e.retryTask(r, t)}
 	}, nil)
 	e.afterTransact(r, err)
+	if err == nil {
+		return refused
+	}
 	return err
 }
 

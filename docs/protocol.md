@@ -2199,7 +2199,16 @@ task that needed the reopened one, is `blocked` again with its result
 dropped, an attempt of theirs in flight is `cancelled` at stage `withdrawn`
 (its session stopped once that is recorded), and neither a withdrawn attempt
 nor a withdrawn result counts against its task's attempts; a task that had
-failed or been cancelled stays so. The review runs again on the repair. A
+failed or been cancelled stays so until a retry. Every attempt so far of
+every such task is taken back, whatever the task's state (the task row's
+`withdrawn`, the number of its last attempt taken back): nothing of them is
+used again, not their results (as a start, or for Accept anyway, which
+answers `409 task_state` with `no attempt since the withdrawal submitted a
+commit to accept` when none since did), not where they started after a
+refusal, not their checkpoints, not a result being verified again, and not
+in the next attempt's task file, which starts at the new input. A repair
+such a task carried goes too (its findings were on the old input); the
+reopened task keeps its own. The review runs again on the repair. A
 task reopened with no attempt left fails instead, keeping the repair: a retry
 allows one more attempt, which starts at the reviewed commit with the
 findings. The run log says what was reopened and withdrawn, and the events
@@ -2214,7 +2223,8 @@ and the receipt comes back as `{receipt: {commandId, intent, revision,
 repeat?, status, error?, refusal?, task?, paused?}}`: `status` is `done` or
 `failed` (with `error` and `refusal`, for a command the run's state refused,
 such as a cancel of a task already finished: `refusal` is the code the
-answer carries, `task_state`, `run_stopped` or `not_found`, on the first
+answer carries, `task_state`, `run_stopped`, `run_continued` or
+`not_found`, on the first
 answer and on every repeat), `task` the task as it stands after the command
 (`{id, state, reason?, attempts, result?: {attempt, commit?}}`, the reason
 at most 2,000 characters; the run has the rest, so a receipt always fits
@@ -2233,7 +2243,9 @@ nothing changes), then acted on and settled in a second (`done` or
 `uncertain` after the recovery, and read as such. A run keeps 4,096
 commands (`409 too_many_commands`); `GET /api/runs/{run}/commands/{command}`
 reads a receipt without acting; a legacy run takes no command (`409
-task_state`). The engine's own `PauseRun`, `CancelTask` and `RetryTask` make
+task_state`), and a run continued, or being continued, takes none either
+(`409 run_continued`: its continuation owns its tasks, and a change here
+would fork their history). The engine's own `PauseRun`, `CancelTask` and `RetryTask` make
 the same changes without a receipt.
 
 **After the server's end, a continuation.** When the server starts and
@@ -2264,9 +2276,15 @@ its own; the rest is ready or blocked as its needs say, and the attempts
 spent before count against every task and number the next (`crew/<new
 run>/<task>.<n>` continues the numbering). A repair a review asked for and
 the attempts a task was allowed past the bound are the task's row's
-(`repair`, `extra`) and carry over; a result imported before keeps its
-source (`importedFrom` names the attempt that made it, in whichever run)
-and its summary, issues and findings through every later continuation. The run log says what was kept,
+(`repair`, `extra`) and carry over, as does `withdrawn`: an attempt taken
+back is not the last one, here or found further back along the runs
+continued, nor is an attempt past the task row's count; a result imported
+before keeps its source (`importedFrom` names the attempt that made it, in
+whichever run; a result made since in a run is that run's own) and its
+summary, issues and findings through every later continuation, and a
+result whose attempt is in none of the runs continued is not imported: the
+task is `failed` with `its result's attempt <n> is not in the ledger:
+retry it`. The run log says what was kept,
 verified again and left for a decision; the continuation is made once
 (`409 already_resumed` names it), and a run still going is not continued
 (`409 run_running`).

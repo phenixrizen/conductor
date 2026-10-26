@@ -70,9 +70,11 @@ describe('taskActions', () => {
     expect(taskActions(task({ state: 'running', attempt: { n: 1, state: 'running', sessionId: 's' } }), live)).toMatchObject({ retry: false, cancel: true, open: true })
     expect(taskActions(task({ state: 'succeeded', result: { attempt: 1, at: '' } }), live)).toMatchObject({ retry: false, cancel: false, showResult: true })
   })
-  it('offers nothing that changes a stopped run or a record', () => {
+  it('offers nothing that changes a stopped run, a record or a run continued', () => {
     expect(taskActions(task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc' } }), { stoppedAt: 'x' })).toMatchObject({ retry: false, accept: false, cancel: false })
     expect(taskActions(task({ state: 'running' }), { record: true })).toMatchObject({ cancel: false })
+    // A finished run, continued: its continuation owns its tasks.
+    expect(taskActions(task({ state: 'failed', attempt: { n: 1, state: 'failed', result: 'abc', sessionId: 's' } }), { resumedBy: 'next' })).toMatchObject({ retry: false, accept: false, cancel: false, open: true })
   })
 })
 

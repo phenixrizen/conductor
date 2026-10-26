@@ -118,21 +118,21 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js, more []byte, err error) {
 		f.Inputs = append(f.Inputs, TaskInput{Task: in.task, Attempt: in.attempt, Commit: in.commit, Branch: in.branch, Summary: in.summary, Verdict: in.verdict})
 	}
 	for _, p := range t.attempts {
-		if p.n == a.n-1 {
+		if p.n == a.n-1 && t.kept(p.n) {
 			f.Previous = &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
 			if p.result != "" && p.result != a.start {
 				f.Previous.Result, f.Previous.Branch = p.result, p.branch
 			}
 		}
 	}
-	if rf := t.refused; f.Previous == nil && rf != nil && rf.n == a.n-1 {
+	if rf := t.refused; f.Previous == nil && rf != nil && rf.n == a.n-1 && t.kept(rf.n) {
 		f.Previous = &TaskPrevious{Attempt: rf.n, State: ledger.AttemptFailed, Stage: rf.stage, Error: rf.err, Result: rf.result, Branch: rf.branch}
 	}
 	f.StartFrom = startFrom(r, t, a)
 	if rp := t.repair; rp != nil {
 		f.Repair = &TaskRepair{Review: rp.review, Attempt: rp.attempt, Commit: rp.commit, Summary: rp.summary, Findings: append([]Finding(nil), rp.findings...)}
 	}
-	if c := t.checkpoint; c != nil && (a.checkpoint == nil || a.checkpoint != c) {
+	if c := t.checkpoint; c != nil && (a.checkpoint == nil || a.checkpoint != c) && t.kept(c.n) {
 		f.Checkpoint = c.api()
 	}
 	e.mu.Unlock()
@@ -460,7 +460,7 @@ func startFrom(r *run, t *task, a *attempt) string {
 		return fmt.Sprintf("the commit review %q asked changes of", rp.review)
 	}
 	for _, p := range t.attempts {
-		if p.n != a.n-1 {
+		if p.n != a.n-1 || !t.kept(p.n) {
 			continue
 		}
 		if p.result == a.start {
@@ -473,10 +473,10 @@ func startFrom(r *run, t *task, a *attempt) string {
 			return fmt.Sprintf("where attempt %d started: its result was refused at %s", p.n, p.stage)
 		}
 	}
-	if rf := t.refused; rf != nil && rf.n == a.n-1 && rf.start == a.start {
+	if rf := t.refused; rf != nil && rf.n == a.n-1 && rf.start == a.start && t.kept(rf.n) {
 		return fmt.Sprintf("where attempt %d started: its result was refused at %s", rf.n, rf.stage)
 	}
-	if t.checkpoint != nil && t.checkpoint.commit == a.start {
+	if t.checkpoint != nil && t.checkpoint.commit == a.start && t.kept(t.checkpoint.n) {
 		return "the checkpoint the last attempt saved"
 	}
 	for _, in := range a.inputs {

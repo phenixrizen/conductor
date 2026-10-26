@@ -3058,6 +3058,33 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **A withdrawal takes back everything the task built on (part of #334,
+  2026-10-25).** A review's needs_changes withdraws what rested on the
+  task it reopens; the next start was derived in four places (the run's
+  attempts, the checkpoint, a continuation's refusal, the walk back along
+  the runs continued) and the withdrawal cleared only the checkpoint, so a
+  dependent could start at its own result built on the old input and be
+  refused. Every attempt of every task resting on the withdrawn result,
+  transitively and whatever the task's state, is now taken back
+  (`withdrawn` in the task's row, ledger schema 4): never a start, a
+  checkpoint, a candidate verified again, Accept anyway's result or the
+  task file's attempt before, in the run or any continuation; a
+  dependent's own repair goes, the reopened task keeps its own; a task
+  that failed or was cancelled stays so and a retry starts it at the new
+  input. A dense graph is walked once. A result made in a run is that
+  run's own, a continuation finds an imported result where its attempt is
+  or fails the task for a retry, and takes no ancestor attempt past the
+  row's count. A run once continued, or being continued, takes no command
+  (`409 run_continued`): the mark is made under the run's transaction
+  lock, so a change under way commits first and the continuation reads
+  it; a run's row written later never clears its `continued_by`. A
+  version 3 ledger is migrated conservatively (the owner's choice): the
+  reopened tasks are found from the events, a needs_changes review
+  attempt or an attempt withdrawn, and every task resting on one takes
+  its highest attempt as withdrawn and loses its repair, inherited down
+  the chain within the attempts each continuation took. Plan:
+  `docs/plans/issue-334-withdrawal.md` (paths 1 to 8), with the rounds 8
+  and 9 refusal code it holds back.
 - **The ledger takes every change it is given (part of #334, 2026-10-25).**
   Found by Codex's reviews of the withdrawal plan, each one a way for a
   managed run to stall on main. A change whose commit failed with no undo

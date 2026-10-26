@@ -87,6 +87,10 @@ type TaskRow struct {
 	// allowed past the bound (retries, and attempts not counted).
 	Repair string
 	Extra  int
+	// Withdrawn is the number of the task's last attempt a withdrawal
+	// took back (its input's result withdrawn, #334), 0 for none: nothing
+	// from an attempt numbered so or less is used again.
+	Withdrawn int
 }
 
 // AttemptRow is one try at a task.
