@@ -867,12 +867,17 @@ func TestAContinuationIsNotMadeWhenAnAncestorCannotBeRead(t *testing.T) {
 	e3.UseLedger(l)
 	l.mu.Lock()
 	l.failLoad = run.ID
+	runs := len(l.runs)
 	l.mu.Unlock()
 	if _, err := e3.ContinueRun(ctx, mid.ID, ""); err == nil || !strings.Contains(err.Error(), "could not read run "+run.ID) {
 		t.Fatalf("a continuation with its ancestor unread: %v", err)
 	}
-	if row := l.runs[mid.ID]; row.ContinuedBy != "" {
-		t.Fatalf("the refused continuation linked the run: %+v", row)
+	// Refused with nothing made: no run in the ledger or the engine, no link.
+	l.mu.Lock()
+	after, row := len(l.runs), l.runs[mid.ID]
+	l.mu.Unlock()
+	if after != runs || row.ContinuedBy != "" || len(e3.List()) != 0 {
+		t.Fatalf("the refused continuation left %d runs (was %d), the source %+v, the engine's %v", after, runs, row, e3.List())
 	}
 	next, err := e3.ContinueRun(ctx, mid.ID, "")
 	if err != nil {

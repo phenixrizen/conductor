@@ -295,3 +295,47 @@ func TestAVersion3InheritedWithdrawalReachesTheChildsDependents(t *testing.T) {
 		t.Fatalf("the child after the migration: withdrawn %v, repairs %v", w, rp)
 	}
 }
+
+// A backfill that fails (a scan cut short, its rows closed with no error
+// from Close, now read from Err) rolls the migration back whole: the
+// database opens read-only at version 3 with no withdrawn column, and the
+// next open migrates it, backfill and all.
+func TestAFailedBackfillRollsTheMigrationBack(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	f := fixture{id: "team-00000001", crew: reviewCrew, events: []string{"task.reopened:build"},
+		tasks: []TaskRow{
+			{ID: "build", Member: "m", Kind: "work", State: TaskReady, Attempts: 1},
+			{ID: "docs", Member: "m", Kind: "work", State: TaskFailed, Attempts: 2},
+		},
+		attempts: []AttemptRow{{TaskID: "docs", N: 2, State: AttemptFailed}},
+	}
+	f.put(t, l)
+	for _, stmt := range []string{"ALTER TABLE tasks DROP COLUMN withdrawn", "UPDATE schema_version SET version = 3"} {
+		if _, err := l.db.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.Close()
+	backfillFails = errors.New("a scan cut short")
+	failed := openLedger(t, dir)
+	backfillFails = nil
+	if ro, why := failed.ReadOnly(); !ro || !strings.Contains(why, "a scan cut short") {
+		t.Fatalf("a failed backfill opened %v: %s", ro, why)
+	}
+	var version, cols int
+	if err := failed.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != 3 {
+		t.Fatalf("version after the failed migration: %d %v", version, err)
+	}
+	if err := failed.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'withdrawn'").Scan(&cols); err != nil || cols != 0 {
+		t.Fatalf("the withdrawn column after the failed migration: %d %v", cols, err)
+	}
+	failed.Close()
+	again := openLedger(t, dir)
+	if ro, why := again.ReadOnly(); ro {
+		t.Fatalf("read-only after the migration: %s", why)
+	}
+	if w, _ := withdrawnOf(t, again, f.id); w["docs"] != 2 {
+		t.Fatalf("withdrawn after the migration: %v", w)
+	}
+}

@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -43,7 +44,7 @@ func backfillWithdrawn(ctx context.Context, tx *sql.Tx) error {
 		runs[id] = ri
 		ids = append(ids, id)
 	}
-	if err := rows.Close(); err != nil {
+	if err := cmp.Or(rows.Err(), rows.Close()); err != nil { // Err: a scan cut short closes the rows with no error from Close
 		return err
 	}
 	// Each run's values once its ancestor's are known; a loop in the
@@ -76,8 +77,15 @@ func backfillWithdrawn(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
+	if backfillFails != nil {
+		return backfillFails
+	}
 	return nil
 }
+
+// backfillFails, when set, fails the backfill once its writes are made: a
+// test sees the migration roll back whole.
+var backfillFails error
 
 // backfillRun sets one run's tasks' withdrawn (backfillWithdrawn), given
 // its ancestor's, and returns every task's value.
@@ -114,7 +122,7 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 			seeds[p.Task] = true
 		}
 	}
-	if err := evs.Close(); err != nil {
+	if err := cmp.Or(evs.Err(), evs.Close()); err != nil {
 		return nil, err
 	}
 	highest := map[string]int{}
@@ -140,7 +148,7 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 			}
 		}
 	}
-	if err := ats.Close(); err != nil {
+	if err := cmp.Or(ats.Err(), ats.Close()); err != nil {
 		return nil, err
 	}
 	// What needs a seed, and what an ancestor's withdrawal reached, with
@@ -179,7 +187,7 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 		}
 		tasks = append(tasks, r)
 	}
-	if err := trs.Close(); err != nil {
+	if err := cmp.Or(trs.Err(), trs.Close()); err != nil {
 		return nil, err
 	}
 	out := map[string]int{}

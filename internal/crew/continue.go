@@ -99,6 +99,11 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, fmt.Errorf("%w: the run's crew as launched has no tasks", ErrTaskState)
 	}
+	h, err := e.readHistory(ctx, from)
+	if err != nil {
+		undo()
+		return nil, err
+	}
 	prefix, err := e.prepare(ctx, c)
 	if err != nil {
 		undo()
@@ -109,7 +114,7 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
 	}
-	if err := e.startContinued(ctx, r, from, old); err != nil {
+	if err := e.startContinued(ctx, r, from, h, old); err != nil {
 		e.abort(r)
 		undo()
 		return nil, err
@@ -175,12 +180,21 @@ func (e *Engine) markContinuing(runID, label string) (*run, string, error) {
 	return old, label, nil
 }
 
-// startContinued sets r up from the run it continues and records it: the
-// base and the pause carried, every task as its row and its last attempt
-// say (imported, failed, cancelled, verified again, waiting for a person,
-// or new), the old run's row naming the new; then the ready tasks are
-// dispatched.
-func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *run) error {
+// history is what a continuation takes from the runs it continues: the
+// source's task rows, each task's last attempt kept (along ContinuedFrom
+// when the source made none), and the imported results with where each
+// was found.
+type history struct {
+	rows  map[string]ledger.TaskRow
+	last  map[string]ledger.AttemptRow
+	refs  map[string]ledger.AttemptRow
+	refOf map[string]string
+}
+
+// readHistory reads the history a continuation of from takes, before the
+// continuation is made: a run the ledger cannot read refuses it with
+// nothing made.
+func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) {
 	rows := map[string]ledger.TaskRow{}
 	for _, row := range from.Tasks {
 		rows[row.ID] = row
@@ -249,7 +263,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		seen[prevID] = true
 		prev, found, err := e.ledger.Load(ctx, prevID)
 		if err != nil {
-			return fmt.Errorf("the ledger could not read run %s: %w", prevID, err)
+			return history{}, fmt.Errorf("the ledger could not read run %s: %w", prevID, err)
 		}
 		if !found {
 			break
@@ -298,8 +312,18 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		}
 	}
 	if readErr != nil {
-		return readErr
+		return history{}, readErr
 	}
+	return history{rows: rows, last: last, refs: refs, refOf: refOf}, nil
+}
+
+// startContinued sets r up from the run it continues and records it: the
+// base and the pause carried, every task as its row and its last attempt
+// say (imported, failed, cancelled, verified again, waiting for a person,
+// or new), the old run's row naming the new; then the ready tasks are
+// dispatched.
+func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run) error {
+	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
 	err := e.transact(ctx, r, func() tx {
 		r.base, r.paused, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.ID
