@@ -85,3 +85,27 @@ the parser, the same rules as the web's `utils/invite.ts`).
 
 The packaged app on each platform (dmg, deb, rpm, AppImage, nsis) and the
 WSL path on a real Windows machine: `docs/features.md` lists the checklist.
+
+## Releasing
+
+A release is built from a dispatch of `.github/workflows/release.yml` with
+its version, never from a pushed tag:
+
+```bash
+gh workflow run release.yml --ref main -f version=0.7.0-rc.18
+```
+
+The run checks, builds every package from the commit at the head of `main`
+and puts them on one draft release named `0.7.0-rc.18` for the tag
+`v0.7.0-rc.18`, which does not exist yet. Its last job, `release-check`,
+fails unless that draft is the version's only release, is for the commit
+built, holds every package with its blockmap and the three `latest*.yml`,
+and no `v0.7.0-rc.18` tag exists. Publishing the draft (as a prerelease for a
+release candidate) makes the tag at that commit.
+
+Do not push a `v*` tag. The apps' updater reads the repository's
+`releases.atom`, which lists a pushed tag even while its release is a draft.
+An app on the rc channel takes the newest rc entry there, finds no
+`latest.yml` on a draft and updates to nothing until a newer release is
+published or the tag is deleted (#375). The dispatch refuses a version whose
+tag exists.
