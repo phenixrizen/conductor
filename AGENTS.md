@@ -130,6 +130,10 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
+- A run's log is not its ledger. The engine notes a change in the run's
+  log inside the change and commits its rows and events after it, outside
+  the lock: a test that saw the note and reads the ledger at once can read
+  it before the commit. Wait on the ledger for what the ledger must hold.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
