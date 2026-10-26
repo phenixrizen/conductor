@@ -3058,6 +3058,17 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **A tag's packages go into one draft release (#372, 2026-10-26).** The
+  three package jobs published through electron-builder, which makes the
+  tag's release when it finds none, and two that found none at once each
+  made a draft: rc.13's and rc.17's packages were split over two, put
+  together by hand. A `release` job now makes the draft before the package
+  jobs start (`scripts/release_draft.py ensure`: named the version, a draft,
+  not a prerelease, as electron-builder makes it; a rerun keeps it; a
+  published release or two drafts on the tag fail the job), so they only
+  find it and upload. A `release-check` job at the end fails unless the
+  tag has that one draft holding every package the jobs built; runs for
+  one tag queue rather than race.
 - **A withdrawal takes back everything the task built on (part of #334,
   2026-10-25).** A review's needs_changes withdraws what rested on the
   task it reopens; the next start was derived in four places (the run's
