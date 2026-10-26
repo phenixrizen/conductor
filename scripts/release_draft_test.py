@@ -1,8 +1,11 @@
 """Tests for release_draft.py: python3 -m unittest discover -s scripts -p '*_test.py'"""
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
+import release_draft
 from release_draft import built, draft, plan, problems
 
 
@@ -88,6 +91,22 @@ class Check(unittest.TestCase):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text("x")
             self.assertEqual(built(Path(d)), ["Conductor-Setup-0.7.0-rc.17.exe", "Conductor-Setup-0.7.0-rc.17.exe.blockmap", "latest.yml"])
+
+
+class Gh(unittest.TestCase):
+    def test_ghs_output_is_read_as_utf8_whatever_the_locale(self):
+        line = '{"id": 7, "tag_name": "v0.7.0-rc.17", "draft": true, "assets": [], "note": "\u201cquoted\u201d"}\n'
+        def run(argv, **kw):
+            # As subprocess decodes: the bytes gh wrote, with the encoding asked for (the locale's if none).
+            return subprocess.CompletedProcess(argv, 0, stdout=line.encode("utf-8").decode(kw.get("encoding") or "cp1252"))
+        with mock.patch.object(release_draft.subprocess, "run", side_effect=run):
+            self.assertEqual(release_draft.releases("o/r")[0]["note"], "\u201cquoted\u201d")
+
+    def test_releases_are_read_without_their_notes(self):
+        with mock.patch.object(release_draft, "gh", return_value="") as gh:
+            release_draft.releases("o/r")
+        self.assertNotIn("body", gh.call_args.args[-1])
+        self.assertIn("{id, tag_name, draft, assets:", gh.call_args.args[-1])
 
 
 if __name__ == "__main__":

@@ -113,12 +113,15 @@ def problems(releases: list[dict], tag: str, packages: list[str]) -> list[str]:
 
 
 def gh(*args: str) -> str:
-    return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+    # gh writes UTF-8; text=True alone decodes with the locale's (cp1252 on the Windows runner).
+    return subprocess.run(["gh", *args], check=True, capture_output=True, encoding="utf-8").stdout
 
 
 def releases(repo: str) -> list[dict]:
-    # One release per line, every page; drafts are listed to a token that may push.
-    out = gh("api", "--paginate", f"repos/{repo}/releases?per_page=100", "--jq", ".[]")
+    # One release per line, every page, with only what is read here (no notes); drafts are listed to
+    # a token that may push.
+    out = gh("api", "--paginate", f"repos/{repo}/releases?per_page=100", "--jq",
+             ".[] | {id, tag_name, draft, assets: [.assets[] | {name, state}]}")
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
