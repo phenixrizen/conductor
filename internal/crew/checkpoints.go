@@ -56,6 +56,9 @@ type checkpoint struct {
 	done, remaining, notes string
 	commit                 string
 	at                     time.Time
+	// n is the attempt that saved it: one taken back by a withdrawal
+	// (task.withdrawn) is not used again.
+	n int
 }
 
 // Checkpoint is a checkpoint as the run reports it and the ledger keeps it.
@@ -251,7 +254,7 @@ func (e *Engine) SaveCheckpoint(ctx context.Context, sessionID, done, remaining,
 	if err != nil || head == "" {
 		return AttemptState{}, ErrNoCommit
 	}
-	c := &checkpoint{done: done, remaining: remaining, notes: notes, commit: head, at: time.Now().UTC()}
+	c := &checkpoint{done: done, remaining: remaining, notes: notes, commit: head, at: time.Now().UTC(), n: a.n}
 	// As the ledger keeps it: within its bound before anything changes, so
 	// a refused row never stays marked for every transaction after.
 	if b, err := json.Marshal(c.api()); err != nil || len(b) > ledger.MaxCheckpoint {

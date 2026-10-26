@@ -823,7 +823,7 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
-	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "ALTER TABLE tasks DROP COLUMN repair", "ALTER TABLE tasks DROP COLUMN extra", "DROP TABLE messages"} {
+	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "ALTER TABLE tasks DROP COLUMN repair", "ALTER TABLE tasks DROP COLUMN extra", "ALTER TABLE tasks DROP COLUMN withdrawn", "DROP TABLE messages"} {
 		if _, err := l.db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}

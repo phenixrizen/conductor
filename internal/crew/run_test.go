@@ -178,6 +178,16 @@ func printOnce(member string, p *sessiontest.FakeProc, _ *session.Local) {
 	_ = p.Print(member + "> ")
 }
 
+// readyEngine is an engine over a new fakeLauncher whose sessions print a
+// prompt once and are ready for their line soon after: the product's
+// readiness bounds (seconds an attempt) are not what its tests test.
+func readyEngine(t *testing.T) (*Engine, *fakeLauncher) {
+	e, fl := newEngine(t)
+	fl.onLaunch = printOnce
+	e.await = readyWait{poll: 5 * time.Millisecond, quiet: 20 * time.Millisecond}.await
+	return e, fl
+}
+
 // askAtOnce makes every agent report that it waits for input as soon as it
 // starts: ready without the quiet period.
 func askAtOnce(_ string, _ *sessiontest.FakeProc, l *session.Local) {

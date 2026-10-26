@@ -34,7 +34,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 3
+const Version = 4
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -44,6 +44,15 @@ var migrations = map[int][]string{
 	// Version 3 (#334, rows 9 and 10): an attempt's checkpoint, and the
 	// messages the members of a run send one another.
 	2: {"ALTER TABLE attempts ADD COLUMN checkpoint TEXT NOT NULL DEFAULT ''", "ALTER TABLE tasks ADD COLUMN repair TEXT NOT NULL DEFAULT ''", "ALTER TABLE tasks ADD COLUMN extra INTEGER NOT NULL DEFAULT 0", messagesTable},
+	// Version 4 (#334, the withdrawal): the last attempt of a task a
+	// withdrawal took back, filled in by backfillWithdrawn.
+	3: {"ALTER TABLE tasks ADD COLUMN withdrawn INTEGER NOT NULL DEFAULT 0"},
+}
+
+// migrationsGo run after a version's statements, in the same transaction:
+// what SQL alone cannot work out.
+var migrationsGo = map[int]func(context.Context, *sql.Tx) error{
+	3: backfillWithdrawn,
 }
 
 // messagesTable is the messages table (#334, row 9): one row per message
@@ -397,6 +406,11 @@ func (l *Ledger) migrate(ctx context.Context, from int) error {
 				return fmt.Errorf("ledger: migrating from version %d: %w", v, err)
 			}
 		}
+		if f := migrationsGo[v]; f != nil {
+			if err := f(ctx, tx); err != nil {
+				return fmt.Errorf("ledger: migrating from version %d: %w", v, err)
+			}
+		}
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE schema_version SET version = ?", Version); err != nil {
 		return err
@@ -486,6 +500,7 @@ var schema = []string{
 		imported_from TEXT NOT NULL DEFAULT '',
 		repair TEXT NOT NULL DEFAULT '',
 		extra INTEGER NOT NULL DEFAULT 0,
+		withdrawn INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (run_id, id)
 	)`,
 	`CREATE TABLE attempts (

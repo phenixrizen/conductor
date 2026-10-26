@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -57,32 +58,14 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	if err := ValidateLabel(label); err != nil {
 		return nil, err
 	}
-	e.mu.Lock()
-	old := e.runs[runID]
-	if old != nil {
-		switch {
-		case !old.managed:
-			e.mu.Unlock()
-			return nil, fmt.Errorf("%w: a legacy run is resumed, not continued", ErrTaskState)
-		case old.stopping && !old.stopDone:
-			e.mu.Unlock()
-			return nil, ErrRunStopped
-		case old.stoppedAt == nil && old.outcome == "":
-			e.mu.Unlock()
-			return nil, ErrRunRunning
-		case old.resumedBy != "":
-			e.mu.Unlock()
-			return nil, &RunResumedError{By: old.resumedBy}
-		case old.resuming:
-			e.mu.Unlock()
-			return nil, &RunResumedError{}
-		}
-		old.resuming = true
-		if label == "" {
-			label = old.label
-		}
+	e.flushPending(ctx, runID)
+	old, label, err := e.markContinuing(runID, label)
+	if err != nil {
+		return nil, err
 	}
-	e.mu.Unlock()
+	if e.beforeContinue != nil {
+		e.beforeContinue(runID)
+	}
 	undo := func() {
 		if old != nil {
 			e.mu.Lock()
@@ -116,6 +99,11 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, fmt.Errorf("%w: the run's crew as launched has no tasks", ErrTaskState)
 	}
+	h, err := e.readHistory(ctx, from)
+	if err != nil {
+		undo()
+		return nil, err
+	}
 	prefix, err := e.prepare(ctx, c)
 	if err != nil {
 		undo()
@@ -126,7 +114,7 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
 	}
-	if err := e.startContinued(ctx, r, from, old); err != nil {
+	if err := e.startContinued(ctx, r, from, h, old); err != nil {
 		e.abort(r)
 		undo()
 		return nil, err
@@ -138,26 +126,102 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	return &out, nil
 }
 
-// startContinued sets r up from the run it continues and records it: the
-// base and the pause carried, every task as its row and its last attempt
-// say (imported, failed, cancelled, verified again, waiting for a person,
-// or new), the old run's row naming the new; then the ready tasks are
-// dispatched.
-func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *run) error {
+// flushPending writes what a run the engine holds has kept for the ledger (the
+// rows and events of changes whose commits failed), so a continuation
+// reads it whole; markContinuing refuses one that still has some.
+func (e *Engine) flushPending(ctx context.Context, runID string) {
+	e.mu.Lock()
+	r := e.runs[runID]
+	e.mu.Unlock()
+	if r != nil {
+		_ = e.transact(ctx, r, func() tx { return tx{} }, nil)
+	}
+}
+
+// markContinuing marks the run the engine holds as being continued
+// (resuming), or refuses it: legacy, still going, continued already or
+// being so, or holding changes the ledger has not taken (ErrRunUnsettled). The mark is made under the run's txMu: a change of it under
+// way commits first, and every later one sees the mark and refuses
+// (ErrRunContinued), so the rows a continuation reads are the run's last.
+// A run the engine does not hold (old nil) is the ledger's to judge. The
+// label is the run's when none is given.
+func (e *Engine) markContinuing(runID, label string) (*run, string, error) {
+	e.mu.Lock()
+	old := e.runs[runID]
+	e.mu.Unlock()
+	if old == nil {
+		return nil, label, nil
+	}
+	old.txMu.Lock()
+	defer old.txMu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runs[runID] != old {
+		return nil, "", ErrRunNotFound
+	}
+	switch {
+	case old.dirty():
+		return nil, "", ErrRunUnsettled
+	case !old.managed:
+		return nil, "", fmt.Errorf("%w: a legacy run is resumed, not continued", ErrTaskState)
+	case old.stopping && !old.stopDone:
+		return nil, "", ErrRunStopped
+	case old.stoppedAt == nil && old.outcome == "":
+		return nil, "", ErrRunRunning
+	case old.resumedBy != "":
+		return nil, "", &RunResumedError{By: old.resumedBy}
+	case old.resuming:
+		return nil, "", &RunResumedError{}
+	}
+	old.resuming = true
+	if label == "" {
+		label = old.label
+	}
+	return old, label, nil
+}
+
+// history is what a continuation takes from the runs it continues: the
+// source's task rows, each task's last attempt kept (along ContinuedFrom
+// when the source made none), and the imported results with where each
+// was found.
+type history struct {
+	rows  map[string]ledger.TaskRow
+	last  map[string]ledger.AttemptRow
+	refs  map[string]ledger.AttemptRow
+	refOf map[string]string
+}
+
+// readHistory reads the history a continuation of from takes, before the
+// continuation is made: a run the ledger cannot read refuses it with
+// nothing made.
+func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) {
 	rows := map[string]ledger.TaskRow{}
 	for _, row := range from.Tasks {
 		rows[row.ID] = row
 	}
+	// An attempt is a task's last only when a withdrawal has not taken it
+	// back, and when it is within the attempts the task's row counts: the
+	// history the continued run had (a ledger whose ancestor was changed
+	// after it was continued has attempts past it).
+	usable := func(a ledger.AttemptRow) bool {
+		row := rows[a.TaskID]
+		return a.N > row.Withdrawn && a.N <= row.Attempts
+	}
 	last := map[string]ledger.AttemptRow{}
 	for _, a := range from.Attempts {
-		if a.N > last[a.TaskID].N {
+		if usable(a) && a.N > last[a.TaskID].N {
 			last[a.TaskID] = a
 		}
 	}
 	// The results imported by reference: from this run's rows, or from the
 	// run an earlier continuation imported them from (the reference is
 	// kept as it was). Read before the transaction: the ledger's one
-	// connection serves no reader inside one.
+	// connection serves no reader inside one. A run that cannot be read,
+	// here or in the walk back below, ends the continuation before it is
+	// made (readErr): read without it,
+	// a task could start at the wrong commit, and the link made would
+	// leave no second try once the ledger reads again.
+	var readErr error
 	sources := map[string]Loaded{from.Run.ID: from}
 	source := func(ref string) (ledger.AttemptRow, bool) {
 		runID, taskID, n, ok := parseImport(ref)
@@ -167,6 +231,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		src, ok := sources[runID]
 		if !ok {
 			loaded, found, err := e.ledger.Load(ctx, runID)
+			if err != nil {
+				readErr = cmp.Or(readErr, fmt.Errorf("the ledger could not read run %s: %w", runID, err))
+			}
 			if err != nil || !found {
 				return ledger.AttemptRow{}, false
 			}
@@ -176,19 +243,87 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		row := byN(src.Attempts, taskID, n)
 		return row, row.N == n
 	}
+	// A task the run made no attempt at (continued while paused, and
+	// stopped again) takes its last attempt from the run it continued,
+	// and so back: attempt numbers run on across continuations, so the
+	// highest is the latest, and with it its checkpoint, its refusal or
+	// its candidate.
+	seen := map[string]bool{from.Run.ID: true}
+	for prevID := from.Run.ContinuedFrom; prevID != "" && !seen[prevID]; {
+		lacking := false
+		for _, row := range from.Tasks {
+			if _, ok := last[row.ID]; !ok && row.Attempts > row.Withdrawn {
+				lacking = true
+				break
+			}
+		}
+		if !lacking {
+			break
+		}
+		seen[prevID] = true
+		prev, found, err := e.ledger.Load(ctx, prevID)
+		if err != nil {
+			return history{}, fmt.Errorf("the ledger could not read run %s: %w", prevID, err)
+		}
+		if !found {
+			break
+		}
+		sources[prevID] = prev
+		for _, a := range prev.Attempts {
+			if _, ok := last[a.TaskID]; usable(a) && (!ok || a.N > last[a.TaskID].N) {
+				last[a.TaskID] = a
+			}
+		}
+		prevID = prev.Run.ContinuedFrom
+	}
+	// A result's attempt, found where the row says, or else in this run
+	// or back along ContinuedFrom: the reference recorded is where it was
+	// found. One found nowhere is not imported (the task fails, for a
+	// person to retry), never made a success with nothing behind it.
+	find := func(row ledger.TaskRow) (string, ledger.AttemptRow, bool) {
+		if _, taskID, n, ok := parseImport(row.ImportedFrom); ok && taskID == row.ID && n == row.ResultAttempt {
+			if ra, ok := source(row.ImportedFrom); ok {
+				return row.ImportedFrom, ra, true
+			}
+		}
+		seen := map[string]bool{}
+		for runID := from.Run.ID; runID != "" && !seen[runID]; {
+			seen[runID] = true
+			ref := runID + "/" + row.ID + "/" + strconv.Itoa(row.ResultAttempt)
+			if ra, ok := source(ref); ok {
+				return ref, ra, true
+			}
+			src, ok := sources[runID]
+			if !ok {
+				break
+			}
+			runID = src.Run.ContinuedFrom
+		}
+		return "", ledger.AttemptRow{}, false
+	}
 	refs := map[string]ledger.AttemptRow{}
+	refOf := map[string]string{}
 	for _, row := range from.Tasks {
-		if row.State != ledger.TaskSucceeded || row.ResultAttempt == 0 {
+		if row.State != ledger.TaskSucceeded || row.ResultAttempt == 0 || row.ResultAttempt <= row.Withdrawn {
 			continue
 		}
-		ref := row.ImportedFrom
-		if ref == "" {
-			ref = from.Run.ID + "/" + row.ID + "/" + strconv.Itoa(row.ResultAttempt)
-		}
-		if ra, ok := source(ref); ok {
-			refs[row.ID] = ra
+		if ref, ra, ok := find(row); ok {
+			refs[row.ID], refOf[row.ID] = ra, ref
 		}
 	}
+	if readErr != nil {
+		return history{}, readErr
+	}
+	return history{rows: rows, last: last, refs: refs, refOf: refOf}, nil
+}
+
+// startContinued sets r up from the run it continues and records it: the
+// base and the pause carried, every task as its row and its last attempt
+// say (imported, failed, cancelled, verified again, waiting for a person,
+// or new), the old run's row naming the new; then the ready tasks are
+// dispatched.
+func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h history, old *run) error {
+	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
 	err := e.transact(ctx, r, func() tx {
 		r.base, r.paused, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.ID
@@ -210,17 +345,31 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 				r.markTask(t)
 				continue
 			}
-			t.prior, t.extra = row.Attempts, row.Extra
+			t.prior, t.extra, t.withdrawn = row.Attempts, row.Extra, row.Withdrawn
 			if rp := decodeRepair(row.Repair); rp != nil {
 				t.repair = rp
 			}
 			la, hasLast := last[t.def.ID]
 			if hasLast && la.Checkpoint != "" && t.def.Kind == TaskWork {
-				t.checkpoint = decodeCheckpoint(la.Checkpoint)
+				if t.checkpoint = decodeCheckpoint(la.Checkpoint); t.checkpoint != nil {
+					t.checkpoint.n = la.N
+				}
 			}
-			switch row.State {
-			case ledger.TaskSucceeded:
-				ra := refs[t.def.ID]
+			if hasLast && t.def.Kind == TaskWork && la.State == ledger.AttemptFailed && la.ResultCommit != "" && la.StartCommit != "" && refusedBeforeChecks(la.Stage) {
+				t.refused = &refusal{n: la.N, start: la.StartCommit, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch}
+			}
+			ra, found := refs[t.def.ID]
+			switch {
+			case row.State == ledger.TaskSucceeded && row.ResultAttempt > 0 && row.ResultAttempt <= row.Withdrawn:
+				// A result a withdrawal took back (a version 3 ledger,
+				// migrated): as new.
+				t.state, t.reason = ledger.TaskBlocked, ""
+				if len(t.def.Needs) == 0 {
+					t.state = ledger.TaskReady
+				}
+			case row.State == ledger.TaskSucceeded && !found:
+				t.state, t.reason = ledger.TaskFailed, fmt.Sprintf("its result's attempt %d is not in the ledger: retry it", row.ResultAttempt)
+			case row.State == ledger.TaskSucceeded:
 				res := decodeResult(ra.Result)
 				at := ra.ClosedAt
 				if at.IsZero() {
@@ -235,15 +384,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 				if t.result.verdict == "" {
 					t.result.verdict = row.Verdict
 				}
-				t.imported = row.ImportedFrom
-				if t.imported == "" {
-					t.imported = from.Run.ID + "/" + t.def.ID + "/" + strconv.Itoa(row.ResultAttempt)
-				}
+				t.imported = refOf[t.def.ID]
 				t.state, t.reason = ledger.TaskSucceeded, ""
 				imported++
-			case ledger.TaskFailed:
+			case row.State == ledger.TaskFailed:
 				t.state, t.reason = ledger.TaskFailed, row.Reason
-			case ledger.TaskCancelled:
+			case row.State == ledger.TaskCancelled:
 				t.state, t.reason = ledger.TaskCancelled, "cancelled"
 			default:
 				switch {

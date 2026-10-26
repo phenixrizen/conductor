@@ -45,6 +45,8 @@ type fakeLedger struct {
 	release  chan struct{}
 	// unavailable, when set, is what Available returns.
 	unavailable error
+	// failLoad, when set, names a run whose next Load fails, once.
+	failLoad string
 }
 
 // matches reports whether an event is named by spec.
@@ -97,6 +99,10 @@ func newFakeLedger() *fakeLedger {
 func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.failLoad != "" && l.failLoad == runID {
+		l.failLoad = ""
+		return Loaded{}, false, errors.New("ledger: disk I/O error (injected)")
+	}
 	row, ok := l.runs[runID]
 	if !ok {
 		return Loaded{}, false, nil
@@ -315,8 +321,7 @@ func (l *fakeLedger) attemptRow(t *testing.T, runID, taskID string, n int) ledge
 // whose sessions print a prompt once, so they are ready for their line.
 func managedEngine(t *testing.T) (*Engine, *fakeLauncher, *fakeLedger) {
 	t.Helper()
-	e, fl := newEngine(t)
-	fl.onLaunch = printOnce
+	e, fl := readyEngine(t)
 	l := newFakeLedger()
 	e.UseLedger(l)
 	return e, fl, l

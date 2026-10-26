@@ -109,6 +109,15 @@ var (
 	ErrRunRunning     = errors.New("the run is still running: stop it first")
 	// ErrRunResumed is what a RunResumedError is (errors.Is).
 	ErrRunResumed = errors.New("the run was resumed already")
+	// ErrRunContinued refuses a change of a managed run's tasks or pause
+	// once a continuation is made of it, or is being made: the
+	// continuation owns that history, and a retry here would fork it.
+	ErrRunContinued = errors.New("the run has been continued: change its continuation instead")
+	// ErrRunUnsettled refuses a continuation of a run with changes the
+	// ledger has not taken (its commits failed): the continuation would
+	// read the run without them, and a later commit would write them
+	// after it.
+	ErrRunUnsettled = errors.New("the run has changes the ledger has not recorded yet: continue it once the ledger takes them")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
@@ -311,6 +320,16 @@ type Engine struct {
 	// tried, when set, is called by deliver after each attempt to type a
 	// handoff, with the member and whether it was typed: tests wait on it.
 	tried func(member string, typed bool)
+	// afterLookup, when set, runs once a command or RetryTask has looked
+	// its run up and before its change: a test evicts the run there.
+	afterLookup func(runID string)
+	// afterVisit, when set, is called by withdraw for each task it visits,
+	// under e.mu: a test counts the visits.
+	afterVisit func(taskID string)
+	// beforeContinue, when set, runs in ContinueRun once the run continued
+	// is marked and before its ledger rows are read: a test lands a
+	// change there.
+	beforeContinue func(runID string)
 }
 
 // sessionMember is the member a session is, and its run.
@@ -1876,8 +1895,21 @@ func runState(r Run) (string, int) {
 // After readyCap it returns errNotReady, and the prompt is typed anyway; once
 // the session has ended it returns session.ErrSessionEnded.
 func awaitReady(ctx context.Context, l *session.Local, held func(question string)) error {
+	return productReady.await(ctx, l, held)
+}
+
+// readyWait is how a readiness wait looks: every poll, and ready once the
+// output has been quiet for quiet and min has passed since the wait began.
+// The product's is productReady; a test that is not about readiness gives
+// its sessions a short one, as the product's bounds are not the test's.
+type readyWait struct{ poll, quiet, min time.Duration }
+
+var productReady = readyWait{readyPoll, readyQuiet, readyMin}
+
+// await is awaitReady with w's bounds.
+func (w readyWait) await(ctx context.Context, l *session.Local, held func(question string)) error {
 	start := time.Now()
-	tick := time.NewTicker(readyPoll)
+	tick := time.NewTicker(w.poll)
 	defer tick.Stop()
 	holding := false
 	for {
@@ -1889,7 +1921,7 @@ func awaitReady(ctx context.Context, l *session.Local, held func(question string
 		att := l.Info().Attention
 		seen, on := l.BracketedPaste()
 		now := time.Now()
-		ready, capped, hold := readyAt(readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}, start, now)
+		ready, capped, hold := w.at(readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}, start, now)
 		switch {
 		case hold:
 			if !holding {
@@ -1935,6 +1967,11 @@ type readiness struct {
 // it is between screens (Claude Code while it starts), and what is typed then
 // loses its Enter. capped is the wait reaching readyCap.
 func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
+	return productReady.at(rd, start, now)
+}
+
+// at is readyAt with w's bounds.
+func (w readyWait) at(rd readiness, start, now time.Time) (ready, capped, hold bool) {
 	if rd.state == session.AttentionNeedsInput && (rd.source == session.SourceTrust || rd.source == session.SourceQuestion) {
 		return false, false, true
 	}
@@ -1945,7 +1982,7 @@ func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
 	if rd.pasteSeen && !rd.pasteOn {
 		return false, capped, false
 	}
-	if !rd.lastOutput.IsZero() && now.Sub(rd.lastOutput) >= readyQuiet && now.Sub(start) >= readyMin {
+	if !rd.lastOutput.IsZero() && now.Sub(rd.lastOutput) >= w.quiet && now.Sub(start) >= w.min {
 		return true, false, false
 	}
 	return false, capped, false

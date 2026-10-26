@@ -101,6 +101,7 @@ const (
 	RefusalRunStopped    = "run_stopped"
 	RefusalNotFound      = "not_found"
 	RefusalStaleRevision = "stale_revision"
+	RefusalRunContinued  = "run_continued"
 )
 
 // refusalOf names the refusal err is.
@@ -108,10 +109,12 @@ func refusalOf(err error) string {
 	switch {
 	case errors.Is(err, ErrRunStopped):
 		return RefusalRunStopped
-	case errors.Is(err, ErrTaskNotFound):
+	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrRunNotFound):
 		return RefusalNotFound
 	case errors.Is(err, ErrStaleRevision):
 		return RefusalStaleRevision
+	case errors.Is(err, ErrRunContinued):
+		return RefusalRunContinued
 	}
 	return RefusalTaskState
 }
@@ -156,6 +159,9 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	r, err := e.managedRun(runID)
 	if err != nil {
 		return Receipt{}, err
+	}
+	if e.afterLookup != nil {
+		e.afterLookup(runID)
 	}
 	fp := fingerprint(intent, args...)
 	if prior, found, err := e.ledger.Receipt(ctx, runID, actor, cmd.ID); err != nil {
@@ -208,7 +214,9 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	err = e.transact(ctx, r, func() tx {
 		var t *task
 		var events []event
-		if cmd.ExpectedRevision > 0 && (cmd.ExpectedRevision != before || r.revision != before+1) {
+		if err := e.continued(r); err != nil {
+			cmdErr = err
+		} else if cmd.ExpectedRevision > 0 && (cmd.ExpectedRevision != before || r.revision != before+1) {
 			cmdErr = fmt.Errorf("%w: expected %d, the run was at %d when the command was taken and is at %d", ErrStaleRevision, cmd.ExpectedRevision, before, r.revision)
 		} else {
 			t, events, cmdErr = do(r)
@@ -313,6 +321,23 @@ func acceptable(t *task) error {
 	return nil
 }
 
+// continued refuses a change of the run once a continuation is made of
+// it or is being made (ErrRunContinued), or once the engine no longer
+// holds it (ErrRunNotFound: evicted after the change looked it up, it
+// could be continued from the ledger with no mark on it). The caller holds
+// e.mu, in a transaction's change: ContinueRun marks the run under its
+// txMu, so a change under way commits first and every later one sees the
+// mark, and a run whose commit is under way is not evicted (dirty).
+func (e *Engine) continued(r *run) error {
+	if e.runs[r.id] != r {
+		return ErrRunNotFound
+	}
+	if r.resumedBy != "" || r.resuming {
+		return ErrRunContinued
+	}
+	return nil
+}
+
 // setPaused pauses or resumes the run's dispatch, noting it; nothing when
 // it is so already. The caller holds e.mu, in a transaction.
 func (r *run) setPaused(paused bool) []event {
@@ -374,21 +399,25 @@ func (e *Engine) retryTask(r *run, t *task) []event {
 // acceptTask takes failed t's last submitted result as its result all the
 // same ("Accept anyway": a commit that failed its checks, decided by a
 // person): the task succeeds with that commit, and what needs it goes on.
-// The caller holds e.mu, in a transaction.
+// A result a withdrawal took back rested on an input since changed: never
+// accepted. The caller holds e.mu, in a transaction.
 func (e *Engine) acceptTask(r *run, t *task, actor string) ([]event, error) {
 	var last *attempt
-	for i := len(t.attempts) - 1; i >= 0; i-- {
+	for i := len(t.attempts) - 1; i >= 0 && t.kept(t.attempts[i].n); i-- {
 		if a := t.attempts[i]; a.submitted != nil && a.result != "" {
 			last = a
 			break
 		}
 	}
 	if last == nil {
+		if t.withdrawn > 0 {
+			return nil, fmt.Errorf("%w: no attempt since the withdrawal submitted a commit to accept", ErrTaskState)
+		}
 		return nil, fmt.Errorf("%w: no attempt submitted a commit to accept", ErrTaskState)
 	}
 	res := last.submitted
 	t.result = &taskResult{attempt: last.n, commit: last.result, summary: res.Summary, issues: slices.Clone(res.Issues), verdict: res.Verdict, findings: slices.Clone(res.Findings), at: time.Now().UTC()}
-	t.repair = nil
+	t.repair, t.imported = nil, ""
 	t.state, t.reason = ledger.TaskSucceeded, fmt.Sprintf("accepted by %s with attempt %d's result", actor, last.n)
 	r.markTask(t)
 	if r.outcome != "" {

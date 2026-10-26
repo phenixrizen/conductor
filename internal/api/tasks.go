@@ -161,6 +161,8 @@ func (s *Server) taskError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "submodules", err.Error())
 	case errors.Is(err, crew.ErrRunStopped):
 		writeError(w, http.StatusConflict, "run_stopped", err.Error())
+	case errors.Is(err, crew.ErrRunContinued):
+		writeError(w, http.StatusConflict, crew.RefusalRunContinued, err.Error())
 	case errors.Is(err, crew.ErrTaskState):
 		writeError(w, http.StatusConflict, "task_state", err.Error())
 	case errors.Is(err, crew.ErrCommandConflict):

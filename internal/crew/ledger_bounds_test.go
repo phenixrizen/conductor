@@ -19,8 +19,7 @@ import (
 // test's: the ledger's own bounds apply, as they do on a server.
 func sqlEngine(t *testing.T) (*Engine, *ledger.Ledger) {
 	t.Helper()
-	e, fl := newEngine(t)
-	fl.onLaunch = printOnce
+	e, _ := readyEngine(t)
 	ld, err := ledger.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

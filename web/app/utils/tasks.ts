@@ -150,9 +150,9 @@ export interface TaskActionSet {
   showResult: boolean
 }
 
-/** Which actions apply to a task: Retry on a failed or cancelled task, Accept anyway on a failed task whose last attempt submitted a commit, Cancel on a live one. */
-export function taskActions(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'record'>): TaskActionSet {
-  const live = !run.stoppedAt && !run.record
+/** Which actions apply to a task: Retry on a failed or cancelled task, Accept anyway on a failed task whose last attempt submitted a commit, Cancel on a live one. None that changes a run continued: its continuation owns its tasks (`409 run_continued`). */
+export function taskActions(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'record' | 'resumedBy'>): TaskActionSet {
+  const live = !run.stoppedAt && !run.record && !run.resumedBy
   const terminal = t.state === 'succeeded' || t.state === 'failed' || t.state === 'cancelled'
   return {
     retry: live && (t.state === 'failed' || t.state === 'cancelled'),
