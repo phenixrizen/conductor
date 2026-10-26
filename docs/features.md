@@ -3081,8 +3081,9 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   version 3 ledger is migrated conservatively (the owner's choice): the
   reopened tasks are found from the events, a needs_changes review
   attempt or an attempt withdrawn, and every task resting on one takes
-  its highest attempt as withdrawn and loses its repair, inherited down
-  the chain within the attempts each continuation took. Plan:
+  its highest attempt as withdrawn and loses its repair, as does every
+  continuation's task whose ancestor's had an attempt withdrawn (version
+  3 could start it on that work). Plan:
   `docs/plans/issue-334-withdrawal.md` (paths 1 to 8), with the rounds 8
   and 9 refusal code it holds back.
 - **The ledger takes every change it is given (part of #334, 2026-10-25).**

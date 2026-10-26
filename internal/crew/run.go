@@ -315,6 +315,9 @@ type Engine struct {
 	// tried, when set, is called by deliver after each attempt to type a
 	// handoff, with the member and whether it was typed: tests wait on it.
 	tried func(member string, typed bool)
+	// afterLookup, when set, runs once a command or RetryTask has looked
+	// its run up and before its change: a test evicts the run there.
+	afterLookup func(runID string)
 	// afterVisit, when set, is called by withdraw for each task it visits,
 	// under e.mu: a test counts the visits.
 	afterVisit func(taskID string)

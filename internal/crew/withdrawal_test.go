@@ -415,7 +415,15 @@ func TestAContinuedRunTakesNoChange(t *testing.T) {
 	<-l.blocked
 	marked := make(chan struct{})
 	var once sync.Once
-	e.beforeContinue = func(string) { once.Do(func() { close(marked) }) }
+	var during error
+	e.beforeContinue = func(string) {
+		once.Do(func() {
+			// Being continued: marked, not continued yet. A change now is
+			// refused too.
+			during = e.RetryTask(ctx, run.ID, "site")
+			close(marked)
+		})
+	}
 	continued := make(chan *Run, 1)
 	go func() {
 		next, err := e.ContinueRun(ctx, run.ID, "")
@@ -439,6 +447,9 @@ func TestAContinuedRunTakesNoChange(t *testing.T) {
 	}
 	if d := taskOf(t, e, next.ID, "docs"); d.State == ledger.TaskCancelled {
 		t.Fatalf("the continuation did not read the retry that committed before it: %+v", d)
+	}
+	if !errors.Is(during, ErrRunContinued) {
+		t.Fatalf("a retry while the run was being continued: %v", during)
 	}
 	// Continued: every change is refused, with a receipt that says so.
 	if err := e.RetryTask(ctx, run.ID, "site"); !errors.Is(err, ErrRunContinued) {
@@ -546,58 +557,123 @@ func TestAWithdrawalVisitsEachTaskOnce(t *testing.T) {
 
 // A version 3 ledger (no withdrawn column) is migrated with the
 // conservative backfill and continued: docs' attempt, taken back by the
-// review's reopening of build, is not reused, its checkpoint neither.
+// review's reopening of build, is not reused, its checkpoint neither. The
+// reopen's event is gone too (a failed commit could save the rows without
+// it): the review attempt's verdict says it. In the second case version 3
+// had continued the run and started docs' attempt 2 at that withdrawn
+// checkpoint, saving one of its own there (Codex's review): the
+// continuation's attempt is taken back as well.
 func TestAMigratedVersion3LedgerReusesNothingWithdrawn(t *testing.T) {
-	dir := newRepo(t)
-	e, fl := newEngine(t)
-	fl.onLaunch = printOnce
-	ldir := t.TempDir()
-	ld, err := ledger.Open(ldir)
-	if err != nil {
-		t.Fatal(err)
+	for _, chained := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the run", true: "its version 3 continuation"}[chained], func(t *testing.T) {
+			dir := newRepo(t)
+			e, fl := newEngine(t)
+			fl.onLaunch = printOnce
+			ldir := t.TempDir()
+			ld, err := ledger.Open(ldir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.UseLedger(SQLLedger(ld))
+			run := launchManaged(t, e, withdrawalCrew(dir))
+			d1 := docsFailsThenBuildIsReopened(t, e, run.ID, "check")
+			stopRun(t, e, run.ID)
+			ctx := context.Background()
+			from := run.ID
+			if chained {
+				from = v3Continuation(t, ld, run.ID)
+			}
+			ld.Close()
+			// As a version 3 Conductor left it: no withdrawn column.
+			db, err := sql.Open("sqlite", filepath.Join(ldir, ledger.File))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stmt := range []string{"ALTER TABLE tasks DROP COLUMN withdrawn", "DELETE FROM events WHERE kind = 'task.reopened'", "UPDATE schema_version SET version = 3"} {
+				if _, err := db.Exec(stmt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			db.Close()
+			ld2, err := ledger.Open(ldir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { ld2.Close() })
+			want := map[string]int{"build": 0, "check": 1, "docs": 1}
+			if chained {
+				want["docs"] = 2
+			}
+			if rows, err := ld2.Tasks(ctx, from); err != nil || len(rows) != 3 {
+				t.Fatalf("tasks after the migration: %v %v", rows, err)
+			} else {
+				for _, r := range rows {
+					if r.Withdrawn != want[r.ID] {
+						t.Fatalf("task %s migrated withdrawn %d, want %d", r.ID, r.Withdrawn, want[r.ID])
+					}
+				}
+			}
+			e2, fl2 := newEngine(t)
+			fl2.onLaunch = printOnce
+			e2.UseLedger(SQLLedger(ld2))
+			next, err := e2.ContinueRun(ctx, from, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pauseRun(t, e2, next.ID, false)
+			b := rebuilt(t, e2, next.ID, 2)
+			startsAtTheNewInput(t, attemptN(t, e2, next.ID, "docs", want["docs"]+1), b, d1)
+			stopRun(t, e2, next.ID)
+		})
 	}
-	e.UseLedger(SQLLedger(ld))
-	run := launchManaged(t, e, withdrawalCrew(dir))
-	d1 := docsFailsThenBuildIsReopened(t, e, run.ID, "check")
-	stopRun(t, e, run.ID)
-	ld.Close()
-	// As a version 3 Conductor left it: no withdrawn column.
-	db, err := sql.Open("sqlite", filepath.Join(ldir, ledger.File))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, stmt := range []string{"ALTER TABLE tasks DROP COLUMN withdrawn", "DELETE FROM events WHERE kind = 'task.reopened'", "UPDATE schema_version SET version = 3"} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	db.Close()
-	ld2, err := ledger.Open(ldir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ld2.Close() })
+}
+
+// v3Continuation writes the continuation of runID as version 3 made it:
+// paused, every task as the run left it but docs, whose attempt 2 started
+// at its attempt 1's checkpoint (withdrawn, which version 3 did not know)
+// and saved a checkpoint there before the continuation stopped.
+func v3Continuation(t *testing.T, ld *ledger.Ledger, runID string) string {
+	t.Helper()
 	ctx := context.Background()
-	if rows, err := ld2.Tasks(ctx, run.ID); err != nil || len(rows) != 3 {
-		t.Fatalf("tasks after the migration: %v %v", rows, err)
-	} else {
-		for _, r := range rows {
-			if want := map[string]int{"build": 0, "check": 1, "docs": 1}[r.ID]; r.Withdrawn != want {
-				t.Fatalf("task %s migrated withdrawn %d, want %d", r.ID, r.Withdrawn, want)
+	src, _, err := ld.Run(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := ld.Tasks(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := ld.Attempts(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := byN(attempts, "docs", 1).Checkpoint
+	at := decodeCheckpoint(cp)
+	if at == nil {
+		t.Fatalf("docs' attempt 1 has no checkpoint: %+v", byN(attempts, "docs", 1))
+	}
+	id := runID[:strings.LastIndexByte(runID, '-')] + "-0000000b"
+	if _, err := ld.Transition(ctx, id, func(tx *ledger.Tx) error {
+		if err := tx.PutRun(ledger.RunRow{ID: id, CrewID: src.CrewID, Crew: src.Crew, Base: src.Base, State: ledger.RunStopped, Paused: true, ContinuedFrom: runID, CreatedAt: tx.Now(), ClosedAt: tx.Now()}); err != nil {
+			return err
+		}
+		for _, row := range tasks {
+			row.RunID, row.Withdrawn = id, 0
+			if row.ID == "docs" {
+				row.State, row.Reason, row.Attempts = ledger.TaskReady, "", 2
+			}
+			if err := tx.PutTask(row); err != nil {
+				return err
 			}
 		}
-	}
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
-	e2.UseLedger(SQLLedger(ld2))
-	next, err := e2.ContinueRun(ctx, run.ID, "")
-	if err != nil {
+		if err := tx.PutAttempt(ledger.AttemptRow{RunID: id, TaskID: "docs", N: 2, Member: "writer", State: ledger.AttemptStopped, StartCommit: at.commit, ReservedAt: tx.Now(), ClosedAt: tx.Now(), Checkpoint: cp}); err != nil {
+			return err
+		}
+		return tx.Continued(runID)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	pauseRun(t, e2, next.ID, false)
-	b := rebuilt(t, e2, next.ID, 2)
-	startsAtTheNewInput(t, attemptN(t, e2, next.ID, "docs", 2), b, d1)
-	stopRun(t, e2, next.ID)
+	return id
 }
 
 // A result whose attempt the ledger does not have is not imported: the
@@ -629,4 +705,51 @@ func TestAResultWhoseAttemptIsGoneIsNotImported(t *testing.T) {
 		t.Fatalf("docs in the continuation: %+v", got)
 	}
 	stopRun(t, e2, next.ID)
+}
+
+// A change that looked its run up before the engine let the run go
+// (evicted, idle and stopped) is refused, nothing changed: the run could
+// be continued from the ledger meanwhile, with no mark on it (Codex's
+// review). The command and the direct retry both.
+func TestAChangeOfARunLetGoIsRefused(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	launched := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	ctx := context.Background()
+	if err := e.CancelTask(ctx, launched.ID, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	commitResult(t, e, waitAttempt(t, e, launched.ID, "build", ledger.AttemptRunning), "built.txt", "b\n", "built")
+	waitTask(t, e, launched.ID, "build", ledger.TaskSucceeded, 1)
+	stopRun(t, e, launched.ID)
+	held := func() *run {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.runs[launched.ID]
+	}()
+	if held == nil {
+		t.Fatal("the run is not held")
+	}
+	// Let go once looked up, as evict does; put back for the next case.
+	e.afterLookup = func(string) {
+		e.mu.Lock()
+		e.forget(held)
+		e.mu.Unlock()
+	}
+	putBack := func() {
+		e.mu.Lock()
+		e.runs[held.id] = held
+		e.order = append(e.order, held)
+		e.mu.Unlock()
+	}
+	if rc, err := e.Retry(ctx, launched.ID, "admin", Command{ID: "r1"}, "docs"); !errors.Is(err, ErrRunNotFound) || rc.Refusal != RefusalNotFound {
+		t.Fatalf("a command on a run let go: %+v %v", rc, err)
+	}
+	putBack()
+	if err := e.RetryTask(ctx, launched.ID, "docs"); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("a retry of a run let go: %v", err)
+	}
+	if row := l.tasks[launched.ID+"/docs"]; row.State != ledger.TaskCancelled {
+		t.Fatalf("docs changed after its run was let go: %+v", row)
+	}
 }

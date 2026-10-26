@@ -109,7 +109,7 @@ func refusalOf(err error) string {
 	switch {
 	case errors.Is(err, ErrRunStopped):
 		return RefusalRunStopped
-	case errors.Is(err, ErrTaskNotFound):
+	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrRunNotFound):
 		return RefusalNotFound
 	case errors.Is(err, ErrStaleRevision):
 		return RefusalStaleRevision
@@ -159,6 +159,9 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	r, err := e.managedRun(runID)
 	if err != nil {
 		return Receipt{}, err
+	}
+	if e.afterLookup != nil {
+		e.afterLookup(runID)
 	}
 	fp := fingerprint(intent, args...)
 	if prior, found, err := e.ledger.Receipt(ctx, runID, actor, cmd.ID); err != nil {
@@ -211,7 +214,7 @@ func (e *Engine) act(ctx context.Context, runID, actor string, cmd Command, inte
 	err = e.transact(ctx, r, func() tx {
 		var t *task
 		var events []event
-		if err := r.continued(); err != nil {
+		if err := e.continued(r); err != nil {
 			cmdErr = err
 		} else if cmd.ExpectedRevision > 0 && (cmd.ExpectedRevision != before || r.revision != before+1) {
 			cmdErr = fmt.Errorf("%w: expected %d, the run was at %d when the command was taken and is at %d", ErrStaleRevision, cmd.ExpectedRevision, before, r.revision)
@@ -319,10 +322,16 @@ func acceptable(t *task) error {
 }
 
 // continued refuses a change of the run once a continuation is made of
-// it or is being made (ErrRunContinued). The caller holds e.mu, in a
-// transaction: ContinueRun marks the run under its txMu, so a change under
-// way commits first and every later one sees the mark.
-func (r *run) continued() error {
+// it or is being made (ErrRunContinued), or once the engine no longer
+// holds it (ErrRunNotFound: evicted after the change looked it up, it
+// could be continued from the ledger with no mark on it). The caller holds
+// e.mu, in a transaction's change: ContinueRun marks the run under its
+// txMu, so a change under way commits first and every later one sees the
+// mark, and a run whose commit is under way is not evicted (dirty).
+func (e *Engine) continued(r *run) error {
+	if e.runs[r.id] != r {
+		return ErrRunNotFound
+	}
 	if r.resumedBy != "" || r.resuming {
 		return ErrRunContinued
 	}

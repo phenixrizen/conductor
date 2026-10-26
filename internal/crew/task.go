@@ -2055,7 +2055,7 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 	var refused error
 	err = e.transact(ctx, r, func() tx {
 		was = r.paused
-		if refused = r.continued(); refused != nil {
+		if refused = e.continued(r); refused != nil {
 			return tx{}
 		}
 		return tx{events: r.setPaused(paused)}
@@ -2084,7 +2084,7 @@ func (e *Engine) CancelTask(ctx context.Context, runID, taskID string) error {
 	}
 	var refused error
 	err = e.transact(ctx, r, func() tx {
-		if refused = r.continued(); refused != nil || cancellable(t) != nil {
+		if refused = e.continued(r); refused != nil || cancellable(t) != nil {
 			return tx{} // continued or ended meanwhile
 		}
 		return tx{events: e.cancelTask(r, t)}
@@ -2104,9 +2104,12 @@ func (e *Engine) RetryTask(ctx context.Context, runID, taskID string) error {
 	if err != nil {
 		return err
 	}
+	if e.afterLookup != nil {
+		e.afterLookup(runID)
+	}
 	var refused error
 	err = e.transact(ctx, r, func() tx {
-		if refused = r.continued(); refused != nil || retryable(t) != nil {
+		if refused = e.continued(r); refused != nil || retryable(t) != nil {
 			return tx{} // continued or changed meanwhile
 		}
 		return tx{events: e.retryTask(r, t)}

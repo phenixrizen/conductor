@@ -161,12 +161,13 @@ func TestAVersion3DatabaseWithdrawsWhatRestedOnAReopenedTask(t *testing.T) {
 	}
 }
 
-// Down a chain of continuations, a task takes its ancestor's withdrawn
-// when higher, but never past the attempts it took from the ancestor:
-// version 3 let an ancestor be retried after it was continued (attempts 4
-// and 5 there, after the child took 3), and the child's own attempt 4 is
-// kept, through a continuation of the child that made no attempt too. A
-// run with nothing to change gets no event.
+// Down a chain of continuations, a task whose ancestor's has attempts
+// withdrawn has every attempt of its own withdrawn too: version 3 started
+// a continuation's first attempt at the ancestor's last checkpoint, and
+// its attempt 4 may rest on withdrawn work (Codex's review), through a
+// continuation that made no attempt too; an ancestor retried after it was
+// continued (attempts 4 and 5 there) does not reach past the child's
+// count. A run with nothing to change gets no event.
 func TestAVersion3ChainInheritsWithdrawnWithinTheAttemptsItTook(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
@@ -204,7 +205,7 @@ func TestAVersion3ChainInheritsWithdrawnWithinTheAttemptsItTook(t *testing.T) {
 	for _, c := range []struct {
 		run  string
 		want int
-	}{{root.id, 5}, {mid.id, 3}, {leaf.id, 3}} {
+	}{{root.id, 5}, {mid.id, 4}, {leaf.id, 4}} {
 		if w, _ := withdrawnOf(t, l, c.run); w["docs"] != c.want || w["build"] != 0 {
 			t.Fatalf("run %s: withdrawn %v, docs should be %d", c.run, w, c.want)
 		}
@@ -220,7 +221,7 @@ func TestAVersion3ChainInheritsWithdrawnWithinTheAttemptsItTook(t *testing.T) {
 	var p struct {
 		Withdrawn map[string]int `json:"withdrawn"`
 	}
-	if evs := migratedEvents(t, l, leaf.id); len(evs) != 1 || json.Unmarshal([]byte(evs[0]), &p) != nil || p.Withdrawn["docs"] != 3 {
+	if evs := migratedEvents(t, l, leaf.id); len(evs) != 1 || json.Unmarshal([]byte(evs[0]), &p) != nil || p.Withdrawn["docs"] != 4 {
 		t.Fatalf("the leaf's migrated event: %v", evs)
 	}
 }

@@ -17,13 +17,14 @@ import (
 // succeeded review attempt whose verdict is needs_changes (its subject
 // through the crew as launched), and an attempt withdrawn (its task's
 // needs). Every task that needs a seeded subject, transitively, takes its
-// highest attempt as withdrawn and loses its repair; a continuation's task
-// takes its ancestor's value when higher, but never above the attempts it
-// took from the ancestor (its row's attempts less its own): version 3 let
-// an ancestor be retried after it was continued, and a higher value would
-// discard the child's fresh attempts, numbered on from those it took. It may
-// drop good work of attempts made after a reopen; it never reuses
-// withdrawn work. Each run it changes gets one "migrated" event.
+// highest attempt as withdrawn and loses its repair. So does a
+// continuation's task whose ancestor's has any attempt withdrawn: version
+// 3 started a continuation's first attempt at its ancestor's last
+// checkpoint or refusal, withdrawn work among them, and every later
+// attempt there may rest on that one, so none of the child's attempts can
+// be told fresh. It may drop good work of attempts made after a reopen; it
+// never reuses withdrawn work. Each run it changes gets one "migrated"
+// event.
 func backfillWithdrawn(ctx context.Context, tx *sql.Tx) error {
 	type runInfo struct{ crew, from string }
 	runs := map[string]runInfo{}
@@ -116,7 +117,7 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 	if err := evs.Close(); err != nil {
 		return nil, err
 	}
-	highest, own := map[string]int{}, map[string]int{}
+	highest := map[string]int{}
 	ats, err := tx.QueryContext(ctx, "SELECT task_id, n, state, stage, result FROM attempts WHERE run_id = ?", runID)
 	if err != nil {
 		return nil, err
@@ -129,7 +130,6 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 			return nil, err
 		}
 		highest[task] = max(highest[task], n)
-		own[task]++
 		var res struct {
 			Verdict string `json:"verdict"`
 		}
@@ -180,10 +180,9 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 	changed := map[string]int{}
 	for _, r := range tasks {
 		w := r.withdrawn
-		if dependent[r.id] {
+		if dependent[r.id] || parent[r.id] > 0 {
 			w = max(w, r.attempts, highest[r.id])
 		}
-		w = max(w, min(parent[r.id], max(r.attempts-own[r.id], 0)))
 		out[r.id] = w
 		if w == r.withdrawn {
 			continue

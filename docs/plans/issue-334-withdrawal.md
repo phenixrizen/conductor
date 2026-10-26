@@ -105,13 +105,15 @@ not its checkpoint, not as a candidate, not in the task file.
    verdict is `needs_changes` (its subject through the saved crew), and an
    attempt with stage `withdrawn` (its task's needs). Every task that needs
    a seeded subject, transitively in the saved crew, gets `withdrawn` = its
-   highest attempt, inherited down the chain (a continuation's task takes
-   its ancestor's value when higher, but never above the attempts it took
-   from the ancestor, its row's `attempts` less its own attempt rows:
-   version 3 let an ancestor be retried after it was continued, and a
-   higher value would discard the child's fresh attempts; the row's
-   `attempts` alone would withdraw a child's own attempt 4), and loses
-   its repair. One `migrated`
+   highest attempt, and so does, down the chain, a continuation's task
+   whose ancestor's has any attempt withdrawn: version 3 started a
+   continuation's first attempt at the ancestor's last checkpoint or
+   refusal, withdrawn work among them, and every later attempt there may
+   rest on it, so none can be told fresh (Codex's review of the code; an
+   earlier draft took the ancestor's value capped at the child's count,
+   which kept such an attempt). An ancestor retried after it was continued
+   reaches no further than the child's own count. Each loses its repair.
+   One `migrated`
    event per run it changes. It may drop good carried work of attempts made
    after a reopen; it never reuses withdrawn work.
 
@@ -205,8 +207,9 @@ Each fails without its part, `-race -count=30`:
 - A retry gated to land while a continuation is being made is refused,
   and the continuation's snapshot is the run as it was.
 - Version 3: an ancestor retried after its continuation (attempts 5 to the
-  child's 3): the child's `withdrawn` is at most 3, and its attempt 4 is
-  kept through another continuation.
+  child's 3), the child making attempt 4 (which may have started at the
+  ancestor's withdrawn checkpoint): the child's `withdrawn` is 4, not 5,
+  through a continuation that made no attempt too.
 - A stop of the source gated to commit while its continuation links it:
   the ledger reloaded still names the continuation, and a second
   continuation is refused.
