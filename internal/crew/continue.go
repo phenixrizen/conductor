@@ -316,7 +316,7 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 			return nil
 		}
 		return w
-	}, nil)
+	}, giveUp)
 	if errors.Is(err, ledger.ErrContinued) {
 		// Continued meanwhile, by another server or request: the one that
 		// was is the continuation.

@@ -391,6 +391,9 @@ func (s *Store) commit(c Crew) error {
 	if err := c.validateWithID(); err != nil {
 		return err
 	}
+	if err := c.ValidateSave(); err != nil {
+		return err
+	}
 	if err := s.st.Save(c.ID+".json", c); err != nil {
 		return fmt.Errorf("%w: save %s.json: %w", ErrWrite, c.ID, err)
 	}

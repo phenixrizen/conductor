@@ -142,7 +142,7 @@ export function memberNameFrom(text: string, taken: readonly string[] = []): str
 export const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/
 
 /** The server's bounds on tasks (internal/crew). */
-export const TASK_LIMITS = { tasks: 128, instructions: 8000, checks: 8, timeout: 3600, timeoutDefault: 600, argv: 32, arg: 4096, argvBytes: 8192 } as const
+export const TASK_LIMITS = { tasks: 128, instructions: 8000, checks: 8, timeout: 3600, timeoutDefault: 600, argv: 32, arg: 4096, argvBytes: 8192, taskText: 40 << 10 } as const
 
 /** Why the server would refuse a task or check id, or '' when it is fine. */
 export function taskIdError(id: string, taken: readonly string[] = []): string {
@@ -171,7 +171,11 @@ export function checkProblems(c: DraftCheck, what: string, taken: readonly strin
 }
 
 /** What a crew with tasks and its members look like to the task rules: a saved crew's tasks or the editor's. */
-export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & { tasks?: ReadonlyArray<CrewTask | DraftTask>; members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'> & { key?: number }> }
+export type TaskShape = Pick<CrewInput, 'setup' | 'isolation'> & {
+  goal?: string
+  tasks?: ReadonlyArray<CrewTask | DraftTask>
+  members: ReadonlyArray<Pick<CrewMember, 'name' | 'start'> & { prompt?: string; key?: number }>
+}
 
 /** Characters as the server counts them (runes), not UTF-16 units. */
 const chars = (s: string) => [...s].length
@@ -263,10 +267,31 @@ export function taskProblems(c: TaskShape): string[] {
   return out
 }
 
-/** The problems of one task's row, for the mark under it: those of taskProblems that name it. */
+/**
+ * Why the server would refuse to save a crew's tasks beyond taskProblems (internal/crew ValidateSave): rules a crew is held to as it is
+ * saved, not as one saved before is launched, so an unchanged crew from before them still launches. A task needs another once, and its
+ * goal, role and instructions as its task.json keeps them (JSON, quotes and escapes) leave room for the rest of a task file, which never
+ * cuts them.
+ */
+export function taskSaveProblems(c: TaskShape): string[] {
+  const out: string[] = []
+  for (const t of plainTasks(c.tasks ?? [])) {
+    const what = t.id ? `Task ${t.id}` : 'A task'
+    const seen = new Set<string>()
+    const twice = new Set<string>()
+    for (const n of t.needs ?? []) (seen.has(n) ? twice : seen).add(n)
+    for (const n of twice) out.push(`${what}: needs ${n} twice`)
+    const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
+    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + bytes(JSON.stringify(s)), 0)
+    if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
+  }
+  return out
+}
+
+/** The problems of one task's row, for the mark under it: those of taskProblems and taskSaveProblems that name it. */
 export function taskRowProblems(t: Pick<CrewTask, 'id'>, c: TaskShape): string[] {
   const what = t.id ? `Task ${t.id}` : 'A task'
-  return taskProblems(c).filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
+  return [...taskProblems(c), ...taskSaveProblems(c)].filter((p) => p.startsWith(what + ':') || p.startsWith(what + ','))
 }
 
 /** A new task for the editor: done by `member`, its id from the member's name, not one of `taken`. */

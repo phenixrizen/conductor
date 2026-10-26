@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentInfo, CrewInfo, CrewMember, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, draftTask, tasksFollowMembers } from './crews'
+import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers } from './crews'
 import type { TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
@@ -509,6 +509,21 @@ describe('taskProblems', () => {
       edit(c)
       expect(taskProblems(c).join('\n'), name).toContain(words)
     }
+  })
+  it('holds a crew to the save-only rules apart, so an unchanged crew from before them still launches', () => {
+    const twice = managed()
+    twice.tasks!.push({ id: 'docs', member: 'builder', kind: 'work', instructions: '', needs: ['build', 'build', 'build'] })
+    expect(taskSaveProblems(twice)).toEqual(['Task docs: needs build twice'])
+    expect(taskProblems(twice)).toEqual([])
+    const wide = String.fromCodePoint(0x1d11e) // four bytes in UTF-8, as JSON keeps it
+    const big = managed()
+    Object.assign(big, { goal: wide.repeat(2000) })
+    Object.assign(big.members[0]!, { prompt: wide.repeat(4000) })
+    big.tasks![0]!.instructions = wide.repeat(8000)
+    expect(taskSaveProblems(big).join('\n')).toContain('Task build: its goal, role and instructions are')
+    expect(taskProblems(big)).toEqual([])
+    expect(taskRowProblems(big.tasks![0]!, big).join('\n')).toContain('its goal, role and instructions')
+    expect(taskSaveProblems(managed())).toEqual([])
   })
   it("keeps a row's problems apart", () => {
     const c = managed()
