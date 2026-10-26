@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -201,7 +202,12 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 	// The results imported by reference: from this run's rows, or from the
 	// run an earlier continuation imported them from (the reference is
 	// kept as it was). Read before the transaction: the ledger's one
-	// connection serves no reader inside one.
+	// connection serves no reader inside one. A run that cannot be read,
+	// here or in the walk back below, ends the continuation before it is
+	// made (readErr): read without it,
+	// a task could start at the wrong commit, and the link made would
+	// leave no second try once the ledger reads again.
+	var readErr error
 	sources := map[string]Loaded{from.Run.ID: from}
 	source := func(ref string) (ledger.AttemptRow, bool) {
 		runID, taskID, n, ok := parseImport(ref)
@@ -211,6 +217,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		src, ok := sources[runID]
 		if !ok {
 			loaded, found, err := e.ledger.Load(ctx, runID)
+			if err != nil {
+				readErr = cmp.Or(readErr, fmt.Errorf("the ledger could not read run %s: %w", runID, err))
+			}
 			if err != nil || !found {
 				return ledger.AttemptRow{}, false
 			}
@@ -239,7 +248,10 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		}
 		seen[prevID] = true
 		prev, found, err := e.ledger.Load(ctx, prevID)
-		if err != nil || !found {
+		if err != nil {
+			return fmt.Errorf("the ledger could not read run %s: %w", prevID, err)
+		}
+		if !found {
 			break
 		}
 		sources[prevID] = prev
@@ -284,6 +296,9 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, old *r
 		if ref, ra, ok := find(row); ok {
 			refs[row.ID], refOf[row.ID] = ra, ref
 		}
+	}
+	if readErr != nil {
+		return readErr
 	}
 	var imported, again, uncertain, held int
 	err := e.transact(ctx, r, func() tx {

@@ -45,6 +45,8 @@ type fakeLedger struct {
 	release  chan struct{}
 	// unavailable, when set, is what Available returns.
 	unavailable error
+	// failLoad, when set, names a run whose next Load fails, once.
+	failLoad string
 }
 
 // matches reports whether an event is named by spec.
@@ -97,6 +99,10 @@ func newFakeLedger() *fakeLedger {
 func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.failLoad != "" && l.failLoad == runID {
+		l.failLoad = ""
+		return Loaded{}, false, errors.New("ledger: disk I/O error (injected)")
+	}
 	row, ok := l.runs[runID]
 	if !ok {
 		return Loaded{}, false, nil

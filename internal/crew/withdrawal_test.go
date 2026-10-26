@@ -833,3 +833,97 @@ func TestARunWithChangesTheLedgerRefusedIsNotContinued(t *testing.T) {
 	}
 	stopRun(t, e, next.ID)
 }
+
+// An ancestor the ledger cannot read ends the continuation before it is
+// made (Codex's review): read without it, docs, its last attempt there
+// (the middle run made none), would start at the base, not its
+// checkpoint, and the link made would leave no second try. Once the
+// ledger reads again, the continuation is made and starts docs at its
+// checkpoint.
+func TestAContinuationIsNotMadeWhenAnAncestorCannotBeRead(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("docs", "writer")))
+	ctx := context.Background()
+	d1 := waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	writeFile(t, filepath.Join(d1.Attempt.Worktree, "half.txt"), "half\n")
+	commitAll(t, d1.Attempt.Worktree, "half")
+	if _, err := e.SaveCheckpoint(ctx, d1.Attempt.SessionID, "half", "the rest", ""); err != nil {
+		t.Fatal(err)
+	}
+	cp := decodeCheckpoint(l.attemptRow(t, run.ID, "docs", 1).Checkpoint).commit
+	pauseRun(t, e, run.ID, true)
+	stopRun(t, e, run.ID)
+	e2, fl2 := newEngine(t)
+	fl2.onLaunch = printOnce
+	e2.UseLedger(l)
+	mid, err := e2.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopRun(t, e2, mid.ID)
+	e3, fl3 := newEngine(t)
+	fl3.onLaunch = printOnce
+	e3.UseLedger(l)
+	l.mu.Lock()
+	l.failLoad = run.ID
+	l.mu.Unlock()
+	if _, err := e3.ContinueRun(ctx, mid.ID, ""); err == nil || !strings.Contains(err.Error(), "could not read run "+run.ID) {
+		t.Fatalf("a continuation with its ancestor unread: %v", err)
+	}
+	if row := l.runs[mid.ID]; row.ContinuedBy != "" {
+		t.Fatalf("the refused continuation linked the run: %+v", row)
+	}
+	next, err := e3.ContinueRun(ctx, mid.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pauseRun(t, e3, next.ID, false)
+	if d2 := attemptN(t, e3, next.ID, "docs", 2); d2.Attempt.Start != cp {
+		t.Fatalf("docs' attempt 2 starts at %s, not its checkpoint %s", short(d2.Attempt.Start), short(cp))
+	}
+	stopRun(t, e3, next.ID)
+}
+
+// The run an imported result was made in, unread, ends the continuation
+// too: the result is not taken as gone (its task failed for a retry).
+// The walk back reads that run first (an imported task has no attempt in
+// the run continued), so it is the walk that refuses; the import's own
+// read refuses the same way, should it be the first to read a run.
+func TestAContinuationIsNotMadeWhenAnImportsRunCannotBeRead(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	ctx := context.Background()
+	if err := e.CancelTask(ctx, run.ID, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "b\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	stopRun(t, e, run.ID)
+	e2, fl2 := newEngine(t)
+	fl2.onLaunch = printOnce
+	e2.UseLedger(l)
+	mid, err := e2.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopRun(t, e2, mid.ID)
+	e3, fl3 := newEngine(t)
+	fl3.onLaunch = printOnce
+	e3.UseLedger(l)
+	l.mu.Lock()
+	l.failLoad = run.ID
+	l.mu.Unlock()
+	if _, err := e3.ContinueRun(ctx, mid.ID, ""); err == nil || !strings.Contains(err.Error(), "could not read run "+run.ID) {
+		t.Fatalf("a continuation with its import's run unread: %v", err)
+	}
+	next, err := e3.ContinueRun(ctx, mid.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := taskOf(t, e3, next.ID, "build"); b.State != ledger.TaskSucceeded || b.ImportedFrom != run.ID+"/build/1" {
+		t.Fatalf("build in the continuation: %+v", b)
+	}
+	stopRun(t, e3, next.ID)
+}
