@@ -262,6 +262,7 @@ func (e *Engine) deliverMessages(r *run, to *member) {
 // whether the record is in; refused, the message waits for the next
 // delivery. The caller does not hold e.mu.
 func (e *Engine) typing(r *run, seq int64) bool {
+	var set *message
 	err := e.transact(context.Background(), r, func() tx {
 		m := r.messageBySeq(seq)
 		if m == nil || !m.deliveredAt.IsZero() {
@@ -271,10 +272,17 @@ func (e *Engine) typing(r *run, seq int64) bool {
 			return tx{} // set out before, within this run: typed again as a handoff is
 		}
 		m.typingAt = time.Now().UTC()
+		set = m
 		w := ev("message.typing", map[string]any{"seq": m.seq, "from": m.from, "to": m.to})
 		w.more = func(ltx LedgerTx) error { return ltx.PutMessage(r.messageRow(m)) }
 		return w
-	}, nil)
+	}, func() {
+		// Not recorded: the intent is not set, so the next delivery records
+		// it before it types.
+		if set != nil {
+			set.typingAt = time.Time{}
+		}
+	})
 	if err != nil {
 		e.mu.Lock()
 		r.unqueued(seq)

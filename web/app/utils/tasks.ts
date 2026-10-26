@@ -15,8 +15,18 @@ export interface Receipt {
   status: 'done' | 'failed'
   error?: string
   refusal?: string
-  task?: RunTask
+  /** The task the command changed, as the receipt keeps it; the run has the rest. */
+  task?: ReceiptTask
   paused?: boolean
+}
+
+/** A task as a receipt keeps it: what the command did to it. */
+export interface ReceiptTask {
+  id: string
+  state: string
+  reason?: string
+  attempts: number
+  result?: { attempt: number, commit?: string }
 }
 
 /** The body every command takes. */

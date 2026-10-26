@@ -1292,12 +1292,14 @@ func TestAFailedCommitPausesDispatchUntilUnpaused(t *testing.T) {
 	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
 	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
 	commitAll(t, a.Attempt.Worktree, "built")
+	// Refused once (a disk full a moment): the event itself is writable.
 	l.mu.Lock()
-	l.failOn = "task.succeeded"
+	l.failOn, l.failOnce = "task.succeeded", true
 	l.mu.Unlock()
 	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
 	// The acceptance could not be committed: the run's dispatch pauses,
-	// nothing rests on it, and the pause's own commit carries the rows.
+	// nothing rests on it, and the pause's own commit carries the rows and
+	// the acceptance's events, before its own.
 	waitLogged(t, e, run.ID, "dispatch paused", 1, 10*time.Second)
 	r, _ := e.Get(run.ID)
 	if !r.Paused || taskOf(t, e, run.ID, "test").Attempts != 0 {
@@ -1309,6 +1311,9 @@ func TestAFailedCommitPausesDispatchUntilUnpaused(t *testing.T) {
 	l.mu.Unlock()
 	if row.State != ledger.TaskSucceeded {
 		t.Fatalf("build's row after the pause: %+v", row)
+	}
+	if kinds := l.kinds(run.ID); slices.Index(kinds, "task.succeeded") < 0 || slices.Index(kinds, "task.succeeded") > slices.Index(kinds, "run.paused") {
+		t.Fatalf("the acceptance's event with the pause: %v", kinds)
 	}
 	if err := e.PauseRun(context.Background(), run.ID, false); err != nil {
 		t.Fatal(err)

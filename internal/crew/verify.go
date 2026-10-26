@@ -134,7 +134,7 @@ func (e *Engine) verify(r *run, a *attempt) {
 			out := ev("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "subject": a.result})
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
 			return out
-		}, nil); err != nil {
+		}, giveUp); err != nil {
 			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check: "+session.CleanMessage(err.Error()))
 			return
 		}
@@ -185,7 +185,7 @@ func (e *Engine) verify(r *run, a *attempt) {
 				"changed": bounded(changed), "changedCount": len(changed), "untracked": bounded(untracked), "untrackedCount": len(untracked), "duration": res.Duration.String(), "error": words})
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
 			return out
-		}, nil); err != nil {
+		}, giveUp); err != nil {
 			e.accept(r, a, false, "check "+ch.ID, "the ledger could not record the check's outcome: "+session.CleanMessage(err.Error()))
 			return
 		}
@@ -290,15 +290,25 @@ func checkoutIntact(ctx context.Context, dir, commit string) (moved bool, change
 	return false, changed, splitNUL(out), nil
 }
 
-// maxListed bounds a path list in an event's payload.
-const maxListed = 50
+// maxListed and maxListedBytes bound a path list in an event's payload: a
+// path may be 4 KiB, and an event at most ledger.MaxPayload.
+const (
+	maxListed      = 50
+	maxListedBytes = 8 << 10
+)
 
-// bounded is the first maxListed of paths, with a mark for the rest.
+// bounded is the first of paths, at most maxListed and maxListedBytes of
+// them, with a mark saying how many more there are.
 func bounded(paths []string) []string {
-	if len(paths) <= maxListed {
+	n, size := 0, 0
+	for n < len(paths) && n < maxListed && size+len(paths[n]) <= maxListedBytes {
+		size += len(paths[n])
+		n++
+	}
+	if n == len(paths) {
 		return paths
 	}
-	return append(slices.Clone(paths[:maxListed]), "…")
+	return append(slices.Clone(paths[:n]), fmt.Sprintf("… and %d more", len(paths)-n))
 }
 
 // modesKept reports whether the filesystem under dir keeps the executable
