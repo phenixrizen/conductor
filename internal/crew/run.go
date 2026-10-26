@@ -1895,8 +1895,21 @@ func runState(r Run) (string, int) {
 // After readyCap it returns errNotReady, and the prompt is typed anyway; once
 // the session has ended it returns session.ErrSessionEnded.
 func awaitReady(ctx context.Context, l *session.Local, held func(question string)) error {
+	return productReady.await(ctx, l, held)
+}
+
+// readyWait is how a readiness wait looks: every poll, and ready once the
+// output has been quiet for quiet and min has passed since the wait began.
+// The product's is productReady; a test that is not about readiness gives
+// its sessions a short one, as the product's bounds are not the test's.
+type readyWait struct{ poll, quiet, min time.Duration }
+
+var productReady = readyWait{readyPoll, readyQuiet, readyMin}
+
+// await is awaitReady with w's bounds.
+func (w readyWait) await(ctx context.Context, l *session.Local, held func(question string)) error {
 	start := time.Now()
-	tick := time.NewTicker(readyPoll)
+	tick := time.NewTicker(w.poll)
 	defer tick.Stop()
 	holding := false
 	for {
@@ -1908,7 +1921,7 @@ func awaitReady(ctx context.Context, l *session.Local, held func(question string
 		att := l.Info().Attention
 		seen, on := l.BracketedPaste()
 		now := time.Now()
-		ready, capped, hold := readyAt(readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}, start, now)
+		ready, capped, hold := w.at(readiness{state: att.State, source: att.Source, lastOutput: l.LastOutputAt(), pasteSeen: seen, pasteOn: on}, start, now)
 		switch {
 		case hold:
 			if !holding {
@@ -1954,6 +1967,11 @@ type readiness struct {
 // it is between screens (Claude Code while it starts), and what is typed then
 // loses its Enter. capped is the wait reaching readyCap.
 func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
+	return productReady.at(rd, start, now)
+}
+
+// at is readyAt with w's bounds.
+func (w readyWait) at(rd readiness, start, now time.Time) (ready, capped, hold bool) {
 	if rd.state == session.AttentionNeedsInput && (rd.source == session.SourceTrust || rd.source == session.SourceQuestion) {
 		return false, false, true
 	}
@@ -1964,7 +1982,7 @@ func readyAt(rd readiness, start, now time.Time) (ready, capped, hold bool) {
 	if rd.pasteSeen && !rd.pasteOn {
 		return false, capped, false
 	}
-	if !rd.lastOutput.IsZero() && now.Sub(rd.lastOutput) >= readyQuiet && now.Sub(start) >= readyMin {
+	if !rd.lastOutput.IsZero() && now.Sub(rd.lastOutput) >= w.quiet && now.Sub(start) >= w.min {
 		return true, false, false
 	}
 	return false, capped, false

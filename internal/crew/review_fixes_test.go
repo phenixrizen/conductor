@@ -153,8 +153,7 @@ func TestAContinuationCarriesRepairsAllowancesImportsAndMessages(t *testing.T) {
 	}
 	l.mu.Unlock()
 	interrupt(l, run.ID, nil)
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, fl2 := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -225,8 +224,7 @@ func TestAContinuationCarriesRepairsAllowancesImportsAndMessages(t *testing.T) {
 	// A second continuation: the imported results keep their source and summary; the messages are still there.
 	docsResult := taskOf(t, e2, next.ID, "docs").Result.Attempt
 	stopRun(t, e2, next.ID)
-	e3, fl3 := newEngine(t)
-	fl3.onLaunch = printOnce
+	e3, _ := readyEngine(t)
 	e3.UseLedger(l)
 	third, err := e3.ContinueRun(ctx, next.ID, "")
 	if err != nil {
@@ -270,8 +268,7 @@ func TestAContinuationKeepsARetrysAllowance(t *testing.T) {
 	}
 	waitTaskWhere(t, e, run.ID, "build", "ready again", func(ts TaskState) bool { return ts.State == ledger.TaskReady })
 	stopRun(t, e, run.ID)
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {

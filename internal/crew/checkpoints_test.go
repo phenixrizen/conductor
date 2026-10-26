@@ -123,8 +123,7 @@ func TestAContinuationStartsAtTheLastCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	interrupt(l, run.ID, map[string][2]string{"build/1": {ledger.AttemptInterrupted, "running: the owner stopped"}})
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {

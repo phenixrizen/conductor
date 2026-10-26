@@ -44,8 +44,7 @@ func TestAContinuationKeepsResultsAndTakesUpTheRest(t *testing.T) {
 	// The server ends with docs' attempt running: its recovery concludes the rows.
 	interrupt(l, run.ID, map[string][2]string{"docs/1": {ledger.AttemptInterrupted, "running: the owner stopped"}})
 	ctx := context.Background()
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -149,8 +148,7 @@ func TestAContinuationVerifiesACandidateAgainAndWaitsOnAnUncertainLaunch(t *test
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {

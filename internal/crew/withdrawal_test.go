@@ -152,16 +152,14 @@ func TestAWithdrawnDependentStartsAtTheNewInputAcrossContinuations(t *testing.T)
 				t.Fatalf("docs' row: %+v", row)
 			}
 			ctx := context.Background()
-			e2, fl2 := newEngine(t)
-			fl2.onLaunch = printOnce
+			e2, _ := readyEngine(t)
 			e2.UseLedger(l)
 			mid, err := e2.ContinueRun(ctx, run.ID, "")
 			if err != nil {
 				t.Fatal(err)
 			}
 			stopRun(t, e2, mid.ID)
-			e3, fl3 := newEngine(t)
-			fl3.onLaunch = printOnce
+			e3, _ := readyEngine(t)
 			e3.UseLedger(l)
 			next, err := e3.ContinueRun(ctx, mid.ID, "")
 			if err != nil {
@@ -245,8 +243,7 @@ func TestAWithdrawnCandidateIsNeverVerified(t *testing.T) {
 	pauseRun(t, e, run.ID, true)
 	stopRun(t, e, run.ID)
 	interrupt(l, run.ID, map[string][2]string{"docs/1": {ledger.AttemptInterrupted, "verifying: the owner stopped; the candidate is verified again"}})
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -343,8 +340,7 @@ func TestAWithdrawnImportedReviewIsTakenFromWhereItWasRemade(t *testing.T) {
 	waitTask(t, e, run.ID, "rb", ledger.TaskSucceeded, 1)
 	waitAttempt(t, e, run.ID, "rb2", ledger.AttemptRunning)
 	stopRun(t, e, run.ID)
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	mid, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -372,8 +368,7 @@ func TestAWithdrawnImportedReviewIsTakenFromWhereItWasRemade(t *testing.T) {
 	row.ImportedFrom = run.ID + "/rb/1"
 	l.tasks[mid.ID+"/rb"] = row
 	l.mu.Unlock()
-	e3, fl3 := newEngine(t)
-	fl3.onLaunch = printOnce
+	e3, _ := readyEngine(t)
 	e3.UseLedger(l)
 	next, err := e3.ContinueRun(ctx, mid.ID, "")
 	if err != nil {
@@ -486,8 +481,7 @@ func TestAContinuationTakesNoAncestorAttemptPastTheRowsCount(t *testing.T) {
 	kept := l.attemptRow(t, run.ID, "docs", 1)
 	pauseRun(t, e, run.ID, true)
 	stopRun(t, e, run.ID)
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	mid, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -505,8 +499,7 @@ func TestAContinuationTakesNoAncestorAttemptPastTheRowsCount(t *testing.T) {
 	if mid.ID == "" || l.tasks[mid.ID+"/docs"].Attempts != 1 {
 		t.Fatalf("the continuation's docs row: %+v", l.tasks[mid.ID+"/docs"])
 	}
-	e3, fl3 := newEngine(t)
-	fl3.onLaunch = printOnce
+	e3, _ := readyEngine(t)
 	e3.UseLedger(l)
 	next, err := e3.ContinueRun(ctx, mid.ID, "")
 	if err != nil {
@@ -567,8 +560,7 @@ func TestAMigratedVersion3LedgerReusesNothingWithdrawn(t *testing.T) {
 	for _, chained := range []bool{false, true} {
 		t.Run(map[bool]string{false: "the run", true: "its version 3 continuation"}[chained], func(t *testing.T) {
 			dir := newRepo(t)
-			e, fl := newEngine(t)
-			fl.onLaunch = printOnce
+			e, _ := readyEngine(t)
 			ldir := t.TempDir()
 			ld, err := ledger.Open(ldir)
 			if err != nil {
@@ -613,8 +605,7 @@ func TestAMigratedVersion3LedgerReusesNothingWithdrawn(t *testing.T) {
 					}
 				}
 			}
-			e2, fl2 := newEngine(t)
-			fl2.onLaunch = printOnce
+			e2, _ := readyEngine(t)
 			e2.UseLedger(SQLLedger(ld2))
 			next, err := e2.ContinueRun(ctx, from, "")
 			if err != nil {
@@ -691,8 +682,7 @@ func TestAResultWhoseAttemptIsGoneIsNotImported(t *testing.T) {
 	l.mu.Lock()
 	delete(l.attempts, run.ID+"/build/1")
 	l.mu.Unlock()
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(context.Background(), run.ID, "")
 	if err != nil {
@@ -770,8 +760,7 @@ func TestAWithdrawnResultIsNotImported(t *testing.T) {
 	row.Withdrawn = 1
 	l.tasks[run.ID+"/docs"] = row
 	l.mu.Unlock()
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(context.Background(), run.ID, "")
 	if err != nil {
@@ -854,16 +843,14 @@ func TestAContinuationIsNotMadeWhenAnAncestorCannotBeRead(t *testing.T) {
 	cp := decodeCheckpoint(l.attemptRow(t, run.ID, "docs", 1).Checkpoint).commit
 	pauseRun(t, e, run.ID, true)
 	stopRun(t, e, run.ID)
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	mid, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopRun(t, e2, mid.ID)
-	e3, fl3 := newEngine(t)
-	fl3.onLaunch = printOnce
+	e3, _ := readyEngine(t)
 	e3.UseLedger(l)
 	l.mu.Lock()
 	l.failLoad = run.ID
@@ -906,16 +893,14 @@ func TestAContinuationIsNotMadeWhenAnImportsRunCannotBeRead(t *testing.T) {
 	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "b\n", "built")
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
 	stopRun(t, e, run.ID)
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	mid, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	stopRun(t, e2, mid.ID)
-	e3, fl3 := newEngine(t)
-	fl3.onLaunch = printOnce
+	e3, _ := readyEngine(t)
 	e3.UseLedger(l)
 	l.mu.Lock()
 	l.failLoad = run.ID

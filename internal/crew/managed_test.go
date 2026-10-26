@@ -321,8 +321,7 @@ func (l *fakeLedger) attemptRow(t *testing.T, runID, taskID string, n int) ledge
 // whose sessions print a prompt once, so they are ready for their line.
 func managedEngine(t *testing.T) (*Engine, *fakeLauncher, *fakeLedger) {
 	t.Helper()
-	e, fl := newEngine(t)
-	fl.onLaunch = printOnce
+	e, fl := readyEngine(t)
 	l := newFakeLedger()
 	e.UseLedger(l)
 	return e, fl, l

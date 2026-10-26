@@ -84,8 +84,7 @@ func TestAContinuedCandidateRefusedBeforeItsChecksHandsTheNextAttemptTheWorksSta
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -374,8 +373,7 @@ func TestAContinuationAfterARefusedResultStartsWhereItStarted(t *testing.T) {
 		t.Fatalf("attempt 1: %+v", row)
 	}
 	stopRun(t, e, run.ID)
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	next, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -431,8 +429,7 @@ func TestARefusalOutlivesAContinuationThatMadeNoAttempt(t *testing.T) {
 	})
 	stopRun(t, e, run.ID)
 	// Continued paused, and stopped with no attempt made.
-	e2, fl2 := newEngine(t)
-	fl2.onLaunch = printOnce
+	e2, _ := readyEngine(t)
 	e2.UseLedger(l)
 	mid, err := e2.ContinueRun(ctx, run.ID, "")
 	if err != nil {
@@ -442,8 +439,7 @@ func TestARefusalOutlivesAContinuationThatMadeNoAttempt(t *testing.T) {
 		t.Fatalf("the paused continuation made an attempt: %+v", ts.Attempt)
 	}
 	stopRun(t, e2, mid.ID)
-	e3, fl3 := newEngine(t)
-	fl3.onLaunch = printOnce
+	e3, _ := readyEngine(t)
 	e3.UseLedger(l)
 	next, err := e3.ContinueRun(ctx, mid.ID, "")
 	if err != nil {
