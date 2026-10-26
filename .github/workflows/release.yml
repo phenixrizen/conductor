@@ -3,7 +3,10 @@ name: release
 # A tag v* builds the desktop packages (macOS dmg and zip, Linux deb, rpm and
 # AppImage, Windows nsis with the Linux server for WSL) and attaches them to
 # the GitHub release. Signing and notarisation run only when the secrets are
-# there; the packages ship unsigned otherwise.
+# there; the packages ship unsigned otherwise. The tag's draft release is made
+# once before the package jobs, which upload to it by its id: electron-builder
+# only builds, since publishing it made the release itself when it found none
+# on the first page, and two jobs at once made two drafts (#372).
 on:
   push:
     tags: ['v*']
@@ -11,6 +14,11 @@ on:
 
 permissions:
   contents: write
+
+# Two runs for one tag would race to make its release as the package jobs did.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   GOFLAGS: -mod=readonly
@@ -39,8 +47,19 @@ jobs:
           path: internal/web/dist
           if-no-files-found: error
 
+  release:
+    runs-on: ubuntu-latest
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - name: the tag's one draft release, made before the packages upload to it
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/release_draft.py ensure "$GITHUB_REF_NAME"
+
   package:
-    needs: web
+    needs: [web, release]
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +79,9 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@v5 # `python` on the three runners, for the upload
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
@@ -80,7 +102,6 @@ jobs:
         working-directory: desktop
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -97,11 +118,18 @@ jobs:
           [ -n "${CSC_LINK:-}" ] || export CSC_IDENTITY_AUTO_DISCOVERY=false
           # The package version: the tag without its v (a release candidate is 0.6.0-rc.1), else 0.0.0 with the commit.
           if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
-            publish=always; ver="${GITHUB_REF_NAME#v}"
+            ver="${GITHUB_REF_NAME#v}"
           else
-            publish=never; ver="0.0.0-$(git rev-parse --short HEAD)"
+            ver="0.0.0-$(git rev-parse --short HEAD)"
           fi
-          npx electron-builder --config electron-builder.yml --publish "$publish" -c.extraMetadata.version="$ver"
+          # Built only; the next step uploads. The latest*.yml and blockmaps are written all the same.
+          npx electron-builder --config electron-builder.yml --publish never -c.extraMetadata.version="$ver"
+      - name: upload to the tag's draft release, by its id
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/release_draft.py upload "$GITHUB_REF_NAME" desktop/release
       - uses: actions/upload-artifact@v4
         with:
           name: conductor-desktop-${{ matrix.name }}
@@ -112,5 +140,22 @@ jobs:
             desktop/release/*.rpm
             desktop/release/*.AppImage
             desktop/release/*.exe
+            desktop/release/*.blockmap
             desktop/release/*.yml
           if-no-files-found: warn
+
+  release-check:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: conductor-desktop-*
+          path: packages
+          merge-multiple: true
+      - name: one draft release holds every package built
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/release_draft.py check "$GITHUB_REF_NAME" packages

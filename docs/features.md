@@ -3058,6 +3058,23 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **A tag's packages go into one draft release (#372, 2026-10-26).** The
+  three package jobs published through electron-builder, which makes the
+  tag's release when it finds none (on the first page of releases only),
+  and two that found none at once each made a draft: rc.13's and rc.17's
+  packages were split over two, put together by hand. electron-builder now
+  only builds (`--publish never`, which still writes the `latest*.yml` and
+  blockmaps). A `release` job makes the draft before the package jobs start
+  (`scripts/release_draft.py ensure`: named the version, a draft, not a
+  prerelease, as electron-builder made it; a rerun keeps it; a published
+  release or two drafts on the tag fail the job), and each package job
+  uploads its packages to that draft by its id (`upload`, which never makes
+  a release and replaces what a failed run left). A `release-check` job at
+  the end fails unless the tag has that one draft with every package the
+  jobs built and each installer's blockmap. The Windows installer is named
+  `Conductor-Setup-<version>.exe` where it is built, the name
+  electron-builder gave it on the release. Runs for one tag queue rather
+  than race.
 - **A withdrawal takes back everything the task built on (part of #334,
   2026-10-25).** A review's needs_changes withdraws what rested on the
   task it reopens; the next start was derived in four places (the run's

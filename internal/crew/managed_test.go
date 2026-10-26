@@ -1900,15 +1900,15 @@ func TestARefusedReservationLeavesNoRowBehind(t *testing.T) {
 	fl.mu.Unlock()
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
 	waitLogged(t, e, run.ID, "no place for attempt 1 yet", 2, 5*time.Second)
+	// The note is made in the change, its event committed after: wait for
+	// the ledger to hold both.
+	waitTrue(t, "two refusals in the ledger", func() bool { return l.count(run.ID, "attempt.unreserved") == 2 })
 	l.mu.Lock()
 	rows := len(l.attempts)
 	build, docs := l.tasks[run.ID+"/build"], l.tasks[run.ID+"/docs"]
 	l.mu.Unlock()
 	if rows != 0 || build.Attempts != 0 || docs.Attempts != 0 {
 		t.Fatalf("the ledger after two refused reservations: %d attempt rows, build %+v, docs %+v", rows, build, docs)
-	}
-	if l.count(run.ID, "attempt.unreserved") != 2 {
-		t.Fatalf("events: %v", l.kinds(run.ID))
 	}
 	stopRun(t, e, run.ID)
 }
