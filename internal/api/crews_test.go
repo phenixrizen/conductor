@@ -1535,11 +1535,21 @@ func TestSeedExamplesOnce(t *testing.T) {
 		t.Fatalf("anonymous: %d", resp.StatusCode)
 	}
 	resp, out := e.do("POST", "/api/crews/examples", adminToken, nil)
-	if resp.StatusCode != http.StatusOK || len(out["added"].([]any)) != 4 || len(out["skipped"].([]any)) != 0 {
+	if resp.StatusCode != http.StatusOK || len(out["added"].([]any)) != 5 || len(out["skipped"].([]any)) != 0 {
 		t.Fatalf("first seed: %d %v", resp.StatusCode, out)
 	}
-	if ids := e.crewIDs(); !slices.Equal(ids, []string{"example-dependency-upgrade", "example-docs-writer", "example-test-fixer", "example-todo-app"}) {
+	if ids := e.crewIDs(); !slices.Equal(ids, []string{"example-dependency-upgrade", "example-docs-writer", "example-test-fixer", "example-todo-app", "example-todo-app-tasks"}) {
 		t.Fatalf("listed by name: %v", ids)
+	}
+	// The todo app with tasks reads back with its tasks, every member started by them.
+	tc := e.crew("example-todo-app-tasks")
+	if tasks, _ := tc["tasks"].([]any); len(tasks) != 5 || tasks[3].(map[string]any)["id"] != "tests" || len(tasks[3].(map[string]any)["needs"].([]any)) != 2 {
+		t.Fatalf("the task example's tasks: %v", tc["tasks"])
+	}
+	for i := range tc["members"].([]any) {
+		if m := crewMember(tc, i); m["start"].(map[string]any)["when"] != "task" {
+			t.Fatalf("member %v", m)
+		}
 	}
 	c := e.crew("example-todo-app")
 	if c["cwd"] != e.root || c["isolation"] != "worktree" || len(c["members"].([]any)) != 4 || e.storedCrew("example-todo-app") == nil {
@@ -1562,7 +1572,7 @@ func TestSeedExamplesOnce(t *testing.T) {
 		t.Fatalf("delete: %d", resp.StatusCode)
 	}
 	_, out = e.do("POST", "/api/crews/examples", adminToken, nil)
-	if added := out["added"].([]any); len(added) != 1 || added[0] != "example-docs-writer" || len(out["skipped"].([]any)) != 3 {
+	if added := out["added"].([]any); len(added) != 1 || added[0] != "example-docs-writer" || len(out["skipped"].([]any)) != 4 {
 		t.Fatalf("second seed: %v", out)
 	}
 	if got := e.crew("example-todo-app"); got["goal"] != "edited" {

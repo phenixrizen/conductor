@@ -74,11 +74,13 @@ function ordered(group: readonly ShapeMember[]): string[][] {
 
 /**
  * A crew's shape in a few words, under its mini graph: "5 · a chain of 3, 1 by hand, 1 alone", "4 · all at launch", "2 · checker after
- * writer", "3 · a chain". A tree (two members start after the same one) is said so.
+ * writer", "3 · a chain". A tree (two members start after the same one) is said so. A crew with tasks, whose members start by them: "4 ·
+ * by tasks".
  */
 export function crewShape(members: readonly ShapeMember[]): string {
   const n = members.length
   if (!n) return 'no members'
+  if (members.every((m) => m.start.when === 'task')) return `${n} · by tasks`
   if (n === 1) return `1 · ${members[0]!.start.when === 'manual' ? 'by hand' : 'at launch'}`
   const groups = groupsOf(members)
   const chains = groups.filter((g) => g.length > 1)

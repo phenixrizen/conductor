@@ -12,11 +12,12 @@ import (
 )
 
 // exampleIDs are the ids of the example crews, in the order Examples lists them.
-var exampleIDs = []string{"example-todo-app", "example-test-fixer", "example-docs-writer", "example-dependency-upgrade"}
+var exampleIDs = []string{"example-todo-app", "example-todo-app-tasks", "example-test-fixer", "example-docs-writer", "example-dependency-upgrade"}
 
-// Every example is a crew the store would accept: the four ids in order,
-// claude and codex members with role prompts that use the goal, the server's
-// working directory, a worktree per member.
+// Every example is a crew the store would accept: the five ids in order,
+// claude and codex members with role prompts, the server's working
+// directory, a worktree per member. A prompt typed into the member uses the
+// goal; a role in a crew with tasks need not, its task file says the goal.
 func TestExamplesAreValidCrews(t *testing.T) {
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	list := Examples("/srv/work", now)
@@ -36,7 +37,7 @@ func TestExamplesAreValidCrews(t *testing.T) {
 			if m.AgentID != "claude" && m.AgentID != "codex" {
 				t.Errorf("%s/%s: agent %q", c.ID, m.Name, m.AgentID)
 			}
-			if !strings.Contains(m.Prompt, "$GOAL") {
+			if len(c.Tasks) == 0 && !strings.Contains(m.Prompt, "$GOAL") {
 				t.Errorf("%s/%s: the prompt does not use $GOAL", c.ID, m.Name)
 			}
 		}
@@ -79,6 +80,77 @@ func TestTodoAppStartsLeadThenBuildersThenTester(t *testing.T) {
 	} {
 		if !strings.Contains(tester, part) {
 			t.Errorf("the tester's prompt does not say %q: %s", part, tester)
+		}
+	}
+}
+
+// The todo app with tasks: the same app as the todo example, run by its
+// tasks. A plan, two parts built from it at once, a task that needs both
+// (its worktree starts at core's result and merges cli's), a review of that
+// one; every work task checked, the plan by its file and the rest by the
+// suite as PLAN.md lays it out, every check an argv run with no shell. cli
+// is told to build and test without core, which it does not have; the task
+// a review reopens is told it owns the repairs, in either part; the plan
+// commits the .gitignore that keeps a tested worktree clean to submit.
+func TestTodoAppWithTasks(t *testing.T) {
+	list := Examples("/w", time.Now())
+	todo, c := list[0], list[1]
+	if c.ID != "example-todo-app-tasks" || c.Name != "Example: todo app, with tasks" {
+		t.Fatalf("second example: %s %q", c.ID, c.Name)
+	}
+	if !strings.HasPrefix(c.Goal, strings.TrimSuffix(todo.Goal, ", with tests")) || !strings.Contains(c.Goal, "TODO_FILE") {
+		t.Errorf("the goal is not the todo app's with TODO_FILE: %s", c.Goal)
+	}
+	if len(c.Setup) != 0 || c.Isolation != IsolationWorktree {
+		t.Errorf("setup %v, isolation %s", c.Setup, c.Isolation)
+	}
+	agents := map[string]string{"lead": "claude", "core": "claude", "cli": "codex", "reviewer": "codex"}
+	if len(c.Members) != len(agents) {
+		t.Fatalf("members: %+v", c.Members)
+	}
+	for _, m := range c.Members {
+		if m.AgentID != agents[m.Name] || m.Start != (Start{When: StartTask}) {
+			t.Errorf("%s: agent %s, start %+v", m.Name, m.AgentID, m.Start)
+		}
+	}
+	suite := []string{"python3", "-m", "unittest", "discover", "-s", "tests", "-t", "."}
+	want := []struct {
+		id, member, kind string
+		needs            []string
+		check            []string
+	}{
+		{"plan", "lead", TaskWork, nil, []string{"test", "-s", "PLAN.md"}},
+		{"core", "core", TaskWork, []string{"plan"}, suite},
+		{"cli", "cli", TaskWork, []string{"plan"}, suite},
+		{"tests", "core", TaskWork, []string{"core", "cli"}, suite},
+		{"review", "reviewer", TaskReview, []string{"tests"}, nil},
+	}
+	if len(c.Tasks) != len(want) {
+		t.Fatalf("tasks: %+v", c.Tasks)
+	}
+	for i, w := range want {
+		got := c.Tasks[i]
+		if got.ID != w.id || got.Member != w.member || got.Kind != w.kind || !slices.Equal(got.Needs, w.needs) {
+			t.Errorf("task %d: %s by %s, %s, needs %v; want %+v", i, got.ID, got.Member, got.Kind, got.Needs, w)
+		}
+		switch {
+		case w.check == nil && len(got.Checks) != 0:
+			t.Errorf("%s: checks %+v", got.ID, got.Checks)
+		case w.check != nil && (len(got.Checks) != 1 || !slices.Equal(got.Checks[0].Argv, w.check)):
+			t.Errorf("%s: checks %+v, want %v", got.ID, got.Checks, w.check)
+		}
+	}
+	says := map[string][]string{
+		"plan":   {"main(argv, store)", "tests/test_*.py", "-s tests -t .", "TODO_FILE", ".gitignore", "todo/__init__.py", "tests/__init__.py"},
+		"cli":    {"fake store", "import nothing from todo/store.py", "not in your worktree"},
+		"tests":  {"git merge --no-edit", "Inputs", "tests/test_end_to_end.py", "in either part", "When the review asks for changes"},
+		"review": {"PLAN.md", "TODO_FILE", "file and line"},
+	}
+	for _, tk := range c.Tasks {
+		for _, part := range says[tk.ID] {
+			if !strings.Contains(tk.Instructions, part) {
+				t.Errorf("%s: the instructions do not say %q", tk.ID, part)
+			}
 		}
 	}
 }
@@ -140,11 +212,44 @@ func TestSeedAddsOnceAndLeavesEditsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	added, skipped, err = s.Seed(Examples("/w", now))
-	if err != nil || !slices.Equal(added, []string{"example-docs-writer"}) || !slices.Equal(skipped, []string{"example-todo-app", "example-test-fixer", "example-dependency-upgrade"}) {
+	if err != nil || !slices.Equal(added, []string{"example-docs-writer"}) || !slices.Equal(skipped, []string{"example-todo-app", "example-todo-app-tasks", "example-test-fixer", "example-dependency-upgrade"}) {
 		t.Fatalf("second seed: %v %v %v", added, skipped, err)
 	}
 	if got, err := s.Get("example-todo-app"); err != nil || got.Goal != "edited" {
 		t.Fatalf("the edit was lost: %q %v", got.Goal, err)
+	}
+}
+
+// Someone who loaded the four examples before the todo app with tasks, and
+// edited one, gets it and only it by loading them again; the edit stays, and
+// a third load adds nothing.
+func TestSeedAddsTheTaskExampleToAnEarlierLoad(t *testing.T) {
+	s, _ := newStore(t)
+	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	before := slices.DeleteFunc(Examples("/w", now), func(c Crew) bool { return c.ID == "example-todo-app-tasks" })
+	if added, _, err := s.Seed(before); err != nil || len(added) != 4 {
+		t.Fatalf("the earlier load: %v %v", added, err)
+	}
+	c, err := s.Get("example-todo-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Goal = "edited"
+	if _, err := s.Update(c.ID, c); err != nil {
+		t.Fatal(err)
+	}
+	added, skipped, err := s.Seed(Examples("/w", now))
+	if err != nil || !slices.Equal(added, []string{"example-todo-app-tasks"}) || len(skipped) != 4 {
+		t.Fatalf("loading again: %v %v %v", added, skipped, err)
+	}
+	if got, err := s.Get("example-todo-app-tasks"); err != nil || len(got.Tasks) != 5 {
+		t.Fatalf("the task example as saved: %+v %v", got.Tasks, err)
+	}
+	if got, err := s.Get("example-todo-app"); err != nil || got.Goal != "edited" {
+		t.Fatalf("the edit was lost: %q %v", got.Goal, err)
+	}
+	if added, _, err := s.Seed(Examples("/w", now)); err != nil || len(added) != 0 {
+		t.Fatalf("a third load: %v %v", added, err)
 	}
 }
 
@@ -157,7 +262,7 @@ func TestSeedLeavesAnUnreadableFileAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	added, skipped, err := s.Seed(Examples("/w", time.Now()))
-	if err != nil || !slices.Equal(skipped, []string{"example-test-fixer"}) || len(added) != 3 {
+	if err != nil || !slices.Equal(skipped, []string{"example-test-fixer"}) || len(added) != 4 {
 		t.Fatalf("%v %v %v", added, skipped, err)
 	}
 	if b, _ := os.ReadFile(path); string(b) != "{not json" {
@@ -183,7 +288,7 @@ func TestSeedLeavesLinksAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	added, skipped, err := s.Seed(Examples("/w", time.Now()))
-	if err != nil || !slices.Equal(added, []string{"example-todo-app", "example-dependency-upgrade"}) || !slices.Equal(skipped, []string{"example-test-fixer", "example-docs-writer"}) {
+	if err != nil || !slices.Equal(added, []string{"example-todo-app", "example-todo-app-tasks", "example-dependency-upgrade"}) || !slices.Equal(skipped, []string{"example-test-fixer", "example-docs-writer"}) {
 		t.Fatalf("%v %v %v", added, skipped, err)
 	}
 	if b, err := os.ReadFile(target); err != nil || string(b) != "keep" {
@@ -203,9 +308,10 @@ func TestSeedLeavesLinksAlone(t *testing.T) {
 func TestSeedStopsAtAnInvalidCrew(t *testing.T) {
 	s, _ := newStore(t)
 	list := Examples("/w", time.Now())
-	list[1].Cwd = strings.Repeat("x", maxCwd+1)
+	fixer := slices.IndexFunc(list, func(c Crew) bool { return c.ID == "example-test-fixer" })
+	list[fixer].Cwd = strings.Repeat("x", maxCwd+1)
 	added, _, err := s.Seed(list)
-	if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "example-test-fixer") || !slices.Equal(added, []string{"example-todo-app"}) {
+	if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "example-test-fixer") || !slices.Equal(added, exampleIDs[:fixer]) {
 		t.Fatalf("%v %v", added, err)
 	}
 	if _, err := s.Get("example-docs-writer"); !errors.Is(err, ErrNotFound) {

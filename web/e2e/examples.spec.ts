@@ -16,14 +16,31 @@ test.afterAll(async ({ api }) => {
 test('the examples load on the empty Crews page, at the scratch repository', async ({ page, api, state }) => {
   await page.goto('/crews')
   await page.locator('[data-crews-empty]').getByRole('button', { name: 'Load the examples' }).click()
-  // Loading opens the first example; the home lists all four.
+  // Loading opens the first example; the home lists all five, each by its id.
   await expect(page).toHaveURL(/\/crews\/example-todo-app$/)
   await page.goto('/crews')
-  await expect(page.locator('[data-crew-item]', { hasText: 'Example: todo app' })).toBeVisible()
-  for (const id of ['example-todo-app', 'example-test-fixer', 'example-docs-writer', 'example-dependency-upgrade']) {
+  for (const id of ['example-todo-app', 'example-todo-app-tasks', 'example-test-fixer', 'example-docs-writer', 'example-dependency-upgrade']) {
+    await expect(page.locator(`[data-crew-entry][data-crew-id="${id}"] [data-crew-item]`)).toBeVisible()
     // The examples work in the server's default working directory: the scratch repository.
     expect((await api.crew(id)).cwd).toBe(state.repo)
   }
+  await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app-tasks"] [data-crew-item]')).toHaveText('Example: todo app, with tasks')
+  // Its members start by their tasks, never "all at launch".
+  await expect(page.locator('[data-crew-entry][data-crew-id="example-todo-app-tasks"] [data-crew-shape]')).toHaveText('4 · by tasks')
+})
+
+test('the todo app with tasks opens in the editor coordinated by tasks, its five tasks as saved and none refused', async ({ page }) => {
+  await page.goto('/crews/example-todo-app-tasks')
+  await expect(page.locator('[data-crew-coordination]')).toContainText('by tasks')
+  await expect(page.locator('[data-crew-tasks-section]')).toBeVisible()
+  const tasks = page.locator('[data-crew-task]')
+  await expect(tasks).toHaveCount(5)
+  expect(await tasks.evaluateAll((rows) => rows.map((r) => r.getAttribute('data-task-id')))).toEqual(['plan', 'core', 'cli', 'tests', 'review'])
+  await expect(tasks.nth(3).locator('[data-task-needs]')).toContainText('core')
+  await expect(tasks.nth(3).locator('[data-task-needs]')).toContainText('cli')
+  // The editor's own check of the tasks (taskProblems) agrees with the server's: nothing to fix.
+  await expect(page.locator('[data-task-error]')).toHaveCount(0)
+  await expect(page.locator('[data-member-start]')).toHaveCount(0)
 })
 
 test('the todo app launches and opens its run page, a tile per member', async ({ page }) => {
