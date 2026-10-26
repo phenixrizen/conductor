@@ -74,6 +74,9 @@ win:
     - from: ../bin/desktop/linux-x64/conductor
       to: conductor-linux
 nsis:
+  # The installer's name on the release, as electron-builder published it (no spaces): the
+  # release workflow uploads the packages itself, under their names here (#372).
+  artifactName: ${productName}-Setup-${version}.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false

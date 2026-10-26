@@ -4,8 +4,9 @@ name: release
 # AppImage, Windows nsis with the Linux server for WSL) and attaches them to
 # the GitHub release. Signing and notarisation run only when the secrets are
 # there; the packages ship unsigned otherwise. The tag's draft release is made
-# once before the package jobs, which only upload to it: each made its own when
-# two found none at once, splitting the packages over two drafts (#372).
+# once before the package jobs, which upload to it by its id: electron-builder
+# only builds, since publishing it made the release itself when it found none
+# on the first page, and two jobs at once made two drafts (#372).
 on:
   push:
     tags: ['v*']
@@ -78,6 +79,9 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@v5 # `python` on the three runners, for the upload
+        with:
+          python-version: '3.12'
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
@@ -98,7 +102,6 @@ jobs:
         working-directory: desktop
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -115,11 +118,18 @@ jobs:
           [ -n "${CSC_LINK:-}" ] || export CSC_IDENTITY_AUTO_DISCOVERY=false
           # The package version: the tag without its v (a release candidate is 0.6.0-rc.1), else 0.0.0 with the commit.
           if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
-            publish=always; ver="${GITHUB_REF_NAME#v}"
+            ver="${GITHUB_REF_NAME#v}"
           else
-            publish=never; ver="0.0.0-$(git rev-parse --short HEAD)"
+            ver="0.0.0-$(git rev-parse --short HEAD)"
           fi
-          npx electron-builder --config electron-builder.yml --publish "$publish" -c.extraMetadata.version="$ver"
+          # Built only; the next step uploads. The latest*.yml and blockmaps are written all the same.
+          npx electron-builder --config electron-builder.yml --publish never -c.extraMetadata.version="$ver"
+      - name: upload to the tag's draft release, by its id
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/release_draft.py upload "$GITHUB_REF_NAME" desktop/release
       - uses: actions/upload-artifact@v4
         with:
           name: conductor-desktop-${{ matrix.name }}
@@ -130,6 +140,7 @@ jobs:
             desktop/release/*.rpm
             desktop/release/*.AppImage
             desktop/release/*.exe
+            desktop/release/*.blockmap
             desktop/release/*.yml
           if-no-files-found: warn
 
