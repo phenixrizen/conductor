@@ -103,6 +103,12 @@ built, holds every package with its blockmap and the three `latest*.yml`,
 and no `v0.7.0-rc.18` tag exists. Publishing the draft (as a prerelease for a
 release candidate) makes the tag at that commit.
 
+Dispatch from `main`, or from a branch kept until the release is published:
+the draft is made after the checks, and GitHub refuses the workflow's token a
+release at a commit no branch holds any more. `main` cannot lose one (its
+ruleset forbids force pushes and deletion). Publishing as a person needs a
+token with the `workflow` scope when the commit changes a workflow.
+
 Do not push a `v*` tag. The apps' updater reads the repository's
 `releases.atom`, which lists a pushed tag even while its release is a draft.
 An app on the rc channel takes the newest rc entry there, finds no
