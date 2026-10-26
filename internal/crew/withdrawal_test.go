@@ -753,3 +753,36 @@ func TestAChangeOfARunLetGoIsRefused(t *testing.T) {
 		t.Fatalf("docs changed after its run was let go: %+v", row)
 	}
 }
+
+// A result whose attempt is withdrawn in its row (a version 3 ledger,
+// migrated) is not imported: the task is taken up as new, at its input.
+func TestAWithdrawnResultIsNotImported(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "b\n", "built")
+	b := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	commitResult(t, e, waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning), "docs.txt", "d\n", "docs")
+	d := waitTask(t, e, run.ID, "docs", ledger.TaskSucceeded, 1)
+	stopRun(t, e, run.ID)
+	l.mu.Lock()
+	row := l.tasks[run.ID+"/docs"]
+	row.Withdrawn = 1
+	l.tasks[run.ID+"/docs"] = row
+	l.mu.Unlock()
+	e2, fl2 := newEngine(t)
+	fl2.onLaunch = printOnce
+	e2.UseLedger(l)
+	next, err := e2.ContinueRun(context.Background(), run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := taskOf(t, e2, next.ID, "build"); got.State != ledger.TaskSucceeded || got.ImportedFrom != run.ID+"/build/1" {
+		t.Fatalf("build in the continuation: %+v", got)
+	}
+	d2 := attemptN(t, e2, next.ID, "docs", 2)
+	if d2.Result != nil || d2.Attempt.Start != b.Result.Commit || d2.Attempt.Start == d.Result.Commit {
+		t.Fatalf("docs in the continuation: %+v %+v", d2, d2.Attempt)
+	}
+	stopRun(t, e2, next.ID)
+}

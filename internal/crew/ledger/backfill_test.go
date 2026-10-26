@@ -262,3 +262,36 @@ func TestARunRowWrittenAfterItsContinuationKeepsTheLink(t *testing.T) {
 		t.Fatalf("a second continuation: %v", err)
 	}
 }
+
+// An ancestor's withdrawal reaches what needs the task in the
+// continuation too: version 3's continuation finished docs on the
+// withdrawn checkpoint and then site, which first ran there, on docs'
+// result; both are withdrawn (Codex's review), build is not.
+func TestAVersion3InheritedWithdrawalReachesTheChildsDependents(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	l := openLedger(t, dir)
+	crew := `{"id":"team","tasks":[{"id":"build","kind":"work"},{"id":"docs","kind":"work","needs":["build"]},{"id":"site","kind":"work","needs":["docs"]}]}`
+	root := fixture{id: "team-00000001", crew: crew, events: []string{"task.reopened:build"},
+		tasks: []TaskRow{
+			{ID: "build", Member: "m", Kind: "work", State: TaskSucceeded, Attempts: 2, ResultAttempt: 2, ResultCommit: "b2"},
+			{ID: "docs", Member: "m", Kind: "work", State: TaskReady, Attempts: 1},
+			{ID: "site", Member: "m", Kind: "work", State: TaskBlocked},
+		},
+		attempts: []AttemptRow{{TaskID: "build", N: 2, State: AttemptSucceeded, ResultCommit: "b2"}, {TaskID: "docs", N: 1, State: AttemptFailed, ResultCommit: "d1", Checkpoint: `{"commit":"d1"}`}},
+	}
+	child := fixture{id: "team-00000002", from: root.id, crew: crew,
+		tasks: []TaskRow{
+			{ID: "build", Member: "m", Kind: "work", State: TaskSucceeded, Attempts: 2, ResultAttempt: 2, ResultCommit: "b2", ImportedFrom: root.id + "/build/2"},
+			{ID: "docs", Member: "m", Kind: "work", State: TaskSucceeded, Attempts: 2, ResultAttempt: 2, ResultCommit: "d2"},
+			{ID: "site", Member: "m", Kind: "work", State: TaskSucceeded, Attempts: 1, ResultAttempt: 1, ResultCommit: "s1", Repair: `{"review":"x"}`},
+		},
+		attempts: []AttemptRow{{TaskID: "docs", N: 2, State: AttemptSucceeded, StartCommit: "d1", ResultCommit: "d2"}, {TaskID: "site", N: 1, State: AttemptSucceeded, ResultCommit: "s1"}},
+	}
+	root.put(t, l)
+	child.put(t, l)
+	l = asVersion3(t, l, dir)
+	w, rp := withdrawnOf(t, l, child.id)
+	if w["build"] != 0 || w["docs"] != 2 || w["site"] != 1 || rp["site"] != "" {
+		t.Fatalf("the child after the migration: withdrawn %v, repairs %v", w, rp)
+	}
+}

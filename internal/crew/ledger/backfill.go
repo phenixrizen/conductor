@@ -18,13 +18,13 @@ import (
 // through the crew as launched), and an attempt withdrawn (its task's
 // needs). Every task that needs a seeded subject, transitively, takes its
 // highest attempt as withdrawn and loses its repair. So does a
-// continuation's task whose ancestor's has any attempt withdrawn: version
-// 3 started a continuation's first attempt at its ancestor's last
-// checkpoint or refusal, withdrawn work among them, and every later
-// attempt there may rest on that one, so none of the child's attempts can
-// be told fresh. It may drop good work of attempts made after a reopen; it
-// never reuses withdrawn work. Each run it changes gets one "migrated"
-// event.
+// continuation's task whose ancestor's has any attempt withdrawn, and
+// every task that needs it, transitively: version 3 started a
+// continuation's first attempt at its ancestor's last checkpoint or
+// refusal, withdrawn work among them, every later attempt there may rest
+// on that one, and a dependent on its result, so none of them can be told
+// fresh. It may drop good work of attempts made after a reopen; it never
+// reuses withdrawn work. Each run it changes gets one "migrated" event.
 func backfillWithdrawn(ctx context.Context, tx *sql.Tx) error {
 	type runInfo struct{ crew, from string }
 	runs := map[string]runInfo{}
@@ -143,8 +143,14 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 	if err := ats.Close(); err != nil {
 		return nil, err
 	}
-	// What needs a seed, transitively.
+	// What needs a seed, and what an ancestor's withdrawal reached, with
+	// what needs that, transitively.
 	dependent := map[string]bool{}
+	for id := range needs {
+		if parent[id] > 0 {
+			dependent[id] = true
+		}
+	}
 	for grew := true; grew; {
 		grew = false
 		for id, ns := range needs {
@@ -180,7 +186,7 @@ func backfillRun(ctx context.Context, tx *sql.Tx, runID, crewJSON string, parent
 	changed := map[string]int{}
 	for _, r := range tasks {
 		w := r.withdrawn
-		if dependent[r.id] || parent[r.id] > 0 {
+		if dependent[r.id] || parent[r.id] > 0 { // parent too: a task the crew read lacks
 			w = max(w, r.attempts, highest[r.id])
 		}
 		out[r.id] = w

@@ -106,10 +106,12 @@ not its checkpoint, not as a candidate, not in the task file.
    attempt with stage `withdrawn` (its task's needs). Every task that needs
    a seeded subject, transitively in the saved crew, gets `withdrawn` = its
    highest attempt, and so does, down the chain, a continuation's task
-   whose ancestor's has any attempt withdrawn: version 3 started a
+   whose ancestor's has any attempt withdrawn, with every task that needs
+   it there, transitively: version 3 started a
    continuation's first attempt at the ancestor's last checkpoint or
    refusal, withdrawn work among them, and every later attempt there may
-   rest on it, so none can be told fresh (Codex's review of the code; an
+   rest on it, and a dependent on its result, so none can be told fresh
+   (Codex's reviews of the code; an
    earlier draft took the ancestor's value capped at the child's count,
    which kept such an attempt). An ancestor retried after it was continued
    reaches no further than the child's own count. Each loses its repair.
