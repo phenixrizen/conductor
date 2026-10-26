@@ -543,6 +543,8 @@ func (s *Server) runError(w http.ResponseWriter, what, id string, err error) {
 		writeError(w, http.StatusConflict, "run_stopped", err.Error())
 	case errors.Is(err, crew.ErrRunRunning):
 		writeError(w, http.StatusConflict, "run_running", err.Error())
+	case errors.Is(err, crew.ErrRunUnsettled):
+		writeError(w, http.StatusServiceUnavailable, "ledger_unavailable", err.Error())
 	case errors.Is(err, crew.ErrRunResumed):
 		writeError(w, http.StatusConflict, "already_resumed", err.Error())
 	case errors.Is(err, crew.ErrMemberRunning):

@@ -113,6 +113,11 @@ var (
 	// once a continuation is made of it, or is being made: the
 	// continuation owns that history, and a retry here would fork it.
 	ErrRunContinued = errors.New("the run has been continued: change its continuation instead")
+	// ErrRunUnsettled refuses a continuation of a run with changes the
+	// ledger has not taken (its commits failed): the continuation would
+	// read the run without them, and a later commit would write them
+	// after it.
+	ErrRunUnsettled = errors.New("the run has changes the ledger has not recorded yet: continue it once the ledger takes them")
 	// ErrManaged says the run is a managed one (a crew with tasks, #334),
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart

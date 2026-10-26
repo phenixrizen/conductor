@@ -2286,8 +2286,11 @@ result whose attempt is in none of the runs continued is not imported: the
 task is `failed` with `its result's attempt <n> is not in the ledger:
 retry it`. The run log says what was kept,
 verified again and left for a decision; the continuation is made once
-(`409 already_resumed` names it), and a run still going is not continued
-(`409 run_running`).
+(`409 already_resumed` names it), a run still going is not continued
+(`409 run_running`), and a run holding changes the ledger refused (its
+commits failed, and failed again as the next carried them) is not
+continued until the ledger takes them, which the continuation tries
+first (`503 ledger_unavailable`).
 
 **Messages, blockers and checkpoints.** The members of a managed run
 exchange messages (`POST /api/sessions/{id}/messages`, the MCP tool

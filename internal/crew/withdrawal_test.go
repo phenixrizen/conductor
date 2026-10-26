@@ -786,3 +786,50 @@ func TestAWithdrawnResultIsNotImported(t *testing.T) {
 	}
 	stopRun(t, e2, next.ID)
 }
+
+// A run whose change the ledger refused, and refused again as the next
+// commit carried it, is not continued while it holds that change: the
+// continuation would read the run without it, and a later commit of the
+// source would write it after (Codex's review). Once the ledger takes
+// writes again, the continuation writes it first and reads it.
+func TestARunWithChangesTheLedgerRefusedIsNotContinued(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer")))
+	ctx := context.Background()
+	if err := e.CancelTask(ctx, run.ID, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	commitResult(t, e, waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning), "built.txt", "b\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	stopRun(t, e, run.ID)
+	// The disk is full: the retry's commit fails, and so does every commit
+	// carrying it.
+	l.mu.Lock()
+	l.failOn = "task.retried"
+	l.mu.Unlock()
+	if err := e.RetryTask(ctx, run.ID, "docs"); err == nil {
+		t.Fatal("the retry committed on a full disk")
+	}
+	if _, err := e.ContinueRun(ctx, run.ID, ""); !errors.Is(err, ErrRunUnsettled) {
+		t.Fatalf("a continuation of a run holding a refused change: %v", err)
+	}
+	l.mu.Lock()
+	l.failOn = ""
+	row := l.tasks[run.ID+"/docs"]
+	l.mu.Unlock()
+	if row.State != ledger.TaskCancelled {
+		t.Fatalf("docs' row before the ledger recovered: %+v", row)
+	}
+	next, err := e.ContinueRun(ctx, run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row := l.tasks[run.ID+"/docs"]; row.State == ledger.TaskCancelled {
+		t.Fatalf("the retry was not written before the continuation: %+v", row)
+	}
+	if d := taskOf(t, e, next.ID, "docs"); d.State == ledger.TaskCancelled {
+		t.Fatalf("the continuation read the run without its retry: %+v", d)
+	}
+	stopRun(t, e, next.ID)
+}

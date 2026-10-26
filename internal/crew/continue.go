@@ -57,6 +57,7 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	if err := ValidateLabel(label); err != nil {
 		return nil, err
 	}
+	e.flushPending(ctx, runID)
 	old, label, err := e.markContinuing(runID, label)
 	if err != nil {
 		return nil, err
@@ -119,9 +120,21 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 	return &out, nil
 }
 
+// flushPending writes what a run the engine holds has kept for the ledger (the
+// rows and events of changes whose commits failed), so a continuation
+// reads it whole; markContinuing refuses one that still has some.
+func (e *Engine) flushPending(ctx context.Context, runID string) {
+	e.mu.Lock()
+	r := e.runs[runID]
+	e.mu.Unlock()
+	if r != nil {
+		_ = e.transact(ctx, r, func() tx { return tx{} }, nil)
+	}
+}
+
 // markContinuing marks the run the engine holds as being continued
 // (resuming), or refuses it: legacy, still going, continued already or
-// being so. The mark is made under the run's txMu: a change of it under
+// being so, or holding changes the ledger has not taken (ErrRunUnsettled). The mark is made under the run's txMu: a change of it under
 // way commits first, and every later one sees the mark and refuses
 // (ErrRunContinued), so the rows a continuation reads are the run's last.
 // A run the engine does not hold (old nil) is the ledger's to judge. The
@@ -141,6 +154,8 @@ func (e *Engine) markContinuing(runID, label string) (*run, string, error) {
 		return nil, "", ErrRunNotFound
 	}
 	switch {
+	case old.dirty():
+		return nil, "", ErrRunUnsettled
 	case !old.managed:
 		return nil, "", fmt.Errorf("%w: a legacy run is resumed, not continued", ErrTaskState)
 	case old.stopping && !old.stopDone:
