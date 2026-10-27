@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 The boxcar Authors
+# Copyright 2026 the Conductor Authors and RockSolid Labs, Inc.
 """Every check CI runs, run locally: `make preflight`.
 
 `python3 scripts/preflight.py` runs, from a clean committed worktree, every
@@ -55,6 +55,7 @@ LINUX_STEPS = [
         "env": {"GOOS": "linux", "GOARCH": "arm64"},
     },
     {"name": "build-go", "covers": "go", "argv": ["make", "build-go"]},
+    {"name": "check-version", "covers": "go", "argv": ["make", "check-version"]},
     {"name": "brand-assets", "covers": "go", "argv": ["python3", "scripts/brand_assets.py", "--check"]},
     {
         "name": "scripts-tests",
@@ -78,6 +79,7 @@ MAC_STEPS = [
     {"name": "lint", "argv": ["make", "lint"]},
     {"name": "go-test-race", "argv": ["go", "test", "-race", "-count=1", "./..."]},
     {"name": "build-go", "argv": ["make", "build-go"]},
+    {"name": "check-version", "argv": ["make", "check-version"]},
     {"name": "desktop-install", "argv": ["npm", "--prefix", "desktop", "ci"]},
     {"name": "desktop-test", "argv": ["make", "desktop-test"]},
 ]
