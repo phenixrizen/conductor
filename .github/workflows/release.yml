@@ -117,7 +117,7 @@ jobs:
           # exists, and the binary would say "dev (unknown)". The Linux runner runs its own package's
           # binary and compares the whole line; macOS is arm64 and Windows runs none of the four.
           if [ "$RUNNER_OS" = Linux ]; then
-            got=$(bin/desktop/linux-x64/conductor version | head -1); want="conductor $v ($c)"
+            got=$(bin/desktop/linux-x64/conductor version | sed -n 1p); want="conductor $v ($c)"
             if [ "$got" != "$want" ]; then echo "version gate: got '$got', want '$want'"; exit 1; fi
             echo "version gate: $got"
           fi

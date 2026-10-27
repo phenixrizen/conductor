@@ -36,7 +36,7 @@ build-go: ## build the Go binary using whatever UI is in internal/web/dist
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/conductor ./cmd/conductor
 
 check-version: ## the built binary reports the version and commit make injected (a missed -X site would say dev (unknown))
-	@got="$$(bin/conductor version | head -1)"; want="conductor $(VERSION) ($(COMMIT))"; \
+	@got="$$(bin/conductor version | sed -n 1p)"; want="conductor $(VERSION) ($(COMMIT))"; \
 	if [ "$$got" != "$$want" ]; then echo "check-version: got '$$got', want '$$want'"; exit 1; fi; echo "check-version: $$got"
 
 web-install: ## reproducible npm install
