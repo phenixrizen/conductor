@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // Link is a share link record. The token itself is never stored. A link is

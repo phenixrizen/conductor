@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/phenixrizen/conductor/internal/cli"
+	"github.com/rocksolidlabs/conductor/internal/cli"
 )
 
 func main() {

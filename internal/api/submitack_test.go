@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A submit naming a request over the wire (#322): the welcome says the

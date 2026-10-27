@@ -19,9 +19,9 @@ import (
 	"github.com/coder/websocket"
 	"github.com/pion/webrtc/v4"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/session/sessiontest"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // heardFromServer has a's server answer a's pings all along, as over a

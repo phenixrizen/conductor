@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // The agent's own question (#193, docs/plans/codex-needs-you.md, Part B):

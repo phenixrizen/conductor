@@ -14,8 +14,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // leaveOf is the server's viewer_leave of the viewer id with reason ("" for

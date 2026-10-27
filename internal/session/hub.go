@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // Sink delivers frames to one attached client over some transport. WriteFrame

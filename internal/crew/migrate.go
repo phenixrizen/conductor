@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // legacyFile is the file an older Conductor kept every crew in.

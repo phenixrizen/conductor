@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The self-service routes: what an agent may do with its own session's

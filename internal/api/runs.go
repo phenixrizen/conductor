@@ -12,11 +12,11 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/phenixrizen/conductor/internal/agents"
-	"github.com/phenixrizen/conductor/internal/catalog"
-	"github.com/phenixrizen/conductor/internal/crew"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 const (

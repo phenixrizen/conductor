@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // The workbench token file holds a workbench token the server generated, in

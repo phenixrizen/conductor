@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     for p in (e, u, c):
         p.add_argument("--target", required=True, help="the full id of the commit built, where publishing makes the tag")
     a = ap.parse_args(argv)
-    repo = os.environ.get("GITHUB_REPOSITORY", "phenixrizen/conductor")
+    repo = os.environ.get("GITHUB_REPOSITORY", "rocksolidlabs/conductor")
     try:
         valid(a.tag, a.target)
         if a.cmd != "check" and tag_exists(repo, a.tag):

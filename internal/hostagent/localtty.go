@@ -9,8 +9,8 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 func terminalSize(f *os.File) (uint16, uint16, error) {

@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/agents"
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // The built-ins are the thirteen supported agents, in the order the launch

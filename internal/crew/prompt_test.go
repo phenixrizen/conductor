@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/session/sessiontest"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // nopSink is a session.Sink that drops what it is sent: a person's

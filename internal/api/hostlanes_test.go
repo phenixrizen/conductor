@@ -18,9 +18,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/hostagent"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/hostagent"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A host's connection carries the server's own messages ahead of the

@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // Webhooks: the server POSTs the activity entries of every session to the

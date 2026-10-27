@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/crew"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A member's process learns its crew, run and member from the environment;

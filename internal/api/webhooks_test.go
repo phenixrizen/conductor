@@ -25,9 +25,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // logBuffer collects what a server logs; the webhook goroutines write to it

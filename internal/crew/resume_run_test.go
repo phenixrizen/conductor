@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // stopRun stops the run and waits for its stop to complete.

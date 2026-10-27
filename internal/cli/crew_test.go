@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 )
 
 // fakeSelf fakes the session's self-service routes and records what came in.

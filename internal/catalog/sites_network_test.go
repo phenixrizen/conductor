@@ -60,7 +60,7 @@ func fetchSite(site string) error {
 	var last error
 	for _, method := range []string{http.MethodHead, http.MethodGet} {
 		req, _ := http.NewRequestWithContext(ctx, method, site, nil)
-		req.Header.Set("User-Agent", "conductor-sites-check/1 (+https://github.com/phenixrizen/conductor)")
+		req.Header.Set("User-Agent", "conductor-sites-check/1 (+https://github.com/rocksolidlabs/conductor)")
 		resp, err := client.Do(req)
 		if err != nil {
 			last = err

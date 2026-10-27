@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/gitcli"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A repository's .git, and git's settings and credentials wherever git

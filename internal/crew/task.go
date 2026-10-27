@@ -15,9 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/phenixrizen/conductor/internal/crew/ledger"
-	"github.com/phenixrizen/conductor/internal/gitcli"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A managed run (a crew with tasks, #334; docs/plans/agent-harness-order.md)

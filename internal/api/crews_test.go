@@ -21,9 +21,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/phenixrizen/conductor/internal/crew"
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // crewBody is a crew as the web client sends it: two members of the test

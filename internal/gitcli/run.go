@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/pty"
 )
 
 // How Conductor runs git. A repository's configuration can name programs

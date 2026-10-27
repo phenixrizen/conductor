@@ -10,8 +10,8 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A paste invite connects a viewer to a session with no server between them

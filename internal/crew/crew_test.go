@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // validCrew is a crew that passes Validate: two members, the second starting

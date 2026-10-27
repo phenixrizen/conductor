@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor"
-	"github.com/phenixrizen/conductor/internal/certs"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor"
+	"github.com/rocksolidlabs/conductor/internal/certs"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 func getPage(t *testing.T, e *testEnv, p string) (int, string) {

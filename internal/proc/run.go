@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/pty"
 )
 
 // Bounds a run is held to.

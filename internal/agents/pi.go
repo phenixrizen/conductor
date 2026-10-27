@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // pi loads an extension named with --extension, so a session launched by

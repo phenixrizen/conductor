@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/pty"
 )
 
 // fakeProc is an in-memory Process: bytes written to out appear as PTY output.

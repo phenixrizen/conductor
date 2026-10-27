@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 )
 
 // With isolation "worktree" every member of a run works in a git worktree of

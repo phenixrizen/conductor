@@ -17,11 +17,11 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/hostagent"
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/hostagent"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // keptSwitchyard is a switchyard on the data directory dir, as a restart finds it.

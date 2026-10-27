@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // ActivityEntry is one line of a session's activity log: who joined, left,

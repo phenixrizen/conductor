@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/gitcli"
-	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/gitcli/gitclitest"
 )
 
 func gitRepo(t *testing.T) string {

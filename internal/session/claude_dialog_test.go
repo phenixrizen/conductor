@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // newClaudeSession is a session of Claude Code's, 120 by 40 as its dialogs

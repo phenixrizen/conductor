@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // Codex 0.161's window title with the override Conductor's launch passes,

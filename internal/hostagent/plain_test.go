@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/pty"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // namedDialer dials a test's names to its own servers: each "host:port" in

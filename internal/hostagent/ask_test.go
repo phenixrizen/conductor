@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/session/sessiontest"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // A report the server forwards marked as the agent's own question (ask,

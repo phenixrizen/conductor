@@ -21,18 +21,18 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/phenixrizen/conductor/internal/agents"
-	"github.com/phenixrizen/conductor/internal/api"
-	"github.com/phenixrizen/conductor/internal/certs"
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/hostagent"
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/reach"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/share"
-	"github.com/phenixrizen/conductor/internal/store"
-	"github.com/phenixrizen/conductor/internal/version"
-	"github.com/phenixrizen/conductor/internal/web"
+	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/certs"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/hostagent"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/reach"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/version"
+	"github.com/rocksolidlabs/conductor/internal/web"
 )
 
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.

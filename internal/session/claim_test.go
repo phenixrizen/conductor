@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A question is single-assignment (docs/plans/codex-needs-you.md, "Who may

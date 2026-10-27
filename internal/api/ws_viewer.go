@@ -11,9 +11,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/signal"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/signal"
 )
 
 func (s *Server) acceptOptions() *websocket.AcceptOptions {

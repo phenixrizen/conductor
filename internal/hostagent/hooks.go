@@ -4,8 +4,8 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/phenixrizen/conductor/internal/agents"
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // writeAssets is agents.WriteAssets: a test replaces it to make a mode fail.

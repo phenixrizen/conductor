@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/crew"
-	"github.com/phenixrizen/conductor/internal/notify"
+	"github.com/rocksolidlabs/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/notify"
 )
 
 const taskUsage = `Usage:

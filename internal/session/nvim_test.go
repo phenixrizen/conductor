@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/nvim"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/nvim"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // nvimEvents reads the nvim_event control frames a chanSink received, from

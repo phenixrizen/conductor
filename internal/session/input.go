@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // Writing to the process. What the session types into the program, a

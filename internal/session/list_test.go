@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // Claude Code 2.1.304's dialogs as it drew them in a PTY 120 columns wide

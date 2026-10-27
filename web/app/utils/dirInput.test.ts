@@ -5,7 +5,7 @@ describe('dirInput', () => {
   it('a chosen folder leaves the field focused, the caret at the end and the field scrolled to its end (#167)', () => {
     const calls: string[] = []
     const input = {
-      value: '/home/nater/go/src/github.com/phenixrizen/conductor',
+      value: '/home/nater/go/src/github.com/rocksolidlabs/conductor',
       scrollLeft: 0,
       scrollWidth: 640,
       focus: () => calls.push('focus'),

@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/nvim"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/nvim"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // The editor's Neovim bridge (design round 12, F8): one of the owner's own

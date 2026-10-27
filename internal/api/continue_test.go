@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // A managed run stopped is continued through the resume route (#334, row

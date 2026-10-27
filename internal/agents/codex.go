@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // Codex CLI takes config overrides with -c, so a session launched by Conductor

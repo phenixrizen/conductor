@@ -5,7 +5,7 @@ export const CREDIT = 'Sponsored and maintained by RockSolid Labs'
 export const SPONSOR_NAME = 'RockSolid Labs'
 export const SPONSOR_URL = 'https://rocksolidlabs.io'
 export const SPONSOR_HOST = 'rocksolidlabs.io'
-export const SOURCE_URL = 'https://github.com/phenixrizen/conductor'
+export const SOURCE_URL = 'https://github.com/rocksolidlabs/conductor'
 /** The holder, as LICENSE, NOTICE and the desktop package name it. */
 export const COPYRIGHT_HOLDER = 'the Conductor Authors and RockSolid Labs, Inc.'
 export const LICENSE = 'Apache-2.0'

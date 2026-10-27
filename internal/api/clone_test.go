@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/agents"
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // keyedSource saves the agent a clone test copies: everything the Agents

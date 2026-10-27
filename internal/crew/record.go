@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // Records keeps runs that ended, one JSON document each under runs/ in the

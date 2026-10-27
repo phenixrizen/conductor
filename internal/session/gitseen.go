@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
 )
 
 // Files seen by git (round 13, G2a): what an agent changed in its working

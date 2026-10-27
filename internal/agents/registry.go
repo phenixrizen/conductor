@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // registry lists every adapter in the order the Events page shows them.

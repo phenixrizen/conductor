@@ -37,7 +37,7 @@ async function loadExamples() {
         <UButton label="Load the example crews" icon="i-lucide-package-open" color="neutral" variant="outline" block :loading="loadingExamples" data-welcome-examples @click="loadExamples" />
         <UButton label="Settings" icon="i-lucide-settings" color="neutral" variant="outline" block to="/settings" />
       </div>
-      <p class="text-xs text-muted">Or run <code>conductor host</code> on another machine to bring its agents here. The <a class="underline" href="https://github.com/phenixrizen/conductor#readme" target="_blank" rel="noopener">README</a> has the rest.</p>
+      <p class="text-xs text-muted">Or run <code>conductor host</code> on another machine to bring its agents here. The <a class="underline" href="https://github.com/rocksolidlabs/conductor#readme" target="_blank" rel="noopener">README</a> has the rest.</p>
     </div>
   </div>
 </template>

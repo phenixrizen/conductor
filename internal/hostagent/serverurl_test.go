@@ -27,9 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/notify"
-	"github.com/phenixrizen/conductor/internal/pty"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/notify"
+	"github.com/rocksolidlabs/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A server is named by its address alone: Run and Uplink.Publish refuse a

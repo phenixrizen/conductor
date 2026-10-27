@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew/ledger"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // The Codex review of rows 6–10 (2026-10-23): each finding's scenario, as

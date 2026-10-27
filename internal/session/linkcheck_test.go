@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // linkFlag stands in for a link store: a revoke marks the link, then closes

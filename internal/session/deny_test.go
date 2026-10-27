@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/nvim"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/nvim"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // DenyList keeps each directory, and each file with the name entry beside

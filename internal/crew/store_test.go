@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // crewJSON is a crew with no members as crews.json of an older Conductor holds it.

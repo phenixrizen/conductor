@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/notify"
-	"github.com/phenixrizen/conductor/internal/version"
+	"github.com/rocksolidlabs/conductor/internal/notify"
+	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
 // conductor mcp is Conductor's MCP server on stdio: the same reports and

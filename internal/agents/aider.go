@@ -1,7 +1,7 @@
 package agents
 
 import (
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 	"regexp"
 )
 

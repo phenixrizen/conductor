@@ -3,7 +3,7 @@ package hostagent
 import (
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A plan set on the question showing, its id, words and choices the same

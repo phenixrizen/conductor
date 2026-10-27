@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/pty"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A session that already runs (a server's local session) is published to a

@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X github.com/phenixrizen/conductor/internal/version.Version=$(VERSION) \
-           -X github.com/phenixrizen/conductor/internal/version.Commit=$(COMMIT)
+LDFLAGS := -X github.com/rocksolidlabs/conductor/internal/version.Version=$(VERSION) \
+           -X github.com/rocksolidlabs/conductor/internal/version.Commit=$(COMMIT)
 GO_FILES := $(shell find . -name '*.go' -not -path './web/*')
 GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22

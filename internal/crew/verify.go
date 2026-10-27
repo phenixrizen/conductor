@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew/ledger"
-	"github.com/phenixrizen/conductor/internal/gitcli"
-	"github.com/phenixrizen/conductor/internal/proc"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/proc"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // Check capture bounds (proc.Spec).

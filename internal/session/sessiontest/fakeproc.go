@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/pty"
 )
 
 // FakeProc is a session.Process in memory. What a test prints with Print is

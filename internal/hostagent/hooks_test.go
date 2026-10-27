@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 )
 
 // logBuffer collects what the host logs while the test reads it.

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/notify"
+	"github.com/rocksolidlabs/conductor/internal/notify"
 )
 
 // conductor crew: what an agent does with its own session from inside it

@@ -11,8 +11,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // FileDeny returns what no file read or write of a session may reach, even

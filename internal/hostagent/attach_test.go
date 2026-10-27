@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/pty"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // joinGate holds the first join the session records, and with it the attach

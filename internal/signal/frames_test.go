@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A signaling message encoded anew past what a SIGNAL frame holds is never

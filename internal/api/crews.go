@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // maxCrewBody bounds the body of a crew create or update: 2 MiB, twice

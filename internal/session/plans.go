@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A plan the agent writes outside the session's folder (#289): Claude Code

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // heldSink is a viewer whose transport stops taking frames: WriteFrame waits
