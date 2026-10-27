@@ -17,6 +17,7 @@ npm --prefix web run typecheck
 npm --prefix web test          # vitest (link detection)
 make web-build                 # nuxt generate + copy into internal/web/dist
 make build-go                  # embeds whatever is in internal/web/dist
+make check-version             # the binary reports the version and commit make injected (a missed -X site would say dev (unknown))
 make test-e2e                  # Playwright (web/e2e): builds both, then a server with stub agents in Chromium 1117
 make test-pebble               # certificates end to end against Let's Encrypt's Pebble (go install'ed when missing)
 make test-live                 # the real Claude Code and Codex (CONDUCTOR_E2E_LIVE_REPO, keys or logins); weekly in CI

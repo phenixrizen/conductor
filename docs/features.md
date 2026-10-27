@@ -3058,6 +3058,24 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **The repository moved to rocksolidlabs/conductor (#380, 2026-10-27).** The
+  GitHub transfer (the ruleset, the `live` environment, the workflows, the
+  labels, the issues and the advisories came along; the old URLs answer 301)
+  is followed by one PR: the module path and every import, the three `-X`
+  ldflag sites (Makefile, Dockerfile, release.yml), the switchyard page's
+  links, the web app's source link, the desktop app's releases URL and
+  update-feed owner, the Linux package maintainer
+  (`conductor@rocksolidlabs.io`), `release_draft.py`'s fallback repo and the
+  two web fixtures that use the checkout's path; the historical plan and
+  review docs keep their commit-pinned links. `scripts/preflight.py` and its
+  test carry the project's copyright line. New: `make check-version`, run by
+  CI after `make build-go` and by preflight, compares the binary's `version`
+  line with the version and commit make injected, and the release workflow's
+  Linux runner does the same for the linux-x64 package binary: the linker
+  ignores a `-X` for a symbol that no longer exists, so a missed site would
+  otherwise ship binaries that say `dev (unknown)`. Installed apps keep
+  updating through GitHub's redirect; a repo or fork at the old name would
+  delete it.
 - **An example crew run by tasks (#377, 2026-10-26).** The four example
   crews all start by rules, so Yardmaster could be tried only with a crew
   built by hand. **Example: todo app, with tasks**
