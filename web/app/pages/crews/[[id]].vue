@@ -568,7 +568,7 @@ usePalette().registerPage(() => ({
             v-else-if="loaded"
             icon="i-lucide-users"
             title="No crews yet"
-            description="A crew is a saved plan: agents, each with a first prompt and a start rule, in one working directory or a git worktree each. A run is one launch of it, here or with conductor up <crew>. The examples show four shapes of crew; they are ordinary crews once loaded."
+            description="A crew is a saved plan: agents, each with a first prompt and a start rule, in one working directory or a git worktree each. A run is one launch of it, here or with conductor up <crew>. The examples show four shapes of crew by start rules and one by tasks, where Yardmaster gives each member its tasks as the results they need come in; they are ordinary crews once loaded."
             :actions="[
               { label: 'New crew', icon: 'i-lucide-plus', onClick: newCrew },
               { label: 'Load the examples', icon: 'i-lucide-package-open', color: 'neutral', variant: 'outline', loading: seeding, onClick: loadExamples },

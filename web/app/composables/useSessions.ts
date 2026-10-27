@@ -664,7 +664,7 @@ export function useSessions() {
     duplicateCrew: (id: string) =>
       request<{ crew: CrewInfo }>(`/api/crews/${encodeURIComponent(id)}/duplicate`, { method: 'POST' }).then((r) => r.crew),
     /**
-     * Seeds the four example crews, as `conductor serve --examples` does: each is saved unless a file with its id exists, which is left
+     * Seeds the five example crews, as `conductor serve --examples` does: each is saved unless a file with its id exists, which is left
      * alone. Returns the ids added and skipped, in the examples' order. 503 `store_unavailable` without a data directory.
      */
     loadExampleCrews: () => request<{ added: string[]; skipped: string[] }>('/api/crews/examples', { method: 'POST' }),

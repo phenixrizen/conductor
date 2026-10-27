@@ -9,8 +9,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a branch cancels its older run. Called from release.yml, every dispatch runs on its
+# branch's ref (main) whatever its version, so each release run's checks keep a group of their own: a
+# second version's dispatch never cancels the first's (release.yml serializes one version's runs).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 env:

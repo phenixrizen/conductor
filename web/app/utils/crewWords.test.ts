@@ -71,6 +71,12 @@ describe('crewShape', () => {
     expect(crewShape([m('lead'), m('core', after('lead')), m('tests', after('core')), m('docs', { when: 'manual' }), m('review')])).toBe('5 · a chain of 3, 1 by hand, 1 alone')
   })
 
+  it('says a crew whose members start by their tasks is run by tasks, not at launch', () => {
+    const task = { when: 'task' } as const
+    expect(crewShape([m('lead', task), m('core', task), m('cli', task), m('reviewer', task)])).toBe('4 · by tasks')
+    expect(crewShape([m('solo', task)])).toBe('1 · by tasks')
+  })
+
   it('calls two members starting after the same one a tree', () => {
     expect(crewShape([m('lead'), m('core', after('lead')), m('cli', after('lead')), m('tester', after('cli'))])).toBe('4 · a tree')
     expect(crewShape([m('lead'), m('core', after('lead')), m('cli', after('lead')), m('docs', { when: 'manual' })])).toBe('4 · a tree of 3, 1 by hand')

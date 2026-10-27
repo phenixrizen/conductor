@@ -1,28 +1,44 @@
 name: release
 
-# A tag v* builds the desktop packages (macOS dmg and zip, Linux deb, rpm and
-# AppImage, Windows nsis with the Linux server for WSL) and attaches them to
-# the GitHub release. Signing and notarisation run only when the secrets are
-# there; the packages ship unsigned otherwise. The tag's draft release is made
-# once before the package jobs, which upload to it by its id: electron-builder
-# only builds, since publishing it made the release itself when it found none
-# on the first page, and two jobs at once made two drafts (#372).
+# A dispatch with a version builds the desktop packages (macOS dmg and zip,
+# Linux deb, rpm and AppImage, Windows nsis with the Linux server for WSL)
+# from the commit it runs on and puts them on that version's draft release;
+# without a version it builds them as this run's artifacts only. Signing and
+# notarisation run only when the secrets are there; the packages ship
+# unsigned otherwise.
+#
+#   gh workflow run release.yml --ref main -f version=0.7.0-rc.18
+#
+# No tag is pushed: the draft names v<version>, which does not exist yet, and
+# the commit, and publishing the draft makes the tag there. A pushed tag is
+# listed in the releases.atom the apps' updater reads even while its release
+# is a draft, and an app whose channel's newest entry has no public
+# latest.yml finds no update at all (#375). The draft is made once, before
+# the package jobs, which upload to it by its id: electron-builder only
+# builds, since publishing it made the release itself when it found none on
+# the first page, and two jobs at once made two drafts (#372).
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: The version to release, without its v (0.7.0-rc.18); empty builds the packages only
+        required: false
+        type: string
 
 permissions:
   contents: write
 
-# Two runs for one tag would race to make its release as the package jobs did.
+# Two runs for one version would race to make its release as the package jobs did.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.version || github.run_id }}
   cancel-in-progress: false
 
 env:
   GOFLAGS: -mod=readonly
   GOTOOLCHAIN: auto # go.mod pins the patch toolchain; the go command fetches it
+  # The input reaches a script only through the environment, never written into a run line;
+  # release_draft.py refuses one that is not a version.
+  VERSION: ${{ inputs.version }}
 
 jobs:
   checks:
@@ -52,11 +68,12 @@ jobs:
     needs: checks
     steps:
       - uses: actions/checkout@v4
-      - name: the tag's one draft release, made before the packages upload to it
-        if: startsWith(github.ref, 'refs/tags/v')
+      # Skipped without a version, the job still succeeds: the package jobs need it.
+      - name: the version's one draft release at this commit, made before the packages upload to it
+        if: inputs.version != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/release_draft.py ensure "$GITHUB_REF_NAME"
+        run: python3 scripts/release_draft.py ensure "v$VERSION" --target "$GITHUB_SHA"
 
   package:
     needs: [web, release]
@@ -89,7 +106,9 @@ jobs:
       - name: server binaries for the packages (no make on the Windows runner)
         shell: bash
         run: |
-          v=$(git describe --tags --always --dirty); c=$(git rev-parse --short HEAD)
+          # The server's version: what git describe said on a pushed tag, v and the version.
+          if [ -n "$VERSION" ]; then v="v$VERSION"; else v=$(git describe --tags --always --dirty); fi
+          c=$(git rev-parse --short HEAD)
           for t in linux/amd64/linux-x64 linux/arm64/linux-arm64 darwin/amd64/mac-x64 darwin/arm64/mac-arm64; do
             goos=${t%%/*}; rest=${t#*/}; goarch=${rest%%/*}; dir=bin/desktop/${rest#*/}; mkdir -p "$dir"
             CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "-X github.com/phenixrizen/conductor/internal/version.Version=$v -X github.com/phenixrizen/conductor/internal/version.Commit=$c" -o "$dir/conductor" ./cmd/conductor && echo "built $dir/conductor"
@@ -116,20 +135,20 @@ jobs:
             [ -z "${!v}" ] && unset "$v" || true
           done
           [ -n "${CSC_LINK:-}" ] || export CSC_IDENTITY_AUTO_DISCOVERY=false
-          # The package version: the tag without its v (a release candidate is 0.6.0-rc.1), else 0.0.0 with the commit.
-          if [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
-            ver="${GITHUB_REF_NAME#v}"
+          # The package version: the version asked for (a release candidate is 0.7.0-rc.18), else 0.0.0 with the commit.
+          if [ -n "$VERSION" ]; then
+            ver="$VERSION"
           else
             ver="0.0.0-$(git rev-parse --short HEAD)"
           fi
           # Built only; the next step uploads. The latest*.yml and blockmaps are written all the same.
           npx electron-builder --config electron-builder.yml --publish never -c.extraMetadata.version="$ver"
-      - name: upload to the tag's draft release, by its id
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: upload to the version's draft release for this commit, by its id
+        if: inputs.version != ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python scripts/release_draft.py upload "$GITHUB_REF_NAME" desktop/release
+        run: python scripts/release_draft.py upload "v$VERSION" desktop/release --target "$GITHUB_SHA"
       - uses: actions/upload-artifact@v4
         with:
           name: conductor-desktop-${{ matrix.name }}
@@ -145,7 +164,7 @@ jobs:
           if-no-files-found: warn
 
   release-check:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: inputs.version != ''
     runs-on: ubuntu-latest
     needs: package
     steps:
@@ -155,7 +174,7 @@ jobs:
           pattern: conductor-desktop-*
           path: packages
           merge-multiple: true
-      - name: one draft release holds every package built
+      - name: one draft release for this commit holds every package built, and no tag yet
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 scripts/release_draft.py check "$GITHUB_REF_NAME" packages
+        run: python3 scripts/release_draft.py check "v$VERSION" packages --target "$GITHUB_SHA"

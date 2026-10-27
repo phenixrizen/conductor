@@ -1038,11 +1038,12 @@ way. A crew whose member's agent is not installed on the server is refused at
 launch (`invalid_crew`, naming the member).
 
 **Example crews.** `conductor serve --examples` (or `CONDUCTOR_EXAMPLES` set to
-`1` or `true`) adds four example crews the first time: `example-todo-app` (a
+`1` or `true`) adds five example crews the first time: `example-todo-app` (a
 lead that plans, two builders after it, a tester after the second builder),
-`example-test-fixer`, `example-docs-writer` and `example-dependency-upgrade`,
-each using Claude Code and Codex, the server's default working directory and a
-worktree per member. They are ordinary crews once saved: edit or delete them
+`example-todo-app-tasks` (the same app run by Yardmaster's tasks:
+see below), `example-test-fixer`, `example-docs-writer` and
+`example-dependency-upgrade`, each using Claude Code and Codex, the server's
+default working directory and a worktree per member. They are ordinary crews once saved: edit or delete them
 freely. A crew whose id has a file is never touched, so edits survive the
 flag, and a deleted example comes back on the next `--examples`. The empty
 **Crews** page offers **Load the examples**, which does the same
@@ -1053,6 +1054,19 @@ the run's id being in its environment), and the todo app's tester merges the
 lead's and the second builder's, then waits for the first builder's and merges
 that too. The todo app writes files in its working directory, so point it at a
 fresh repository with one commit, not at a real project.
+
+**Example: todo app, with tasks** is the way to see Yardmaster, Conductor's
+agent harness, at work. It builds the same app (in Python, with its standard
+library only, so each check is a fixed command with nothing to install) as
+five tasks instead of start rules: `plan` (the lead writes PLAN.md, checked by
+`test -s PLAN.md`), then `core` and `cli` at once, each from the plan's result
+and checked by `python3 -m unittest discover -s tests -t .`, then `tests`,
+which needs both (its worktree starts at core's result and merges cli's) and
+runs the whole suite, then `review`, which approves or sends `tests` back with
+findings. Loading the examples again adds it for anyone who loaded them before
+it existed. Point it at a fresh repository with one commit, launch it, and
+the run page's **Tasks** tab shows each task wait, run, get checked and pass
+or go back.
 
 A member starts `immediately` at launch, `after <member>` once that member,
 with its own prompt typed, first reports it is done (idle), or `manual`, when

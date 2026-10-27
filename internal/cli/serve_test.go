@@ -433,10 +433,10 @@ func TestServeSeedsTheExamplesOnce(t *testing.T) {
 	data := filepath.Join(dir, "state")
 	cfg := writeServeConfig(t, dir, fmt.Sprintf(`{"workbenchToken": "t", "allowedRoots": [%q], "defaultCwd": %q, "dataDir": %q}`, work, work, data))
 	logs := serveUntilListening(t, "--config", cfg, "--examples")
-	if lines := logLines(logs, "example crews", `added="[example-todo-app example-test-fixer example-docs-writer example-dependency-upgrade]"`, "skipped=[]"); len(lines) != 1 {
+	if lines := logLines(logs, "example crews", `added="[example-todo-app example-todo-app-tasks example-test-fixer example-docs-writer example-dependency-upgrade]"`, "skipped=[]"); len(lines) != 1 {
 		t.Fatalf("first start:\n%s", logs)
 	}
-	for _, id := range []string{"example-todo-app", "example-test-fixer", "example-docs-writer", "example-dependency-upgrade"} {
+	for _, id := range []string{"example-todo-app", "example-todo-app-tasks", "example-test-fixer", "example-docs-writer", "example-dependency-upgrade"} {
 		if _, err := os.Stat(filepath.Join(data, "crews", id+".json")); err != nil {
 			t.Fatal(err)
 		}

@@ -3058,6 +3058,44 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **An example crew run by tasks (#377, 2026-10-26).** The four example
+  crews all start by rules, so Yardmaster could be tried only with a crew
+  built by hand. **Example: todo app, with tasks**
+  (`example-todo-app-tasks`, listed beside the todo app so the two are
+  compared) builds the same app in Python with its standard library, as five
+  tasks: `plan` (the lead writes PLAN.md, with core's interface given
+  exactly, the test layout and a `.gitignore` for Python's caches, so a
+  tested worktree stays clean to submit; checked by `test -s PLAN.md`),
+  `core` and `cli` at once from the plan (cli builds and tests
+  `main(argv, store)` against a fake store, since core is not in its
+  worktree), `tests` (needs both: its worktree starts at core's result and
+  merges cli's; it adds the end-to-end tests and owns every fix, in either
+  part, including what the review sends back), and `review`. The work tasks
+  after the plan are checked by `python3 -m unittest discover -s tests -t
+  .`. **Load the example crews** adds it for anyone who loaded the four
+  before. The Crews list says a crew whose members start by their tasks is
+  `4 · by tasks`, not `all at launch`. Its run on real agents is checked by
+  hand, not in CI.
+- **No release tag before its release is published (#375, 2026-10-26).**
+  A pushed `v*` tag is in the repository's `releases.atom` at once, and
+  electron-updater (6.8.9) takes the newest entry of the app's channel
+  there: while rc.17's release was a draft, every app on the rc channel
+  found no `latest.yml` (a 404, logged only) and so no update at all, not
+  even to the newest published version. A release is now built by
+  dispatching `release.yml` with its version (`gh workflow run release.yml
+  --ref main -f version=0.7.0-rc.18`); no tag is pushed. The draft names
+  `v<version>`, which does not exist yet, and the commit built
+  (`target_commitish`); GitHub makes the tag there when the draft is
+  published, so the feed lists only published releases. `release_draft.py`
+  refuses a version that is not SemVer without build metadata, a tag that
+  exists, and a draft for another commit or under the bare version, in
+  `ensure` and `upload` alike, and `release-check` also fails on a tag
+  pushed meanwhile and on a draft without the updater's three
+  `latest*.yml`. The server binaries say `v<version>`, as `git describe`
+  did on a tag. A dispatch without a version builds the packages as the
+  run's artifacts only. `desktop/README.md` has the steps. The tag
+  `v0.7.0-rc.17`, pushed before this, still lists a draft: the apps' check
+  fails until a newer rc is published or that tag is deleted.
 - **A tag's packages go into one draft release (#372, 2026-10-26).** The
   three package jobs published through electron-builder, which makes the
   tag's release when it finds none (on the first page of releases only),
