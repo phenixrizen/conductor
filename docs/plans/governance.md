@@ -433,12 +433,21 @@ python3 scripts/dco_check.py --base <rev> --head <rev> [--repo <dir>]
   does not. The committer is not consulted: a maintainer's rebase keeps
   the author's sign-off. No bot exemption.
 - `read(repo, base, head) -> list[Commit]`: one
-  `git -C repo log --reverse --format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%s%x1f%B base..head`,
+  `git -C repo log --reverse --encoding=UTF-8 --format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%s%x1f%B base..head`,
   read as UTF-8 whatever the locale (the lesson of
   `release_draft_test.py`'s `Gh` test), split on the record and unit
   separators; a record that does not split into six parts (a message
-  holding those bytes) fails the read. The script never passes a shell
-  string.
+  holding those bytes) fails the read. Both ends of the pipe are fixed:
+  git re-encodes what it logs, the author's name and the message alike,
+  to `i18n.logOutputEncoding` (unset, to `i18n.commitEncoding`), so a
+  developer with either set would get bytes no UTF-8 decoder accepts and
+  a branch signed off in full would fail the read before any sign-off is
+  judged; `--encoding=UTF-8` makes git write UTF-8 whatever either
+  setting says. (Observed on git 2.50.1 with
+  `i18n.logOutputEncoding=cp1252`: a `ö` in the author's name comes back
+  as the byte 0xf6 and an en dash in the subject as 0x96, in `%an` and
+  `%B` both; with the flag, as UTF-8; `i18n.commitEncoding=cp1252` alone
+  does the same.) The script never passes a shell string.
 - `main(argv)`: exit 0 and `N commits signed off by their authors` (or
   `no commits between base and head`); exit 1 with one line per problem and
   a last line that counts and names the fix: when no commit in the range
@@ -492,7 +501,8 @@ tests, each failing without its part:
   `-c init.defaultBranch=main` and run with `GIT_CONFIG_GLOBAL=/dev/null`
   and `GIT_CONFIG_NOSYSTEM=1`, so a developer's global configuration (a
   signing key, a commit template, a hooks path) cannot make the test fail
-  or pass for its own reasons; the two tests below are made the same way.
+  or pass for its own reasons; the three tests below are made the same
+  way.
 - `test_a_merge_that_carried_its_own_edit_is_repaired_without_losing_it`:
   the same repository, but the merge is made with `--no-commit`, a file
   in neither parent is added before it is committed, and it is the only
@@ -520,6 +530,21 @@ tests, each failing without its part:
   author. Run as Bob, it returns 0 with two commits counted: Bob's
   commit carries his own line beside Alice's, and Alice's commit keeps
   hers. This is why `CONTRIBUTING.md` says the author runs the fix.
+- `test_a_commit_with_non_ascii_text_is_read_as_utf8_whatever_git_is_told_to_write`:
+  a repository with a base commit and one commit signed off by its
+  author, whose name holds a non-ASCII letter (`Ada Lövelace`) and whose
+  subject an en dash, the identity set with `-c user.name` and
+  `-c user.email`; then `git config i18n.logOutputEncoding cp1252` in
+  that repository, the repository's own configuration, which
+  `GIT_CONFIG_GLOBAL=/dev/null` does not hide and which the script's
+  `git log` reads as it would a developer's. First the test runs that
+  `git log` itself without `--encoding=UTF-8` under the setting and
+  asserts the bytes do not decode as UTF-8 (0xf6 where the `ö` is): the
+  mechanism, proved in the test, so it cannot pass for nothing on a git
+  that ignored the setting. Then `main()` returns 0 with one commit
+  counted, and `read()` gives the author's name and the subject as they
+  were written. With the flag removed from the script, the read raises
+  and the test fails.
 - `test_a_record_that_does_not_parse_fails_the_read` (exit 2).
 
 ### `.github/workflows/ci.yml` (edited; PR-1)
@@ -645,6 +670,11 @@ documents, one workflow job and one script. What does have an order is CI.
 - The script fails closed: exit 1 names every offending commit and the
   fix; exit 2 is a read that failed (git, or a record that did not parse);
   there is no path to exit 0 without every commit read and judged.
+- What the script reads is the same on every machine: git is told to
+  write UTF-8 (`--encoding=UTF-8`) whatever `i18n.logOutputEncoding` or
+  `i18n.commitEncoding` a developer has set, and the script decodes
+  UTF-8 whatever the locale, so a non-ASCII name or subject is judged
+  the same on a laptop and on the runner.
 - `make preflight` runs the step first; `--only dco` gives a partial
   receipt as any `--only` does (`preflight.py:188-189`).
 - `NOTICE` keeps twelve lines; the two sites that copy it do not change.
@@ -779,7 +809,7 @@ so the second waits for the first.
 - Touches: the repository root (`CONTRIBUTING.md`, `DCO`, `AGENTS.md`),
   `.github` (the PR template, the workflow), `scripts`, `docs`
   (`checks.md`, `repository-map.md`).
-- Tests: the scripts suite with the thirteen tests named above and the
+- Tests: the scripts suite with the fourteen tests named above and the
   preflight test; `python3 scripts/preflight.py --only dco`; `ci.yml` read
   twice; the PR's own CI run, every commit signed, the green case on a
   real PR; the two throwaway PRs of the acceptance check, the first cut
