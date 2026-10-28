@@ -146,7 +146,8 @@ old receipts); a test beside each.
 
 **Where.** `<dataDir>/dispatch/dispatch.sqlite`, mode 0600, and
 `<dataDir>/dispatch/attachments/<sha256>` (0600, content addressed, the
-first two hex characters as a sub-directory). The data directory is
+first two hex characters as a sub-directory; `attachments/tmp/` holds the
+uploads in flight). The data directory is
 refused to Conductor's own file routes and to every session's file reads
 (`config.FileDenyFunc`), so no viewer reaches the store through a Files
 pane; an agent's own process runs as the server's OS user and can open
@@ -176,9 +177,10 @@ the commit's last `seq`, the entity, its id, and the ticket and project
 it belongs to; the API turns it into the SSE event below, CS1's
 continuity store will hook it too.
 
-**Ids and keys.** Every row has an opaque id of 16 lower-case hex
-characters from 8 random bytes (`crypto/rand`, the shape of
-`session.NewID`, without importing `internal/session`). A project also has
+**Ids and keys.** Every row but a person's has an opaque id of 16
+lower-case hex characters from 8 random bytes (`crypto/rand`, the shape
+of `session.NewID`, without importing `internal/session`); a person is
+its name (the table says why). A project also has
 a key, `^[A-Z][A-Z0-9]{1,5}$`, unique, chosen at creation and never
 changed; a ticket has a number, allocated from `projects.next_number` in
 the transaction that creates it, and its key is `<project key>-<number>`
@@ -195,23 +197,23 @@ row for the row; the rows of a set (`ticket_assignees`, `ticket_labels`,
 `relations`, `links`, `attachments`) are added and removed, never edited,
 and carry none: their ticket's `rev` is bumped instead and is what an
 `expectedRev` compares with. `deleted_at` is on every row with an id of
-its own; "among live rows" below is a partial unique index (`WHERE
-deleted_at = ''`):
+its own; "live" below means `deleted_at = ''`:
 
 | Table | Columns (bounds in `model.go`) |
 |---|---|
 | `schema_version` | `version` |
 | `projects` | `id` PK, `key` UNIQUE, `name` (1 to 60 characters, no control characters), `description` (Markdown, ≤ 16 KiB), `cwd` (≤ 4,096 bytes, a path kept as text, resolved only when something launches from it, which is DS2's), `tracker` (`native` or `external`), `tracker_url` (≤ 2 KiB, an `http` or `https` URL, with `external` only), `close_requires` (JSON array of `acceptance` and `delivery`; `verified` is refused until DS2 defines it), `next_number`, `number_from`, `number_to`, `archived_at`, `created_at`, `updated_at`, `rev` |
-| `people` | `id` PK, `name` UNIQUE (1 to 60 characters), `created_at`: the directory the owner and person pickers offer; a name typed that is not there is added (decision D4: people are local labels until identity exists) |
-| `tickets` | `id` PK, `project_id` FK, `number`, `key` UNIQUE, `title` (1 to 200 characters), `description` (Markdown, ≤ 64 KiB), `acceptance` (Markdown, ≤ 16 KiB), `status`, `priority` (0 to 4), `horizon` (`''`, `now`, `next`, `later`), `owner` (a person's name or `''`), `parent_id` (a ticket of the same project or `''`), `milestone_id`, `accepted_at`, `accepted_by`, `accepted_for` (the owner the acceptance was recorded for), `accepted_criteria` (the SHA-256 of `acceptance` then), `accepted_note` (≤ 1,000 characters), `source` (`native`; IN1a adds its own), `external_id`, `external_url`, `external_snapshot`, `authority` (the last four `''` here, reserved for IN1a so it adds no column), `created_at`, `created_by`, `updated_at`, `closed_at`, `deleted_at`, `rev`; UNIQUE(`project_id`, `number`) |
+| `people` | `name` PK (1 to 60 characters), `created_at`: the directory the owner and person pickers offer; a name typed that is not there is added (decision D4: people are local labels until identity exists); the name is the person's identity, carried by `owner` and by `ticket_assignees.actor`, and nothing carries a person's id, so two replicas adding one name add one row |
+| `tickets` | `id` PK, `project_id` FK, `number`, `key` UNIQUE, `title` (1 to 200 characters), `description` (Markdown, ≤ 64 KiB), `acceptance` (Markdown, ≤ 16 KiB), `status`, `priority` (0 to 4), `horizon` (`''`, `now`, `next`, `later`), `owner` (a person's name or `''`), `parent_id` (a live ticket of the same project or `''`), `milestone_id` (a live milestone of the same project or `''`), `accepted_at`, `accepted_by`, `accepted_for` (the owner the acceptance was recorded for), `accepted_criteria` (the SHA-256 of `acceptance` then), `accepted_note` (≤ 1,000 characters), `source` (`native`; IN1a adds its own), `external_id`, `external_url`, `external_snapshot`, `authority` (the last four `''` here, reserved for IN1a so it adds no column), `created_at`, `created_by`, `updated_at`, `closed_at`, `deleted_at`, `rev`; UNIQUE(`project_id`, `number`) |
 | `ticket_assignees` | `ticket_id`, `actor` (`person:<name>` or `agent:<catalog id>`), `added_at`; PK of the two; at most 8 per ticket |
-| `labels` | `id` PK, `project_id`, `name` (1 to 40 characters), `color` (one of the twelve names the UI maps to the brand's status scales, never a hex value from the client), `created_at`, `deleted_at`, `rev`; UNIQUE(`project_id`, `name`) among live rows; at most 100 live per project |
-| `ticket_labels` | `ticket_id`, `label_id`; PK of the two; at most 20 per ticket |
+| `labels` | `id` PK, `project_id`, `name` (1 to 40 characters), `color` (one of the twelve names the UI maps to the brand's status scales, never a hex value from the client), `created_at`, `deleted_at`, `rev`; a live label's name is unique in its project on a local write (`invalid`; a rule in the operation, not an index, since a merge may bring a second: see the field rules); at most 100 live per project |
+| `ticket_labels` | `ticket_id`, `label_id` (a live label of the ticket's project, checked in the operation); PK of the two; at most 20 per ticket |
 | `milestones` | `id` PK, `project_id`, `name` (1 to 60), `description` (≤ 4 KiB), `target` (`YYYY-MM-DD` or `''`), `state` (`open` or `closed`), `created_at`, `updated_at`, `deleted_at`, `rev`; at most 100 live per project |
-| `relations` | `id` PK, `from_id`, `to_id`, `kind` (`blocks` or `relates`), `created_at`, `created_by`, `deleted_at`; UNIQUE(`from_id`, `to_id`, `kind`) among live rows (one added again after a remove is a new row); both tickets of one project; at most 100 live per ticket; "depends on" is `blocks` read from the other end |
+| `relations` | `id` PK, `from_id`, `to_id`, `kind` (`blocks` or `relates`), `created_at`, `created_by`, `deleted_at`; one live row per (`from_id`, `to_id`, `kind`) on a local write (`invalid`; a rule, not an index: a merge may bring a second, read as one member; one added again after a remove is a new row); both tickets live and of one project; at most 100 live per ticket; "depends on" is `blocks` read from the other end |
 | `comments` | `id` PK, `ticket_id`, `author` (an actor as above, with `by`, the display name), `body` (Markdown, ≤ 16 KiB), `created_at`, `edited_at`, `deleted_at`, `rev`; at most 2,000 per ticket. A comment's number on the page, `n`, is its 1-based place in the ticket's comments ordered by (`created_at`, `author`, `id`), derived at read and never stored, so a replicated comment takes its place without renumbering a row; a comment is addressed by its `id` |
 | `attachments` | `id` PK, `ticket_id`, `name` (1 to 255 bytes, no `/`, `\`, NUL or control character, not `.` or `..`), `size`, `sha256`, `content_type` (as given, ≤ 100 bytes; served only when on the allow list below), `created_at`, `created_by`, `deleted_at`; at most 50 per ticket, 16 MiB each |
-| `links` | `id` PK, `ticket_id`, `kind` (`delivery`, `run`, `external`; DS2 adds `plan`, `candidate`, `check`, `finding`, DR1 `decision`), `ref` (≤ 2 KiB: a run id, a PR number, else the `url` itself when none is given, so every link has an identity), `url` (≤ 2 KiB, `http` or `https`), `note` (≤ 1,000), `created_at`, `created_by`, `deleted_at`; UNIQUE(`ticket_id`, `kind`, `ref`) among live rows (a second live link with the same identity is `invalid`; one added again after a remove is a new row); a `run` link's `ref` is unique among the live links of every ticket, a run belonging to one ticket at most; at most 50 live per ticket |
+| `uploads` | `id` PK, `sha256`, `created_at`: a hash held from before its file is published until the row that names it is committed (see Attachments), dropped in that commit or in the refusal's; one older than `sweepGrace` is a crashed upload's and the sweep drops it |
+| `links` | `id` PK, `ticket_id`, `kind` (`delivery`, `run`, `external`; DS2 adds `plan`, `candidate`, `check`, `finding`, DR1 `decision`), `ref` (≤ 2 KiB: a run id, a PR number, else the `url` itself when none is given, so every link has an identity), `url` (≤ 2 KiB, `http` or `https`), `note` (≤ 1,000), `created_at`, `created_by`, `deleted_at`; one live row per (`ticket_id`, `kind`, `ref`) on a local write (a second is `invalid`; a rule, not an index: a merge may bring a second, read as one member; one added again after a remove is a new row); a `run` link's `ref` names a run no other ticket's live `run` link names, on a local write (`run_linked`) and after a merge by `Reconcile`, so a run belongs to one ticket at most; at most 50 live per ticket |
 | `views` | `id` PK, `project_id` (`''` for every project), `name` (1 to 60), `kind` (`list`, `board`, `roadmap`), `query` (JSON, ≤ 8 KiB, the filter, sort and grouping of `query.go`), `created_at`, `updated_at`, `deleted_at`, `rev`; at most 200 live |
 | `changes` | `seq` INTEGER PRIMARY KEY AUTOINCREMENT (local to this database: the SSE event's and the history's paging cursor, never replicated), `entity` (`project`, `ticket`, `comment`, `label`, `milestone`, `view`, `person`; a set member, an assignee, label, relation, link or attachment, is a row of its ticket's `field`), `entity_id`, `ticket_id` and `project_id` (the ticket and project the row belongs to, `''` where there is none), `field`, `op` (`set`, `add`, `remove`, `create`, `delete`, `reconcile`, `migrate`), `value` (a string field's text as it is, a structured field's JSON; ≤ 64 KiB, the largest field's bound, which a text value meets by its field's bound and a structured one, ≤ 8 KiB, by its own), `prior` (the same shape: the value before a `set`; for a `remove`, the tags of the adds it removes), `at`, `actor`, `by`, `op_id`, `n` (the row's place in its operation, from 0); UNIQUE(`actor`, `op_id`, `n`), the row's identity across replicas: the operation log, the ticket's history and what CS1 replicates, in the one order (`at`, `actor`, `op_id`, `n`) |
 | `ops` | `actor`, `id`, `intent`, `fingerprint`, `status` (`done` or `failed`), `receipt` (JSON, ≤ 4 KiB: it carries no entity), `created_at`; PK(`actor`, `id`); the newest 20,000 kept |
@@ -221,9 +223,14 @@ Indexes: `tickets(project_id, status, updated_at)`, `tickets(project_id,
 priority)`, `tickets(milestone_id)`, `tickets(parent_id)`,
 `tickets(owner)`, `tickets(deleted_at)`, `ticket_assignees(actor)`,
 `relations(to_id)`, `comments(ticket_id, created_at)`, `changes(entity,
-entity_id, seq)`, `changes(ticket_id, seq)`, `links(kind, ref)` (unique
-among live `run` links), `attachments(sha256)`, and the partial unique
-indexes of the live rows named in the table.
+entity_id, seq)`, `changes(ticket_id, seq)`, `links(kind, ref)`,
+`attachments(sha256)`, `uploads(sha256)`. The unique indexes are those
+of the keys never minted twice and nothing else: `projects.key`,
+`tickets.key` and (`project_id`, `number`), `people.name`, `changes`
+(`actor`, `op_id`, `n`) and `ops` (`actor`, `id`); every other
+uniqueness in the table is a rule checked on a local write inside the
+operation's transaction, so no index refuses a replicated add (see the
+field rules), and a test reads the schema back and asserts the list.
 
 Vocabularies: `status` is `backlog`, `ready`, `in_progress`, `in_review`,
 `done`, `cancelled` (six, fixed in this item; Owner decisions, 4);
@@ -273,23 +280,30 @@ operation), `ticket.delete`, `ticket.undelete`, `ticket.accept`,
 orderings and invariants" as code, `Class(entity, field)`,
 `Merge(local, remote Change) Winner` and `Reconcile(edges []Edge)
 []Edge` (the edges to undo so a merged parent or `blocks` graph keeps
-its invariants), pure and tested here, used by CS1 later; the schema
-comment names the table.
+its invariants and a run stays linked to one ticket), pure and tested
+here, used by CS1 later; the schema comment names the table.
 
 **Queries** (`query.go`): `List(ctx, Query) (Page, error)` with `Query{
 Project, Status[], Priority[], Labels[], Owner, Assignees[], Milestone,
 Horizon[], Parent, Blocked bool, Q string, Sort (updated, created,
 priority, status, title, key, milestone), Desc bool, Limit (1 to 200),
 Cursor}`: one SQL statement from the filter, the FTS5 match joined when
-`Q` is set (≤ 200 characters: the text is cut into terms at whitespace
-and every term is passed as a quoted string with its `"` doubled, the
-terms joined by FTS5's implicit AND and the last one also as a prefix
-(`"term"*`), so `CND-12`, `OR`, `NOT`, `a:b`, `(x)`, `*` and `"` are
-words to match, never syntax), the cursor the last row's sort key and
-id, encoded opaque; the page carries summaries without the description.
+`Q` is set (≤ 200 characters: the text is cut into terms at whitespace;
+a term with no letter or digit in it is dropped, since `unicode61` makes
+no token of punctuation alone and `*` or `"` by itself would match
+nothing; every term kept is passed as a quoted string with its `"`
+doubled, the terms joined by FTS5's implicit AND and the last one also
+as a prefix (`"term"*`), so `CND-12`, `OR`, `NOT`, `a:b` and `(x)` are
+words to match, never syntax, and a query whose terms are all dropped is
+an empty page, what FTS5 answers a phrase of no tokens), the cursor the
+last row's sort key and id, encoded opaque; the page carries summaries
+without the description.
 `Ticket(ctx, id)` reads one with its assignees, labels, relations both
-ways, links, attachments and the last 50 comments; `History(ctx, id, after, limit ≤
-500)` pages the changes; `Children`, `Blockers`. A benchmark,
+ways, the first 50 children by number with their count, links,
+attachments and the last 50 comments, in one read transaction (see the
+store's invariants); `History(ctx, id, after, limit ≤ 500)` pages the
+changes; `Children` (paged as `List` with `Parent` is), `Blockers`. A
+benchmark,
 `BenchmarkList`, over 10,000 tickets in three projects: the targets to
 measure in PR-4 and name in its body are a filtered, sorted page under
 20 ms and a full-text page under 50 ms on the Linux box; a target missed
@@ -297,21 +311,38 @@ is tuned in that PR (an index, the statement), not waived.
 
 **Attachments** (`attachments.go`): `Add(ctx, op, ticket, name,
 contentType, r io.Reader) (Receipt, Attachment, error)` reads at most
-16 MiB + 1 (`bound` past it), into a temp file in `attachments/` while
-hashing, fsyncs, renames it to its hash (a file already there is the same
-content; the temp file goes), then runs the operation that writes the
-row; `beforeCommit`, a seam of the store a test sets, runs between the
-two. A crash between the rename and the commit leaves a file no row
-names. Only the sweep deletes a file: `sweep(ctx, now)` (`sweep.go`), run
-by `Open` before any route is served and called by a test, deletes a
-file in `attachments/` that no live row names and whose modification
-time is older than `sweepGrace` (an hour; a field a test sets), so a
-second server opening the same data directory while this one is between
-the rename and the commit leaves the upload alone, and a tombstoned
-attachment's content goes at an open after that hour. `Remove` tombstones
-the row and deletes no file, since an `Add` of the same content may be
-between its rename and its commit. `Open(ctx, id)` gives the row and an
-`*os.File` of the content, opened by its hash, never by a client's path.
+16 MiB + 1 (`bound` past it), into a temp file in `attachments/tmp/`
+while hashing, fsyncs, and holds the hash before it publishes the file:
+one transaction (`BEGIN IMMEDIATE`) inserts an `uploads` row naming the
+hash and commits; then the temp file is renamed to its hash (a file
+already there is the same content; the temp file goes; no file's
+modification time is consulted by anything); then the operation that
+writes the attachment row runs and deletes the `uploads` row in its own
+transaction, a refusal's transaction deleting it too; `beforeCommit`, a
+seam of the store a test sets, runs between the rename and the
+operation. So from before a hash-named file exists until the row that
+names it is committed, an `uploads` row names its hash, and a file named
+by neither is an orphan: a crash between the rename and the commit (its
+`uploads` row then expires), or a tombstoned attachment's content. Only
+the sweep deletes a file: `sweep(ctx, now)` (`sweep.go`), run by `Open`
+before any route is served and called by a test, lists the directory,
+then in one `BEGIN IMMEDIATE` transaction it holds while it works deletes
+the `uploads` rows older than `sweepGrace` (an hour; a field a test
+sets), reads the hashes the live `attachments` rows and the `uploads`
+rows name, deletes every listed hash-named file that neither names and
+every temp file older than the grace, and commits. The write lock is
+what orders publication, reference and collection across processes: an
+`Add`, in this server or a second one on the same directory, publishes a
+file only after its `uploads` row is committed, and no commit falls
+inside the sweep's transaction, so a sweep whose transaction began
+before that commit finishes its deletes before the file is published (a
+reused hash it deleted is published afresh by the rename), and one that
+begins after it sees the row and leaves the file, whatever the file's
+age and whether the content is new or a reused hash whose last
+attachment was removed an hour ago. `Remove` tombstones the row and
+deletes no file, since an `Add` of the same content may be between its
+rename and its commit. `Open(ctx, id)` gives the row and an `*os.File`
+of the content, opened by its hash, never by a client's path.
 
 ### `internal/api`: the routes and the event
 
@@ -335,7 +366,19 @@ its bound with each character doubled by JSON escaping: the Markdown
 fields allow only `\n` and `\t` of the control characters, so a
 browser's `JSON.stringify` at most doubles them, and the CLI encodes
 with HTML escaping off (`<` stays one byte); a field over its own bound
-after decoding is the store's `bound`.
+after decoding is the store's `bound`. Replies are encoded with HTML
+escaping off too (`SetEscapeHTML(false)`, as `internal/store` and the
+task file write; `writeJSON`'s default encoder makes six bytes of `<`,
+`>` and `&`, which would put fifty comments of `<` at 4.9 MB), so every
+text field encodes to at most twice its bytes, and the full ticket read
+is bounded by its shape: the last 50 comments, the first 50 children
+with their count, the sets at their bounds. The largest reply the server
+can make, every field and set at its bound with each text doubled (fifty
+comments at 32 KiB, the description at 128 KiB, fifty links, fifty
+attachments, a hundred relations and fifty children with their titles),
+is under 3 MiB, `maxTicketReply`, a constant `dispatch_test.go` proves
+by building that ticket and measuring the reply, and that the CLI's and
+the tools' limits are checked against (PR-12).
 
 | Route | Body and reply |
 |---|---|
@@ -348,7 +391,7 @@ after decoding is the store's `bound`.
 | `GET /api/dispatch/people`, `POST /api/dispatch/people` | `{people}`; `{opId, name}` |
 | `GET /api/dispatch/tickets?project=&status=&priority=&label=&owner=&assignee=&milestone=&horizon=&parent=&blocked=&q=&sort=&desc=&limit=&cursor=` | `{tickets, next?, total}` (repeatable parameters as `status=a&status=b`; `limit` 1 to 200, default 100; `400 invalid_request` for a bad value) |
 | `POST /api/dispatch/tickets` | `{opId, project, title, description?, acceptance?, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, parent?}` (192 KiB) → `201 {receipt, ticket}` |
-| `GET /api/dispatch/tickets/{key}` | `{ticket}` in full: assignees, labels, relations both ways, children, links, attachments, the last 50 comments (each with its derived `n`), the close policy's state (`close: {requires, met: {acceptance, delivery}, missing, why}`, `why` the words for an acceptance recorded but unmet) |
+| `GET /api/dispatch/tickets/{key}` | `{ticket}` in full, from one read transaction: assignees, labels, relations both ways, `children` (the first 50 by number and `total`; the rest through the list's `parent=`), links, attachments, the last 50 comments (each with its derived `n`), the close policy's state (`close: {requires, met: {acceptance, delivery}, missing, why}`, `why` the words for an acceptance recorded but unmet) |
 | `POST /api/dispatch/tickets/{key}/edit` | `{opId, expectedRev?, set?: {…}, add?: {assignees?, labels?}, remove?: {…}}` (192 KiB) → `{receipt, ticket}`; a `set.status` of `done` refused by the policy is `409 close_policy` with `missing` in the receipt; a `set.parent` that would cycle or pass depth 8 `409 cycle` |
 | `POST …/{key}/accept`, `…/unaccept` | `{opId, note?}`: records `accepted_at`, `accepted_by` (the admin's display name, `by`), `accepted_for` (the ticket's owner now; `409 invalid` when it has none), `accepted_criteria` (the hash of its criteria now) and the note; `unaccept` clears them |
 | `POST …/{key}/delete`, `…/undelete` | a tombstone; a deleted ticket is listed only with `?deleted=1`, its key kept |
@@ -395,37 +438,65 @@ L]...`, `edit KEY-n [--status S] [--priority P] [--owner NAME] [--assignee
 KEY-n TEXT...`, `accept KEY-n [--note TEXT]`, `link KEY-n --kind
 delivery|run|external [--url U] [--ref R]`, with `--server` and `--token`
 as `conductor crews` takes them (the plain-`http` refusal included); each
-write mints its op id and asks once more on a lost reply, as the web does.
-`cli/task.go`: `conductor task ticket` prints the ticket this attempt's run
+write mints its op id and asks once more on a lost reply, as the web
+does; its reads go through `apiClient.doLimit` with `maxDispatchReply`,
+4 MiB, the smallest whole number of MiB above `maxTicketReply`, the way
+`conductor crews` reads with `maxCrewsReply` (`maxReply`'s 1 MiB is a
+run's). `cli/task.go`: `conductor task ticket` prints the ticket this attempt's run
 is linked to (one at most: a run belongs to one ticket, so the tools have
 one target), `conductor task ticket comment TEXT...` comments on it as
 `agent:<member>`. `cli/mcp.go`: `ticket_read` and `ticket_comment` over
 the same two routes, `GET /api/sessions/{id}/ticket` and `POST
 /api/sessions/{id}/ticket/comments` (the session's own token or the
 admin's, through `taskSession`; `404 no_ticket` when the session's run is
-linked to none). The usage in `root.go`, the completion table, and the
+linked to none); the task commands and the tools read through
+`crewClient`, whose 4 MiB (`crew.go`) holds `maxTicketReply`, and a test
+of each reads the largest ticket whole. The usage in `root.go`, the completion table, and the
 skill's new "Your ticket" section (`agents/skill.go`, with its test). No
 agent creates or edits a ticket in this item (Owner decisions, 13).
 
 ### `web/app`: the pages, the views, the palette
 
 - `composables/useDispatch.ts`: the client over `useApi` with the types of
-  every reply (as `useSessions.ts` holds the crews' and runs'), and
-  `useDispatchOps.ts`: a minted op id, `expectedRev` from the entity
-  shown, a lost reply asked for once with the same id, a refusal read from
-  the receipt (`sendCommand` of `utils/tasks.ts`, generalised to take the
-  op body, used by both), toasts in the task commands' words.
+  every reply (as `useSessions.ts` holds the crews' and runs'), and the
+  ordering gate every page's state and the palette's Tickets cache go
+  through, the `RunStore`'s rule (`utils/runs.ts`: a read's answer
+  replaces a run only when no later read or removal of that run has been
+  applied): a page numbers every request it sends, reads and operations
+  alike, per thing shown (a ticket by key, a list by its filter, the
+  project, the projects), and a reply is applied only when no later
+  request for that thing was sent before it arrived, else dropped; a
+  filter change is a new thing, so the old filter's late page never
+  shows under the new one; an operation's reply (`{receipt, ticket}`)
+  goes through the same gate, its `rev` becoming the `expectedRev` of
+  the next operation; a read sent after an operation and served before
+  its commit shows the older state only until the commit's `dispatch`
+  event, whose re-read is later than both. The gate is
+  `utils/dispatchOrder.ts`, pure, tested with replies completing in
+  reverse order. `useDispatchOps.ts`: a minted op id, `expectedRev` from
+  the entity shown, a lost reply asked for once with the same id, a
+  refusal read from the receipt (`sendCommand` of `utils/tasks.ts`,
+  generalised to take the op body, used by both), toasts in the task
+  commands' words.
 - `composables/useDispatchLive.ts`: the `dispatch` events and the
   `snapshot`, taken in `useAttention.handleBlock` beside `run`, handed to
-  listeners: a ticket page re-reads its ticket when the event's `ticket`
-  is it (a comment, link, attachment or relation names the ticket it
-  belongs to), and its project's labels, milestones and policy on a
-  `project`, `label` or `milestone` event of its project; a list, board
-  or roadmap re-reads itself at most once per 250 ms
-  (`RUN_EVENT_WINDOW_MS`'s rule) when `project` is its project; the
-  projects page on any `project` event; every subscribed page on a
-  `snapshot`, the stream having reconnected after a drop, when what was
-  missed is unknown; nothing polls.
+  listeners. What a page shows derives from more than its own entity: a
+  ticket's `blocked` from its blockers' statuses, its children and its
+  relations' rows from other tickets' titles, statuses and parents, its
+  project's labels, milestones and policy from the project, and the
+  projects page's counts from every ticket; so the scope a page re-reads
+  on is its project, not its entity. A ticket page re-reads its ticket at
+  once when the event's `ticket` is it (a comment, link, attachment or
+  relation names the ticket it belongs to) and, gathered for 250 ms
+  (`RUN_EVENT_WINDOW_MS`'s rule), on any other event whose `project` is
+  its project (a blocker closed, a sibling reparented, a label renamed,
+  the policy edited); a list, board or roadmap re-reads itself, gathered
+  the same way, when `project` is its project; the projects page on any
+  event at all, gathered the same way, since a ticket's status moves its
+  project's counts; every subscribed page on a `snapshot`, the stream
+  having reconnected after a drop, when what was missed is unknown;
+  nothing polls. Every re-read passes the ordering gate of
+  `useDispatch.ts` above.
 - `utils/dispatch.ts` (vitest): the key parser (`CND-12`), the
   vocabularies with their words, colours and icons, `ticketWords`, the
   close policy's words from `close`, the list's sort and the board's
@@ -496,8 +567,18 @@ config key, no workflow change, no change under `desktop/`.
 
 **The store.**
 
-- One connection; every operation one `BEGIN IMMEDIATE … COMMIT`; a
-  reader never sees an operation half done.
+- One connection; every operation one `BEGIN IMMEDIATE … COMMIT`; every
+  read of more than one statement (`Ticket` with its sets, comments,
+  links, attachments, children and policy; the project read with its
+  labels, milestones and views; `List` with its page and `total`; the
+  projects with their counts) runs inside one read transaction
+  (`BeginTx` with `ReadOnly: true`, which the driver begins as a plain
+  `BEGIN` whatever `_txlock` says, so no write lock is taken; under WAL
+  the transaction reads one snapshot from its first statement to its
+  end), so a reader never sees an operation half done and a composite
+  reply describes one state, its `rev` and its rows agreeing, whatever
+  commits between its statements from this process or from a second
+  server on the same file.
 - `changes.seq` is monotonic within one database and local to it: the
   cursor the SSE event and the history's paging carry, never replicated.
   A change row's identity across replicas is (`actor`, `op_id`, `n`), and
@@ -523,18 +604,32 @@ config key, no workflow change, no change under `desktop/`.
   indexes; a read never finds a ticket the search does not, nor the
   reverse.
 - An attachment's file is on disk, fsynced and named by its hash before
-  the row that names it is committed; only the sweep deletes a file, at
-  open, before any route is served, when no live row names its hash and
-  it is older than `sweepGrace` (an hour), which leaves alone an upload
-  another server on the same directory has renamed and not yet committed;
+  the row that names it is committed, and an `uploads` row committed
+  before the rename names its hash until that commit; only the sweep
+  deletes a file, at open, before any route is served, inside one
+  `BEGIN IMMEDIATE` transaction, when neither a live `attachments` row
+  nor an `uploads` row names its hash (an `uploads` row older than
+  `sweepGrace`, an hour, is a crashed upload's and is dropped first), so
+  an upload another server on the same directory has renamed and not yet
+  committed is named by a row every sweep sees, a reused file included;
   a remove deletes no file.
 - The receipt is written in the operation's transaction, a refusal's in a
   transaction with nothing else; a database failure writes none; a repeat
   answers the receipt, a conflicting repeat `op_conflict`; the newest
   20,000 receipts are kept (`prune(ctx, now)` drops the rest, called at
   open and by a goroutine every `pruneEvery`, a field of the store, a day
-  by default, and by a test directly), so only a resend older than 20,000
-  later operations could run twice.
+  by default, and by a test directly). A resend whose receipt is pruned
+  is answered by the `changes` log, which keeps the operation's identity
+  for good: when a row (`actor`, `op_id`, 0) exists the operation ran,
+  and the resend is answered `{repeat: true, status: done}` with no
+  `rev`, `id` or `key` (the detail went with the receipt; the entity can
+  be read) whatever its content, since the fingerprint went too; the
+  lookup is made before anything is written, never left to the log's
+  unique index. When no such row exists the receipt was a refusal's,
+  which wrote no change, and the resend runs as a new operation. So a
+  successful operation never runs twice, however old its resend, and the
+  only resend that acts again is a refused one, which is refused again
+  or allowed now on its own merits.
 - `OnChange` runs after the commit, outside the transaction, on the
   caller's goroutine; the event hub's `dispatch` never waits.
 - The store refuses a write while read-only; a read works whenever the
@@ -557,8 +652,19 @@ The policy's state is computed on every ticket read (`close`), never
 stored, so a policy, an owner or criteria edited later read true at
 once.
 
-**Hierarchy and relations.** A parent is a ticket of the same project; a
-parent chain is at most 8 deep and never a cycle, checked in the
+**Hierarchy, relations and references.** Every reference a ticket
+carries, its parent, its milestone, each of its labels and each
+relation's other end, names a live row of the ticket's own project,
+checked inside the operation's transaction after the revision check: a
+row missing or tombstoned is `not_found`, a live row of another project
+`invalid`, and nothing is written on either; a foreign key alone would
+not see a tombstone. The write lock orders a reference against a
+delete: a `label.delete` or `milestone.delete` committed first leaves
+the add or set `not_found`, and one committed after removes what the
+add made, with its `changes` row, as it does for every ticket. A view's
+`project_id` names a live project or is `''`; a comment, link,
+attachment or relation names a live ticket. A parent is a ticket of the
+same project; a parent chain is at most 8 deep and never a cycle, checked in the
 operation by walking up the new parent's chain and down the moved
 ticket's subtree (a recursive CTE under the transaction, bounded by the
 project's tickets): the moved ticket is not among its new ancestors, and
@@ -577,14 +683,17 @@ decides), the page only says so.
 commit, once per entity the commit changed, by the `run` event's path: a
 client that cannot keep up is dropped and reconnects to a new
 `snapshot`, never skipped and kept (the one rule, stated the same in
-`events.go` above). What a page re-reads: a ticket page its ticket when
-`ticket` is it (its own fields and sets, its comments, links,
-attachments and relations all name it), and its project's labels,
-milestones and policy on a `project`, `label` or `milestone` event of
-its project; a list, board or roadmap itself (debounced 250 ms) when
-`project` is its project, a project's policy edit included, since it
-changes `close` on every ticket; the projects page on any `project`
-event; every subscribed page on a `snapshot`, which is how a dropped
+`events.go` above). What a page re-reads: a ticket page its ticket at
+once when `ticket` is it (its own fields and sets, its comments, links,
+attachments and relations all name it) and, gathered for 250 ms, on any
+other event of its project, since its `blocked`, its children, its
+relations' rows and its project's labels, milestones and policy derive
+from other rows of the project (a blocker closed is an event naming the
+blocker, not the blocked ticket); a list, board or roadmap itself
+(gathered 250 ms) when `project` is its project, a project's policy edit
+included, since it changes `close` on every ticket; the projects page on
+any event, gathered the same way, since its counts derive from every
+ticket; every subscribed page on a `snapshot`, which is how a dropped
 client repairs what it missed, beside the sessions' and runs' re-read.
 No `internal/proto` and no `protocol.ts` change: an event on `GET
 /api/events` is an HTTP API change, as the `run` event was (its commit,
@@ -619,7 +728,7 @@ their text.
 | scalar | `title`, `description`, `acceptance`, `status`, `priority`, `horizon`, `owner`, `parent_id`, `milestone_id`, `accepted_at`, `accepted_by`, `accepted_for`, `accepted_criteria`, `accepted_note`, `closed_at`, `deleted_at`, `external_*`, `authority`; a project's `name`, `description`, `cwd`, `tracker`, `tracker_url`, `close_requires`, `archived_at`; a label's `name`, `color`, `deleted_at`; a milestone's and a view's fields, `deleted_at` included; a comment's `body`, `edited_at`, `deleted_at` | last writer wins per field: the later `at` wins; equal, the greater `actor`; equal, the greater `op_id`. A field is merged alone: concurrent edits of `title` and `priority` both survive |
 | set | `ticket_assignees`, `ticket_labels`, `relations`, `links`, `attachments` | an observed-remove set: an `add` is tagged by its change row's identity (`actor`, `op_id`, `n`); a `remove` names in `prior` the tags of that member's adds it had seen and removes those alone; a member is present while an add of it exists that no remove names, so an add a remove did not see survives whatever the clocks say, and two adds of one member from two replicas are two tags, both needed gone. The set tables hold the members those tags make |
 | log | `comments`, `changes` | append only, in the one order (`at`, `actor`, `op_id`, `n`); a comment's place on the page by (`created_at`, `author`, `id`), its number derived; never merged, never lost |
-| allocation | `number` | taken from the replica's own block (`number_from` to `number_to`), which the sync service hands out, so two replicas never mint one key; a replica with no block creates no ticket until it has one |
+| allocation | `number`, a project's `key` | taken from the replica's own block (`number_from` to `number_to`), which the sync service hands out, so two replicas never mint one key; a project's key is registered with the sync service before the create, the same way; a replica with no block creates no ticket, and one that cannot register a key creates no project, until it can |
 | gated | `status` set to `done` | the writer applied the close policy; a merge takes the scalar rule and never re-applies the policy, since the facts it rests on travel in the same log; the page shows the policy's state as read |
 
 A bound (8 assignees, 20 labels, 100 relations, 50 links, 50 attachments
@@ -627,16 +736,38 @@ per ticket, 100 labels and milestones per project) is checked on a local
 write alone: a merge never refuses a replicated add, so a set may stand
 past its bound after one, which the page shows as it is and which
 refuses further local adds until it is under the bound again. The
-invariants that span rows, a parent chain acyclic and at most 8 deep and
-a `blocks` graph acyclic, are checked on a local write and re-established
-after a merge by one rule both replicas apply to the same log: among the
-edges of a cycle, or the parent edges of a chain past 8, the one whose
-change is latest by (`at`, `actor`, `op_id`, `n`) is undone, the parent
-cleared to `''` or the relation removed, with a `changes` row of `op:
-reconcile` by the actor `merge`, as that writer would have been refused
-had it seen the other; `rules.go`'s `Reconcile(edges []Edge) []Edge`,
-pure, names the edges to undo, and two replicas holding the same log
-reach the same graph whichever order it arrived in.
+invariants that span rows, a parent chain acyclic and at most 8 deep, a
+`blocks` graph acyclic and a run linked to one ticket at most, are
+checked on a local write and re-established after a merge by one rule
+both replicas apply to the same log: among the edges of a cycle, the
+parent edges of a chain past 8, or the live `run` links of one run, the
+one whose change is latest by (`at`, `actor`, `op_id`, `n`) is undone,
+the parent cleared to `''` or the relation or link removed, with a
+`changes` row of `op: reconcile` by the actor `merge`, as that writer
+would have been refused had it seen the other; `rules.go`'s
+`Reconcile(edges []Edge) []Edge`, pure, names the edges to undo, and two
+replicas holding the same log reach the same graph whichever order it
+arrived in.
+
+What the schema keeps unique is kept so under replication by one of
+these rules and never by an index a replicated add could trip (the
+unique indexes are only those of keys never minted twice, listed under
+the schema). Allocated: a ticket's `number` and a project's `key`, the
+allocation class. Folded: a person's name is the person, so a second
+`person.add` of a name held is dropped as a second `create` of an id is;
+a relation's (`from_id`, `to_id`, `kind`) and a link's (`ticket_id`,
+`kind`, `ref`) are a member of a set, so two live rows of one from two
+replicas are one member with two tags, read as one, which a local
+remove names together; a membership table (`ticket_assignees`,
+`ticket_labels`) holds one row per member however many tags the log
+holds for it, and a membership whose label is a tombstone reads as
+absent. Reconciled: a run linked to two tickets, by `Reconcile` above.
+Kept: two live labels of one name in one project, created on two
+replicas, both stand (the local rule refused only what its writer saw);
+the project page shows both and a person deletes or renames one, as a
+milestone of a repeated name is already a person's to tidy. Each rule
+gives the same rows whichever order the log arrived in, and the rules
+tests apply both.
 
 `at` is the writer's clock, UTC with nanoseconds; CS1 may replace it with
 a hybrid logical clock without changing a rule, since every rule compares
@@ -707,9 +838,12 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   `n` from 0 in the operation's order, a row with an identity already
   held refused; `prune(ctx, now)` called on 20,001 receipts keeps the
   newest 20,000, and the goroutine with `pruneEvery` a millisecond calls
-  it, seen on the store's `pruned` counter (polled, never slept on);
-  `OnChange` called once per entity per commit, after it, with the
-  sequence, the ticket and the project.
+  it, seen on the store's `pruned` counter (polled, never slept on); a
+  successful operation whose `ops` row the test deletes, resent with the
+  same content and with other content, answers `repeat` and `done` with
+  no `rev`, changes nothing and errs nowhere; a refused one whose row is
+  deleted, resent, runs anew; `OnChange` called once per entity per
+  commit, after it, with the sequence, the ticket and the project.
 - every bound in `model.go`, at the bound and one past it (a table test);
   a description at its bound made of quotes, backslashes and newlines,
   set and then replaced, recorded whole in `value` and `prior`; a control
@@ -721,10 +855,16 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   observed add is removed, a log is never merged, a second create and a
   change row of a held identity are dropped; `Reconcile` on two
   concurrent parent sets that make a 2-cycle, on three that make a
-  3-cycle, on a reparenting that makes a chain of 9 and on two `blocks`
-  that make a cycle undoes the latest edge, the same from either
-  replica's log in either order; the one order of the log on a seeded
-  pair of logs.
+  3-cycle, on a reparenting that makes a chain of 9, on two `blocks`
+  that make a cycle and on two `run` links of one run on two tickets
+  undoes the latest edge, the same from either replica's log in either
+  order; the uniqueness rules in both orders: two creates of one label
+  name in one project leave both labels, two adds of one relation and of
+  one link from two actors leave one member with two tags that one local
+  remove names together, a second `person.add` of a held name is
+  dropped, a membership of a tombstoned label reads absent; the schema
+  read back holds exactly the unique indexes listed; the one order of
+  the log on a seeded pair of logs.
 - tickets: create with every field; edit setting several fields in one
   operation; `done` refused by `acceptance` then allowed once accepted;
   refused by `delivery` then allowed with a link; `done` refused again
@@ -732,7 +872,12 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   after a new acceptance, the page's reason in `close`; `closed_at` set
   and cleared; `unaccept`; a parent cycle and a depth of 9 refused, by a
   new parent and by moving a subtree of height 4 under a chain of 5
-  (allowed under a chain of 4); a parent of another project refused;
+  (allowed under a chain of 4); a parent of another project refused
+  `invalid` and a deleted one `not_found`; a label and a milestone of
+  another project `invalid`, a tombstoned one `not_found`; the race
+  ordered both ways by the test: a label deleted then added to a ticket
+  `not_found`, added then deleted leaves no membership and one `changes`
+  row for the ticket, the same for a milestone;
   delete and undelete with the key kept; assignees past 8, labels past
   20 refused; a set past its bound by a row the test inserts refuses an
   add and allows a remove.
@@ -747,19 +892,33 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   delete).
 - queries: each filter alone and three together against a seeded set;
   every sort both ways; the cursor pages 1,000 tickets without a repeat
-  or a gap; `q` of a ticket key (`CND-12`), of `OR`, `AND`, `NOT`, a
-  colon, parentheses, a quote and a star, each matched as words and none
-  an error, the last term matching as a prefix; a deleted ticket out
-  unless asked; `BenchmarkList` with its two targets.
-- attachments: the file written and hashed before the row; a second
-  upload of the same content shares the file; a remove deletes no file,
-  and the sweep after it (grace 0) deletes the file no live row names and
-  leaves a shared one; the sweep deletes an orphan made by hand and
-  leaves a named file, and leaves an orphan younger than the grace; an
-  upload paused at `beforeCommit` while a second store opened on the
-  directory sweeps (grace an hour), then committed, names a file still
-  there; a name with `/` or `..` refused; 16 MiB + 1 refused with no
-  file left.
+  or a gap; `q` of a ticket key (`CND-12`), of `OR`, `AND`, `NOT`, `a:b`
+  and `(x)`, each matched as the words in it and none an error; a quote
+  alone, a star alone and `"*"` an empty page and no error, and one of
+  them beside a word dropped with the word matched; the last term
+  matching as a prefix; a deleted ticket out unless asked; a composite
+  read paused by a test seam (`betweenReads`, between the ticket's row
+  and its comments) while a second `Store` on the same file commits a
+  comment and a status answers the state before the commit whole, the
+  `rev` and the rows agreeing, and the next read the new state, the
+  same with the writer in this process; `BenchmarkList` with its two
+  targets.
+- attachments: the file written and hashed before the row, the `uploads`
+  row before the file; a second upload of the same content shares the
+  file; a remove deletes no file, and the sweep after it deletes the file
+  no live row names and leaves a shared one; the sweep deletes an orphan
+  made by hand whatever its age and leaves a named file and one an
+  `uploads` row names; an upload paused at `beforeCommit` while a second
+  store opened on the directory sweeps (grace an hour), then committed,
+  names a file still there, and the same when the content is a reused
+  hash: uploaded before, its only attachment removed, its file's
+  modification time set back a day by the test, the second store's sweep
+  leaves it because the `uploads` row names it, and the attachment opens
+  whole after the commit; an `uploads` row older than the grace is
+  dropped by the sweep and its file, named by no live row, with it; a
+  temp file older than the grace goes and a younger one stays; a refusal
+  (the 51st attachment) leaves no `uploads` row; a name with `/` or `..`
+  refused; 16 MiB + 1 refused with no file left.
 - views: create, edit, delete (a tombstone); a `query` past 8 KiB
   refused; a view of every project.
 - links and labels: a `delivery` link without `ref` takes its URL as
@@ -779,7 +938,9 @@ create, at most 160 bytes, the longest payload the server can make
 measured under it, a client whose queue is full dropped and closed by
 it as a `run` event drops one; a ticket body with a description at its
 bound of escaped characters accepted and read back whole, a body past
-192 KiB `413`; a receipt read back through `GET /api/dispatch/ops/
+192 KiB `413`; the largest ticket the server can make (every field and
+set at its bound, every text of `<`) read back whole and under
+`maxTicketReply`, the reply holding no `\u003c`; a receipt read back through `GET /api/dispatch/ops/
 {opId}`; an upload past the bound `413`; the download headers (nosniff,
 attachment, an `image/svg+xml` served as `application/octet-stream`); the
 `links?run=` route against a live run of the engine (a fake launcher) and
@@ -787,8 +948,9 @@ a run's record, naming the one ticket, and `409 run_linked` from a second
 ticket. `internal/cli` (`dispatch_test.go`, `task_test.go`,
 `mcp_test.go`): each command and tool against a test server, a lost
 reply asked for once with the same op id, `no_ticket` for a session in
-no linked run, the usage. `internal/agents`: the skill's section present
-and its marker intact.
+no linked run, `show`, `conductor task ticket` and `ticket_read` of the
+largest ticket printed whole through their clients' limits, the usage.
+`internal/agents`: the skill's section present and its marker intact.
 
 **vitest** (`web/app/utils/*.test.ts`, `composables/*.test.ts`):
 `dispatch.test.ts` (the key parser, the vocabularies' words, `ticketWords`,
@@ -796,10 +958,16 @@ the close policy's words, the board and roadmap columns, the keyboard
 model: `j` `k` wrap at the ends, `x` toggles, a row gone hands the focus
 on), `dispatchQuery.test.ts` (the URL codec both ways, a saved view's
 query both ways, an unknown parameter ignored), `useDispatchLive.test.ts`
-(an event naming the page's ticket re-reads it and one naming another
-does not; a comment's event names its ticket; a `project` event re-reads
-a list of that project and a ticket page's policy; a `snapshot` re-reads
-every subscriber), `palette.test.ts` (a key typed ranks its ticket first
+(an event naming the page's ticket re-reads it at once; one naming
+another ticket of its project re-reads it once after the 250 ms window,
+three such events once; one of another project does not; a comment's
+event names its ticket; a `project` event re-reads a list of that
+project and a ticket page; a ticket event re-reads the projects page; a
+`snapshot` re-reads every subscriber), `dispatchOrder.test.ts` (two
+reads of one ticket answered in reverse order leave the later's; an
+operation's reply arriving after a later read's is dropped; a filter
+changed drops the old filter's late page; another thing's reply is not
+dropped), `palette.test.ts` (a key typed ranks its ticket first
 in Tickets; `go dispatch`), `useShortcuts.test.ts` (`KeyD`, the rows),
 `tasks.test.ts` (`sendCommand` with an op body unchanged for the task
 commands).
@@ -813,7 +981,11 @@ commands).
   the fields set; the project page's counts; a second browser context on
   the same ticket sees a title edit without a reload (PR-8), the comment
   (PR-10) and its close card following a policy edit made on the project
-  page by the first (PR-11).
+  page by the first (PR-11); the second context's projects page sees the
+  open count move when the first makes a ticket (PR-8); the second
+  context on a ticket blocked by another sees Blocked go when the first
+  cancels the blocker, and on a parent sees a child leave its children
+  when the first reparents it (PR-10).
 - `dispatch-views.spec.ts`: the filter in the URL (`?status=`, `?q=`),
   the list filtered; a saved view made, its chip applying the filter,
   renamed and deleted; the board's columns with the ticket in its status;
@@ -893,9 +1065,12 @@ first commit, the checks for its surfaces before every push, its body
 ticking the open-core checklist and naming the agent that made it; each
 leaves `main` working and green on its own (a route without its page is
 reachable by the CLI and the tests; a page without its later parts says
-what is not there yet). Parallel means the two touch no common package or
-directory, `docs/` included; a PR that edits `docs/protocol.md` is not
-parallel with another that does. Sizes are estimates of changed lines
+what is not there yet). Parallel means the two touch no common Go
+package, no common directory under `web/`, and no common file under
+`docs/` or at the root: two PRs editing different docs merge without a
+conflict, two editing `docs/protocol.md` or `README.md` do not, so a PR
+that edits one of those is not parallel with another that does. Sizes
+are estimates of changed lines
 with tests, measured against `internal/crew/ledger` (1,784 lines of code
 and 1,300 of tests for 8 tables): the store's four PRs come to about
 5,500 for 15 tables, the FTS index, the rules and the pruning.
@@ -963,7 +1138,8 @@ links. Go only.
 **PR-4** (`internal/dispatch`): `List` with every filter, sort and the
 cursor; FTS5 maintained in the transaction (tickets, acceptance,
 comments) and the query's terms quoted; `Ticket`, `History`, `Children`,
-`Blockers`; views; the goroutine that calls `prune` every `pruneEvery`
+`Blockers`, the composite reads in one read transaction with the
+`betweenReads` seam; views; the goroutine that calls `prune` every `pruneEvery`
 (the sweep of orphan files is PR-7's); `BenchmarkList` with the two
 targets measured on the Linux box and named in the PR body. Tests:
 queries, views, the pruning goroutine, the benchmark. Go only.
@@ -975,24 +1151,27 @@ unaccept, delete, undelete, history, comments read), `links?run=` and
 event's path; `docs/protocol.md` rows and the Events row; the
 architecture section, which opens by telling the component from the
 engine's verb. Tests: those routes' 2xx and 4xx, auth, switchyard, the
-two 503s, the event and the drop, the receipt route, the body bound. Go
-only.
+two 503s, the event and the drop, the receipt route, the body bound, the
+replies with HTML escaping off and the largest ticket under
+`maxTicketReply`. Go only.
 
 **PR-6** (`internal/api`, docs): comments (add, edit, delete), labels,
 milestones, people, relations, links (`run_linked` among them), views
 routes; their `docs/protocol.md` rows. Tests: each. Go only.
 
 **PR-7** (`internal/dispatch`, `internal/api`, docs): `attachments.go`
-(the file first, the hash, the row, `beforeCommit`), `sweep.go`
-(`sweep(ctx, now)` with `sweepGrace`, at open), `Open(ctx, id)`; the
-upload route (multipart, the bound), the download route (the headers,
-the allow list), the delete; the protocol rows. Tests: the attachment
-tests of the store, the paused upload against a second store, the two
-routes, the headers. Go only; the Mac and Windows preflight rows run
-here.
+(the file first, the hash, the `uploads` row, the rename, the attachment
+row, `beforeCommit`), `sweep.go` (`sweep(ctx, now)` in one write
+transaction with `sweepGrace`, at open), `Open(ctx, id)`; the upload
+route (multipart, the bound), the download route (the headers, the allow
+list), the delete; the protocol rows. Tests: the attachment tests of the
+store, the paused upload against a second store with new content and
+with a reused hash, the two routes, the headers. Go only; the Mac and
+Windows preflight rows run here.
 
-**PR-8** (`web/app`, `web/e2e`): `useDispatch.ts`, `useDispatchOps.ts`
-(`sendCommand` generalised), `useDispatchLive.ts` and the `dispatch` and
+**PR-8** (`web/app`, `web/e2e`): `useDispatch.ts` with the ordering gate
+(`utils/dispatchOrder.ts`), `useDispatchOps.ts` (`sendCommand`
+generalised), `useDispatchLive.ts` and the `dispatch` and
 `snapshot` branches in `useAttention.handleBlock`; `utils/dispatch.ts`
 and `dispatchQuery.ts`; the nav item, `G D`, `Alt+D`, the shortcuts rows;
 `pages/dispatch/index.vue` with New project; `pages/dispatch/[project]/
@@ -1001,10 +1180,11 @@ index.vue` with the list view, its New ticket button and the filter bar
 change" until PR-9); the ticket page with title, description and
 acceptance (edit and preview), status, priority, horizon, owner,
 assignees, history. Tests: vitest `dispatch.test.ts`,
-`dispatchQuery.test.ts`, `useDispatchLive.test.ts`,
-`useShortcuts.test.ts`; Playwright `dispatch.spec.ts` (its second
-context seeing a title edit; the comment and the policy parts come with
-PR-10 and PR-11). UI only.
+`dispatchQuery.test.ts`, `dispatchOrder.test.ts`,
+`useDispatchLive.test.ts`, `useShortcuts.test.ts`; Playwright
+`dispatch.spec.ts` (its second context seeing a title edit and the
+projects page's count; the comment and the policy parts come with PR-10
+and PR-11). UI only.
 
 **PR-9** (`web/app`, `web/e2e`): the board and the roadmap with drag and
 keyboard moves; the saved views bar; the list's keys (`c` among them)
@@ -1021,8 +1201,9 @@ and children, relations with `TicketPicker.vue`, labels and milestones
 management on the project page and their pickers on the ticket page.
 Tests: Playwright `dispatch.spec.ts` additions (comments, one seen live
 by the second context, an attachment uploaded and downloaded byte for
-byte, a parent set, a `blocks` relation shown both ways); vitest for the
-pickers' pure parts. UI only.
+byte, a parent set, a `blocks` relation shown both ways, the blocked
+ticket's page and the old parent's page following the other context's
+change); vitest for the pickers' pure parts. UI only.
 
 **PR-11** (`web/app`, `web/e2e`): `DispatchClosePolicy.vue` with Accept,
 Unaccept and Close, the refusal's words and the unmet reasons; delivery
@@ -1037,9 +1218,10 @@ README): `GET /api/sessions/{id}/ticket` and `POST /api/sessions/{id}/
 ticket/comments` through `taskSession`; `conductor dispatch` and
 `conductor task ticket`; the two MCP tools; the usage, the completion
 table, the skill's section; the protocol rows and the README's CLI lines.
-Tests: `cli/dispatch_test.go`, `task_test.go`, `mcp_test.go`, the skill
-test, `api/dispatch_test.go` additions. Go only; the Mac and Windows
-preflight rows run here.
+Tests: `cli/dispatch_test.go`, `task_test.go`, `mcp_test.go` (the
+largest ticket through each client's limit among them), the skill test,
+`api/dispatch_test.go` additions. Go only; the Mac and Windows preflight
+rows run here.
 
 **PR-13** (docs): the `docs/features.md` entry recording what each PR
 verified and the by-hand checks run; the README's Dispatch section; the
@@ -1068,9 +1250,9 @@ the reasoning is why it was taken.
    to recover, SQLite's locking orders writers across processes, and
    every revision is read and bumped inside its transaction, so a second
    server on the same data directory (already refused unless each has a
-   token of its own) changes nothing wrongly (the sweep's grace leaves
-   its uploads alone); it only misses the other's SSE events, which the
-   next read repairs.
+   token of its own) changes nothing wrongly (an `uploads` row names
+   each of its uploads until the row commits, and the sweep sees it); it
+   only misses the other's SSE events, which the next read repairs.
 3. **A second importer of `modernc.org/sqlite`, no shared helper.** The
    open, pragma and migration code is about sixty lines; copying them
    into `internal/dispatch` keeps the ledger untouched by this stream. A
@@ -1095,7 +1277,9 @@ the reasoning is why it was taken.
    requirement with it.
 7. **Keys are `KEY-n`**, the project key `^[A-Z][A-Z0-9]{1,5}$`, numbers
    allocated by the store with two columns reserved for CS1's number
-   blocks; a ticket is never renumbered and never moves between projects.
+   blocks, and a key registered with CS1's sync service before a create
+   once there is one; a ticket is never renumbered and never moves
+   between projects.
 8. **Attachments are content-addressed files beside the database**,
    16 MiB each, 50 per ticket, served as downloads with an allow list
    for inline types; the page fetches with the token and shows images
@@ -1121,9 +1305,11 @@ the reasoning is why it was taken.
     come later through the same typed operations.
 14. **Search is FTS5**, compiled into the pinned driver (checked
     2026-10-28); a typed query is words, every term quoted, never FTS
-    syntax.
+    syntax; a term of punctuation alone is dropped, a query of nothing
+    else an empty page.
 15. **Receipts: the newest 20,000 kept**, pruned by `prune(ctx, now)` at
-    open and daily.
+    open and daily; the `changes` log answers a resend older than that
+    (`repeat`, `done`), so no successful operation runs twice.
 16. **Deletes are tombstones**; projects are archived, never deleted; keys
     are kept.
 17. **Every Dispatch route is the admin's**; share-link viewers see no
