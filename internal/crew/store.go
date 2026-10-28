@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // crewsDir is the directory of the data directory that holds one file per

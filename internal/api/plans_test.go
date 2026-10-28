@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A Claude Code session's plan, written outside its folder (under the

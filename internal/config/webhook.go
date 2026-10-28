@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // Webhook is a URL the server POSTs activity entries to: the entries of every

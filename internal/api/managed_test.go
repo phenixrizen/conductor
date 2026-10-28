@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // A managed run launched through the server's engine makes its attempt a

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/pty"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/pty"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))

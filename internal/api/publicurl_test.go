@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/config"
 )
 
 // A share link is built on the address its request came through while

@@ -3,7 +3,7 @@ package version
 
 // Version and Commit are set at build time:
 //
-//	-ldflags "-X github.com/phenixrizen/conductor/internal/version.Version=v1.0.0"
+//	-ldflags "-X github.com/rocksolidlabs/conductor/internal/version.Version=v1.0.0"
 var (
 	Version = "dev"
 	Commit  = "unknown"

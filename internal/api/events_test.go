@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 func TestEventHubActivityFormat(t *testing.T) {

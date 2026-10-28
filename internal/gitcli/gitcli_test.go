@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
+	"github.com/rocksolidlabs/conductor/internal/gitcli/gitclitest"
 )
 
 func repo(t *testing.T) string {

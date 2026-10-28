@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // useBin makes bin the conductor binary the adapters name when they render

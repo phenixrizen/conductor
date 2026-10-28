@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A member that asks its own question (#193) and ends its turn waits on it:

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // Adapter knows how one agent reports to Conductor.

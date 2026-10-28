@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // Saving a file from the editor (design round 12, F6): a controller on a

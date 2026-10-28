@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // Submitting a line. What Conductor types itself (a crew member's role

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/share"
-	"github.com/phenixrizen/conductor/internal/store"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
 // A switchyard keeps the links it mints for hosts that register under an

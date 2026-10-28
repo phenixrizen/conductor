@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A viewer's requests that wait. A submit, a chat sent to the agent and a

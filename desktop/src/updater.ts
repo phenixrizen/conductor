@@ -12,7 +12,7 @@ export function updateChannel(platform: string, appImage: boolean, packaged: boo
   return appImage ? 'auto' : 'link'
 }
 
-export const RELEASES_URL = 'https://github.com/phenixrizen/conductor/releases/latest'
+export const RELEASES_URL = 'https://github.com/rocksolidlabs/conductor/releases/latest'
 const EVERY = 6 * 60 * 60 * 1000
 /** How long an install may take to quit the app before it is taken for one that did not start. */
 const INSTALL_WAIT = 60 * 1000

@@ -111,8 +111,16 @@ jobs:
           c=$(git rev-parse --short HEAD)
           for t in linux/amd64/linux-x64 linux/arm64/linux-arm64 darwin/amd64/mac-x64 darwin/arm64/mac-arm64; do
             goos=${t%%/*}; rest=${t#*/}; goarch=${rest%%/*}; dir=bin/desktop/${rest#*/}; mkdir -p "$dir"
-            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "-X github.com/phenixrizen/conductor/internal/version.Version=$v -X github.com/phenixrizen/conductor/internal/version.Commit=$c" -o "$dir/conductor" ./cmd/conductor && echo "built $dir/conductor"
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "-X github.com/rocksolidlabs/conductor/internal/version.Version=$v -X github.com/rocksolidlabs/conductor/internal/version.Commit=$c" -o "$dir/conductor" ./cmd/conductor && echo "built $dir/conductor"
           done
+          # The gate against a missed -X site: the linker ignores one for a symbol that no longer
+          # exists, and the binary would say "dev (unknown)". The Linux runner runs its own package's
+          # binary and compares the whole line; macOS is arm64 and Windows runs none of the four.
+          if [ "$RUNNER_OS" = Linux ]; then
+            got=$(bin/desktop/linux-x64/conductor version | sed -n 1p); want="conductor $v ($c)"
+            if [ "$got" != "$want" ]; then echo "version gate: got '$got', want '$want'"; exit 1; fi
+            echo "version gate: $got"
+          fi
       - run: npm ci
         working-directory: desktop
       - run: npm run build

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/gitcli"
-	"github.com/phenixrizen/conductor/internal/gitrepo"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/gitrepo"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // The git reads a viewer asks for through the file request (design 4d,

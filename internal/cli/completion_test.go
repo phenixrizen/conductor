@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/agents"
-	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // fakeConductor is a conductor that answers `crews --ids` with ids, for the

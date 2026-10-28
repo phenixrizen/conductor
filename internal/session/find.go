@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // The Explorer's filter reaches folders not opened yet (design round 12):

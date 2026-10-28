@@ -2,7 +2,7 @@
 
 The backlog moved to GitHub on 2026-10-13. Every bug known and every
 feature set aside is now an
-[issue](https://github.com/phenixrizen/conductor/issues), and the work is
+[issue](https://github.com/rocksolidlabs/conductor/issues), and the work is
 on the project board **Conductor**
 (https://github.com/users/phenixrizen/projects/3). `AGENTS.md` ("Working an
 issue") defines the current task workflow. Undisclosed security findings

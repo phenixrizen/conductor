@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/gitcli"
-	"github.com/phenixrizen/conductor/internal/nvim"
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/gitcli"
+	"github.com/rocksolidlabs/conductor/internal/nvim"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // A bare repository in the working directory is read only whatever git's

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A handoff a member of a run reports (a session.ActivityHandoff entry) is

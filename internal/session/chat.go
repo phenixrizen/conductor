@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // Chat beside the terminal (docs/protocol.md, Chat): the people on a session

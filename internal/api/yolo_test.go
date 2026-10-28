@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/agents"
-	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/config"
 )
 
 // yoloScript prints the arguments it was given and two variables, then waits.

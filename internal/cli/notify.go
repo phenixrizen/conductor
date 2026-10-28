@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/notify"
+	"github.com/rocksolidlabs/conductor/internal/notify"
 )
 
 // runNotify reports an attention state, or with --event something the agent

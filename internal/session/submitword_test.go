@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // The owner's word on a submit that named a request (#322): nothing for one

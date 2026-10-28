@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/phenixrizen/conductor/internal/agents"
+	"github.com/rocksolidlabs/conductor/internal/agents"
 )
 
 // integration is one hook adapter as GET /api/integrations lists it: what

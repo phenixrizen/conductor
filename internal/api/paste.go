@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/paste"
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/paste"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // PasteAnswerer answers a viewer's paste offer for a server session

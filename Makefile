@@ -1,13 +1,13 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -X github.com/phenixrizen/conductor/internal/version.Version=$(VERSION) \
-           -X github.com/phenixrizen/conductor/internal/version.Commit=$(COMMIT)
+LDFLAGS := -X github.com/rocksolidlabs/conductor/internal/version.Version=$(VERSION) \
+           -X github.com/rocksolidlabs/conductor/internal/version.Commit=$(COMMIT)
 GO_FILES := $(shell find . -name '*.go' -not -path './web/*')
 GO_MIN   := $(shell awk '/^go /{print $$2}' go.mod)
 NODE_MIN := 22
 NODE_STAMP := web/node_modules/.package-lock.json
 
-.PHONY: help deps check-tools build build-go notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e lint lint-static vuln fmt generate docker clean preflight
+.PHONY: help deps check-tools build build-go check-version notices web-install web-build web-typecheck web-dev run dev test test-web test-e2e test-live test-pebble test-network test-recipes desktop-install desktop-dev desktop-test desktop-binaries desktop-dist desktop-e2e lint lint-static vuln fmt generate docker clean preflight
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -34,6 +34,10 @@ build: web-build build-go ## build the single binary with the embedded UI
 build-go: ## build the Go binary using whatever UI is in internal/web/dist
 	@touch internal/web/dist/.gitkeep
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/conductor ./cmd/conductor
+
+check-version: ## the built binary reports the version and commit make injected (a missed -X site would say dev (unknown))
+	@got="$$(bin/conductor version | sed -n 1p)"; want="conductor $(VERSION) ($(COMMIT))"; \
+	if [ "$$got" != "$$want" ]; then echo "check-version: got '$$got', want '$$want'"; exit 1; fi; echo "check-version: $$got"
 
 web-install: ## reproducible npm install
 	cd web && npm ci

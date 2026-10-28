@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // linkTree makes base/root, the session's folder, and base/outside beside

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/certs"
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/reach"
+	"github.com/rocksolidlabs/conductor/internal/certs"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/reach"
 )
 
 type stubReach struct{ st reach.Status }

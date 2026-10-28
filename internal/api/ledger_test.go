@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
 // A command's receipt is read by the admin alone, by its run and id: 200

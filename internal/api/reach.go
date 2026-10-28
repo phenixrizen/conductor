@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/phenixrizen/conductor/internal/certs"
-	"github.com/phenixrizen/conductor/internal/reach"
+	"github.com/rocksolidlabs/conductor/internal/certs"
+	"github.com/rocksolidlabs/conductor/internal/reach"
 )
 
 // reachSource says what the server knows about its reach (internal/reach).

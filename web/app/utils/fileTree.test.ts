@@ -104,12 +104,12 @@ describe('the Explorer filter as a path (#138)', () => {
 })
 
 describe('the breadcrumb folded from the left (#169)', () => {
-  const crumbs = crumbsOf('/home/nater/go/src/github.com/phenixrizen/conductor')
+  const crumbs = crumbsOf('/home/nater/go/src/github.com/rocksolidlabs/conductor')
   it('keeps the last crumbs whole and folds the rest into one', () => {
     const f = foldCrumbs(crumbs, 1)
     expect(f.shown.map((c) => c.label)).toEqual(['conductor'])
-    expect(f.hidden.map((c) => c.label)).toEqual(['home', 'nater', 'go', 'src', 'github.com', 'phenixrizen'])
-    expect(foldCrumbs(crumbs, 3).shown.map((c) => c.label)).toEqual(['github.com', 'phenixrizen', 'conductor'])
+    expect(f.hidden.map((c) => c.label)).toEqual(['home', 'nater', 'go', 'src', 'github.com', 'rocksolidlabs'])
+    expect(foldCrumbs(crumbs, 3).shown.map((c) => c.label)).toEqual(['github.com', 'rocksolidlabs', 'conductor'])
   })
   it('shows a short path whole, with one folder above the kept ones', () => {
     expect(foldCrumbs(crumbsOf('/srv/work'), 1)).toEqual({ hidden: [], shown: crumbsOf('/srv/work') })

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew/ledger"
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // A continuation (docs/plans/agent-harness-order.md, decision 9; row 8 of

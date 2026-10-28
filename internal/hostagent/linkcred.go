@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 	"weak"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // linkCred is what the host knows of a link its viewers joined through:

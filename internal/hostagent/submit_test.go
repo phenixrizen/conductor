@@ -12,10 +12,10 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/phenixrizen/conductor/internal/api"
-	"github.com/phenixrizen/conductor/internal/proto"
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/session/sessiontest"
+	"github.com/rocksolidlabs/conductor/internal/api"
+	"github.com/rocksolidlabs/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session/sessiontest"
 )
 
 // submitViewer is a controller attached over a loopback data channel to a

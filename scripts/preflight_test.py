@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 The boxcar Authors
+# Copyright 2026 the Conductor Authors and RockSolid Labs, Inc.
 """The preflight runner: its receipts, steps, display and Windows handling."""
 
 import json

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/phenixrizen/conductor/internal/catalog"
+	"github.com/rocksolidlabs/conductor/internal/catalog"
 )
 
 // Claude Code reads extra settings from --settings, so a session launched by

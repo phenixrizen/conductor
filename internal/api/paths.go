@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/config"
-	"github.com/phenixrizen/conductor/internal/crew"
+	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 )
 
 // The working-directory pickers (the crew editor and the Launch dialog)

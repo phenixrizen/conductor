@@ -18,7 +18,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/phenixrizen/conductor/internal/version"
+	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
 // binPlaceholder stands for the conductor binary in an asset. It is always

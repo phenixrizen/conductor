@@ -73,6 +73,7 @@ jobs:
       - run: make lint-static
       - run: go test -race -count=1 ./...
       - run: make build-go
+      - run: make check-version
       - run: python3 scripts/brand_assets.py --check
       - run: python3 -m unittest discover -s scripts -p '*_test.py'
       # THIRD_PARTY_NOTICES is current: the Go modules, the web bundle's packages and the desktop app's, read from their node_modules.

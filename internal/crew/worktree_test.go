@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/gitcli/gitclitest"
+	"github.com/rocksolidlabs/conductor/internal/gitcli/gitclitest"
 )
 
 // newRepo makes a git repository with one commit holding README (three

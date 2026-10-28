@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/phenixrizen/conductor/internal/version"
+	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
 const usage = `conductor - shared agent terminals

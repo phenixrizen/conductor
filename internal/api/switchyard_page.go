@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/version"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/version"
 )
 
 // The switchyard's own pages. A switchyard serves no workbench: the agents,
@@ -25,9 +25,9 @@ import (
 // copy is the design's, word for word (docs/design: "Switchyard Pages").
 
 const (
-	switchyardDocsURL   = "https://github.com/phenixrizen/conductor#readme"
-	switchyardSourceURL = "https://github.com/phenixrizen/conductor"
-	switchyardAppURL    = "https://github.com/phenixrizen/conductor/releases"
+	switchyardDocsURL   = "https://github.com/rocksolidlabs/conductor#readme"
+	switchyardSourceURL = "https://github.com/rocksolidlabs/conductor"
+	switchyardAppURL    = "https://github.com/rocksolidlabs/conductor/releases"
 )
 
 // relayMeter counts the bytes the switchyard relayed over the last hour, in

@@ -16,7 +16,7 @@ COPY --from=web /src/internal/web/dist ./internal/web/dist
 ARG VERSION=docker
 ARG COMMIT=unknown
 RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags "-X github.com/phenixrizen/conductor/internal/version.Version=${VERSION} -X github.com/phenixrizen/conductor/internal/version.Commit=${COMMIT}" \
+    -ldflags "-X github.com/rocksolidlabs/conductor/internal/version.Version=${VERSION} -X github.com/rocksolidlabs/conductor/internal/version.Commit=${COMMIT}" \
     -o /out/conductor ./cmd/conductor
 
 # Stage 3: runtime. Agent CLIs (claude, codex, agy) are NOT included; install

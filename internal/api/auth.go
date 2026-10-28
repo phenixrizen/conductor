@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/phenixrizen/conductor/internal/session"
-	"github.com/phenixrizen/conductor/internal/share"
+	"github.com/rocksolidlabs/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/share"
 )
 
 // principal is the authenticated caller of a request.

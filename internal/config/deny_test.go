@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/phenixrizen/conductor/internal/session"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // FileDeny names the data directory and the directories given, then what

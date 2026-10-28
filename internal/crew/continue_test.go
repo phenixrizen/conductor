@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
 // interrupt leaves the ledger's rows as the owner's recovery would after

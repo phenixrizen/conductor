@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/config"
 )
 
 // requestLines waits until the log holds n request lines and returns them:

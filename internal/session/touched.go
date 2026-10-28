@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/phenixrizen/conductor/internal/proto"
+	"github.com/rocksolidlabs/conductor/internal/proto"
 )
 
 // The Touched section's index (design 4e; round 13, G1): one entry per file
