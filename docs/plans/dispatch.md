@@ -167,11 +167,23 @@ database file that is a symbolic link, opens with the ledger's pragmas
 one connection (`SetMaxOpenConns(1)`), runs `PRAGMA quick_check`, and
 brings the schema to `Version` (1 here) or opens read-only: a database a
 newer Conductor wrote, or one that fails its check, is read when it can
-be and never written, and `ReadOnly()` says why. `Open` fails only when
+be and never written, and `ReadOnly()` says why. The version is read
+inside the `BEGIN IMMEDIATE` transaction that would create or migrate
+the schema, never before it: the ledger's `prepare` (`ledger.go`) reads
+it first and begins after, which its owner lock makes safe, and Dispatch
+has no such lock, so two openers on one directory (two servers, or two
+stores in a test) are ordered by the write lock instead: the second
+waits on the busy timeout for the first's commit, then reads the
+version it wrote and finds nothing to do; one still refused busy past
+the timeout (`busyTimeout`, 5 s, a field a test sets) opens read-only
+with "another writer holds the database" as why, since a write lock
+held that long is not an opener's (the schema is a few dozen
+statements). `Open` fails only when
 the directory cannot be made or the file is a link. There is no owner
 lock (see Owner decisions, 2): SQLite's own locking orders writers across
-processes, and every revision is read and bumped inside the transaction
-that uses it. `Close` checkpoints the WAL (`wal_checkpoint(TRUNCATE)`)
+processes, every revision is read and bumped inside the transaction
+that uses it, and the schema is made inside the transaction that read
+its version. `Close` checkpoints the WAL (`wal_checkpoint(TRUNCATE)`)
 and closes; `Checkpoint(ctx)` does the first alone, for C6's export of a
 running server. `OnChange(func(Change))` is called after every commit,
 once per entity the commit changed (a relation counts for both its
@@ -285,10 +297,12 @@ operation), `ticket.delete`, `ticket.undelete`, `ticket.accept`,
 
 **Rules** (`rules.go`): the field classes of the table in "Events,
 orderings and invariants" as code, `Class(entity, field)`,
-`Merge(local, remote Change) Winner` and `Reconcile(edges []Edge)
-[]Edge` (the edges to undo so a merged parent or `blocks` graph keeps
-its invariants and a run stays linked to one ticket), pure and tested
-here, used by CS1 later; the schema comment names the table.
+`Merge(local, remote Change) Winner` and `Reconcile(changes
+[]EdgeChange) []EdgeChange` (a serial replay of one invariant's edge
+changes in the one order, naming the adds it refuses, so a merged parent
+or `blocks` graph keeps its invariants and a run stays linked to one
+ticket, the same whatever batches the changes arrived in), pure and
+tested here, used by CS1 later; the schema comment names the table.
 
 **Queries** (`query.go`): `List(ctx, Query) (Page, error)` with `Query{
 Project, Status[], Priority[], Labels[], Owner, Assignees[], Milestone,
@@ -321,9 +335,29 @@ contentType, r io.Reader) (Receipt, Attachment, error)` reads at most
 16 MiB + 1 (`bound` past it), into a temp file in `attachments/tmp/`
 while hashing, fsyncs, and holds the hash before it publishes the file:
 one transaction (`BEGIN IMMEDIATE`) inserts an `uploads` row naming the
-hash and commits; then the temp file is renamed to its hash (a file
-already there is the same content; the temp file goes; no file's
-modification time is consulted by anything); then the operation that
+hash and commits; then `publish(tmp, dst)` renames the temp file to its
+hash (a file already there is the same content; the temp file goes; no
+file's modification time is consulted by anything) and makes the new
+name durable before anything can name it, since a file's fsync does not
+carry its directory entry (fsync(2)): one `publish` per platform,
+`attachments_unix.go` renaming and then fsyncing the shard directory
+(`attachments/<xx>/`), and `attachments/` as well when the shard
+directory was made for this file (`Mkdir`, then its parent synced), as
+SQLite syncs a directory after making a journal in it;
+`attachments_windows.go` moving with `MoveFileEx` and
+`MOVEFILE_WRITE_THROUGH` (`golang.org/x/sys/windows`, a package of a
+module `internal/proc` already imports, so `make notices` is
+unchanged), which returns once the move is on the disk, since a
+directory handle cannot be flushed there; the file's own `Sync` is
+`F_FULLFSYNC` on darwin by Go's doing. The syncs go through `syncDir
+func(path string) error`, a field of the store a test replaces; a
+`publish` that fails, at the rename or at a sync, is returned from `Add`
+as an error before the operation runs, as a failure of the database
+itself is (the route answers `500 store_failed`, as the crews routes
+answer one), so no attachment row and no receipt names the file: the
+lease is deleted in a transaction with nothing else when the database
+answers, else left to expire, and the file, published or not, is the
+sweep's; then the operation that
 writes the attachment row runs, and its transaction deletes the
 `uploads` row first and requires that delete to have found the row: the
 row is the upload's lease, and a delete that finds none means the sweep
@@ -335,8 +369,8 @@ the file; the route answers `409 expired` and the page offers the upload
 again), and a rename that finds no temp file (the sweep took it, older
 than the grace) is the same refusal before any row is written; a
 refusal's transaction deletes the lease too; `beforeCommit`, a seam of
-the store a test sets, runs between the rename and the operation, and
-`beforePublish` between the lease's commit and the rename. So from
+the store a test sets, runs between `publish` and the operation, and
+`beforePublish` between the lease's commit and `publish`. So from
 before a hash-named file exists until the row that
 names it is committed, an `uploads` row names its hash, and a file named
 by neither is an orphan: a crash between the rename and the commit (its
@@ -419,7 +453,7 @@ the tools' limits are checked against (PR-12).
 | `POST …/{key}/comments`, `…/comments/{id}/edit`, `…/comments/{id}/delete` | `{opId, body}`; the author is the admin's display name, recorded as `actor: admin`, `by: <name>` |
 | `POST …/{key}/relations`, `…/relations/{id}/delete` | `{opId, kind, to}` (`to` a key of the same project); a `blocks` that would cycle `409 cycle` |
 | `POST …/{key}/links`, `…/links/{id}/delete` | `{opId, kind, ref?, url?, note?}`: `delivery` needs `url`; `run` needs `ref`, a run the engine holds or has a record of (`404 not_found` otherwise) and linked to no other ticket (`409 run_linked`, the receipt naming that ticket); `external` needs `url`; a `delivery` or `external` link without `ref` takes its URL as one; a second live link with the same identity `409 invalid` |
-| `GET /api/dispatch/links?run={id}` | `{ticket}` (`null` when none): the one ticket a run is linked to, for the run page's chip; a deleted one is answered with `deletedAt` set, the chip saying so |
+| `GET /api/dispatch/links?run={id}` | `{ticket}` (`null` when none): the ticket a run is linked to, for the run page's chip: the live ticket whose live `run` link names the run when there is one (one at most, by `run_linked` and `Reconcile`); else, when only deleted tickets' live `run` links name it, the one whose link is latest by its add's log order (`at`, `actor`, `op_id`, `n`), answered with `deletedAt` set, the chip saying so; a live ticket always wins over a tombstone, so a run linked again after its ticket's delete answers the new ticket |
 | `POST …/{key}/attachments` | `multipart/form-data`, one part `file` (its filename the name, its type the content type; 16 MiB plus 64 KiB of envelope, `413 bound` past it) → `201 {receipt, attachment}`; `409 expired` when the upload's lease was swept before its row was written (the server suspended past `sweepGrace` between the two), the page offering the upload again |
 | `GET /api/dispatch/attachments/{id}` | the content, `Content-Disposition: attachment; filename*=…`, `X-Content-Type-Options: nosniff`, `Content-Type` the stored type when it is `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `text/plain`, `application/pdf` or `application/json`, else `application/octet-stream` (an SVG is served as a download, never inline, since it can script); `Content-Length` |
 | `POST …/attachments/{id}/delete` | `{opId}` |
@@ -479,8 +513,9 @@ one target), `conductor task ticket comment TEXT...` comments on it as
 `agent:<member>`. `cli/mcp.go`: `ticket_read` and `ticket_comment` over
 the same two routes, `GET /api/sessions/{id}/ticket` and `POST
 /api/sessions/{id}/ticket/comments` (the session's own token or the
-admin's, through `taskSession`; `404 no_ticket` when the session's run is
-linked to none); the task commands and the tools read through
+admin's, through `taskSession`; `404 no_ticket` when no live ticket's
+live `run` link names the session's run, a deleted ticket's link holding
+none); the task commands and the tools read through
 `crewClient`, whose 4 MiB (`crew.go`) holds `maxTicketReply`, and a test
 of each reads the largest ticket whole. The usage in `root.go`, the completion table, and the
 skill's new "Your ticket" section (`agents/skill.go`, with its test). No
@@ -534,7 +569,12 @@ agent creates or edits a ticket in this item (Owner decisions, 13).
   the policy edited); a list, board or roadmap re-reads itself, gathered
   the same way, when `project` is its project; the projects page on any
   event at all, gathered the same way, since a ticket's status moves its
-  project's counts; every subscribed page on a `snapshot`, the stream
+  project's counts; the run page's chip (`links?run=`) on any event
+  whose `entity` is `ticket`, gathered the same way, since a link's add
+  or remove and a ticket's delete or undelete are events of that ticket,
+  the event names no run and no field, and a run linked to nothing has
+  no project to narrow by (the read is one indexed row, `links(kind,
+  ref)`); every subscribed page on a `snapshot`, the stream
   having reconnected after a drop, when what was missed is unknown;
   nothing polls. Every re-read passes the ordering gate of
   `useDispatch.ts` above.
@@ -581,7 +621,13 @@ agent creates or edits a ticket in this item (Owner decisions, 13).
   gains the row). `useShortcuts.ts`: `DISPATCH_SHORTCUTS` (the list's and
   the page's keys above), registered by the Dispatch pages.
 - `pages/runs/[run].vue` and `CrewRunHeader.vue`: a chip "CND-12" when
-  `GET /api/dispatch/links?run=` names a ticket, opening its page.
+  `GET /api/dispatch/links?run=` names a ticket, opening its page, and
+  "(deleted)" on it when the ticket is a tombstone; the lookup is read
+  with the page and re-read through `useDispatchLive` on every
+  `dispatch` event whose `entity` is `ticket`, gathered 250 ms, and on a
+  `snapshot`, through the ordering gate as every read, so a run linked
+  or unlinked from another browser gains or loses its chip with no
+  reload, a run that had no ticket when the page opened included.
 - The palette (`usePaletteRows.ts`, `utils/palette.ts`): a Tickets group
   in the search (the open tickets of every project, read after the first
   paint and cached a minute as the crews are, read again on a `dispatch`
@@ -647,8 +693,11 @@ config key, no workflow change, no change under `desktop/`.
 - `tickets_fts` is written in the transaction that writes the row it
   indexes; a read never finds a ticket the search does not, nor the
   reverse.
-- An attachment's file is on disk, fsynced and named by its hash before
-  the row that names it is committed, and an `uploads` row committed
+- An attachment's file is on disk, fsynced, named by its hash and its
+  new name made durable (`publish`: the directory synced on unix, the
+  move written through on Windows) before the row that names it is
+  committed, so a committed row never names a file a power loss can
+  take back; and an `uploads` row committed
   before the rename names its hash until that commit; only the sweep
   deletes a file, at open, before any route is served, inside one
   `BEGIN IMMEDIATE` transaction, when neither a live `attachments` row
@@ -739,9 +788,14 @@ the target is deleted: a deleted parent's children keep their
 `children` are not read from it, a deleted blocker does not block
 (`blocked` is from live blockers, as above), a deleted ticket's live
 `run` links hold no run (`run_linked` counts the live links of live
-tickets, so the run can be linked to another ticket; `links?run=`
-answers the deleted ticket with `deletedAt` set and the tools answer
-`no_ticket`), and a tombstoned label's membership and a tombstoned
+tickets, so the run can be linked to another ticket; while no live
+ticket holds the run, `links?run=` answers the deleted ticket with
+`deletedAt` set, the latest-linked of them when several tombstones hold
+a link to it, and the session route and the tools answer `no_ticket`;
+once a live ticket holds it, every lookup answers that ticket and the
+tombstones' links count for nothing, through the deleted ticket's
+undelete, which removes its link, below), and a tombstoned label's
+membership and a tombstoned
 milestone read as absent and none. The write-time check above is a
 check on the write alone: it keeps a person from making a reference to
 what is deleted; the inactive state is for what a later delete or a
@@ -777,7 +831,10 @@ blocker, not the blocked ticket); a list, board or roadmap itself
 (gathered 250 ms) when `project` is its project, a project's policy edit
 included, since it changes `close` on every ticket; the projects page on
 any event, gathered the same way, since its counts derive from every
-ticket; every subscribed page on a `snapshot`, which is how a dropped
+ticket; the run page's chip its `links?run=` lookup on any `ticket`
+event, gathered the same way, since the event names no run and an
+unlinked run has no project; every subscribed page on a `snapshot`,
+which is how a dropped
 client repairs what it missed, beside the sessions' and runs' re-read.
 No `internal/proto` and no `protocol.ts` change: an event on `GET
 /api/events` is an HTTP API change, as the `run` event was (its commit,
@@ -786,10 +843,14 @@ neither protocol package), documented in `docs/protocol.md`'s Events
 section with its bound and tested in `api/events_test.go`; the event's
 TypeScript type lives in `useDispatch.ts` beside the replies'.
 
-**Migrations.** Version 1 is new: `prepare` makes the schema whole in one
-transaction. Later versions follow the ledger's shape, `migrations[v]`
-statements and `migrationsGo[v]` steps in one transaction with the
-version bump, and the conservative rule the owner set for the ledger on
+**Migrations.** Version 1 is new: `prepare` reads the version and makes
+the schema whole in one `BEGIN IMMEDIATE` transaction (Open, above).
+Later versions follow the ledger's shape, `migrations[v]` statements and
+`migrationsGo[v]` steps in one transaction with the version bump, the
+version read inside that transaction too, so the steps run are chosen
+from the version the lock holder sees and a second opener finds the
+bump, never runs the steps again; and the conservative rule the owner
+set for the ledger on
 2026-10-25: a migration never drops or reinterprets what an older
 version kept; a value it cannot derive is left at its default and said
 in one `changes` row of `op: migrate` per entity it touched, so a later
@@ -823,15 +884,33 @@ refuses further local adds until it is under the bound again. The
 invariants that span rows, a parent chain acyclic and at most 8 deep, a
 `blocks` graph acyclic and a run linked to one ticket at most, are
 checked on a local write and re-established after a merge by one rule
-both replicas apply to the same log: among the edges of a cycle, the
-parent edges of a chain past 8, or the live `run` links of one run, the
-one whose change is latest by (`at`, `actor`, `op_id`, `n`) is undone,
-the parent cleared to `''` or the relation or link removed, with a
-`changes` row of `op: reconcile` by the actor `merge`, as that writer
-would have been refused had it seen the other; `rules.go`'s
-`Reconcile(edges []Edge) []Edge`, pure, names the edges to undo, and two
-replicas holding the same log reach the same graph whichever order it
-arrived in.
+both replicas apply to the same log, which answers from the log alone
+and never from the state a batch found: `Reconcile` replays the source
+changes of one invariant (a project's parent sets; a project's `blocks`
+adds and removes; one run's `run` link adds and removes with the
+tickets' `deleted_at` sets, since a tombstone holds no run) in the one
+order (`at`, `actor`, `op_id`, `n`), as if they had been written one
+after another on one replica, admitting an add only when the edges
+admitted and not removed before it keep the invariant and refusing it
+otherwise, as that writer would have been refused had it seen the
+others (a `run` link added, or a ticket undeleted, while another live
+ticket holds the run is the refused change, its link the edge); the row
+tables hold the admitted edges. A refused add is undone there, the
+parent cleared to `''` or the relation or link removed, with a `changes`
+row of `op: reconcile` by the actor `merge`, and that row is derived,
+never a source change: CS1 ships none (the actor `merge` marks it), and
+the projection is computed again after every merge, so an add refused
+after one batch and admitted once an earlier change arrives is restored,
+with a second `reconcile` row that says so, and the reverse; the history
+shows the repairs, the row tables the projection of the log as it
+stands. A repair is therefore a function of the source log alone: the
+four `blocks` edges `B→A`, `B→C`, `A→B`, `C→A` in log order leave
+`B→A`, `B→C` and `C→A` and refuse `A→B` whether they arrive whole, as
+{1, 3} then {2, 4} or as {2, 3, 4} then {1}, where a repair made against
+each batch's state would have undone `A→B` in the first case and `C→A`
+with `A→B` in the second. `rules.go`'s `Reconcile(changes []EdgeChange)
+[]EdgeChange`, pure, names the adds refused, and two replicas holding
+the same log reach the same graph whichever batches it arrived in.
 
 What the schema keeps unique is kept so under replication by one of
 these rules and never by an index a replicated add could trip (the
@@ -924,7 +1003,14 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   with the words; a damaged file (a byte over the header) is read-only
   with the check's words; a symbolic link in the file's place refuses
   `Open`; the pragmas in force (`journal_mode`, `foreign_keys`); `Close`
-  leaves no `-wal` behind; `Checkpoint` on an open store.
+  leaves no `-wal` behind; `Checkpoint` on an open store; eight stores
+  opened at once on one empty directory from eight goroutines all open
+  writable, the schema made once (one `schema_version` row, every table
+  once in `sqlite_master`) and each writes after, `-count=30`; a store
+  opened while the test holds a `BEGIN IMMEDIATE` on the file past
+  `busyTimeout` (50 ms for the test) opens read-only with the words,
+  and one opened while the test holds it for less opens writable and
+  made the schema once.
 - ids and keys: a project key refused outside the pattern; `CND-1`,
   `CND-2` allocated in order under 50 goroutines creating at once (no
   duplicate, no gap); a key kept through a delete; `number_from`/`_to`
@@ -961,8 +1047,16 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   concurrent parent sets that make a 2-cycle, on three that make a
   3-cycle, on a reparenting that makes a chain of 9, on two `blocks`
   that make a cycle and on two `run` links of one run on two tickets
-  undoes the latest edge, the same from either replica's log in either
-  order; the uniqueness rules in both orders: two creates of one label
+  refuses the later edge, the same from either replica's log in either
+  order; on the four `blocks` edges of the field rules delivered whole,
+  as {1, 3} then {2, 4} and as {2, 3, 4} then {1}, the same three stand
+  and `A→B` is refused every way, and the test shows that a repair
+  against each batch's state would differ; an edge refused after one
+  batch and admitted once an earlier remove arrives is restored with a
+  second `reconcile` row, the reverse undone the same way; an undelete
+  arriving while another live ticket holds the run leaves the undeleted
+  ticket's link refused; every `reconcile` row carries the actor
+  `merge`; the uniqueness rules in both orders: two creates of one label
   name in one project leave both labels, two adds of one relation and of
   one link from two actors, the link's with two URLs and two notes,
   leave one member with two tags that reads as the later add's row (its
@@ -991,8 +1085,12 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   delete and undelete with the key kept; a parent with live children, a
   blocker and a ticket with a `run` link deleted: the children keep
   `parent_id` and read it as deleted, the blocked ticket reads
-  unblocked, the run links to another ticket and `links?run=` names
-  the deleted one as deleted, no other ticket's `rev` moved; a comment,
+  unblocked, the run's lookup names the deleted ticket as deleted, then
+  the run links to another ticket and the lookup names that one, live,
+  from then on: after a second deleted ticket's link names the run too,
+  and after the first deleted ticket's undelete (its link removed); with
+  the two deleted tickets' links alone (the live one removed) it names
+  the later-linked tombstone; no other ticket's `rev` moved; a comment,
   relation, link, attachment or edit on the deleted ticket `not_found`;
   the undelete restores every reference and removes the run link a live
   ticket took meanwhile with one `changes` row; a cycle and a chain of 9
@@ -1041,7 +1139,13 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   dropped by the sweep and its file, named by no live row, with it; a
   temp file older than the grace goes and a younger one stays; a refusal
   (the 51st attachment) leaves no `uploads` row; a name with `/` or `..`
-  refused; 16 MiB + 1 refused with no file left.
+  refused; 16 MiB + 1 refused with no file left; `syncDir` made to fail
+  by the test: `Add` returns the error, writes no attachment row and no
+  receipt, leaves no lease, and the file it published is swept as an
+  orphan; the same content uploaded again under a new op id succeeds;
+  `syncDir` recording its paths is given the shard directory on every
+  upload and `attachments/` as well on the one that made the shard
+  directory; the Windows `publish` runs in the Windows preflight row.
 - views: create, edit, delete (a tombstone); a `query` past 8 KiB
   refused; a view of every project.
 - links and labels: a `delivery` link without `ref` takes its URL as
@@ -1073,10 +1177,15 @@ under 128 KiB; a receipt read back through `GET /api/dispatch/ops/
 attachment, an `image/svg+xml` served as `application/octet-stream`); the
 `links?run=` route against a live run of the engine (a fake launcher) and
 a run's record, naming the one ticket, and `409 run_linked` from a second
-ticket. `internal/cli` (`dispatch_test.go`, `task_test.go`,
+ticket; after the ticket's delete the route names it with `deletedAt`
+and `GET /api/sessions/{id}/ticket` is `404 no_ticket`, after the run is
+linked to a second ticket both name the second, and still do after the
+first's undelete. `internal/cli` (`dispatch_test.go`, `task_test.go`,
 `mcp_test.go`): each command and tool against a test server, a lost
 reply asked for once with the same op id, `no_ticket` for a session in
-no linked run, `show`, `conductor task ticket` and `ticket_read` of the
+no linked run and in one whose only link is a deleted ticket's, the live
+ticket once the run is linked to one, `show`, `conductor task ticket`
+and `ticket_read` of the
 largest ticket printed whole through their clients' limits, `projects`
 over 201 projects with 16 KiB descriptions of backslashes listed whole
 through two pages, each under the limit, and `tickets` over 201 the
@@ -1093,8 +1202,10 @@ query both ways, an unknown parameter ignored), `useDispatchLive.test.ts`
 another ticket of its project re-reads it once after the 250 ms window,
 three such events once; one of another project does not; a comment's
 event names its ticket; a `project` event re-reads a list of that
-project and a ticket page; a ticket event re-reads the projects page; a
-`snapshot` re-reads every subscriber; a re-read that fails is asked
+project and a ticket page; a ticket event re-reads the projects page and
+a run page's lookup once after the window, a label event the projects
+page and not the lookup; a `snapshot` re-reads every subscriber, the
+lookup included; a re-read that fails is asked
 again after the window, doubled, and stops once one answers or a
 `snapshot` re-reads), `dispatchOrder.test.ts` (two
 reads of one ticket answered in reverse order leave the later's; an
@@ -1141,7 +1252,9 @@ commands).
 - `dispatch-links.spec.ts`: a managed run launched (`tasks.spec.ts`'s
   crew), linked to a ticket by the link form; the ticket page's Runs
   section shows the run's task rows (`[data-task-row]`); the run page's
-  chip names the ticket and opens it.
+  chip names the ticket and opens it; a second context on the run page,
+  opened before any link, gains the chip when the first context links
+  the run and loses it when the first removes the link, with no reload.
 - `palette.spec.ts` and `palette-rows.spec.ts` gain the Tickets group (a
   key typed opens the ticket on Enter; `→` Copy key by its toast; "New
   ticket in E2E" opens the dialog) and the Dispatch page's rows.
@@ -1297,9 +1410,10 @@ milestones, people, relations, links (`run_linked` among them), views
 routes; their `docs/protocol.md` rows. Tests: each. Go only.
 
 **PR-7** (`internal/dispatch`, `internal/api`, docs): `attachments.go`
-(the file first, the hash, the `uploads` row as the lease, the rename,
-the attachment row with the lease check and `expired`, `beforePublish`
-and `beforeCommit`), `sweep.go` (`sweep(ctx, now)` in one write
+(the file first, the hash, the `uploads` row as the lease, `publish` per
+platform with `syncDir`, the attachment row with the lease check and
+`expired`, `beforePublish` and `beforeCommit`), `sweep.go`
+(`sweep(ctx, now)` in one write
 transaction with `sweepGrace`, at open), `Open(ctx, id)`; the upload
 route (multipart, the bound), the download route (the headers, the allow
 list), the delete; the protocol rows. Tests: the attachment tests of the
@@ -1385,8 +1499,10 @@ the reasoning is why it was taken.
    expects of the later action.
 2. **No owner lock for Dispatch.** The ledger needs one because two
    servers would each recover the other's runs; Dispatch has no process
-   to recover, SQLite's locking orders writers across processes, and
-   every revision is read and bumped inside its transaction, so a second
+   to recover, SQLite's locking orders writers across processes, the
+   schema is made or migrated inside a `BEGIN IMMEDIATE` that reads the
+   version first (Open), and every revision is read and bumped inside
+   its transaction, so a second
    server on the same data directory (already refused unless each has a
    token of its own) changes nothing wrongly (an `uploads` row names
    each of its uploads until the row commits, the sweep sees it, and an
@@ -1394,7 +1510,9 @@ the reasoning is why it was taken.
    only misses the other's SSE events, which the next read repairs.
 3. **A second importer of `modernc.org/sqlite`, no shared helper.** The
    open, pragma and migration code is about sixty lines; copying them
-   into `internal/dispatch` keeps the ledger untouched by this stream. A
+   into `internal/dispatch`, with one change (the version read moves
+   inside the schema transaction, since no owner lock orders two openers
+   here; Open, above), keeps the ledger untouched by this stream. A
    shared package can come when a third store needs it.
 4. **Six statuses, five priorities, three horizons, fixed.** Linear's
    vocabulary without custom workflows: `backlog`, `ready`, `in_progress`,
