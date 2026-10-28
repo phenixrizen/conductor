@@ -125,7 +125,6 @@ result's problem, as a failing check is today.
 type Recipe struct {
 	Schema        int      `json:"schema,omitempty"`   // 1; required in conductor.recipe.json, absent in a crew's
 	File          bool     `json:"file,omitempty"`     // read conductor.recipe.json at the tree's commit; every other field empty then
-	Revision      int64    `json:"revision,omitempty"` // the server's: bumped by every save that changes the recipe
 	Prerequisites []Check  `json:"prerequisites,omitempty"`
 	Env           []string `json:"env,omitempty"`
 	Ports         []string `json:"ports,omitempty"`
@@ -149,8 +148,11 @@ type Probe struct {
 }
 ```
 
-`Crew` gains `Recipe *Recipe` (`json:"recipe,omitempty"`). `Check` is the
-existing `{id, argv, timeoutSeconds}`. The limits, enforced by
+`Crew` gains `Recipe *Recipe` (`json:"recipe,omitempty"`) and
+`RecipeRevision int64` (`json:"recipeRevision,omitempty"`): the server's
+count of the crew's recipe changes, on the crew and not inside the optional
+`Recipe`, so a save that removes the recipe keeps it (the store, below).
+`Check` is the existing `{id, argv, timeoutSeconds}`. The limits, enforced by
 `Recipe.validate` from `Crew.checkTasks`, the first problem returned as an
 `ErrInvalid` the API answers `400 invalid_crew`:
 
@@ -185,7 +187,20 @@ existing `{id, argv, timeoutSeconds}`. The limits, enforced by
   expanded literally inside one argv element, inside a probe's URL and
   inside `preview`, and nowhere else (`expand`); a placeholder naming no
   port of the recipe is refused at validation. There is no shell: a step
-  that wants one names it in its argv, as checks do today.
+  that wants one names it in its argv, as checks do today. The bounds above
+  hold on the expanded form too: `resolveTree` expands every argv, URL and
+  `preview` of the recipe once, when the ports and the state directory are
+  known, and holds each expanded argv element to 4096 bytes and each argv
+  to 8 KiB, an expanded URL to 2048 and the expanded `preview` to 512; one
+  past its bound fails the tree at `recipe` ("preview expands to 61,440
+  bytes, more than 512"), attributed by the tree's rule, before anything is
+  written or run. A port expands to at most five digits, shorter than its
+  placeholder, but the state directory is a path of up to the platform's
+  limit, so a `preview` of twenty `${CONDUCTOR_STATE_DIR}` (457 bytes,
+  valid) could expand past 60 KiB were the template alone bounded, and
+  defeat the task file's uncut section (`taskfile.go` would refuse the
+  files at that stage, a failure counted and named `task file`), the
+  receipt's `url` column and a step's argv row.
 - A probe has `argv` or `url`, not both. A URL is `http` or `https` with a
   host of `127.0.0.1`, `localhost` or `[::1]`, at most 2048 bytes;
   `preview` follows the same rule at most 512 bytes (a loopback URL needs
@@ -196,8 +211,8 @@ existing `{id, argv, timeoutSeconds}`. The limits, enforced by
   with "needs a newer Conductor"; in a crew's recipe it is left out: a crew
   file is read with `store.LoadLimit`, which decodes strictly
   (`store.DecodeStrict`, unknown fields refused), so an older binary refuses
-  a crew with a field it does not know, as for every crew field. `revision`
-  in a request body is ignored: the store owns it.
+  a crew with a field it does not know, as for every crew field.
+  `recipeRevision` in a request body is ignored: the store owns it.
 - The recipe as JSON is at most 64 KiB (`maxRecipeJSON`); the file
   `conductor.recipe.json` at most 256 KiB as a blob (`maxRecipeFile`),
   read and decoded strictly with `DisallowUnknownFields`.
@@ -227,10 +242,18 @@ conductor.recipe.json"), attributed as any step of that tree would be. A
 recipe's identity is recorded with every step it ran: `crew:<revision>` or
 `file:<blob>`.
 
-`internal/crew/store.go`: `Save` compares the incoming recipe with the stored
-one as JSON (`revision` left out) and sets `Revision` to the old one plus
-one when they differ, else keeps it; a new crew's is 1. A legacy crew's JSON
-on disk is unchanged (the existing round-trip test keeps proving it).
+`internal/crew/store.go`: `Update` compares the incoming crew's
+`effectiveRecipe()` with the stored one's as JSON and sets `RecipeRevision`
+to the old one plus one when they differ, a removal included (a recipe taken
+off the crew is a change the counter keeps, so the next recipe put on the
+crew is one past the removed one's number and never `crew:1` again: a
+number names one recipe of a crew for good, which is what a receipt's
+identity promises); an unchanged recipe keeps it. `Create` gives a new crew
+whose effective recipe is not empty 1, else 0; a legacy crew's `setup` never
+changed since is 0 and its steps record `crew:0`, one content as any number
+is. A legacy crew's JSON on disk is unchanged (the existing round-trip test
+keeps proving it: the counter is `omitempty` and an unchanged save leaves it
+0).
 
 ### `internal/crew`: trees, steps and receipts (new file `steps.go`)
 
@@ -257,9 +280,11 @@ with the step named; its first step is `resolveTree`, which the dispatch
 runs before the task files are written, so the files carry what it made:
 
 1. `resolveTree`: the recipe resolved (until PR-5, one naming a phase this
-   build does not run yet is refused here with `prepare`'s words, so a
-   result commit or a continuation's candidate cannot bring in a `verify` or
-   a `cleanup` the engine would skip); its `env` names checked, each for
+   build does not run yet, or a placeholder it does not expand yet, is
+   refused here with `prepare`'s words, so a result commit or a
+   continuation's candidate cannot bring in a `verify` or a `cleanup` the
+   engine would skip, or a `${CONDUCTOR_STATE_DIR}` it would pass on as
+   it is); its `env` names checked, each for
    permission and for presence (`allowedEnv`: a name the host does not allow
    fails the tree at `recipe`, "NPM_TOKEN is not in the server's
    envPassthrough", and one allowed but not set in the server's environment
@@ -354,21 +379,35 @@ trees over); `waitFor(ctx, &r.trees)`; the end told. A stop cut short by
 its context leaves `cleaning` above zero and the end is told all the same;
 the teardown goes on under `r.teardown`, which no stop cuts. The stop's
 context is the request's for a stop from the UI or the CLI (`runContext`)
-and the shutdown's for the server's: `Server.Shutdown` stops every run not
-yet stopped, as today, then calls `Engine.Drain(ctx)` (new) before the
-ledger closes. `Drain` waits for `r.trees` of every run the engine holds,
-the stopped and the finished ones included (a run cleaning after a stop
-that returned early, or after a result taken a moment before, which the
-stop loop passes over), until the teardown's cut-off, the shutdown's
-deadline less `proc.WaitDelay`; then it cancels `r.teardown` of every run
-still cleaning, so each step still running is killed by its context
-(`proc.Run` returns once its group is reaped) and recorded `interrupted`,
-and waits for `r.trees` once more until the deadline. The CLI's budget is
-10 s and the app's 12 s, both unchanged: under a shutdown a tree's
-services are ended first (the grace fits the budget), each cleanup step
-runs until its own timeout or the cut-off, and a `tree.ended` the ledger's
-close beat is finished by `Recover` at the next start from the tree's
-`trees` row (below: the row `ended` and `interrupted`, its open step rows
+and the shutdown's for the server's, which is the one context that cuts
+the teardown, and arms the cut before it waits for anything:
+`Server.Shutdown` first calls `Engine.Draining(ctx)` (new), which sets the
+teardown's cut-off on the engine, the shutdown's deadline less
+`teardownReserve` (`proc.WaitDelay` for the reaping and one second for the
+rows: 3 s; ctx's end when it has no deadline), and starts the goroutine
+that cancels `r.teardown` of every run the engine holds when the cut-off
+comes; then it stops every run not yet stopped, as today, a finished run
+among them (its `StoppedAt` is nil until a stop sets it, so the stop loop
+stops it as any other and its stop waits for its trees); then it calls
+`Engine.Drain(ctx)` (new) before the ledger closes, which waits for
+`r.trees` of every run the engine holds until the deadline, the runs
+stopped before the shutdown included (one cleaning after a stop from the
+UI that returned early, its `StoppedAt` set, which the stop loop passes
+over). The cut-off armed first is what gives the stops their room: a
+cleanup step that would outlast the budget is killed by its context at the
+cut-off (`proc.Run` returns once its group is reaped) and recorded
+`interrupted`, and no step starts after it (`proc.Run` under an ended
+context returns at once, `Canceled`, and the row is not put), so each
+tree's `tree.ended` is committed and each stop returns before the
+deadline, with the reserve left for the rows and the records; a cut-off
+reached only after the stops, as a `Drain` alone would reach it, would
+hold every stop to the full deadline behind one long cleanup and leave the
+cut nothing to reap and record in. The CLI's budget is 10 s and the app's
+12 s, both unchanged: under a shutdown a tree's services are ended first
+(the grace fits the budget), each cleanup step runs until its own timeout
+or the cut-off, and a `tree.ended` the ledger's close beat all the same is
+finished by `Recover` at the next start from the tree's `trees` row
+(below: the row `ended` and `interrupted`, its open step rows
 `interrupted`, its services reported), the ports being nobody's by then. A
 recipe whose cleanup needs longer keeps its receipts at a stop from the UI
 and loses the cut step's at a shutdown, which the run log says.
@@ -454,9 +493,10 @@ the session builds from `cfg.EnvPassthrough` and the agent's). A step's
 `proc.Spec.Allow` carries the same approved names.
 The task file (`taskfile.go`) gains `TaskFile.Recipe` (`{source, revision,
 digest, ports, preview, services}`: the identity, the ports by name, the
-preview URL of at most 512 bytes and the service ids; the state directory
-is not in it, being `.conductor/state` under the working directory the
-file already names, and `CONDUCTOR_STATE_DIR` in the environment), never
+preview URL of at most 512 bytes expanded (the bound above) and the service
+ids; the state directory is not in it, being `.conductor/state` under the
+working directory the file already names, and `CONDUCTOR_STATE_DIR` in the
+environment), never
 cut and at most 2 KiB as the sum of its parts at their largest (a 512-byte
 preview, 8 ports, 4 ids, the identity: about 1.2 KiB), which the extended
 largest-of-each-part test proves (`TestTheTaskFileIsCutToFit`). "Where you
@@ -568,10 +608,18 @@ carry the tree rows; the phase constants are `PhaseCheck`, `PhaseSetup`,
 `PhasePrerequisite`. `Recover` already turns a `started` or `running` row
 into `interrupted`; it does the same for a prerequisite's row. Its selection
 (`transition.go`'s query: a run running, or with an open attempt, check or
-command row) gains a run with a `trees` row not `ended`: a succeeded attempt
-can be closed, every service row finished and the run finished when the
-server dies before the first cleanup row or the `tree.ended`, and nothing
-else selects that run. Each such tree it concludes `ended` and
+command row) gains two predicates. A run with a `prerequisites` row
+`started` or `running` (an `EXISTS` on the new table, as the attempts',
+checks' and commands' are): a stop waits for the prerequisites' goroutine
+only as long as its context lasts (`waitFor(ctx, &r.starts)`), so a stop
+cut short commits `run.stopped` while the prerequisite it ended is still
+being reaped, and a server that dies before the row's `interrupted` commit
+leaves a stopped run with no attempt, no check and no tree, which no other
+predicate selects; its row would say `running` for good. And a run with a
+`trees` row not `ended`: a succeeded attempt can be closed, every service
+row finished and the run finished when the server dies before the first
+cleanup row or the `tree.ended`, and nothing else selects that run. Each
+such tree it concludes `ended` and
 `interrupted`, why "the owner stopped before the tree was ended", its open
 step rows `interrupted`, counted in `Recovered.Trees`, with a `tree.ended
 {interrupted: true, recovered: true}` event per tree under the run, whose
@@ -584,9 +632,16 @@ was not confirmed, which may be alive and cannot be named. A process this
 server started that outlived it is reported, never killed (a pid after a
 restart is nobody's to signal), and a tree the server did not run natively
 has no pid to report. A newer database still opens read-only in an older
-binary, as today. `Prune` deletes the prerequisites and the trees with the
-run's rows, and the prerequisites' logs count toward `MaxRunLogs` as the
-checks' do.
+binary, as today. `Prune` refuses a run with a `trees` row not `ended` or a
+`prerequisites` row `started` or `running` as it refuses an open run
+(`ErrNotPrunable`: "a tree of it is still ending", "a prerequisite of it is
+still running"): a finished run can be mid-cleanup (`Run.Outcome` set,
+`cleaning` above zero), and deleting it then would cascade the live tree's
+rows and receipts away, fail the cleanup's remaining transactions and lose
+the row `Recover` concludes; `Prune` has no caller on main but the ledger's
+tests, and this is the precondition its first caller gets. Otherwise it
+deletes the prerequisites and the trees with the run's rows, and the
+prerequisites' logs count toward `MaxRunLogs` as the checks' do.
 
 ### `internal/proc`: a service runner, and the engine's own names
 
@@ -816,8 +871,10 @@ Invariants, each with a test in "Tests per surface":
   result taken as for a refused one (both `tree.ended` rows follow
   `task.succeeded` in the ledger); a stop waits for it after `recordStop`,
   bounded by its context and cutting nothing, and the server's shutdown
-  waits for it through `Drain`, for the stopped and the finished runs too,
-  and cuts what is left at its cut-off; `Run.Outcome` set means every
+  arms the teardown's cut-off before its first wait (`Draining`), stops
+  every run not yet stopped, the finished ones too, and waits for the rest
+  through `Drain`, so every stop returns before the deadline with the
+  reserve left; `Run.Outcome` set means every
   attempt is closed, not that every cleanup is done (`cleaning` says).
 - A continuation reruns the prerequisites, verifies a candidate in a
   checkout with the candidate's recipe, and makes nothing of a tree the run
@@ -871,10 +928,19 @@ harness with its fake ledger and `sessiontest.FakeProc`):
   argv and url, a URL off the loopback, `setup` beside `recipe`, a recipe
   without tasks, `schema` 2 in a file, a file over 256 KiB, a crew's recipe
   over 64 KiB; `effectiveRecipe` lifting `setup`; `expand` on argv, URL and
-  preview, never splitting an element.
+  preview, never splitting an element; the expanded bounds: twenty
+  `${CONDUCTOR_STATE_DIR}` in a `preview` of 457 bytes, which validation
+  accepts, expand past 512 with any real state directory (the test's
+  temporary one is near 100 bytes; no long directory is needed to show it)
+  and fail the tree at `recipe` with the expanded size in its words,
+  uncounted in the worktree and counted in a checkout, nothing written or
+  run; the same for an argv element past 4096 and a probe URL past 2048
+  (more placeholders).
 - `store_test.go`: the revision bumped on a changed recipe and kept on an
-  unchanged save, a client's `revision` ignored, a legacy crew's JSON
-  unchanged.
+  unchanged save, a client's `recipeRevision` ignored, a legacy crew's JSON
+  unchanged; the counter kept by a save that removes the recipe and, the
+  store reopened, one past it when a different recipe is added again
+  (update, remove, reopen, re-add: 2, 3 and 4, never 1 again).
 - The attempt's worktree: setup, services (a shell loop writing its pid to
   the state directory, `.conductor/state` in the tree), a probe by file and
   a probe by URL (an `httptest` server on the loopback), the ports as
@@ -931,7 +997,8 @@ harness with its fake ledger and `sessiontest.FakeProc`):
   `cleaning` above zero and the tree ends after), after a withdrawal (the
   tree ended, its ports released); a cleanup step that fails leaves the
   attempt's state as it was and is a row and a log line; `cleaning` above
-  zero holds off `evict`; `endTree` once per tree.
+  zero holds off `evict`, and `Prune` refuses the finished run while its
+  cleanup step is held at a gate (a real ledger); `endTree` once per tree.
 - Prerequisites: on a goroutine of the run's, the launch answering while one
   is held at a gate (a file the test creates), the pump dispatching nothing
   while another attempt's close pumps it, a stop during one ending it with
@@ -956,7 +1023,8 @@ harness with its fake ledger and `sessiontest.FakeProc`):
   (`afterAdd`), the run's base and its recipe the pinned commit's; a
   continuation whose recorded base holds a valid file while HEAD holds
   none or a broken one continues; a result commit that adds a phase this
-  build does not run yet (PR-2 to PR-4) refused at `recipe`, counted.
+  build does not run yet (PR-2 to PR-4), or `${CONDUCTOR_STATE_DIR}` in a
+  step's argv before PR-3, refused at `recipe`, counted.
 - Ports: two trees in flight never share one; a lease released at
   `tree.ended`; a number held by a live tree drawn again.
 - A service left running across a restart (a real ledger, the engine
@@ -974,12 +1042,18 @@ Go, `internal/crew/ledger`: the migration from a version-4 fixture (the
 rows read back as phase `check`, no recipe, no ports, one try, no error,
 the version bumped, the `recovered` event unchanged); `PutCheck` and
 `Checks` with the new columns; `PutPrerequisite`, `Prerequisites`, a
-prerequisite row concluded by `Recover`, pruned with the run and counted
-toward `MaxRunLogs`; a `service` row concluded by `Recover` and counted, a
-`started` one reported as unconfirmed; `PutTree` and `Trees`, a tree row
+prerequisite row concluded by `Recover`, a stopped run whose only open row
+is a prerequisite `running` selected and concluded by it (the row
+`interrupted`, the run left `stopped`, one `recovered` event), pruned with
+the run and counted toward `MaxRunLogs`; a `service` row concluded by
+`Recover` and counted, a `started` one reported as unconfirmed; `PutTree`
+and `Trees`, a tree row
 left `ready` under a finished run selected and concluded by `Recover`
 (`ended`, `interrupted`, the `tree.ended` event written) and one `ended`
-left alone, pruned with the run; `url` on a probe's row read back.
+left alone, pruned with the run; `Prune` refusing a finished run whose tree
+row is `ready` and one whose prerequisite row is `running`, and deleting
+each once the row is `ended` or `finished`; `url` on a probe's row read
+back.
 
 Go, `internal/proc` (`serve_test.go`): a service started, its `Started`
 pid, `Done` on its own exit with the `Result`, `Stop` ending a process that
@@ -995,12 +1069,18 @@ environment (`sessions_test`-style with a stub agent); `shutdown_test.go`,
 beside `TestShutdownWritesEveryRunsRecordWhenItsBudgetIsSpent`, two cases:
 `Server.Shutdown` under the CLI's 10 s budget with a run whose service
 ignores `SIGTERM`, the service's pid gone when it returns (PR-4); and a
-run whose task succeeded, which the stop loop passes over, and whose
-cleanup step, begun under `r.teardown` before the shutdown, sleeps past
-the budget: `Drain` cuts it, the step's pid is gone when `Shutdown`
-returns, and its row is `interrupted` and the tree's row `ended` once the
-ledger is reopened, by the cut when it fit the budget or by `Recover` when
-it did not (PR-5).
+run whose task succeeded and which nobody stopped (finished, its
+`StoppedAt` nil, so the stop loop stops it as any other and its stop waits
+for its trees) and whose cleanup step, begun under `r.teardown` before the
+shutdown, sleeps past the budget: the cut-off armed at the shutdown's
+entry ends it at the deadline less the reserve, the stop returns before
+the deadline, the step's pid is gone when `Shutdown` returns, and its row
+is `interrupted` and the tree's row `ended` once the ledger is reopened,
+by the cut when the reaping and the rows fit the reserve (the code's own
+cap) or by `Recover` when the machine missed it; and the same run stopped
+from the UI before the shutdown, its stop returned early under a short
+context with `cleaning` 1, which the stop loop passes over and `Drain`
+waits for: the same rows (PR-5).
 
 vitest: `crews.test.ts` (`recipeProblems` item for item against the Go
 table, `toCrewInput` with a recipe and with a lifted `setup`), `tasks.test.ts`
@@ -1098,16 +1178,23 @@ commit, bounded, decoded strictly, its blob id), the store's revision,
 `docs/protocol.md`; the web types and `toCrewInput`, `liftSetup`,
 `recipeProblems` and `TASK_LIMITS`. Nothing runs a recipe yet: the engine
 reads `effectiveRecipe().Setup` where it read `Setup`, so behaviour is
-main's, and `Engine.prepare` refuses a launch whose recipe names a phase or
-form the engine does not run yet (`400 invalid_crew`, "this build does not
-run a recipe's services yet"; prerequisites, `env`, `ports`, services,
-`ready`, `preview`, `verify`, `cleanup` and the file form, so a recipe saved
-early is never accepted and silently skipped); each later PR lifts the
-refusal for what it runs, PR-2 applies the same check in `resolveTree` to
-every recipe it resolves (a result commit's, a candidate's), and PR-5
-removes both. Touches `internal/crew`, `docs`, `web/app/composables`,
-`web/app/utils`. Tests: `recipe_test.go` (the refusal per phase),
-`store_test.go`, `crews.test.ts`. Depends on nothing. Parallel with nothing
+main's, and `Engine.prepare` refuses a launch whose recipe names a phase,
+form or placeholder the engine does not run yet (`400 invalid_crew`, "this
+build does not run a recipe's services yet"; prerequisites, `env`, `ports`,
+services, `ready`, `preview`, `verify`, `cleanup`, the file form, and
+`${CONDUCTOR_STATE_DIR}` in any argv, "this build does not expand a recipe's
+placeholders yet": `expand` lands in PR-3 and the runner passes argv as it
+is (`runCommand`, `verify.go`), so a `mkdir ${CONDUCTOR_STATE_DIR}/cache`
+in a `setup` step, which needs no port and no refused field, would make a
+directory of that literal name; a `${CONDUCTOR_PORT_<NAME>}` needs `ports`,
+refused here; so a recipe saved early is never accepted and silently
+skipped or half run); each later PR lifts the refusal for what it runs,
+PR-2 applies the same check in `resolveTree` to every recipe it resolves (a
+result commit's, a candidate's, a file recipe's), and PR-5 removes both.
+Touches `internal/crew`, `docs`, `web/app/composables`, `web/app/utils`.
+Tests: `recipe_test.go` (the refusal per phase, and for a setup-only recipe
+with `${CONDUCTOR_STATE_DIR}` in a step's argv), `store_test.go`,
+`crews.test.ts`. Depends on nothing. Parallel with nothing
 (every later PR builds on it). About 950 lines.
 
 **PR-2 — ledger and engine: every step a receipt, every failure named and
@@ -1132,9 +1219,11 @@ types, `requestText` and the four fetchers, which PR-7's components use).
 Tests: the migration fixture, `steps_test.go` (receipts, the attribution
 both ways, the pause and the unpause, the prerequisites and their gate, one
 generation at a time, the successor's start, the pinned base, a result
-commit bringing in an unsupported phase, the tree rows and the crash before
-the first cleanup row), `composables/useApi.test.ts`, the existing cases
-that change with the lift: `refused_result_test.go` (rows now),
+commit or a file recipe bringing in an unsupported phase or the
+state-directory placeholder, refused at `recipe`, the tree rows and the
+crash before the first cleanup row), `composables/useApi.test.ts`, the
+existing cases that change with the lift: `refused_result_test.go` (rows
+now),
 `managed_test.go`
 (`TestTheSetupRunsInTheChecksCheckoutAndMayChangeNothingTracked`: one
 `check.setup` event becomes one row of phase `setup` in the checkout) and
@@ -1147,13 +1236,15 @@ PR-1. About 1,800 lines.
 `env`; `LaunchSpec.Inject` and `Allow` through `createLocalSession`; the
 `env` checks in the prerequisites and, for permission and presence, in
 `resolveTree`; port allocation and the engine's leases; the state directory;
-`expand` applied to steps; the task file's ports and state directory;
-`CONDUCTOR_PORT_*` and `CONDUCTOR_STATE_DIR` in steps and sessions;
-`allowedEnv` in every tree; the executor's `port`; the refusal lifted for
-`env` and `ports`. Touches `internal/proc`, `internal/crew`, `internal/api`,
+`expand` applied to steps, with the bounds on the expanded form; the task
+file's ports and state directory; `CONDUCTOR_PORT_*` and
+`CONDUCTOR_STATE_DIR` in steps and sessions; `allowedEnv` in every tree;
+the executor's `port`; the refusal lifted for `env`, `ports` and the
+placeholders. Touches `internal/proc`, `internal/crew`, `internal/api`,
 `internal/agents` (the skill's sentence), `docs`. Tests: `proc/run_test.go`
 (inject accepted and refused), `steps_test.go` (the environment of a step
-and of a session, the leases, the state directory, the env prerequisites,
+and of a session, the leases, the state directory, the expanded bounds, the
+env prerequisites,
 the `env` rule, permission and presence, in the checkout and the next
 worktree), `api` (Launch's inject and allow). Depends on PR-2. About 1,100
 lines.
@@ -1163,21 +1254,24 @@ lines.
 executor's `serve` and `probe`; the `services` and `ready` phases in both
 trees; the preview URL on the tree, the attempt and the session; the
 services ended at `endTree`, with `r.trees`, `r.teardown`, the stop's wait
-after `recordStop`, `Engine.Drain` in `Server.Shutdown` with its cut-off,
+after `recordStop`, `Engine.Draining` and `Engine.Drain` in
+`Server.Shutdown`, the cut-off armed at its entry with `teardownReserve`,
 and `cleaning` on the run and in `idle`, so no main between two merges
 lets a stop return under a service still being signalled;
 `Recovered.Services`; a service that dies before ready, a daemonizer
 included; the refusal lifted for services, `ready` and `preview`. Touches
 `internal/proc`, `internal/crew`, `internal/crew/ledger` (the recovery
-words), `internal/api` (`Drain` and the shutdown test), `docs`. Tests:
-`serve_test.go`, `steps_test.go` (services by file and by URL probe, a
-dying service and a daemonizing one, the escaped child, the pid gone after
+words), `internal/api` (`Draining`, `Drain` and the shutdown test), `docs`.
+Tests: `serve_test.go`, `steps_test.go` (services by file and by URL probe,
+a dying service and a daemonizing one, the escaped child, the pid gone
+after
 the tree, the stop mid-service, `cleaning` holding off `evict`, the
 restart cases against a real ledger), `api/shutdown_test.go`'s first case.
 Depends on PR-3. About 1,600 lines.
 
 **PR-5 — verify and cleanup.** The `verify` steps in the checks loop; the
-`cleanup` phase in `endTree` under `r.teardown` and `Drain`'s cut-off;
+`cleanup` phase in `endTree` under `r.teardown` and the shutdown's armed
+cut-off;
 cleanup after a cancel, a withdrawal, a stop and a failed step; a cleanup
 failure as a receipt and a log line; the launch refusal and
 `resolveTree`'s removed. Touches `internal/crew`, `internal/api` (the
