@@ -42,6 +42,9 @@ RECEIPT_VERSION = 1
 # The order is CI's: the web build first, since the Go binary embeds it.
 GATE_JOBS = ("required-checks",)
 LINUX_STEPS = [
+    # First: it takes a second, the rest an hour, so an unsigned commit is the
+    # first line of the receipt (CONTRIBUTING.md, Sign-off).
+    {"name": "dco", "covers": "dco", "argv": ["python3", "scripts/dco_check.py", "--base", "origin/main", "--head", "HEAD"]},
     {"name": "web-typecheck", "covers": "web", "argv": ["make", "web-typecheck"]},
     {"name": "web-test", "covers": "web", "argv": ["npm", "--prefix", "web", "test"]},
     {"name": "web-build", "covers": "web", "argv": ["make", "web-build"]},

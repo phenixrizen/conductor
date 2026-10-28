@@ -11,6 +11,7 @@ Run the narrow tests while iterating, then the complete checks for every affecte
 
 
 ```bash
+python3 scripts/dco_check.py --base origin/main --head HEAD  # every commit of the branch signed off by its author (CI's dco job)
 make lint                      # gofmt -l, go vet
 go test -race -count=1 ./...   # includes PTY, WebSocket and pion loopback tests
 npm --prefix web run typecheck
@@ -28,7 +29,7 @@ make test-network              # the built-in agents' sites on the network (nigh
 make test-recipes              # the recipe flags against the CLIs on this machine (nightly)
 python3 scripts/brand_assets.py --check
 python3 scripts/notices.py --check  # THIRD_PARTY_NOTICES current (after make web-build, npm ci in desktop/)
-python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (notices.py)
+python3 -m unittest discover -s scripts -p '*_test.py'  # the scripts' own tests (dco_check.py, notices.py, preflight.py, release_draft.py)
 ```
 
 The e2e stub (`web/e2e/stub-agent.sh`) answers as Claude Code, Codex or an

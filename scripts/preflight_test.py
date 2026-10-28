@@ -105,6 +105,14 @@ class Steps(unittest.TestCase):
         self.assertTrue(jobs, "no jobs parsed from ci.yml")
         self.assertEqual(jobs - covered, set(), f"ci.yml jobs with no preflight step: {jobs - covered}")
 
+    def test_the_dco_check_runs_first_against_origin_main(self):
+        first = p.LINUX_STEPS[0]
+        self.assertEqual((first["name"], first["covers"]), ("dco", "dco"))
+        self.assertEqual(first["argv"], ["python3", "scripts/dco_check.py", "--base", "origin/main", "--head", "HEAD"])
+        # Not on the Mac or Windows rows: what a commit carries does not depend on the machine.
+        for steps in (p.MAC_STEPS, p.WINDOWS_STEPS):
+            self.assertFalse(any(s["name"] == "dco" for s in steps))
+
     def test_the_go_race_tests_run_on_the_whole_module_here_and_on_the_mac(self):
         for steps in (p.LINUX_STEPS, p.MAC_STEPS):
             race = [s for s in steps if s["name"] == "go-test-race"]
