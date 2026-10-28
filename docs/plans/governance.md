@@ -13,46 +13,35 @@ stop saying "the owner" and start naming a role.
 
 ## Articles it serves
 
-The twelve articles are the open-core rules of the Program (section 2.1);
-they are restated here in the repository's own words where this item
-touches them.
+The twelve articles are the Program's (section 2.1); their text is there,
+not here. By number, what this item does to each. Articles 1 to 4 become
+public as `CONTRIBUTING.md`'s open-core rules, in the wording of its
+section 6 below.
 
-1. No paid code and no licence or plan check in this repository; the only
-   check is whether a provider is registered. Served: `CONTRIBUTING.md`
-   states it as open-core rule 1, the PR template makes every PR tick it,
-   and nothing in this item adds a gate of that kind.
-2. The open-source build is fully useful on its own. Served: rule 2 and
-   the template's second box; the build itself is untouched.
-3. A paid feature is gated by a hosted dependency it needs, never by a
-   flag a fork could flip. Served: rule 3 and the third box;
-   `CONTRIBUTING.md` says paid work is built outside this repository.
-4. Stop, inspect, revoke, export and required approvals stay free and never
-   degrade. Served: rule 4 and the fourth box; none of those code paths is
-   touched.
-5. Dependencies point one way and a lint rule proves it. Not touched: the
-   lint rule is item C1's; this item adds no import.
-6. No feature build tag in the open-source repository. Not touched: the
-   `dco` job runs `python3` on the runner, no build at all.
-7. The free default of every interface is what main does today, and
-   open-source code never calls `EntitlementSource` to gate a free feature.
-   Not touched: no interface exists yet; `CONTRIBUTING.md` gets a "Rules
+1. Served: `CONTRIBUTING.md` states it as open-core rule 1, the PR
+   template makes every PR tick it, and nothing in this item adds a gate
+   of that kind.
+2. Served: rule 2 and the template's second box; the build itself is
+   untouched.
+3. Served: rule 3 and the third box; `CONTRIBUTING.md` says paid work is
+   built outside this repository.
+4. Served: rule 4 and the fourth box; none of those code paths is touched.
+5. Not touched: this item adds no import; the lint rule is item C1's.
+6. Not touched: the `dco` job runs `python3` on the runner, no build and
+   no tag.
+7. Not touched: no interface exists yet; `CONTRIBUTING.md` gets a "Rules
    for code" section where item C7 adds its one line.
-8. A provider whose hosted service is unreachable answers as the free
-   default. Not touched: no provider, nothing hosted, nothing to test.
-9. Release binaries stay `CGO_ENABLED=0`; a local store is
-   `modernc.org/sqlite`. Not touched: no Go changes.
-10. The repository contract (`AGENTS.md`) holds in all three repositories,
-    the private ones dropping the DCO. Served: `AGENTS.md` stays the
-    contract and gains the sign-off as one bullet a private copy leaves
-    out; `CONTRIBUTING.md` keeps the sign-off in one section and the PR
-    template in one line, for the same reason.
-11. The railroad names keep their meaning and "workspace" is reserved.
-    Served: the new files say Conductor, Yardmaster, Brakeman and Switchman
-    as `AGENTS.md` defines them, call a worktree a worktree, and
-    `TRADEMARKS.md` covers the Conductor name.
-12. Execution stays behind one seam. Not touched: no process, check or
-    attempt is started or changed by documents, a workflow job and a script
-    that reads `git log` on a CI runner (the Boxcar table below).
+8. Not touched: no provider, nothing hosted, nothing to test.
+9. Not touched: no Go change, no store.
+10. Served: `AGENTS.md` stays the contract and gains the sign-off as one
+    bullet of its own; `CONTRIBUTING.md` keeps it in one section and the
+    PR template in one line.
+11. Served: the new files say Conductor, Yardmaster, Brakeman and
+    Switchman as `AGENTS.md` defines them, call a worktree a worktree,
+    and `TRADEMARKS.md` covers the Conductor name.
+12. Not touched: no process, check or attempt is started or changed by
+    documents, a workflow job and a script that reads `git log` on a CI
+    runner (the Boxcar table below).
 
 ## Why and what happens
 
@@ -63,18 +52,21 @@ the Conductor marks "the project's marks" (NOTICE:10-11), an `AGENTS.md`
 written for the owner's own agents that says "the owner" five times
 (lines 40, 64, 67, 79, 85), a PR template with no checklist
 (`.github/pull_request_template.md`, nine lines), and no `CONTRIBUTING.md`,
-`SECURITY.md`, `TRADEMARKS.md` or DCO. No commit on main carries a
-`Signed-off-by` line: none of the twenty most recent non-merge commits has
-one. CI's one required status check is `required-checks` (ruleset
+`SECURITY.md`, `TRADEMARKS.md` or DCO. Of the 1,196 non-merge commits on
+`main`, 22 carry a `Signed-off-by` line, all of them the `docs:` and
+`workflow:` commits of 2026-10-17 (373df2eb among them, signed off by its
+author); none of the twenty most recent has one, and no merge commit does.
+CI's one required status check is `required-checks` (ruleset
 25591653 on `main`; `ci.yml:257-264`), green when every job in its
 `needs` list passed.
 
 After this item:
 
 - A contributor finds `CONTRIBUTING.md`: `AGENTS.md` for how an issue is
-  worked, `docs/checks.md` for the checks, the sign-off on every commit
-  with the fix for a branch that lacks it, the four open-core rules, where
-  paid work goes instead, the PR checklist, and who the maintainers are.
+  worked, and the fork path for a contributor without write access,
+  `docs/checks.md` for the checks, the sign-off on every commit with the
+  fix for a branch that lacks it, the four open-core rules, where paid
+  work goes instead, the PR checklist, and who the maintainers are.
 - A pull request with a commit whose author has not signed it off fails
   CI: the `dco` job names the commit and the fix in its log, and
   `required-checks`, which needs it, is red, so the PR cannot merge. A
@@ -102,13 +94,13 @@ After this item:
 
 ## The changes
 
-Three pull requests; by file. Nothing here touches a Go package, the web
+Two pull requests; by file. Nothing here touches a Go package, the web
 app, the desktop shell, the protocol, a store or a schema, so there is no
 migration and no new frame; no dependency is added, so `make notices` has
 nothing to regenerate. Names: the application is Conductor; Yardmaster is
 its agent harness; a worktree is a worktree.
 
-### `CONTRIBUTING.md` (new, repository root; PR-1)
+### `CONTRIBUTING.md` (new, repository root; PR-1; section 9 extended by PR-2)
 
 Sections, in this order, in plain words:
 
@@ -129,8 +121,20 @@ Sections, in this order, in plain words:
    `main`, one PR; a draft PR at the first commit; `Fixes #N` or
    `Part of #N`; the PR body as the template lays it out, with who made it
    (person or agent, with a session link when there is one); every review
-   comment answered, fixed or declined with why. A branch on origin is a
-   claim. Never two open issues at once.
+   comment answered, fixed or declined with why. Never two open issues at
+   once. The `ready` label is the go-ahead for everyone. With write access
+   (the maintainers and the agents they run), `AGENTS.md`'s bullets apply
+   as written: assign yourself, cut the branch on origin with
+   `gh issue develop` (the branch on origin is the claim), keep the Project
+   board current. Without it, which is every contributor outside RockSolid
+   Labs at first: say on the issue that you are taking it, and a
+   maintainer assigns it to you (the assignment is the claim) and moves it
+   on the board for you; fork the repository, cut `issue-N` from `main`
+   (your fork's, brought up to date with this repository's), and open the
+   PR from the fork, where CI runs as on any other PR, the `dco` job
+   included (a first-time contributor's first run may wait for a
+   maintainer's approval, as GitHub has it); handing off, say so in a PR
+   comment and a maintainer unassigns you.
 4. **Sign-off.** Every commit is signed off: `git commit -s` adds
    `Signed-off-by: Your Name <you@example.org>`, and by adding it you
    certify the Developer Certificate of Origin, whose text is in `DCO` at
@@ -144,8 +148,12 @@ Sections, in this order, in plain words:
    `git push --force-with-lease`; for the last commit alone,
    `git commit --amend -s --no-edit`. Check before pushing:
    `python3 scripts/dco_check.py --base origin/main --head HEAD`
-   (`make preflight` runs it first). A merge commit needs no sign-off, and
-   a branch is rebased rather than merged anyway. An agent's commits are
+   (`make preflight` runs it first). A merge commit on the branch is a
+   commit of the pull request and is checked like any other
+   (`git merge --signoff` signs one; GitHub's "Update branch" button makes
+   one nobody signed), so rebase instead of merging:
+   `git rebase --signoff origin/main` signs the branch and drops its
+   merges in one step. An agent's commits are
    the commits of the person running it: they carry that person's
    sign-off; the agent's attribution lines (`Co-Authored-By`, a session
    link) are something else and do not replace it.
@@ -180,12 +188,13 @@ Sections, in this order, in plain words:
    and `docs/protocol.md` together, with a size limit and a test; a new
    dependency needs its reason in the PR and `make notices`; every shipped
    feature gets its `docs/features.md` entry. Item C7 adds its line here.
-9. **Licence, marks, security.** Contributions are under the Apache
-   License 2.0 (`LICENSE`), no copyright assignment; the marks are
-   `TRADEMARKS.md`'s; a vulnerability is `SECURITY.md`'s and never an
-   issue.
+9. **Licence.** Contributions are under the Apache License 2.0
+   (`LICENSE`), no copyright assignment. PR-2 extends the section to
+   "Licence, marks, security": the marks are `TRADEMARKS.md`'s; a
+   vulnerability is `SECURITY.md`'s and never an issue. PR-1 names
+   neither file, since neither exists until PR-2 merges.
 
-About 150 lines. The company is "RockSolid Labs"; the entity
+About 170 lines. The company is "RockSolid Labs"; the entity
 "RockSolid Labs, Inc."
 
 ### `DCO` (new, repository root; PR-1)
@@ -196,7 +205,7 @@ permitted, changes are not). It is not under Apache-2.0 and says so itself;
 `scripts/notices.py` reads Go modules and npm packages, never root files,
 so `THIRD_PARTY_NOTICES` is unchanged.
 
-### `AGENTS.md` (edited; PR-1)
+### `AGENTS.md` (edited; PR-1, one pointer by PR-2)
 
 - A new bullet in the top list, after the dependency bullet: every commit
   is signed off (`git commit -s`; the Developer Certificate of Origin in
@@ -210,10 +219,15 @@ so `THIRD_PARTY_NOTICES` is unchanged.
   "Work the owner asks for" becomes "Work a maintainer asks for";
   line 79, "the owner decides when" becomes "a maintainer decides when";
   line 85, "until the owner decides on disclosure" becomes "until a
-  maintainer decides on disclosure (`SECURITY.md`)".
-- One sentence in the "Working an issue" introduction defines the role:
-  the maintainers are the owners of the `rocksolidlabs` GitHub
+  maintainer decides on disclosure"; PR-2 appends "(`SECURITY.md`)" to
+  that bullet once the file exists.
+- Two sentences in the "Working an issue" introduction. The first defines
+  the role: the maintainers are the owners of the `rocksolidlabs` GitHub
   organization (`CONTRIBUTING.md`, Who decides); they merge and decide.
+  The second says whose the assignment, branch-on-origin and Project
+  board bullets are: the maintainers' and the agents they run, who have
+  write access; a contributor without it follows `CONTRIBUTING.md`'s fork
+  path, and a maintainer assigns the issue and moves the board for them.
 - The draft-PR bullet (lines 53-55) adds: tick the template's checklist.
 - Nothing else moves. Other files say "the owner" in other senses or as
   history and stay: `docs/dependencies.md:17` (a dated choice),
@@ -237,7 +251,7 @@ Every commit is signed off by its author (`git commit -s`; CONTRIBUTING.md, Sign
 
 The first line, the two headings and the comments stay as they are.
 
-### `.github/ISSUE_TEMPLATE/task.md` (edited; PR-1)
+### `.github/ISSUE_TEMPLATE/task.md` (edited; PR-2)
 
 Its closing comment gains "(`SECURITY.md` says how)" after "Vulnerabilities
 go in a Draft Security Advisory, never here."
@@ -271,26 +285,38 @@ Sections:
    a domain name, a company name); anything implying that RockSolid Labs
    made, endorses or sponsors something it did not; the RockSolid Labs
    logos anywhere except as the unmodified software shows them.
-6. **A fork.** Rename it and drop the marks. Where they are compiled in:
-   `web/public/brand/`, `web/public/sponsor/`, `desktop/static/sponsor/`,
-   `web/app/utils/about.ts` (the credit and the sponsor's name and site),
+6. **A fork.** Rename it and drop the marks. Where the images are:
+   `web/public/brand/` (the SVGs); `web/public/sponsor/` and
+   `desktop/static/sponsor/` (the sponsor PNGs); `desktop/build/`, the
+   committed rasters the desktop packages carry (`desktop/electron-builder.yml`):
+   `icon.png`, `icon-512.png` and `tray.png`, rendered from the app icon
+   by `scripts/brand_assets.py --desktop-icons`, and the Windows
+   installer's `installerSidebar.bmp` and `installerHeader.bmp`, rendered
+   from `scripts/installer-art.html` by `scripts/installer-art.mjs`. Where
+   the name and the credit are written in: `web/app/utils/about.ts` (the
+   credit and the sponsor's name and site),
    `web/app/components/AboutCard.vue`, `web/app/pages/join/[token].vue`,
+   `web/app/layouts/default.vue` (the sidebar's name),
    `desktop/src/splash.ts` and `desktop/static/splash.html`,
    `internal/cli/root.go` (`Credit`), `internal/api/switchyard_page.go`
    (the header's marks, the footer's badge), `desktop/electron-builder.yml`
-   (`productName`, `copyright`), `web/nuxt.config.ts` (the title),
-   `README.md`'s footer, `docs/design/brand.md`. The railroad names of
-   Conductor's parts (Yardmaster, Brakeman, Switchman, the Switchyard, the
-   Yard, the Roundhouse) are ordinary words used descriptively and are not
-   claimed as marks; a fork may keep them.
+   (`productName`, `copyright`, the invite protocol's name),
+   `web/nuxt.config.ts` (the title), `README.md`'s footer,
+   `docs/design/brand.md`. That is where to start, not the whole of it:
+   the name is in page titles, messages and documentation too, and
+   `git grep -w Conductor` finds every site; what a renamed build then
+   shows is the fork's to check.
 7. **The spelling.** "Conductor"; "RockSolid Labs"; "RockSolid Labs,
    Inc." for the legal entity; the site rocksolidlabs.io; the GitHub
    organization `rocksolidlabs`.
 8. **Questions.** conductor@rocksolidlabs.io.
 
-About 90 lines. `docs/design/brand.md` keeps the rule that the junction is
+About 100 lines. `docs/design/brand.md` keeps the rule that the junction is
 artwork and never a status light (`AGENTS.md`); `TRADEMARKS.md` is about
-who may use the marks, not how the project draws them.
+who may use the marks, not how the project draws them. The file says
+nothing about the railroad names of Conductor's parts (Yardmaster,
+Brakeman, Switchman, the Switchyard, the Yard, the Roundhouse): neither
+claimed nor disclaimed (B8).
 
 ### `NOTICE` (edited, lines 8-12; PR-2)
 
@@ -331,7 +357,11 @@ and what is not. The file stays twelve lines; the Dockerfile (line 31) and
    to their vendors) and what the README's "Security model and limits"
    documents as by design.
 5. **Supported versions.** The latest release and `main`. Older release
-   candidates get no fixes; the desktop app updates itself.
+   candidates get no fixes. The desktop app updates itself on macOS, on
+   Windows and as an AppImage (`desktop/src/updater.ts`, `updateChannel`);
+   a deb or rpm install only points at the release page, and the
+   `conductor` binary, the packages and the image are updated by whoever
+   installed them: install the latest release.
 6. **Everyone working in this repository.** A vulnerability found while
    working, by a person or an agent, goes into a draft security advisory
    and never into an issue, a pull request, a commit message or a doc,
@@ -352,7 +382,7 @@ these marks, and the RockSolid Labs marks, belong to RockSolid Labs, Inc.;
 `TRADEMARKS.md` says what may be done with them. Line 215's "does not
 establish trademark clearance" stays true of that guide.
 
-### `scripts/dco_check.py` (new; PR-3)
+### `scripts/dco_check.py` (new; PR-1)
 
 Standard library only, the SPDX and copyright lines `scripts/preflight.py`
 carries, a docstring with the usage:
@@ -366,14 +396,16 @@ python3 scripts/dco_check.py --base <rev> --head <rev> [--repo <dir>]
   whitespace allowed) parsed as `Name <address>`; a line without angle
   brackets is no sign-off.
 - `Commit`: sha, parents, author name, author address, subject, message.
-- `problems(commits) -> list[str]`: for every commit with fewer than two
-  parents, unless one of its sign-offs has the author's name (trimmed,
+- `problems(commits) -> list[str]`: for every commit, merge commits
+  included, unless one of its sign-offs has the author's name (trimmed,
   exact) and the author's address (compared without regard to case), one
-  line: the first twelve characters of the sha, the subject, the author,
-  and either `no Signed-off-by` or the sign-offs found with `(not the
-  author)`. Merge commits are skipped, as the DCO GitHub App skips them.
-  The committer is not consulted: a maintainer's rebase keeps the author's
-  sign-off. No bot exemption.
+  line: the first twelve characters of the sha, the subject (a merge
+  commit marked `(merge)`), the author, and either `no Signed-off-by` or
+  the sign-offs found with `(not the author)`. A merge on the branch is a
+  commit of the pull request and may carry a conflict's resolution, so it
+  is judged like any other; the DCO GitHub App skips merges, this check
+  does not. The committer is not consulted: a maintainer's rebase keeps
+  the author's sign-off. No bot exemption.
 - `read(repo, base, head) -> list[Commit]`: one
   `git -C repo log --reverse --format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%s%x1f%B base..head`,
   read as UTF-8 whatever the locale (the lesson of
@@ -385,12 +417,13 @@ python3 scripts/dco_check.py --base <rev> --head <rev> [--repo <dir>]
   `no commits between base and head`); exit 1 with one line per problem and
   a last line, `K of N commits are not signed off by their author. Fix:
   git rebase --signoff <base> && git push --force-with-lease
-  (CONTRIBUTING.md, Sign-off).`; exit 2 when git fails or a record does not
-  parse, with git's message. Never silently green.
+  (CONTRIBUTING.md, Sign-off).`, a fix that signs every commit and drops
+  the branch's merges; exit 2 when git fails or a record does not parse,
+  with git's message. Never silently green.
 
 About 120 lines.
 
-### `scripts/dco_check_test.py` (new; PR-3)
+### `scripts/dco_check_test.py` (new; PR-1)
 
 `python3 -m unittest discover -s scripts -p '*_test.py'` finds it. The
 tests, each failing without its part:
@@ -403,14 +436,24 @@ tests, each failing without its part:
 - `test_another_persons_signoff_does_not_count` (a co-author's, a
   reviewer's).
 - `test_the_address_is_compared_without_regard_to_case_and_the_name_exactly`.
-- `test_a_merge_commit_is_skipped`.
+- `test_a_merge_commit_is_judged_like_any_other` (an unsigned
+  two-parent commit is named, marked as a merge; one signed off by its
+  author passes).
 - `test_an_empty_range_passes`.
 - `test_the_report_counts_the_commits_and_names_the_fix`.
 - `test_a_range_is_read_from_a_repository_as_git_logs_it`: a repository
-  made in a temporary directory with `git init -q`, three commits (one
-  signed off, one not, one a `--no-ff` merge of a branch), `main([...])`
-  returning 1 and naming the unsigned one only; then the unsigned commit
-  amended with `-s` and the same range returning 0. The git calls carry
+  made in a temporary directory with `git init -q`: a base commit; on
+  `main` one commit signed off and one not; then a `--no-ff` merge of a
+  side branch holding one signed-off commit, the merge itself unsigned.
+  `main([... "--base", <base sha>, "--head", "HEAD"])` returns 1 naming
+  the unsigned commit and the merge, nothing else. Then the fix the
+  script prints, `git rebase --signoff <base sha>`, is run in that
+  repository, and the same base and `HEAD` return 0 with three commits
+  counted: the rebase replays the three non-merge commits, adds the
+  sign-off where it was missing and drops the merge, which is exactly
+  what `CONTRIBUTING.md`'s Sign-off section promises. (`git commit
+  --amend -s` would not do here: it rewrites `HEAD` only, and the
+  unsigned commit is below the merge.) The git calls carry
   `-c user.name`, `-c user.email`, `-c commit.gpgsign=false`,
   `-c init.defaultBranch=main` and run with `GIT_CONFIG_GLOBAL=/dev/null`
   and `GIT_CONFIG_NOSYSTEM=1`, so a developer's global configuration (a
@@ -418,7 +461,7 @@ tests, each failing without its part:
   or pass for its own reasons.
 - `test_a_record_that_does_not_parse_fails_the_read` (exit 2).
 
-### `.github/workflows/ci.yml` (edited; PR-3)
+### `.github/workflows/ci.yml` (edited; PR-1)
 
 A job before `required-checks`, and `dco` appended to that job's `needs`
 list (line 259):
@@ -446,7 +489,7 @@ The shas reach the script through the environment, as `release.yml` passes
 its version. `python3` is on the runner, as the `go` job already relies on
 (`ci.yml:77-78`). No permission beyond `contents: read` is needed.
 
-### `scripts/preflight.py` and `scripts/preflight_test.py` (edited; PR-3)
+### `scripts/preflight.py` and `scripts/preflight_test.py` (edited; PR-1)
 
 `LINUX_STEPS` gains, first, `{"name": "dco", "covers": "dco", "argv":
 ["python3", "scripts/dco_check.py", "--base", "origin/main", "--head",
@@ -458,22 +501,22 @@ fails on the new job: that test is why the step cannot be forgotten.
 (the first Linux step's name and argv). The Mac and Windows rows do not
 get it: what a commit carries does not depend on the machine.
 
-### `docs/checks.md` (edited; PR-3)
+### `docs/checks.md` (edited; PR-1)
 
 The code block gains
 `python3 scripts/dco_check.py --base origin/main --head HEAD  # every commit of the branch signed off by its author (CI's dco job)`,
 and the scripts-suite line's "(notices.py)" becomes the four scripts.
 
-### `docs/repository-map.md` (edited; PR-1, PR-2, PR-3)
+### `docs/repository-map.md` (edited; PR-1, PR-2)
 
-One row in the table, added by PR-1 and extended by the two after it:
+One row in the table, added by PR-1 and extended by PR-2:
 `CONTRIBUTING.md`, `DCO`, `TRADEMARKS.md`, `SECURITY.md`, `NOTICE`,
 `scripts/dco_check.py`: how to contribute (the sign-off, the open-core
 rules, the checklist, the maintainers), the certificate's text, the marks
 and their owner, how to report a vulnerability, and the check CI's `dco`
 job runs.
 
-### `docs/features.md` (edited; PR-3, the last)
+### `docs/features.md` (edited; PR-2, the last)
 
 One entry, where the newest entries go (before the entry for the move,
 #380, 2026-10-27), recording what shipped and what was observed: the two
@@ -507,18 +550,21 @@ documents, one workflow job and one script. What does have an order is CI.
   checkout fetches the whole history (`fetch-depth: 0`), so both are
   present; a PR from a fork is the same, since its head is a parent of the
   merge ref the checkout takes.
-- The invariant: every commit in that set with at most one parent carries
-  a `Signed-off-by` whose name is the author's and whose address is the
-  author's, compared without regard to case. Merge commits are exempt.
-  The committer is not consulted. No author is exempt, bots included;
-  the first bot adopted brings its exemption in its own PR.
+- The invariant: every commit in that set, merge commits included,
+  carries a `Signed-off-by` whose name is the author's and whose address
+  is the author's, compared without regard to case. The committer is not
+  consulted. No author is exempt, bots included; the first bot adopted
+  brings its exemption in its own PR. A merge in the set is the
+  contributor's own (GitHub's merge commits are on `main`, outside it);
+  a branch rebased as `CONTRIBUTING.md` says has none.
 - The workflow that runs for a pull request is the one at the PR's merge
   commit, so the PR that adds the job is checked by it, and so is every PR
   after. History is never re-checked: the commits on `main` before the
   job carry no sign-off and never will; the rule is not retroactive.
-- Order of the PRs: the words (PR-1) before the check (PR-3), so nobody
-  meets the check before the rule is written, and the template's sign-off
-  line tells a contributor before CI does.
+- The words and the check land in one merge (PR-1): nobody meets the
+  check before the rule is written, `AGENTS.md` never states a check that
+  does not run, and the template's sign-off line and the `dco` job meet a
+  contributor on the same PR. PR-1 names no file PR-2 adds.
 - The script fails closed: exit 1 names every offending commit and the
   fix; exit 2 is a read that failed (git, or a record that did not parse);
   there is no path to exit 0 without every commit read and judged.
@@ -554,6 +600,8 @@ documents, one workflow job and one script. What does have an order is CI.
 - The private repositories' contract (`AGENTS.md` minus the DCO): their
   scaffolds' work (the Program, section 2.3).
 - Re-signing history; rewriting any commit on `main`.
+- A rename rehearsal (building a fork under another name and checking
+  what it shows): the fork's work; `TRADEMARKS.md` says where to look.
 - A test or lint for the company's spelling: the PR's verification greps
   for it instead.
 - The six historical docs that say phenixrizen, and the doc drift named
@@ -572,19 +620,20 @@ change has no check; a workflow change has no local runner.
   `NOTICE`, `AGENTS.md`, `docs/design/brand.md`, `docs/repository-map.md`,
   `docs/checks.md`, `docs/features.md`): no check applies. By hand, in
   each PR's Verification: every path a new file names exists
-  (`git ls-files` for each); `DCO` diffed against developercertificate.org
+  (`git ls-files` for each; it passes on each PR as cut, since no PR
+  names a file the other adds); `DCO` diffed against developercertificate.org
   with no difference; `git grep -i 'rock solid'` and
   `git grep -i 'rocksolid labs' | grep -v 'RockSolid Labs'` find nothing;
   `wc -l NOTICE` is 12; the line-number sites in `AGENTS.md` and `NOTICE`
   named above are the ones edited.
 - **`.github` templates** (PR-1, PR-2): no runner; read twice; the next PR
   opened shows the template and ticks it (PR-2's body is the first).
-- **`.github/workflows/ci.yml`** (PR-3): no runner; read twice; the scripts
+- **`.github/workflows/ci.yml`** (PR-1): no runner; read twice; the scripts
   suite (`preflight_test.py`'s job-coverage test fails when a job has no
   preflight step); the PR's own CI run shows the `dco` job green and
   `required-checks` listing it among its needs; the throwaway PR (below)
   shows it red with the commit named, then green.
-- **Scripts** (PR-3: `scripts/dco_check.py`, `scripts/preflight.py` and
+- **Scripts** (PR-1: `scripts/dco_check.py`, `scripts/preflight.py` and
   the two tests): `python3 -m unittest discover -s scripts -p '*_test.py'`
   before every push, with every test named above; CI's `go` job runs the
   same suite (`ci.yml:78`); `python3 scripts/preflight.py --only dco` once,
@@ -596,26 +645,21 @@ change has no check; a workflow change has no local runner.
 
 ## Boxcar constraints
 
-The eight constraints of the Program's section 2.5, each not touched:
+The eight constraints are the Program's (section 2.5); their text is
+there, not here. By number, none is touched:
 
-1. An attempt starts only through `crew.Launcher`: no attempt, run or
-   process of Yardmaster's is started or changed; the `dco` job is CI
-   tooling on a runner, like `notices.py` and `brand_assets.py`.
-2. `session.Local` drives a `session.Process`; no code reaches past it:
-   no session code is touched.
-3. An attempt's context is files relative to its worktree: no task file,
-   worktree or `os.Root` is touched.
-4. The agent reaches the server over the network: no hook, MCP or token
-   path is touched.
-5. Checks go through `internal/proc` and carry where they ran: this is
-   about Yardmaster's task checks; `dco_check.py` is not one, and it runs
-   `git` through `subprocess` with an argv list on the CI runner, as the
-   other scripts in `scripts/` do.
-6. Platform splits stay platform tags and the UI shows capabilities, never
-   a plan: no tag, capability or UI is touched.
-7. Evidence rows gain `where` in C10 and nothing assumes a native process:
-   no ledger row is touched.
-8. `hostagent` is a launch site as much as `api`: neither is touched.
+1. Nothing of Yardmaster's is started or changed: no attempt, run or
+   process; the `dco` job is CI tooling on a runner, like `notices.py`
+   and `brand_assets.py`.
+2. No session code is touched.
+3. No task file, worktree or `os.Root` is touched.
+4. No hook, MCP or token path is touched.
+5. `dco_check.py` is not a task check; it runs `git` through `subprocess`
+   with an argv list on the CI runner, as the other scripts in `scripts/`
+   do.
+6. No build tag, capability or UI is touched.
+7. No ledger row is touched.
+8. Neither `internal/api` nor `internal/hostagent` is touched.
 
 ## Open-core checklist
 
@@ -634,61 +678,60 @@ For the item as a whole, the four rules it writes down:
 
 ## The PRs
 
-Three pull requests, in this order, each cut from `main` on its own
+Two pull requests, in this order, each cut from `main` on its own
 `issue-N` branch once the plan is cut into issues, each green on its own,
+each passing the path check as cut (no PR names a file the other adds),
 each one sitting. They share the repository root, `.github/` and `docs/`,
-so none runs in parallel with another.
+so the second waits for the first.
 
-### PR-1: Contributing under the DCO: `CONTRIBUTING.md`, the `DCO` text, the maintainer role in `AGENTS.md`, the PR and issue templates
+### PR-1: Contributing under the DCO: `CONTRIBUTING.md`, the `DCO` text, the maintainer role and the fork path in `AGENTS.md`, the PR template, `scripts/dco_check.py` and its tests, the `dco` job behind `required-checks`, the preflight step, `docs/checks.md`
 
-- Contains: `CONTRIBUTING.md` and `DCO` (new); `AGENTS.md` (the sign-off
-  bullet, the role's five sites and its definition, the checklist in the
-  draft-PR bullet); `.github/pull_request_template.md` (the checklist and
-  the sign-off line); `.github/ISSUE_TEMPLATE/task.md` (the pointer);
-  `docs/repository-map.md` (the row, with the files this PR adds).
+- Contains: `CONTRIBUTING.md` (sections 1 to 8, and section 9's licence
+  sentence) and `DCO` (new); `AGENTS.md` (the sign-off bullet, the role's
+  five sites, the two sentences defining the role and the fork path, the
+  checklist in the draft-PR bullet); `.github/pull_request_template.md`
+  (the checklist and the sign-off line); `scripts/dco_check.py` and
+  `scripts/dco_check_test.py` (new); `scripts/preflight.py` and
+  `scripts/preflight_test.py`; `.github/workflows/ci.yml` (the job and the
+  `needs` list); `docs/checks.md`; `docs/repository-map.md` (the row, with
+  the files this PR adds).
 - Touches: the repository root (`CONTRIBUTING.md`, `DCO`, `AGENTS.md`),
-  `.github` (the two templates), `docs` (`repository-map.md`).
-- Tests: none apply (documents and templates); by hand, the path check,
-  the `DCO` diff, the spelling grep. Every commit signed off (the brief's
-  rule, before CI enforces it).
-- Depends on: nothing. Parallel with: none.
-- About 250 changed lines.
+  `.github` (the PR template, the workflow), `scripts`, `docs`
+  (`checks.md`, `repository-map.md`).
+- Tests: the scripts suite with the eleven tests named above and the
+  preflight test; `python3 scripts/preflight.py --only dco`; `ci.yml` read
+  twice; the PR's own CI run, every commit signed, the green case on a
+  real PR; the throwaway PR of the acceptance check, cut from this branch,
+  its two run URLs in the PR body; by hand, the path check, the `DCO`
+  diff, the spelling grep.
+- Depends on: nothing. It names no file PR-2 adds: `TRADEMARKS.md` and
+  `SECURITY.md` are PR-2's words. Parallel with: none.
+- About 600 changed lines, most of them the script and its tests; one
+  sitting.
 
-### PR-2: The marks and security: `TRADEMARKS.md`, `SECURITY.md`, `NOTICE`'s owner line, the brand guide's pointer, the vulnerability contact link
+### PR-2: The marks and security: `TRADEMARKS.md`, `SECURITY.md`, `NOTICE`'s owner line, the brand guide's pointer, the vulnerability contact link, the pointers in `CONTRIBUTING.md`, `AGENTS.md` and the issue template, the `docs/features.md` entry
 
 - Contains: `TRADEMARKS.md` and `SECURITY.md` (new); `NOTICE` lines 8-12;
   `docs/design/brand.md` (one sentence);
-  `.github/ISSUE_TEMPLATE/config.yml` (new); `docs/repository-map.md` (the
-  row extended).
-- Touches: the repository root (`TRADEMARKS.md`, `SECURITY.md`, `NOTICE`),
-  `.github` (`ISSUE_TEMPLATE/config.yml`), `docs` (`design/brand.md`,
-  `repository-map.md`).
+  `.github/ISSUE_TEMPLATE/config.yml` (new); `CONTRIBUTING.md` (section 9
+  extended with the marks and security sentences); `AGENTS.md` (the
+  `SECURITY.md` pointer in the vulnerabilities bullet);
+  `.github/ISSUE_TEMPLATE/task.md` (the pointer); `docs/repository-map.md`
+  (the row extended); `docs/features.md` (the entry for the whole item,
+  with PR-1's two run URLs).
+- Touches: the repository root (`TRADEMARKS.md`, `SECURITY.md`, `NOTICE`,
+  `CONTRIBUTING.md`, `AGENTS.md`), `.github` (`ISSUE_TEMPLATE`), `docs`
+  (`design/brand.md`, `repository-map.md`, `features.md`).
 - Tests: none apply; by hand, `wc -l NOTICE`, the path check, the
   spelling grep, the private-vulnerability-reporting setting read back
   (`enabled: true`) and the advisory link opened as a non-member once the
-  setting is on.
-- Depends on: PR-1 (`CONTRIBUTING.md` links to both new files; the
-  repository-map row it extends). Parallel with: none.
+  setting is on. Its own body is the first to show PR-1's template.
+- Depends on: PR-1 (the files its pointers name, the repository-map row it
+  extends, the template its body ticks). Parallel with: none.
 - Needs a maintainer before it merges: the setting on, the mailbox
   confirmed, the wording of `TRADEMARKS.md` and `SECURITY.md` approved
   (the review approval is that).
-- About 200 changed lines.
-
-### PR-3: The dco check: `scripts/dco_check.py` and its tests, the `dco` job behind `required-checks`, the preflight step, `docs/checks.md`, the `docs/features.md` entry
-
-- Contains: `scripts/dco_check.py` and `scripts/dco_check_test.py` (new);
-  `scripts/preflight.py` and `scripts/preflight_test.py`;
-  `.github/workflows/ci.yml` (the job and the `needs` list);
-  `docs/checks.md`; `docs/repository-map.md` (the row's last file);
-  `docs/features.md` (the entry for the whole item).
-- Touches: `scripts`, `.github/workflows`, `docs`.
-- Tests: the scripts suite with the eleven tests named above and the
-  preflight test; `python3 scripts/preflight.py --only dco`; `ci.yml` read
-  twice; the PR's own CI run; the throwaway PR of the acceptance check,
-  cut from this branch, its two run URLs in the PR body.
-- Depends on: PR-1 (the words the job's comment and the script's last line
-  cite). Parallel with: none.
-- About 360 changed lines.
+- About 220 changed lines.
 
 ## Owner decisions
 
@@ -711,7 +754,8 @@ a status-log row (the convention of section 3.1).
   `required-checks`). The DCO GitHub App is not installed today. If the
   owner prefers the App as a second required check, the ruleset gains its
   context (an action only the owner takes) and the job is dropped, not
-  doubled.
+  doubled; the App skips merge commits, which the job does not (B3), and
+  that difference comes with the choice.
 - **B1, the named role.** "Maintainer": an owner of the `rocksolidlabs`
   GitHub organization. Two accounts hold it today, and the org's `Owners`
   team (secret) mirrors them; no team is created and no setting changes.
@@ -720,8 +764,11 @@ a status-log row (the convention of section 3.1).
   1.1, so what a sign-off certifies is in the repository and readable
   offline; `CONTRIBUTING.md` paraphrases and points.
 - **B3, what a sign-off must match.** The commit author's name (exact,
-  trimmed) and address (case ignored); merge commits exempt; the committer
-  not consulted; no bot exemption until a bot is adopted.
+  trimmed) and address (case ignored); merge commits included, since a
+  merge on the branch is a commit of the pull request and the requirement
+  exempts none (the DCO GitHub App's exemption of merges is the App's, not
+  the requirement's); the committer not consulted; no bot exemption until
+  a bot is adopted.
 - **B4, the fifth point of the checklist.** The four open-core rules, then
   the checks-per-surface rule with the dependency rule (what `AGENTS.md`
   already requires of every PR and the template's Verification section
@@ -737,32 +784,46 @@ a status-log row (the convention of section 3.1).
   built by RockSolid Labs outside this repository and name no private
   repository.
 - **B8, the component names.** `TRADEMARKS.md` claims Conductor, the
-  junction mark and logos, and the RockSolid Labs marks; the railroad
-  names of Conductor's parts are described as ordinary words a fork may
-  keep.
+  junction mark and logos, and the RockSolid Labs marks, and says nothing
+  about the railroad names of Conductor's parts (Yardmaster, Brakeman,
+  Switchman, the Switchyard, the Yard, the Roundhouse): neither claimed
+  nor disclaimed. Silence is the default because a published disclaimer
+  is relied on and no later status-log row takes it back, and the names
+  may yet name products or services (the Switchyard already names the
+  hosted service RockSolid Labs runs); claiming or disclaiming any of
+  them is a decision the owner takes before PR-2, not a default of this
+  plan.
 - **B9, the README.** Left to stream A, which the Program already charges
   with its badges and links; its footer stays true through `NOTICE`.
 - **B10, not retroactive.** No commit on `main` is rewritten or re-signed.
-- **B11, three PRs in order.** PR-1, PR-2, PR-3; none in parallel.
+- **B11, two PRs in order.** PR-1 (the words and the check together, so
+  nothing documented is unenforced between merges), then PR-2; none in
+  parallel.
 - **B12, the acceptance check's force-push.** The throwaway branch of the
   acceptance check is rewritten once, with `--force-with-lease`, because
   the fix for a missing sign-off is a rebase; nothing else is ever
   force-pushed, and the branch is deleted by a maintainer afterwards.
+- **B13, the fork path.** A contributor without write access forks,
+  claims an issue by a comment, is assigned by a maintainer (the
+  assignment is the claim) who moves the board for them, and opens the PR
+  from the fork; `AGENTS.md`'s assignment, branch-on-origin and board
+  bullets are the maintainers' and their agents'. No team, label or
+  setting is added for it.
 
 ## Acceptance
 
 The acceptance boundary is three observations.
 
-1. **An unsigned commit fails CI.** From PR-3's branch, the implementer
+1. **An unsigned commit fails CI.** From PR-1's branch, the implementer
    cuts a throwaway branch `issue-N-unsigned`, makes one commit without
    `-s` (a line in a scratch file), pushes it and opens a draft PR: the
    `dco` job fails with the commit named and the fix in its log, and
    `required-checks` is red. Then `git rebase --signoff` on that branch,
    `git push --force-with-lease`: `dco` and `required-checks` green. Both
-   run URLs go into PR-3's body and the `docs/features.md` entry; the
-   throwaway PR is closed and a maintainer deletes its branch. A
+   run URLs go into PR-1's body and the `docs/features.md` entry (PR-2);
+   the throwaway PR is closed and a maintainer deletes its branch. A
    maintainer may repeat it from `main` after the merge; the first
-   observation is enough for Done. PR-3's own run, every commit signed, is
+   observation is enough for Done. PR-1's own run, every commit signed, is
    the green case on a real PR.
 2. **The marks have a named owner.** `TRADEMARKS.md` and `NOTICE` both say
    RockSolid Labs, Inc., and a maintainer has approved the wording (the
@@ -771,10 +832,10 @@ The acceptance boundary is three observations.
    PR-1 merges (PR-2) shows the checklist with the four rule boxes and the
    sign-off line in its body.
 
-Done means all three observed after the three PRs merge, never a ticked
+Done means all three observed after the two PRs merge, never a ticked
 list. Needs the owner: enabling private vulnerability reporting on the
 repository before PR-2 merges; confirming the mailbox; approving the
-trademark and security wording; the three merges; deleting the throwaway
+trademark and security wording; the two merges; deleting the throwaway
 branch; the status-log rows for O11 and O13 in the Program; and, outside
 this item, the repository's description and topics and the `Owners` team's
 visibility if wanted.
