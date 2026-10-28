@@ -144,16 +144,40 @@ Sections, in this order, in plain words:
    author's, as `git config user.name` and `user.email` give them. There
    is no contributor licence agreement. CI's `dco` job fails a pull request
    with a commit that lacks a matching sign-off, naming the commit. The
-   fix for a branch: `git rebase --signoff origin/main`, then
-   `git push --force-with-lease`; for the last commit alone,
-   `git commit --amend -s --no-edit`. Check before pushing:
+   fix for a branch of your own commits with no merge commit on it:
+   `git rebase --signoff origin/main`, then `git push --force-with-lease`;
+   for the last commit alone, `git commit --amend -s --no-edit` (a merge
+   at the tip too: amending keeps its parents and its tree). The base is
+   named on purpose: a bare `git rebase --signoff` rebases onto the
+   branch's own upstream, which already holds the commits, and signs
+   nothing. Who runs the fix matters: `git rebase --signoff` and
+   `git commit -s` sign as the person running them (`user.name`,
+   `user.email`), whatever the commit's author, so on someone else's
+   commit they add a sign-off that is not the author's and the check
+   still fails. A commit by someone else is theirs to sign: the author
+   runs the fix on the branch and pushes it, or writes the line,
+   `Signed-off-by: Name <address>` as their commits name them, on the
+   pull request, and whoever repairs the branch adds it to that commit's
+   message (`git rebase -i origin/main`, `reword`). Check before pushing:
    `python3 scripts/dco_check.py --base origin/main --head HEAD`
    (`make preflight` runs it first). A merge commit on the branch is a
    commit of the pull request and is checked like any other
    (`git merge --signoff` signs one; GitHub's "Update branch" button makes
-   one nobody signed), so rebase instead of merging:
-   `git rebase --signoff origin/main` signs the branch and drops its
-   merges in one step. An agent's commits are
+   one nobody signed), so rebase instead of merging. A branch that has a
+   merge commit anyway is repaired without losing what the merge carried:
+   a rebase drops the merge and replays the commits of both sides, and
+   what the merge held of its own goes with it; a conflict it resolved
+   comes back during the replay and stops the rebase to be resolved
+   again, an edit made in the merge itself is dropped without a word
+   (`--rebase-merges` is no help: it makes the merge again without that
+   edit and without a sign-off). So: note the tip,
+   `before=$(git rev-parse HEAD)`; rebase in place,
+   `git rebase --signoff $(git merge-base origin/main HEAD)`; compare,
+   `git diff --stat $before HEAD`, which prints nothing when nothing was
+   lost; otherwise `git restore --source=$before --staged --worktree :/`
+   and `git commit -s` put back what the diff showed as a commit of its
+   own, and the diff is empty. Then the check above, and the push with
+   `--force-with-lease`. An agent's commits are
    the commits of the person running it: they carry that person's
    sign-off; the agent's attribution lines (`Co-Authored-By`, a session
    link) are something else and do not replace it.
@@ -194,7 +218,7 @@ Sections, in this order, in plain words:
    vulnerability is `SECURITY.md`'s and never an issue. PR-1 names
    neither file, since neither exists until PR-2 merges.
 
-About 170 lines. The company is "RockSolid Labs"; the entity
+About 190 lines. The company is "RockSolid Labs"; the entity
 "RockSolid Labs, Inc."
 
 ### `DCO` (new, repository root; PR-1)
@@ -211,8 +235,10 @@ so `THIRD_PARTY_NOTICES` is unchanged.
   is signed off (`git commit -s`; the Developer Certificate of Origin in
   `DCO`; the sign-off's name and address the commit author's); CI's `dco`
   job fails a pull request with a commit that lacks it;
-  `git rebase --signoff` fixes a branch; `CONTRIBUTING.md` says how.
-  `CLAUDE.md` imports `AGENTS.md`, so every agent reads it.
+  `git rebase --signoff origin/main` fixes a branch of your own commits;
+  `CONTRIBUTING.md` says how, and how a merge commit or another author's
+  commit is repaired. `CLAUDE.md` imports `AGENTS.md`, so every agent
+  reads it.
 - "The owner" becomes the role, at its five sites: line 40, "The owner has
   said this twice" becomes "The maintainers have said this twice";
   line 64, "The owner merges" becomes "A maintainer merges"; line 67,
@@ -415,11 +441,16 @@ python3 scripts/dco_check.py --base <rev> --head <rev> [--repo <dir>]
   string.
 - `main(argv)`: exit 0 and `N commits signed off by their authors` (or
   `no commits between base and head`); exit 1 with one line per problem and
-  a last line, `K of N commits are not signed off by their author. Fix:
-  git rebase --signoff <base> && git push --force-with-lease
-  (CONTRIBUTING.md, Sign-off).`, a fix that signs every commit and drops
-  the branch's merges; exit 2 when git fails or a record does not parse,
-  with git's message. Never silently green.
+  a last line that counts and names the fix: when no commit in the range
+  is a merge, `K of N commits are not signed off by their author. Fix:
+  git rebase --signoff <base> && git push --force-with-lease, run by each
+  commit's author (CONTRIBUTING.md, Sign-off).`, the rebase that signs a
+  linear branch; when one is, `K of N commits are not signed off by their
+  author. The branch has a merge commit: CONTRIBUTING.md, Sign-off, says
+  how to sign it without losing what the merge carried.`, because a plain
+  rebase drops a merge with the edit it may hold of its own; exit 2 when
+  git fails or a record does not parse, with git's message. Never
+  silently green.
 
 About 120 lines.
 
@@ -440,25 +471,55 @@ tests, each failing without its part:
   two-parent commit is named, marked as a merge; one signed off by its
   author passes).
 - `test_an_empty_range_passes`.
-- `test_the_report_counts_the_commits_and_names_the_fix`.
+- `test_the_report_counts_the_commits_and_names_the_fix` (the rebase line
+  for a range without a merge; the merge line when the range holds one).
 - `test_a_range_is_read_from_a_repository_as_git_logs_it`: a repository
   made in a temporary directory with `git init -q`: a base commit; on
   `main` one commit signed off and one not; then a `--no-ff` merge of a
-  side branch holding one signed-off commit, the merge itself unsigned.
+  side branch holding one signed-off commit, the merge itself unsigned
+  and carrying nothing of its own.
   `main([... "--base", <base sha>, "--head", "HEAD"])` returns 1 naming
   the unsigned commit and the merge, nothing else. Then the fix the
-  script prints, `git rebase --signoff <base sha>`, is run in that
-  repository, and the same base and `HEAD` return 0 with three commits
-  counted: the rebase replays the three non-merge commits, adds the
-  sign-off where it was missing and drops the merge, which is exactly
-  what `CONTRIBUTING.md`'s Sign-off section promises. (`git commit
-  --amend -s` would not do here: it rewrites `HEAD` only, and the
-  unsigned commit is below the merge.) The git calls carry
-  `-c user.name`, `-c user.email`, `-c commit.gpgsign=false`,
+  script prints for a linear branch, `git rebase --signoff <base sha>`,
+  is run in that repository, and the same base and `HEAD` return 0 with
+  three commits counted: the rebase replays the three non-merge commits,
+  adds the sign-off where it was missing and drops the merge; and the
+  tree is the same before and after (`git rev-parse HEAD^{tree}` read
+  before the rebase and after it), the proof that this merge carried
+  nothing. (`git commit --amend -s` would not do here: it rewrites
+  `HEAD` only, and the unsigned commit is below the merge.) The git
+  calls carry `-c user.name`, `-c user.email`, `-c commit.gpgsign=false`,
   `-c init.defaultBranch=main` and run with `GIT_CONFIG_GLOBAL=/dev/null`
   and `GIT_CONFIG_NOSYSTEM=1`, so a developer's global configuration (a
   signing key, a commit template, a hooks path) cannot make the test fail
-  or pass for its own reasons.
+  or pass for its own reasons; the two tests below are made the same way.
+- `test_a_merge_that_carried_its_own_edit_is_repaired_without_losing_it`:
+  the same repository, but the merge is made with `--no-commit`, a file
+  in neither parent is added before it is committed, and it is the only
+  unsigned commit. `main()` returns 1 naming the merge. The tip and its
+  tree are recorded; `git rebase --signoff <base sha>` returns 0 for the
+  check with three commits counted, but the tree is not the recorded
+  one and `git diff --stat <tip before> HEAD` names the file: the loss
+  the script's merge line and `CONTRIBUTING.md` warn of, which a count
+  of commits and sign-offs cannot see. Then the recipe:
+  `git restore --source=<tip before> --staged --worktree :/` and
+  `git commit -s`; the tree equals the recorded one again and the check
+  returns 0 with four commits counted. (Observed with git 2.50.1 while
+  planning: the plain rebase drops the file; `--rebase-merges` makes the
+  merge again without the file and without a sign-off; amending a merge
+  at the tip keeps its parents and its tree; `git restore --source`
+  removes a file the source lacks, which `git checkout <rev> -- .` would
+  not, so the restored tree is exact.)
+- `test_the_fix_signs_as_the_person_running_it_so_each_author_signs_their_own`:
+  a repository with a base commit and, on `main`, one commit by Alice
+  signed off and one by Bob without a sign-off (the identity set per
+  commit with `-c user.name` and `-c user.email`). `main()` returns 1
+  naming Bob's commit. `git rebase --signoff <base sha>` run as Alice
+  returns 1 still: Bob's commit now carries Alice's sign-off, named
+  `(not the author)`, since git signs as the committer and keeps the
+  author. Run as Bob, it returns 0 with two commits counted: Bob's
+  commit carries his own line beside Alice's, and Alice's commit keeps
+  hers. This is why `CONTRIBUTING.md` says the author runs the fix.
 - `test_a_record_that_does_not_parse_fails_the_read` (exit 2).
 
 ### `.github/workflows/ci.yml` (edited; PR-1)
@@ -519,9 +580,9 @@ job runs.
 ### `docs/features.md` (edited; PR-2, the last)
 
 One entry, where the newest entries go (before the entry for the move,
-#380, 2026-10-27), recording what shipped and what was observed: the two
-runs of the acceptance check with their URLs, the decisions below, and the
-date.
+#380, 2026-10-27), recording what shipped and what was observed: the
+three runs of the acceptance check with their URLs, the decisions below,
+and the date.
 
 ### Not changed
 
@@ -558,9 +619,25 @@ documents, one workflow job and one script. What does have an order is CI.
   contributor's own (GitHub's merge commits are on `main`, outside it);
   a branch rebased as `CONTRIBUTING.md` says has none.
 - The workflow that runs for a pull request is the one at the PR's merge
-  commit, so the PR that adds the job is checked by it, and so is every PR
-  after. History is never re-checked: the commits on `main` before the
-  job carry no sign-off and never will; the rule is not retroactive.
+  commit, so the PR that adds the job is checked by it, and so is every
+  PR opened or pushed after PR-1 merges. A PR open before that is not,
+  until it runs again: `ci.yml` runs on `pull_request`'s default events
+  (`opened`, `synchronize`, `reopened`; `ci.yml:6`), PR-1's merge is a
+  push to `main` that fires none of them, and the ruleset does not
+  require a branch to be up to date before it merges
+  (`strict_required_status_checks_policy: false` on ruleset 25591653),
+  so such a PR keeps the green `required-checks` of a run that had no
+  `dco` job and could merge unsigned. The cutover closes that gap: right
+  after PR-1 merges and before any other PR does, a maintainer lists the
+  open PRs (`gh pr list --state open`) and closes and reopens each
+  (`gh pr close N && gh pr reopen N`); `reopened` makes a new merge
+  commit against the current `main`, whose `ci.yml` has the job, and the
+  new run's `required-checks` needs it. A re-run of the old run would
+  not do: a re-run keeps the original event's commit and with it the old
+  `ci.yml`. A PR that no longer merges cleanly gets its run when its
+  branch is updated, which it needs before merging anyway. History is
+  never re-checked: the commits on `main` before the job carry no
+  sign-off and never will; the rule is not retroactive.
 - The words and the check land in one merge (PR-1): nobody meets the
   check before the rule is written, `AGENTS.md` never states a check that
   does not run, and the template's sign-off line and the `dco` job meet a
@@ -631,16 +708,20 @@ change has no check; a workflow change has no local runner.
 - **`.github/workflows/ci.yml`** (PR-1): no runner; read twice; the scripts
   suite (`preflight_test.py`'s job-coverage test fails when a job has no
   preflight step); the PR's own CI run shows the `dco` job green and
-  `required-checks` listing it among its needs; the throwaway PR (below)
-  shows it red with the commit named, then green.
+  `required-checks` listing it among its needs; the first throwaway PR
+  (below) shows it red with the commit named, then green; after the
+  merge, the cutover's reopened runs show it among `required-checks`'
+  needs on every PR open at the merge, red on the second throwaway with
+  its commit named.
 - **Scripts** (PR-1: `scripts/dco_check.py`, `scripts/preflight.py` and
   the two tests): `python3 -m unittest discover -s scripts -p '*_test.py'`
   before every push, with every test named above; CI's `go` job runs the
   same suite (`ci.yml:78`); `python3 scripts/preflight.py --only dco` once,
   to see the step run here (a partial receipt, as expected).
 - **Go, web, desktop**: not affected by any PR; reported as not run.
-- **By hand, what no test reaches**: the acceptance check (below); the
-  private-vulnerability-reporting setting read back before PR-2 merges;
+- **By hand, what no test reaches**: the acceptance check (below), the
+  cutover among it; the private-vulnerability-reporting setting read back
+  before PR-2 merges;
   the mailbox conductor@rocksolidlabs.io confirmed by a maintainer.
 
 ## Boxcar constraints
@@ -698,15 +779,20 @@ so the second waits for the first.
 - Touches: the repository root (`CONTRIBUTING.md`, `DCO`, `AGENTS.md`),
   `.github` (the PR template, the workflow), `scripts`, `docs`
   (`checks.md`, `repository-map.md`).
-- Tests: the scripts suite with the eleven tests named above and the
+- Tests: the scripts suite with the thirteen tests named above and the
   preflight test; `python3 scripts/preflight.py --only dco`; `ci.yml` read
   twice; the PR's own CI run, every commit signed, the green case on a
-  real PR; the throwaway PR of the acceptance check, cut from this branch,
-  its two run URLs in the PR body; by hand, the path check, the `DCO`
-  diff, the spelling grep.
+  real PR; the two throwaway PRs of the acceptance check, the first cut
+  from this branch with its two run URLs in the PR body, the second cut
+  from `main` and left open for the cutover; by hand, the path check, the
+  `DCO` diff, the spelling grep.
+- Lands with: the cutover (Events, orderings and invariants), run by a
+  maintainer right after the merge and before any other, or by the
+  implementer with a maintainer's go-ahead; the acceptance's fourth
+  observation is its proof.
 - Depends on: nothing. It names no file PR-2 adds: `TRADEMARKS.md` and
   `SECURITY.md` are PR-2's words. Parallel with: none.
-- About 600 changed lines, most of them the script and its tests; one
+- About 650 changed lines, most of them the script and its tests; one
   sitting.
 
 ### PR-2: The marks and security: `TRADEMARKS.md`, `SECURITY.md`, `NOTICE`'s owner line, the brand guide's pointer, the vulnerability contact link, the pointers in `CONTRIBUTING.md`, `AGENTS.md` and the issue template, the `docs/features.md` entry
@@ -718,7 +804,7 @@ so the second waits for the first.
   `SECURITY.md` pointer in the vulnerabilities bullet);
   `.github/ISSUE_TEMPLATE/task.md` (the pointer); `docs/repository-map.md`
   (the row extended); `docs/features.md` (the entry for the whole item,
-  with PR-1's two run URLs).
+  with the acceptance check's three run URLs).
 - Touches: the repository root (`TRADEMARKS.md`, `SECURITY.md`, `NOTICE`,
   `CONTRIBUTING.md`, `AGENTS.md`), `.github` (`ISSUE_TEMPLATE`), `docs`
   (`design/brand.md`, `repository-map.md`, `features.md`).
@@ -768,7 +854,9 @@ a status-log row (the convention of section 3.1).
   merge on the branch is a commit of the pull request and the requirement
   exempts none (the DCO GitHub App's exemption of merges is the App's, not
   the requirement's); the committer not consulted; no bot exemption until
-  a bot is adopted.
+  a bot is adopted. The sign-off is the author's own line: the fix is run
+  by the author, or the author's line, given on the pull request, is
+  added to the commit by hand; nobody signs for someone else.
 - **B4, the fifth point of the checklist.** The four open-core rules, then
   the checks-per-surface rule with the dependency rule (what `AGENTS.md`
   already requires of every PR and the template's Verification section
@@ -797,33 +885,51 @@ a status-log row (the convention of section 3.1).
   with its badges and links; its footer stays true through `NOTICE`.
 - **B10, not retroactive.** No commit on `main` is rewritten or re-signed.
 - **B11, two PRs in order.** PR-1 (the words and the check together, so
-  nothing documented is unenforced between merges), then PR-2; none in
-  parallel.
-- **B12, the acceptance check's force-push.** The throwaway branch of the
-  acceptance check is rewritten once, with `--force-with-lease`, because
-  the fix for a missing sign-off is a rebase; nothing else is ever
-  force-pushed, and the branch is deleted by a maintainer afterwards.
+  nothing documented is unenforced between merges), the cutover, then
+  PR-2; none in parallel.
+- **B12, the acceptance check's force-push.** The first throwaway branch
+  of the acceptance check is rewritten once, with `--force-with-lease`,
+  because the fix for a missing sign-off is a rebase; the second is
+  closed as it is; nothing else is ever force-pushed, and both branches
+  are deleted by a maintainer afterwards.
 - **B13, the fork path.** A contributor without write access forks,
   claims an issue by a comment, is assigned by a maintainer (the
   assignment is the claim) who moves the board for them, and opens the PR
   from the fork; `AGENTS.md`'s assignment, branch-on-origin and board
   bullets are the maintainers' and their agents'. No team, label or
   setting is added for it.
+- **B14, the cutover.** The gap for PRs open at PR-1's merge is closed
+  by a procedure, not a setting: a maintainer closes and reopens every
+  open PR right after the merge and before any other (Events, orderings
+  and invariants), and the acceptance's fourth observation proves it on
+  a throwaway opened before the merge. The alternative is the ruleset's
+  "require branches to be up to date before merging"
+  (`strict_required_status_checks_policy`), which makes a stale result
+  worthless for good; it is the owner's setting, outside this item, and
+  it changes every merge: each PR would be brought up to date first, by a
+  rebase, since the button's merge commit is one nobody signed. The owner
+  may choose it with a status-log row; the cutover is then not needed
+  and the fourth observation still holds.
 
 ## Acceptance
 
-The acceptance boundary is three observations.
+The acceptance boundary is three observations; the cutover adds a
+fourth that the first needs.
 
 1. **An unsigned commit fails CI.** From PR-1's branch, the implementer
    cuts a throwaway branch `issue-N-unsigned`, makes one commit without
    `-s` (a line in a scratch file), pushes it and opens a draft PR: the
    `dco` job fails with the commit named and the fix in its log, and
-   `required-checks` is red. Then `git rebase --signoff` on that branch,
-   `git push --force-with-lease`: `dco` and `required-checks` green. Both
-   run URLs go into PR-1's body and the `docs/features.md` entry (PR-2);
-   the throwaway PR is closed and a maintainer deletes its branch. A
-   maintainer may repeat it from `main` after the merge; the first
-   observation is enough for Done. PR-1's own run, every commit signed, is
+   `required-checks` is red. Then the fix as the script prints it, with
+   its base: `git rebase --signoff origin/main` on that branch (the PR's
+   base, the range CI checks; a bare `git rebase --signoff` would rebase
+   onto the branch's upstream, `origin/issue-N-unsigned`, which already
+   holds the commit, and sign nothing), the same range checked locally,
+   `python3 scripts/dco_check.py --base origin/main --head HEAD`
+   returning 0, then `git push --force-with-lease`: `dco` and
+   `required-checks` green. Both run URLs go into PR-1's body and the
+   `docs/features.md` entry (PR-2); the throwaway PR is closed and a
+   maintainer deletes its branch. PR-1's own run, every commit signed, is
    the green case on a real PR.
 2. **The marks have a named owner.** `TRADEMARKS.md` and `NOTICE` both say
    RockSolid Labs, Inc., and a maintainer has approved the wording (the
@@ -831,11 +937,24 @@ The acceptance boundary is three observations.
 3. **The PR template carries the four rules.** The first PR opened after
    PR-1 merges (PR-2) shows the checklist with the four rule boxes and the
    sign-off line in its body.
+4. **A PR open before the job merged runs it before it merges.** Before
+   PR-1 merges, the implementer cuts a second throwaway branch
+   `issue-N-before` from `main`, which has no `dco` job, makes one commit
+   without `-s`, pushes it and opens a draft PR: its run is green with no
+   `dco` job in it, the gap the cutover closes. Right after PR-1 merges,
+   the cutover runs (Events, orderings and invariants): every open PR
+   closed and reopened, the throwaway among them. Its new run shows `dco`
+   red with the commit named and `required-checks` red; that run's URL
+   goes into the `docs/features.md` entry. Every other PR open at the
+   merge shows a new run with `dco` among `required-checks`' needs before
+   it merges. Then the throwaway PR is closed as it is and a maintainer
+   deletes its branch.
 
-Done means all three observed after the two PRs merge, never a ticked
+Done means all four observed after the two PRs merge, never a ticked
 list. Needs the owner: enabling private vulnerability reporting on the
 repository before PR-2 merges; confirming the mailbox; approving the
-trademark and security wording; the two merges; deleting the throwaway
-branch; the status-log rows for O11 and O13 in the Program; and, outside
-this item, the repository's description and topics and the `Owners` team's
-visibility if wanted.
+trademark and security wording; the two merges, with the cutover right
+after the first (or the go-ahead for the implementer to run it); deleting
+the two throwaway branches; the status-log rows for O11 and O13 in the
+Program; and, outside this item, the repository's description and topics
+and the `Owners` team's visibility if wanted.
