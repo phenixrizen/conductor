@@ -336,13 +336,19 @@ runs before the task files are written, so the files carry what it made:
    the agent, whose session starts only after this step; the attempt's own
    `preview` (`AttemptState.Preview`, the run's read, which the UI's Open
    preview follows) is the worktree's URL, set in the worktree's
-   `tree.ready` transaction and cleared in its `tree.ended` one, the same
-   change that releases its ports, so the read offers a preview only while
-   the tree answers behind it: never before the probes passed, never once
-   the services are stopped and the number may be another tree's. The
-   checkout's preview is its own rows' alone. The URL stays for the record
-   in the `trees` row, the `recipe.ports` and `tree.ready` events and the
-   task file.
+   `tree.ready` transaction and cleared in the first of two: the attempt's
+   close transaction (the one that hands the worktree to `endTree`, below:
+   the teardown begins there, before any service is signalled, so no
+   cleanup step, however long it runs, runs behind an offered URL) and a
+   `service.ended` of the worktree's own that nobody asked for (a service
+   that exited on its own after `tree.ready`: the tree no longer answers
+   whole), so the read offers a preview only while the tree answers behind
+   it: never before the probes passed, never once a service is gone or the
+   teardown has begun, and never once the number may be another tree's,
+   the port lease being released only in `tree.ended`, after the clear.
+   The checkout's preview is its own rows' alone. The URL stays for the
+   record in the `trees` row, the `recipe.ports` and `tree.ready` events
+   and the task file.
 
 `runStep(ctx, r, a, t, phase, ch) proc.Result` is today's `runSetup` with a
 receipt: a `ledger.CheckRow` with `Phase`, `Recipe`, `Ports`, `Error` and
@@ -439,8 +445,28 @@ crew's working directory, on a goroutine of the run's own counted in
 its row `interrupted`), gated by `r.prereq`, a run flag the pump checks:
 `pending` → `running` → `passed` | `failed`; the pump dispatches nothing
 while it is not `passed`, whatever pumped it (another attempt's close
-included). `startManaged` sets it `pending` after `run.created` and starts
-the goroutine, and the launch answers at once with the run
+included). The goroutine is counted in `r.prereqs` too, a count beside the
+wait group as `cleaning` is beside `r.trees` (0 or 1: one generation at a
+time, below), set under `e.mu` in the commit that starts it and cleared
+under `e.mu` after its last commit, dropped or not; `Engine.idle` is false
+while it is above zero, as it is while `cleaning` is, since `idle` reads
+neither `r.starts` nor the run's context and a prerequisite is no member
+and no tree: so `evict` never forgets a run with a generation in flight,
+which would cancel the run's context under the step without joining it,
+take the run out of the shutdown's inventory and leave the step's reaping
+and its last row racing the ledger's close. A run that becomes terminal
+while a generation is in flight (its last open task cancelled before they
+first passed, or an attempt's close finishing the run while an unpause's
+generation runs; a stop cancels `r.ctx` itself) ends the generation in the
+commit that sets its outcome (`settleRun`, whichever close called it): the
+goroutine runs under a context of the generation's own beneath `r.ctx`
+(`r.prereqCancel`), which that commit cancels when `r.prereqs` is above
+zero, so the step's process is killed and reaped (`proc.Run` returns once
+its group is), its row `interrupted` with why "the run finished before the
+prerequisite ended", and the goroutine's last commit clears the count;
+until then the run stays held, and the shutdown's stop loop stops it as
+any other. `startManaged` sets `r.prereq` `pending` after `run.created`
+and starts the goroutine, and the launch answers at once with the run
 (`Run.Recipe.prerequisites[].state` says `running`); `startContinued` does
 the same for a continuation; an unpause's commit sets it back to `pending`
 and starts the goroutine again, so a host fixed in between is seen, and
@@ -583,10 +609,12 @@ same path, so a candidate's checkout gets its recipe, in an attempt of its
 own (`reverify` numbers it after the task's, uncounted).
 
 `pauseRecipe(r, why)` is `pauseDispatch` with words of its own: `r.paused`
-set and marked, `r.pausedWhy` kept, the run log's line "dispatch paused:
-<why>", the event `run.paused {why}`. An unpause (`setPaused(false)`, which
-`Pause`, the command the UI's route calls, and `PauseRun` both go through)
-clears `pausedWhy` and, unless a generation is in flight, sets `r.prereq`
+set and marked, `r.pausedWhy` kept and on the run row (`paused_why`,
+below, so the ledger holds the words, not the record alone), the run log's
+line "dispatch paused: <why>", the event `run.paused {why}`. An unpause
+(`setPaused(false)`, which `Pause`, the command the UI's route calls, and
+`PauseRun` both go through) clears `pausedWhy`, in memory and on the row,
+and, unless a generation is in flight, sets `r.prereq`
 to `pending` and starts the prerequisites again in the same commit (one
 generation at a time, above), so the pump, which runs under
 `e.mu` and cannot wait on a process, dispatches nothing until they pass,
@@ -595,8 +623,9 @@ failing again they pause again. The API's run gains `pausedWhy` and
 `cleaning`; `Run.Recipe` (`{source, revision, digest, prerequisites: [{id,
 k, state, exit, error, duration}]}`) says which recipe the run has and how
 its prerequisites go (`running` while they do); `AttemptState` gains
-`preview` (in the run's read: the worktree's URL between its `tree.ready`
-and its `tree.ended`, empty otherwise, step 5 of `prepareTree`) and
+`preview` (in the run's read: the worktree's URL from its `tree.ready` to
+its clear, the attempt's close or an earlier `service.ended` of the
+worktree's own, empty otherwise, step 5 of `prepareTree`) and
 `steps` (in the task's read alone,
 `Engine.TaskOf`, as `submitted` is): `[{phase, id, k, state, argv, url,
 dir, subject, recipe, exit, timedOut, duration, error, ports, tries,
@@ -619,7 +648,19 @@ still says why after the engine has let the run go), `url TEXT NOT NULL
 DEFAULT ''` (a probe over HTTP has no argv: its expanded URL, at most 2048
 bytes, is the receipt's command, the method `GET` by the rule above, so the
 receipt still says what was asked of what after the engine has let the run
-go); `CREATE TABLE prerequisites`, the `checks` columns without `task_id`,
+go); `ALTER TABLE runs ADD COLUMN paused_why TEXT NOT NULL DEFAULT ''`
+(the words of a pause, bounded as the event's are: `RunRow` gains
+`PausedWhy`, `PutRun` writes it beside `paused`, and the row the engine
+puts in every transaction that marks the run, `task.go`'s `RunRow` from
+`r.paused`, carries `r.pausedWhy`, so the words are committed in the
+transaction that commits `run.paused {why}` and cleared in the one that
+commits the unpause; `Recovered` reads them into the record beside
+`Paused`, `rec.PausedWhy = from.Run.PausedWhy`, so a record that lags the
+ledger, the record being written after the commit and a crash between the
+two losing it, or one missing altogether is rebuilt with the words by
+`syncRecords`, and a continuation inherits them with `paused`; a
+version-4 row reads with none); `CREATE TABLE prerequisites`, the
+`checks` columns without `task_id`,
 `n`, `phase`, `ports` and `tries`, keyed `(run_id, id, k)` with `run_id`
 referencing `runs` on delete cascade: a prerequisite has no attempt to hang
 a `checks` row on (the table's foreign key), and gets a row of the same
@@ -663,14 +704,27 @@ step rows `interrupted`, counted in `Recovered.Trees`, with a `tree.ended
 {interrupted: true, recovered: true}` event per tree under the run, whose
 own state it leaves as it was when terminal (nothing runs after a restart:
 the ports are nobody's, the cleanup steps are not run, and `Run.Cleaning` is
-0). It also gains `Recovered.Services`, the rows of phase `service` so
-concluded, which the `recovered` event names: one that was `running` with
-its pid, group and start time; one still `started` as a service whose start
-was not confirmed, which may be alive and cannot be named. A process this
-server started that outlived it is reported, never killed (a pid after a
-restart is nobody's to signal), and a tree the server did not run natively
-has no pid to report. A newer database still opens read-only in an older
-binary, as today. `Prune` refuses a run with a `trees` row not `ended` or a
+0). It also gains `Recovered.Services`, one descriptor per row of phase
+`service` so concluded, `RecoveredService {Task, N, Tree, ID, Pid, Group,
+StartedAt, Confirmed}` and nothing of the row's argv, log or words (the
+row holds them): one that was `running` with its pid, group and start
+time, `Confirmed`; one still `started` as a service whose start was not
+confirmed, which may be alive and cannot be named. The `recovered` event
+names them by count alone, `services` and `unconfirmed`, as it counts
+`checks` and `commands`, and each concluded row gets a `service.ended
+{task, attempt, tree, id, pid, group, startedAt, confirmed, interrupted:
+true, recovered: true}` event of its own in the same transaction, a
+payload of a fixed shape near 200 bytes. `Recover` writes through
+`Tx.Event`, not the engine's `writable`, so an oversized payload would
+roll the whole recovery back: nothing it writes may carry a row's argv (a
+recovery can meet 32 open service rows, 4 attempts in flight × 2 trees ×
+4 services, 8 KiB of argv each, four times `MaxPayload` in one list), and
+each of its payloads is bounded by its shape, never by the rows. A
+process this server started that outlived it is reported, never killed (a
+pid after a restart is nobody's to signal), and a tree the server did not
+run natively has no pid to report. A newer database still opens read-only
+in an older binary, as today. `Prune` refuses a run with a `trees` row not
+`ended` or a
 `prerequisites` row `started` or `running` as it refuses an open run
 (`ErrNotPrunable`: "a tree of it is still ending", "a prerequisite of it is
 still running"): a finished run can be mid-cleanup (`Run.Outcome` set,
@@ -753,6 +807,24 @@ X-Conductor-Log-SHA256`, so the hash reaches the app's script where the
 server answers cross-origin (a dev origin under `cfg.Dev`,
 `crossOriginAllowed`), the one case the app and the API are not one origin.
 
+`tasks.go`: `handleGetTask`, the task read `RunTasks.vue` lists attempts
+from, answers from the ledger when the engine answers `ErrRunNotFound`
+(the run evicted, or the server started again; today that is a `404` and
+the page has no attempt row to open, though the receipts are in the
+ledger): `crew.LoadedTask(from, taskID)` builds the `TaskState` and every
+`AttemptState` of the task from `Loaded`'s rows through the one
+row-to-state code `Recovered` uses (`taskStateOfRow`,
+`attemptStateOfRow`, factored out of `continue.go`), each attempt with its
+number, state, stage, error, commits, worktree, branch, session id, times,
+`submitted` (the row's result decoded, as `Recovered` decodes it) and
+`steps` from `ledger.Checks` without logs, as the engine's read carries
+them, and no `preview` (nothing answers behind a tree the engine let go);
+`404 not_found` when the ledger has no such run or task, `503
+ledger_unavailable` with no ledger, as the commands route answers. So a
+historical run page has attempt rows to open, and the receipts under each
+read as they do for a held run; the run read already answers from the
+record (`syncRecords`), and this is its counterpart for the task.
+
 ### `web/app`
 
 - `composables/useApi.ts`: `requestText(path)` beside `request<T>`, which
@@ -783,7 +855,9 @@ server answers cross-origin (a dev origin under `cfg.Dev`,
   interval, timeout), `env` and `ports` as chip inputs, the preview URL;
   each row's first problem under it, the Save gate and the Launch button's
   reason as the tasks table has them (`taskProblems` gains the recipe's).
-- `components/RunAttemptSteps.vue` (new) in `RunTasks.vue`'s attempt detail:
+- `components/RunAttemptSteps.vue` (new) in `RunTasks.vue`'s attempt detail,
+  for a run the engine holds and one it has let go alike (the attempt rows
+  come from the task read, which answers from the ledger for the latter):
   the attempt's steps in order with phase, id, outcome in words (`stepWords`
   in `utils/tasks.ts`: "exited 0 in 4.2 s", "timed out after 60 s", "ready
   after 3 tries", "running since …", "interrupted"), the command (a probe
@@ -794,8 +868,9 @@ server answers cross-origin (a dev origin under `cfg.Dev`,
   prerequisites the same way at the top of `RunTasks.vue` while the run has
   a recipe; "Open preview" on a task row and in its → actions and the
   palette row while the attempt's `preview` is set, between its worktree's
-  `tree.ready` and `tree.ended` and never before or after (step 5 of
-  `prepareTree`); it opens a new browser tab: the preview is on the
+  `tree.ready` and the attempt's close, or a worktree service's own exit
+  before it, and never before or after (step 5 of `prepareTree`); it
+  opens a new browser tab: the preview is on the
   server's loopback and is not proxied, and the editor's URL iframe would
   be mixed content under TLS.
 - `CrewRunHeader.vue`: the `paused` badge carries `pausedWhy` as its title
@@ -831,8 +906,11 @@ changed; new stage words are `<phase> <id>` for the five recipe phases and
 `task file`, `setup <id>`, `launch`, `prompt`, `checkout`, `check <id>` and
 `withdrawn`. A step row runs `started → running → finished | interrupted`,
 as a check's does; a service row stays `running` until `finished` at its
-end. The run's `paused` is one bool, as today; `pausedWhy` is in memory and
-in the record, and a continuation inherits `paused` as it does now (a person
+end. The run's `paused` is one bool, as today; `pausedWhy` is in memory,
+on the run row (`paused_why`, written in the transaction that commits
+`run.paused {why}` and cleared in the unpause's) and in the record, which
+is rebuilt from the row when it lags or is missing, and a continuation
+inherits `paused` and its words as it inherits `paused` now (a person
 unpauses; the prerequisites run again).
 
 The order of a tree, each line a transaction committed before the next
@@ -851,7 +929,13 @@ side effect, in the run's own order (`transact`):
    committed before the next service starts (a `running` the ledger
    refuses stops and reaps the service: the tree fails at that service);
    `service.ended {id, exit, signal, why}` with the row `finished` when it
-   ends, whether it was stopped or died on its own.
+   ends, whether it was stopped or died on its own; a worktree's service
+   that exits on its own after `tree.ready` clears the attempt's `preview`
+   in that transaction and puts a line in the run log ("task build:
+   attempt 2: service web exited 1 while the tree was in use; the preview
+   is withdrawn"), the attempt's state untouched (the exit is a receipt;
+   its session goes on, and `endTree` finds that service ended and stops
+   the rest when the attempt closes).
 4. For each probe: one row; `tries` counted; `finished` when it passed or
    its timeout passed.
 5. `tree.ready {tree, task, attempt, preview}` with the row `ready`, then
@@ -904,7 +988,10 @@ Invariants, each with a test in "Tests per surface":
   released only in the `tree.ended` transaction. Two trees of one attempt
   (its worktree and its checkout) never share a port or a state directory.
   An attempt's `preview` is set in its worktree's `tree.ready` transaction
-  and cleared in its `tree.ended` one, so a read never offers a URL whose
+  and cleared in the first of the attempt's close and a `service.ended` of
+  the worktree's own, both before the teardown signals a service and
+  before the lease is released in `tree.ended`, so a read never offers a
+  URL behind which a service has been stopped or has died, nor one whose
   port the lease has let go.
 - Every row of a phase other than `check` names the recipe that ran it;
   the identity is recorded (`recipe.resolved`) before the first step of the
@@ -919,7 +1006,11 @@ Invariants, each with a test in "Tests per surface":
 - The pump dispatches nothing while `r.prereq` is not `passed`, whatever
   pumps it; the launch and the continuation answer before the
   prerequisites have run; at most one generation of them is in flight,
-  and a commit from one that is not the run's current is dropped.
+  and a commit from one that is not the run's current is dropped. A run
+  with a generation in flight is never forgotten (`idle` is false while
+  `r.prereqs` is above zero), and one that becomes terminal with one in
+  flight ends it in the commit that sets its outcome, the step's process
+  reaped and its row `interrupted` before the count is cleared.
 - The attempt after an uncounted one starts where the uncounted one
   started, after a continuation too.
 - The checkout's tracked content equals the result commit after each
@@ -952,7 +1043,8 @@ Invariants, each with a test in "Tests per surface":
   checkout with the candidate's recipe, and makes nothing of a tree the run
   it continues left (its services are the recovered rows above).
 - The migration changes no existing value's meaning: a version-4 row reads
-  as a task's check with no recipe, no ports and one try.
+  as a task's check with no recipe, no ports and one try, and a version-4
+  run row with no pause words.
 - Every tree the engine resolved has a `trees` row from the
   `recipe.resolved` transaction on, `ended` only in the `tree.ended` one; a
   row not `ended` at the next start is concluded by `Recover` whatever the
@@ -1085,7 +1177,14 @@ harness with its fake ledger and `sessiontest.FakeProc`):
 - Prerequisites: on a goroutine of the run's, the launch answering while one
   is held at a gate (a file the test creates), the pump dispatching nothing
   while another attempt's close pumps it, a stop during one ending it with
-  its row `interrupted`; a pause and an unpause while a generation is held
+  its row `interrupted`; the sole task cancelled while one is held at its
+  gate: the run finished in that commit and the generation ended by it,
+  the step's process gone and its row `interrupted` with the words, the
+  run held under eviction pressure (the harness's `maxRuns` at 1 and a
+  second launch) until the goroutine's last commit and forgotten only
+  after, and, in `api/shutdown_test.go`, the same run under
+  `Server.Shutdown`, the row committed before the ledger closes; a pause
+  and an unpause while a generation is held
   at its gate starting no second one (one run of the id in the executor's
   count, `k` 1), the gate released, its `passed` standing and the pump
   dispatching; a stale generation's commit (the harness bumping
@@ -1111,8 +1210,13 @@ harness with its fake ledger and `sessiontest.FakeProc`):
 - Ports: two trees in flight never share one; a lease released at
   `tree.ended`; a number held by a live tree drawn again; the attempt's
   `preview` empty before `tree.ready` (a probe held at a gate), the URL
-  after it, empty after `tree.ended`, and still empty when the next tree
-  draws the released number.
+  after it, empty once the attempt's close is committed, read while a
+  cleanup step is held at a gate after the services ended (not after
+  `tree.ended` alone), empty after `tree.ended`, and still empty when the
+  next tree draws the released number; a worktree service the test kills
+  after `tree.ready`: `service.ended` with its exit, the `preview` empty in
+  that transaction, the run log's line, the attempt still running and its
+  other services stopped only when it closes.
 - A service left running across a restart (a real ledger, the engine
   ended, `Recover`): the row `interrupted`, `Recovered.Services` naming its
   pid, the process not signalled; a crash between the services' end and
@@ -1132,7 +1236,12 @@ prerequisite row concluded by `Recover`, a stopped run whose only open row
 is a prerequisite `running` selected and concluded by it (the row
 `interrupted`, the run left `stopped`, one `recovered` event), pruned with
 the run and counted toward `MaxRunLogs`; a `service` row concluded by
-`Recover` and counted, a `started` one reported as unconfirmed; `PutTree`
+`Recover` and described, a `started` one reported as unconfirmed, and the
+most one recovery can meet, 32 open service rows (4 attempts × 2 trees × 4
+services) each with an argv of 8 KiB, concluded in one transaction, the
+`recovered` event under `MaxPayload` with its counts and one
+`service.ended` per row; `paused_why` written by `PutRun`, read back by
+`Load` and `Runs`, empty on a version-4 row; `PutTree`
 and `Trees`, a tree row
 left `ready` under a finished run selected and concluded by `Recover`
 (`ended`, `interrupted`, the `tree.ended` event written) and one `ended`
@@ -1152,9 +1261,19 @@ killed with it, `Inject` names accepted and a token name refused, a
 Go, `internal/api` (`recipe_test.go`): the steps route and the log route
 (`200`, the hash header, `404`, `410`, admin only, a run the engine let
 go, the hash header exposed to a dev origin), the prerequisites pair the
-same, `Launch` carrying `Inject` and `Allow` into the session's
-environment (`sessions_test`-style with a stub agent); `shutdown_test.go`,
-beside `TestShutdownWritesEveryRunsRecordWhenItsBudgetIsSpent`, two cases:
+same, the task read for a run the engine let go (`ForgetForTest`) and,
+against a real ledger, after a restart (a second server opened on the
+same data directory, as `shutdown_test.go` reopens the ledger): a task
+with two attempts answered whole, each attempt's state, commits,
+`submitted` and `steps` as the rows have them, no `preview`, each
+attempt's log read through the log route, `404` for a task the ledger has
+not; `ledger_test.go`: `syncRecords` rebuilding a missing record and one
+whose revision lags a `run.paused` commit, the run read after it carrying
+the row's `pausedWhy`, and empty again after an unpause; `Launch`
+carrying `Inject` and `Allow` into the session's environment
+(`sessions_test`-style with a stub agent); `shutdown_test.go`,
+beside `TestShutdownWritesEveryRunsRecordWhenItsBudgetIsSpent`, three
+cases:
 `Server.Shutdown` under the CLI's 10 s budget with a run whose service
 ignores `SIGTERM`, the service's pid gone when it returns (PR-4); and a
 run whose task succeeded and which nobody stopped (finished, its
@@ -1168,7 +1287,11 @@ by the cut when the reaping and the rows fit the reserve (the code's own
 cap) or by `Recover` when the machine missed it; and the same run stopped
 from the UI before the shutdown, its stop returned early under a short
 context with `cleaning` 1, which the stop loop passes over and `Drain`
-waits for: the same rows (PR-5).
+waits for: the same rows (PR-5); and a third, a run whose sole task was
+cancelled while a prerequisite was held at its gate (the run finished,
+the generation ended by that commit): the stop loop stops it as any
+other, the step's pid gone and its row `interrupted` before the ledger
+closes (PR-2).
 
 vitest: `crews.test.ts` (`recipeProblems` item for item against the Go
 table, `toCrewInput` with a recipe and with a lifted `setup`), `tasks.test.ts`
@@ -1186,7 +1309,8 @@ updated for the moved Setup box); `recipe.spec.ts` (the stub workers as in
 `python3 -m http.server` service on `${CONDUCTOR_PORT_WEB}` with a URL probe
 and a preview; the Tasks view's steps and their logs; Open preview answering
 from the test while the attempt runs, and gone from the row, the → actions
-and the palette once the task succeeded and its tree ended; the service's
+and the palette once the task succeeded, which closes the attempt, its
+tree ending after; the service's
 pid gone and the `tree.ended` row present once
 the task succeeded; a prerequisite on a file the spec creates later: the run
 paused with the step named, Resume continuing it; Cancel mid-step followed by
@@ -1306,8 +1430,11 @@ services come later; here it waits for the tree to be quiet and records
 `tree.ended`) and its hand-off from `endAttempt`, the `uncounted` close, the
 successor's start and `pauseRecipe`, the prerequisites on their goroutine
 with `r.prereq` and the pump's gate (commands only; `env` comes in PR-3),
-`refusedBeforeChecks`'s new words, `Run.Recipe`, `pausedWhy`,
-`AttemptState.Steps`; the four receipt routes; the task file's section with
+`r.prereqs` in `idle` and the terminal run's end of a generation,
+`refusedBeforeChecks`'s new words, `Run.Recipe`, `pausedWhy` on the run
+row and in `Recovered`, `AttemptState.Steps`; the four receipt routes and
+the task read's ledger fallback (`handleGetTask`, `crew.LoadedTask`); the
+task file's section with
 the recipe's identity; the refusal lifted for prerequisites, `setup` and the
 file form, and applied by `resolveTree` to every resolved recipe; the base
 pinned through `prepare` and `startManaged`, `ContinueRun` passing its own;
@@ -1338,8 +1465,10 @@ now),
 the stage `setup` becomes `setup <id>`, the checkout compared after each
 step) and
 `ledger_bounds_test.go` (`TestALaunchAndASetupThatHappenedKeepTheirEvents`:
-`attempt.setup` becomes `step.finished`); `api/recipe_test.go`. Depends on
-PR-1. About 1,900 lines.
+`attempt.setup` becomes `step.finished`); `api/recipe_test.go` (the task
+read's fallback after `ForgetForTest` and after a restart);
+`api/ledger_test.go` (`syncRecords` and the pause words);
+`api/shutdown_test.go`'s third case. Depends on PR-1. About 2,100 lines.
 
 **PR-3 — the host's names, the ports and the state directory.**
 `proc.Spec.Inject` with `injectable`, `Spec.Allow` carried from the recipe's
@@ -1363,21 +1492,27 @@ lines.
 `ServeGrace`, the signal argument; the engine's `service` interface and the
 executor's `serve` and `probe`; the `services` and `ready` phases in both
 trees; the preview URL on the tree and the session, and on the attempt
-between its worktree's `tree.ready` and `tree.ended`; the
+between its worktree's `tree.ready` and its clear (the attempt's close,
+or a worktree service's own exit); the
 services ended at `endTree`, with `r.trees`, `r.teardown`, the stop's wait
 after `recordStop`, `Engine.Draining` and `Engine.Drain` in
 `Server.Shutdown`, the cut-off armed at its entry with `teardownReserve`,
 and `cleaning` on the run and in `idle`, so no main between two merges
 lets a stop return under a service still being signalled;
-`Recovered.Services`; a service that dies before ready, a daemonizer
+`Recovered.Services` as descriptors, the counts in `recovered` and the
+`service.ended` event per recovered row; a service that dies before
+ready, a daemonizer
 included; the refusal lifted for services, `ready` and `preview`. Touches
 `internal/proc`, `internal/crew`, `internal/crew/ledger` (the recovery
 words), `internal/api` (`Draining`, `Drain` and the shutdown test), `docs`.
 Tests: `serve_test.go`, `steps_test.go` (services by file and by URL probe,
 a dying service and a daemonizing one, the escaped child, the `ready`
 comparison with a writing service and with a writing probe, a check
-beside a running service that writes, the attempt's `preview` set and
-cleared with its tree and empty when the number is drawn again, the pid
+beside a running service that writes, the attempt's `preview` set at
+`tree.ready`, empty from the attempt's close on, read while its services
+are still being stopped, empty at a worktree service's own exit, and
+empty when the number is drawn again, the recovery of 32 service rows at
+8 KiB of argv each, the pid
 gone
 after
 the tree, the stop mid-service, `cleaning` holding off `evict`, the
@@ -1392,7 +1527,9 @@ failure as a receipt and a log line; the launch refusal and
 `resolveTree`'s removed. Touches `internal/crew`, `internal/api` (the
 shutdown test), `docs`. Tests: `steps_test.go` (every way a tree ends, the
 ledger's order on a result taken, the cancel mid-step against a step that
-ignores `SIGTERM`, the cleanup cut by `Drain`, once per tree),
+ignores `SIGTERM`, the cleanup cut by `Drain`, the `preview` empty while
+a cleanup step is held at a gate after the services ended, once per
+tree),
 `api/shutdown_test.go`'s second case, `-race -count=30`. Depends on PR-4.
 About 800 lines.
 
