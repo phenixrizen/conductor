@@ -584,6 +584,26 @@ func leases(e *Engine) map[int]string {
 	return out
 }
 
+// attemptWhen waits up to 10 s for the attempt's row in the fake ledger to
+// satisfy ok, and returns it: the run as read is one change ahead of the
+// ledger while that change commits, so what the ledger must hold is waited
+// for in the ledger.
+func (l *fakeLedger) attemptWhen(t *testing.T, runID, taskID string, n int, ok func(ledger.AttemptRow) bool) ledger.AttemptRow {
+	t.Helper()
+	var row ledger.AttemptRow
+	waitFake(t, fmt.Sprintf("the row of %s's attempt %d as wanted", taskID, n), func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		r, found := l.attempts[fmt.Sprintf("%s/%s/%d", runID, taskID, n)]
+		row = r
+		return found && ok(r)
+	})
+	return row
+}
+
+// failedRow is an attempt's row closed failed.
+func failedRow(r ledger.AttemptRow) bool { return r.State == ledger.AttemptFailed }
+
 // envFile is the environment a step wrote to the file at path (env >
 // path), by name.
 func envFile(t *testing.T, path string) map[string]string {
@@ -833,7 +853,7 @@ func TestATreeWhoseManifestExpandsPastItsBoundsFailsAtManifest(t *testing.T) {
 		}
 		run := launchManaged(t, e, c)
 		attemptFailed(t, e, run.ID, "build", 1)
-		row := l.attemptRow(t, run.ID, "build", 1)
+		row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
 		state := filepath.Join(row.Worktree, ".conductor", "state")
 		words := fmt.Sprintf("setup cache: argv[2] expands to %s bytes, more than 4,096", byteCount(180*len(state)))
 		if row.Stage != "manifest" || row.Error != words {
@@ -925,11 +945,14 @@ func TestTheEnvNamesArePrerequisites(t *testing.T) {
 			if ts := taskOf(t, e, run.ID, "build"); ts.Attempts != 0 || len(l.prereqRows(run.ID)) != 0 || l.count(run.ID, "prerequisites.passed") != 0 {
 				t.Fatalf("spent or run: %+v, prerequisites %+v", ts, l.prereqRows(run.ID))
 			}
-			// An unpause alone: the host is as it was.
+			// An unpause alone: the host is as it was. The pause, the
+			// unpause and the second pause, in the ledger.
 			pauseRun(t, e, run.ID, false)
 			waitTrue(t, "the run paused again", func() bool { r, _ := e.Get(run.ID); return r.Paused && r.PausedWhy == tc.words })
-			if n := l.count(run.ID, "run.paused"); n != 3 || taskOf(t, e, run.ID, "build").Attempts != 0 || len(l.prereqRows(run.ID)) != 0 {
-				t.Fatalf("after the unpause: %d run.paused, %+v", n, l.prereqRows(run.ID))
+			waitFake(t, "the second pause recorded", func() bool { return l.count(run.ID, "run.paused") == 3 })
+			if p := l.payloads(run.ID, "run.paused"); p[0]["why"] != tc.words || p[1]["paused"] != false || p[2]["why"] != tc.words ||
+				taskOf(t, e, run.ID, "build").Attempts != 0 || len(l.prereqRows(run.ID)) != 0 {
+				t.Fatalf("after the unpause: run.paused %v, prerequisites %+v", p, l.prereqRows(run.ID))
 			}
 			stopRun(t, e, run.ID)
 		})
@@ -1006,7 +1029,7 @@ func TestTheEnvRuleHoldsInAWorktreeAfterARestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			attemptFailed(t, e2, next.ID, "docs", 1)
-			row := l.attemptRow(t, next.ID, "docs", 1)
+			row := l.attemptWhen(t, next.ID, "docs", 1, failedRow)
 			if row.StartCommit != result || row.Stage != "manifest" || row.Error != tc.words {
 				t.Fatalf("docs' attempt 1 (at %s): %+v", short(result), row)
 			}
