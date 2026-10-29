@@ -94,7 +94,8 @@ and moves the board for them.
   nothing goes as one line into the single standing flaky-tests issue
   (#281), fixed when someone is in that file anyway; no issue per flake.
 - Vulnerabilities go in a GitHub Draft Security Advisory, never in an
-  issue, PR, commit message or doc, until a maintainer decides on disclosure.
+  issue, PR, commit message or doc, until a maintainer decides on disclosure
+  (`SECURITY.md`).
 
 ## Tests that do not flake
 
@@ -146,16 +147,15 @@ add its rule here.
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
   it before the commit. Wait on the ledger for what the ledger must hold.
-- End what the test started before its directories go. Cleanups run
-  last-registered first: the fake sessions end before `t.TempDir`'s
-  directory is removed, and what their ends set off runs beside the
-  removal. An engine left running (a continuation test's first engine,
-  never stopped, since a stop would write rows the continuation reads)
-  takes up the attempt a cleanup ended, and its `git worktree add`
-  writes in the repository while `RemoveAll` empties it. Register the
-  end of such work right after it is made (`abandonAtEnd` in
-  `internal/crew`): no new work, its context cancelled, its goroutines
-  waited for.
+- End what a test started before its directories go. An engine a test
+  abandons (the server that ended, before a continuation) keeps reacting:
+  when the fake launcher ended its processes at cleanup, it failed their
+  attempts and made the next attempt's worktree in a repository
+  `t.TempDir` was removing (`.git: directory not empty`, #391). The fake
+  launcher ends its engine's runs, recording nothing, before the first of
+  its processes (`endRuns` in `internal/crew`); anything else a test leaves
+  running is ended the same way, before the cleanup that removes what it
+  writes to.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
