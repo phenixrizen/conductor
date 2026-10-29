@@ -40,6 +40,21 @@ export interface TextReply {
   headers: Headers
 }
 
+/**
+ * A failed reply's body as the server sent it: an object for a JSON request, and for a text one (`responseType: 'text'`) the JSON
+ * text, which ofetch hands back unparsed, read here as the same object; anything that is no object is no error body.
+ */
+function errorBody(data: unknown): ApiErrorBody | undefined {
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data)
+    } catch {
+      return undefined
+    }
+  }
+  return data !== null && typeof data === 'object' ? (data as ApiErrorBody) : undefined
+}
+
 /** $fetch wrapper that attaches the workbench token and normalises errors. */
 export function useApi() {
   const { httpBase } = useApiBase()
@@ -47,12 +62,13 @@ export function useApi() {
 
   /** The error a failed request throws: the server's code and message, or `network` when it could not be reached. */
   function normalise(e: unknown, explicitToken: boolean): ApiError {
-    const fe = e as FetchError<ApiErrorBody>
+    const fe = e as FetchError<unknown>
     const status = fe.statusCode ?? 0
-    const code = fe.data?.error?.code ?? (status === 0 ? 'network' : 'http_error')
-    const message = fe.data?.error?.message ?? (status === 0 ? 'Cannot reach the server' : fe.message)
+    const data = errorBody(fe.data)
+    const code = data?.error?.code ?? (status === 0 ? 'network' : 'http_error')
+    const message = data?.error?.message ?? (status === 0 ? 'Cannot reach the server' : fe.message)
     if (status === 401 && !explicitToken) admin.needsToken.value = true
-    return new ApiError(status, code, message, fe.data?.error ?? {}, fe.data)
+    return new ApiError(status, code, message, data?.error ?? {}, data ?? fe.data)
   }
 
   async function request<T>(path: string, opts: { method?: string; body?: unknown; token?: string; query?: Record<string, string>; base?: string } = {}): Promise<T> {
