@@ -31,6 +31,10 @@ type launchCall struct {
 	ref                session.CrewRef
 	yolo               bool
 	resume             string
+	// inject and allow are the spec's Inject and Allow: the attempt's
+	// tree's names and the env names the server approved for it.
+	inject map[string]string
+	allow  []string
 }
 
 // fakeLauncher starts member sessions over fake processes, where the API
@@ -78,17 +82,23 @@ type fakeLauncher struct {
 	// start; launchHeld, when set, is given each session so held.
 	launchHold chan struct{}
 	launchHeld chan *session.Local
+	// ports draws the engine's trees' ports (treeExec.port): numbers from
+	// a range, never the network.
+	ports *fakePorts
 }
 
 func newFakeLauncher(t *testing.T) *fakeLauncher {
 	return &fakeLauncher{t: t, fail: map[string]error{}, procs: map[string]*sessiontest.FakeProc{},
-		locals: map[string]*session.Local{}, byID: map[string]*session.Local{}}
+		locals: map[string]*session.Local{}, byID: map[string]*session.Local{}, ports: newFakePorts()}
 }
 
-// newEngine returns an engine over a new fakeLauncher.
+// newEngine returns an engine over a new fakeLauncher, its trees' ports
+// drawn by the launcher's fakePorts: no engine test reaches the network
+// but through the executor.
 func newEngine(t *testing.T) (*Engine, *fakeLauncher) {
 	fl := newFakeLauncher(t)
 	e := NewEngine(fl, fl.lookup)
+	e.exec.port = fl.ports.port
 	fl.engine = e
 	return e, fl
 }
@@ -115,7 +125,7 @@ func (f *fakeLauncher) Reserve(ctx context.Context) (*session.Reservation, error
 func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Local, error) {
 	name, ref := spec.Name, spec.Ref
 	f.mu.Lock()
-	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume})
+	f.calls = append(f.calls, launchCall{spec.AgentID, name, spec.Cwd, slices.Clone(spec.Args), maps.Clone(spec.Env), ref, spec.Yolo, spec.Resume, maps.Clone(spec.Inject), slices.Clone(spec.Allow)})
 	err, block := f.fail[name], f.block[name]
 	f.mu.Unlock()
 	if err != nil {

@@ -9,8 +9,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
+	"net"
+	"os"
+	"path"
+	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,37 +137,158 @@ func (rm resolvedManifest) row() string {
 }
 
 // tree is a directory the engine makes usable through the run's project
-// manifest: an attempt's worktree, or the checkout of its result. busy is
-// held while one of its phases or checks runs, and in a worktree through
-// its session's launch (hold). Under e.mu: handed is set once it is handed
-// to endTree, ending once its end begins (nothing holds it after), ended
-// once its end is recorded, and session names the session its end waits
-// for, one being stopped (set by handTrees, or by the launch's record when
-// the close came during the launch).
+// manifest: an attempt's worktree, or the checkout of its result. Its
+// manifest is the one resolved for it, expanded with its ports and its
+// state directory (expandManifest); its ports are leased to it on the
+// engine (e.ports) from its manifest.resolved to its tree.ended; its state
+// directory is .conductor/state under its working directory; its preview
+// is the manifest's, expanded, "" for none; allow is the manifest's env
+// names the server approved (allowedEnv). All of that is set before the
+// tree is the attempt's and never changed. busy is held while one of its
+// phases or checks runs, and in a worktree through its session's launch
+// (hold). Under e.mu: handed is set once it is handed to endTree, ending
+// once its end begins (nothing holds it after), ended once its end is
+// recorded, and session names the session its end waits for, one being
+// stopped (set by handTrees, or by the launch's record when the close came
+// during the launch).
 type tree struct {
-	kind   string // ledger.TreeWorktree | ledger.TreeCheckout
-	dir    string // the worktree or the checkout
-	cwd    string // the crew's working directory in it
-	commit string
-	man    resolvedManifest
-	a      *attempt
-	busy   sync.WaitGroup
+	kind     string // ledger.TreeWorktree | ledger.TreeCheckout
+	dir      string // the worktree or the checkout
+	cwd      string // the crew's working directory in it
+	commit   string
+	man      resolvedManifest
+	ports    map[string]int
+	stateDir string
+	preview  string
+	allow    []string
+	a        *attempt
+	busy     sync.WaitGroup
 	// handed, ending, ended and session: see above.
 	handed, ending, ended bool
 	session               string
 }
 
 // treeExec is everything a tree does on the machine that runs it: a
-// command, run as a check is (run), today; the services, the probes and the
-// ports follow it. The native one runs proc.Run; a test replaces it whole,
-// and the Runtime seam (C10) wraps it, so nothing of a tree reaches the
-// machine but through it.
+// command, run as a check is (run), and a port drawn for it (port), today;
+// the services and the probes follow it. The native one runs proc.Run and
+// binds 127.0.0.1:0; a test replaces it whole, and the Runtime seam (C10)
+// wraps it, so nothing of a tree reaches the machine but through it, and a
+// port of a tree that is not on the server's machine is never the server's
+// own.
 type treeExec struct {
-	run func(ctx context.Context, s proc.Spec) proc.Result
+	run  func(ctx context.Context, s proc.Spec) proc.Result
+	port func(ctx context.Context) (int, error)
 }
 
-// nativeExec runs a tree's commands on this machine.
-func nativeExec() treeExec { return treeExec{run: proc.Run} }
+// nativeExec runs a tree's commands, and draws its ports, on this machine.
+func nativeExec() treeExec { return treeExec{run: proc.Run, port: freePort} }
+
+// freePort draws a port of this machine's loopback: a bind of 127.0.0.1:0,
+// its number taken and the listener closed, so that the tree's own can
+// bind it. Nothing holds the port on the host meanwhile; the engine's
+// lease (e.ports) keeps two live trees of this server off one number.
+func freePort(ctx context.Context) (int, error) {
+	var lc net.ListenConfig
+	l, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	addr, ok := l.Addr().(*net.TCPAddr)
+	if !ok || addr.Port == 0 {
+		return 0, fmt.Errorf("the loopback gave no port: %v", l.Addr())
+	}
+	return addr.Port, nil
+}
+
+// maxPortDraws bounds the numbers drawn for one port of a tree: a number
+// another live tree of this server holds is drawn again, at most so often.
+const maxPortDraws = 16
+
+// stateDirName is a tree's state directory in its .conductor.
+const stateDirName = "state"
+
+// SetEnvPassthrough gives the engine the server's envPassthrough (config
+// envPassthrough, read once at the server's start): the host's variables a
+// project manifest's env may pass on to its steps and sessions
+// (allowedEnv). The manifest names what the project needs; the host
+// decides what leaves it. Set it before the first launch; until then no
+// name passes.
+func (e *Engine) SetEnvPassthrough(names []string) {
+	e.mu.Lock()
+	e.envPassthrough = slices.Clone(names)
+	e.mu.Unlock()
+}
+
+// allowedEnv approves a project manifest's env names, in order, for a
+// tree's commands and session or for the run's prerequisites: each must be
+// in the server's envPassthrough and set in the server's environment,
+// which is read once, at its start (pty.ParentEnv is os.Environ), and never
+// reloaded. The first that is not is the error, in words naming it: one
+// the server does not allow, or one the host does not have, with what fixes
+// that. Nothing of a value is read beyond its presence, and nothing of it
+// is recorded.
+func (e *Engine) allowedEnv(names []string) ([]string, error) {
+	e.mu.Lock()
+	allowed := e.envPassthrough
+	e.mu.Unlock()
+	var out []string
+	for _, name := range names {
+		if !slices.Contains(allowed, name) {
+			return nil, fmt.Errorf("%s is not in the server's envPassthrough", name)
+		}
+		if _, ok := os.LookupEnv(name); !ok {
+			return nil, fmt.Errorf("the host has no %s: set it where the server starts, start it again and continue the run", name)
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+// portVar is the variable a tree's port is in: CONDUCTOR_PORT_<NAME>, the
+// port's name in upper case.
+func portVar(name string) string { return "CONDUCTOR_PORT_" + strings.ToUpper(name) }
+
+// names is Conductor's own names of t as its session is given them
+// (LaunchSpec.Inject): its ports, its state directory and its preview.
+func (t *tree) names() map[string]string {
+	env := map[string]string{"CONDUCTOR_STATE_DIR": t.stateDir}
+	for name, n := range t.ports {
+		env[portVar(name)] = strconv.Itoa(n)
+	}
+	if t.preview != "" {
+		env["CONDUCTOR_PREVIEW_URL"] = t.preview
+	}
+	return env
+}
+
+// cmdEnv is what a command of a run is given beside the fixed allowlist
+// (proc.Spec): allow, the project manifest's env names the server
+// approved, and inject, Conductor's own names of the command's tree.
+type cmdEnv struct {
+	allow  []string
+	inject map[string]string
+}
+
+// env is what a command run in t is given: its approved env names, and its
+// names with the run, the task and the attempt, which a session has from
+// its crew's names; nothing for no tree (a run without a manifest).
+func (t *tree) env(runID string) cmdEnv {
+	if t == nil {
+		return cmdEnv{}
+	}
+	inject := t.names()
+	inject["CONDUCTOR_RUN"], inject["CONDUCTOR_TASK"], inject["CONDUCTOR_ATTEMPT"] = runID, t.a.t.def.ID, strconv.Itoa(t.a.n)
+	return cmdEnv{allow: t.allow, inject: inject}
+}
+
+// task is the tree's manifest as its task file names it: the identity, and
+// the ports by name.
+func (t *tree) task() *TaskManifest {
+	tm := t.man.task()
+	tm.Ports = maps.Clone(t.ports)
+	return tm
+}
 
 // flight counts goroutines in flight under e.mu and is waited for without
 // it: a sync.WaitGroup must not take an Add while another goroutine waits
@@ -236,10 +365,7 @@ var errAttemptClosed = errors.New("the attempt closed")
 
 // resolveAt is r's project manifest as a tree at commit has it: the crew's
 // as launched, or, with the file form, conductor.manifest.json at commit,
-// refused (matching ErrInvalid) when it names what this build does not run
-// yet (runnable), so a result's commit or a continuation's candidate brings
-// in no phase the engine would skip and no placeholder it would pass on as
-// it is. The crew's was held to the same at the launch (prepare).
+// read and held to a manifest's rules (resolveManifest).
 func (e *Engine) resolveAt(ctx context.Context, r *run, commit string) (resolvedManifest, error) {
 	if !r.manifest.File {
 		return resolvedManifest{m: r.manifest, source: sourceCrew, revision: r.manifestRev}, nil
@@ -248,53 +374,194 @@ func (e *Engine) resolveAt(ctx context.Context, r *run, commit string) (resolved
 	if err != nil {
 		return resolvedManifest{}, err
 	}
-	if err := rec.runnable(); err != nil {
-		return resolvedManifest{}, fmt.Errorf("%s at %s: %w", r.prefix+manifestFile, short(commit), err)
-	}
 	return resolvedManifest{m: rec, source: sourceFile, digest: blob}, nil
 }
 
 // resolveTree makes the tree of kind at dir (the crew's directory cwd in
-// it, at commit) attempt a's: its manifest resolved (resolveAt), then
-// manifest.resolved recorded with the tree's row, resolved, in one
-// transaction, from which the tree is the attempt's (a.trees) and ends when
-// it closes. The transaction is the run's, so it is ordered with the
-// attempt's close: an attempt closed before it gets no tree
-// (errAttemptClosed). Any other error is the manifest's, its stage
-// "manifest".
+// it, at commit) attempt a's. In order: its manifest resolved (resolveAt);
+// its env names approved (allowedEnv), so a manifest at any commit passes
+// on no name the server's operator did not allow or the host does not
+// have; its ports drawn (treeExec.port); the manifest expanded with them
+// and the state directory (expandManifest) and held to its bounds; with
+// the file form, a phase this build does not run yet refused (runnable),
+// as the crew's was at the launch (prepare), so a result's commit or a
+// continuation's candidate brings in no phase the engine would skip. Then
+// one transaction of the run's leases the ports to the tree and records
+// manifest.resolved, manifest.ports (with ports or a preview) and the
+// tree's row, resolved: a number another live tree of this server holds,
+// or another of the tree's ports drew, is drawn again (at most
+// maxPortDraws times a port) instead, and from the commit on the tree is
+// the attempt's (a.trees), its ports leased until its tree.ended. The
+// transaction is ordered with the attempt's close: an attempt closed
+// before it gets no tree (errAttemptClosed). Last, its state directory is
+// made (makeStateDir). Any other error is the manifest's, its stage
+// "manifest", the failure attributed by the tree's rule: nothing is
+// written or run in the tree before the transaction, and a tree whose
+// state directory could not be made is returned with the error, the
+// attempt's to end with it.
 func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir, cwd, commit string) (*tree, error) {
 	man, err := e.resolveAt(ctx, r, commit)
 	if err != nil {
 		return nil, err
 	}
-	t := &tree{kind: kind, dir: dir, cwd: cwd, commit: commit, man: man, a: a}
-	closed := false
-	err = e.transact(ctx, r, func() tx {
-		if !a.closedAt.IsZero() {
-			closed = true
-			return tx{}
-		}
-		a.trees = append(a.trees, t)
-		payload := map[string]any{"tree": kind, "task": a.t.def.ID, "attempt": a.n, "source": man.source, "env": slices.Clone(man.m.Env)}
-		if man.source == sourceFile {
-			payload["digest"] = man.digest
-		} else {
-			payload["revision"] = man.revision
-		}
-		out := ev("manifest.resolved", payload)
-		row := ledger.TreeRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Kind: kind, Dir: dir, Commit: commit, Manifest: man.identity(), State: ledger.TreeResolved}
-		out.more = func(ltx LedgerTx) error { return ltx.PutTree(row) }
-		return out
-	}, func() {
-		a.trees = slices.DeleteFunc(a.trees, func(x *tree) bool { return x == t })
-	})
-	switch {
-	case closed:
-		return nil, errAttemptClosed
-	case err != nil:
-		return nil, fmt.Errorf("the ledger could not record the manifest: %w", err)
+	allow, err := e.allowedEnv(man.m.Env)
+	if err != nil {
+		return nil, err
 	}
-	return t, nil
+	stateDir := filepath.Join(cwd, taskDir, stateDirName)
+	ports := map[string]int{}
+	draws := map[string]int{}
+	draw := man.m.Ports
+	for {
+		for _, name := range draw {
+			if draws[name] == maxPortDraws {
+				return nil, fmt.Errorf("the port %s: %d numbers drawn, each another tree's", name, maxPortDraws)
+			}
+			draws[name]++
+			n, err := e.exec.port(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("the port %s could not be drawn: %w", name, err)
+			}
+			ports[name] = n
+		}
+		expanded, err := expandManifest(man.m, ports, stateDir)
+		if err == nil && man.source == sourceFile {
+			err = expanded.runnable()
+		}
+		if err != nil {
+			if man.source == sourceFile {
+				err = fmt.Errorf("%s at %s: %w", r.prefix+manifestFile, short(commit), err)
+			}
+			return nil, err
+		}
+		t := &tree{kind: kind, dir: dir, cwd: cwd, commit: commit, man: resolvedManifest{m: expanded, source: man.source, revision: man.revision, digest: man.digest},
+			ports: maps.Clone(ports), stateDir: stateDir, preview: expanded.Preview, allow: allow, a: a}
+		closed := false
+		draw = nil
+		err = e.transact(ctx, r, func() tx {
+			if !a.closedAt.IsZero() {
+				closed = true
+				return tx{}
+			}
+			if draw = e.heldPorts(t); len(draw) > 0 {
+				return tx{}
+			}
+			e.lease(t)
+			a.trees = append(a.trees, t)
+			payload := map[string]any{"tree": kind, "task": a.t.def.ID, "attempt": a.n, "source": man.source, "env": slices.Clone(man.m.Env)}
+			if man.source == sourceFile {
+				payload["digest"] = man.digest
+			} else {
+				payload["revision"] = man.revision
+			}
+			out := ev("manifest.resolved", payload)
+			if len(t.ports) > 0 || t.preview != "" {
+				out.events = append(out.events, event{"manifest.ports", map[string]any{"tree": kind, "task": a.t.def.ID, "attempt": a.n, "ports": maps.Clone(t.ports), "preview": t.preview}})
+			}
+			row := ledger.TreeRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Kind: kind, Dir: dir, Commit: commit, Manifest: man.identity(), Ports: maps.Clone(t.ports), Preview: t.preview, State: ledger.TreeResolved}
+			out.more = func(ltx LedgerTx) error { return ltx.PutTree(row) }
+			return out
+		}, func() {
+			a.trees = slices.DeleteFunc(a.trees, func(x *tree) bool { return x == t })
+			e.release(t)
+		})
+		switch {
+		case closed:
+			return nil, errAttemptClosed
+		case err != nil:
+			return nil, fmt.Errorf("the ledger could not record the manifest: %w", err)
+		case len(draw) > 0:
+			continue // another tree's number: drawn again
+		}
+		if err := makeStateDir(cwd, kind == ledger.TreeCheckout); err != nil {
+			return t, fmt.Errorf("the state directory %s/%s could not be made: %w", taskDir, stateDirName, err)
+		}
+		return t, nil
+	}
+}
+
+// heldPorts is the names of t's ports, in the manifest's order, whose number
+// another live tree of this server holds, or an earlier port of t drew
+// too: to be drawn again. The caller holds e.mu.
+func (e *Engine) heldPorts(t *tree) []string {
+	var held []string
+	seen := map[int]bool{}
+	for _, name := range t.man.m.Ports {
+		n := t.ports[name]
+		if holder, ok := e.ports[n]; (ok && holder != t) || seen[n] {
+			held = append(held, name)
+		}
+		seen[n] = true
+	}
+	return held
+}
+
+// lease leases t's ports to it, until its tree.ended (release). The
+// caller holds e.mu, in the transaction's change that makes the tree the
+// attempt's.
+func (e *Engine) lease(t *tree) {
+	if e.ports == nil {
+		e.ports = map[int]*tree{}
+	}
+	for _, n := range t.ports {
+		e.ports[n] = t
+	}
+}
+
+// release lets go of the ports t holds. The caller holds e.mu, in the
+// transaction's change that records tree.ended, or in the undo of the one
+// that leased them.
+func (e *Engine) release(t *tree) {
+	for _, n := range t.ports {
+		if e.ports[n] == t {
+			delete(e.ports, n)
+		}
+	}
+}
+
+// makeStateDir makes a tree's state directory, .conductor/state under its
+// working directory cwd, through a root at cwd as the task files are
+// written (writeTaskFiles): .conductor made when missing and refused when it
+// is there as anything but a directory, and the state directory the same.
+// A checkout, which has no task files, gets .conductor's .gitignore beside
+// it, so the comparisons after its steps and checks list nothing of it; a
+// worktree's comes with its task files, written next. The directory is
+// inside the tree, so a tree handed to a guest whole carries it.
+func makeStateDir(cwd string, checkout bool) error {
+	root, err := os.OpenRoot(cwd)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := mkdirIn(root, taskDir); err != nil {
+		return err
+	}
+	if checkout {
+		ignore := path.Join(taskDir, ".gitignore")
+		if _, err := root.Lstat(ignore); errors.Is(err, fs.ErrNotExist) {
+			if err := root.WriteFile(ignore, []byte("*\n"), 0o644); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+	}
+	return mkdirIn(root, path.Join(taskDir, stateDirName))
+}
+
+// mkdirIn makes the directory name in root: one there already is taken
+// when it is a directory, refused when it is anything else (a link).
+func mkdirIn(root *os.Root, name string) error {
+	fi, err := root.Lstat(name)
+	switch {
+	case err == nil && !fi.IsDir():
+		return fmt.Errorf("%s exists in the tree and is not a directory", name)
+	case err == nil:
+		return nil
+	case errors.Is(err, fs.ErrNotExist):
+		return root.Mkdir(name, 0o755)
+	}
+	return err
 }
 
 // hold marks t busy for a phase, a check or a launch about to run in it,
@@ -350,8 +617,13 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 		return proc.Result{Exit: -1, Canceled: true}, fmt.Errorf("%s was not run: %w", ch.ID, err)
 	}
 	man, dir, subject := r.baseMan, r.cwd, r.base
+	env := t.env(r.id)
 	if t != nil {
 		man, dir, subject = t.man, t.cwd, t.commit
+	} else {
+		// A prerequisite: the base's env names, which its generation
+		// approved before its first step.
+		env.allow, _ = e.allowedEnv(man.m.Env)
 	}
 	e.mu.Lock()
 	var k int
@@ -363,6 +635,9 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 	}
 	e.mu.Unlock()
 	row := ledger.CheckRow{RunID: r.id, ID: ch.ID, K: k, Phase: phase, Manifest: man.identity(), Tries: 1, Argv: slices.Clone(ch.Argv), Dir: dir, Subject: subject, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+	if t != nil {
+		row.Ports = maps.Clone(t.ports)
+	}
 	payload := func(more map[string]any) map[string]any {
 		p := map[string]any{"phase": phase, "id": ch.ID, "k": k}
 		if a != nil {
@@ -412,7 +687,7 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 	stepCtx, endStep := context.WithCancel(ctx)
 	defer endStep()
 	var refused error
-	res := e.runCommand(stepCtx, dir, ch.Argv, stepTimeout(phase, ch), &log, func(p proc.Process) {
+	res := e.runCommand(stepCtx, dir, ch.Argv, stepTimeout(phase, ch), env, &log, func(p proc.Process) {
 		running := row
 		running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
 		if err := e.transact(context.Background(), r, func() tx {
@@ -545,12 +820,18 @@ type prereqReceipt struct {
 	gen int
 }
 
+// hasPrerequisites reports whether the manifest has prerequisites to run
+// before any tree: commands, or env names to check (allowedEnv).
+func (rm resolvedManifest) hasPrerequisites() bool {
+	return len(rm.m.Prerequisites) > 0 || len(rm.m.Env) > 0
+}
+
 // armPrerequisites sets r's prerequisites pending, to run once the
 // transaction that arms them is committed (transact starts the
 // generation), or passed when the run's manifest has none. The caller
 // holds e.mu, in a transaction's change.
 func (r *run) armPrerequisites() {
-	if len(r.baseMan.m.Prerequisites) == 0 {
+	if !r.baseMan.hasPrerequisites() {
 		r.prereq = prereqPassed
 		return
 	}
@@ -565,7 +846,7 @@ func (r *run) armPrerequisites() {
 // holds e.mu, in a transaction's change.
 func (r *run) rearmPrerequisites() {
 	switch {
-	case len(r.baseMan.m.Prerequisites) == 0 || r.outcome != "":
+	case !r.baseMan.hasPrerequisites() || r.outcome != "":
 	case r.prereq == prereqPassed || r.prereq == prereqFailed || r.prereq == prereqInterrupted:
 		r.prereq, r.prereqStart = prereqPending, true
 	}
@@ -613,12 +894,18 @@ func (e *Engine) startPrerequisites(r *run) {
 	go e.prerequisites(ctx, cancel, r, gen)
 }
 
-// prerequisites runs r's prerequisites of generation gen, in order, in
-// the crew's directory, each a receipt (runStep), and records
-// prerequisites.passed once every one passed, then dispatches. One that
-// fails pauses the run's dispatch with its words (runStep), and the rest
-// do not run. A commit from a generation that is no longer the run's is
-// dropped, its rows kept. The count of generations in flight drops once
+// prerequisites runs r's prerequisites of generation gen: first the
+// manifest's env names, each in the server's envPassthrough and set in its
+// environment (allowedEnv), then its prerequisites' commands, in order, in
+// the crew's directory, each a receipt (runStep) given the approved names;
+// and records prerequisites.passed once every one passed, then dispatches.
+// A name the server does not allow or the host does not have pauses the
+// run's dispatch with its words, the second saying a restart fixes it (the
+// server's environment is its start's, so an unpause alone finds it as it
+// was), and no command runs; one command that fails pauses it with its
+// words (runStep), and the rest do not run. A commit from a generation
+// that is no longer the run's is dropped, its rows kept. The count of
+// generations in flight drops once
 // its last commit is in, so the run is held (idle) until then; a
 // generation armed meanwhile (an unpause after this one's result) starts
 // then. That end is taken under r.txMu, as a transaction's change is, so
@@ -652,10 +939,16 @@ func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r
 		e.startPrerequisites(r)
 		r.touch()
 	}()
+	if _, err := e.allowedEnv(r.baseMan.m.Env); err != nil {
+		if ctx.Err() == nil {
+			e.prerequisiteRefused(r, gen, "the prerequisites failed: "+err.Error())
+		}
+		return
+	}
 	for _, ch := range r.baseMan.m.Prerequisites {
 		if _, err := e.runStep(ctx, r, nil, nil, ledger.PhasePrerequisite, ch, gen); err != nil {
 			if ctx.Err() == nil {
-				e.prerequisiteRefused(r, gen, ch, err)
+				e.prerequisiteRefused(r, gen, fmt.Sprintf("the prerequisite %s failed: %v", ch.ID, err))
 			}
 			return
 		}
@@ -674,11 +967,12 @@ func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r
 	}
 }
 
-// prerequisiteRefused ends a generation that stopped at ch with err but
-// without its failure recorded with the step (the ledger refused the
-// step's row): when it is still the run's, the prerequisites are failed
-// and the dispatch pauses with why, so the run never waits on a
-// generation that has ended, and an unpause runs them again. A
+// prerequisiteRefused ends a generation that stopped with why but without
+// its failure recorded with a step (an env name refused before any step,
+// or a step's row the ledger refused): when it is still the run's, the
+// prerequisites are failed and the dispatch pauses with why, so the run
+// never waits on a generation that has ended, and an unpause runs them
+// again. A
 // generation whose failure the run took already (r.prereqFailedGen: its
 // step's finished row took it, committed or ahead of a commit the ledger
 // refused) is not failed again. An unpause since then may have armed
@@ -687,7 +981,7 @@ func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r
 // leave the generation's end nothing armed to start (Codex's review of
 // #422, round 4). The change is then empty, and its commit carries only
 // what a refused one left for the next.
-func (e *Engine) prerequisiteRefused(r *run, gen int, ch Check, err error) {
+func (e *Engine) prerequisiteRefused(r *run, gen int, why string) {
 	if e.beforePrereqRefused != nil {
 		e.beforePrereqRefused()
 	}
@@ -696,7 +990,7 @@ func (e *Engine) prerequisiteRefused(r *run, gen int, ch Check, err error) {
 			return tx{}
 		}
 		r.prereq, r.prereqFailedGen = prereqFailed, gen
-		return tx{events: e.pauseManifest(r, fmt.Sprintf("the prerequisite %s failed: %v", ch.ID, err))}
+		return tx{events: e.pauseManifest(r, why)}
 	}, nil)
 	if terr != nil {
 		e.afterTransact(r, terr)
@@ -828,10 +1122,11 @@ func (e *Engine) startTrees(r *run) {
 // held it returned; then the session being stopped ended, bounded by
 // stopTimeout, read once the hold is let go: a launch the close came
 // during names its session on the tree only then) and records tree.ended
-// with the tree's row ended. Nothing runs in it after: it has no services
-// and no cleanup steps yet. A refused commit is kept for the run's next
-// (transact), and a row left not ended is concluded by the recovery at the
-// next start.
+// with the tree's row ended, its ports released in that change, so a
+// number is the next tree's only once its tree.ended is. Nothing runs in
+// it after: it has no services and no cleanup steps yet. A refused commit
+// is kept for the run's next (transact), and a row left not ended is
+// concluded by the recovery at the next start.
 func (e *Engine) endTree(r *run, h treeEnd) {
 	t := h.t
 	defer func() {
@@ -865,8 +1160,10 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 			return tx{}
 		}
 		t.ended = true
+		e.release(t)
 		out := ev("tree.ended", map[string]any{"tree": t.kind, "task": a.t.def.ID, "attempt": a.n, "why": h.why})
-		row := ledger.TreeRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Kind: t.kind, Dir: t.dir, Commit: t.commit, Manifest: t.man.identity(), State: ledger.TreeEnded, Why: session.CleanMessage(h.why), EndedAt: time.Now().UTC()}
+		row := ledger.TreeRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Kind: t.kind, Dir: t.dir, Commit: t.commit, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Preview: t.preview,
+			State: ledger.TreeEnded, Why: session.CleanMessage(h.why), EndedAt: time.Now().UTC()}
 		out.more = func(ltx LedgerTx) error { return ltx.PutTree(row) }
 		return out
 	}, nil)
@@ -998,8 +1295,10 @@ func sortSteps(steps []StepState) {
 
 // runCommand runs one command of a tree, a check or a step, in dir
 // through the tree's executor: a process group of its own, no PTY, the
-// environment without Conductor's tokens, the output's head and tail kept,
-// the log to log, whole within ledger.MaxLog.
-func (e *Engine) runCommand(ctx context.Context, dir string, argv []string, timeout time.Duration, log io.Writer, started func(proc.Process)) proc.Result {
-	return e.exec.run(ctx, proc.Spec{Argv: slices.Clone(argv), Dir: dir, Timeout: timeout, Head: checkHead, Tail: checkTail, Log: log, LogLimit: ledger.MaxLog, Started: started})
+// environment without Conductor's tokens (env passes the manifest's
+// approved names on and gives the tree's own names), the output's head and
+// tail kept, the log to log, whole within ledger.MaxLog.
+func (e *Engine) runCommand(ctx context.Context, dir string, argv []string, timeout time.Duration, env cmdEnv, log io.Writer, started func(proc.Process)) proc.Result {
+	return e.exec.run(ctx, proc.Spec{Argv: slices.Clone(argv), Dir: dir, Allow: slices.Clone(env.allow), Inject: maps.Clone(env.inject), Timeout: timeout,
+		Head: checkHead, Tail: checkTail, Log: log, LogLimit: ledger.MaxLog, Started: started})
 }

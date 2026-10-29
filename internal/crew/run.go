@@ -59,6 +59,15 @@ type LaunchSpec struct {
 	// Resume, when set, is the agent session the launch resumes with its
 	// agent's recipe (ResumeMember); ResumedFrom the session it follows.
 	Resume, ResumedFrom string
+	// Inject is Conductor's own names of the attempt's tree, set in the
+	// process after the crew's as a session's own are, unfiltered: its
+	// ports (CONDUCTOR_PORT_<NAME>), its state directory
+	// (CONDUCTOR_STATE_DIR) and its preview (CONDUCTOR_PREVIEW_URL). Allow
+	// is the project manifest's env names the server approved (allowedEnv:
+	// in its envPassthrough and set in its environment), passed on beside
+	// the session's own passthrough. Both nil without a project manifest.
+	Inject map[string]string
+	Allow  []string
 }
 
 // Member states (MemberState.Status).
@@ -276,6 +285,12 @@ type Engine struct {
 	exec treeExec
 	// checkSem bounds the checks running at once (checkSlots).
 	checkSem chan struct{}
+	// envPassthrough is the server's envPassthrough (SetEnvPassthrough):
+	// the host's names a project manifest's env may pass on (allowedEnv),
+	// none before it is set. ports are the port leases of the live trees,
+	// by number (steps.go: a number is one tree's at a time). Both under mu.
+	envPassthrough []string
+	ports          map[int]*tree
 
 	// bySession maps the ID of each member's session to its sessionMember.
 	// It is read without mu, so that the activity and the changes of the

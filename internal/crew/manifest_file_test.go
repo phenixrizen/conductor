@@ -54,23 +54,30 @@ func TestTheFileManifestIsReadAtEachTreesCommit(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
-// A result whose file the manifest's rules refuse (broken, gone, or naming
-// a phase or a placeholder this build does not run yet) is refused at
-// manifest in its checkout, counted, the next attempt starting where the
-// refused one did; the words name the file and the commit.
+// A result whose file the manifest's rules refuse (broken, gone, naming a
+// phase this build does not run yet, or naming an env name the server does
+// not allow or the host does not have: the env rule holds in every tree,
+// so a result's manifest adds no name the operator did not allow) is
+// refused at manifest in its checkout, counted, the next attempt starting
+// where the refused one did; the words name the file and the commit, or
+// the env name.
 func TestAResultWhoseManifestCannotBeUsedIsRefusedAtManifest(t *testing.T) {
+	t.Setenv("EN1_NOT_ALLOWED", "set but not allowed")
 	for _, tc := range []struct {
 		name, content, words string
 	}{
 		{"a broken file", `{"schema": 1, "setup": [`, "conductor.manifest.json at "},
 		{"no file", "", "does not hold conductor.manifest.json"},
 		{"a phase this build does not run", `{"schema": 1, "services": [{"id": "web", "argv": ["sh", "-c", "sleep 60"]}]}`, "this build does not run a project manifest's services yet"},
-		{"the state directory's placeholder", `{"schema": 1, "setup": [{"id": "cache", "argv": ["mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache"]}]}`, "this build does not expand a project manifest's placeholders yet"},
+		{"a name the server does not allow", `{"schema": 1, "env": ["EN1_NOT_ALLOWED"], "setup": [{"id": "deps", "argv": ["true"]}]}`, "EN1_NOT_ALLOWED is not in the server's envPassthrough"},
+		{"a name the host does not have", `{"schema": 1, "env": ["EN1_UNSET"], "setup": [{"id": "deps", "argv": ["true"]}]}`,
+			"the host has no EN1_UNSET: set it where the server starts, start it again and continue the run"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := newRepo(t)
 			commitManifestFile(t, dir, `{"schema": 1, "setup": [{"id": "deps", "argv": ["true"]}]}`)
 			e, _, l := managedEngine(t)
+			e.SetEnvPassthrough([]string{"EN1_UNSET"})
 			build := work("build", "lead")
 			build.Checks = []Check{shStep("unit", "true")}
 			run := launchManaged(t, e, fileCrew(dir, build))

@@ -4,11 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -512,4 +518,504 @@ func TestARefusedRunningRowEndsAndFailsTheSetupStep(t *testing.T) {
 		t.Fatalf("the task after an uncounted attempt: %+v", ts)
 	}
 	stopRun(t, e, run.ID)
+}
+
+// fakePorts is the harness's port executor (treeExec.port): numbers from a
+// range in turn, wrapping, never the network, a test's scripted ones
+// first; it keeps every number it drew.
+type fakePorts struct {
+	mu    sync.Mutex
+	next  int
+	queue []int
+	drawn []int
+}
+
+// The range fakePorts draws from.
+const (
+	fakePortsFirst = 41000
+	fakePortsLast  = 41999
+)
+
+func newFakePorts() *fakePorts { return &fakePorts{next: fakePortsFirst} }
+
+// port draws a number: the first scripted one, else the range's next.
+func (f *fakePorts) port(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int
+	if len(f.queue) > 0 {
+		n, f.queue = f.queue[0], f.queue[1:]
+	} else {
+		n = f.next
+		if f.next++; f.next > fakePortsLast {
+			f.next = fakePortsFirst
+		}
+	}
+	f.drawn = append(f.drawn, n)
+	return n, nil
+}
+
+// script puts ns first in line, in order.
+func (f *fakePorts) script(ns ...int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queue = append(f.queue, ns...)
+}
+
+// draws is every number drawn so far, in order.
+func (f *fakePorts) draws() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.drawn)
+}
+
+// leases is the engine's port leases: each number and the tree it is
+// leased to.
+func leases(e *Engine) map[int]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := map[int]string{}
+	for n, t := range e.ports {
+		out[n] = fmt.Sprintf("%s.%d %s", t.a.t.def.ID, t.a.n, t.kind)
+	}
+	return out
+}
+
+// envFile is the environment a step wrote to the file at path (env >
+// path), by name.
+func envFile(t *testing.T, path string) map[string]string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// conductorVars is env's CONDUCTOR_ names with their values.
+func conductorVars(env map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range env {
+		if strings.HasPrefix(k, "CONDUCTOR_") {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// A tree has the host's names, its ports and its state directory (EN1
+// PR-3). A step's environment (env written to a file) holds the manifest's
+// env names the server approved and no other name of its passthrough, the
+// tree's ports as CONDUCTOR_PORT_*, exactly the injectable CONDUCTOR_
+// names and no token; a placeholder in its argv is put in; the session is
+// given the tree's names and the approved names; the task files name the
+// ports and the state directory as they are on disk before the launch; the
+// events, the tree's row and every receipt carry the ports. The checkout
+// of the result is a tree of its own: other ports, its own state
+// directory with .conductor's .gitignore beside it, and the task's check
+// given its names as its steps are, so it reaches what the tree holds.
+// Once both trees have ended their ports are nobody's.
+func TestATreeHasTheHostsNamesItsPortsAndItsStateDirectory(t *testing.T) {
+	t.Setenv("EN1_STEP_TOKEN", "from-the-host")
+	t.Setenv("EN1_NOT_NAMED", "not-asked-for")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "the-server's")
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	e.SetEnvPassthrough([]string{"EN1_STEP_TOKEN", "EN1_NOT_NAMED"})
+	build := work("build", "lead")
+	build.Checks = []Check{shStep("unit", `test -d "$CONDUCTOR_STATE_DIR/cache/$CONDUCTOR_PORT_WEB" && test "$EN1_STEP_TOKEN" = from-the-host && env > "$CONDUCTOR_STATE_DIR/check-env.txt"`)}
+	m := Manifest{Env: []string{"EN1_STEP_TOKEN"}, Ports: []string{"web", "db"},
+		Setup: []Check{shStep("env", `env > "$CONDUCTOR_STATE_DIR/env.txt"`), {ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache/${CONDUCTOR_PORT_WEB}"}}}}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, build))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	wt := a.Attempt.Worktree
+	state := filepath.Join(wt, ".conductor", "state")
+	ports := map[string]int{"web": fakePortsFirst, "db": fakePortsFirst + 1}
+	want := map[string]string{"CONDUCTOR_RUN": run.ID, "CONDUCTOR_TASK": "build", "CONDUCTOR_ATTEMPT": "1", "CONDUCTOR_STATE_DIR": state,
+		"CONDUCTOR_PORT_WEB": strconv.Itoa(ports["web"]), "CONDUCTOR_PORT_DB": strconv.Itoa(ports["db"])}
+	env := envFile(t, filepath.Join(state, "env.txt"))
+	if got := conductorVars(env); !maps.Equal(got, want) {
+		t.Fatalf("the step's CONDUCTOR_ names: %v, want %v", got, want)
+	}
+	if env["EN1_STEP_TOKEN"] != "from-the-host" || env["EN1_NOT_NAMED"] != "" {
+		t.Fatalf("the step's host names: EN1_STEP_TOKEN=%q EN1_NOT_NAMED=%q", env["EN1_STEP_TOKEN"], env["EN1_NOT_NAMED"])
+	}
+	cache := filepath.Join(state, "cache", strconv.Itoa(ports["web"]))
+	if _, err := os.Stat(cache); err != nil {
+		t.Fatalf("the placeholders were not put in: %v", err)
+	}
+	rows := l.stepRows(run.ID, "build", 1)
+	if len(rows) != 2 || !maps.Equal(rows[0].Ports, ports) || !maps.Equal(rows[1].Ports, ports) || rows[1].Argv[2] != cache {
+		t.Fatalf("the worktree's receipts:\n%s\nports %v %v, argv %q", rowWords(rows), rows[0].Ports, rows[1].Ports, rows[1].Argv)
+	}
+	// The session: the tree's names and the approved names, beside its
+	// crew's own.
+	fl.mu.Lock()
+	call := fl.calls[len(fl.calls)-1]
+	fl.mu.Unlock()
+	wantInject := map[string]string{"CONDUCTOR_STATE_DIR": state, "CONDUCTOR_PORT_WEB": want["CONDUCTOR_PORT_WEB"], "CONDUCTOR_PORT_DB": want["CONDUCTOR_PORT_DB"]}
+	if call.name != "lead · build #1" || !maps.Equal(call.inject, wantInject) || !slices.Equal(call.allow, []string{"EN1_STEP_TOKEN"}) {
+		t.Fatalf("the session %q: inject %v, allow %v", call.name, call.inject, call.allow)
+	}
+	// The task files, written before the launch.
+	md, f := taskFileOf(t, a)
+	if f.Manifest == nil || !maps.Equal(f.Manifest.Ports, ports) || !strings.Contains(md, "web 41000 (`CONDUCTOR_PORT_WEB`)") || !strings.Contains(md, "db 41001 (`CONDUCTOR_PORT_DB`)") ||
+		!strings.Contains(md, "The tree's state directory is `.conductor/state`") {
+		t.Fatalf("the task file's manifest: %+v\n%s", f.Manifest, md)
+	}
+	kinds := l.kinds(run.ID)
+	for _, order := range [][2]string{{"manifest.resolved", "manifest.ports"}, {"manifest.ports", "attempt.workspace"}, {"attempt.workspace", "attempt.launched"}} {
+		if i, j := slices.Index(kinds, order[0]), slices.Index(kinds, order[1]); i < 0 || i > j {
+			t.Fatalf("%s before %s: %v", order[0], order[1], kinds)
+		}
+	}
+	if p := l.payloads(run.ID, "manifest.ports")[0]; p["tree"] != ledger.TreeWorktree || !maps.Equal(p["ports"].(map[string]int), ports) || p["preview"] != "" {
+		t.Fatalf("manifest.ports: %v", p)
+	}
+	if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); !maps.Equal(tr.Ports, ports) {
+		t.Fatalf("the worktree's row: %+v", tr)
+	}
+	// The checkout of the result: a tree of its own, its check given its
+	// names.
+	commitResult(t, e, a, "built.txt", "yes\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	ck := wt + ".check"
+	ckState := filepath.Join(ck, ".conductor", "state")
+	ckPorts := map[string]int{"web": fakePortsFirst + 2, "db": fakePortsFirst + 3}
+	ckEnv := envFile(t, filepath.Join(ckState, "env.txt"))
+	if ckEnv["CONDUCTOR_STATE_DIR"] != ckState || ckEnv["CONDUCTOR_PORT_WEB"] != strconv.Itoa(ckPorts["web"]) || ckEnv["CONDUCTOR_PORT_DB"] != strconv.Itoa(ckPorts["db"]) {
+		t.Fatalf("the checkout's step: %v", conductorVars(ckEnv))
+	}
+	if checkEnv := envFile(t, filepath.Join(ckState, "check-env.txt")); !maps.Equal(conductorVars(checkEnv), conductorVars(ckEnv)) || checkEnv["EN1_STEP_TOKEN"] != "from-the-host" || checkEnv["EN1_NOT_NAMED"] != "" {
+		t.Fatalf("the check's environment: %v", conductorVars(checkEnv))
+	}
+	if ignore, err := os.ReadFile(filepath.Join(ck, ".conductor", ".gitignore")); err != nil || string(ignore) != "*\n" {
+		t.Fatalf("the checkout's .gitignore: %q %v", ignore, err)
+	}
+	rows = l.stepRows(run.ID, "build", 1)
+	if len(rows) != 5 || rows[2].Dir != ck || !maps.Equal(rows[2].Ports, ckPorts) || rows[4].Phase != ledger.PhaseCheck || !maps.Equal(rows[4].Ports, ckPorts) {
+		t.Fatalf("the attempt's receipts:\n%s", rowWords(rows))
+	}
+	waitTreesEnded(t, e, run.ID)
+	if held := leases(e); len(held) != 0 {
+		t.Fatalf("ports leased after every tree ended: %v", held)
+	}
+	if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeCheckout); tr.State != ledger.TreeEnded || !maps.Equal(tr.Ports, ckPorts) {
+		t.Fatalf("the checkout's row: %+v", tr)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A port is one live tree's at a time (EN1 PR-3): leased to it in the
+// transaction that makes it its attempt's, let go in its tree.ended and
+// not before. Two trees in flight never share a number: two tasks' first
+// draws scripted to one number, one gets it and the other draws again; the
+// checkout drawing its worktree's number draws again; once every tree has
+// ended, the number is the next tree's at its first draw.
+func TestAPortIsOneLiveTreesAtATime(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	const shared = 41500
+	fl.ports.script(shared, shared)
+	// As each tree's end is about to be recorded, its ports are still its
+	// own.
+	var early []string
+	e.beforeTreeEnd = func(string) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, r := range e.runs {
+			for _, tk := range r.tasks {
+				for _, at := range tk.attempts {
+					for _, tr := range at.trees {
+						for name, n := range tr.ports {
+							if tr.ending && !tr.ended && e.ports[n] != tr {
+								early = append(early, fmt.Sprintf("%s.%d %s %s %d", tk.def.ID, at.n, tr.kind, name, n))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	m := Manifest{Ports: []string{"web"}, Setup: []Check{shStep("deps", "true")}}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead"), work("docs", "writer")))
+	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	d := waitAttempt(t, e, run.ID, "docs", ledger.AttemptRunning)
+	bw, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree)
+	dw, _ := l.treeRow(run.ID, "docs", 1, ledger.TreeWorktree)
+	bPort, dPort := bw.Ports["web"], dw.Ports["web"]
+	if draws := fl.ports.draws(); bPort == dPort || (bPort != shared && dPort != shared) || len(draws) != 3 || draws[0] != shared || draws[1] != shared {
+		t.Fatalf("two worktrees in flight: build %d, docs %d, draws %v", bPort, dPort, draws)
+	}
+	if got := leases(e); len(got) != 2 {
+		t.Fatalf("the leases: %v", got)
+	}
+	// The checkout of build's result draws its worktree's number first.
+	fl.ports.script(bPort)
+	commitResult(t, e, b, "built.txt", "yes\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	bc, _ := l.treeRow(run.ID, "build", 1, ledger.TreeCheckout)
+	if draws := fl.ports.draws(); len(draws) != 5 || draws[3] != bPort || bc.Ports["web"] != draws[4] || bc.Ports["web"] == bPort || bc.Ports["web"] == dPort {
+		t.Fatalf("build's checkout: %v, draws %v", bc.Ports, draws)
+	}
+	commitResult(t, e, d, "docs.txt", "yes\n", "documented")
+	waitTask(t, e, run.ID, "docs", ledger.TaskSucceeded, 1)
+	waitTreesEnded(t, e, run.ID)
+	if got := leases(e); len(got) != 0 {
+		t.Fatalf("ports leased after every tree ended: %v", got)
+	}
+	e.mu.Lock()
+	gone := slices.Clone(early)
+	e.mu.Unlock()
+	if len(gone) > 0 {
+		t.Fatalf("let go before their tree.ended: %v", gone)
+	}
+	// Let go, the number is the next tree's at its first draw.
+	fl.ports.script(shared)
+	before := len(fl.ports.draws())
+	next := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	waitAttempt(t, e, next.ID, "build", ledger.AttemptRunning)
+	if w, _ := l.treeRow(next.ID, "build", 1, ledger.TreeWorktree); w.Ports["web"] != shared || len(fl.ports.draws()) != before+1 {
+		t.Fatalf("the next tree: %v, draws %v", w.Ports, fl.ports.draws()[before:])
+	}
+	stopRun(t, e, next.ID)
+	stopRun(t, e, run.ID)
+}
+
+// The native executor draws a port of the loopback and lets it go: the
+// number it gives is free to bind. Another process may take a free number
+// between the two, so a number that cannot be bound is drawn again, three
+// times at most: one that the executor held would fail every time.
+func TestTheNativeExecutorDrawsAPortAndLetsItGo(t *testing.T) {
+	var errs []string
+	for range 3 {
+		n, err := nativeExec().port(t.Context())
+		if err != nil || n < 1 || n > maxPort {
+			t.Fatalf("drawn %d: %v", n, err)
+		}
+		l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(n)))
+		if err == nil {
+			l.Close()
+			return
+		}
+		errs = append(errs, err.Error())
+	}
+	t.Fatalf("no drawn port could be bound: %v", errs)
+}
+
+// The bounds hold on the expanded form (EN1 PR-3): a manifest the rules
+// accept, whose placeholders put the state directory in past an argv
+// element's 4,096 bytes, a probe URL's 2,048 or the preview's 512, fails
+// its tree at manifest with the size it expands to, before anything is
+// written or run in it, attributed by the tree's rule: uncounted in an
+// attempt's worktree, the run paused; counted in the checkout of a result,
+// refused before its checks, the next attempt where the refused one
+// started. The preview and the probe reach the bound in a checkout, by a
+// file a result commits: this build refuses both at the launch (PR-4 runs
+// them), and a tree checks the bounds before that refusal.
+func TestATreeWhoseManifestExpandsPastItsBoundsFailsAtManifest(t *testing.T) {
+	long := strings.Repeat(stateDirPlaceholder, 180)
+	t.Run("an argv element in a worktree", func(t *testing.T) {
+		dir := newRepo(t)
+		e, _, l := managedEngine(t)
+		c := repoManifestCrew(dir, Manifest{Setup: []Check{{ID: "cache", Argv: []string{"mkdir", "-p", long}}}}, work("build", "lead"))
+		if err := c.ValidateSave(); err != nil || len(long) > maxArg {
+			t.Fatalf("the manifest is not valid: %v (%d bytes)", err, len(long))
+		}
+		run := launchManaged(t, e, c)
+		attemptFailed(t, e, run.ID, "build", 1)
+		row := l.attemptRow(t, run.ID, "build", 1)
+		state := filepath.Join(row.Worktree, ".conductor", "state")
+		words := fmt.Sprintf("setup cache: argv[2] expands to %s bytes, more than 4,096", byteCount(180*len(state)))
+		if row.Stage != "manifest" || row.Error != words {
+			t.Fatalf("attempt 1: %+v\nwant %q", row, words)
+		}
+		why := "attempt 1 could not be made usable at manifest: " + words
+		waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && r.PausedWhy == why })
+		if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskReady || ts.Reason != why {
+			t.Fatalf("the task: %+v", ts)
+		}
+		if _, err := os.Lstat(filepath.Join(row.Worktree, ".conductor")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("written in the worktree: %v", err)
+		}
+		if _, ok := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); ok || len(l.stepRows(run.ID, "build", 1)) != 0 || l.count(run.ID, "manifest.resolved") != 0 || len(leases(e)) != 0 {
+			t.Fatalf("a tree was made: %v, receipts:\n%s", l.kinds(run.ID), rowWords(l.stepRows(run.ID, "build", 1)))
+		}
+		stopRun(t, e, run.ID)
+	})
+	url := "http://127.0.0.1/"
+	for _, tc := range []struct {
+		name, content string
+		words         func(state string) string
+	}{
+		{"the preview in a checkout", `{"schema": 1, "preview": "` + url + strings.Repeat(stateDirPlaceholder, 20) + `"}`, func(state string) string {
+			return fmt.Sprintf("preview expands to %s bytes, more than 512", byteCount(len(url)+20*len(state)))
+		}},
+		{"a probe's url in a checkout", `{"schema": 1, "ready": [{"id": "up", "url": "` + url + strings.Repeat(stateDirPlaceholder, 90) + `"}]}`, func(state string) string {
+			return fmt.Sprintf("ready up: its url expands to %s bytes, more than 2,048", byteCount(len(url)+90*len(state)))
+		}},
+		{"an argv element in a checkout", `{"schema": 1, "setup": [{"id": "cache", "argv": ["mkdir", "-p", "` + long + `"]}]}`, func(state string) string {
+			return fmt.Sprintf("setup cache: argv[2] expands to %s bytes, more than 4,096", byteCount(180*len(state)))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			commitManifestFile(t, dir, `{"schema": 1, "setup": [{"id": "deps", "argv": ["true"]}]}`)
+			e, _, l := managedEngine(t)
+			build := work("build", "lead")
+			build.Checks = []Check{shStep("unit", "true")}
+			run := launchManaged(t, e, fileCrew(dir, build))
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitManifestFile(t, a.Attempt.Worktree, tc.content)
+			submit(t, e, a.Attempt.SessionID, Result{Summary: "a manifest that grows"})
+			a2 := attemptN(t, e, run.ID, "build", 2)
+			ck := a.Attempt.Worktree + ".check"
+			row := l.attemptRow(t, run.ID, "build", 1)
+			words := manifestFile + " at " + short(row.ResultCommit) + ": " + tc.words(filepath.Join(ck, ".conductor", "state"))
+			if row.State != ledger.AttemptFailed || row.Stage != "manifest" || row.Error != words || a2.Attempt.Start != a.Attempt.Start {
+				t.Fatalf("attempt 1: %+v\nwant %q; attempt 2 starts at %s", row, words, short(a2.Attempt.Start))
+			}
+			if _, err := os.Lstat(filepath.Join(ck, ".conductor")); !errors.Is(err, fs.ErrNotExist) || l.count(run.ID, "check.started") != 0 {
+				t.Fatalf("written or run in the checkout: %v, %d checks", err, l.count(run.ID, "check.started"))
+			}
+			if _, ok := l.treeRow(run.ID, "build", 1, ledger.TreeCheckout); ok {
+				t.Fatal("the checkout became a tree")
+			}
+			if r, _ := e.Get(run.ID); r.Paused {
+				t.Fatal("a refused result paused the run")
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// A manifest's env names are prerequisites (EN1 PR-3): before any of the
+// prerequisites' commands, each name must be in the server's
+// envPassthrough and set in the server's environment. One that is not
+// pauses the run before its first dispatch with the name in the words, the
+// commands not run and nothing spent; one the host does not have says a
+// restart fixes it, and an unpause alone finds the host as it was (R13:
+// nothing reloads the server's environment). Names allowed and set pass,
+// with commands or none, and reach the commands.
+func TestTheEnvNamesArePrerequisites(t *testing.T) {
+	t.Setenv("EN1_SET", "yes")
+	for _, tc := range []struct {
+		name, env, words string
+		passthrough      []string
+	}{
+		{"a name the server does not allow", "EN1_SET", "the prerequisites failed: EN1_SET is not in the server's envPassthrough", nil},
+		{"a name the host does not have", "EN1_UNSET", "the prerequisites failed: the host has no EN1_UNSET: set it where the server starts, start it again and continue the run", []string{"EN1_SET", "EN1_UNSET"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			e.SetEnvPassthrough(tc.passthrough)
+			m := Manifest{Env: []string{tc.env}, Prerequisites: []Check{shStep("tools", "true")}, Setup: []Check{shStep("deps", "true")}}
+			run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+			waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && r.PausedWhy == tc.words })
+			if ts := taskOf(t, e, run.ID, "build"); ts.Attempts != 0 || len(l.prereqRows(run.ID)) != 0 || l.count(run.ID, "prerequisites.passed") != 0 {
+				t.Fatalf("spent or run: %+v, prerequisites %+v", ts, l.prereqRows(run.ID))
+			}
+			// An unpause alone: the host is as it was.
+			pauseRun(t, e, run.ID, false)
+			waitTrue(t, "the run paused again", func() bool { r, _ := e.Get(run.ID); return r.Paused && r.PausedWhy == tc.words })
+			if n := l.count(run.ID, "run.paused"); n != 3 || taskOf(t, e, run.ID, "build").Attempts != 0 || len(l.prereqRows(run.ID)) != 0 {
+				t.Fatalf("after the unpause: %d run.paused, %+v", n, l.prereqRows(run.ID))
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+	for _, tc := range []struct {
+		name     string
+		commands []Check
+	}{{"names allowed and set reach the commands", []Check{shStep("token", `test "$EN1_SET" = yes`)}}, {"names alone", nil}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			e.SetEnvPassthrough([]string{"EN1_SET"})
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Env: []string{"EN1_SET"}, Prerequisites: tc.commands}, work("build", "lead")))
+			waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			rows := l.prereqRows(run.ID)
+			if len(rows) != len(tc.commands) || l.count(run.ID, "prerequisites.passed") != 1 {
+				t.Fatalf("the prerequisites: %+v", rows)
+			}
+			for _, row := range rows {
+				if row.State != ledger.CheckFinished || row.Exit != 0 || row.Error != "" {
+					t.Fatalf("the prerequisite %s: %+v", row.ID, row)
+				}
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// The env rule holds in every tree, whichever commit's manifest named the
+// name (EN1 PR-3): a server started again without a name a result added
+// (one its envPassthrough no longer allows, or one its environment no
+// longer has) fails the next tree made at that result in its worktree, at
+// manifest, uncounted, the run's scheduling paused with the words, as any
+// failure of a worktree's manifest is: the continuation's prerequisites,
+// at a base whose manifest names nothing, pass, and the worktree's own
+// check is what stops the name.
+func TestTheEnvRuleHoldsInAWorktreeAfterARestart(t *testing.T) {
+	t.Setenv("EN1_ADDED", "yes")
+	for _, tc := range []struct {
+		name, words string
+		passthrough []string
+		unset       bool
+	}{
+		{"no longer allowed", "EN1_ADDED is not in the server's envPassthrough", nil, false},
+		{"no longer set", "the host has no EN1_ADDED: set it where the server starts, start it again and continue the run", []string{"EN1_ADDED"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			commitManifestFile(t, dir, `{"schema": 1, "setup": [{"id": "deps", "argv": ["true"]}]}`)
+			e, fl, l := managedEngine(t)
+			e.SetEnvPassthrough([]string{"EN1_ADDED"})
+			run := launchManaged(t, e, fileCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
+			b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			// build's result names EN1_ADDED, which this server allows and
+			// has: its checkout passes. docs is held at its place.
+			commitManifestFile(t, b.Attempt.Worktree, `{"schema": 1, "env": ["EN1_ADDED"], "setup": [{"id": "deps", "argv": ["sh", "-c", "test \"$EN1_ADDED\" = yes"]}]}`)
+			hold := make(chan struct{})
+			fl.mu.Lock()
+			fl.reserveHold = hold
+			fl.mu.Unlock()
+			t.Cleanup(func() { close(hold) })
+			submit(t, e, b.Attempt.SessionID, Result{Summary: "needs EN1_ADDED"})
+			result := waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1).Attempt.Result
+			stopRun(t, e, run.ID)
+			// The server started again without it.
+			if tc.unset {
+				os.Unsetenv("EN1_ADDED")
+			}
+			e2, _ := readyEngine(t)
+			e2.UseLedger(l)
+			e2.SetEnvPassthrough(tc.passthrough)
+			next, err := e2.ContinueRun(t.Context(), run.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			attemptFailed(t, e2, next.ID, "docs", 1)
+			row := l.attemptRow(t, next.ID, "docs", 1)
+			if row.StartCommit != result || row.Stage != "manifest" || row.Error != tc.words {
+				t.Fatalf("docs' attempt 1 (at %s): %+v", short(result), row)
+			}
+			why := "attempt 1 could not be made usable at manifest: " + tc.words
+			waitTrue(t, "the continuation paused", func() bool { r, _ := e2.Get(next.ID); return r.Paused && r.PausedWhy == why })
+			if ts := taskOf(t, e2, next.ID, "docs"); ts.State != ledger.TaskReady || ts.Reason != why {
+				t.Fatalf("docs: %+v", ts)
+			}
+			stopRun(t, e2, next.ID)
+		})
+	}
 }

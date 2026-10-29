@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,7 +61,9 @@ func checkTimeout(ch Check) time.Duration {
 // changes the manifest is checked by the one it changed), then its setup
 // phase, each step a receipt and the checkout compared with the result
 // after each (what the worker had, the checks have; a step that changes
-// tracked content fails the attempt at it). Then the checks, one at a time
+// tracked content fails the attempt at it), its ports, its state directory
+// and the manifest's approved env names given to its steps and checks as
+// to the worker's session. Then the checks, one at a time
 // across the server (checkSlots), each recorded before it starts, with its
 // process once started, and with its outcome when it ends. After each one
 // the checkout is compared with the commit as git would store it
@@ -153,6 +156,9 @@ func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, di
 		k := a.nextK(ch.ID)
 		e.mu.Unlock()
 		row := ledger.CheckRow{RunID: r.id, TaskID: t.def.ID, N: a.n, ID: ch.ID, K: k, Phase: ledger.PhaseCheck, Tries: 1, Argv: slices.Clone(ch.Argv), Dir: cwd, Subject: a.result, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+		if tr != nil {
+			row.Ports = maps.Clone(tr.ports)
+		}
 		if err := e.transact(ctx, r, func() tx {
 			out := ev("check.started", map[string]any{"task": t.def.ID, "attempt": a.n, "check": ch.ID, "k": k, "subject": a.result})
 			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
@@ -167,7 +173,7 @@ func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, di
 			return "", "", false
 		}
 		var log bytes.Buffer
-		res := e.runCommand(ctx, cwd, ch.Argv, checkTimeout(ch), &log, func(p proc.Process) {
+		res := e.runCommand(ctx, cwd, ch.Argv, checkTimeout(ch), tr.env(r.id), &log, func(p proc.Process) {
 			running := row
 			running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
 			_ = e.transact(context.Background(), r, func() tx {

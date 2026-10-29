@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -333,11 +334,76 @@ func TestExpandPutsThePlaceholdersInLiterally(t *testing.T) {
 	}
 }
 
-// The launch of a manifest that names a phase or a placeholder this build
-// does not run yet is refused before anything is made; a manifest with its
-// prerequisites and setup phase, the file form (held to the same once it is
-// read, at the launch's base), and a legacy setup whatever its argv holds,
-// launch.
+// expandManifest puts a tree's ports and state directory in every argv,
+// probe URL and preview of a manifest, and holds the expanded form to the
+// bounds the manifest's own is (EN1 PR-3): twenty ${CONDUCTOR_STATE_DIR}
+// in a preview of 457 bytes, which validation accepts, expand past 512
+// with any real state directory (a temporary one is near 100 bytes) and
+// are refused with the size they expand to; the same for an argv element
+// past 4,096, an argv past 8 KiB in all and a probe's URL past 2,048, in
+// every phase. The prerequisites are left as they are, and the manifest
+// given is not changed.
+func TestTheExpandedManifestIsHeldToItsBounds(t *testing.T) {
+	state := filepath.Join(t.TempDir(), ".conductor", "state")
+	ports := map[string]int{"web": 41234}
+	fits := Manifest{Ports: []string{"web"}, Prerequisites: []Check{{ID: "node", Argv: []string{"node", "--version"}}},
+		Setup:    []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache"}}},
+		Services: []Check{{ID: "web", Argv: []string{"serve", "--port", "${CONDUCTOR_PORT_WEB}"}}},
+		Ready:    []Probe{{ID: "up", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/health"}, {ID: "file", Argv: []string{"test", "-e", "${CONDUCTOR_STATE_DIR}/up"}}},
+		Preview:  "http://localhost:${CONDUCTOR_PORT_WEB}/", Cleanup: []Check{{ID: "rm", Argv: []string{"rm", "-rf", "${CONDUCTOR_STATE_DIR}/tmp"}}}}
+	got, err := expandManifest(fits, ports, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Setup[0].Argv[2] != state+"/cache" || got.Services[0].Argv[2] != "41234" || got.Ready[0].URL != "http://127.0.0.1:41234/health" || got.Ready[1].Argv[2] != state+"/up" ||
+		got.Preview != "http://localhost:41234/" || got.Cleanup[0].Argv[2] != state+"/tmp" || !reflect.DeepEqual(got.Prerequisites, fits.Prerequisites) {
+		t.Fatalf("expanded: %+v", got)
+	}
+	if fits.Setup[0].Argv[2] != "${CONDUCTOR_STATE_DIR}/cache" || fits.Ready[0].URL != "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/health" || fits.Preview != "http://localhost:${CONDUCTOR_PORT_WEB}/" {
+		t.Fatalf("the manifest given was changed: %+v", fits)
+	}
+	url := "http://127.0.0.1/"
+	preview := url + strings.Repeat(stateDirPlaceholder, 20)
+	element := strings.Repeat(stateDirPlaceholder, 180)
+	k := maxArg / len(state) // placeholders in a part that expands within maxArg
+	part := strings.Repeat(stateDirPlaceholder, k)
+	if len(preview) != 457 || len(element) > maxArg {
+		t.Fatalf("the preview is %d bytes, the element %d", len(preview), len(element))
+	}
+	for _, tc := range []struct {
+		name  string
+		rec   Manifest
+		words string
+	}{
+		{"the preview", Manifest{Preview: preview}, fmt.Sprintf("preview expands to %s bytes, more than 512", byteCount(len(url)+20*len(state)))},
+		{"a setup step's argv element", Manifest{Setup: []Check{{ID: "cache", Argv: []string{"mkdir", "-p", element}}}}, fmt.Sprintf("setup cache: argv[2] expands to %s bytes, more than 4,096", byteCount(180*len(state)))},
+		{"a service's argv element", Manifest{Services: []Check{{ID: "db", Argv: []string{"postgres", "-D", element}}}}, fmt.Sprintf("service db: argv[2] expands to %s bytes, more than 4,096", byteCount(180*len(state)))},
+		{"a probe's argv element", Manifest{Ready: []Probe{{ID: "file", Argv: []string{"test", "-e", element}}}}, fmt.Sprintf("ready file: argv[2] expands to %s bytes, more than 4,096", byteCount(180*len(state)))},
+		{"a cleanup step's argv element", Manifest{Cleanup: []Check{{ID: "rm", Argv: []string{"rm", "-rf", element}}}}, fmt.Sprintf("cleanup rm: argv[2] expands to %s bytes, more than 4,096", byteCount(180*len(state)))},
+		{"a verify step's argv in all", Manifest{Verify: []Check{{ID: "e2e", Argv: []string{"run", part, part, part}}}}, fmt.Sprintf("verify e2e: its argv expands to %s bytes in all, more than 8,192", byteCount(3+3*k*len(state)))},
+		{"a probe's url", Manifest{Ready: []Probe{{ID: "up", URL: url + strings.Repeat(stateDirPlaceholder, 90)}}}, fmt.Sprintf("ready up: its url expands to %s bytes, more than 2,048", byteCount(len(url)+90*len(state)))},
+	} {
+		c := managedCrew()
+		c.Setup, c.Manifest = nil, &tc.rec
+		if err := c.ValidateSave(); err != nil {
+			t.Fatalf("%s: the manifest is not valid: %v", tc.name, err)
+		}
+		if _, err := expandManifest(tc.rec, nil, state); !errors.Is(err, ErrInvalid) || err.Error() != tc.words {
+			t.Errorf("%s: %v\nwant %s", tc.name, err, tc.words)
+		}
+	}
+	for n, want := range map[int]string{0: "0", 512: "512", 4096: "4,096", 61440: "61,440", 1234567: "1,234,567"} {
+		if got := byteCount(n); got != want {
+			t.Errorf("byteCount(%d) = %s", n, got)
+		}
+	}
+}
+
+// The launch of a manifest that names a phase this build does not run yet
+// is refused before anything is made; a manifest with its prerequisites
+// and setup phase, its env names, its ports and its placeholders, the file
+// form (held to the same once it is read, at the launch's base), and a
+// legacy setup whatever its argv holds, launch.
 func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	setup := []Check{{ID: "deps", Argv: []string{"npm", "ci"}}}
 	cases := []struct {
@@ -345,15 +411,11 @@ func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 		rec   Manifest
 		words string
 	}{
-		{"env", Manifest{Setup: setup, Env: []string{"NPM_TOKEN"}}, "this build does not pass a project manifest's env names on yet"},
-		{"ports", Manifest{Setup: setup, Ports: []string{"web"}}, "this build does not give a project manifest's ports yet"},
 		{"services", Manifest{Services: []Check{{ID: "web", Argv: []string{"npm", "start"}}}}, "this build does not run a project manifest's services yet"},
 		{"ready", Manifest{Ready: []Probe{{ID: "up", Argv: []string{"true"}}}}, "this build does not run a project manifest's ready probes yet"},
 		{"preview", Manifest{Preview: "http://127.0.0.1:8080/"}, "this build does not offer a project manifest's preview yet"},
 		{"verify", Manifest{Verify: []Check{{ID: "e2e", Argv: []string{"npm", "test"}}}}, "this build does not run a project manifest's verify steps yet"},
 		{"cleanup", Manifest{Cleanup: []Check{{ID: "rm", Argv: []string{"rm", "-rf", "tmp"}}}}, "this build does not run a project manifest's cleanup steps yet"},
-		{"the state directory in a setup step", Manifest{Setup: []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache"}}}},
-			"this build does not expand a project manifest's placeholders yet: setup[0] (\"cache\") names ${CONDUCTOR_STATE_DIR} in argv[2]"},
 	}
 	e, _ := newEngine(t)
 	for _, tc := range cases {
@@ -370,9 +432,10 @@ func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	if runs := e.List(); len(runs) != 0 {
 		t.Fatalf("a refused launch kept a run: %+v", runs)
 	}
-	// Its prerequisites and its setup phase run, and the file form is read
-	// at the base; a legacy setup is not a manifest saved ahead of its
-	// engine: its argv is passed on as main passes it.
+	// Its prerequisites and its setup phase run, its env names pass on,
+	// its ports are given and its placeholders put in (EN1 PR-3), and the
+	// file form is read at the base; a legacy setup is not a manifest saved
+	// ahead of its engine: it is the manifest's setup phase.
 	c := managedCrew()
 	c.Setup, c.Manifest = nil, &Manifest{Setup: setup}
 	if err := c.runnableManifest(); err != nil {
@@ -381,6 +444,14 @@ func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	c.Manifest = &Manifest{Setup: setup, Prerequisites: []Check{{ID: "node", Argv: []string{"node", "--version"}}}}
 	if err := c.runnableManifest(); err != nil {
 		t.Fatalf("a manifest with prerequisites: %v", err)
+	}
+	c.Manifest = &Manifest{Env: []string{"NPM_TOKEN"}, Ports: []string{"web"},
+		Setup: []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache/${CONDUCTOR_PORT_WEB}"}}}}
+	if err := c.ValidateSave(); err != nil {
+		t.Fatalf("a manifest with env names, ports and placeholders is not valid: %v", err)
+	}
+	if err := c.runnableManifest(); err != nil {
+		t.Fatalf("a manifest with env names, ports and placeholders: %v", err)
 	}
 	c.Manifest = &Manifest{File: true}
 	if err := c.runnableManifest(); err != nil {

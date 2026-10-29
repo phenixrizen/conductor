@@ -25,9 +25,10 @@ import (
 // in the crew's directory as each tree's commit holds it (resolveManifest),
 // versioned with the code. A crew has one or the other. A legacy Setup is
 // the manifest's setup phase (effectiveManifest), so the engine sees one
-// shape. This build runs the prerequisites and the setup phase (steps.go):
-// a manifest that names more is refused (runnableManifest, runnable) rather
-// than skipped or half run.
+// shape. This build runs the prerequisites and the setup phase, passes the
+// host's env names on, gives each tree its ports and its state directory
+// and expands the placeholders (steps.go): a manifest that names more is
+// refused (runnableManifest, runnable) rather than skipped or half run.
 
 // Manifest is a project manifest. Every step is a Check: an argv array, never a
 // shell line, run in the tree's working directory.
@@ -460,8 +461,8 @@ func placeholders(what, s string, ports map[string]bool) error {
 // state directory. It is applied to one argv element at a time, a probe's
 // URL and the preview, so it never splits an element, and what it puts in
 // is never expanded again. A placeholder naming no port is left as it is
-// (validation refuses one in a manifest). Nothing applies it yet: the engine
-// that runs a manifest's ports and state directory does.
+// (validation refuses one in a manifest). expandManifest applies it to a
+// tree's manifest once its ports and state directory are known.
 func expand(s string, ports map[string]int, stateDir string) string {
 	if !strings.Contains(s, "${CONDUCTOR_") {
 		return s
@@ -478,13 +479,85 @@ func expand(s string, ports map[string]int, stateDir string) string {
 	})
 }
 
+// expandManifest is rec as a tree runs it: every placeholder put in
+// (expand) with the tree's ports and state directory, in each argv of its
+// setup steps, services, ready probes, verify and cleanup steps, in its
+// probes' URLs and in its preview, and the expanded form held to the bounds
+// the manifest's own is: each argv element at most maxArg bytes and each
+// argv maxArgsBytes in all (a step's receipt keeps its argv), a probe's
+// URL maxProbeURL (the receipt's url) and the preview maxPreview (the task
+// file carries it uncut). A port puts in at most five digits, shorter than
+// its placeholder, but a state directory is a path of up to the platform's
+// limit: a preview of twenty ${CONDUCTOR_STATE_DIR}, 457 bytes and valid,
+// would expand past 60 KiB were the manifest alone bounded. The first bound
+// passed is the error (matching ErrInvalid), naming the step, or the
+// preview, and the size it expands to. The prerequisites, which run before
+// any tree, have no placeholder (validate) and are left as they are.
+func expandManifest(rec Manifest, ports map[string]int, stateDir string) (Manifest, error) {
+	out := rec.clone()
+	argv := func(what string, list []string) error {
+		total := 0
+		for i := range list {
+			list[i] = expand(list[i], ports, stateDir)
+			if n := len(list[i]); n > maxArg {
+				return invalidf("%s: argv[%d] expands to %s bytes, more than %s", what, i, byteCount(n), byteCount(maxArg))
+			}
+			total += len(list[i])
+		}
+		if total > maxArgsBytes {
+			return invalidf("%s: its argv expands to %s bytes in all, more than %s", what, byteCount(total), byteCount(maxArgsBytes))
+		}
+		return nil
+	}
+	for _, phase := range []struct {
+		name  string
+		steps []Check
+	}{{"setup", out.Setup}, {"service", out.Services}, {"verify", out.Verify}, {"cleanup", out.Cleanup}} {
+		for _, ch := range phase.steps {
+			if err := argv(phase.name+" "+ch.ID, ch.Argv); err != nil {
+				return Manifest{}, err
+			}
+		}
+	}
+	for i := range out.Ready {
+		p := &out.Ready[i]
+		if err := argv("ready "+p.ID, p.Argv); err != nil {
+			return Manifest{}, err
+		}
+		if p.URL == "" {
+			continue
+		}
+		p.URL = expand(p.URL, ports, stateDir)
+		if n := len(p.URL); n > maxProbeURL {
+			return Manifest{}, invalidf("ready %s: its url expands to %s bytes, more than %s", p.ID, byteCount(n), byteCount(maxProbeURL))
+		}
+	}
+	if out.Preview != "" {
+		out.Preview = expand(out.Preview, ports, stateDir)
+		if n := len(out.Preview); n > maxPreview {
+			return Manifest{}, invalidf("preview expands to %s bytes, more than %s", byteCount(n), byteCount(maxPreview))
+		}
+	}
+	return out, nil
+}
+
+// byteCount is n with its thousands set apart by commas, as a person reads
+// a size: 61,440.
+func byteCount(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
+}
+
 // runnableManifest refuses the launch of a crew whose project manifest names a
-// phase or a placeholder this build does not run yet (runnable), so a
-// manifest saved ahead of its engine is never accepted and then skipped or
-// half run. The file form is held to the same once it is read, at the
-// launch's base (Engine.prepare) and at every tree's commit (resolveAt). A
-// legacy Setup launches as it always has. The error matches ErrInvalid: the
-// API answers 400 invalid_crew.
+// phase this build does not run yet (runnable), so a manifest saved ahead
+// of its engine is never accepted and then skipped or half run. The file
+// form is held to the same once it is read, at the launch's base
+// (Engine.prepare) and at every tree's commit (resolveTree). A legacy
+// Setup launches as it always has. The error matches ErrInvalid: the API
+// answers 400 invalid_crew.
 func (c Crew) runnableManifest() error {
 	if !c.hasManifest() || c.Manifest.File {
 		return nil
@@ -492,16 +565,13 @@ func (c Crew) runnableManifest() error {
 	return c.Manifest.runnable()
 }
 
-// runnable refuses a manifest that names a phase or a placeholder this
-// build does not run yet: it runs the prerequisites and the setup phase,
-// and expands no placeholder (a ${CONDUCTOR_STATE_DIR} in a setup step
-// would be passed on as it is; a prerequisite has none by its rules).
+// runnable refuses a manifest that names a phase this build does not run
+// yet: it runs the prerequisites and the setup phase, passes the env names
+// the server allows on, gives each tree its ports and its state directory
+// and expands every placeholder; the services, the ready probes, the
+// preview, the verify steps and the cleanup steps come later.
 func (rec Manifest) runnable() error {
 	switch {
-	case len(rec.Env) > 0:
-		return invalidf("this build does not pass a project manifest's env names on yet")
-	case len(rec.Ports) > 0:
-		return invalidf("this build does not give a project manifest's ports yet")
 	case len(rec.Services) > 0:
 		return invalidf("this build does not run a project manifest's services yet")
 	case len(rec.Ready) > 0:
@@ -512,13 +582,6 @@ func (rec Manifest) runnable() error {
 		return invalidf("this build does not run a project manifest's verify steps yet")
 	case len(rec.Cleanup) > 0:
 		return invalidf("this build does not run a project manifest's cleanup steps yet")
-	}
-	for i, ch := range rec.Setup {
-		for j, a := range ch.Argv {
-			if m := placeholderPattern.FindString(a); m != "" {
-				return invalidf("this build does not expand a project manifest's placeholders yet: setup[%d] (%s) names %s in argv[%d]", i, quote(ch.ID), m, j)
-			}
-		}
 	}
 	return nil
 }
