@@ -489,6 +489,51 @@ func TestARetryWhileTheInterruptedGenerationEndsRunsThemAgain(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A continuation of a run whose every task ended is finished by the commit
+// that arms its prerequisites, so that generation never begins: it reads
+// as one the run's end interrupted, none in flight, the prerequisite
+// pending with no receipt, never running. A retry reopens the
+// continuation and runs them (k 1), and the task is dispatched once they
+// pass (Codex's review of #422, round 3: the generation stayed pending
+// with nothing to run it, and the pump, which dispatches only on passed,
+// waited for good).
+func TestARetryInAContinuationFinishedAtItsStartRunsThePrerequisites(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	gate, pidFile := filepath.Join(t.TempDir(), "gate"), filepath.Join(t.TempDir(), "pid")
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{gatedPrerequisite("tools", gate, pidFile)}}, work("build", "lead")))
+	pidIn(t, pidFile)
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	r := runOf(t, e, run.ID)
+	waitTrue(t, "the generation's end", func() bool { st, _, n := prereqState(e, r); return st == prereqInterrupted && n == 0 })
+	open(t, gate)
+	next, err := e.ContinueRun(t.Context(), run.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nr := runOf(t, e, next.ID)
+	if st, gen, n := prereqState(e, nr); next.Outcome != ledger.OutcomeCancelled || st != prereqInterrupted || gen != 0 || n != 0 {
+		t.Fatalf("the continuation finished at its start: outcome %q, prerequisites %s, generation %d, %d in flight", next.Outcome, st, gen, n)
+	}
+	if got, _ := e.Get(next.ID); got.Manifest == nil || len(got.Manifest.Prerequisites) != 1 || got.Manifest.Prerequisites[0].State != "pending" || len(l.prereqRows(next.ID)) != 0 {
+		t.Fatalf("the finished continuation's prerequisites: %+v, rows %+v", got.Manifest, l.prereqRows(next.ID))
+	}
+	if err := e.RetryTask(t.Context(), next.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, next.ID, "build", ledger.AttemptRunning)
+	if rows := l.prereqRows(next.ID); len(rows) != 1 || rows[0].K != 1 || rows[0].State != ledger.CheckFinished || rows[0].Exit != 0 {
+		t.Fatalf("the continuation's prerequisites after the retry: %+v", rows)
+	}
+	kinds := l.kinds(next.ID)
+	if p, a := slices.Index(kinds, "prerequisites.passed"), slices.Index(kinds, "attempt.reserved"); p < 0 || p > a || slices.Index(kinds, "task.retried") > p {
+		t.Fatalf("the retry, the prerequisites and the dispatch: %v", kinds)
+	}
+	stopRun(t, e, next.ID)
+}
+
 // An unpause the ledger refuses while a failed generation is ending starts
 // no generation (Codex's review of #422): the generation's end waits for
 // the unpause's commit and reads the run as its undo left it, never the

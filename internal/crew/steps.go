@@ -46,8 +46,8 @@ import (
 // The prerequisites' states (run.prereq): pending once armed, running
 // from its generation's first step, then passed or failed; interrupted
 // when the commit that finished the run, or a stop, ended the generation
-// before its verdict, with none in flight. The pump dispatches only on
-// passed.
+// before its verdict, or before it began (startPrerequisites), with none
+// in flight. The pump dispatches only on passed.
 const (
 	prereqPending     = "pending"
 	prereqRunning     = "running"
@@ -569,10 +569,12 @@ func (r *run) rearmPrerequisites() {
 
 // reopenPrerequisites arms them again as a retry or an acceptance reopens a
 // finished run whose finishing commit ended a generation before its
-// verdict (interrupted): the pump dispatches only on passed, so the run
-// would wait for good. A generation still ending as the run reopens runs
-// them again itself as it ends (prerequisites); one that passed or failed
-// stands. The caller holds e.mu, in a transaction's change.
+// verdict, or before it began (interrupted; a continuation whose every
+// task was carried ended is finished by the commit that arms its first):
+// the pump dispatches only on passed, so the run would wait for good. A
+// generation still ending as the run reopens runs them again itself as it
+// ends (prerequisites); one that passed or failed stands. The caller holds
+// e.mu, in a transaction's change.
 func (r *run) reopenPrerequisites() {
 	if r.prereq == prereqInterrupted && r.outcome == "" && !r.stopping {
 		r.prereq, r.prereqStart = prereqPending, true
@@ -580,12 +582,22 @@ func (r *run) reopenPrerequisites() {
 }
 
 // startPrerequisites starts a generation of r's prerequisites, armed and
-// committed: one at a time (r.prereqs), none once the run stops. The
+// committed: one at a time (r.prereqs), none once the run has ended. One
+// armed in a run that has ended by then (finished, as a continuation whose
+// every task was carried ended is by the commit that arms it, or stopping)
+// never begins: it is interrupted, none in flight, so nothing says it
+// runs, and a retry that reopens the run arms it again
+// (reopenPrerequisites); left pending, nothing would ever run it and the
+// pump would wait for good (Codex's review of #422, round 3). The
 // generation runs on a goroutine counted in r.starts, under a context of
 // its own beneath r.ctx, which a commit that finishes the run cancels
 // (settleRun). The caller holds e.mu.
 func (e *Engine) startPrerequisites(r *run) {
-	if r.stopping || r.ctx.Err() != nil || r.outcome != "" || r.prereqs > 0 || r.prereq != prereqPending {
+	if r.prereqs > 0 || r.prereq != prereqPending {
+		return
+	}
+	if r.stopping || r.ctx.Err() != nil || r.outcome != "" {
+		r.prereq = prereqInterrupted
 		return
 	}
 	r.prereqGen++
