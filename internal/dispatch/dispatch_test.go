@@ -278,6 +278,24 @@ func rawConnAt(t *testing.T, path string) *sql.DB {
 	return db
 }
 
+// rollbackConnAt is a connection on the database file at path that sets
+// no journal mode, as another tool's would: it finds the file in the mode
+// the file is in.
+func rollbackConnAt(t *testing.T, path string) *sql.Conn {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
 func TestAWriterHoldingTheDatabasePastTheTimeoutOpensReadOnly(t *testing.T) {
 	dir := storeDir(t)
 	s := openStore(t, dir)
@@ -309,6 +327,80 @@ func TestAWriterHoldingTheDatabasePastTheTimeoutOpensReadOnly(t *testing.T) {
 	}
 	rc, err = s.AddPerson(context.Background(), testOp("a1"), "Alice")
 	want(t, rc, err, StatusDone, "")
+}
+
+// A database in a rollback journal's mode, as another tool can leave it,
+// that the store cannot write is read all the same: the read-only
+// connection sets no journal mode, since a switch to WAL writes the file's
+// header, which read-only mode refuses, and a refused open would leave the
+// store nothing to read. The file stays in the mode it was found in. The
+// writable open fails two ways: a file the store may not write, and a
+// writer holding the database past the busy timeout.
+func TestARollbackJournalDatabaseItCannotWriteIsRead(t *testing.T) {
+	cases := []struct {
+		name string
+		// fail makes the store's writable open of the file at path fail,
+		// conn being a connection on it, and gives the words ReadOnly
+		// says why with.
+		fail func(t *testing.T, path string, conn *sql.Conn) string
+	}{
+		{"a file it may not write", func(t *testing.T, path string, _ *sql.Conn) string {
+			if os.Geteuid() == 0 {
+				t.Skip("root writes a file whatever its mode")
+			}
+			if err := os.Chmod(path, 0o400); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(path, 0o600) })
+			return "readonly database"
+		}},
+		{"a writer holding it past the busy timeout", func(t *testing.T, _ string, conn *sql.Conn) string {
+			if _, err := conn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { conn.ExecContext(context.Background(), "ROLLBACK") })
+			old := busyTimeout
+			busyTimeout = 50 * time.Millisecond
+			t.Cleanup(func() { busyTimeout = old })
+			return "another writer holds the database"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := storeDir(t)
+			s := openStore(t, dir)
+			rc, err := s.AddPerson(ctx, testOp("a1"), "Alice")
+			want(t, rc, err, StatusDone, "")
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, File)
+			conn := rollbackConnAt(t, path)
+			var mode string
+			if err := conn.QueryRowContext(ctx, "PRAGMA journal_mode = DELETE").Scan(&mode); err != nil || mode != "delete" {
+				t.Fatalf("the rollback journal's mode: %q %v", mode, err)
+			}
+			words := tc.fail(t, path, conn)
+			again := openStore(t, dir)
+			ro, why := again.ReadOnly()
+			if !ro || !strings.Contains(why, words) || strings.Contains(why, "nor read") {
+				t.Fatalf("read-only %v: %s", ro, why)
+			}
+			// It reads what the file holds, the writable open still failing.
+			if people, err := again.People(ctx); err != nil || len(people) != 1 || people[0].Name != "Alice" {
+				t.Fatalf("a read: %+v %v", people, err)
+			}
+			if rc, found, err := again.Receipt(ctx, "test", "a1"); !found || err != nil || rc.Status != StatusDone {
+				t.Fatalf("the receipt kept: %+v %v %v", rc, found, err)
+			}
+			rc, err = again.AddPerson(ctx, testOp("b1"), "Bob")
+			want(t, rc, err, StatusFailed, RefusalReadOnly)
+			if err := again.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil || mode != "delete" {
+				t.Fatalf("the journal mode the store left: %q %v", mode, err)
+			}
+		})
+	}
 }
 
 func TestAWriterLettingGoWhileOpenWaitsLeavesItWritable(t *testing.T) {

@@ -234,12 +234,20 @@ func open(ctx context.Context, path string, readOnly bool) (*sql.DB, error) {
 // path with forward slashes and escaped, so a directory with '#', '?' or
 // '%' in its name is the directory it is, and a Windows drive after a
 // '/' (file:///C:/…); the pragmas every connection needs (the busy
-// timeout, foreign keys on, a full sync, WAL; on darwin a full fsync,
-// since a plain fsync there does not reach the disk), BEGIN IMMEDIATE for
-// every transaction, and read-only mode when the store is.
+// timeout, foreign keys on, a full sync; on darwin a full fsync, since a
+// plain fsync there does not reach the disk), WAL for a writable one,
+// BEGIN IMMEDIATE for every transaction, and read-only mode when the
+// store is. A read-only connection sets no journal mode: it reads the file
+// in the mode the file is in (a WAL file's header says WAL), since a
+// switch from a rollback journal's mode writes the header, which
+// read-only mode refuses, and a refused open would leave the store
+// nothing to read.
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
-	pragmas := []string{fmt.Sprintf("busy_timeout(%d)", busyTimeout/time.Millisecond), "foreign_keys(1)", "synchronous(FULL)", "journal_mode(WAL)"}
+	pragmas := []string{fmt.Sprintf("busy_timeout(%d)", busyTimeout/time.Millisecond), "foreign_keys(1)", "synchronous(FULL)"}
+	if !readOnly {
+		pragmas = append(pragmas, "journal_mode(WAL)")
+	}
 	if runtime.GOOS == "darwin" {
 		pragmas = append(pragmas, "fullfsync(1)", "checkpoint_fullfsync(1)")
 	}
