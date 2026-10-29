@@ -146,6 +146,16 @@ add its rule here.
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
   it before the commit. Wait on the ledger for what the ledger must hold.
+- End what the test started before its directories go. Cleanups run
+  last-registered first: the fake sessions end before `t.TempDir`'s
+  directory is removed, and what their ends set off runs beside the
+  removal. An engine left running (a continuation test's first engine,
+  never stopped, since a stop would write rows the continuation reads)
+  takes up the attempt a cleanup ended, and its `git worktree add`
+  writes in the repository while `RemoveAll` empties it. Register the
+  end of such work right after it is made (`abandonAtEnd` in
+  `internal/crew`): no new work, its context cancelled, its goroutines
+  waited for.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.

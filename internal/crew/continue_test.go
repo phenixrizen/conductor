@@ -28,6 +28,38 @@ func interrupt(l *fakeLedger, runID string, attempts map[string][2]string) {
 	}
 }
 
+// abandonAtEnd stands for the server's end under e, a run of which the
+// test then continues with another engine (#391). e is never stopped (a
+// stop would record itself in the rows the continuation reads), so its
+// work is ended when the test ends: registered right after the engine is
+// made, the cleanup runs once the fake sessions have ended (cleanups run
+// last-registered first) and before the repository's temporary directory
+// is removed. Each run of e takes no more work, its context ends, and the
+// dispatches, deliveries and checks under way are waited for, as a stop
+// waits for them, with no record. Without it an attempt whose session the
+// cleanups end is taken up again, and its git worktree add writes in the
+// repository while RemoveAll empties it.
+func abandonAtEnd(t *testing.T, e *Engine) {
+	t.Cleanup(func() {
+		e.mu.Lock()
+		var runs []*run
+		var cancels []context.CancelFunc
+		for _, r := range e.runs {
+			r.stopping = true
+			runs, cancels = append(runs, r), append(cancels, r.cancel)
+		}
+		e.mu.Unlock()
+		for _, cancel := range cancels {
+			cancel()
+		}
+		for _, r := range runs {
+			r.starts.Wait()
+			r.deliveries.Wait()
+			r.checks.Wait()
+		}
+	})
+}
+
 // A continuation after the server's end (row 8 of #334): the results that
 // stood are kept by reference, an attempt interrupted mid-work gets a
 // fresh attempt numbered after it, the old run names the new, and the
@@ -35,6 +67,7 @@ func interrupt(l *fakeLedger, runID string, attempts map[string][2]string) {
 func TestAContinuationKeepsResultsAndTakesUpTheRest(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
+	abandonAtEnd(t, e)
 	build := work("build", "lead")
 	build.Checks = []Check{{ID: "ok", Argv: []string{"sh", "-c", "test -e built.txt"}}}
 	run := launchManaged(t, e, repoCrew(dir, build, work("docs", "writer", "build"), work("site", "web", "docs")))

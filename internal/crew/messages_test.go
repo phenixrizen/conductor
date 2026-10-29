@@ -153,6 +153,7 @@ func TestAHandoffInAManagedRunIsAMessage(t *testing.T) {
 func TestAContinuationCarriesTheMessages(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
+	abandonAtEnd(t, e)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), work("docs", "writer", "build")))
 	ctx := context.Background()
 	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
