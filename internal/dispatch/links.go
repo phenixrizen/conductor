@@ -129,12 +129,13 @@ func (s *Store) AddLink(ctx context.Context, op Op, key string, l NewLink) (Rece
 
 // RemoveLink removes the live link with the id from the live ticket with
 // the key (link.remove): every live row of its member tombstoned (two,
-// after a merge brought a second add), one remove row, its value the row
-// named whole and its prior the tags of the adds it removes, so the
-// member is gone on every replica. A link added again after it is a new
-// row with a new id. The link missing, removed or another ticket's is
-// not_found; a deleted ticket is not_found; an expected revision is the
-// ticket's; an archived project refuses it (archived).
+// after a merge brought a second add), one remove row (more when a merge
+// brought more adds than one row's prior holds), its value the row named
+// whole and its prior the tags of the adds it removes, so the member is
+// gone on every replica. A link added again after it is a new row with a
+// new id. The link missing, removed or another ticket's is not_found; a
+// deleted ticket is not_found; an expected revision is the ticket's; an
+// archived project refuses it (archived).
 func (s *Store) RemoveLink(ctx context.Context, op Op, key, id string) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -161,8 +162,9 @@ func (s *Store) RemoveLink(ctx context.Context, op Op, key, id string) (Receipt,
 }
 
 // removeLink tombstones every live row of the member of the ticket's
-// link l and records one remove row: its value l whole, its prior the
-// tags of the adds it removes.
+// link l and records its remove: its value l whole, its prior the tags of
+// the adds it removes (one row, more when they are more than one prior
+// holds: recordRemove).
 func (t *tx) removeLink(tk Ticket, l Link) error {
 	ids, err := readTexts(t.ctx, t.tx, "SELECT id FROM links WHERE ticket_id = ? AND kind = ? AND ref = ? AND deleted_at = ''", tk.ID, l.Kind, l.Ref)
 	if err != nil {
@@ -181,8 +183,8 @@ func (t *tx) removeLink(tk Ticket, l Link) error {
 	if err != nil {
 		return err
 	}
-	return t.record(ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID, Field: "links", Op: OpRemove,
-		Value: value, Prior: EncodeTags(rowTags(ids, adds))})
+	return t.recordRemove(ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID, Field: "links", Value: value},
+		rowTags(ids, adds))
 }
 
 // runHolder is the key of the live ticket other than the one with the id

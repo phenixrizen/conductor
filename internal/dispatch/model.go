@@ -121,7 +121,9 @@ const (
 	// MaxChangeValue bounds a change row's value and prior, in bytes: a
 	// text value meets it by its field's bound, a structured one by its
 	// shape (the largest, a link's add, is under 16 KiB with every field
-	// at its bound, which model_test.go measures).
+	// at its bound, which model_test.go measures), and a remove's prior,
+	// the tags of the adds it removes, by going into as many rows as it
+	// needs (recordRemove).
 	MaxChangeValue = 64 << 10
 	// MaxReceipt bounds a receipt's JSON, a repeat's answer included.
 	MaxReceipt = 4 << 10

@@ -133,13 +133,14 @@ func (s *Store) AddRelation(ctx context.Context, op Op, key, kind, to string) (R
 // RemoveRelation removes the live relation with the id from the live
 // ticket with the key, at either of its ends (relation.remove): every
 // live row of its member tombstoned (two, after a merge brought a second
-// add), one remove row on its from ticket, its value the row named whole
-// and its prior the tags of the adds it removes, so the member is gone on
-// every replica; both tickets' revs are bumped. The relation missing,
-// removed or not the ticket's is not_found, and so is one whose other
-// end is deleted (a write on a deleted ticket's relations; its undelete
-// brings the relation back as it was). An expected revision is the
-// ticket's with the key; an archived project refuses it (archived).
+// add), one remove row on its from ticket (more when a merge brought more
+// adds than one row's prior holds), its value the row named whole and its
+// prior the tags of the adds it removes, so the member is gone on every
+// replica; both tickets' revs are bumped. The relation missing, removed
+// or not the ticket's is not_found, and so is one whose other end is
+// deleted (a write on a deleted ticket's relations; its undelete brings
+// the relation back as it was). An expected revision is the ticket's
+// with the key; an archived project refuses it (archived).
 func (s *Store) RemoveRelation(ctx context.Context, op Op, key, id string) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -194,8 +195,8 @@ func (s *Store) RemoveRelation(ctx context.Context, op Op, key, id string) (Rece
 		if err := t.touch(EntityTicket, tk.ID, tk.ID, tk.ProjectID); err != nil {
 			return err
 		}
-		if err := t.record(ChangeRow{Entity: EntityTicket, EntityID: r.FromID, TicketID: r.FromID, ProjectID: tk.ProjectID,
-			Field: "relations", Op: OpRemove, Value: value, Prior: EncodeTags(rowTags(ids, adds))}); err != nil {
+		if err := t.recordRemove(ChangeRow{Entity: EntityTicket, EntityID: r.FromID, TicketID: r.FromID, ProjectID: tk.ProjectID,
+			Field: "relations", Value: value}, rowTags(ids, adds)); err != nil {
 			return err
 		}
 		return t.touch(EntityTicket, other.ID, other.ID, other.ProjectID)

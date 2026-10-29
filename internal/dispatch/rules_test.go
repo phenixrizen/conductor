@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -720,6 +721,156 @@ func TestTwoAddsOfOneMemberReadAsTheLaterAdd(t *testing.T) {
 		if n := count(t, s, "SELECT COUNT(*) FROM relations WHERE deleted_at = ''") + count(t, s, "SELECT COUNT(*) FROM links WHERE deleted_at = ''"); n != 0 {
 			t.Fatalf("%s: %d live rows of the members after their removes", c.name, n)
 		}
+	}
+}
+
+// A member more replicas added than one row's prior can name, each add's
+// tag as long as tags get, is removed whole all the same, by each path a
+// remove takes: a link, a relation, an assignee through ticket.edit, and a
+// run link a ticket's undelete releases. The remove's tags go into as
+// many rows as they need, each prior within MaxChangeValue, every add's
+// tag named once, in the log's order, and no live row of the member is
+// left.
+func TestAMemberOfManyReplicasAddsIsRemovedWhole(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	s.SetRunExists(runs("run1"))
+	pid := newProject(t, s, "CND")
+	aID, a := newTicket(t, s, "CND", "A")
+	bID, _ := newTicket(t, s, "CND", "B")
+	rID, r := newTicket(t, s, "CND", "Ran first")
+	_, live := newTicket(t, s, "CND", "Runs it now")
+	// 200 replicas, each actor MaxActor bytes, most of them '<', which a
+	// tag escapes to six, and each op id 32: 200 tags of 355 bytes, more
+	// than one prior holds.
+	const replicas = 200
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	// adds writes every replica's add of one member, in one transaction as
+	// a merge would bring them, a millisecond apart: row writes the add's
+	// own row of the member, when it has one, and gives the add's value. It
+	// gives the adds' tags in the log's order.
+	adds := func(prefix, ticketID, field string, row func(x *sql.Tx, actor string, when time.Time) string) []Tag {
+		t.Helper()
+		x, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer x.Rollback()
+		var tags []Tag
+		for i := range replicas {
+			actor := fmt.Sprintf("replica-%04d-", i)
+			actor += strings.Repeat("<", MaxActor-len(actor))
+			opID := prefix + fmt.Sprintf("%0*d", 32-len(prefix), i)
+			when := at.Add(time.Duration(i) * time.Millisecond)
+			if _, err := x.Exec(`INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n)
+				VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, 0)`,
+				EntityTicket, ticketID, ticketID, pid, field, OpAdd, row(x, actor, when), stamp(when), actor, actor, opID); err != nil {
+				t.Fatal(err)
+			}
+			tags = append(tags, Tag{actor, opID, 0})
+		}
+		if err := x.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(EncodeTags(tags)); n <= MaxChangeValue {
+			t.Fatalf("the %d tags are %d bytes: one prior holds them", len(tags), n)
+		}
+		return tags
+	}
+	link := func(ticketID, kind, ref, url string) func(*sql.Tx, string, time.Time) string {
+		return func(x *sql.Tx, actor string, when time.Time) string {
+			l := Link{ID: newID(), TicketID: ticketID, Kind: kind, Ref: ref, URL: url, CreatedAt: when, CreatedBy: actor}
+			if _, err := x.Exec("INSERT INTO links (id, ticket_id, kind, ref, url, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				l.ID, l.TicketID, l.Kind, l.Ref, l.URL, stamp(when), actor); err != nil {
+				t.Fatal(err)
+			}
+			value, err := encodeValue(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+	}
+	// removedWhole checks the rows the operation opID wrote after its first
+	// skip: each a remove of the field, all of one value, each prior within
+	// MaxChangeValue, naming the tags between them once each, in order.
+	removedWhole := func(opID, field string, skip int, tags []Tag) {
+		t.Helper()
+		rows := changesOf(t, s, "test", opID)
+		if len(rows) < skip+2 {
+			t.Fatalf("%s: %d rows, want the tags in more than one", opID, len(rows))
+		}
+		var named []Tag
+		for _, row := range rows[skip:] {
+			if row.Op != OpRemove || row.Field != field || row.Value != rows[skip].Value || len(row.Prior) > MaxChangeValue {
+				t.Fatalf("%s: a row %s:%s, its prior %d bytes", opID, row.Op, row.Field, len(row.Prior))
+			}
+			named = append(named, Tags(row.Prior)...)
+		}
+		if !slices.Equal(named, tags) {
+			t.Fatalf("%s: the rows name %d tags, want the %d adds' in order", opID, len(named), len(tags))
+		}
+	}
+	// A link.
+	tags := adds("link", aID, "links", link(aID, LinkDelivery, "#7", "https://example.com/pull/7"))
+	ls, err := s.Links(ctx, a)
+	if err != nil || len(ls) != 1 {
+		t.Fatalf("the links: %d %v", len(ls), err)
+	}
+	rc, err := s.RemoveLink(ctx, testOp("x-link"), a, ls[0].ID)
+	want(t, rc, err, StatusDone, "")
+	removedWhole("x-link", "links", 0, tags)
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND deleted_at = ''", aID); n != 0 {
+		t.Fatalf("%d live rows of the link", n)
+	}
+	// A relation.
+	tags = adds("rela", aID, "relations", func(x *sql.Tx, actor string, when time.Time) string {
+		rel := Relation{ID: newID(), FromID: aID, ToID: bID, Kind: RelationBlocks, CreatedAt: when, CreatedBy: actor}
+		if _, err := x.Exec("INSERT INTO relations (id, from_id, to_id, kind, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+			rel.ID, rel.FromID, rel.ToID, rel.Kind, stamp(when), actor); err != nil {
+			t.Fatal(err)
+		}
+		value, err := encodeValue(rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	})
+	rs, err := s.Relations(ctx, a)
+	if err != nil || len(rs) != 1 {
+		t.Fatalf("the relations: %d %v", len(rs), err)
+	}
+	rc, err = s.RemoveRelation(ctx, testOp("x-rel"), a, rs[0].ID)
+	want(t, rc, err, StatusDone, "")
+	removedWhole("x-rel", "relations", 0, tags)
+	if n := count(t, s, "SELECT COUNT(*) FROM relations WHERE deleted_at = ''"); n != 0 {
+		t.Fatalf("%d live rows of the relation", n)
+	}
+	// An assignee: one membership row however many adds.
+	exec(t, s, "INSERT INTO ticket_assignees (ticket_id, actor, added_at) VALUES (?, 'person:Alice', ?)", aID, stamp(at))
+	tags = adds("asgn", aID, "assignees", func(*sql.Tx, string, time.Time) string { return "person:Alice" })
+	rc, err = edit(s, "x-asgn", a, TicketEdit{Remove: TicketMembers{Assignees: []string{"person:Alice"}}})
+	want(t, rc, err, StatusDone, "")
+	removedWhole("x-asgn", "assignees", 0, tags)
+	if as := ticketOf(t, s, a).Assignees; len(as) != 0 {
+		t.Fatalf("the assignees: %v", as)
+	}
+	// A run link the undelete releases, a live ticket having taken the run
+	// while its ticket was deleted: the undelete's own row, then the
+	// remove's.
+	tags = adds("runl", rID, "links", link(rID, LinkRun, "run1", ""))
+	rc, err = s.DeleteTicket(ctx, testOp("del-r"), r)
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "l-live", live, NewLink{Kind: LinkRun, Ref: "run1"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.UndeleteTicket(ctx, testOp("undel-r"), r)
+	want(t, rc, err, StatusDone, "")
+	if rows := changesOf(t, s, "test", "undel-r"); rows[0].Op != OpSet || rows[0].Field != "deleted_at" {
+		t.Fatalf("the undelete's first row: %s:%s", rows[0].Op, rows[0].Field)
+	}
+	removedWhole("undel-r", "links", 1, tags)
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND deleted_at = ''", rID); n != 0 {
+		t.Fatalf("%d live rows of the released link", n)
 	}
 }
 

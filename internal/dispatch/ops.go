@@ -264,6 +264,50 @@ func (t *tx) record(c ChangeRow) error {
 	return t.touch(c.Entity, c.EntityID, c.TicketID, c.ProjectID)
 }
 
+// recordRemove records the remove of a member of one of a ticket's sets:
+// row as given, its op remove and its prior the tags of the adds it
+// removes, in their order. The tags go into as many rows as they need,
+// each prior at most MaxChangeValue bytes (tagPriors): nothing bounds how
+// many replicas' adds one member gathers, each a tag of its own and every
+// one needed gone, and a remove too large to write would leave the member
+// impossible to remove. Each row names its share and removes those tags
+// alone, so the member is gone, on every replica, once every tag is
+// named. One row whenever the tags fit, which they do but after such a
+// merge.
+func (t *tx) recordRemove(row ChangeRow, tags []Tag) error {
+	for _, prior := range tagPriors(tags) {
+		r := row
+		r.Op, r.Prior = OpRemove, prior
+		if err := t.record(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// tagPriors cuts tags, in their order, into the fewest priors of at most
+// MaxChangeValue bytes each, every one but the last too full to take the
+// next tag; none is one empty list. A tag alone is far under the bound,
+// its actor at most MaxActor bytes and its op id at most 32.
+func tagPriors(tags []Tag) []string {
+	var out []string
+	var part []Tag
+	size := len("[]")
+	for _, tag := range tags {
+		n := len(EncodeTags([]Tag{tag})) - len("[]")
+		if len(part) > 0 {
+			n++ // the comma before it
+		}
+		if len(part) > 0 && size+n > MaxChangeValue {
+			out = append(out, EncodeTags(part))
+			part, size, n = nil, len("[]"), n-1
+		}
+		part = append(part, tag)
+		size += n
+	}
+	return append(out, EncodeTags(part))
+}
+
 // touch marks an entity the operation changed, for the rev bump and
 // OnChange, once however many rows name it; record calls it for every
 // row, and an operation calls it alone for an entity it changed through

@@ -657,11 +657,12 @@ var (
 
 // members removes and then adds members of one set of the ticket base
 // names, one row each (a remove's prior the tags of the member's adds it
-// removes, its value the member; an add's value the member, its row's
-// identity its tag), and gives the members it added; a member there
-// already is not added again, nor one absent removed. An operation that
-// adds leaves the set at its bound at most (bound), however far past it
-// the set stood before; one that only removes is never refused.
+// removes, in more rows when they are more than one prior holds, its
+// value the member; an add's value the member, its row's identity its
+// tag), and gives the members it added; a member there already is not
+// added again, nor one absent removed. An operation that adds leaves the
+// set at its bound at most (bound), however far past it the set stood
+// before; one that only removes is never refused.
 func (t *tx) members(base ChangeRow, set memberSet, add, remove []string) ([]string, error) {
 	ticketID := base.EntityID
 	for _, m := range remove {
@@ -680,8 +681,8 @@ func (t *tx) members(base ChangeRow, set memberSet, add, remove []string) ([]str
 			return nil, err
 		}
 		row := base
-		row.Field, row.Op, row.Value, row.Prior = set.field, OpRemove, m, EncodeTags(tags)
-		if err := t.record(row); err != nil {
+		row.Field, row.Value = set.field, m
+		if err := t.recordRemove(row, tags); err != nil {
 			return nil, err
 		}
 	}
