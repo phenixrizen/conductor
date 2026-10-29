@@ -343,6 +343,10 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 			s.runs.UseLedger(crew.SQLLedger(s.ledger))
 		}
 		s.runs.SetCheckConcurrency(cfg.CheckConcurrency())
+		// The host's names a project manifest's env may pass on to its
+		// steps and sessions: the server's envPassthrough, as the server
+		// started with it.
+		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after

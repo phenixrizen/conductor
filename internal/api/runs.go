@@ -48,7 +48,10 @@ const (
 const broadcastTimeout = 15 * time.Second
 
 // Launch starts the session of a crew member through createLocalSession, the
-// path POST /api/sessions takes (crew.Launcher). An error is an *apiError.
+// path POST /api/sessions takes (crew.Launcher). An attempt's tree's own
+// names (spec.Inject) and the env names the server approved for its
+// project manifest (spec.Allow) go into the session's environment. An
+// error is an *apiError.
 func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Local, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -57,7 +60,8 @@ func (s *Server) Launch(ctx context.Context, spec crew.LaunchSpec) (*session.Loc
 	ref := spec.Ref
 	// The run's chat: the session is made with it, so that its first viewer finds it, and joins it once it exists.
 	room := s.runs.ChatRoom(ref.RunID)
-	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom, runChat: room, reservation: spec.Reservation}, &ref)
+	local, aerr := s.createLocalSession(createSessionRequest{AgentID: spec.AgentID, Name: spec.Name, Cwd: spec.Cwd, Args: spec.Args, Env: spec.Env, Yolo: &yolo, resume: spec.Resume, resumedFrom: spec.ResumedFrom,
+		runChat: room, reservation: spec.Reservation, inject: spec.Inject, allow: spec.Allow}, &ref)
 	if aerr != nil {
 		return nil, aerr
 	}

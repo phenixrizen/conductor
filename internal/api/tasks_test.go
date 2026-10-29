@@ -1,9 +1,14 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +33,71 @@ func TestCrewInjectNamesTheAttempt(t *testing.T) {
 	if attempt["CONDUCTOR_TASK"] != "build" || attempt["CONDUCTOR_ATTEMPT"] != "2" || attempt["CONDUCTOR_TASK_FILE"] != ".conductor/task.md" || len(attempt) != 6 {
 		t.Fatalf("an attempt: %v", attempt)
 	}
+}
+
+// Launch carries an attempt's tree's own names (LaunchSpec.Inject) and the
+// env names the server approved for its project manifest
+// (LaunchSpec.Allow) into its session's environment (EN1 PR-3): the names
+// set beside the crew's, an approved name passed on beside the server-wide
+// list, and a host name neither names kept out.
+func TestLaunchCarriesTheTreesNamesAndTheApprovedEnvNames(t *testing.T) {
+	t.Setenv("EN1_LAUNCH_TOKEN", "from-the-host")
+	t.Setenv("EN1_LAUNCH_OTHER", "not-asked-for")
+	script := `echo "P=[$CONDUCTOR_PORT_WEB] S=[$CONDUCTOR_STATE_DIR] U=[$CONDUCTOR_PREVIEW_URL] T=[$EN1_LAUNCH_TOKEN] O=[$EN1_LAUNCH_OTHER] R=[$CONDUCTOR_RUN] A=[$CONDUCTOR_ATTEMPT] END"; exec /bin/cat`
+	e := newTestEnvAgents(t, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), []catalog.Agent{{ID: "env-cat", Name: "env cat", Command: []string{"/bin/sh", "-c", script}}})
+	state := filepath.Join(e.root, ".conductor", "state")
+	local, err := e.srv.Launch(t.Context(), crew.LaunchSpec{AgentID: "env-cat", Name: "lead · build #1", Cwd: e.root,
+		Ref:    session.CrewRef{RunID: "names-00000001", CrewID: "names", Member: "lead", Task: "build", Attempt: 1},
+		Inject: map[string]string{"CONDUCTOR_PORT_WEB": "41234", "CONDUCTOR_STATE_DIR": state, "CONDUCTOR_PREVIEW_URL": "http://127.0.0.1:41234/"},
+		Allow:  []string{"EN1_LAUNCH_TOKEN"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := local.Info().ID
+	t.Cleanup(func() {
+		if d, ok := e.srv.registry.Get(id); ok {
+			_ = d.Stop(context.Background())
+		}
+	})
+	c := dialViewer(t, e, id, adminToken)
+	c.hello(80, 24)
+	c.expectOutput("P=[41234] S=[" + state + "] U=[http://127.0.0.1:41234/] T=[from-the-host] O=[] R=[names-00000001] A=[1] END")
+}
+
+// A managed run through the server (EN1 PR-3): the server gives its engine
+// its envPassthrough, so a project manifest's env name the server allows
+// and the host has passes the prerequisites and reaches the attempt's
+// session, beside the tree's port and state directory, which its task file
+// names.
+func TestAnAttemptsSessionHasItsTreesNamesAndTheServersApprovedNames(t *testing.T) {
+	t.Setenv("EN1_API_TOKEN", "from-the-host")
+	script := `echo "P=[$CONDUCTOR_PORT_WEB] S=[$CONDUCTOR_STATE_DIR] T=[$EN1_API_TOKEN] END"; exec /bin/cat`
+	e := newTestEnvAgents(t, func(c *config.Config) { c.EnvPassthrough = []string{"EN1_API_TOKEN"} }, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		[]catalog.Agent{{ID: "env-cat", Name: "env cat", Command: []string{"/bin/sh", "-c", script}}})
+	e.gitRepo(t)
+	c := crew.Crew{ID: "names", Name: "Names", Goal: "build it", Cwd: e.root, Where: crew.WhereServer, Isolation: crew.IsolationWorktree,
+		Members:  []crew.Member{{Name: "lead", AgentID: "env-cat", Start: crew.Start{When: crew.StartTask}}},
+		Tasks:    []crew.Task{{ID: "build", Member: "lead", Kind: crew.TaskWork, Instructions: "Build it."}},
+		Manifest: &crew.Manifest{Env: []string{"EN1_API_TOKEN"}, Ports: []string{"web"}, Setup: []crew.Check{{ID: "deps", Argv: []string{"true"}}}}}
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), c, "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil) })
+	a := runningAttempt(t, e, run.ID, "build", 1)
+	worktree, _ := a["worktree"].(string)
+	b, err := os.ReadFile(filepath.Join(worktree, ".conductor", "task.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f crew.TaskFile
+	if err := json.Unmarshal(b, &f); err != nil || f.Manifest == nil || f.Manifest.Ports["web"] == 0 {
+		t.Fatalf("the task file's manifest: %+v %v", f.Manifest, err)
+	}
+	v := dialViewer(t, e, a["sessionId"].(string), adminToken)
+	v.hello(80, 24)
+	v.expectOutput(fmt.Sprintf("P=[%d] S=[%s] T=[from-the-host] END", f.Manifest.Ports["web"], filepath.Join(worktree, ".conductor", "state")))
 }
 
 // A crew with tasks is saved under its rules (a member starts by task,
