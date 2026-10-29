@@ -316,14 +316,64 @@ export interface CrewMember {
   start: CrewStart
 }
 
-/** A command the controller runs (#334): against a task's result (`CrewTask.checks`) or in every new attempt worktree (`CrewInfo.setup`). An argv array, never a shell line. */
+/**
+ * A command the controller runs (#334): against a task's result (`CrewTask.checks`), or a step of a project recipe (`CrewRecipe`, whose setup
+ * phase `CrewInfo.setup` was). An argv array, never a shell line.
+ */
 export interface CrewCheck {
-  /** `^[a-z0-9][a-z0-9_-]{0,39}$`, unique among a task's checks. */
+  /** `^[a-z0-9][a-z0-9_-]{0,39}$`, unique among a task's checks; a recipe's step's unique across the recipe and none of the tasks' check ids. */
   id: string
   /** The program and its arguments: at most 32 of 4096 bytes, 8 KiB in all. */
   argv: string[]
   /** 1 to 3600; 600 when missing. */
   timeoutSeconds?: number
+}
+
+/**
+ * A project recipe's readiness probe: a command run until it exits 0, or a URL on this machine fetched until it answers under 300, every
+ * `intervalSeconds`, for at most `timeoutSeconds`. It has `argv` or `url`, never both.
+ */
+export interface CrewProbe {
+  /** As a check's: unique across the recipe. */
+  id: string
+  argv?: string[]
+  /** http or https on 127.0.0.1, localhost or [::1], at most 2048 bytes; `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` expand in it. */
+  url?: string
+  /** 1 to 3600; 60 when missing. */
+  timeoutSeconds?: number
+  /** 1 to 60; 2 when missing. */
+  intervalSeconds?: number
+}
+
+/**
+ * A project recipe (docs/plans/project-recipes.md): what makes a fresh tree of the project (an attempt's worktree, or the checkout of its
+ * result) usable, how it is checked and how it is cleaned up. Not an agent's recipes (the catalog's yolo, trust and session recipes).
+ * `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` expand inside one argv element, a probe's URL and the preview. This build runs
+ * the setup phase alone and refuses the launch of a recipe that names more (400 invalid_crew).
+ */
+export interface CrewRecipe {
+  /** Only in conductor.recipe.json (1); never in a crew's. */
+  schema?: number
+  /** Read conductor.recipe.json from the crew's directory at each tree's commit; nothing else is set then. */
+  file?: boolean
+  /** At most 8, run once per run before any tree, with no placeholders; 60 s each when no timeout is given. */
+  prerequisites?: CrewCheck[]
+  /** At most 32 names of the host's variables (`^[A-Za-z_][A-Za-z0-9_]{0,127}$`, never CONDUCTOR_*, never a loader); the values stay the host's. */
+  env?: string[]
+  /** At most 8 names (`^[a-z][a-z0-9_]{0,15}$`, unique), each `CONDUCTOR_PORT_<NAME>` in a tree. */
+  ports?: string[]
+  /** At most 8 steps that make a fresh tree usable; 600 s each by default. */
+  setup?: CrewCheck[]
+  /** At most 4 commands that run beside the tree as long as it lives, with no timeout. */
+  services?: CrewCheck[]
+  /** At most 8. */
+  ready?: CrewProbe[]
+  /** The URL a person opens: as a probe's, at most 512 bytes. */
+  preview?: string
+  /** At most 8 steps run after the task's checks in the checkout of a result; 600 s each by default. */
+  verify?: CrewCheck[]
+  /** At most 8 steps run once a tree ends, however it ends; 60 s each by default. */
+  cleanup?: CrewCheck[]
 }
 
 /** A task of a managed crew (#334): a member does it once the tasks it needs have results, in a worktree of its own, and submits a result the checks decide. */
@@ -363,8 +413,12 @@ export interface CrewInfo {
   members: CrewMember[]
   /** At most 128; present, the crew is managed (#334): every member starts by its tasks and `isolation` is `worktree`. */
   tasks?: CrewTask[]
-  /** At most 8 commands run in every new attempt worktree before its member starts; only with tasks. */
+  /** At most 8 commands run in every new attempt worktree before its member starts; only with tasks. The project recipe's setup phase as a crew saved before recipes holds it: never beside `recipe`. */
   setup?: CrewCheck[]
+  /** The crew's project recipe; only with tasks. The whole recipe is at most 64 KiB as JSON. */
+  recipe?: CrewRecipe
+  /** The server's count of the crew's recipe changes (`crew:<revision>` in a receipt): never sent back. */
+  recipeRevision?: number
   createdAt: string
   updatedAt: string
 }
@@ -381,8 +435,8 @@ export interface CrewSummary {
   updatedAt: string
 }
 
-/** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these three included. */
-export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt'>
+/** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these four included. */
+export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'recipeRevision'>
 
 /** A member of a crew run, as the run routes report it. */
 export interface RunMember {

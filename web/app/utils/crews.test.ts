@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentInfo, CrewInfo, CrewMember, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewRecipe, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers } from './crews'
-import type { TaskShape } from './crews'
+import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, liftSetup, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, recipeProblems, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS } from './crews'
+import type { RecipeShape, TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
 const lead: CrewMember = { name: 'lead', agentId: 'claude', prompt: 'Own the plan for $GOAL.', args: ['--model', 'x'], start: { when: 'immediately' } }
@@ -581,5 +581,150 @@ describe('tasks in the editor', () => {
     expect(startFrom('task')).toEqual({ when: 'task' })
     expect(startWords({ when: 'task' }).text).toBe('By its tasks')
     expect(startSentence([{ name: 'a', start: { when: 'task' } }, { name: 'b', start: { when: 'task' } }])).toBe('each does its tasks')
+  })
+})
+
+describe('project recipes', () => {
+  const task: CrewTask = { id: 'build', member: 'lead', kind: 'work', instructions: 'Build it.', checks: [{ id: 'unit', argv: ['go', 'test', './...'] }] }
+  const managedInfo: CrewInfo = { ...info, members: [{ ...lead, start: { when: 'task' } }], tasks: [task] }
+  /** A project recipe with every phase, valid beside the task's check "unit" (internal/crew recipe_test.go fullRecipe). */
+  const fullRecipe = (): CrewRecipe => ({
+    prerequisites: [{ id: 'node', argv: ['node', '--version'] }],
+    env: ['NPM_TOKEN'],
+    ports: ['web', 'db'],
+    setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 900 }],
+    services: [
+      { id: 'dbserver', argv: ['postgres', '-p', '${CONDUCTOR_PORT_DB}', '-D', '${CONDUCTOR_STATE_DIR}/db'] },
+      { id: 'webserver', argv: ['npm', 'run', 'dev', '--', '--port', '${CONDUCTOR_PORT_WEB}'] },
+    ],
+    ready: [
+      { id: 'dbready', argv: ['pg_isready', '-p', '${CONDUCTOR_PORT_DB}'] },
+      { id: 'webready', url: 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/health', timeoutSeconds: 120, intervalSeconds: 1 },
+    ],
+    preview: 'http://localhost:${CONDUCTOR_PORT_WEB}/',
+    verify: [{ id: 'e2e', argv: ['npm', 'run', 'e2e'] }],
+    cleanup: [{ id: 'dropdb', argv: ['rm', '-rf', '${CONDUCTOR_STATE_DIR}/db'] }],
+  })
+  type Fixture = RecipeShape & { recipe: CrewRecipe; tasks: CrewTask[] }
+  const crew = (): Fixture => ({ tasks: [structuredClone(task)], recipe: fullRecipe() })
+  const steps = (prefix: string, n: number): CrewCheck[] => Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, argv: ['true'] }))
+
+  it('sends a recipe as the server takes it, never the revision, and setup only while the crew has one', () => {
+    const saved: CrewInfo = { ...managedInfo, recipe: { ...fullRecipe(), env: [], setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 0, pending: 'x' } as CrewCheck] }, recipeRevision: 3 }
+    const sent = wire(toCrewInput(saved))
+    expect(sent).not.toHaveProperty('recipeRevision')
+    expect(sent).not.toHaveProperty('setup')
+    expect(sent.recipe.setup).toEqual([{ id: 'deps', argv: ['npm', 'ci'] }])
+    expect(sent.recipe).not.toHaveProperty('env')
+    expect(sent.recipe.ready).toEqual(fullRecipe().ready)
+    expect(Object.keys(sent.recipe)).toEqual(['prerequisites', 'ports', 'setup', 'services', 'ready', 'preview', 'verify', 'cleanup'])
+    // An empty recipe is none; an empty setup is none.
+    expect(wire(toCrewInput({ ...managedInfo, recipe: { setup: [], ready: [] }, setup: [] }))).not.toHaveProperty('recipe')
+    expect(wire(toCrewInput({ ...managedInfo, setup: [] }))).not.toHaveProperty('setup')
+    // A draft of a crew with a recipe is no change until something is edited.
+    const d = toDraft(saved)
+    expect(d.recipe?.setup).toEqual([{ id: 'deps', argv: ['npm', 'ci'] }])
+    expect(crewKey(d)).toBe(crewKey(saved))
+  })
+
+  it('lifts a loaded crew\'s setup into the recipe for the editor, which then sends it as the recipe', () => {
+    const saved: CrewInfo = { ...managedInfo, setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 120 }], recipeRevision: 0 }
+    const lifted = liftSetup(saved)
+    expect(lifted.setup).toBeUndefined()
+    expect(lifted.recipe).toEqual({ setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 120 }] })
+    lifted.recipe!.setup![0]!.argv.push('--quiet')
+    expect(saved.setup![0]!.argv).toEqual(['npm', 'ci'])
+    const sent = wire(toCrewInput(liftSetup(saved)))
+    expect(sent).not.toHaveProperty('setup')
+    expect(sent.recipe).toEqual({ setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 120 }] })
+    // A crew with a recipe, or without a setup, stays as it is.
+    const withRecipe: CrewInfo = { ...managedInfo, recipe: fullRecipe() }
+    expect(liftSetup(withRecipe)).toBe(withRecipe)
+    expect(liftSetup(managedInfo)).toBe(managedInfo)
+  })
+
+  it('has no problem with a recipe with every phase, every list at its bound, the file form alone, or none', () => {
+    expect(recipeProblems(crew())).toEqual([])
+    const c = crew()
+    const r = c.recipe
+    r.prerequisites = steps('p', TASK_LIMITS.recipeSteps)
+    r.setup = steps('s', TASK_LIMITS.recipeSteps)
+    r.verify = steps('v', TASK_LIMITS.recipeSteps)
+    r.cleanup = steps('c', TASK_LIMITS.recipeSteps)
+    r.services = steps('svc', TASK_LIMITS.recipeServices)
+    r.ready = Array.from({ length: TASK_LIMITS.recipeSteps }, (_, i) => ({ id: `r${i}`, url: 'https://[::1]:8443/', timeoutSeconds: TASK_LIMITS.probeTimeout, intervalSeconds: TASK_LIMITS.probeInterval }))
+    r.env = Array.from({ length: TASK_LIMITS.recipeEnv }, (_, i) => `VAR_${i}`)
+    r.ports = ['a', 'b', 'c', 'd', 'e', 'f', 'web', 'p'.repeat(16)]
+    const head = `http://127.0.0.1:\${CONDUCTOR_PORT_${'P'.repeat(16)}}/`
+    r.preview = head + 'x'.repeat(TASK_LIMITS.preview - head.length)
+    expect(recipeProblems(c)).toEqual([])
+    expect(recipeProblems({ tasks: [task], recipe: { file: true } })).toEqual([])
+    expect(recipeProblems({ tasks: [task], recipe: { setup: [{ id: 'deps', argv: ['npm', 'ci'] }] } })).toEqual([])
+    expect(recipeProblems({ tasks: [], recipe: {} })).toEqual([])
+    expect(recipeProblems({ tasks: [task] })).toEqual([])
+  })
+
+  it('names each rule the server holds a recipe to, item for item with internal/crew recipe_test.go', () => {
+    const big = 'x'.repeat(TASK_LIMITS.arg)
+    const cases: Array<[string, (c: Fixture) => void, string]> = [
+      ['a recipe without tasks', (c) => (c.tasks = []), 'A project recipe needs tasks'],
+      ['setup beside the recipe', (c) => (c.setup = [{ id: 'old', argv: ['true'] }]), "setup is the recipe's setup phase, put it there"],
+      ['schema in a crew\'s recipe', (c) => (c.recipe.schema = 1), 'it is only set in conductor.recipe.json'],
+      ['file beside a phase', (c) => (c.recipe.file = true), 'set nothing else'],
+      ['too many prerequisites', (c) => (c.recipe.prerequisites = steps('p', 9)), 'At most 8 prerequisites'],
+      ['too many setup steps', (c) => (c.recipe.setup = steps('s', 9)), 'At most 8 setup steps'],
+      ['too many services', (c) => (c.recipe.services = steps('svc', 5)), 'At most 4 services'],
+      ['too many ready probes', (c) => c.recipe.ready!.push(...Array.from({ length: 7 }, (_, i) => ({ id: `r${i}`, argv: ['true'] }))), 'At most 8 ready probes'],
+      ['too many verify steps', (c) => (c.recipe.verify = steps('v', 9)), 'At most 8 verify steps'],
+      ['too many cleanup steps', (c) => (c.recipe.cleanup = steps('c', 9)), 'At most 8 cleanup steps'],
+      ['too many env names', (c) => c.recipe.env!.push(...Array.from({ length: 32 }, (_, i) => `VAR_${i}`)), 'At most 32 env names'],
+      ['too many ports', (c) => c.recipe.ports!.push('a', 'b', 'c', 'd', 'e', 'f', 'g'), 'At most 8 ports'],
+      ['a step with a bad id', (c) => (c.recipe.setup![0]!.id = 'Deps'), 'Setup step 1: Lower-case'],
+      ['a step with no program', (c) => (c.recipe.cleanup![0]!.argv = []), 'Cleanup step 1: name a program'],
+      ["a step's argv past its bound", (c) => (c.recipe.verify![0]!.argv = ['x', big, big]), 'Verify step 1: the arguments are more than 8 KiB in all'],
+      ["a step's timeout past the bound", (c) => (c.recipe.prerequisites![0]!.timeoutSeconds = 3601), 'Prerequisite 1: the timeout is 1 to 3600'],
+      ['a service with a timeout', (c) => (c.recipe.services![0]!.timeoutSeconds = 60), 'Service 1: a service has no timeout'],
+      ['an id in two lists', (c) => (c.recipe.cleanup![0]!.id = 'deps'), 'Cleanup step 1: Another one has this id'],
+      ["a probe's id taken by a step", (c) => (c.recipe.ready![0]!.id = 'webserver'), 'Ready probe 1: Another one has this id'],
+      ["an id of a task's check", (c) => (c.recipe.setup![0]!.id = 'unit'), 'Setup step 1: unit is also a check of task build'],
+      ['a bad env name', (c) => (c.recipe.env = ['NPM-TOKEN']), 'Env NPM-TOKEN: letters, digits and _'],
+      ['an env name starting with a digit', (c) => (c.recipe.env = ['1PASSWORD']), 'Env 1PASSWORD: letters, digits and _'],
+      ['a CONDUCTOR_ env name', (c) => (c.recipe.env = ['CONDUCTOR_NOTIFY_TOKEN']), "Env CONDUCTOR_NOTIFY_TOKEN is Conductor's own"],
+      ['a loader', (c) => (c.recipe.env = ['PATH', 'LD_PRELOAD']), "Env LD_PRELOAD is a loader's variable"],
+      ['an env name twice', (c) => (c.recipe.env = ['NPM_TOKEN', 'NPM_TOKEN']), 'Env NPM_TOKEN is named twice'],
+      ['a port name in capitals', (c) => (c.recipe.ports = ['Web']), 'Port Web: lower-case letters'],
+      ['a port name past 16', (c) => (c.recipe.ports = ['p'.repeat(17)]), `Port ${'p'.repeat(17)}: lower-case letters`],
+      ['a port name twice', (c) => (c.recipe.ports = ['web', 'db', 'web']), 'Port web is named twice'],
+      ['a placeholder naming no port', (c) => (c.recipe.setup![0]!.argv = ['npm', 'ci', '--port=${CONDUCTOR_PORT_API}']), 'Setup step 1: ${CONDUCTOR_PORT_API} names no port of the recipe'],
+      ['a port placeholder in lower case', (c) => (c.recipe.services![1]!.argv[5] = '${CONDUCTOR_PORT_web}'), 'Service 2: ${CONDUCTOR_PORT_web} names no port of the recipe'],
+      ["a placeholder naming no port in a probe's URL", (c) => (c.recipe.ready![1]!.url = 'http://127.0.0.1:${CONDUCTOR_PORT_API}/'), 'Ready probe 2: the URL: ${CONDUCTOR_PORT_API} names no port'],
+      ['a placeholder naming no port in the preview', (c) => (c.recipe.preview = 'http://localhost:${CONDUCTOR_PORT_UI}/'), 'The preview: ${CONDUCTOR_PORT_UI} names no port'],
+      ['a port placeholder in a prerequisite', (c) => (c.recipe.prerequisites![0]!.argv = ['nc', '-z', '127.0.0.1', '${CONDUCTOR_PORT_DB}']), 'Prerequisite 1: a prerequisite runs before any tree: no placeholders'],
+      ['the state directory in a prerequisite', (c) => (c.recipe.prerequisites![0]!.argv = ['mkdir', '${CONDUCTOR_STATE_DIR}/cache']), 'Prerequisite 1: a prerequisite runs before any tree: no placeholders'],
+      ['a probe with argv and url', (c) => (c.recipe.ready![0]!.url = 'http://127.0.0.1/'), 'Ready probe 1: a probe has a command or a URL, not both'],
+      ['a probe with neither', (c) => (c.recipe.ready![0]!.argv = []), 'Ready probe 1: give it a command or a URL'],
+      ['a probe with a bad id', (c) => (c.recipe.ready![0]!.id = 'db.ready'), 'Ready probe 1: Lower-case'],
+      ["a probe's argv with no program", (c) => (c.recipe.ready![0]!.argv = ['']), 'Ready probe 1: name a program'],
+      ["a probe's URL off the loopback", (c) => (c.recipe.ready![1]!.url = 'http://example.com/health'), 'Ready probe 2: the URL must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL on a host that starts as the loopback", (c) => (c.recipe.ready![1]!.url = 'http://127.0.0.1.example.com/'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL with a user", (c) => (c.recipe.ready![1]!.url = 'http://localhost@example.com/'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL of another scheme", (c) => (c.recipe.ready![1]!.url = 'ftp://127.0.0.1/'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL with a space", (c) => (c.recipe.ready![1]!.url = 'http://127.0.0.1/a b'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL past 2048", (c) => (c.recipe.ready![1]!.url = 'http://127.0.0.1/' + 'x'.repeat(2048)), 'Ready probe 2: the URL is longer than 2048 bytes'],
+      ["a probe's port of 0", (c) => (c.recipe.ready![1]!.url = 'http://127.0.0.1:0/'), 'the port must be 1 to 65535'],
+      ["a probe's port past 65535", (c) => (c.recipe.ready![1]!.url = 'http://[::1]:65536/'), 'the port must be 1 to 65535'],
+      ["a probe's timeout past the bound", (c) => (c.recipe.ready![1]!.timeoutSeconds = 3601), 'Ready probe 2: the timeout is 1 to 3600 seconds'],
+      ["a probe's negative timeout", (c) => (c.recipe.ready![1]!.timeoutSeconds = -1), 'Ready probe 2: the timeout is 1 to 3600 seconds'],
+      ["a probe's interval past the bound", (c) => (c.recipe.ready![1]!.intervalSeconds = 61), 'Ready probe 2: the interval is 1 to 60 seconds'],
+      ['a preview off the loopback', (c) => (c.recipe.preview = 'https://preview.example.com/'), 'The preview must be http or https on 127.0.0.1, localhost or [::1]'],
+      ['a preview past 512', (c) => (c.recipe.preview = 'http://localhost/' + 'x'.repeat(512)), 'The preview is longer than 512 bytes'],
+      ['a recipe past 64 KiB as JSON', (c) => (c.recipe.setup = Array.from({ length: 8 }, (_, i) => ({ id: `s${i}`, argv: [big, big] }))), 'bytes as JSON, more than 65536'],
+    ]
+    for (const [name, edit, words] of cases) {
+      const c = crew()
+      edit(c)
+      expect(recipeProblems(c).join('\n'), name).toContain(words)
+    }
+    expect(cases).toHaveLength(52)
   })
 })
