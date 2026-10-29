@@ -3075,10 +3075,10 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   the repository named and its whole history, whatever the environment
   selects, cuts or rewrites) with its tests; the `dco` job in `ci.yml` among
   `required-checks`' needs; the preflight step, first; `docs/checks.md`.
-  PR-2 (#387): `TRADEMARKS.md` (the marks; their owner, RockSolid Labs,
-  Inc.; what the licence does not grant; what is allowed without asking and
-  what is not; how a fork renames itself and where the marks are written
-  in; the spelling; the address), `SECURITY.md` (GitHub's private
+  PR-2 (#387, PR #392): `TRADEMARKS.md` (the marks; their owner, RockSolid
+  Labs, Inc.; what the licence does not grant; what is allowed without
+  asking and what is not; how a fork renames itself and where the marks are
+  written in; the spelling; the address), `SECURITY.md` (GitHub's private
   vulnerability reporting first and the mailbox second; what to include; an
   acknowledgement within seven days, the fix as an ordinary pull request
   that names the change and not the vulnerability, the advisory published
