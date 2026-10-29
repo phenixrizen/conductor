@@ -75,9 +75,12 @@ type Store struct {
 	// pruned counts the receipts prune dropped, for the tests of the
 	// pruning goroutine (PR-4).
 	pruned atomic.Int64
-	// beforeCommit, when set, runs before an operation commits: a test
-	// makes the commit fail.
-	beforeCommit func() error
+	// beforeReceipt, when set, runs inside an operation's transaction,
+	// the write lock held, once the change is made (or refused and
+	// undone) and before the receipt is written and the transaction
+	// committed: a test makes the commit fail with an error, or acts
+	// while the lock is held.
+	beforeReceipt func() error
 }
 
 // Errors of a store that cannot serve.

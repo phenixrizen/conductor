@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestARepeatAnswersTheReceiptAndOtherContentConflicts(t *testing.T) {
@@ -131,10 +133,16 @@ func TestARefusedChangeLeavesAFailedReceiptAndNoChange(t *testing.T) {
 func TestACommitMadeToFailLeavesNeither(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
-	s.beforeCommit = func() error { return errors.New("the disk is full") }
+	s.beforeReceipt = func() error { return errors.New("the disk is full") }
 	_, err := s.AddPerson(ctx, testOp("a1"), "Alice")
 	if err == nil || !strings.Contains(err.Error(), "disk is full") {
 		t.Fatalf("a commit made to fail: %v", err)
+	}
+	// A refusal's receipt is written in the same transaction: a commit
+	// made to fail keeps it neither.
+	_, err = s.AddPerson(ctx, testOp("r1"), strings.Repeat("a", MaxPersonName+1))
+	if err == nil || !strings.Contains(err.Error(), "disk is full") {
+		t.Fatalf("a refusal's commit made to fail: %v", err)
 	}
 	if n := count(t, s, "SELECT COUNT(*) FROM people"); n != 0 {
 		t.Fatalf("%d people", n)
@@ -147,11 +155,95 @@ func TestACommitMadeToFailLeavesNeither(t *testing.T) {
 	}
 	// Nothing was written, so the same id runs once the store can
 	// commit.
-	s.beforeCommit = nil
+	s.beforeReceipt = nil
 	rc, err := s.AddPerson(ctx, testOp("a1"), "Alice")
 	want(t, rc, err, StatusDone, "")
 	if rc.Repeat {
 		t.Fatalf("a repeat of an operation never written: %+v", rc)
+	}
+}
+
+// A refusal's receipt is committed in the transaction that ran the change,
+// the change undone under a savepoint, so the write lock is held from the
+// change to the receipt: a second store on the same file that sends the
+// same operation in between waits and is refused busy, never running the
+// operation itself and racing the first's receipt (a UNIQUE error for one
+// of them); once the first has committed, it finds the receipt.
+func TestARefusalKeepsTheWriteLockUntilItsReceiptIsCommitted(t *testing.T) {
+	dir := storeDir(t)
+	ctx := context.Background()
+	first := openStore(t, dir)
+	old := busyTimeout
+	busyTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { busyTimeout = old })
+	second := openStore(t, dir)
+	long := strings.Repeat("a", MaxPersonName+1)
+	var during Receipt
+	var duringErr error
+	first.beforeReceipt = func() error {
+		first.beforeReceipt = nil
+		during, duringErr = second.AddPerson(ctx, testOp("a1"), long)
+		return nil
+	}
+	rc, err := first.AddPerson(ctx, testOp("a1"), long)
+	want(t, rc, err, StatusFailed, RefusalBound)
+	if !isBusy(duringErr) {
+		t.Fatalf("the second store, between the refusal and its receipt: %+v %v", during, duringErr)
+	}
+	again, err := second.AddPerson(ctx, testOp("a1"), long)
+	want(t, again, err, StatusFailed, RefusalBound)
+	if !again.Repeat || again.Error != rc.Error {
+		t.Fatalf("the second store's answer after the commit: %+v", again)
+	}
+	if conflict, err := second.AddPerson(ctx, testOp("a1"), "Alice"); err != nil || conflict.Refusal != RefusalOpConflict {
+		t.Fatalf("other content after the commit: %+v %v", conflict, err)
+	}
+	if n := count(t, first, "SELECT COUNT(*) FROM ops"); n != 1 {
+		t.Fatalf("%d receipts", n)
+	}
+}
+
+// A change that records no change row is refused invalid, and what it
+// wrote is undone: every done receipt has its row (actor, op_id, 0) in the
+// log, so no success is taken for a refusal and run again once its receipt
+// is pruned.
+func TestAChangeThatRecordsNoRowIsRefused(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	calls := 0
+	silent := func(x *tx) error {
+		calls++
+		_, err := x.tx.ExecContext(x.ctx, "INSERT INTO people (name, created_at) VALUES ('Ghost', ?)", stamp(x.now))
+		return err
+	}
+	rc, err := s.Apply(ctx, testOp("n1"), "test.silent", nil, silent)
+	want(t, rc, err, StatusFailed, RefusalInvalid)
+	if !strings.Contains(rc.Error, "changes nothing") {
+		t.Fatalf("the refusal's words: %q", rc.Error)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM people"); n != 0 {
+		t.Fatalf("%d people written without a change row", n)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM changes"); n != 0 {
+		t.Fatalf("%d change rows", n)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM ops WHERE status = 'done'"); n != 0 {
+		t.Fatalf("%d done receipts", n)
+	}
+	again, err := s.Apply(ctx, testOp("n1"), "test.silent", nil, silent)
+	want(t, again, err, StatusFailed, RefusalInvalid)
+	if !again.Repeat || calls != 1 {
+		t.Fatalf("the repeat: %+v after %d calls", again, calls)
+	}
+	// Its receipt pruned, the resend is a refusal's: it runs anew and is
+	// refused again on its merits, never answered as done.
+	if _, err := s.db.Exec("DELETE FROM ops"); err != nil {
+		t.Fatal(err)
+	}
+	again, err = s.Apply(ctx, testOp("n1"), "test.silent", nil, func(x *tx) error { calls++; return nil })
+	want(t, again, err, StatusFailed, RefusalInvalid)
+	if again.Repeat || calls != 2 {
+		t.Fatalf("the resend after pruning: %+v after %d calls", again, calls)
 	}
 }
 
@@ -514,5 +606,43 @@ func TestAReceiptStaysUnderItsBound(t *testing.T) {
 	// The receipt's JSON names its fields as the API will send them.
 	if !strings.Contains(body, `"opId":"r1"`) || !strings.Contains(body, `"refusal":"close_policy"`) || !strings.Contains(body, `"missing":["acceptance","delivery"]`) {
 		t.Fatalf("the receipt's JSON: %s", body)
+	}
+	// The words are cut by their size as JSON too, at the longest op id:
+	// characters JSON writes as six bytes (<, >, &, U+2028, U+2029, a
+	// control character) or that take four in UTF-8 still leave the
+	// receipt under its bound, kept and answered again, and cut no shorter
+	// than it must be.
+	for i, w := range []string{
+		strings.Repeat("<", maxReceiptWords),
+		strings.Repeat(string(rune(0x2028)), maxReceiptWords),
+		strings.Repeat(string(rune(0x1F600)), maxReceiptWords),
+		strings.Repeat("&\x01\"\\", maxReceiptWords),
+	} {
+		op := testOp(strings.Repeat("o", 31) + strconv.Itoa(i))
+		rc, err := s.Apply(ctx, op, "test.refuse", nil, func(x *tx) error {
+			return &Refusal{Code: RefusalClosePolicy, Words: w, Missing: []string{"acceptance", "delivery"}}
+		})
+		want(t, rc, err, StatusFailed, RefusalClosePolicy)
+		cut := strings.TrimSuffix(rc.Error, "…")
+		if cut == rc.Error || !strings.HasPrefix(w, cut) || !utf8.ValidString(rc.Error) {
+			t.Fatalf("words %d were not cut at a character: %q", i, rc.Error)
+		}
+		var body string
+		if err := s.db.QueryRow("SELECT receipt FROM ops WHERE actor = 'test' AND id = ?", op.ID).Scan(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > MaxReceipt {
+			t.Fatalf("words %d: the receipt is %d bytes", i, len(body))
+		}
+		longer := rc
+		longer.Error = w[:len(cut)+utf8.RuneLen([]rune(w[len(cut):])[0])] + "…"
+		if b, _ := json.Marshal(longer); len(b) <= MaxReceipt {
+			t.Fatalf("words %d were cut shorter than they must be: %d bytes with one more character", i, len(b))
+		}
+		again, err := s.Apply(ctx, op, "test.refuse", nil, func(x *tx) error { return errors.New("not run again") })
+		want(t, again, err, StatusFailed, RefusalClosePolicy)
+		if !again.Repeat || again.Error != rc.Error {
+			t.Fatalf("words %d: the repeat %+v", i, again)
+		}
 	}
 }
