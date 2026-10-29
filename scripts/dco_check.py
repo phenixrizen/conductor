@@ -15,6 +15,12 @@ included. A merge on the branch is a commit of the pull request and may carry
 a conflict's resolution, so it is judged like any other (the DCO GitHub App
 skips merges; this check does not).
 
+The commits read are the repository's as its objects hold them: the
+variables by which the environment would select another repository, or cut
+or rewrite this one's history, are dropped; replacement refs are not read;
+and a shallow repository or a grafts file is refused rather than judged,
+since either lists a range with commits missing and no error.
+
 Exit 0 when every commit passes, with the count. Exit 1 with one line per
 commit that does not and a last line that counts them and names the fix.
 Exit 2 when git fails or a record does not parse, with git's message. There
@@ -57,6 +63,24 @@ REPOSITORY_VARIABLES = (
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
+# The history is the repository's own, as its objects and refs hold it. These
+# are the variables by which git would take it from somewhere else (git fetch
+# and git receive-pack export GIT_SHALLOW_FILE to their hooks; a shell may
+# hold any of them): a shallow file cuts the commits it names from their
+# parents, a grafts file gives them the parents it says, and the replace-ref
+# variables turn replacement refs on under another base or off. Each lists a
+# range with commits missing and no error, and the verdict would be green
+# over history never judged. They are dropped with the repository variables;
+# git runs with --no-replace-objects, so a replacement the repository itself
+# holds (refs/replace/) is not read either; and a shallow repository or a
+# grafts file of the repository's own is refused (read).
+HISTORY_VARIABLES = (
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_NO_REPLACE_OBJECTS",
 )
 
 
@@ -115,23 +139,45 @@ def problems(commits):
     return out
 
 
-def read(repo, base, head):
-    """The commits of base..head in repo, oldest first, as git logs them: the
-    records alone, in UTF-8 (the comment at FORMAT), read from repo whatever
-    repository the environment would select (REPOSITORY_VARIABLES)."""
-    argv = [
-        "git", "-C", repo, "log", "--reverse", "--encoding=UTF-8", "--no-show-signature",
-        "--format=" + FORMAT, f"{base}..{head}",
-    ]
-    env = {k: v for k, v in os.environ.items() if k not in REPOSITORY_VARIABLES}
+def git(repo, *args):
+    """git run in repo, its stdout as bytes: the repository the environment
+    would select and the history it would substitute both dropped
+    (REPOSITORY_VARIABLES, HISTORY_VARIABLES), replacement refs not read. An
+    Error with git's message when it fails."""
+    argv = ["git", "--no-replace-objects", "-C", repo, *args]
+    env = {k: v for k, v in os.environ.items() if k not in REPOSITORY_VARIABLES + HISTORY_VARIABLES}
     try:
         p = subprocess.run(argv, capture_output=True, env=env)
     except OSError as e:
         raise Error(f"git could not be run: {e}") from None
     if p.returncode:
-        raise Error(p.stderr.decode("utf-8", "replace").strip() or "git log failed")
+        raise Error(p.stderr.decode("utf-8", "replace").strip() or f"git {args[0]} failed")
+    return p.stdout
+
+
+def read(repo, base, head):
+    """The commits of base..head in repo, oldest first, as git logs them: the
+    records alone, in UTF-8 (the comment at FORMAT), from the repository
+    named and its whole history (the comments at REPOSITORY_VARIABLES and
+    HISTORY_VARIABLES). Incomplete history is refused, not judged: a shallow
+    repository cuts the commits its shallow file names from their parents
+    and a grafts file rewrites parents, and either lists the range with
+    commits missing and no error."""
+    shallow, grafts = git(repo, "rev-parse", "--is-shallow-repository", "--git-path", "info/grafts").split(b"\n")[:2]
+    if shallow.strip() == b"true":
+        raise Error(
+            "the repository is shallow, so commits between base and head may be missing from the history it holds: "
+            "git fetch --unshallow, then run the check again"
+        )
+    grafts = os.path.join(repo, os.fsdecode(grafts.strip()))
+    if os.path.exists(grafts):
+        raise Error(
+            f"the repository has a grafts file ({grafts}), which rewrites the history the check reads: "
+            "git replace --convert-graft-file turns it into replacement refs, which the check does not read"
+        )
+    out = git(repo, "log", "--reverse", "--encoding=UTF-8", "--no-show-signature", "--format=" + FORMAT, f"{base}..{head}")
     try:
-        text = p.stdout.decode("utf-8")
+        text = out.decode("utf-8")
     except UnicodeDecodeError as e:
         raise Error(f"git log wrote bytes that are not UTF-8: {e}") from None
     if text and not text.startswith(RECORD):

@@ -331,6 +331,86 @@ class Repository(unittest.TestCase):
             code, out, err = self.check(r, base)
         self.assertEqual((code, out), (0, "1 commit signed off by its author\n"), err)
 
+    def test_the_history_read_is_the_repositorys_whatever_the_environment_cuts_or_rewrites(self):
+        # git fetch and receive-pack export GIT_SHALLOW_FILE to their hooks, a
+        # shell may hold GIT_GRAFT_FILE or GIT_REPLACE_REF_BASE beside it, and
+        # each changes the history git traverses without a word: a shallow
+        # file cuts the commits it names from their parents, a grafts file
+        # gives them the parents it says, and the replace base turns on
+        # replacement refs kept under another name. The mechanism first, on a
+        # bare rev-list under each (the unsigned commit below the boundary is
+        # gone, no error), then the read under the same environment.
+        r, base = self.repo()
+        two = r.commit("two.txt", "two, unsigned")
+        three = r.commit("three.txt", "three, signed", signoff=True)
+        files = tempfile.TemporaryDirectory()
+        self.addCleanup(files.cleanup)
+        shallow, grafts = Path(files.name, "shallow"), Path(files.name, "grafts")
+        shallow.write_text(three + "\n")
+        grafts.write_text(f"{three} {base}\n")
+        rewritten = r.git("commit-tree", f"{three}^{{tree}}", "-p", base, "-m", "three, with base as its parent")
+        r.git("update-ref", f"refs/elsewhere/{three}", rewritten)
+        for selects in (
+            {"GIT_SHALLOW_FILE": str(shallow)},
+            {"GIT_GRAFT_FILE": str(grafts)},
+            {"GIT_REPLACE_REF_BASE": "refs/elsewhere/"},
+        ):
+            with self.subTest(**selects):
+                p = subprocess.run(
+                    ["git", "-C", r.dir, "rev-list", f"{base}..HEAD"], capture_output=True, text=True, env={**git_env(), **selects}
+                )
+                self.assertEqual(p.stdout.split(), [three], p.stderr)
+                with mock.patch.dict(os.environ, selects):
+                    self.assertEqual([c.sha for c in d.read(r.dir, base, "HEAD")], [two, three])
+                    code, out, err = self.check(r, base)
+                self.assertEqual(code, 1, out + err)
+                self.assertTrue(out.startswith(f"{two[:12]} two, unsigned by "), out)
+        # A replacement the repository itself holds (git replace) is not read
+        # either: the commits are judged as they are, which is how GitHub
+        # lists them.
+        r.git("replace", "--graft", three, base)
+        self.assertEqual(r.git("rev-list", f"{base}..HEAD").split(), [three])
+        self.assertEqual([c.sha for c in d.read(r.dir, base, "HEAD")], [two, three])
+        self.assertEqual(self.check(r, base)[0], 1)
+        # A grafts file of the repository's own cannot be ignored, so it is
+        # refused, with the conversion git itself recommends.
+        own = Path(r.dir, ".git", "info", "grafts")
+        own.parent.mkdir(exist_ok=True)
+        shutil.copy(grafts, own)
+        with self.assertRaises(d.Error):
+            d.read(r.dir, base, "HEAD")
+        code, out, err = self.check(r, base)
+        self.assertEqual((code, out), (2, ""), err)
+        self.assertIn("git replace --convert-graft-file", err)
+
+    def test_a_shallow_repository_is_refused_until_its_history_is_whole(self):
+        # A clone made with --depth, the base fetched the same way, holds both
+        # ends of the range and nothing between them, and git lists the range
+        # as the tip alone, no error: the mechanism first, then the refusal
+        # with the fix it names, then the true verdict once the history is
+        # whole. (A URL: git ignores --depth for a local path.)
+        src, base = self.repo()
+        two = src.commit("two.txt", "two, unsigned")
+        three = src.commit("three.txt", "three, signed", signoff=True)
+        src.git("branch", "base", base)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        clone = Repo(str(Path(tmp.name, "clone")))
+        Repo(tmp.name).git("clone", "-q", "--depth=1", Path(src.dir).as_uri(), clone.dir)
+        clone.git("fetch", "-q", "--depth=1", "origin", "base")
+        self.assertEqual(clone.git("rev-parse", "--is-shallow-repository"), "true")
+        self.assertEqual(clone.git("rev-list", f"{base}..HEAD").split(), [three])
+        with self.assertRaises(d.Error):
+            d.read(clone.dir, base, "HEAD")
+        code, out, err = self.check(clone, base)
+        self.assertEqual((code, out), (2, ""), err)
+        self.assertIn("git fetch --unshallow", err)
+        clone.git("fetch", "-q", "--unshallow")
+        self.assertEqual(clone.git("rev-parse", "--is-shallow-repository"), "false")
+        code, out, err = self.check(clone, base)
+        self.assertEqual(code, 1, out + err)
+        self.assertTrue(out.startswith(f"{two[:12]} two, unsigned by "), out)
+
     def test_a_signed_commits_verification_lines_never_reach_the_records(self):
         # log.showSignature in a developer's configuration makes git log write a
         # signed commit's verification lines to stdout before its record: the
