@@ -2253,8 +2253,10 @@ per run, in the crew's directory at the run's base, before the first attempt
 is dispatched: the launch answers while they run (the run's
 `manifest.prerequisites[].state` says `running`), and nothing is dispatched
 until they passed; they run again at each unpause (unless a run of them is
-under way, whose result stands), in a continuation, and when a retry or an
-acceptance reopens a run whose end cut a run of them short (`interrupted`).
+under way, whose result stands), in a continuation (one whose every task was
+carried ended is finished at its start and runs none, each `pending`, until a
+retry reopens it), and when a retry or an acceptance reopens a run whose end
+cut a run of them short (`interrupted`).
 One that fails pauses the run's scheduling with its words and spends
 nothing. The setup steps run in
 each new worktree, the manifest resolved for it at the attempt's start commit
