@@ -689,9 +689,9 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 // sessions ended with the server. The server writes it in place of the
 // record the run last saved, which may lag the ledger (a snapshot cut
 // short by the server's end) or be missing (rec empty): then the run is
-// built from the crew as launched, its log empty. Its prerequisites are
-// read from their receipts (recoveredPrerequisites), whatever the record
-// said of them.
+// built from the crew as launched and the manifest its row keeps, its log
+// empty. Its prerequisites are read from their receipts
+// (recoveredPrerequisites), whatever the record said of them.
 func Recovered(rec Run, from Loaded) Run {
 	if rec.ID == "" {
 		rec = Run{ID: from.Run.ID, CrewID: from.Run.CrewID, StartedAt: from.Run.CreatedAt, State: RunRunning}
@@ -704,7 +704,7 @@ func Recovered(rec Run, from Loaded) Run {
 			for _, t := range c.Tasks {
 				rec.Tasks = append(rec.Tasks, TaskState{ID: t.ID, Member: t.Member, Kind: t.Kind, Needs: slices.Clone(t.Needs), State: ledger.TaskBlocked})
 			}
-			rec.Manifest = launchedManifest(c, from.Prerequisites)
+			rec.Manifest = launchedManifest(c, from.Run.Manifest)
 		}
 		if !from.Run.ClosedAt.IsZero() && from.Run.State == ledger.RunStopped {
 			at := from.Run.ClosedAt
@@ -804,36 +804,30 @@ func recoveredPrerequisites(listed []PrerequisiteState, rows []ledger.Prerequisi
 }
 
 // launchedManifest is the project manifest of a run whose record is
-// missing, as the crew as launched and the prerequisites' receipts say it:
-// the crew's at its revision with its prerequisites, or the file's, its
-// blob and its prerequisites named by their receipts, in the order they
-// first ran (the file at the base is not read again); nil for a crew with
-// none. The states are recoveredPrerequisites'.
-func launchedManifest(c Crew, rows []ledger.PrerequisiteRow) *RunManifest {
-	m := c.effectiveManifest()
-	if m.empty() {
-		return nil
-	}
-	rm := &RunManifest{Source: sourceCrew, Revision: c.ManifestRevision}
-	var ids []string
-	for _, ch := range m.Prerequisites {
-		ids = append(ids, ch.ID)
-	}
-	if m.File {
-		rm = &RunManifest{Source: sourceFile}
-		ids = nil
-		ran := slices.Clone(rows)
-		slices.SortStableFunc(ran, func(x, y ledger.PrerequisiteRow) int { return x.StartedAt.Compare(y.StartedAt) })
-		for _, row := range ran {
-			if !slices.Contains(ids, row.ID) {
-				ids = append(ids, row.ID)
-			}
-			if blob, ok := strings.CutPrefix(row.Manifest, sourceFile+":"); ok {
-				rm.Digest = blob
-			}
+// missing, as the run's ledger row keeps the manifest at its base (row,
+// manifestRow): where it comes from, the crew's revision or the file's
+// blob, and every prerequisite in the manifest's order, those no
+// generation reached among them (the file at the base is not read again).
+// A row with none is a run without a manifest, or a version 4 run's, whose
+// manifest can only be the crew's as launched (setup steps at most); nil
+// for a crew with none. The states are recoveredPrerequisites'.
+func launchedManifest(c Crew, row string) *RunManifest {
+	var mr manifestRow
+	if row == "" || json.Unmarshal([]byte(row), &mr) != nil || mr.Source == "" {
+		m := c.effectiveManifest()
+		if m.empty() {
+			return nil
+		}
+		mr = manifestRow{Source: sourceCrew, Revision: c.ManifestRevision}
+		if m.File {
+			mr = manifestRow{Source: sourceFile}
+		}
+		for _, ch := range m.Prerequisites {
+			mr.Prerequisites = append(mr.Prerequisites, ch.ID)
 		}
 	}
-	for _, id := range ids {
+	rm := &RunManifest{Source: mr.Source, Revision: mr.Revision, Digest: mr.Digest}
+	for _, id := range mr.Prerequisites {
 		rm.Prerequisites = append(rm.Prerequisites, PrerequisiteState{ID: id, State: "pending"})
 	}
 	return rm

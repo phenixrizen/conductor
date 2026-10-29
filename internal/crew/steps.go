@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -96,6 +97,35 @@ func (rm resolvedManifest) task() *TaskManifest {
 		tm.Revision = rm.revision
 	}
 	return tm
+}
+
+// manifestRow is the manifest at a run's base as the run's ledger row
+// keeps it (ledger.RunRow's Manifest): where it comes from and its
+// prerequisites' ids in order, which a run whose record is missing reports
+// (Recovered) without reading the file at the base again.
+type manifestRow struct {
+	Source        string   `json:"source"`
+	Revision      int64    `json:"revision,omitempty"`
+	Digest        string   `json:"digest,omitempty"`
+	Prerequisites []string `json:"prerequisites,omitempty"`
+}
+
+// row is the manifest as the run's ledger row keeps it (manifestRow).
+func (rm resolvedManifest) row() string {
+	mr := manifestRow{Source: rm.source}
+	if rm.source == sourceFile {
+		mr.Digest = rm.digest
+	} else {
+		mr.Revision = rm.revision
+	}
+	for _, ch := range rm.m.Prerequisites {
+		mr.Prerequisites = append(mr.Prerequisites, ch.ID)
+	}
+	b, err := json.Marshal(mr)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // tree is a directory the engine makes usable through the run's project

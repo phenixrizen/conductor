@@ -387,9 +387,12 @@ type run struct {
 	// prereqs the generations in flight (0 or 1), prereqCancel the one in
 	// flight's cancel, prereqStart that the commit in flight starts one,
 	// prereqK each prerequisite's runs, prereqRows their latest receipts.
+	// baseManRow is baseMan as the run's ledger row keeps it, "" without a
+	// manifest.
 	manifest     Manifest
 	manifestRev  int64
 	baseMan      resolvedManifest
+	baseManRow   string
 	prereq       string
 	prereqGen    int
 	prereqs      int
@@ -958,6 +961,9 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 		r.tasks = newTasks(c.Tasks)
 		r.crewJSON = crewAsLaunched(c)
 		r.manifest, r.manifestRev, r.baseMan = c.effectiveManifest(), c.ManifestRevision, p.man
+		if r.hasManifest() {
+			r.baseManRow = p.man.row()
+		}
 		r.prereq, r.prereqK, r.prereqRows = prereqPassed, map[string]int{}, map[string]prereqReceipt{}
 		r.teardown, r.teardownCancel = context.WithCancel(context.Background())
 	}

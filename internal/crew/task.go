@@ -1366,7 +1366,7 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 	} else if r.outcome != "" {
 		state = ledger.RunFinished
 	}
-	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, PausedWhy: r.pausedWhy, CreatedAt: r.startedAt, ContinuedFrom: r.resumedFrom, ContinuedBy: r.resumedBy}
+	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, PausedWhy: r.pausedWhy, CreatedAt: r.startedAt, ContinuedFrom: r.resumedFrom, ContinuedBy: r.resumedBy, Manifest: r.baseManRow}
 	if state != ledger.RunRunning {
 		row.ClosedAt = time.Now().UTC()
 	}

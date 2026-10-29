@@ -51,10 +51,14 @@ var migrations = map[int][]string{
 	// manifest is a receipt. A checks row gains the phase it ran in (a
 	// task's check, or a manifest phase), the manifest that ran it, the
 	// tree's ports, its tries, the words of its failure and a probe's URL;
-	// a run its pause's words; the prerequisites, which no attempt owns,
-	// get a receipt table of the same shape, and the trees a table of
-	// their lifecycle. Every row a version 4 database holds is a task's
-	// check, so the defaults are true of it: no backfill.
+	// a run its pause's words and the project manifest at its base (where
+	// it comes from and its prerequisites, in order); the prerequisites,
+	// which no attempt owns, get a receipt table of the same shape, and the
+	// trees a table of their lifecycle. Every row a version 4 database
+	// holds is a task's check, so the defaults are true of it, and a
+	// version 4 run's manifest can only be the crew's as launched (setup
+	// steps at most: none read the file or ran a prerequisite), which its
+	// row holds already: no backfill.
 	4: {
 		"ALTER TABLE checks ADD COLUMN phase TEXT NOT NULL DEFAULT 'check'",
 		"ALTER TABLE checks ADD COLUMN manifest TEXT NOT NULL DEFAULT ''",
@@ -63,6 +67,7 @@ var migrations = map[int][]string{
 		"ALTER TABLE checks ADD COLUMN error TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE checks ADD COLUMN url TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE runs ADD COLUMN paused_why TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE runs ADD COLUMN manifest TEXT NOT NULL DEFAULT ''",
 		prerequisitesTable,
 		treesTable,
 	},
@@ -563,7 +568,8 @@ var schema = []string{
 		continued_by TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL,
 		closed_at TEXT NOT NULL DEFAULT '',
-		paused_why TEXT NOT NULL DEFAULT ''
+		paused_why TEXT NOT NULL DEFAULT '',
+		manifest TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE TABLE tasks (
 		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

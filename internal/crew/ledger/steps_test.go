@@ -19,6 +19,7 @@ var version5Added = []string{
 	"ALTER TABLE checks DROP COLUMN error",
 	"ALTER TABLE checks DROP COLUMN url",
 	"ALTER TABLE runs DROP COLUMN paused_why",
+	"ALTER TABLE runs DROP COLUMN manifest",
 	"DROP TABLE prerequisites",
 	"DROP TABLE trees",
 }
@@ -55,8 +56,8 @@ func finish(t *testing.T, l *Ledger, runID string) {
 // A version 4 database (every checks row a task's check, no pause's
 // words, no prerequisites or trees) is brought to 5 as it opens: its rows
 // read back as checks of phase check, with no manifest, no ports, one try
-// and no error or URL, the run with no pause's words, and the events it
-// had, the recovery's among them, as they were.
+// and no error or URL, the run with no pause's words and no manifest, and
+// the events it had, the recovery's among them, as they were.
 func TestAVersion4DatabaseIsBroughtToVersion5(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
@@ -96,7 +97,7 @@ func TestAVersion4DatabaseIsBroughtToVersion5(t *testing.T) {
 	if c := checks[0]; c.Phase != PhaseCheck || c.Manifest != "" || c.Ports != nil || c.Tries != 1 || c.Error != "" || c.URL != "" || c.State != CheckInterrupted || string(c.Log) != "ok" || c.LogBytes != 2 {
 		t.Fatalf("the check after the migration: %+v", c)
 	}
-	if r, ok, err := again.Run(ctx, "team-00000001"); err != nil || !ok || !r.Paused || r.PausedWhy != "" {
+	if r, ok, err := again.Run(ctx, "team-00000001"); err != nil || !ok || !r.Paused || r.PausedWhy != "" || r.Manifest != "" {
 		t.Fatalf("the run after the migration: %+v %v %v", r, ok, err)
 	}
 	after, _ := again.Events(ctx, "team-00000001", 0, 100)
@@ -201,6 +202,53 @@ func TestARunsPauseKeepsItsWords(t *testing.T) {
 	set(false, "")
 	if r, _, _ := l.Run(ctx, "team-00000001"); r.Paused || r.PausedWhy != "" {
 		t.Fatalf("after the unpause: %+v", r)
+	}
+}
+
+// A run's row keeps the project manifest at its base, written with the row
+// and read back by Run and Runs, kept by a write that carries it again; one
+// past an event's bound is refused.
+func TestARunsRowKeepsItsManifest(t *testing.T) {
+	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
+	ctx := context.Background()
+	newRun(t, l, "team-00000001")
+	put := func(manifest string) error {
+		_, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+			r, _, err := tx.Run()
+			if err != nil {
+				return err
+			}
+			r.Manifest = manifest
+			return tx.PutRun(r)
+		})
+		return err
+	}
+	m := `{"source":"file","digest":"0a1b2c","prerequisites":["tools","node"]}`
+	if err := put(m); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := l.Run(ctx, "team-00000001"); r.Manifest != m {
+		t.Fatalf("Run: %+v", r)
+	}
+	if runs, _ := l.Runs(ctx); len(runs) != 1 || runs[0].Manifest != m {
+		t.Fatalf("Runs: %+v", runs)
+	}
+	// A pause read and written back keeps it.
+	if _, err := l.Transition(ctx, "team-00000001", func(tx *Tx) error {
+		r, _, err := tx.Run()
+		if err != nil {
+			return err
+		}
+		r.Paused = true
+		return tx.PutRun(r)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _, _ := l.Run(ctx, "team-00000001"); !r.Paused || r.Manifest != m {
+		t.Fatalf("after a pause: %+v", r)
+	}
+	if err := put(strings.Repeat("x", MaxPayload+1)); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("a manifest past its bound: %v", err)
 	}
 }
 

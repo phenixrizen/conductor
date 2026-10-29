@@ -299,10 +299,12 @@ func prereqWords(ps []PrerequisiteState) string {
 // says passed after a second generation failed reads failed at k 2, the
 // prerequisite that generation never reached pending with its earlier k;
 // one that says running for a receipt that finished before the server's
-// end reads passed; and a run with no record gets its manifest from the
-// crew as launched, the crew's at its revision, or the file's blob and
-// prerequisites as their receipts name them. The record given is not
-// changed.
+// end reads passed; and a run with no record gets its manifest from its
+// ledger row, the crew's at its revision or the file's blob, with every
+// prerequisite in its order: one no generation reached is pending, and a
+// file with none still has its blob (round 2), which no receipt names. A
+// version 4 row, which keeps no manifest, gets the crew's as launched.
+// The record given is not changed.
 func TestARecoveredRecordsPrerequisitesAreTheirReceipts(t *testing.T) {
 	t0 := time.Now().UTC().Add(-time.Minute)
 	at := func(s int) time.Time { return t0.Add(time.Duration(s) * time.Second) }
@@ -323,14 +325,16 @@ func TestARecoveredRecordsPrerequisitesAreTheirReceipts(t *testing.T) {
 		return string(b)
 	}
 	crewForm := &Manifest{Prerequisites: []Check{{ID: "tools", Argv: []string{"tools"}}, {ID: "node", Argv: []string{"node"}}}}
-	loaded := func(m *Manifest, prereqs []ledger.PrerequisiteRow) Loaded {
-		return Loaded{Run: ledger.RunRow{ID: "r-00000002", Crew: crewJSON(m), State: ledger.RunInterrupted, Revision: 12, Paused: true, PausedWhy: "the prerequisite tools failed: tools exited 127: tools: not found"}, Prerequisites: prereqs}
+	loaded := func(m *Manifest, row string, prereqs []ledger.PrerequisiteRow) Loaded {
+		return Loaded{Run: ledger.RunRow{ID: "r-00000002", Crew: crewJSON(m), Manifest: row, State: ledger.RunInterrupted, Revision: 12, Paused: true, PausedWhy: "the prerequisite tools failed: tools exited 127: tools: not found"}, Prerequisites: prereqs}
 	}
+	crewRow := `{"source":"crew","revision":3,"prerequisites":["tools","node"]}`
+	fileRow := `{"source":"file","digest":"0a1b2c","prerequisites":["tools","node"]}`
 	failed := "tools k2 failed exit 127 \"tools exited 127: tools: not found\" 1000ms; node k1 pending exit - \"\" 0ms"
 
 	lagging := Run{ID: "r-00000002", State: RunRunning, Managed: &Managed{Revision: 7},
 		Manifest: &RunManifest{Source: sourceCrew, Revision: 3, Prerequisites: []PrerequisiteState{{ID: "tools", K: 1, State: "passed"}, {ID: "node", K: 1, State: "passed"}}}}
-	out := Recovered(lagging, loaded(crewForm, rows("crew:3")))
+	out := Recovered(lagging, loaded(crewForm, crewRow, rows("crew:3")))
 	if got := prereqWords(out.Manifest.Prerequisites); got != failed || out.Manifest.Source != sourceCrew || out.Manifest.Revision != 3 || !out.Paused {
 		t.Fatalf("a record that lags a failed generation: %s (%+v)", got, out.Manifest)
 	}
@@ -340,20 +344,34 @@ func TestARecoveredRecordsPrerequisitesAreTheirReceipts(t *testing.T) {
 
 	running := Run{ID: "r-00000002", State: RunRunning, Managed: &Managed{Revision: 5},
 		Manifest: &RunManifest{Source: sourceCrew, Revision: 3, Prerequisites: []PrerequisiteState{{ID: "tools", K: 1, State: "passed"}, {ID: "node", K: 1, State: "running"}}}}
-	out = Recovered(running, loaded(crewForm, rows("crew:3")[:2]))
+	out = Recovered(running, loaded(crewForm, crewRow, rows("crew:3")[:2]))
 	if got := prereqWords(out.Manifest.Prerequisites); got != "tools k1 passed exit 0 \"\" 1000ms; node k1 passed exit 0 \"\" 2000ms" {
 		t.Fatalf("a receipt that finished before the server's end: %s", got)
 	}
 
-	out = Recovered(Run{}, loaded(crewForm, rows("crew:3")))
-	if m := out.Manifest; m == nil || m.Source != sourceCrew || m.Revision != 3 || m.Digest != "" || prereqWords(m.Prerequisites) != failed {
-		t.Fatalf("no record, the crew's manifest: %+v", m)
+	for name, row := range map[string]string{"its row": crewRow, "a version 4 row": ""} {
+		out = Recovered(Run{}, loaded(crewForm, row, rows("crew:3")))
+		if m := out.Manifest; m == nil || m.Source != sourceCrew || m.Revision != 3 || m.Digest != "" || prereqWords(m.Prerequisites) != failed {
+			t.Fatalf("no record, the crew's manifest from %s: %+v", name, m)
+		}
 	}
-	out = Recovered(Run{}, loaded(&Manifest{File: true}, rows("file:0a1b2c")))
+	out = Recovered(Run{}, loaded(&Manifest{File: true}, fileRow, rows("file:0a1b2c")))
 	if m := out.Manifest; m == nil || m.Source != sourceFile || m.Revision != 0 || m.Digest != "0a1b2c" || prereqWords(m.Prerequisites) != failed {
 		t.Fatalf("no record, the file's manifest: %+v", m)
 	}
-	if out := Recovered(Run{}, loaded(nil, nil)); out.Manifest != nil {
+	// The file's first prerequisite failed before the second ever ran: the
+	// second is pending, at no k.
+	firstFailed := []ledger.PrerequisiteRow{{ID: "tools", K: 1, State: ledger.CheckFinished, Manifest: "file:0a1b2c", Exit: 127, Error: "tools exited 127: tools: not found", StartedAt: at(0), FinishedAt: at(1)}}
+	out = Recovered(Run{}, loaded(&Manifest{File: true}, fileRow, firstFailed))
+	if m := out.Manifest; m == nil || m.Digest != "0a1b2c" || prereqWords(m.Prerequisites) != `tools k1 failed exit 127 "tools exited 127: tools: not found" 1000ms; node k0 pending exit - "" 0ms` {
+		t.Fatalf("no record, the file's first prerequisite failed: %+v", m)
+	}
+	// A file with setup steps alone: its blob, and no prerequisite.
+	out = Recovered(Run{}, loaded(&Manifest{File: true}, `{"source":"file","digest":"0a1b2c"}`, nil))
+	if m := out.Manifest; m == nil || m.Source != sourceFile || m.Digest != "0a1b2c" || len(m.Prerequisites) != 0 {
+		t.Fatalf("no record, a file with no prerequisite: %+v", m)
+	}
+	if out := Recovered(Run{}, loaded(nil, "", nil)); out.Manifest != nil {
 		t.Fatalf("no record, no manifest: %+v", out.Manifest)
 	}
 }
@@ -375,6 +393,47 @@ func TestTheLedgersLoadCarriesThePrerequisites(t *testing.T) {
 	}
 	if m := Recovered(Run{}, from).Manifest; m == nil || prereqWords(m.Prerequisites) == "" || m.Prerequisites[0].State != "passed" || m.Prerequisites[0].K != 1 {
 		t.Fatalf("the run read with no record: %+v", m)
+	}
+}
+
+// The run's ledger row keeps the manifest at its base, so a run with no
+// record names it whole (Codex's review of #422, round 2): a file whose
+// first prerequisite failed has both, the one never run pending, and a
+// file of setup steps alone its blob, which no receipt names.
+func TestARunWithNoRecordNamesTheManifestItsRowKeeps(t *testing.T) {
+	for _, tc := range []struct{ name, file string }{
+		{"the first prerequisite failed", `{"schema": 1, "prerequisites": [{"id": "tools", "argv": ["sh", "-c", "exit 1"]}, {"id": "node", "argv": ["true"]}]}`},
+		{"setup steps alone", `{"schema": 1, "setup": [{"id": "deps", "argv": ["true"]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			blob := commitManifestFile(t, dir, tc.file)
+			e, ld := sqlEngine(t)
+			run := launchManaged(t, e, fileCrew(dir, work("build", "lead")))
+			if strings.Contains(tc.file, "prerequisites") {
+				waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
+			} else {
+				waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			}
+			stopRun(t, e, run.ID)
+			from, ok, err := SQLLedger(ld).Load(context.Background(), run.ID)
+			if err != nil || !ok {
+				t.Fatalf("load: %v %v", ok, err)
+			}
+			m := Recovered(Run{}, from).Manifest
+			if m == nil || m.Source != sourceFile || m.Digest != blob || m.Revision != 0 {
+				t.Fatalf("the run read with no record: %+v (its row %s)", m, from.Run.Manifest)
+			}
+			if !strings.Contains(tc.file, "prerequisites") {
+				if len(m.Prerequisites) != 0 {
+					t.Fatalf("prerequisites of a file with none: %+v", m.Prerequisites)
+				}
+				return
+			}
+			if p := m.Prerequisites; len(p) != 2 || p[0].ID != "tools" || p[0].K != 1 || p[0].State != "failed" || p[1].ID != "node" || p[1].K != 0 || p[1].State != "pending" {
+				t.Fatalf("the prerequisites read with no record: %s", prereqWords(p))
+			}
+		})
 	}
 }
 

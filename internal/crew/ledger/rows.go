@@ -97,6 +97,11 @@ type RunRow struct {
 	// dispatch when the engine did (a project manifest's step, the
 	// ledger), "" for a person's pause and while not paused.
 	PausedWhy string
+	// Manifest is the run's project manifest at its base as the engine
+	// resolved it, JSON (where it comes from, the crew's revision or the
+	// file's blob, and its prerequisites' ids in order); "" for a run
+	// without one. A run whose record is missing is rebuilt from it.
+	Manifest string
 }
 
 // TaskRow is a task of a run.

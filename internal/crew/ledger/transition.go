@@ -44,7 +44,7 @@ func (t *Tx) Run() (RunRow, bool, error) {
 	var r RunRow
 	var paused int
 	var created, closed string
-	switch err := row.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy); {
+	switch err := row.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest); {
 	case errors.Is(err, sql.ErrNoRows):
 		return RunRow{}, false, nil
 	case err != nil:
@@ -190,16 +190,19 @@ func (t *Tx) PutRun(r RunRow) error {
 	if len(r.PausedWhy) > MaxPayload {
 		return fmt.Errorf("%w: the pause's words are %d bytes", ErrTooLarge, len(r.PausedWhy))
 	}
+	if len(r.Manifest) > MaxPayload {
+		return fmt.Errorf("%w: the run's manifest is %d bytes", ErrTooLarge, len(r.Manifest))
+	}
 	if r.ID != t.runID {
 		return fmt.Errorf("ledger: run %s put in %s's transition", r.ID, t.runID)
 	}
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runs (id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runs (id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET crew_id = excluded.crew_id, crew = excluded.crew, base = excluded.base, state = excluded.state,
 			outcome = excluded.outcome, paused = excluded.paused, continued_from = excluded.continued_from,
 			continued_by = CASE WHEN excluded.continued_by = '' THEN runs.continued_by ELSE excluded.continued_by END,
-			closed_at = excluded.closed_at, paused_why = excluded.paused_why`,
-		r.ID, r.CrewID, r.Crew, r.Base, r.State, r.Outcome, b2i(r.Paused), r.ContinuedFrom, r.ContinuedBy, stamp(r.CreatedAt), stamp(r.ClosedAt), r.PausedWhy)
+			closed_at = excluded.closed_at, paused_why = excluded.paused_why, manifest = excluded.manifest`,
+		r.ID, r.CrewID, r.Crew, r.Base, r.State, r.Outcome, b2i(r.Paused), r.ContinuedFrom, r.ContinuedBy, stamp(r.CreatedAt), stamp(r.ClosedAt), r.PausedWhy, r.Manifest)
 	return err
 }
 
@@ -482,7 +485,7 @@ func (l *Ledger) Runs(ctx context.Context) ([]RunRow, error) {
 }
 
 // runCols are the runs columns a RunRow is read from, in its scan order.
-const runCols = `id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why`
+const runCols = `id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest`
 
 func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow, error) {
 	db, err := l.conn()
@@ -499,7 +502,7 @@ func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow,
 		var r RunRow
 		var paused int
 		var created, closed string
-		if err := rows.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy); err != nil {
+		if err := rows.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest); err != nil {
 			return nil, err
 		}
 		r.Paused, r.CreatedAt, r.ClosedAt = paused != 0, unstamp(created), unstamp(closed)
