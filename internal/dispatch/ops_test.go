@@ -308,7 +308,7 @@ func TestRevIsBumpedOncePerOperationWhateverItSet(t *testing.T) {
 	}
 	// A ticket's rev is apart from its project's, and the receipt
 	// carries the subject's: the first entity the change named.
-	tid, _ := newTicket(t, s, pid, "First")
+	tid, _ := newTicket(t, s, "CND", "First")
 	rc, err = setFields(s, testOp("e2"), EntityTicket, tid, field{"title", "Second"})
 	want(t, rc, err, StatusDone, "")
 	if rc.Rev != 2 {
@@ -518,23 +518,25 @@ func TestOnChangeIsCalledOncePerEntityAfterTheCommit(t *testing.T) {
 	if len(got) != 1 || got[0] != (Change{Seq: 1, Entity: EntityPerson, ID: "Alice"}) {
 		t.Fatalf("after a person: %+v", got)
 	}
+	// A project's create writes three rows (its create, its name, its
+	// close policy): one call, with the commit's last seq.
 	current = "project-CND"
 	pid := newProject(t, s, "CND")
-	if len(got) != 2 || got[1] != (Change{Seq: 2, Entity: EntityProject, ID: pid, Project: "CND"}) {
+	if len(got) != 2 || got[1] != (Change{Seq: 4, Entity: EntityProject, ID: pid, Project: "CND"}) {
 		t.Fatalf("after a project: %+v", got)
 	}
 	current = "t1"
-	rc, err = createTicket(s, testOp("t1"), pid, "First")
+	rc, err = s.CreateTicket(ctx, testOp("t1"), NewTicket{Project: "CND", Title: "First"})
 	want(t, rc, err, StatusDone, "")
 	tid := rc.ID
-	if len(got) != 3 || got[2] != (Change{Seq: 3, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
+	if len(got) != 3 || got[2] != (Change{Seq: 6, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
 		t.Fatalf("after a ticket: %+v", got)
 	}
 	// Two rows of one entity: one call, with the commit's last seq.
 	current = "e1"
 	rc, err = setFields(s, testOp("e1"), EntityTicket, tid, field{"title", "Second"}, field{"description", "More"})
 	want(t, rc, err, StatusDone, "")
-	if len(got) != 4 || got[3] != (Change{Seq: 5, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
+	if len(got) != 4 || got[3] != (Change{Seq: 8, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
 		t.Fatalf("after two fields: %+v", got)
 	}
 	// Two entities in one operation: two calls, both with the last seq,
@@ -550,7 +552,7 @@ func TestOnChangeIsCalledOncePerEntityAfterTheCommit(t *testing.T) {
 		return x.record(ChangeRow{Entity: EntityTicket, EntityID: tid, TicketID: tid, ProjectID: pid, Field: "title", Op: OpSet, Value: "Third", Prior: "Second"})
 	})
 	want(t, rc, err, StatusDone, "")
-	if len(got) != 6 || got[4] != (Change{Seq: 7, Entity: EntityProject, ID: pid, Project: "CND"}) || got[5] != (Change{Seq: 7, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
+	if len(got) != 6 || got[4] != (Change{Seq: 10, Entity: EntityProject, ID: pid, Project: "CND"}) || got[5] != (Change{Seq: 10, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
 		t.Fatalf("after two entities: %+v", got)
 	}
 	// A refusal, a repeat and a conflict change nothing: no call.

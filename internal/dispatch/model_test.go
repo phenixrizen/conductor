@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -349,9 +350,18 @@ func TestTheLargestStructuredValueIsUnder16KiB(t *testing.T) {
 	if strings.Join(keys, ",") != "createdAt,createdBy,id,kind,note,ref,url" {
 		t.Fatalf("a link's add carries %v", keys)
 	}
-	// A close policy, the structured value of this change's, is smaller.
-	if got, err := encodeValue(CloseRequirements); err != nil || len(got) >= len(value) {
-		t.Errorf("a close policy is %d bytes: %v", len(got), err)
+	// The values this change writes at their worst are smaller: a
+	// ticket's create row, a project's, a close policy.
+	by := strings.Repeat("\u2028", MaxByName)
+	for name, v := range map[string]any{
+		"a ticket's create":  ticketCreated{ID: link.ID, ProjectID: link.ID, Number: 1<<63 - 1, Key: "ABCDEF-999999999999999999", CreatedAt: link.CreatedAt, CreatedBy: by},
+		"a project's create": projectCreated{ID: link.ID, Key: "ABCDEF", CreatedAt: link.CreatedAt},
+		"a close policy":     CloseRequirements,
+	} {
+		got, err := encodeValue(v)
+		if err != nil || len(got) >= len(value) {
+			t.Errorf("%s at its worst is %d bytes, not under a link's %d: %v", name, len(got), len(value), err)
+		}
 	}
 }
 
@@ -362,5 +372,39 @@ func TestAStructuredValueIsWrittenWithHTMLEscapingOff(t *testing.T) {
 	}
 	if got != `{"a":"<b> & \u2028"}` {
 		t.Fatalf("%s", got)
+	}
+}
+
+// A ticket's and a project's scalar fields start at the schema's
+// defaults: the create's set rows are what differs from them, so a
+// default the code and the schema disagree on would be a field the log
+// never sets.
+func TestTheDefaultsAreTheSchemas(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	now := stamp(time.Now())
+	if _, err := s.db.Exec("INSERT INTO projects (id, key, name, created_at, updated_at) VALUES ('p', 'CND', '', ?, ?)", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("INSERT INTO tickets (id, project_id, number, key, title, created_at, updated_at) VALUES ('t', 'p', 1, 'CND-1', '', ?, ?)", now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		table, id string
+		defaults  []fieldValue
+	}{{"projects", "p", projectDefaults}, {"tickets", "t", ticketDefaults}} {
+		_, err := s.Apply(ctx, testOp("read-"+c.table), "test.read", nil, func(x *tx) error {
+			got, err := x.scalars(c.table, c.id, columns(c.defaults))
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(got, c.defaults) {
+				t.Errorf("%s: the schema's %v, the code's %v", c.table, got, c.defaults)
+			}
+			return refuse(RefusalInvalid, "read only")
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }

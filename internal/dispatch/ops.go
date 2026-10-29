@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -585,4 +586,75 @@ func (s *Store) prune(ctx context.Context, now time.Time) (int, error) {
 	n, _ := res.RowsAffected()
 	s.pruned.Add(n)
 	return int(n), nil
+}
+
+// fieldValue is a scalar field's column and its value as a change row
+// records it: a text field's text as it is, a number in decimal, a
+// structured field's JSON. Its column takes that value as it is (SQLite
+// stores a decimal in an INTEGER column as the integer), so the row is
+// what its change rows make.
+type fieldValue struct{ column, value string }
+
+// fieldValues is a copy of fields, to change without touching them.
+func fieldValues(fields []fieldValue) []fieldValue { return append([]fieldValue(nil), fields...) }
+
+// setField sets the column's value among fields, in place.
+func setField(fields []fieldValue, column, value string) {
+	for i := range fields {
+		if fields[i].column == column {
+			fields[i].value = value
+		}
+	}
+}
+
+// columns is the columns of fields, in their order.
+func columns(fields []fieldValue) []string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		out[i] = f.column
+	}
+	return out
+}
+
+// scalars reads the columns of the row with the id, as text: a number
+// in decimal. table and the columns are the code's, never a client's.
+func (t *tx) scalars(table, id string, cols []string) ([]fieldValue, error) {
+	values := make([]string, len(cols))
+	dest := make([]any, len(cols))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	if err := t.tx.QueryRowContext(t.ctx, "SELECT "+strings.Join(cols, ", ")+" FROM "+table+" WHERE id = ?", id).Scan(dest...); err != nil {
+		return nil, err
+	}
+	out := make([]fieldValue, len(cols))
+	for i, c := range cols {
+		out[i] = fieldValue{c, values[i]}
+	}
+	return out, nil
+}
+
+// setScalars writes each field of the row base names whose value in
+// after differs from before's, in after's order: its column set, and one
+// set row naming the field, its value and its prior. A field unchanged
+// writes nothing. table and the columns are the code's, never a client's.
+func (t *tx) setScalars(table string, base ChangeRow, before, after []fieldValue) error {
+	prior := map[string]string{}
+	for _, f := range before {
+		prior[f.column] = f.value
+	}
+	for _, f := range after {
+		if prior[f.column] == f.value {
+			continue
+		}
+		if _, err := t.tx.ExecContext(t.ctx, "UPDATE "+table+" SET "+f.column+" = ? WHERE id = ?", f.value, base.EntityID); err != nil {
+			return err
+		}
+		row := base
+		row.Field, row.Op, row.Value, row.Prior = f.column, OpSet, f.value, prior[f.column]
+		if err := t.record(row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
