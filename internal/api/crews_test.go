@@ -2231,6 +2231,32 @@ func TestACrewsProjectRecipeRoundTripsWithItsRevision(t *testing.T) {
 	}
 }
 
+// A crew read back goes back by PUT once the fields the server sets are
+// taken out, as docs/protocol.md's crew rows name them: id, createdAt,
+// updatedAt and recipeRevision, which a crew with a legacy setup carries
+// too (1 when created). A body that keeps the count is refused.
+func TestACrewReadBackGoesBackWithoutWhatTheServerSets(t *testing.T) {
+	e := newTestEnv(t, nil)
+	body := e.recipeCrewBody("Legacy", "cat", nil)
+	delete(body, "recipe")
+	body["setup"] = []any{map[string]any{"id": "deps", "argv": []any{"npm", "ci"}}}
+	id, _ := e.sendCrew("POST", "/api/crews", body, http.StatusCreated)["id"].(string)
+	read := e.crew(id)
+	if read["recipeRevision"] != 1.0 {
+		t.Fatalf("a new crew with a setup: %v", read["recipeRevision"])
+	}
+	for _, k := range []string{"id", "createdAt", "updatedAt"} {
+		delete(read, k)
+	}
+	resp, out := e.do("PUT", "/api/crews/"+id, adminToken, read)
+	wantAPIError(t, "a crew read back with its count", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "recipeRevision"`)
+	delete(read, "recipeRevision")
+	read["goal"] = "edited"
+	if saved := e.sendCrew("PUT", "/api/crews/"+id, read, http.StatusOK); saved["recipeRevision"] != 1.0 || saved["goal"] != "edited" || saved["setup"] == nil {
+		t.Fatalf("a crew read back without what the server sets: %v", saved)
+	}
+}
+
 // The launch of a project recipe this build does not run yet is refused
 // with words that say so, and nothing is made; one with its setup phase
 // alone launches, its setup run as a legacy setup is.
