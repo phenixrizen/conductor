@@ -94,7 +94,8 @@ and moves the board for them.
   nothing goes as one line into the single standing flaky-tests issue
   (#281), fixed when someone is in that file anyway; no issue per flake.
 - Vulnerabilities go in a GitHub Draft Security Advisory, never in an
-  issue, PR, commit message or doc, until a maintainer decides on disclosure.
+  issue, PR, commit message or doc, until a maintainer decides on disclosure
+  (`SECURITY.md`).
 
 ## Tests that do not flake
 

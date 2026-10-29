@@ -28,6 +28,10 @@ All production assets are in [the public brand directory](../../web/public/brand
 The SVGs are self-contained paths, with accessible labels, no font binaries,
 embedded raster images, scripts or external resources.
 
+The Conductor name and these marks, and the RockSolid Labs marks (the sponsor
+credit, below), belong to RockSolid Labs, Inc.; `TRADEMARKS.md` at the root of
+the repository says what may be done with them.
+
 | File | Use |
 |---|---|
 | [conductor-logo.svg](../../web/public/brand/conductor-logo.svg) | Primary horizontal lockup and editable master |
