@@ -340,10 +340,16 @@ hash (a file already there is the same content; the temp file goes; no
 file's modification time is consulted by anything) and makes the new
 name durable before anything can name it, since a file's fsync does not
 carry its directory entry (fsync(2)): one `publish` per platform,
-`attachments_unix.go` renaming and then fsyncing the shard directory
-(`attachments/<xx>/`), and `attachments/` as well when the shard
-directory was made for this file (`Mkdir`, then its parent synced), as
-SQLite syncs a directory after making a journal in it;
+`attachments_unix.go` making the shard directory (`attachments/<xx>/`)
+when it is missing, renaming into it, then fsyncing the shard directory
+and then `attachments/`, the parent on every upload and not only on the
+one that made the shard, as SQLite syncs a directory after making a
+journal in it: a shard found already there may be one an upload made
+and then failed or stopped at its parent's sync, in this server or in
+another on the same directory, and nothing on disk tells a durable
+shard from one the page cache alone holds, so every upload makes the
+shard's own entry durable itself before its row can name a file inside
+it (a sync of a directory nothing changed since its last costs little);
 `attachments_windows.go` moving with `MoveFileEx` and
 `MOVEFILE_WRITE_THROUGH` (`golang.org/x/sys/windows`, a package of a
 module `internal/proc` already imports, so `make notices` is
@@ -376,23 +382,45 @@ names it is committed, an `uploads` row names its hash, and a file named
 by neither is an orphan: a crash between the rename and the commit (its
 `uploads` row then expires), or a tombstoned attachment's content. Only
 the sweep deletes a file: `sweep(ctx, now)` (`sweep.go`), run by `Open`
-before any route is served and called by a test, lists the directory,
-then in one `BEGIN IMMEDIATE` transaction it holds while it works deletes
-the `uploads` rows older than `sweepGrace` (an hour; a field a test
-sets), reads the hashes the live `attachments` rows and the `uploads`
-rows name, deletes every listed hash-named file that neither names and
-every temp file older than the grace, and commits. The write lock is
-what orders publication, reference and collection across processes: an
-`Add`, in this server or a second one on the same directory, publishes a
-file only after its `uploads` row is committed, and no commit falls
-inside the sweep's transaction, so a sweep whose transaction began
-before that commit finishes its deletes before the file is published (a
-reused hash it deleted is published afresh by the rename), and one that
-begins after it sees the row and leaves the file, whatever the file's
-age and whether the content is new or a reused hash whose last
-attachment was removed an hour ago; and an `Add` whose lease a sweep
-dropped before its row was written is refused rather than trusted, so
-no row names a file a sweep may have deleted. `Remove` tombstones the row and
+before any route is served and called by a test, is two steps, each a
+function a test can call alone. `expireLeases(ctx, now)` is one `BEGIN
+IMMEDIATE` transaction that deletes the `uploads` rows older than
+`sweepGrace` (an hour; a field a test sets) and commits; only once that
+commit has returned, on disk (`synchronous(FULL)`), does
+`collectOrphans(ctx, now)` run: it lists the directory, then in a second
+`BEGIN IMMEDIATE` transaction it holds while it works reads the hashes
+the live `attachments` rows and the `uploads` rows name, deletes every
+listed hash-named file that neither names and every temp file older
+than the grace, and ends. The leases go before any file does, and in a
+transaction of their own, because a deletion the database undoes cannot
+bring a file back: a sweep that expired the leases and unlinked the
+files in one transaction and then failed or died before its commit
+would leave the leases restored by the rollback and the files gone, and
+an upload paused at `beforeCommit` through it would resume, find its
+lease, and commit a row naming content that is not there. With the
+expiry committed first that upload finds no lease and is refused
+`expired` whatever becomes of the sweep after it; the collection's
+transaction writes nothing, so nothing of it is undone, and the files
+it unlinked were named by no row while it held the lock (an unlink a
+power loss takes back leaves an orphan again, the next sweep's). Each
+unlink goes through `unlink func(path string) error`, a field of the
+store a test replaces; a file the sweep cannot delete is left to the
+next sweep, the sweep going on with the rest and returning the first
+error at its end, logged at open, the store serving regardless, since
+an orphan left is harmless and a lease it failed to expire is still a
+lease, its file left too. The write lock is what orders publication,
+reference and collection across processes: an `Add`, in this server or
+a second one on the same directory, publishes a file only after its
+`uploads` row is committed, and no commit falls inside the collection's
+transaction, so a collection whose transaction began before that commit
+finishes its deletes before the file is published (a reused hash it
+deleted is published afresh by the rename), and one that begins after
+it sees the row and leaves the file, whatever the file's age and
+whether the content is new or a reused hash whose last attachment was
+removed an hour ago (a lease committed between the two steps is one the
+second reads); and an `Add` whose lease a sweep dropped before its row
+was written is refused rather than trusted, so no row names a file a
+sweep may have deleted. `Remove` tombstones the row and
 deletes no file, since an `Add` of the same content may be between its
 rename and its commit. `Open(ctx, id)` gives the row and an `*os.File`
 of the content, opened by its hash, never by a client's path.
@@ -694,15 +722,20 @@ config key, no workflow change, no change under `desktop/`.
   indexes; a read never finds a ticket the search does not, nor the
   reverse.
 - An attachment's file is on disk, fsynced, named by its hash and its
-  new name made durable (`publish`: the directory synced on unix, the
-  move written through on Windows) before the row that names it is
+  new name made durable (`publish`: on unix the shard directory synced
+  and then `attachments/`, on every upload, so the shard's own entry is
+  durable whoever made the shard and however that ended; the move
+  written through on Windows) before the row that names it is
   committed, so a committed row never names a file a power loss can
   take back; and an `uploads` row committed
   before the rename names its hash until that commit; only the sweep
-  deletes a file, at open, before any route is served, inside one
-  `BEGIN IMMEDIATE` transaction, when neither a live `attachments` row
-  nor an `uploads` row names its hash (an `uploads` row older than
-  `sweepGrace`, an hour, is a crashed upload's and is dropped first), so
+  deletes a file, at open, before any route is served, under a
+  `BEGIN IMMEDIATE` transaction it holds while it unlinks, when neither
+  a live `attachments` row nor an `uploads` row names its hash (an
+  `uploads` row older than `sweepGrace`, an hour, is a crashed upload's
+  and is dropped first, in a transaction of its own committed before
+  any file goes, so a dropped lease stays dropped however the sweep
+  ends and no rollback can revive a lease whose file was unlinked), so
   an upload another server on the same directory has renamed and not yet
   committed is named by a row every sweep sees, a reused file included;
   the row is the upload's lease, and the operation that names the hash
@@ -1135,7 +1168,17 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   `sweepGrace` at zero (the lease older than it), then resumed, is
   refused `expired` with a failed receipt, writes no attachment row and
   leaves no file in the directory, and the same content uploaded again
-  under a new op id succeeds; an `uploads` row older than the grace is
+  under a new op id succeeds; the same with the second store's `unlink`
+  replaced by one that deletes the file and then returns an error, so
+  its sweep fails after unlinking: the sweep returns the error, the
+  resumed upload is still refused `expired` with a failed receipt,
+  writes no attachment row, and no file of its hash is in the directory
+  (the lease's expiry was committed before the unlink, so the sweep's
+  failure restored nothing); an upload paused at `beforeCommit` while
+  the second store runs `expireLeases` alone with its `sweepGrace` at
+  zero, then resumed, is refused `expired`, its file left in the
+  directory, named by no row, and gone after the next `collectOrphans`;
+  an `uploads` row older than the grace is
   dropped by the sweep and its file, named by no live row, with it; a
   temp file older than the grace goes and a younger one stays; a refusal
   (the 51st attachment) leaves no `uploads` row; a name with `/` or `..`
@@ -1143,9 +1186,23 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   by the test: `Add` returns the error, writes no attachment row and no
   receipt, leaves no lease, and the file it published is swept as an
   orphan; the same content uploaded again under a new op id succeeds;
-  `syncDir` recording its paths is given the shard directory on every
-  upload and `attachments/` as well on the one that made the shard
-  directory; the Windows `publish` runs in the Windows preflight row.
+  `syncDir` made to fail on `attachments/` alone, the shard's sync
+  passing, on the upload that makes the shard: `Add` returns the error
+  as above and the shard directory is left behind; the same content
+  uploaded again under a new op id, `syncDir` restored and recording,
+  succeeds, its `syncDir` given the shard directory and then
+  `attachments/` though the shard was there before it; `syncDir`
+  recording its paths is given the shard directory and then
+  `attachments/`, in that order, on every upload, among them one into a
+  shard the test made by hand with `os.Mkdir` and never synced (what an
+  upload stopped between making the shard and syncing its parent leaves
+  behind, in this server or another); an upload held by the test inside
+  its `syncDir` at the shard's sync, the shard it made not yet synced
+  into its parent, while a second upload into the same shard runs whole:
+  the second's `syncDir` is given the shard directory and then
+  `attachments/` and its row commits, and the first, released, finishes
+  and names its file; the Windows `publish` runs in the Windows
+  preflight row.
 - views: create, edit, delete (a tombstone); a `query` past 8 KiB
   refused; a view of every project.
 - links and labels: a `delivery` link without `ref` takes its URL as
@@ -1411,15 +1468,19 @@ routes; their `docs/protocol.md` rows. Tests: each. Go only.
 
 **PR-7** (`internal/dispatch`, `internal/api`, docs): `attachments.go`
 (the file first, the hash, the `uploads` row as the lease, `publish` per
-platform with `syncDir`, the attachment row with the lease check and
-`expired`, `beforePublish` and `beforeCommit`), `sweep.go`
-(`sweep(ctx, now)` in one write
-transaction with `sweepGrace`, at open), `Open(ctx, id)`; the upload
-route (multipart, the bound), the download route (the headers, the allow
-list), the delete; the protocol rows. Tests: the attachment tests of the
-store, the paused upload against a second store with new content, with
-a reused hash and swept past its grace, the two routes, the headers. Go only; the Mac and
-Windows preflight rows run here.
+platform with `syncDir`, the shard and then `attachments/` synced on
+every upload, the attachment row with the lease check and `expired`,
+`beforePublish` and `beforeCommit`), `sweep.go` (`sweep(ctx, now)` as
+`expireLeases` and then `collectOrphans`, two write transactions with
+`sweepGrace`, the leases' expiry committed before any unlink, `unlink`
+the seam, at open), `Open(ctx, id)`; the upload route (multipart, the
+bound), the download route (the headers, the allow list), the delete;
+the protocol rows. Tests: the attachment tests of the store, the paused
+upload against a second store with new content, with a reused hash,
+swept past its grace, through a sweep that fails after unlinking and
+through its expiry alone, the parent sync failing and the shard reused
+by a later and by a concurrent upload, the two routes, the headers. Go
+only; the Mac and Windows preflight rows run here.
 
 **PR-8** (`web/app`, `web/e2e`): `useDispatch.ts` with the ordering gate
 (`utils/dispatchOrder.ts`), `useDispatchOps.ts` (`sendCommand`
