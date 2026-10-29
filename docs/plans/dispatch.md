@@ -235,7 +235,7 @@ its own; "live" below means `deleted_at = ''`:
 | `views` | `id` PK, `project_id` (`''` for every project), `name` (1 to 60), `kind` (`list`, `board`, `roadmap`), `query` (JSON, ≤ 8 KiB, the filter, sort and grouping of `query.go`), `created_at`, `updated_at`, `deleted_at`, `rev`; at most 200 live |
 | `changes` | `seq` INTEGER PRIMARY KEY AUTOINCREMENT (local to this database: the SSE event's and the history's paging cursor, never replicated), `entity` (`project`, `ticket`, `comment`, `label`, `milestone`, `view`, `person`; a set member, an assignee, label, relation, link or attachment, is a row of its ticket's `field`), `entity_id`, `ticket_id` and `project_id` (the ticket and project the row belongs to, `''` where there is none), `field`, `op` (`set`, `add`, `remove`, `create`, `delete`, `reconcile`, `migrate`), `value` (a string field's text as it is, a structured field's JSON; ≤ 64 KiB for every row: a text value meets it by its field's bound, a structured one by its shape, the largest a link's `add`, `{id, kind, ref, url, note, createdAt, createdBy}`, under 16 KiB with every field at its bound and every byte at its escaped worst (a `\` or `"` doubled; U+2028 and U+2029 six bytes each, which `encoding/json` escapes whatever `SetEscapeHTML` says), which `model_test.go` builds and measures as the ticket reply's test does; an attachment's add (its name and type at most doubled), a relation's, a member's actor or label id and a view's `query` (≤ 8 KiB as stored) are smaller), `prior` (the same shape: the value before a `set`; for a `remove`, the tags of the adds it removes), `at`, `actor`, `by`, `op_id`, `n` (the row's place in its operation, from 0); UNIQUE(`actor`, `op_id`, `n`), the row's identity across replicas: the operation log, the ticket's history and what CS1 replicates, in the one order (`at`, `actor`, `op_id`, `n`) |
 | `ops` | `actor`, `id`, `intent`, `fingerprint`, `status` (`done` or `failed`), `receipt` (JSON, ≤ 4 KiB: it carries no entity), `created_at`; PK(`actor`, `id`); the newest 20,000 kept |
-| `tickets_fts` | FTS5 over `key`, `title`, `description`, `acceptance` and the ticket's comments, maintained by the store in the same transaction as the rows it indexes (a comment added or edited rewrites its ticket's entry); the `unicode61` tokenizer with `remove_diacritics 2` |
+| `tickets_fts` | FTS5 entries, maintained by the store in the same transaction as the rows they index: one of each ticket's own, over its `key`, `title`, `description` and `acceptance`, rewritten by its create and by an edit of those fields, and one of each live comment, over its `body`, written by the comment's add, rewritten by its edit and removed by its delete, so a comment's write re-indexes that comment alone (Owner decisions, 20); an entry's rowid holds its ticket's rowid and its comment's (none for the ticket's own), so a search reads an entry's ticket off its rowid; a deleted ticket keeps its entries; the `unicode61` tokenizer with `remove_diacritics 2` |
 
 Indexes: `tickets(project_id, status, updated_at)`, `tickets(project_id,
 priority)`, `tickets(milestone_id)`, `tickets(parent_id)`,
@@ -308,17 +308,20 @@ tested here, used by CS1 later; the schema comment names the table.
 Project, Status[], Priority[], Labels[], Owner, Assignees[], Milestone,
 Horizon[], Parent, Blocked bool, Q string, Sort (updated, created,
 priority, status, title, key, milestone), Desc bool, Limit (1 to 200),
-Cursor}`: one SQL statement from the filter, the FTS5 match joined when
-`Q` is set (≤ 200 characters: the text is cut into terms at whitespace;
-a term with no letter or digit in it is dropped, since `unicode61` makes
-no token of punctuation alone and `*` or `"` by itself would match
-nothing; every term kept is passed as a quoted string with its `"`
-doubled, the terms joined by FTS5's implicit AND and the last one also
-as a prefix (`"term"*`), so `CND-12`, `OR`, `NOT`, `a:b` and `(x)` are
-words to match, never syntax, and a query whose terms are all dropped is
-an empty page, what FTS5 answers a phrase of no tokens), the cursor the
-last row's sort key and id, encoded opaque; the page carries summaries
-without the description.
+Cursor}`: one SQL statement from the filter, the FTS5 matches joined
+when `Q` is set (≤ 200 characters: the text is cut into terms at
+whitespace; a term with no letter or digit in it is dropped, since
+`unicode61` makes no token of punctuation alone and `*` or `"` by itself
+would match nothing; every term kept is passed as a quoted string with
+its `"` doubled, the last one also as a prefix (`"term"*`), so `CND-12`,
+`OR`, `NOT`, `a:b` and `(x)` are words to match, never syntax, and a
+query whose terms are all dropped is an empty page, what FTS5 answers a
+phrase of no tokens; each term is matched on its own against every
+entry, a ticket's own and its comments', and the tickets the terms match
+are intersected, so a ticket is found when every term is in one of its
+entries, not necessarily the same one: Owner decisions, 20), the cursor
+the last row's sort key and id, encoded opaque; the page carries
+summaries without the description.
 `Ticket(ctx, id)` reads one with its assignees, labels, relations both
 ways, the first 50 children by number with their count, links,
 attachments and the last 50 comments, in one read transaction (see the
@@ -719,8 +722,10 @@ config key, no workflow change, no change under `desktop/`.
   new row with a new id; lists leave tombstones out unless asked; a hard
   delete exists for nothing in this item.
 - `tickets_fts` is written in the transaction that writes the row it
-  indexes; a read never finds a ticket the search does not, nor the
-  reverse.
+  indexes, and an operation rewrites the entries of the rows it writes
+  and no other (a comment's add, edit or delete its comment's entry, an
+  edit of a ticket's text the ticket's own); a read never finds a ticket
+  the search does not, nor the reverse.
 - An attachment's file is on disk, fsynced, named by its hash and its
   new name made durable (`publish`: on unix the shard directory synced
   and then `attachments/`, on every upload, so the shard's own entry is
@@ -1137,15 +1142,18 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
 - comments: `n` derived at read, 1 to k with no gap under 50 concurrent
   adds, a row the test inserts with an earlier `created_at` taking its
   place and renumbering the later ones; edit and delete as tombstones;
-  the FTS entry rewritten (a word in a new comment found, gone after its
-  delete).
+  the comment's FTS entry written with it and no other entry (a word in
+  a new comment found, gone after its delete, and the ticket's own entry
+  and its other comments' left as they were).
 - queries: each filter alone and three together against a seeded set;
   every sort both ways; the cursor pages 1,000 tickets without a repeat
   or a gap; `q` of a ticket key (`CND-12`), of `OR`, `AND`, `NOT`, `a:b`
   and `(x)`, each matched as the words in it and none an error; a quote
   alone, a star alone and `"*"` an empty page and no error, and one of
   them beside a word dropped with the word matched; the last term
-  matching as a prefix; a deleted ticket out unless asked; a composite
+  matching as a prefix; a ticket found by words spread across its own
+  entry and two of its comments, and not found when one word is in none
+  of them; a deleted ticket out unless asked; a composite
   read paused by a test seam (`betweenReads`, between the ticket's row
   and its comments) while a second `Store` on the same file commits a
   comment and a status answers the state before the commit whole, the
@@ -1443,9 +1451,9 @@ relations, comments, the policy and acceptance, labels and milestones,
 links. Go only.
 
 **PR-4** (`internal/dispatch`): `List` with every filter, sort and the
-cursor; FTS5 maintained in the transaction (tickets, acceptance,
-comments) and the query's terms quoted; `Ticket`, `History`, `Children`,
-`Blockers`, the composite reads in one read transaction with the
+cursor; FTS5 maintained in the transaction (a ticket's own entry, an
+entry per comment) and the query's terms quoted; `Ticket`, `History`,
+`Children`, `Blockers`, the composite reads in one read transaction with the
 `betweenReads` seam; views; the goroutine that calls `prune` every `pruneEvery`
 (the sweep of orphan files is PR-7's); `BenchmarkList` with the two
 targets measured on the Linux box and named in the PR body. Tests:
@@ -1543,9 +1551,9 @@ else the entry says it is pending. Docs only; no check applies.
 
 ## Owner decisions
 
-Dated 2026-10-28. Each is a default the owner can overturn with a dated
-row in the Program's status log, its convention for a decision changed;
-the reasoning is why it was taken.
+Dated 2026-10-28, the twentieth 2026-10-29. Each is a default the owner
+can overturn with a dated row in the Program's status log, its
+convention for a decision changed; the reasoning is why it was taken.
 
 1. **O10, the conflict rules.** Dispatch keeps an operation log
    (`changes`) beside its tables and classifies every field as immutable,
@@ -1660,6 +1668,29 @@ the reasoning is why it was taken.
     harness plan already called the action "pausing scheduling"
     (`docs/plans/agent-harness.md`), and once Dispatch is the tracker,
     "Dispatch paused" on a run page would read as the tracker going down.
+20. **Each comment is its own search entry, 2026-10-29, the owner's.**
+    The search index holds an entry of each ticket's own, its key,
+    title, description and acceptance criteria, and one of each live
+    comment, so a comment's add, edit or delete re-indexes that comment
+    alone, and an edit of a ticket's text its own entry alone. A search
+    takes its terms one by one, each matching the tickets of every entry
+    it is in, and intersects them, so every word of a query must still
+    appear somewhere in the ticket or its comments, not necessarily in
+    one entry, as before. The plan's first design kept one entry per
+    ticket with its comments in it, rewritten whole by every comment's
+    write while the store's one connection was held and every Dispatch
+    read and write waited behind it: PR-4's review found that cost
+    growing with the ticket's comment text, with no bound short of the
+    comment bound, and measured it at 2.78 s for one comment's edit on a
+    ticket of 1,999 comments of 16 KiB
+    ([PR #425, review finding 3](https://github.com/rocksolidlabs/conductor/pull/425#discussion_r4416676542)).
+    Chosen over keeping that design, and over capping the comment text
+    one entry holds, which would leave older comments' words unfound.
+    The search pays instead: a term reads every entry it matches, where
+    FTS5's AND inside one entry skipped through them, and PR-4's body
+    measures the full-text pages against their target. It lands in
+    PR-4, before that PR merges; version 1 of the schema is in no
+    release yet, so it changes version 1.
 
 One question is left open, the shape of the week of use (Acceptance),
 which is the owner's; each answer above lets the plan stand, and the
