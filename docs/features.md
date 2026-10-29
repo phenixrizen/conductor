@@ -3104,32 +3104,34 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   (`issue-386-unsigned`, one commit without `-s`) ran
   https://github.com/rocksolidlabs/conductor/actions/runs/40782459422 with
   `dco` red, its log naming the commit and the fix, and `required-checks`
-  red; the fix (`git rebase --signoff origin/main`, then the check exit 0
-  with four commits counted, the same tree) was run locally and not pushed,
-  since it is the force-push B12 authorizes and the agent's rules forbid,
-  so the green half on that branch waits for a maintainer, and #389 was
-  closed as it was: it is reopened first (a push to a closed pull request's
-  branch fires no run, and a pull request whose branch was force-pushed
-  while it was closed cannot be reopened until the branch is put back as it
-  was), then the force-push, whose run is the green half. The green case on
-  a real PR: PR #388's own run
+  red. The green half, on 2026-10-29 at the owner's word: #389 was
+  reopened first (a push to a closed pull request's branch fires no run),
+  and its run
+  https://github.com/rocksolidlabs/conductor/actions/runs/40902106218 was
+  red again on the unsigned commit; then the one force-push B12
+  authorizes (`git rebase --signoff origin/main`, `458482eb` to `f8f9f478`)
+  ran https://github.com/rocksolidlabs/conductor/actions/runs/40902150072
+  with `dco` and `required-checks` green, every job green. The green case
+  on a real PR: PR #388's own run
   https://github.com/rocksolidlabs/conductor/actions/runs/40782335246,
   `dco` printing `3 commits signed off by their authors`, every job green.
   Observation 2: `TRADEMARKS.md` and `NOTICE` both name RockSolid Labs,
   Inc.; a maintainer's review approval on PR-2 approves the wording.
   Observation 3: PR-2's body is the first opened after PR-1 merged and
   carries the template's four rule boxes and the sign-off line.
-  Observation 4, prepared: the throwaway PR #390 (`issue-386-before`, cut
-  from `main` before the job) ran
+  Observation 4: the throwaway PR #390 (`issue-386-before`, cut from
+  `main` before the job) ran
   https://github.com/rocksolidlabs/conductor/actions/runs/40782472193 with
-  no `dco` job at all; the cutover had not run when this entry was written
-  (#390 open, never closed and reopened), so its reopened run is still to
-  be observed. Issue #414 carries both missing URLs, the green half's and
-  the reopened run's, into this entry once a maintainer has run B12 and
-  B14. Private vulnerability reporting read `enabled: false` on 2026-10-28;
-  a maintainer turns it on before PR-2 merges. `internal/crew`'s
-  `TestAContinuation*` flaked at `TempDir` cleanup on the throwaway and plan
-  runs (#281, one line each).
+  no `dco` job at all; after the cutover (B14, 2026-10-29: every open pull
+  request closed and reopened) its run
+  https://github.com/rocksolidlabs/conductor/actions/runs/40877819815 has
+  `dco` red, naming the commit (`184f920b`, no `Signed-off-by`) and the
+  fix, and `required-checks` red. Neither throwaway merges; #390 was closed
+  after its run. Private vulnerability reporting, off on 2026-10-28, was
+  turned on by a maintainer and read back `enabled: true` on 2026-10-29,
+  after PR-2 merged. `internal/crew`'s `TestAContinuation*` flaked at
+  `TempDir` cleanup on the throwaway and plan runs (#281, one line each),
+  until #391's fix, PR #421, merged.
 - **The repository moved to rocksolidlabs/conductor (#380, 2026-10-27).** The
   GitHub transfer (the ruleset, the `live` environment, the workflows, the
   labels, the issues and the advisories came along; the old URLs answer 301)
