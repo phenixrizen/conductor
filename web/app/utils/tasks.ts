@@ -101,7 +101,7 @@ export function taskWords(t: RunTask, run: Pick<RunInfo, 'stoppedAt' | 'paused'>
       const why = t.reason ? `${t.reason}; ` : ''
       if (run.state === 'interrupted') return { text: `${why}taken up when the run is continued`, tone: 'warning' }
       if (run.stoppedAt) return { text: `${why}ready, the run is stopped`, tone: 'muted' }
-      if (run.paused) return { text: `${why}ready, the dispatch is paused`, tone: 'warning' }
+      if (run.paused) return { text: `${why}ready, scheduling is paused`, tone: 'warning' }
       return { text: `${why}ready to start`, tone: 'default' }
     }
     case 'running':

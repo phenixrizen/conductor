@@ -394,7 +394,7 @@ palette.registerPage(() => {
       { key: 'page:add', label: 'Add an agent…', icon: 'i-lucide-user-plus', disabled: stopped || !!r.record, run: () => header.value?.openAdd() },
       ...views.map(([v, label, icon]) => ({ key: `page:view:${v}`, label, icon, on: view.value === v, run: () => (view.value = v) })),
       { key: 'page:share', label: 'Share run', icon: 'i-lucide-share-2', kbds: ['S'], run: () => header.value?.share() },
-      ...(r.managed && !stopped && !r.record ? [{ key: 'page:pause', label: r.paused ? 'Resume the dispatch' : 'Pause the dispatch', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
+      ...(r.managed && !stopped && !r.record ? [{ key: 'page:pause', label: r.paused ? 'Resume scheduling' : 'Pause scheduling', icon: r.paused ? 'i-lucide-play' : 'i-lucide-pause', run: () => header.value?.togglePause() }] : []),
       { key: 'page:chat', label: `Open the run's chat${runChatUnread.value ? ` · ${runChatUnread.value} unread` : ''}`, icon: 'i-lucide-message-circle', run: () => (runChatOpen.value = true) },
       ...(stopped
         ? [{ key: 'page:resume', label: 'Resume as new run', icon: 'i-lucide-history', run: () => header.value?.resume() }]

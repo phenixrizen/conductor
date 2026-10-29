@@ -122,7 +122,7 @@ var (
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
 	// through the ledger, not through a member resumed in its old worktree.
-	ErrManaged = errors.New("the run is managed: its tasks are dispatched by the run, and a member is never started, added or resumed by hand")
+	ErrManaged = errors.New("the run is managed: its tasks are scheduled by the run, and a member is never started, added or resumed by hand")
 	// errNotReady is awaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )

@@ -121,7 +121,7 @@ async function togglePause() {
   pausing.value = true
   try {
     await sendCommand((body) => api.pauseRun(props.runId, paused, body))
-    toast.add({ title: paused ? 'Dispatch paused' : 'Dispatch resumed', description: paused ? 'Attempts in flight go on; no task starts until it is resumed.' : undefined, icon: paused ? 'i-lucide-pause' : 'i-lucide-play', color: 'neutral' })
+    toast.add({ title: paused ? 'Scheduling paused' : 'Scheduling resumed', description: paused ? 'Attempts in flight go on; no task starts until it is resumed.' : undefined, icon: paused ? 'i-lucide-pause' : 'i-lucide-play', color: 'neutral' })
   } catch (e) {
     toast.add({ title: paused ? 'Not paused' : 'Not resumed', description: (e as Error).message, icon: 'i-lucide-triangle-alert', color: 'error' })
   } finally {
@@ -189,7 +189,7 @@ defineExpose({ openAdd, share: () => (shareOpen.value = true), stopNow: stopAll,
         <ChatUnreadPill :count="chatUnread" />
       </UButton>
       <UButton v-if="resumable" icon="i-lucide-play" color="primary" variant="soft" :aria-label="run?.managed ? 'Continue the run' : 'Resume as new run'" :loading="resuming" data-run-resume @click="resumeRun"><span class="hidden sm:inline">{{ run?.managed ? 'Continue' : 'Resume as new run' }}</span></UButton>
-      <UButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :aria-label="run.paused ? 'Resume the dispatch' : 'Pause the dispatch'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></UButton>
+      <UButton v-if="run?.managed && !stopped && !record" :icon="run.paused ? 'i-lucide-play' : 'i-lucide-pause'" color="neutral" variant="outline" :aria-label="run.paused ? 'Resume scheduling' : 'Pause scheduling'" :loading="pausing" data-run-pause :data-run-paused="run.paused ? '' : undefined" @click="togglePause"><span class="hidden sm:inline">{{ run.paused ? 'Resume' : 'Pause' }}</span></UButton>
       <UButton v-if="!stopped && !record" icon="i-lucide-square" color="error" variant="soft" aria-label="Stop" :disabled="!run" data-run-stop @click="stopOpen = true"><span class="hidden sm:inline">Stop</span></UButton>
       <FullscreenButton class="hidden sm:inline-flex" />
     </template>

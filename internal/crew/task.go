@@ -809,7 +809,7 @@ func (e *Engine) pauseDispatch(r *run, err error) bool {
 		r.paused = true
 		r.markRun()
 	}
-	r.note(session.ActivityError, "dispatch paused: the ledger could not record the run's state: %v", err)
+	r.note(session.ActivityError, "scheduling paused: the ledger could not record the run's state: %v", err)
 	return true
 }
 
