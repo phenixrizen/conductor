@@ -49,6 +49,11 @@ var busyTimeout = 5 * time.Second
 // lock until Open reaches it.
 var beforePrepareTx func()
 
+// defaultPruneEvery is how often an open store prunes its receipts: a
+// day (docs/plans/dispatch.md, Owner decisions, 15: pruned at open and
+// daily).
+const defaultPruneEvery = 24 * time.Hour
+
 // Store is the open database. One connection serves it, so every
 // operation is one BEGIN IMMEDIATE … COMMIT in turn and a read never sees
 // an operation half done; there is no owner lock (docs/plans/dispatch.md,
@@ -76,9 +81,17 @@ type Store struct {
 	lmu       sync.Mutex
 	listeners []func(Change)
 
-	// pruned counts the receipts prune dropped, for the tests of the
-	// pruning goroutine (PR-4).
+	// pruned counts the receipts prune dropped, at open and by the
+	// pruning goroutine: what a test of the goroutine watches.
 	pruned atomic.Int64
+	// pruneEvery is how often the pruning goroutine calls prune: a day
+	// (defaultPruneEvery). Open starts the goroutine on a writable store
+	// and Close stops it (stopPruning cancels it, and pruneDone is closed
+	// once it has ended); a test sets the field through openWith, before
+	// the goroutine reads it.
+	pruneEvery  time.Duration
+	stopPruning context.CancelFunc
+	pruneDone   chan struct{}
 	// betweenReads, when set, runs inside Ticket's read transaction once
 	// the ticket's row is read and before the rest of the read (its
 	// relations, children, links, attachments, comments and close state):
@@ -137,8 +150,13 @@ type Change struct {
 // never written, and ReadOnly says why. It fails only when the directory
 // cannot be made or the database file is a symbolic link. A relative dir
 // is taken under the working directory, and the store keeps it absolute.
-// The receipts are pruned at open (prune).
-func Open(dir string) (*Store, error) {
+// The receipts are pruned at open (prune) and then every day by a
+// goroutine of the store's, which Close stops.
+func Open(dir string) (*Store, error) { return openWith(dir, nil) }
+
+// openWith is Open, configure (when given) setting the store's fields
+// before anything reads them: a test shortens pruneEvery so.
+func openWith(dir string, configure func(*Store)) (*Store, error) {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -150,7 +168,10 @@ func Open(dir string) (*Store, error) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("dispatch: %s is a symbolic link", path)
 	}
-	s := &Store{dir: dir, path: path}
+	s := &Store{dir: dir, path: path, pruneEvery: defaultPruneEvery}
+	if configure != nil {
+		configure(s)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db, err := openWriter(ctx, path)
@@ -177,11 +198,41 @@ func Open(dir string) (*Store, error) {
 		return s, nil
 	}
 	s.db = db
-	// A pruning that fails drops nothing, and the next one (at the next
-	// open, and the goroutine of PR-4) takes what it left: nothing is
-	// lost but space, so Open does not fail for it.
+	// A pruning that fails drops nothing, and the next one (the
+	// goroutine's, or the next open's) takes what it left: nothing is lost
+	// but space, so Open does not fail for it.
 	s.prune(ctx, time.Now())
+	s.startPruning()
 	return s, nil
+}
+
+// startPruning starts the goroutine that prunes the receipts every
+// pruneEvery, until Close stops it.
+func (s *Store) startPruning() {
+	if s.pruneEvery <= 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.stopPruning, s.pruneDone = cancel, make(chan struct{})
+	go s.pruning(ctx, s.pruneEvery, s.pruneDone)
+}
+
+// pruning calls prune every every until ctx ends, then closes done. A
+// pruning that fails drops nothing and the next one takes what it left,
+// so its error is not kept; ctx ends one in flight, so Close never waits
+// on a long one.
+func (s *Store) pruning(ctx context.Context, every time.Duration, done chan struct{}) {
+	defer close(done)
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-tick.C:
+			s.prune(ctx, now)
+		}
+	}
 }
 
 // readBack opens the database read-only for a store that will not take
@@ -449,6 +500,12 @@ func checkpoint(ctx context.Context, db *sql.DB) error {
 // begins gets ErrClosed; one in flight gets the database's own error,
 // never a panic.
 func (s *Store) Close() error {
+	// The pruning goroutine first, outside the lock, which a pruning in
+	// flight holds: stopped and ended before the database closes.
+	if s.stopPruning != nil {
+		s.stopPruning()
+		<-s.pruneDone
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
