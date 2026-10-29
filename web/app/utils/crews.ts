@@ -224,6 +224,31 @@ export function taskIdError(id: string, taken: readonly string[] = []): string {
 
 const bytes = (s: string) => new TextEncoder().encode(s).length
 
+/**
+ * How many bytes v takes as JSON as the server writes it (Go's encoding/json, compact, with <, > and & as they are: internal/crew
+ * encodeRecipe). JSON.stringify's own text is off both ways: the server escapes U+2028 and U+2029, six bytes each where JSON.stringify keeps
+ * the three-byte character, and a lone surrogate, which JSON.stringify sends as a six-byte escape, reaches the server as U+FFFD, three bytes.
+ */
+function serverJsonBytes(v: unknown): number {
+  const text = JSON.stringify(v, (_key, x: unknown) => (typeof x === 'string' ? wellFormed(x) : x))
+  let n = bytes(text)
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c === 0x2028 || c === 0x2029) n += 3
+  }
+  return n
+}
+
+/** s with each lone surrogate as U+FFFD: the string the server decodes from JSON.stringify's escape of one. */
+function wellFormed(s: string): string {
+  let out = ''
+  for (const ch of s) {
+    const c = ch.charCodeAt(0)
+    out += ch.length === 1 && c >= 0xd800 && c <= 0xdfff ? String.fromCharCode(0xfffd) : ch
+  }
+  return out
+}
+
 /** Why the server would refuse a check or setup command (its id, argv and timeout), in order; empty when it is fine. */
 export function checkProblems(c: DraftCheck, what: string, taken: readonly string[] = []): string[] {
   const out: string[] = []
@@ -367,7 +392,7 @@ export function recipeProblems(c: RecipeShape): string[] {
   if (r.preview) out.push(...urlProblems(r.preview, 'The preview', TASK_LIMITS.preview, ports))
   steps(r.verify, 'Verify step', 'verify steps', TASK_LIMITS.recipeSteps, 'tree')
   steps(r.cleanup, 'Cleanup step', 'cleanup steps', TASK_LIMITS.recipeSteps, 'tree')
-  const size = bytes(JSON.stringify(toCrewRecipe(r)))
+  const size = serverJsonBytes(toCrewRecipe(r))
   if (size > TASK_LIMITS.recipeJson) out.push(`The project recipe is ${size} bytes as JSON, more than ${TASK_LIMITS.recipeJson}`)
   return out
 }

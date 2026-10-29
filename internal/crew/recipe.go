@@ -175,7 +175,10 @@ func (c Crew) effectiveRecipe() Recipe {
 
 // encodeRecipe is rec as JSON, as maxRecipeJSON counts it and the store
 // compares two: compact, with <, > and & as they are (as the crew's file
-// and web/app/utils/crews.ts's JSON.stringify keep them).
+// keeps them), and U+2028 and U+2029 escaped, six bytes each, as
+// encoding/json always writes them. web/app/utils/crews.ts counts a
+// recipe the same way (serverJsonBytes), which JSON.stringify's text
+// alone does not.
 func encodeRecipe(rec Recipe) ([]byte, error) {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)

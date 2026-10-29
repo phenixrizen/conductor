@@ -727,4 +727,24 @@ describe('project recipes', () => {
     }
     expect(cases).toHaveLength(52)
   })
+
+  it('counts a recipe as the server writes it as JSON, case for case with internal/crew recipe_test.go', () => {
+    // Eight setup steps of two arguments, the last step's second one `last`: 61,457 bytes as JSON before it. The server writes U+2028 and
+    // U+2029 escaped (six bytes, where JSON.stringify keeps three) and a lone surrogate as U+FFFD (three, where JSON.stringify sends a
+    // six-byte escape), so JSON.stringify's own text would pass the U+2028 and U+2029 recipes past the bound and refuse the lone surrogate's
+    // at it.
+    const sized = (last: string): Fixture => ({
+      tasks: [structuredClone(task)],
+      recipe: { setup: Array.from({ length: 8 }, (_, i) => ({ id: `s${i}`, argv: ['x'.repeat(TASK_LIMITS.arg), i === 7 ? last : 'y'.repeat(4066)] })) },
+    })
+    const past = ['The project recipe is 65537 bytes as JSON, more than 65536']
+    const [ls, ps, lone] = [String.fromCharCode(0x2028), String.fromCharCode(0x2029), String.fromCharCode(0xd800)]
+    expect(recipeProblems(sized('y'.repeat(4079)))).toEqual([])
+    expect(recipeProblems(sized('y'.repeat(4080)))).toEqual(past)
+    expect(recipeProblems(sized('y'.repeat(4073) + ls))).toEqual([])
+    expect(recipeProblems(sized('y'.repeat(4074) + ls))).toEqual(past)
+    expect(recipeProblems(sized('y'.repeat(4074) + ps))).toEqual(past)
+    expect(recipeProblems(sized('y'.repeat(4076) + lone))).toEqual([])
+    expect(recipeProblems(sized('y'.repeat(4077) + lone))).toEqual(past)
+  })
 })

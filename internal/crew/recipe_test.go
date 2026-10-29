@@ -179,6 +179,71 @@ func TestAProjectRecipeIsHeldToItsRules(t *testing.T) {
 	}
 }
 
+// The 64 KiB bound counts a recipe as encodeRecipe writes it: U+2028 and
+// U+2029 escaped, six bytes each, and a lone surrogate, which the web's
+// JSON.stringify sends as an escape, decoded as U+FFFD, three bytes.
+// web/app/utils/crews.test.ts holds the same cases for recipeProblems.
+func TestARecipesJSONBoundCountsItAsTheServerWritesIt(t *testing.T) {
+	// sized is recipeCrew with eight setup steps of two arguments for its
+	// recipe, the last step's second one last: 61,457 bytes as JSON
+	// before it.
+	sized := func(last string) Crew {
+		c := recipeCrew()
+		c.Recipe = &Recipe{}
+		for i := range maxRecipeSteps {
+			arg := strings.Repeat("y", 4066)
+			if i == maxRecipeSteps-1 {
+				arg = last
+			}
+			c.Recipe.Setup = append(c.Recipe.Setup, Check{ID: fmt.Sprintf("s%d", i), Argv: []string{strings.Repeat("x", maxArg), arg}})
+		}
+		return c
+	}
+	// held checks that c's recipe is size bytes as JSON, and that it is
+	// refused for it exactly when that is past the bound.
+	held := func(name string, c Crew, size int) {
+		t.Helper()
+		if b, err := encodeRecipe(*c.Recipe); err != nil || len(b) != size {
+			t.Fatalf("%s: %d bytes as JSON, %v (want %d)", name, len(b), err, size)
+		}
+		err := c.Validate()
+		if size <= maxRecipeJSON {
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+			}
+			return
+		}
+		want := fmt.Sprintf("the recipe is %d bytes as JSON, more than %d", size, maxRecipeJSON)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v (want %q)", name, err, want)
+		}
+	}
+	ls, ps := string(rune(0x2028)), string(rune(0x2029))
+	held("ASCII at the bound", sized(strings.Repeat("y", 4079)), maxRecipeJSON)
+	held("ASCII past it", sized(strings.Repeat("y", 4080)), maxRecipeJSON+1)
+	held("U+2028 at the bound", sized(strings.Repeat("y", 4073)+ls), maxRecipeJSON)
+	held("U+2028 past it", sized(strings.Repeat("y", 4074)+ls), maxRecipeJSON+1)
+	held("U+2029 past it", sized(strings.Repeat("y", 4074)+ps), maxRecipeJSON+1)
+	// A lone surrogate comes as the web sends it, an escape in the body,
+	// and is decoded as U+FFFD.
+	for _, tc := range []struct{ ys, size int }{{4076, maxRecipeJSON}, {4077, maxRecipeJSON + 1}} {
+		body, err := json.Marshal(sized(strings.Repeat("y", tc.ys) + "@").Recipe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rec Recipe
+		if err := json.Unmarshal([]byte(strings.Replace(string(body), `@"`, `\`+`ud800"`, 1)), &rec); err != nil {
+			t.Fatal(err)
+		}
+		if got := rec.Setup[maxRecipeSteps-1].Argv[1]; got != strings.Repeat("y", tc.ys)+string(rune(0xfffd)) {
+			t.Fatalf("the escape decoded as %q", got[tc.ys:])
+		}
+		c := recipeCrew()
+		c.Recipe = &rec
+		held(fmt.Sprintf("a lone surrogate after %d bytes", tc.ys), c, tc.size)
+	}
+}
+
 // A legacy setup keeps main's rule: its ids unique within setup, and one
 // may be a task's check id too, so no stored crew becomes invalid.
 func TestALegacySetupKeepsItsRules(t *testing.T) {
