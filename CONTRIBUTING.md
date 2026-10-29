@@ -68,9 +68,13 @@ agreement.
 CI's `dco` job fails a pull request with a commit that lacks a matching
 sign-off, naming the commit. Check before pushing:
 
-    python3 scripts/dco_check.py --base origin/main --head HEAD
+    git fetch origin && python3 scripts/dco_check.py --base origin/main --head HEAD
 
-`make preflight` runs it first.
+The fetch is part of the check: it judges `origin/main..HEAD`, and an
+`origin/main` behind GitHub's main, which only a fetch moves, puts main's
+own commits in that range, which the check names and the fix below would
+replay as the branch's. `make preflight` fetches `origin/main` and runs the
+check first.
 
 **A branch of your own commits, with no merge commit on it:**
 

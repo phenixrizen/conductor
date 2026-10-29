@@ -11,7 +11,7 @@ Run the narrow tests while iterating, then the complete checks for every affecte
 
 
 ```bash
-python3 scripts/dco_check.py --base origin/main --head HEAD  # every commit of the branch signed off by its author (CI's dco job)
+git fetch origin && python3 scripts/dco_check.py --base origin/main --head HEAD  # every commit of the branch signed off by its author (CI's dco job); the fetch so that origin/main is GitHub's
 make lint                      # gofmt -l, go vet
 go test -race -count=1 ./...   # includes PTY, WebSocket and pion loopback tests
 npm --prefix web run typecheck

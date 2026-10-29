@@ -2,6 +2,8 @@
 # Copyright 2026 the Conductor Authors and RockSolid Labs, Inc.
 """The preflight runner: its receipts, steps, display and Windows handling."""
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
@@ -106,6 +108,7 @@ class Steps(unittest.TestCase):
         self.assertEqual(jobs - covered, set(), f"ci.yml jobs with no preflight step: {jobs - covered}")
 
     def test_the_dco_check_runs_first_against_origin_main(self):
+        # The fetch that makes origin/main GitHub's comes before the steps (Main).
         first = p.LINUX_STEPS[0]
         self.assertEqual((first["name"], first["covers"]), ("dco", "dco"))
         self.assertEqual(first["argv"], ["python3", "scripts/dco_check.py", "--base", "origin/main", "--head", "HEAD"])
@@ -180,6 +183,54 @@ class Steps(unittest.TestCase):
                 self.assertEqual(calls[1], "npm test")
                 self.assertTrue(receipt["partial"])
                 self.assertFalse(p.receipt_passes(p.load_receipt(d, HEAD, machine), HEAD, machine))
+
+
+class Main(unittest.TestCase):
+    def test_origin_main_is_fetched_before_the_base_is_read_and_a_step_runs(self):
+        # The dco step judges origin/main..HEAD: a ref behind GitHub's main
+        # would put main's own commits in the range, so the fetch comes first,
+        # a partial run included, and a fetch that fails stops the run before
+        # any step.
+        fetch = ("fetch", "--quiet", "origin", "main")
+        with tempfile.TemporaryDirectory() as d:
+            answers = {
+                ("rev-parse", "--show-toplevel"): d,
+                ("status", "--porcelain", "--untracked-files=no"): "",
+                fetch: "",
+                ("rev-parse", "HEAD"): HEAD,
+                ("rev-parse", "origin/main"): "b" * 40,
+                ("rev-parse", "--path-format=absolute", "--git-common-dir"): d,
+            }
+            calls, runs = [], []
+
+            def fake_git(*args, cwd=None):
+                calls.append(args)
+                return answers[args]
+
+            def failing_git(*args, cwd=None):
+                if args == fetch:
+                    raise p.Error("fatal: unable to access 'https://github.com/x/y/': Could not resolve host")
+                return fake_git(*args, cwd=cwd)
+
+            def fake_linux(root, head, base, directory, only, say):
+                runs.append((head, base, only))
+                return receipt("linux", ok=False, partial=True)
+
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch.object(p, "git", fake_git), unittest.mock.patch.dict(p.RUNNERS, {"linux": fake_linux}):
+                with contextlib.redirect_stdout(out):
+                    code = p.main(["--only", "dco"])
+            self.assertEqual(code, 1, out.getvalue())  # a partial run never passes
+            self.assertIn(fetch, calls)
+            self.assertLess(calls.index(fetch), calls.index(("rev-parse", "origin/main")))
+            self.assertEqual(runs, [(HEAD, "b" * 40, ["dco"])])
+            runs.clear()
+            with unittest.mock.patch.object(p, "git", failing_git), unittest.mock.patch.dict(p.RUNNERS, {"linux": fake_linux}):
+                with contextlib.redirect_stderr(err):
+                    code = p.main([])
+            self.assertEqual(code, 2)
+            self.assertEqual(runs, [])
+            self.assertIn("git fetch origin main failed: fatal: unable to access", err.getvalue())
 
 
 if __name__ == "__main__":
