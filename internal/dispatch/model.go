@@ -276,6 +276,14 @@ const (
 	ViewRoadmap = "roadmap"
 )
 
+// ViewKinds is the kinds of a saved view.
+var ViewKinds = []string{ViewList, ViewBoard, ViewRoadmap}
+
+// Groupings is what a saved view's list may be grouped by, "" for none: a
+// board's columns are its statuses and a roadmap's its horizons whatever
+// its grouping.
+var Groupings = []string{"", "status", "priority", "horizon", "milestone", "owner"}
+
 // The states of a milestone.
 const (
 	MilestoneOpen   = "open"
