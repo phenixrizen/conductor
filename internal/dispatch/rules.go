@@ -291,15 +291,23 @@ func (e EdgeChange) Tag() Tag { return Tag{e.Actor, e.OpID, e.N} }
 // and names the adds it refuses: a parent set that would make a cycle or
 // a chain past MaxParentDepth (the chain from the deepest ticket of the
 // moved subtree to the root), a blocks add that would make a cycle, a
-// run link added while another live ticket holds the run, and the link
-// of a ticket undeleted while another live ticket holds the run
-// meanwhile. An add is admitted only when the edges admitted and not
-// removed before it keep the invariant, as that writer would have been
-// refused had it seen the others, so the answer is a function of the
-// whole log alone, the same whichever batches it arrived in and never of
-// the state a batch found; the row tables hold the admitted edges, and a
-// refused add is undone there with a Repair row. Tombstoned tickets keep
-// their parent and their relations, so those walks take them as edges.
+// run link added to a live ticket while another live ticket holds the
+// run, and the link of a ticket undeleted while another live ticket
+// holds the run meanwhile. An add is admitted only when the edges
+// admitted and not removed before it keep the invariant, as that writer
+// would have been refused had it seen the others, so the answer is a
+// function of the whole log alone, the same whichever batches it arrived
+// in and never of the state a batch found; the row tables hold the
+// admitted edges, and a refused add is undone there with a Repair row.
+// The replay goes on from the graph those rows hold: parent_id is a
+// scalar, which a later set replaces whether or not the set stands, so a
+// refused parent set leaves its ticket with no parent, as its repair
+// clears the field, never with the parent the set replaced. A tombstone
+// holds no run, so a link added to one (its writer had not seen the
+// delete) is admitted inactive whoever holds the run, and is refused, if
+// at all, at its ticket's undelete, when another live ticket holds the
+// run then. Tombstoned tickets keep their parent and their relations, so
+// those walks take them as edges.
 // A remove removes the adds of its member it names, whatever their place
 // in the order: one that sorts before an add it names (its writer's clock
 // behind the adder's) removes that add when it comes, as the
@@ -356,6 +364,9 @@ func Reconcile(changes []EdgeChange) []EdgeChange {
 			}
 			if e.To == e.From || reachesUp(parents, e.To, e.From) || depthOf(parents, e.To)+height(parents, e.From) > MaxParentDepth {
 				refused = append(refused, e)
+				// The set replaced the parent it found, and its repair
+				// clears the field: no parent from here, as in the rows.
+				parents[e.From] = ""
 				continue
 			}
 			parents[e.From] = e.To
@@ -391,7 +402,9 @@ func Reconcile(changes []EdgeChange) []EdgeChange {
 			switch e.Op {
 			case OpAdd:
 				l := &link{e: e, removed: isRemoved(e)}
-				if !l.removed && holder(e.To, e.From) != nil {
+				// A tombstone's link holds no run: admitted inactive, it
+				// meets the holder at its ticket's undelete, below.
+				if !l.removed && !deleted[e.From] && holder(e.To, e.From) != nil {
 					l.refused = true
 					refused = append(refused, e)
 				}

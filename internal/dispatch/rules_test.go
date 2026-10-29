@@ -256,6 +256,15 @@ func TestReconcileParentSets(t *testing.T) {
 	// A refused set stays refused: a later clear of the other side does
 	// not admit it after the fact (serial).
 	both(t, "serial", []EdgeChange{parent(1, "a", "A", "B"), parent(2, "b", "B", "A"), parent(3, "a", "A", "")}, "B→A")
+	// A reparent refused on a ticket that has a parent leaves it with
+	// none, as its repair clears parent_id: B→A replaced B→C under the
+	// scalar rule, so C→B, a cycle only with B→C, stands.
+	both(t, "a reparent refused on a ticket with a parent", []EdgeChange{parent(1, "a", "B", "C"), parent(2, "b", "A", "B"), parent(3, "a", "B", "A"), parent(4, "b", "C", "B")}, "B→A")
+	// The parent cleared counts for nothing in a chain either: T5's
+	// reparent under T7 is refused, which leaves T5 a root and T8 4 deep,
+	// so a ticket set under T8 is 5 deep and stands.
+	cut := append(append([]EdgeChange(nil), chain[:7]...), parent(20, "b", "T5", "T7"), parent(21, "a", "Y", "T8"))
+	both(t, "a chain cut by a refused reparent", cut, "T5→T7")
 	// The input is left as it was.
 	in := []EdgeChange{parent(2, "b", "B", "A"), parent(1, "a", "A", "B")}
 	Reconcile(in)
@@ -398,6 +407,17 @@ func TestReconcileRunLinks(t *testing.T) {
 	both(t, "undeleted, free", []EdgeChange{first, tombstone(2, "a", "T1", true), tombstone(3, "a", "T1", false), link(4, "b", "T2", "R")}, "T2→R")
 	second := link(3, "b", "T2", "R")
 	both(t, "undeleted after the other let go", []EdgeChange{first, tombstone(2, "a", "T1", true), second, unlink(4, "b", second), tombstone(5, "a", "T1", false), link(6, "b", "T3", "R")}, "T3→R")
+	// A link added to a tombstone (its writer had not seen the delete)
+	// holds no run while the ticket is deleted, so the live ticket holding
+	// the run then does not refuse it: it stands, inactive.
+	taken := link(2, "b", "T2", "R")
+	inactive := link(3, "a", "T1", "R")
+	both(t, "a link added to a tombstone", []EdgeChange{tombstone(1, "b", "T1", true), taken, inactive}, "")
+	// It comes back with the undelete, and holds the run when no other
+	// live ticket does at that moment.
+	both(t, "a link added to a tombstone, the run free at the undelete", []EdgeChange{tombstone(1, "b", "T1", true), taken, inactive, unlink(4, "b", taken), tombstone(5, "b", "T1", false), link(6, "b", "T3", "R")}, "T3→R")
+	// Held by another live ticket at the undelete, it is refused there.
+	both(t, "a link added to a tombstone, the run held at the undelete", []EdgeChange{tombstone(1, "b", "T1", true), taken, inactive, tombstone(5, "b", "T1", false)}, "T1→R")
 	// A remove naming no tag removes nothing: the run stays held.
 	none := edge(2, "a", EdgeRun, OpRemove, "T1", "R")
 	both(t, "a remove naming no tag", []EdgeChange{first, none, link(3, "b", "T2", "R")}, "T2→R")
