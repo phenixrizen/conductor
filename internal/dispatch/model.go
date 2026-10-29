@@ -418,8 +418,8 @@ const (
 	// kindText is text with no control character: a path, a reference,
 	// a content type.
 	kindText
-	// kindURL is an http or https URL with a host, and no control
-	// character.
+	// kindURL is an http or https URL with a host name (a port alone is
+	// none), and no control character.
 	kindURL
 	// kindFileName is a file's name: no '/', '\' or control character
 	// (NUL among them), and neither "." nor "..".
@@ -504,7 +504,7 @@ func (r textRule) check(label, s string) error {
 	switch r.kind {
 	case kindURL:
 		u, err := url.Parse(s)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
 			return refuse(RefusalInvalid, "%s is not an http or https URL", label)
 		}
 	case kindFileName:

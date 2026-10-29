@@ -144,7 +144,12 @@ func TestEachKindOfTextRefusesWhatItCannotHold(t *testing.T) {
 	for _, key := range []string{"project.tracker_url", "link.url"} {
 		allowed(key, "https://github.com/rocksolidlabs/conductor")
 		allowed(key, "HTTP://example.com/a?b=c#d")
-		for _, s := range []string{"ftp://h/x", "https:///x", "//h/x", "github.com/x", "https://h/\u0085", "https://h/a\nb", "mailto:a@b.c", "javascript:alert(1)"} {
+		allowed(key, "https://h:443/x")
+		allowed(key, "https://[::1]:8080/x")
+		// A port with no host name is no host: url.Parse gives each of
+		// these a Host that is a port alone and an empty Hostname.
+		for _, s := range []string{"ftp://h/x", "https:///x", "//h/x", "github.com/x", "https://h/\u0085", "https://h/a\nb", "mailto:a@b.c", "javascript:alert(1)",
+			"https://:443/issues", "http://:80/", "https://:/x", "https://user@:443/x"} {
 			refused(key, s, RefusalInvalid)
 		}
 	}

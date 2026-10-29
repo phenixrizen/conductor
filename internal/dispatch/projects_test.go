@@ -104,6 +104,7 @@ func TestAProjectsValuesAreChecked(t *testing.T) {
 		{NewProject{Key: "CD", Name: "x", TrackerURL: "https://github.com/x"}, RefusalInvalid},
 		{NewProject{Key: "CD", Name: "x", Tracker: TrackerExternal}, RefusalInvalid},
 		{NewProject{Key: "CD", Name: "x", Tracker: TrackerExternal, TrackerURL: "ftp://h/x"}, RefusalInvalid},
+		{NewProject{Key: "CD", Name: "x", Tracker: TrackerExternal, TrackerURL: "https://:443/issues"}, RefusalInvalid},
 		{NewProject{Key: "CD", Name: "x", Tracker: TrackerExternal, TrackerURL: "https://h/" + strings.Repeat("a", MaxTrackerURL)}, RefusalBound},
 		{NewProject{Key: "CD", Name: "x", CloseRequires: &verified}, RefusalInvalid},
 		{NewProject{Key: "CD", Name: "x", CloseRequires: &twice}, RefusalInvalid},
