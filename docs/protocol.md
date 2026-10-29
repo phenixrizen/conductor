@@ -1772,9 +1772,9 @@ its run, and on no other.
 | `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
 | `GET /api/runs/{run}/commands/{command}` | admin | a command's receipt from the managed runs' ledger (#334): `{command: {id, intent, status, receipt?, createdAt}}`, `status` one of `accepted`, `done`, `failed`, `uncertain`; `404 not_found` for a run or command unknown, or one that is not the admin's; `400 invalid_request` for a command id that is not 1 to 32 of letters, digits, `.`, `_`, `~` and `-`. A read: it never acts, so a client that lost a reply looks here before it sends again |
-| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`) and `steps` its receipts as the steps route below answers them; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no preview; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
+| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`) and `steps` its receipts as the steps route below answers them; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no preview, a result a continuation imported read from the run that made it; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` | admin | an attempt's receipts from the ledger (Project manifests below): `{steps}`, by when each started, each `{phase, id, k, state, argv?, url?, dir?, subject?, manifest?, exit?, timedOut?, duration?, error?, ports?, tries, startedAt, finishedAt?, logBytes, logDropped?, logSha256?}`, the row whole but for its log (`duration` in milliseconds; `exit` once it finished); a run the server let go answers the same; `404 not_found` for a run or attempt the ledger has not; `503 ledger_unavailable`; `400 invalid_request` for an id or number that is not shaped as one |
-| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log` | admin | one receipt's log: `200 text/plain`, the bytes the ledger keeps (at most 1 MiB: the output's head, a line saying how many bytes were dropped, and its last bytes), their SHA-256 in `X-Conductor-Log-SHA256` (exposed to a dev origin's script); `404 not_found` for a row the ledger has not, or one still running; `410 log_dropped` for a log not kept past the run's 64 MiB of logs (its hash and tail stay on the row); fetched with the bearer header, never as a link the browser follows |
+| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log` | admin | one receipt's log: `200 text/plain`, the bytes the ledger keeps (at most 1 MiB: the output's head, a line saying how many bytes were dropped, and its last bytes), their SHA-256 in `X-Conductor-Log-SHA256` (exposed to a dev origin's script; a log kept empty answers `200`, empty, with its hash); `404 not_found` for a row the ledger has not, one still running, or one that ended with no log (a check its attempt closed under, a step or prerequisite the recovery concluded); `410 log_dropped` for a log not kept past the run's 64 MiB of logs (its hash and tail stay on the row); fetched with the bearer header, never as a link the browser follows |
 | `GET /api/runs/{run}/prerequisites` | admin | a run's prerequisites' receipts from the ledger: `{steps}` as the steps route answers them, each of phase `prerequisite`, `k` counting its runs in the run; `404 not_found` for a run the ledger has not; `503 ledger_unavailable` |
 | `GET /api/runs/{run}/prerequisites/{id}/{k}/log` | admin | one prerequisite receipt's log, as a step's log route answers it |
 | `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's scheduling (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
@@ -2253,15 +2253,18 @@ per run, in the crew's directory at the run's base, before the first attempt
 is dispatched: the launch answers while they run (the run's
 `manifest.prerequisites[].state` says `running`), and nothing is dispatched
 until they passed; they run again at each unpause (unless a run of them is
-under way, whose result stands) and in a continuation. One that fails pauses
-the run's scheduling with its words and spends nothing. The setup steps run in
+under way, whose result stands), in a continuation, and when a retry or an
+acceptance reopens a run whose end cut a run of them short (`interrupted`).
+One that fails pauses the run's scheduling with its words and spends
+nothing. The setup steps run in
 each new worktree, the manifest resolved for it at the attempt's start commit
 and the task files written first (`task.json`'s `manifest`, `{source,
 revision | digest}`, and a sentence in `task.md`), before the session; and in
 the checkout of a result, the manifest read at the result commit (a result
 that changes `conductor.manifest.json` is checked by the one it changed),
-before the checks, the checkout compared with the result after each step
-(`setup deps changed tracked files: …`). A step's timeout is 60 s for a
+before the checks, the checkout compared with the result after each step,
+before its receipt is finished, so a change fails that step in its receipt
+as in the attempt (`setup deps changed tracked files: …`). A step's timeout is 60 s for a
 prerequisite and 600 s for a setup step when it gives none. A step that fails
 in an attempt's worktree, or a manifest that cannot be resolved there (stage
 `setup <id>` or `manifest`), is the host's or the manifest's, not the agent's:
@@ -2284,7 +2287,10 @@ run of its id on the attempt, a check's included, so a legacy setup step that
 shares a check's id keeps every row), the manifest that ran it
 (`crew:<revision>` or `file:<blob>`), where it ran, its command, exit, timing,
 log (at most 1 MiB: the output's head, a line saying how many bytes were
-dropped, its last bytes) and SHA-256, and the words of its failure. The
+dropped, its last bytes) and SHA-256, and the words of its failure. A row the
+ledger refuses fails its step ("the ledger could not record the step deps:
+…"), a refused `running` row ending the step's process first, so nothing runs
+that the ledger does not record. The
 events: `manifest.resolved {tree, task, attempt, source, revision | digest,
 env}`; `step.started {phase, id, k, manifest}`, `step.running {…, pid, group}`
 and `step.finished {…, exit, timedOut, duration, error, interrupted}`, each
@@ -2373,8 +2379,9 @@ run whose record lags the ledger (a snapshot cut short by the server's
 end) or has none is written again as the ledger has it (`crew.Recovered`):
 its state (`interrupted` when the recovery found it running), each task as
 its row and its last attempt say (a task whose attempt was interrupted is
-`ready` with why, one whose attempt is uncertain `failed` with why), the
-members' sessions ended; it reads so, read-only, until it is continued. `POST /api/runs/{run}/resume` on a managed run
+`ready` with why, one whose attempt is uncertain `failed` with why), its
+prerequisites as their receipts say (the last run of them, a prerequisite it
+did not reach `pending`), the members' sessions ended; it reads so, read-only, until it is continued. `POST /api/runs/{run}/resume` on a managed run
 (interrupted, stopped, or finished with an outcome; the engine's or its
 record) makes its continuation (`crew.ContinueRun`): a new run of the crew
 as launched, from the same base, named in the old run's `resumedBy` (the
