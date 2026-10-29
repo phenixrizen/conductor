@@ -56,40 +56,58 @@ func TestAStaleRevisionIsRefusedAndKept(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
 	pid := newProject(t, s, "CND")
+	// stale sends op, whose expected revision is not the project's, twice:
+	// each answer is a stale_revision refusal naming both revisions and
+	// kept as a failed receipt, the second a repeat that does not try
+	// again, and the project's name and rev and the changes log stay as
+	// they were.
+	stale := func(op Op, name string, rev int64) {
+		t.Helper()
+		logged := count(t, s, "SELECT COUNT(*) FROM changes")
+		for _, repeat := range []bool{false, true} {
+			rc, err := setFields(s, op, EntityProject, pid, field{"name", "Stale"})
+			want(t, rc, err, StatusFailed, RefusalStaleRevision)
+			if rc.Repeat != repeat {
+				t.Fatalf("the refusal of %s, a repeat %v: %+v", op.ID, repeat, rc)
+			}
+			if !strings.Contains(rc.Error, strconv.FormatInt(op.ExpectedRev, 10)) || !strings.Contains(rc.Error, strconv.FormatInt(rev, 10)) {
+				t.Fatalf("the refusal's words: %q", rc.Error)
+			}
+			if kept, found, err := s.Receipt(ctx, "test", op.ID); !found || err != nil || kept.Status != StatusFailed || kept.Refusal != RefusalStaleRevision {
+				t.Fatalf("the failed receipt: %+v %v %v", kept, found, err)
+			}
+			var gotName string
+			var gotRev int64
+			if err := s.db.QueryRow("SELECT name, rev FROM projects WHERE id = ?", pid).Scan(&gotName, &gotRev); err != nil || gotName != name || gotRev != rev {
+				t.Fatalf("after the refusal of %s: %q rev %d %v", op.ID, gotName, gotRev, err)
+			}
+			if rows := changesOf(t, s, "test", op.ID); len(rows) != 0 {
+				t.Fatalf("change rows of a refused operation: %+v", rows)
+			}
+			if n := count(t, s, "SELECT COUNT(*) FROM changes"); n != logged {
+				t.Fatalf("%d change rows after the refusal of %s, %d before", n, op.ID, logged)
+			}
+		}
+	}
+	// A revision ahead of the project's.
 	op := testOp("e1")
 	op.ExpectedRev = 5
-	rc, err := setFields(s, op, EntityProject, pid, field{"name", "Conductor"})
-	want(t, rc, err, StatusFailed, RefusalStaleRevision)
-	if !strings.Contains(rc.Error, "5") || !strings.Contains(rc.Error, "1") {
-		t.Fatalf("the refusal's words: %q", rc.Error)
-	}
-	if kept, found, err := s.Receipt(ctx, "test", "e1"); !found || err != nil || kept.Status != StatusFailed || kept.Refusal != RefusalStaleRevision {
-		t.Fatalf("the failed receipt: %+v %v %v", kept, found, err)
-	}
-	var name string
-	var rev int64
-	if err := s.db.QueryRow("SELECT name, rev FROM projects WHERE id = ?", pid).Scan(&name, &rev); err != nil || name != "CND" || rev != 1 {
-		t.Fatalf("after the refusal: %q rev %d %v", name, rev, err)
-	}
-	if rows := changesOf(t, s, "test", "e1"); len(rows) != 0 {
-		t.Fatalf("change rows of a refused operation: %+v", rows)
-	}
-	// The same id again answers the refusal, and does not try again.
-	repeat, err := setFields(s, op, EntityProject, pid, field{"name", "Conductor"})
-	want(t, repeat, err, StatusFailed, RefusalStaleRevision)
-	if !repeat.Repeat {
-		t.Fatalf("the repeat of a refusal: %+v", repeat)
-	}
+	stale(op, "CND", 1)
 	// The revision as it is: allowed, and the receipt carries the new one.
 	op = testOp("e2")
 	op.ExpectedRev = 1
-	rc, err = setFields(s, op, EntityProject, pid, field{"name", "Conductor"})
+	rc, err := setFields(s, op, EntityProject, pid, field{"name", "Conductor"})
 	want(t, rc, err, StatusDone, "")
 	if rc.Rev != 2 {
 		t.Fatalf("the receipt's rev: %+v", rc)
 	}
+	// A revision behind the project's: a writer that read revision 1
+	// before e2 made it 2 is refused, and e2's name stands.
+	op = testOp("e3")
+	op.ExpectedRev = 1
+	stale(op, "Conductor", 2)
 	// No revision expected: allowed whatever it is.
-	rc, err = setFields(s, testOp("e3"), EntityProject, pid, field{"name", "Conductor 2"})
+	rc, err = setFields(s, testOp("e4"), EntityProject, pid, field{"name", "Conductor 2"})
 	want(t, rc, err, StatusDone, "")
 	if rc.Rev != 3 {
 		t.Fatalf("the receipt's rev: %+v", rc)
