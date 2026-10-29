@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -64,7 +65,7 @@ func TestOpenMakesTheSchema(t *testing.T) {
 		tables = append(tables, n)
 	}
 	rows.Close()
-	if want := "attempts checks commands events messages runs schema_version tasks"; strings.Join(tables, " ") != want {
+	if want := "attempts checks commands events messages prerequisites runs schema_version tasks trees"; strings.Join(tables, " ") != want {
 		t.Fatalf("tables %v", tables)
 	}
 	newRun(t, l, "team-00000001")
@@ -823,7 +824,7 @@ func TestARunsLogsAreBoundedInAll(t *testing.T) {
 func TestAVersion1DatabaseIsBroughtToTheVersionThisConductorWrites(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	l := openLedger(t, dir)
-	for _, stmt := range []string{"ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "ALTER TABLE tasks DROP COLUMN repair", "ALTER TABLE tasks DROP COLUMN extra", "ALTER TABLE tasks DROP COLUMN withdrawn", "DROP TABLE messages"} {
+	for _, stmt := range append(slices.Clone(version5Added), "ALTER TABLE attempts DROP COLUMN result", "ALTER TABLE attempts DROP COLUMN checkpoint", "ALTER TABLE tasks DROP COLUMN repair", "ALTER TABLE tasks DROP COLUMN extra", "ALTER TABLE tasks DROP COLUMN withdrawn", "DROP TABLE messages") {
 		if _, err := l.db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}

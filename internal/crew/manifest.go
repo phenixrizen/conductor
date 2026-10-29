@@ -25,8 +25,9 @@ import (
 // in the crew's directory as each tree's commit holds it (resolveManifest),
 // versioned with the code. A crew has one or the other. A legacy Setup is
 // the manifest's setup phase (effectiveManifest), so the engine sees one
-// shape. This build runs that phase alone: the launch of a manifest that
-// names more is refused (runnableManifest) rather than skipped or half run.
+// shape. This build runs the prerequisites and the setup phase (steps.go):
+// a manifest that names more is refused (runnableManifest, runnable) rather
+// than skipped or half run.
 
 // Manifest is a project manifest. Every step is a Check: an argv array, never a
 // shell line, run in the tree's working directory.
@@ -478,22 +479,25 @@ func expand(s string, ports map[string]int, stateDir string) string {
 }
 
 // runnableManifest refuses the launch of a crew whose project manifest names a
-// phase, a form or a placeholder this build does not run yet, so a manifest
-// saved ahead of its engine is never accepted and then skipped or half
-// run. This build runs the setup phase alone, as it runs a legacy Setup,
-// and expands no placeholder (a ${CONDUCTOR_STATE_DIR} in a setup step
-// would be passed on as it is). A legacy Setup launches as it always has.
-// The error matches ErrInvalid: the API answers 400 invalid_crew.
+// phase or a placeholder this build does not run yet (runnable), so a
+// manifest saved ahead of its engine is never accepted and then skipped or
+// half run. The file form is held to the same once it is read, at the
+// launch's base (Engine.prepare) and at every tree's commit (resolveAt). A
+// legacy Setup launches as it always has. The error matches ErrInvalid: the
+// API answers 400 invalid_crew.
 func (c Crew) runnableManifest() error {
-	if !c.hasManifest() {
+	if !c.hasManifest() || c.Manifest.File {
 		return nil
 	}
-	rec := c.Manifest
+	return c.Manifest.runnable()
+}
+
+// runnable refuses a manifest that names a phase or a placeholder this
+// build does not run yet: it runs the prerequisites and the setup phase,
+// and expands no placeholder (a ${CONDUCTOR_STATE_DIR} in a setup step
+// would be passed on as it is; a prerequisite has none by its rules).
+func (rec Manifest) runnable() error {
 	switch {
-	case rec.File:
-		return invalidf("this build does not read a project manifest from %s yet", manifestFile)
-	case len(rec.Prerequisites) > 0:
-		return invalidf("this build does not run a project manifest's prerequisites yet")
 	case len(rec.Env) > 0:
 		return invalidf("this build does not pass a project manifest's env names on yet")
 	case len(rec.Ports) > 0:

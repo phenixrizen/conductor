@@ -27,13 +27,54 @@ import (
 // never known (uncertain) waits for a person: its task fails with why, and
 // a retry allows one more attempt. Nothing is retried on its own.
 
-// Loaded is a run as the ledger has it, for a continuation and for the
-// record written after a recovery.
+// Loaded is a run as the ledger has it, for a continuation, for the record
+// written after a recovery and for a task read of a run the engine does
+// not hold. Prerequisites are its prerequisites' receipts, without their
+// logs. Imported are the attempt rows its tasks' results were imported
+// from by reference, by the reference (run/task/n), read from the runs
+// that hold them (LoadImports): empty unless read.
 type Loaded struct {
-	Run      ledger.RunRow
-	Tasks    []ledger.TaskRow
-	Attempts []ledger.AttemptRow
-	Messages []ledger.MessageRow
+	Run           ledger.RunRow
+	Tasks         []ledger.TaskRow
+	Attempts      []ledger.AttemptRow
+	Messages      []ledger.MessageRow
+	Prerequisites []ledger.PrerequisiteRow
+	Imported      map[string]ledger.AttemptRow
+}
+
+// LoadImports reads into from.Imported the attempt rows of the results its
+// tasks imported by reference (a continuation's: the row stays in the run
+// that made it, which the task row's ImportedFrom names), so a task read
+// from the ledger says what such a result's attempt submitted, as the run
+// reports it while the engine holds it. A run the ledger has not is passed
+// over (the result reads with its commit alone); a read that fails is the
+// error.
+func LoadImports(ctx context.Context, l Ledger, from *Loaded) error {
+	runs := map[string][]ledger.AttemptRow{}
+	for _, row := range from.Tasks {
+		runID, taskID, n, ok := parseImport(row.ImportedFrom)
+		if !ok || taskID != row.ID || n != row.ResultAttempt || runID == from.Run.ID {
+			continue
+		}
+		attempts, read := runs[runID]
+		if !read {
+			src, found, err := l.Load(ctx, runID)
+			if err != nil {
+				return fmt.Errorf("the ledger could not read run %s: %w", runID, err)
+			}
+			if found {
+				attempts = src.Attempts
+			}
+			runs[runID] = attempts
+		}
+		if ra := byN(attempts, taskID, n); ra.N == n {
+			if from.Imported == nil {
+				from.Imported = map[string]ledger.AttemptRow{}
+			}
+			from.Imported[row.ImportedFrom] = ra
+		}
+	}
+	return nil
 }
 
 // candidate is a result a continuation verifies again: the interrupted
@@ -104,12 +145,14 @@ func (e *Engine) ContinueRun(ctx context.Context, runID, label string) (*Run, er
 		undo()
 		return nil, err
 	}
-	prefix, err := e.prepare(ctx, c)
+	// Prepared at its own base, never at the directory's HEAD: the
+	// commit its manifest and its prerequisites are read at.
+	p, err := e.prepare(ctx, c, from.Run.Base)
 	if err != nil {
 		undo()
 		return nil, err
 	}
-	r := e.add(c, prefix, label)
+	r := e.add(c, p, label)
 	defer e.launched(r)
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
@@ -181,14 +224,32 @@ func (e *Engine) markContinuing(runID, label string) (*run, string, error) {
 }
 
 // history is what a continuation takes from the runs it continues: the
-// source's task rows, each task's last attempt kept (along ContinuedFrom
-// when the source made none), and the imported results with where each
-// was found.
+// source's task rows, each task's last attempt kept and counted (along
+// ContinuedFrom when the source made none), the attempt after it whose
+// worktree could not be made usable when the task's last is one
+// (unusable), whether such an attempt refused the last one's checkpoint
+// (refusedCP), and the imported results with where each was found.
 type history struct {
-	rows  map[string]ledger.TaskRow
-	last  map[string]ledger.AttemptRow
-	refs  map[string]ledger.AttemptRow
-	refOf map[string]string
+	rows      map[string]ledger.TaskRow
+	last      map[string]ledger.AttemptRow
+	unusable  map[string]ledger.AttemptRow
+	refusedCP map[string]bool
+	refs      map[string]ledger.AttemptRow
+	refOf     map[string]string
+}
+
+// uncountedRow reports whether an attempt's row is one whose worktree
+// could not be made usable (steps.go): failed with no result at a stage
+// of the project manifest. A continuation passes over it as the run that
+// made it did.
+func uncountedRow(a ledger.AttemptRow) bool {
+	return a.State == ledger.AttemptFailed && a.ResultCommit == "" && manifestStage(a.Stage)
+}
+
+// manifestStage reports whether stage is a project manifest's: one of its
+// phases' steps, or "manifest" for one that could not be resolved.
+func manifestStage(stage string) bool {
+	return stage == "manifest" || strings.HasPrefix(stage, "setup ") || strings.HasPrefix(stage, "service ") || strings.HasPrefix(stage, "ready ")
 }
 
 // readHistory reads the history a continuation of from takes, before the
@@ -207,11 +268,27 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 		row := rows[a.TaskID]
 		return a.N > row.Withdrawn && a.N <= row.Attempts
 	}
-	last := map[string]ledger.AttemptRow{}
-	for _, a := range from.Attempts {
-		if usable(a) && a.N > last[a.TaskID].N {
+	// last is each task's highest counted attempt, top its highest, and
+	// uncounted its attempts whose worktree could not be made usable.
+	last, top := map[string]ledger.AttemptRow{}, map[string]ledger.AttemptRow{}
+	uncounted := map[string][]ledger.AttemptRow{}
+	consider := func(a ledger.AttemptRow) {
+		if !usable(a) {
+			return
+		}
+		if a.N > top[a.TaskID].N {
+			top[a.TaskID] = a
+		}
+		if uncountedRow(a) {
+			uncounted[a.TaskID] = append(uncounted[a.TaskID], a)
+			return
+		}
+		if a.N > last[a.TaskID].N {
 			last[a.TaskID] = a
 		}
+	}
+	for _, a := range from.Attempts {
+		consider(a)
 	}
 	// The results imported by reference: from this run's rows, or from the
 	// run an earlier continuation imported them from (the reference is
@@ -270,9 +347,7 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 		}
 		sources[prevID] = prev
 		for _, a := range prev.Attempts {
-			if _, ok := last[a.TaskID]; usable(a) && (!ok || a.N > last[a.TaskID].N) {
-				last[a.TaskID] = a
-			}
+			consider(a)
 		}
 		prevID = prev.Run.ContinuedFrom
 	}
@@ -314,7 +389,27 @@ func (e *Engine) readHistory(ctx context.Context, from Loaded) (history, error) 
 	if readErr != nil {
 		return history{}, readErr
 	}
-	return history{rows: rows, last: last, refs: refs, refOf: refOf}, nil
+	// A task whose last attempt could not be made usable: the next starts
+	// where it did, and the last counted one's checkpoint is refused when
+	// an attempt after it, made there, could not be made usable.
+	unusable, refusedCP := map[string]ledger.AttemptRow{}, map[string]bool{}
+	for id, t := range top {
+		la, hasLast := last[id]
+		if uncountedRow(t) && (!hasLast || t.N > la.N) {
+			unusable[id] = t
+		}
+		if !hasLast || la.Checkpoint == "" {
+			continue
+		}
+		if cp := decodeCheckpoint(la.Checkpoint); cp != nil && cp.commit != la.StartCommit {
+			for _, u := range uncounted[id] {
+				if u.N > la.N && u.StartCommit == cp.commit {
+					refusedCP[id] = true
+				}
+			}
+		}
+	}
+	return history{rows: rows, last: last, unusable: unusable, refusedCP: refusedCP, refs: refs, refOf: refOf}, nil
 }
 
 // startContinued sets r up from the run it continues and records it: the
@@ -326,8 +421,11 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 	rows, last, refs, refOf := h.rows, h.last, h.refs, h.refOf
 	var imported, again, uncertain, held int
 	err := e.transact(ctx, r, func() tx {
-		r.base, r.paused, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.ID
+		r.base, r.paused, r.pausedWhy, r.resumedFrom = from.Run.Base, from.Run.Paused, from.Run.PausedWhy, from.Run.ID
 		r.markRun()
+		// The prerequisites run again in the continuation, at its base,
+		// once this is committed: a host fixed since is seen.
+		r.armPrerequisites()
 		for _, row := range from.Messages {
 			m := &message{seq: row.Seq, from: row.From, to: row.To, text: row.Text, createdAt: row.CreatedAt, typingAt: row.TypingAt, deliveredAt: row.DeliveredAt, ackedAt: row.AckedAt}
 			if !row.TypingAt.IsZero() && row.DeliveredAt.IsZero() {
@@ -350,10 +448,29 @@ func (e *Engine) startContinued(ctx context.Context, r *run, from Loaded, h hist
 				t.repair = rp
 			}
 			la, hasLast := last[t.def.ID]
-			if hasLast && la.Checkpoint != "" && t.def.Kind == TaskWork {
+			if hasLast && la.Checkpoint != "" && t.def.Kind == TaskWork && !h.refusedCP[t.def.ID] {
 				if t.checkpoint = decodeCheckpoint(la.Checkpoint); t.checkpoint != nil {
-					t.checkpoint.n = la.N
+					t.checkpoint.n, t.checkpoint.start, t.checkpoint.branch = la.N, la.StartCommit, la.Branch
 				}
+			}
+			if ua, ok := h.unusable[t.def.ID]; ok {
+				// The last attempt could not be made usable: the next starts
+				// where it started, as if it had not been made, or where the
+				// checkpointed attempt did when it refused the checkpoint.
+				u := &unusable{n: ua.N, stage: ua.Stage, err: ua.Error, next: ua.StartCommit}
+				if hasLast {
+					u.prev = &TaskPrevious{Attempt: la.N, State: la.State, Stage: la.Stage, Error: la.Error}
+					u.prevResult = la.ResultCommit
+					if la.ResultCommit != "" && la.ResultCommit != ua.StartCommit {
+						u.prev.Result, u.prev.Branch = la.ResultCommit, la.Branch
+					}
+					if h.refusedCP[t.def.ID] {
+						if cp := decodeCheckpoint(la.Checkpoint); cp != nil {
+							u.checkpoint, u.branch, u.checkpointN, u.next = cp.commit, la.Branch, la.N, la.StartCommit
+						}
+					}
+				}
+				t.unusable = u
 			}
 			if hasLast && t.def.Kind == TaskWork && la.State == ledger.AttemptFailed && la.ResultCommit != "" && la.StartCommit != "" && refusedBeforeChecks(la.Stage) {
 				t.refused = &refusal{n: la.N, start: la.StartCommit, stage: la.Stage, err: la.Error, result: la.ResultCommit, branch: la.Branch}
@@ -572,7 +689,11 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 // sessions ended with the server. The server writes it in place of the
 // record the run last saved, which may lag the ledger (a snapshot cut
 // short by the server's end) or be missing (rec empty): then the run is
-// built from the crew as launched, its log empty.
+// built from the crew as launched and the manifest its row keeps, its log
+// empty. Its prerequisites are read from their receipts
+// (recoveredPrerequisites), whatever the record said of them, and nothing
+// is cleaning: a record that said otherwise at the ledger's revision is
+// written again too (UnderWay).
 func Recovered(rec Run, from Loaded) Run {
 	if rec.ID == "" {
 		rec = Run{ID: from.Run.ID, CrewID: from.Run.CrewID, StartedAt: from.Run.CreatedAt, State: RunRunning}
@@ -585,6 +706,7 @@ func Recovered(rec Run, from Loaded) Run {
 			for _, t := range c.Tasks {
 				rec.Tasks = append(rec.Tasks, TaskState{ID: t.ID, Member: t.Member, Kind: t.Kind, Needs: slices.Clone(t.Needs), State: ledger.TaskBlocked})
 			}
+			rec.Manifest = launchedManifest(c, from.Run.Manifest)
 		}
 		if !from.Run.ClosedAt.IsZero() && from.Run.State == ledger.RunStopped {
 			at := from.Run.ClosedAt
@@ -604,50 +726,25 @@ func Recovered(rec Run, from Loaded) Run {
 		rec.State = RunFinished
 	}
 	rec.Managed = &Managed{Revision: from.Run.Revision}
-	rec.Paused, rec.Outcome, rec.NeedsInput = from.Run.Paused, from.Run.Outcome, 0
+	rec.Paused, rec.PausedWhy, rec.Outcome, rec.NeedsInput = from.Run.Paused, from.Run.PausedWhy, from.Run.Outcome, 0
+	// Nothing runs after the server's end: a tree it left ending is the
+	// recovery's (ledger.Recover), not the run's, and so is a prerequisite
+	// it left running, which the recovery interrupted. The prerequisites
+	// are as their receipts say, not as a record that lags them.
+	rec.Cleaning = 0
+	if m := rec.Manifest; m != nil {
+		read := *m
+		read.Prerequisites = recoveredPrerequisites(m.Prerequisites, from.Prerequisites, from.Run.State == ledger.RunRunning)
+		rec.Manifest = &read
+	}
 	rows := map[string]ledger.TaskRow{}
 	for _, row := range from.Tasks {
 		rows[row.ID] = row
 	}
-	last := map[string]ledger.AttemptRow{}
-	for _, a := range from.Attempts {
-		if a.N > last[a.TaskID].N {
-			last[a.TaskID] = a
-		}
-	}
 	for i := range rec.Tasks {
 		t := &rec.Tasks[i]
-		if row, ok := rows[t.ID]; ok {
-			t.State, t.Reason, t.Attempts, t.ImportedFrom = row.State, row.Reason, row.Attempts, row.ImportedFrom
-			switch {
-			case row.ResultAttempt == 0:
-				// Withdrawn, or never made: the snapshot's result goes.
-				t.Result = nil
-			case t.Result == nil || t.Result.Attempt != row.ResultAttempt:
-				res := decodeResult(byN(from.Attempts, t.ID, row.ResultAttempt).Result)
-				t.Result = &ResultState{Attempt: row.ResultAttempt, Commit: row.ResultCommit, Summary: res.Summary, Issues: res.Issues, Verdict: row.Verdict, Findings: res.Findings, At: byN(from.Attempts, t.ID, row.ResultAttempt).ClosedAt}
-			}
-		}
-		la, ok := last[t.ID]
-		if !ok {
-			continue
-		}
-		as := AttemptState{N: la.N, SessionID: la.SessionID, Worktree: la.Worktree, Branch: la.Branch, Start: la.StartCommit, Result: la.ResultCommit, State: la.State, Stage: la.Stage, Error: la.Error}
-		if !la.LaunchedAt.IsZero() {
-			at := la.LaunchedAt
-			as.StartedAt = &at
-		}
-		if !la.ClosedAt.IsZero() {
-			at := la.ClosedAt
-			as.EndedAt = &at
-		}
-		t.Attempt = &as
-		switch {
-		case la.State == ledger.AttemptUncertain && (t.State == ledger.TaskRunning || t.State == ledger.TaskVerifying):
-			t.State, t.Reason = ledger.TaskFailed, fmt.Sprintf("attempt %d's launch is uncertain (the server stopped before it was known): retry it once the run is continued", la.N)
-		case la.State == ledger.AttemptInterrupted && (t.State == ledger.TaskRunning || t.State == ledger.TaskVerifying):
-			t.State, t.Reason = ledger.TaskReady, fmt.Sprintf("attempt %d was interrupted by the server's end: the run continues it", la.N)
-		}
+		row, ok := rows[t.ID]
+		taskStateOfRow(t, row, ok, from.Attempts, from.Imported)
 	}
 	now := time.Now().UTC()
 	for i := range rec.Members {
@@ -660,4 +757,217 @@ func Recovered(rec Run, from Loaded) Run {
 		}
 	}
 	return rec
+}
+
+// UnderWay reports whether rec, a managed run's record, says something of
+// the run is under way that only the server running it can be doing: a
+// tree being ended, or a prerequisite running. A record at the ledger's
+// revision can say so: the journal can write it between a commit and the
+// end of what that commit finished (a tree's tree.ended and the drop of
+// its count, a generation's last row and its end), and the server can end
+// before the next. Nothing runs after the server's end, so the server's
+// start writes such a record again as the ledger has it (Recovered), as it
+// does one that lags (Codex's review of #422, round 2).
+func UnderWay(rec Run) bool {
+	if rec.Cleaning != 0 {
+		return true
+	}
+	if m := rec.Manifest; m != nil {
+		for _, p := range m.Prerequisites {
+			if p.State == "running" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// recoveredPrerequisites is a run's prerequisites as their receipts say
+// once nothing runs (after the server's end), in the order listed (the
+// record's, which is the manifest's): each with its latest receipt's k,
+// and the state of that receipt when the generation that ran last reached
+// it (passed or failed with its exit, words and time; interrupted), else
+// pending. Generations go one at a time and each begins with the first
+// prerequisite, so the last began with the first's latest receipt, and a
+// receipt that started before it is an earlier generation's. A receipt
+// still open in a run the ledger has running is running.
+func recoveredPrerequisites(listed []PrerequisiteState, rows []ledger.PrerequisiteRow, runRunning bool) []PrerequisiteState {
+	latest := map[string]ledger.PrerequisiteRow{}
+	for _, row := range rows {
+		if row.K > latest[row.ID].K {
+			latest[row.ID] = row
+		}
+	}
+	var since time.Time
+	if len(listed) > 0 {
+		since = latest[listed[0].ID].StartedAt
+	}
+	var out []PrerequisiteState
+	for _, p := range listed {
+		ps := PrerequisiteState{ID: p.ID, State: "pending"}
+		row, ok := latest[p.ID]
+		if ok {
+			ps.K = row.K
+		}
+		switch {
+		case !ok || row.StartedAt.Before(since):
+		case row.State == ledger.CheckFinished:
+			exit := row.Exit
+			ps.Exit, ps.Error, ps.Duration = &exit, row.Error, row.FinishedAt.Sub(row.StartedAt).Milliseconds()
+			ps.State = "passed"
+			if row.Error != "" {
+				ps.State = "failed"
+			}
+		case row.State == ledger.CheckInterrupted || !runRunning:
+			ps.State, ps.Error = "interrupted", row.Error
+		default:
+			ps.State = "running"
+		}
+		out = append(out, ps)
+	}
+	return out
+}
+
+// launchedManifest is the project manifest of a run whose record is
+// missing, as the run's ledger row keeps the manifest at its base (row,
+// manifestRow): where it comes from, the crew's revision or the file's
+// blob, and every prerequisite in the manifest's order, those no
+// generation reached among them (the file at the base is not read again).
+// A row with none is a run without a manifest, or a version 4 run's, whose
+// manifest can only be the crew's as launched (setup steps at most); nil
+// for a crew with none. The states are recoveredPrerequisites'.
+func launchedManifest(c Crew, row string) *RunManifest {
+	var mr manifestRow
+	if row == "" || json.Unmarshal([]byte(row), &mr) != nil || mr.Source == "" {
+		m := c.effectiveManifest()
+		if m.empty() {
+			return nil
+		}
+		mr = manifestRow{Source: sourceCrew, Revision: c.ManifestRevision}
+		if m.File {
+			mr = manifestRow{Source: sourceFile}
+		}
+		for _, ch := range m.Prerequisites {
+			mr.Prerequisites = append(mr.Prerequisites, ch.ID)
+		}
+	}
+	rm := &RunManifest{Source: mr.Source, Revision: mr.Revision, Digest: mr.Digest}
+	for _, id := range mr.Prerequisites {
+		rm.Prerequisites = append(rm.Prerequisites, PrerequisiteState{ID: id, State: "pending"})
+	}
+	return rm
+}
+
+// taskStateOfRow is st, a task as a record or the crew has it, as the
+// ledger has it: its row's state, reason, attempts and import (when it has
+// a row), its result's attempt decoded (a snapshot's own kept when it is
+// the same attempt; one a continuation imported read from imported, the
+// rows LoadImports reads by reference), its last attempt
+// (attemptStateOfRow), and the state the recovery concluded for the task
+// of an attempt it found interrupted or uncertain. Recovered and
+// LoadedTask build a task this one way.
+func taskStateOfRow(st *TaskState, row ledger.TaskRow, hasRow bool, attempts []ledger.AttemptRow, imported map[string]ledger.AttemptRow) {
+	if hasRow {
+		st.State, st.Reason, st.Attempts, st.ImportedFrom = row.State, row.Reason, row.Attempts, row.ImportedFrom
+		switch {
+		case row.ResultAttempt == 0:
+			// Withdrawn, or never made: the snapshot's result goes.
+			st.Result = nil
+		case st.Result == nil || st.Result.Attempt != row.ResultAttempt:
+			ra := byN(attempts, st.ID, row.ResultAttempt)
+			if imp, ok := imported[row.ImportedFrom]; ok && row.ImportedFrom != "" {
+				ra = imp
+			}
+			res := decodeResult(ra.Result)
+			st.Result = &ResultState{Attempt: row.ResultAttempt, Commit: row.ResultCommit, Summary: res.Summary, Issues: res.Issues, Verdict: row.Verdict, Findings: res.Findings, At: ra.ClosedAt}
+		}
+	}
+	var la ledger.AttemptRow
+	for _, a := range attempts {
+		if a.TaskID == st.ID && a.N > la.N {
+			la = a
+		}
+	}
+	if la.N == 0 {
+		return
+	}
+	as := attemptStateOfRow(la)
+	st.Attempt = &as
+	switch {
+	case la.State == ledger.AttemptUncertain && (st.State == ledger.TaskRunning || st.State == ledger.TaskVerifying):
+		st.State, st.Reason = ledger.TaskFailed, fmt.Sprintf("attempt %d's launch is uncertain (the server stopped before it was known): retry it once the run is continued", la.N)
+	case la.State == ledger.AttemptInterrupted && (st.State == ledger.TaskRunning || st.State == ledger.TaskVerifying):
+		st.State, st.Reason = ledger.TaskReady, fmt.Sprintf("attempt %d was interrupted by the server's end: the run continues it", la.N)
+	}
+}
+
+// attemptStateOfRow is an attempt's row as the run reports it: its
+// number, session, worktree, branch, commits, state, stage, error, times
+// and checkpoint. What it submitted and its receipts are a task's own
+// read's (LoadedTask, the API's).
+func attemptStateOfRow(la ledger.AttemptRow) AttemptState {
+	as := AttemptState{N: la.N, SessionID: la.SessionID, Worktree: la.Worktree, Branch: la.Branch, Start: la.StartCommit, Result: la.ResultCommit, State: la.State, Stage: la.Stage, Error: la.Error}
+	if !la.LaunchedAt.IsZero() {
+		at := la.LaunchedAt
+		as.StartedAt = &at
+	}
+	if !la.ClosedAt.IsZero() {
+		at := la.ClosedAt
+		as.EndedAt = &at
+	}
+	if c := decodeCheckpoint(la.Checkpoint); c != nil {
+		as.Checkpoint = c.api()
+	}
+	return as
+}
+
+// LoadedTask is a task of a run the engine does not hold (let go, or the
+// server started since), as the ledger has it: the task as the run would
+// report it, from the crew as launched and its rows (taskStateOfRow; a
+// result a continuation imported read from from.Imported, which
+// LoadImports fills), and every attempt of it in order with what it
+// submitted (attemptStateOfRow). It has no preview: nothing answers behind
+// a tree the engine let go. ok is false when the run has no such task.
+func LoadedTask(from Loaded, taskID string) (TaskState, []AttemptState, bool) {
+	st := TaskState{ID: taskID}
+	known := false
+	var c Crew
+	if err := json.Unmarshal([]byte(from.Run.Crew), &c); err == nil {
+		for _, t := range c.Tasks {
+			if t.ID == taskID {
+				st.Member, st.Kind, st.Needs, known = t.Member, t.Kind, slices.Clone(t.Needs), true
+			}
+		}
+	}
+	row, hasRow := ledger.TaskRow{}, false
+	for _, r := range from.Tasks {
+		if r.ID == taskID {
+			row, hasRow = r, true
+		}
+	}
+	if !known && !hasRow {
+		return TaskState{}, nil, false
+	}
+	if hasRow {
+		if st.Member == "" {
+			st.Member, st.Kind = row.Member, row.Kind
+		}
+	} else {
+		st.State = ledger.TaskBlocked
+	}
+	taskStateOfRow(&st, row, hasRow, from.Attempts, from.Imported)
+	var attempts []AttemptState
+	for _, a := range from.Attempts {
+		if a.TaskID != taskID {
+			continue
+		}
+		as := attemptStateOfRow(a)
+		if a.Result != "" {
+			res := decodeResult(a.Result)
+			as.Submitted = &res
+		}
+		attempts = append(attempts, as)
+	}
+	slices.SortFunc(attempts, func(x, y AttemptState) int { return x.N - y.N })
+	return st, attempts, true
 }

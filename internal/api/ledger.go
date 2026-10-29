@@ -55,15 +55,18 @@ func recoverLedger(ctx context.Context, ld *ledger.Ledger, records *crew.Records
 		log.Warn("the ledger's recovery failed", "err", err)
 	}
 	for _, r := range recovered {
-		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks, "commands", r.Commands)
+		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks,
+			"prerequisites", r.Prerequisites, "trees", r.Trees, "commands", r.Commands)
 	}
 	syncRecords(rctx, ld, records, log)
 }
 
 // syncRecords writes the record of every managed run the ledger has whose
 // record lags the ledger (a snapshot cut short by the last server's end,
-// or none at all), as the ledger has it (crew.Recovered): what the API
-// answers for a run it no longer holds is then the ledger's state.
+// or none at all), or says something of the run is under way (a tree
+// being ended, a prerequisite running: crew.UnderWay), which nothing is
+// after the server's end, as the ledger has it (crew.Recovered): what the
+// API answers for a run it no longer holds is then the ledger's state.
 func syncRecords(ctx context.Context, ld *ledger.Ledger, records *crew.Records, log logger) {
 	if records == nil {
 		return
@@ -78,7 +81,7 @@ func syncRecords(ctx context.Context, ld *ledger.Ledger, records *crew.Records, 
 		if err != nil {
 			continue
 		}
-		if ok && rec.Managed != nil && rec.Managed.Revision >= row.Revision {
+		if ok && rec.Managed != nil && rec.Managed.Revision >= row.Revision && !crew.UnderWay(rec) {
 			continue
 		}
 		from, found, err := crew.SQLLedger(ld).Load(ctx, row.ID)

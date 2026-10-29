@@ -51,6 +51,32 @@ const (
 	CommandUncertain = "uncertain"
 )
 
+// The phases a receipt is of (CheckRow.Phase): a task's check, or a step
+// of a project manifest's phase (EN1); a prerequisite's receipt is a
+// PrerequisiteRow, of the phase PhasePrerequisite. A step's row runs
+// started → running → finished, or interrupted, as a check's does.
+const (
+	PhaseCheck        = "check"
+	PhaseSetup        = "setup"
+	PhaseService      = "service"
+	PhaseReady        = "ready"
+	PhaseVerify       = "verify"
+	PhaseCleanup      = "cleanup"
+	PhasePrerequisite = "prerequisite"
+)
+
+// A tree's kinds and states (TreeRow): an attempt's worktree or the
+// checkout of its result, resolved (its manifest read, the row put),
+// ready (made usable) and ended (its end recorded).
+const (
+	TreeWorktree = "worktree"
+	TreeCheckout = "checkout"
+
+	TreeResolved = "resolved"
+	TreeReady    = "ready"
+	TreeEnded    = "ended"
+)
+
 // RunRow is a managed run.
 type RunRow struct {
 	ID       string
@@ -67,6 +93,15 @@ type RunRow struct {
 	ContinuedBy   string
 	CreatedAt     time.Time
 	ClosedAt      time.Time // zero while the run is open
+	// PausedWhy is the pause's words, beside Paused: what paused the
+	// dispatch when the engine did (a project manifest's step, the
+	// ledger), "" for a person's pause and while not paused.
+	PausedWhy string
+	// Manifest is the run's project manifest at its base as the engine
+	// resolved it, JSON (where it comes from, the crew's revision or the
+	// file's blob, and its prerequisites' ids in order); "" for a run
+	// without one. A run whose record is missing is rebuilt from it.
+	Manifest string
 }
 
 // TaskRow is a task of a run.
@@ -140,13 +175,31 @@ type MessageRow struct {
 	AckedAt     time.Time
 }
 
-// CheckRow is one run of a check against an attempt's result: its receipt.
+// CheckRow is one run of a check against an attempt's result, or of a
+// step of a project manifest in one of its trees: its receipt.
 type CheckRow struct {
-	RunID            string
-	TaskID           string
-	N                int
-	ID               string
-	K                int // the k-th run of this check on this attempt
+	RunID  string
+	TaskID string
+	N      int
+	ID     string
+	// K numbers the runs of this id on this attempt, whatever their phase:
+	// the attempt allocates it, so a setup step run in the worktree (k 1)
+	// and again in the checkout (k 2) are told apart.
+	K int
+	// Phase is PhaseCheck for a task's check (every row a version 4
+	// database holds), else the manifest phase the step ran in; Manifest
+	// the identity of the manifest that ran it ("crew:<revision>",
+	// "file:<blob>"), "" for a check.
+	Phase    string
+	Manifest string
+	// Ports are the tree's ports by name, Tries the tries of a readiness
+	// probe (1 otherwise), Error the words of its failure ("" for none),
+	// bounded as an event's are, and URL a probe's expanded URL (at most
+	// MaxURL bytes), its command when it has no argv.
+	Ports            map[string]int
+	Tries            int
+	Error            string
+	URL              string
 	Argv             []string
 	Dir              string
 	Subject          string // the commit checked
@@ -167,6 +220,63 @@ type CheckRow struct {
 	LogDropped       bool   // the log was not kept: the run's logs were at MaxRunLogs; the hash and the tail stay
 	LogSHA256        string
 	Tail             string
+	// LogBytes is the log's size as kept, read with the row whether or not
+	// the log comes along; a put ignores it.
+	LogBytes int64
+}
+
+// PrerequisiteRow is one run of a project manifest's prerequisite in a
+// run, before any tree: its receipt, the shape of a CheckRow but for the
+// attempt, the phase, the ports and the tries. K numbers the
+// prerequisite's runs in the run (an unpause runs them again).
+type PrerequisiteRow struct {
+	RunID            string
+	ID               string
+	K                int
+	Manifest         string
+	Error            string
+	URL              string
+	Argv             []string
+	Dir              string
+	Subject          string // the commit the run's manifest was read at
+	State            string
+	PID              int
+	Group            int
+	ProcessStartedAt time.Time
+	StartedAt        time.Time
+	FinishedAt       time.Time
+	Exit             int
+	Signal           string
+	TimedOut         bool
+	Killed           bool
+	Stable           bool
+	Truncated        bool
+	Total            int64
+	Log              []byte
+	LogDropped       bool
+	LogSHA256        string
+	Tail             string
+	LogBytes         int64
+}
+
+// TreeRow is a tree's lifecycle: an attempt's worktree or the checkout of
+// its result, keyed by its attempt and kind, from the transaction that
+// resolved its manifest (TreeResolved) to the one that ended it
+// (TreeEnded, with why, and Interrupted when the recovery ended it).
+type TreeRow struct {
+	RunID       string
+	TaskID      string
+	N           int
+	Kind        string
+	Dir         string
+	Commit      string
+	Manifest    string
+	Ports       map[string]int
+	Preview     string
+	State       string
+	Why         string
+	Interrupted bool
+	EndedAt     time.Time
 }
 
 // CommandRow is a command's receipt: what was asked, by whom, and what
@@ -204,6 +314,8 @@ const (
 	MaxResult = 256 << 10
 	// MaxCrew bounds the crew JSON kept with a run.
 	MaxCrew = 1 << 20
+	// MaxURL bounds a probe's URL kept with its receipt.
+	MaxURL = 2048
 )
 
 // maxCommands bounds the commands kept per run: past it a new one is

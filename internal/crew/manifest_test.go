@@ -297,10 +297,10 @@ func TestTheEffectiveManifestLiftsALegacySetup(t *testing.T) {
 	// setup alike.
 	e, _ := newEngine(t)
 	for _, c := range []Crew{managedCrew(), func() Crew { c := managedCrew(); c.Manifest, c.Setup = &Manifest{Setup: c.Setup}, nil; return c }()} {
-		r := e.add(c, "", "")
+		r := e.add(c, prepared{}, "")
 		e.launched(r)
-		if len(r.setup) != 1 || r.setup[0].ID != "deps" {
-			t.Fatalf("the run's setup: %+v", r.setup)
+		if len(r.manifest.Setup) != 1 || r.manifest.Setup[0].ID != "deps" || !r.hasManifest() {
+			t.Fatalf("the run's setup: %+v", r.manifest.Setup)
 		}
 	}
 }
@@ -333,10 +333,11 @@ func TestExpandPutsThePlaceholdersInLiterally(t *testing.T) {
 	}
 }
 
-// The launch of a manifest that names a phase, the file form or a
-// placeholder this build does not run yet is refused before anything is
-// made; a manifest with its setup phase alone, and a legacy setup whatever
-// its argv holds, launch as main launches a setup.
+// The launch of a manifest that names a phase or a placeholder this build
+// does not run yet is refused before anything is made; a manifest with its
+// prerequisites and setup phase, the file form (held to the same once it is
+// read, at the launch's base), and a legacy setup whatever its argv holds,
+// launch.
 func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	setup := []Check{{ID: "deps", Argv: []string{"npm", "ci"}}}
 	cases := []struct {
@@ -344,8 +345,6 @@ func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 		rec   Manifest
 		words string
 	}{
-		{"the file form", Manifest{File: true}, "this build does not read a project manifest from conductor.manifest.json yet"},
-		{"prerequisites", Manifest{Setup: setup, Prerequisites: []Check{{ID: "node", Argv: []string{"node", "--version"}}}}, "this build does not run a project manifest's prerequisites yet"},
 		{"env", Manifest{Setup: setup, Env: []string{"NPM_TOKEN"}}, "this build does not pass a project manifest's env names on yet"},
 		{"ports", Manifest{Setup: setup, Ports: []string{"web"}}, "this build does not give a project manifest's ports yet"},
 		{"services", Manifest{Services: []Check{{ID: "web", Argv: []string{"npm", "start"}}}}, "this build does not run a project manifest's services yet"},
@@ -371,13 +370,21 @@ func TestALaunchOfAManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
 	if runs := e.List(); len(runs) != 0 {
 		t.Fatalf("a refused launch kept a run: %+v", runs)
 	}
-	// Its setup phase alone runs as a legacy setup does; a legacy setup is
-	// not a manifest saved ahead of its engine: its argv is passed on as main
-	// passes it.
+	// Its prerequisites and its setup phase run, and the file form is read
+	// at the base; a legacy setup is not a manifest saved ahead of its
+	// engine: its argv is passed on as main passes it.
 	c := managedCrew()
 	c.Setup, c.Manifest = nil, &Manifest{Setup: setup}
 	if err := c.runnableManifest(); err != nil {
 		t.Fatalf("a manifest with its setup alone: %v", err)
+	}
+	c.Manifest = &Manifest{Setup: setup, Prerequisites: []Check{{ID: "node", Argv: []string{"node", "--version"}}}}
+	if err := c.runnableManifest(); err != nil {
+		t.Fatalf("a manifest with prerequisites: %v", err)
+	}
+	c.Manifest = &Manifest{File: true}
+	if err := c.runnableManifest(); err != nil {
+		t.Fatalf("the file form: %v", err)
 	}
 	c = managedCrew()
 	c.Setup = []Check{{ID: "cache", Argv: []string{"mkdir", "-p", "${CONDUCTOR_STATE_DIR}/cache"}}}
@@ -403,15 +410,17 @@ func TestAManifestsSetupRunsAsALegacySetupDoes(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(a.Attempt.Worktree, "dep.txt")); err != nil {
 		t.Fatalf("the manifest's setup did not run in the worktree: %v", err)
 	}
-	if n := l.count(run.ID, "attempt.setup"); n != 1 {
-		t.Fatalf("attempt.setup events: %d", n)
+	if rows := l.stepRows(run.ID, "build", 1); len(rows) != 1 || rows[0].Phase != ledger.PhaseSetup || rows[0].K != 1 || rows[0].Dir != a.Attempt.Worktree || rows[0].Manifest != "crew:0" || rows[0].State != ledger.CheckFinished {
+		t.Fatalf("the worktree's setup receipt:\n%s", rowWords(rows))
 	}
 	writeFile(t, filepath.Join(a.Attempt.Worktree, "built.txt"), "yes\n")
 	commitAll(t, a.Attempt.Worktree, "built")
 	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
-	if n := l.count(run.ID, "check.setup"); n != 1 {
-		t.Fatalf("check.setup events: %d", n)
+	// The checkout's setup is the attempt's second row of deps, then the check.
+	rows := l.stepRows(run.ID, "build", 1)
+	if len(rows) != 3 || rows[1].ID != "deps" || rows[1].K != 2 || rows[1].Dir != a.Attempt.Worktree+".check" || rows[2].Phase != ledger.PhaseCheck || rows[2].ID != "dep" || rows[2].K != 1 {
+		t.Fatalf("the receipts:\n%s", rowWords(rows))
 	}
 	// The run's row keeps the crew as launched, manifest and all.
 	var launched Crew

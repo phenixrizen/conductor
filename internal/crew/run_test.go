@@ -72,6 +72,12 @@ type fakeLauncher struct {
 	all          []*sessiontest.FakeProc   // every process launched, in order
 	locals       map[string]*session.Local // by member name, the latest
 	byID         map[string]*session.Local // by session ID
+	// launchHold, when set, holds every launch once its session exists
+	// (its process made, the session registered) until it closes, its
+	// context not looked at, as Server.Launch looks at it only at its
+	// start; launchHeld, when set, is given each session so held.
+	launchHold chan struct{}
+	launchHeld chan *session.Local
 }
 
 func newFakeLauncher(t *testing.T) *fakeLauncher {
@@ -134,6 +140,15 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	})
 	if f.onLaunch != nil {
 		go f.onLaunch(name, p, l)
+	}
+	f.mu.Lock()
+	hold, held := f.launchHold, f.launchHeld
+	f.mu.Unlock()
+	if hold != nil {
+		if held != nil {
+			held <- l
+		}
+		<-hold
 	}
 	return l, nil
 }
@@ -1135,7 +1150,7 @@ func TestALaunchingRunIsNeverForgotten(t *testing.T) {
 	var forgotten []string
 	e.OnForget = func(run Run) { forgotten = append(forgotten, run.ID) }
 	// Launch keeps its run first (add), then starts what starts at once.
-	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), "", "")
+	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), prepared{}, "")
 	var first string
 	for i := range maxRuns {
 		run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))

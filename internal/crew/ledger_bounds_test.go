@@ -244,10 +244,18 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 		}
 		checks = append(checks, Check{ID: fmt.Sprintf("c%d", i), Argv: argv, TimeoutSeconds: 600})
 	}
-	f := TaskFile{Task: "build", Attempt: 2, MaxAttempts: 3, Member: "lead", Kind: TaskWork,
+	// The manifest's section at its largest (a file's blob of a SHA-256
+	// repository), and the uncounted attempt before at its largest: never
+	// cut, and the manifest's at most 2 KiB as the sum of its parts.
+	manifest := &TaskManifest{Source: sourceFile, Digest: strings.Repeat("f", 64), Revision: 1<<63 - 1}
+	if b, _ := json.Marshal(manifest); len(b) > 2<<10 {
+		t.Fatalf("the manifest's section is %d bytes", len(b))
+	}
+	unusable := &TaskUnusable{Attempt: 3, Stage: "setup " + strings.Repeat("s", 40), Error: strings.Repeat("u", 500)}
+	f := TaskFile{Task: "build", Attempt: 4, MaxAttempts: 4, Member: "lead", Kind: TaskWork,
 		Goal: strings.Repeat("<", maxGoal), Role: strings.Repeat("<", maxPrompt), Instructions: strings.Repeat("<", maxInstructions),
-		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks,
-		Previous:   &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 40<<10)},
+		Start: strings.Repeat("b", 40), Inputs: inputs, Checks: checks, Manifest: manifest, Unusable: unusable,
+		Previous:   &TaskPrevious{Attempt: 1, State: ledger.AttemptFailed, Stage: "check c0", Error: strings.Repeat("e", 40<<10), Checkpoint: strings.Repeat("c", 64), Branch: "crew/run/build.1"},
 		Repair:     &TaskRepair{Review: "check", Attempt: 1, Commit: strings.Repeat("c", 40), Summary: strings.Repeat("r", maxSummary), Findings: findings},
 		Checkpoint: &Checkpoint{Done: strings.Repeat("d", maxCheckpointField), Remaining: strings.Repeat("m", maxCheckpointField), Commit: strings.Repeat("e", 40)}}
 	md, js, more, err := fitTaskFile(f)
@@ -270,6 +278,10 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	}
 	if kept.Goal != f.Goal || kept.Role != f.Role || kept.Instructions != f.Instructions || !strings.Contains(string(md), f.Instructions) {
 		t.Fatal("the crew's own text was cut")
+	}
+	if kept.Manifest == nil || *kept.Manifest != *manifest || kept.Unusable == nil || *kept.Unusable != *unusable || kept.Previous == nil || kept.Previous.Checkpoint != f.Previous.Checkpoint ||
+		!strings.Contains(string(md), "The project manifest `conductor.manifest.json` as this commit holds it") || !strings.Contains(string(md), unusable.Error) {
+		t.Fatalf("the manifest's section or the attempt before was cut: %+v %+v %+v", kept.Manifest, kept.Unusable, kept.Previous)
 	}
 	keptFindings := 0
 	if kept.Repair != nil {
@@ -557,7 +569,7 @@ func TestARefusedCommandIsNotAcceptedLater(t *testing.T) {
 // launch, and a setup command that ran, are written with the failure
 // that follows.
 func TestALaunchAndASetupThatHappenedKeepTheirEvents(t *testing.T) {
-	for _, kind := range []string{"attempt.launched", "attempt.setup"} {
+	for _, kind := range []string{"attempt.launched", "step.finished"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := newRepo(t)
 			e, _, l := managedEngine(t)
@@ -567,6 +579,17 @@ func TestALaunchAndASetupThatHappenedKeepTheirEvents(t *testing.T) {
 			l.failOn, l.failOnce = kind, true
 			l.mu.Unlock()
 			run := launchManaged(t, e, c)
+			if kind == "step.finished" {
+				// The setup step's receipt not recorded fails the worktree at
+				// that step: not counted, the dispatch paused; unpaused, the
+				// next attempt runs.
+				attemptFailed(t, e, run.ID, "build", 1)
+				if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "setup deps" || !strings.Contains(row.Error, "the ledger could not record the step deps") {
+					t.Fatalf("attempt 1: %+v", row)
+				}
+				waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
+				pauseRun(t, e, run.ID, false)
+			}
 			waitTaskWhere(t, e, run.ID, "build", "attempt 2 running", func(ts TaskState) bool {
 				return ts.Attempt != nil && ts.Attempt.N == 2 && ts.Attempt.State == ledger.AttemptRunning
 			})

@@ -35,14 +35,14 @@ const (
 	// when Spec says nothing: the first DefaultHead and the last DefaultTail.
 	DefaultHead = 64 << 10
 	DefaultTail = 16 << 10
-	// DefaultLogLimit is how much of the output Spec.Log gets before the
-	// dropped line, when Spec says nothing; LogTail is how much after it.
+	// DefaultLogLimit is how much Spec.Log gets in all when Spec says
+	// nothing: the output's head, the dropped line and the output's last
+	// bytes together. LogTail bounds those last bytes: a quarter of the
+	// limit, or LogTail when that is less; logLine is what is kept for the
+	// dropped line, and the head has the rest.
 	DefaultLogLimit = 1 << 20
 	LogTail         = 256 << 10
-	// logQueue bounds the chunks of output queued for a Log writer that
-	// does not keep up: past it the log is cut (Result.LogErr), never the
-	// run held up.
-	logQueue = 256
+	logLine         = 64
 	// holdGrace is how long Run gives the output pipe to close once the
 	// process has exited before it takes it for held by a child: the
 	// kernel closes the process's end at its exit, so the pipe closes at
@@ -71,11 +71,15 @@ type Spec struct {
 	// the last; DefaultHead and DefaultTail when zero.
 	Head, Tail int
 	// Log, when set, gets the output as it comes, on a goroutine of its
-	// own, so a slow writer never holds the process up: the first LogLimit
-	// bytes (DefaultLogLimit when zero), then a line saying how many bytes
-	// were dropped, then the last LogTail bytes; everything, when there is
-	// less. A writer that falls logQueue chunks behind, or does not return
-	// within WaitDelay at the end, loses the rest (Result.LogErr).
+	// own, so a slow writer never holds the process up, and gets at most
+	// LogLimit bytes in all (DefaultLogLimit when zero): everything when
+	// the output fits; else its head, a line saying how many bytes were
+	// dropped, and its last bytes (a quarter of LogLimit, at most
+	// LogTail), the head being what the other two leave. A writer given a
+	// store's bound as LogLimit holds no more than the store takes when
+	// Run returns. The head waits in memory for the writer (at most the
+	// limit's bytes, however the output comes); a writer that does not
+	// return within WaitDelay at the end loses the rest (Result.LogErr).
 	Log      io.Writer
 	LogLimit int64
 	// Started, when set, is called once the process exists and before any
@@ -386,79 +390,121 @@ func (c *capture) bytes() (head, tail []byte, total int64, truncated bool) {
 	return head, tail, c.total, c.total > int64(len(head)+len(tail))
 }
 
-// logSink feeds a Log writer on a goroutine of its own, through a bounded
-// queue, so that a writer that blocks never holds the output pipe, the
-// process or Run up: the first limit bytes go to the writer as they come,
-// the rest is kept as a tail for finish. A queue that fills cuts the log.
+// logSink feeds a Log writer on a goroutine of its own, so that a writer
+// that blocks never holds the output pipe, the process or Run up: the
+// first head bytes are queued for the writer as they come, the rest is
+// kept as a tail at once, and the writer gets at most limit bytes in all,
+// the dropped line and the tail included (logBounds). The queue holds at
+// most the head's bytes, however the output is cut into chunks, so a
+// writer that keeps up loses nothing whatever the goroutines' scheduling,
+// and one that blocks costs no more than the limit.
 type logSink struct {
 	w     io.Writer
 	limit int64
-	ch    chan []byte
+	head  int64
 	done  chan struct{}
+	// wake tells the writer's goroutine to look at the queue again: one
+	// pending wake is enough, so a send that would block is dropped.
+	wake chan struct{}
 
 	mu        sync.Mutex
-	cut       string // why the log was cut, once it was
-	abandoned bool   // finish gave up on the writer: nothing more is written
-	written   int64
-	over      int64
+	queue     [][]byte // head bytes waiting for the writer, in order
+	accepted  int64    // head bytes taken so far, queued or written
+	over      int64    // bytes past the head, the tail's
+	closed    bool     // finish was called: nothing more comes
+	abandoned bool     // finish gave up on the writer: nothing more is written
+	written   int64    // bytes the writer took
 	tail      *capture
 	err       error
 }
 
 func newLogSink(w io.Writer, limit int64) *logSink {
-	l := &logSink{w: w, limit: limit, ch: make(chan []byte, logQueue), done: make(chan struct{}), tail: &capture{tailMax: LogTail}}
+	head, tail := logBounds(limit)
+	l := &logSink{w: w, limit: limit, head: head, done: make(chan struct{}), wake: make(chan struct{}, 1), tail: &capture{tailMax: int(tail)}}
 	go l.run()
 	return l
 }
 
-func (l *logSink) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	cut := l.cut
-	l.mu.Unlock()
-	if cut != "" {
-		return len(p), nil
-	}
-	chunk := append([]byte(nil), p...)
-	select {
-	case l.ch <- chunk:
-	default:
-		l.mu.Lock()
-		l.cut = fmt.Sprintf("the log writer fell %d chunks behind: the log is cut", logQueue)
-		l.mu.Unlock()
-	}
-	return len(p), nil
+// logBounds splits a log's limit: the tail is a quarter of it, at most
+// LogTail; logLine bytes are kept for the dropped line; the head has the
+// rest (none, for a limit too small to keep a head beside the two).
+func logBounds(limit int64) (head, tail int64) {
+	tail = min(LogTail, limit/4)
+	head = max(limit-tail-logLine, 0)
+	return head, tail
 }
 
-// run is the sink's goroutine: it writes the chunks within the limit and
-// keeps the rest for the tail, then, once the queue closes, the dropped
-// line and the tail.
-func (l *logSink) run() {
-	defer close(l.done)
-	for p := range l.ch {
-		if l.gone() {
-			continue // drained and dropped: Run has returned
-		}
-		if room := l.limit - l.written; room > 0 {
-			m := int(min(room, int64(len(p))))
-			if l.err == nil {
-				if _, err := l.w.Write(p[:m]); err != nil {
-					l.err = err
-				}
-			}
-			l.written += int64(m)
-			p = p[m:]
-		}
-		if len(p) > 0 {
-			l.over += int64(len(p))
-			l.tail.Write(p)
+func (l *logSink) Write(p []byte) (int, error) {
+	n := len(p)
+	l.mu.Lock()
+	if room := l.head - l.accepted; room > 0 && !l.closed {
+		k := int(min(room, int64(len(p))))
+		l.queue = append(l.queue, append([]byte(nil), p[:k]...))
+		l.accepted += int64(k)
+		p = p[k:]
+		select {
+		case l.wake <- struct{}{}:
+		default:
 		}
 	}
-	if l.over == 0 || l.err != nil || l.gone() {
+	if len(p) > 0 {
+		l.over += int64(len(p))
+		l.tail.Write(p)
+	}
+	l.mu.Unlock()
+	return n, nil
+}
+
+// run is the sink's goroutine: it writes the head as it is queued, then,
+// once finish closed the queue, the dropped line and the tail.
+func (l *logSink) run() {
+	defer close(l.done)
+	for {
+		l.mu.Lock()
+		batch, closed, gone := l.queue, l.closed, l.abandoned
+		l.queue = nil
+		l.mu.Unlock()
+		if gone {
+			return
+		}
+		for _, c := range batch {
+			if l.err != nil {
+				break
+			}
+			if _, err := l.w.Write(c); err != nil {
+				l.err = err
+			}
+			l.mu.Lock()
+			l.written += int64(len(c))
+			gone = l.abandoned
+			l.mu.Unlock()
+			if gone {
+				return
+			}
+		}
+		if closed && len(batch) == 0 {
+			break
+		}
+		if len(batch) == 0 {
+			<-l.wake
+		}
+	}
+	l.mu.Lock()
+	over, written := l.over, l.written
+	l.mu.Unlock()
+	if over == 0 || l.err != nil || l.gone() {
 		return
 	}
 	_, tail, _, _ := l.tail.bytes()
-	if dropped := l.over - int64(len(tail)); dropped > 0 {
-		if _, err := fmt.Fprintf(l.w, "\n… %d bytes dropped …\n", dropped); err != nil {
+	if dropped := over - int64(len(tail)); dropped > 0 {
+		// Within what the head and the tail leave of the limit: the line
+		// is shorter than logLine, and cut only for a limit too small to
+		// hold it.
+		line := fmt.Sprintf("\n… %d bytes dropped …\n", dropped)
+		if room := l.limit - written - int64(len(tail)); int64(len(line)) > room {
+			line = line[:max(room, 0)]
+		}
+		if _, err := io.WriteString(l.w, line); err != nil {
 			l.err = err
 			return
 		}
@@ -480,9 +526,15 @@ func (l *logSink) gone() bool {
 // finish closes the queue and waits up to wait for the sink to write what
 // is left; it reports why the log is short, "" when it is whole. Past the
 // wait the writer is left behind: a Write in flight may still return, and
-// nothing is written after it, neither the chunks queued nor the tail.
+// nothing is written after it, neither the head queued nor the tail.
 func (l *logSink) finish(wait time.Duration) string {
-	close(l.ch)
+	l.mu.Lock()
+	l.closed = true
+	l.mu.Unlock()
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
 	select {
 	case <-l.done:
 	case <-time.After(wait):
@@ -491,10 +543,8 @@ func (l *logSink) finish(wait time.Duration) string {
 		l.mu.Unlock()
 		return fmt.Sprintf("the log writer did not return within %s: the log is cut", wait)
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.err != nil {
 		return l.err.Error()
 	}
-	return l.cut
+	return ""
 }

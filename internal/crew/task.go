@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -59,7 +58,11 @@ type LedgerTx interface {
 	PutRun(ledger.RunRow) error
 	PutTask(ledger.TaskRow) error
 	PutAttempt(ledger.AttemptRow) error
+	// PutCheck keeps a check's receipt, or a step's in a tree (steps.go);
+	// PutPrerequisite a prerequisite's; PutTree a tree's lifecycle.
 	PutCheck(ledger.CheckRow) error
+	PutPrerequisite(ledger.PrerequisiteRow) error
+	PutTree(ledger.TreeRow) error
 	// Command and Settle keep a command's receipt (commands.go).
 	Command(actor, id, intent, fingerprint string) (prior ledger.CommandRow, found bool, err error)
 	Settle(actor, id, status string, receipt any) error
@@ -80,8 +83,10 @@ type Ledger interface {
 	Available() error
 	// Receipt reads a command's receipt (commands.go).
 	Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error)
-	// Load reads a run with its tasks and attempts, for a continuation
-	// (continue.go); ok is false for a run the ledger has no row of.
+	// Load reads a run with its tasks, attempts, messages and
+	// prerequisites' receipts (without their logs), for a continuation, a
+	// recovered record and a task read (continue.go); ok is false for a run
+	// the ledger has no row of.
 	Load(ctx context.Context, runID string) (from Loaded, ok bool, err error)
 }
 
@@ -122,7 +127,11 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 	if err != nil {
 		return Loaded{}, true, err
 	}
-	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages}, true, nil
+	prereqs, err := s.l.Prerequisites(ctx, runID, false)
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs}, true, nil
 }
 
 // UseLedger gives the engine the ledger managed runs are written to. Set
@@ -292,6 +301,10 @@ type task struct {
 	// attempt numbered so or less is used again: not its result, its
 	// start, its checkpoint, its candidate, nor in the task file.
 	withdrawn int
+	// unusable is the task's last attempt when its worktree could not be
+	// made usable (steps.go): not counted, the next attempt starting where
+	// it started; a continuation's from the rows.
+	unusable *unusable
 }
 
 // lastKept is t's last attempt when a withdrawal has not taken it back,
@@ -390,6 +403,13 @@ type attempt struct {
 	// submitSeq numbers the submissions taken, so a refused one puts back
 	// its own state and never a later one's.
 	submitSeq int
+	// trees are the trees the attempt made usable (steps.go): its
+	// worktree, its checkout; they end once it closes. ks numbers the
+	// receipts of each id on the attempt (nextK). uncounted says it closed
+	// as its worktree could not be made usable (failUnusable).
+	trees     []*tree
+	ks        map[string]int
+	uncounted bool
 }
 
 // input is a result a task starts from or has at hand.
@@ -438,6 +458,9 @@ type AttemptState struct {
 	Submitted *Result `json:"submitted,omitempty"`
 	// Checkpoint is the attempt's last checkpoint (checkpoints.go).
 	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	// Steps are the attempt's receipts, its checks' and its trees' steps,
+	// in a task's own read from the ledger; the run's read leaves them out.
+	Steps []StepState `json:"steps,omitempty"`
 }
 
 // ResultState is a task's accepted result as the run reports it.
@@ -744,6 +767,13 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		cancel()
 	}
 	r.pendingCancels = nil
+	// The trees of the attempts this commit closed end now (steps.go), and
+	// the prerequisites it armed start.
+	e.startTrees(r)
+	if r.prereqStart {
+		r.prereqStart = false
+		e.startPrerequisites(r)
+	}
 	stops := r.pendingStops
 	r.pendingStops = nil
 	e.mu.Unlock()
@@ -805,11 +835,12 @@ func (e *Engine) pauseDispatch(r *run, err error) bool {
 		r.note(session.ActivityStatus, "the ledger did not record the run's state as it stopped: %v", err)
 		return false
 	}
-	if !r.paused {
-		r.paused = true
+	why := session.CleanMessage("the ledger could not record the run's state: " + err.Error())
+	if !r.paused || r.pausedWhy != why {
+		r.paused, r.pausedWhy = true, why
 		r.markRun()
 	}
-	r.note(session.ActivityError, "scheduling paused: the ledger could not record the run's state: %v", err)
+	r.note(session.ActivityError, "scheduling paused: %s", why)
 	return true
 }
 
@@ -834,6 +865,12 @@ func (e *Engine) settleRun(r *run) {
 		r.markRun()
 		r.endPending = true
 		r.note(session.ActivityStatus, "every task is done: the run %s", r.outcome)
+		if r.prereqs > 0 && r.prereqCancel != nil {
+			// A generation of the prerequisites in flight ends with the
+			// commit that finishes the run: its step is killed, recorded
+			// interrupted, and the run is held until its last commit.
+			r.pendingCancels = append(r.pendingCancels, r.prereqCancel)
+		}
 	}
 }
 
@@ -1012,6 +1049,12 @@ func (r *run) startCommit(t *task) string {
 		}
 		return r.base
 	}
+	if u := t.unusable; u != nil && u.n == t.lastN() && t.kept(u.n) && u.next != "" {
+		// After an attempt whose worktree could not be made usable: where
+		// it started, as if it had not been made, or, when it refused a
+		// checkpoint, where the checkpointed attempt started (steps.go).
+		return u.next
+	}
 	if last := t.lastKept(); last != nil {
 		if last.state == ledger.AttemptFailed && last.result != "" && refusedBeforeChecks(last.stage) && last.start != "" {
 			return last.start
@@ -1043,12 +1086,18 @@ func (r *run) startCommit(t *task) string {
 
 // refusedBeforeChecks reports whether an attempt that failed at stage had
 // its result refused before any check ran: its checkout was refused (a
-// link out of the tree, a commit git would not check out) or the crew's
-// setup failed or changed tracked files there. An attempt made at that
-// result fails the same way before its agent can do anything: the setup
-// runs in its worktree before the launch.
+// link out of the tree, a commit git would not check out), its project
+// manifest could not be resolved there, or one of its phases failed or
+// changed tracked files there (setup, a service, a probe, the ready phase
+// as a whole). An attempt made at that result fails the same way before
+// its agent can do anything: the manifest makes its worktree usable before
+// the launch. "setup" alone is the stage main wrote for the whole phase.
 func refusedBeforeChecks(stage string) bool {
-	return stage == "checkout" || stage == "setup" || strings.HasPrefix(stage, "setup ")
+	switch stage {
+	case "checkout", "setup", "manifest", "ready":
+		return true
+	}
+	return strings.HasPrefix(stage, "setup ") || strings.HasPrefix(stage, "service ") || strings.HasPrefix(stage, "ready ")
 }
 
 // pump dispatches the ready tasks, in plan order, while the run takes
@@ -1057,7 +1106,9 @@ func refusedBeforeChecks(stage string) bool {
 // holds e.mu, and has committed the state the dispatch rests on; the
 // dispatches run on goroutines of their own.
 func (e *Engine) pump(r *run) {
-	if !r.managed || r.stopping || r.paused || r.ctx.Err() != nil {
+	if !r.managed || r.stopping || r.paused || r.prereq != prereqPassed || r.ctx.Err() != nil {
+		// Nothing is dispatched until the prerequisites passed, whatever
+		// pumps the run meanwhile (steps.go).
 		return
 	}
 	r.ready()
@@ -1109,24 +1160,20 @@ func (e *Engine) noteEndLater(r *run) {
 	go e.noteEnd(r.id)
 }
 
-// startManaged begins a managed run: its base is the repository's commit,
-// its first transition records the run and its tasks, and the ready tasks
-// are dispatched. An error is the launch's.
+// startManaged begins a managed run: its base is the commit the launch
+// pinned (prepare), its first transition records the run and its tasks
+// and arms its prerequisites, which start once that is committed and
+// answer later: the launch does not wait for them. The ready tasks are
+// dispatched once they passed, at once without any. An error is the
+// launch's.
 func (e *Engine) startManaged(ctx context.Context, r *run) error {
-	base, err := headCommit(ctx, r.cwd)
-	if err != nil {
-		return fmt.Errorf("reading the repository's commit: %w", err)
-	}
-	if !fullCommit(base) {
-		return fmt.Errorf("the repository's commit %q is not a commit id", base)
-	}
 	if err := e.transact(ctx, r, func() tx {
-		r.base = base
 		r.markRun()
 		for _, t := range r.tasks {
 			r.markTask(t)
 		}
-		return ev("run.created", map[string]any{"base": base, "tasks": len(r.tasks)})
+		r.armPrerequisites()
+		return ev("run.created", map[string]any{"base": r.base, "tasks": len(r.tasks)})
 	}, giveUp); err != nil {
 		return err
 	}
@@ -1227,6 +1274,9 @@ func (e *Engine) endAttempt(r *run, a *attempt, state, stage, errText string) {
 	}
 	r.active--
 	r.markAttempt(a)
+	// Its trees end after the close, once the commit that makes it
+	// durable is in (steps.go).
+	e.handTrees(r, a)
 }
 
 // unreserve takes back an attempt nothing was made for (no place among
@@ -1316,7 +1366,7 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 	} else if r.outcome != "" {
 		state = ledger.RunFinished
 	}
-	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, CreatedAt: r.startedAt, ContinuedFrom: r.resumedFrom, ContinuedBy: r.resumedBy}
+	row := ledger.RunRow{ID: r.id, CrewID: r.crewID, Crew: crewJSON, Base: r.base, State: state, Outcome: r.outcome, Paused: r.paused, PausedWhy: r.pausedWhy, CreatedAt: r.startedAt, ContinuedFrom: r.resumedFrom, ContinuedBy: r.resumedBy, Manifest: r.baseManRow}
 	if state != ledger.RunRunning {
 		row.ClosedAt = time.Now().UTC()
 	}
@@ -1326,16 +1376,19 @@ func (r *run) runRow(crewJSON string) ledger.RunRow {
 // dispatch makes a's worktree and session and types its task line, each
 // step recorded before it is taken: the member's previous session let go,
 // the place among the sessions reserved, the attempt reserved in the
-// ledger, the worktree at the start commit, the task files, the setup, the
-// launch, the line. A failure fails the attempt at its stage; a refusal at
-// the reservation spends nothing. It runs on a goroutine of its own, on
-// the attempt's context, and ends the start it was reserved under.
+// ledger, the worktree at the start commit, the project manifest resolved
+// for it, the task files, the manifest's setup phase, the launch, the
+// line. A failure fails the attempt at its stage; a refusal at the
+// reservation spends nothing; a worktree the manifest could not make
+// usable fails it uncounted (failUnusable). It runs on a goroutine of its
+// own, on the attempt's context, and ends the start it was reserved under.
 func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	defer r.starts.Done()
 	t, m := a.t, a.m
 	// fail closes the attempt at its stage; with stop, its session goes
-	// once the close is committed (pendingStops).
-	fail := func(stage string, err error, stop bool) {
+	// once the close is committed (pendingStops); uncounted, the stage is
+	// the worktree's manifest's, and the attempt is not counted.
+	fail := func(stage string, err error, stop, uncounted bool) {
 		terr := e.transact(context.Background(), r, func() tx {
 			state := ledger.AttemptFailed
 			if r.ctx.Err() != nil {
@@ -1345,6 +1398,9 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 			}
 			if stop && a.sessionID != "" {
 				r.pendingStops = append(r.pendingStops, a.sessionID)
+			}
+			if uncounted && state == ledger.AttemptFailed && a.closedAt.IsZero() {
+				return tx{events: e.failUnusable(r, a, stage, session.CleanMessage(err.Error()))}
 			}
 			e.closeAttempt(r, a, state, stage, session.CleanMessage(err.Error()))
 			return ev("attempt.failed", map[string]any{"task": t.def.ID, "attempt": a.n, "stage": stage, "error": a.err, "state": a.state})
@@ -1420,7 +1476,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	}
 	// The worktree, at the start commit, under the repository's lock.
 	if err := checkWorktreesDir(r.cwd); err != nil {
-		fail("worktree", err, false)
+		fail("worktree", err, false, false)
 		return
 	}
 	e.gitMu.Lock()
@@ -1435,57 +1491,89 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		e.mu.Unlock()
 	}
 	if tracked, err := treeHasPath(ctx, r.cwd, a.start, path.Join(filepath.ToSlash(r.prefix), taskDir)); err != nil {
-		fail("worktree", err, false)
+		fail("worktree", err, false, false)
 		return
 	} else if tracked {
-		fail("worktree", fmt.Errorf("the commit %s tracks %s/ in the working directory, which is Conductor's: the task files cannot be written", short(a.start), taskDir), false)
+		fail("worktree", fmt.Errorf("the commit %s tracks %s/ in the working directory, which is Conductor's: the task files cannot be written", short(a.start), taskDir), false, false)
 		return
 	}
 	e.gitMu.Lock()
 	err = AddWorktreeAt(ctx, r.cwd, a.worktree, a.branch, a.start)
 	e.gitMu.Unlock()
 	if err != nil {
-		fail("worktree", err, false)
+		fail("worktree", err, false, false)
 		return
 	}
 	if head, err := headCommit(ctx, a.worktree); err != nil || head != a.start {
-		fail("worktree", fmt.Errorf("the worktree is at %s, not %s", short(head), short(a.start)), false)
+		fail("worktree", fmt.Errorf("the worktree is at %s, not %s", short(head), short(a.start)), false, false)
 		return
 	}
 	if err := checkMemberDir(a.worktree, r.prefix); err != nil {
-		fail("worktree", err, false)
+		fail("worktree", err, false, false)
 		return
 	}
 	cwd := filepath.Join(a.worktree, r.prefix)
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		fail("worktree", err, false)
+		fail("worktree", err, false, false)
 		return
 	}
 	e.mu.Lock()
 	m.state.Branch, m.state.Worktree = a.branch, a.worktree
 	m.base = a.start
 	e.mu.Unlock()
+	// The project manifest, resolved for the worktree at its commit,
+	// before the task files are written, so they carry what it made; one
+	// that cannot be is the worktree's failure, uncounted.
+	var tr *tree
+	if r.hasManifest() {
+		tr, err = e.resolveTree(ctx, r, a, ledger.TreeWorktree, a.worktree, cwd, a.start)
+		if errors.Is(err, errAttemptClosed) {
+			return // cancelled or stopped meanwhile: what closed it wrote it
+		}
+		if err != nil {
+			fail("manifest", err, false, true)
+			return
+		}
+	}
 	// The task files, through a root at the working directory: a
 	// .conductor that is not a directory of ours, or a task file that is
 	// there already, is refused.
-	md, js, more, err := e.taskFile(r, a)
+	md, js, more, err := e.taskFile(r, a, tr)
 	if err == nil {
 		err = writeTaskFiles(a.worktree, r.prefix, md, js, more)
 	}
 	if err != nil {
-		fail("task file", err, false)
+		fail("task file", err, false, false)
 		return
 	}
 	if err := e.transact(ctx, r, func() tx {
 		return ev("attempt.workspace", map[string]any{"task": t.def.ID, "attempt": a.n, "worktree": a.worktree, "branch": a.branch, "start": a.start})
 	}, giveUp); err != nil {
-		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err), false)
+		fail("worktree", fmt.Errorf("the ledger could not record the worktree: %w", err), false, false)
 		return
 	}
-	// The setup, in the worktree, before the member starts.
-	for _, ch := range r.setup {
-		if err := e.runSetup(ctx, r, a, cwd, ch, "attempt.setup"); err != nil {
-			fail("setup "+ch.ID, err, false)
+	// The manifest's setup phase, in the worktree, before the member
+	// starts: a step that fails here is the host's or the manifest's, not
+	// the agent's, which has typed nothing yet. The worktree stays held
+	// through the launch, until its session is recorded: a close that
+	// comes meanwhile stops no session, there being none yet, so the
+	// tree's end waits on the hold and then for the session the record
+	// stops (endTree).
+	held := false
+	release := func() {
+		if held {
+			held = false
+			tr.busy.Done()
+		}
+	}
+	if tr != nil {
+		if !e.hold(tr) {
+			return // closed meanwhile: its tree is ending
+		}
+		held = true
+		if stage, err := e.prepareTree(ctx, r, a, tr); err != nil {
+			release()
+			fail(stage, err, false, true)
 			return
 		}
 	}
@@ -1493,7 +1581,8 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: fmt.Sprintf("%s · %s #%d", m.def.Name, t.def.ID, a.n), Cwd: cwd, Args: slices.Clone(m.def.Args),
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: t.def.ID, Attempt: a.n}, Yolo: r.yolo, Reservation: res})
 	if err != nil {
-		fail("launch", err, false)
+		release()
+		fail("launch", err, false, false)
 		return
 	}
 	id := local.Info().ID
@@ -1503,6 +1592,15 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		a.sessionID, a.launchedAt = id, started
 		if a.closedAt.IsZero() {
 			a.state = ledger.AttemptLaunched
+		} else {
+			// Closed during the launch (a cancel, a withdrawal, a stop
+			// cut short): the session goes with the commit that carries
+			// this change, and the worktree's end, held until now, waits
+			// for it.
+			r.pendingStops = append(r.pendingStops, id)
+			if tr != nil {
+				tr.session = id
+			}
 		}
 		m.state.SessionID, m.state.Started, m.state.Status, m.state.Ended, m.state.Err = id, &started, MemberStarting, nil, ""
 		m.state.Task, m.state.Attempt = t.def.ID, a.n
@@ -1512,16 +1610,17 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		stopping = r.stopping
 		return ev("attempt.launched", map[string]any{"task": t.def.ID, "attempt": a.n, "session": id})
 	}, nil)
+	release()
 	go e.watchAttempt(r, a, local)
 	// Closed before its session is stopped, so the stage is the launch's,
 	// not the watcher's "session ended".
 	if stopping {
-		fail("launch", ErrRunStopped, true)
+		fail("launch", ErrRunStopped, true, false)
 		return
 	}
 	if lerr != nil {
 		// The session is not in the ledger: it does not get its task.
-		fail("launch", fmt.Errorf("the ledger could not record the launch: %w", lerr), true)
+		fail("launch", fmt.Errorf("the ledger could not record the launch: %w", lerr), true, false)
 		return
 	}
 	// Messages waiting for the member go into its session once it has its
@@ -1532,7 +1631,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		if r.ctx.Err() != nil {
 			err = ErrRunStopped
 		}
-		fail("prompt", err, true)
+		fail("prompt", err, true, false)
 		return
 	}
 	if err := e.transact(ctx, r, func() tx {
@@ -1548,26 +1647,6 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		_ = e.pauseFor(r, err)
 	}
 	m.poke()
-}
-
-// runSetup runs one setup command in dir (an attempt's working directory,
-// or the checks' checkout) and records how it went under the event kind.
-func (e *Engine) runSetup(ctx context.Context, r *run, a *attempt, dir string, ch Check, kind string) error {
-	res := e.runCommand(ctx, dir, ch, io.Discard, nil)
-	if err := e.transact(context.Background(), r, func() tx {
-		return ev(kind, map[string]any{"task": a.t.def.ID, "attempt": a.n, "setup": ch.ID, "exit": res.Exit, "timedOut": res.TimedOut, "error": res.Err, "duration": res.Duration.String()})
-	}, nil); err != nil {
-		return fmt.Errorf("the ledger could not record %s: %w", ch.ID, err)
-	}
-	switch {
-	case res.Err != "" && !res.TimedOut:
-		return fmt.Errorf("%s could not run: %s", ch.ID, res.Err)
-	case res.TimedOut:
-		return fmt.Errorf("%s timed out after %s%s", ch.ID, checkTimeout(ch), tailWords(lastOutput(res, checkTail)))
-	case res.Exit != 0:
-		return fmt.Errorf("%s exited %d%s", ch.ID, res.Exit, tailWords(lastOutput(res, checkTail)))
-	}
-	return nil
 }
 
 func tailWords(tail []byte) string {
@@ -2027,7 +2106,7 @@ func (e *Engine) withdrawFrom(r *run, sub *task, why string, seen map[*task]bool
 		if n := t.lastN(); n > t.withdrawn {
 			t.withdrawn = n
 		}
-		t.repair, t.candidate, t.checkpoint, t.refused = nil, nil, nil, nil
+		t.repair, t.candidate, t.checkpoint, t.refused, t.unusable = nil, nil, nil, nil, nil
 		if t.state != ledger.TaskFailed && t.state != ledger.TaskCancelled {
 			t.state, t.reason = ledger.TaskBlocked, why
 		}
@@ -2051,10 +2130,10 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 	if stopped {
 		return ErrRunStopped
 	}
-	var was bool
+	var was pauseMark
 	var refused error
 	err = e.transact(ctx, r, func() tx {
-		was = r.paused
+		was = r.pauseMarkOf()
 		if refused = e.continued(r); refused != nil {
 			return tx{}
 		}
@@ -2062,7 +2141,7 @@ func (e *Engine) PauseRun(ctx context.Context, runID string, paused bool) error 
 	}, func() {
 		// Not recorded: as it was, so a dispatch never rests on a pause
 		// or an unpause the ledger does not have.
-		r.paused = was
+		r.restorePause(was)
 		r.note(session.ActivityError, "the ledger could not record the %s", map[bool]string{true: "pause", false: "unpause"}[paused])
 	})
 	if err == nil && refused != nil {

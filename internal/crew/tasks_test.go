@@ -183,7 +183,7 @@ func TestValidateChecksADenseGraphQuickly(t *testing.T) {
 func TestAManagedRunsRefusalLeavesTheEngineUsable(t *testing.T) {
 	e, _ := newEngine(t)
 	c := managedCrew()
-	r := e.add(c, "", "")
+	r := e.add(c, prepared{}, "")
 	e.launched(r)
 	ctx := t.Context()
 	if err := e.StartMember(ctx, r.id, "builder"); !errors.Is(err, ErrManaged) {

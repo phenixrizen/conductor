@@ -527,6 +527,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/{run}/commands/{command}", s.requireAdmin(s.handleGetCommand))
 	// Managed runs: the tasks, and the commands with receipts (tasks.go).
 	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}", s.requireAdmin(s.handleGetTask))
+	// A project manifest's receipts, from the ledger (manifest.go).
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps", s.requireAdmin(s.handleAttemptSteps))
+	mux.HandleFunc("GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log", s.requireAdmin(s.handleStepLog))
+	mux.HandleFunc("GET /api/runs/{run}/prerequisites", s.requireAdmin(s.handlePrerequisites))
+	mux.HandleFunc("GET /api/runs/{run}/prerequisites/{id}/{k}/log", s.requireAdmin(s.handlePrerequisiteLog))
 	mux.HandleFunc("POST /api/runs/{run}/pause", s.requireAdmin(s.handlePauseRun))
 	mux.HandleFunc("POST /api/runs/{run}/unpause", s.requireAdmin(s.handleUnpauseRun))
 	mux.HandleFunc("POST /api/runs/{run}/tasks/{task}/cancel", s.requireAdmin(s.handleCancelTask))
@@ -603,6 +608,8 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			// A receipt's log hash reaches the app's script across origins.
+			h.Set("Access-Control-Expose-Headers", logHashHeader)
 			h.Set("Vary", "Origin")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

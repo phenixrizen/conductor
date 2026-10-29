@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -39,11 +40,11 @@ func (t *Tx) Now() time.Time { return t.now }
 // (Run, Runs, Tasks…) must not be called inside a transition: there is one
 // connection, and it is the transaction's until it commits.
 func (t *Tx) Run() (RunRow, bool, error) {
-	row := t.tx.QueryRowContext(t.ctx, `SELECT id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at FROM runs WHERE id = ?`, t.runID)
+	row := t.tx.QueryRowContext(t.ctx, `SELECT `+runCols+` FROM runs WHERE id = ?`, t.runID)
 	var r RunRow
 	var paused int
 	var created, closed string
-	switch err := row.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed); {
+	switch err := row.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest); {
 	case errors.Is(err, sql.ErrNoRows):
 		return RunRow{}, false, nil
 	case err != nil:
@@ -186,16 +187,22 @@ func (t *Tx) PutRun(r RunRow) error {
 	if len(r.Crew) > MaxCrew {
 		return fmt.Errorf("%w: the crew is %d bytes", ErrTooLarge, len(r.Crew))
 	}
+	if len(r.PausedWhy) > MaxPayload {
+		return fmt.Errorf("%w: the pause's words are %d bytes", ErrTooLarge, len(r.PausedWhy))
+	}
+	if len(r.Manifest) > MaxPayload {
+		return fmt.Errorf("%w: the run's manifest is %d bytes", ErrTooLarge, len(r.Manifest))
+	}
 	if r.ID != t.runID {
 		return fmt.Errorf("ledger: run %s put in %s's transition", r.ID, t.runID)
 	}
-	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runs (id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+	_, err := t.tx.ExecContext(t.ctx, `INSERT INTO runs (id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET crew_id = excluded.crew_id, crew = excluded.crew, base = excluded.base, state = excluded.state,
 			outcome = excluded.outcome, paused = excluded.paused, continued_from = excluded.continued_from,
 			continued_by = CASE WHEN excluded.continued_by = '' THEN runs.continued_by ELSE excluded.continued_by END,
-			closed_at = excluded.closed_at`,
-		r.ID, r.CrewID, r.Crew, r.Base, r.State, r.Outcome, b2i(r.Paused), r.ContinuedFrom, r.ContinuedBy, stamp(r.CreatedAt), stamp(r.ClosedAt))
+			closed_at = excluded.closed_at, paused_why = excluded.paused_why, manifest = excluded.manifest`,
+		r.ID, r.CrewID, r.Crew, r.Base, r.State, r.Outcome, b2i(r.Paused), r.ContinuedFrom, r.ContinuedBy, stamp(r.CreatedAt), stamp(r.ClosedAt), r.PausedWhy, r.Manifest)
 	return err
 }
 
@@ -297,25 +304,39 @@ func (l *Ledger) Messages(ctx context.Context, runID string) ([]MessageRow, erro
 	return out, rows.Err()
 }
 
-// PutCheck puts a check's row, new or changed; its log at most MaxLog, and
-// the run's logs at most MaxRunLogs in all: a log that would pass that is
-// not kept (LogDropped), its hash and tail are. The row's own log, when it
-// is replaced, counts no more.
+// PutCheck puts a check's row, new or changed: a task's check or a step
+// of a project manifest (Phase, PhaseCheck when empty; Tries at least 1);
+// its log at most MaxLog, and the run's logs, the prerequisites' with the
+// checks', at most MaxRunLogs in all: a log that would pass that is not
+// kept (LogDropped), its hash and tail are. The row's own log, when it is
+// replaced, counts no more.
 func (t *Tx) PutCheck(r CheckRow) error {
 	if len(r.Log) > MaxLog {
 		return fmt.Errorf("%w: the log is %d bytes", ErrTooLarge, len(r.Log))
 	}
+	if err := rowText(r.URL, r.Manifest, r.Error); err != nil {
+		return err
+	}
 	argv, err := encode(r.Argv, MaxPayload)
 	if err != nil {
 		return err
+	}
+	ports, err := encodePorts(r.Ports)
+	if err != nil {
+		return err
+	}
+	phase := r.Phase
+	if phase == "" {
+		phase = PhaseCheck
 	}
 	if r.LogDropped {
 		r.Log = nil // dropped is dropped: no bytes behind the mark
 	}
 	if len(r.Log) > 0 {
 		var kept int64
-		if err := t.tx.QueryRowContext(t.ctx, `SELECT COALESCE(SUM(LENGTH(log)), 0) FROM checks WHERE run_id = ? AND NOT (task_id = ? AND n = ? AND id = ? AND k = ?)`,
-			t.runID, r.TaskID, r.N, r.ID, r.K).Scan(&kept); err != nil {
+		if err := t.tx.QueryRowContext(t.ctx, `SELECT (SELECT COALESCE(SUM(LENGTH(log)), 0) FROM checks WHERE run_id = ? AND NOT (task_id = ? AND n = ? AND id = ? AND k = ?))
+			+ (SELECT COALESCE(SUM(LENGTH(log)), 0) FROM prerequisites WHERE run_id = ?)`,
+			t.runID, r.TaskID, r.N, r.ID, r.K, t.runID).Scan(&kept); err != nil {
 			return err
 		}
 		if kept+int64(len(r.Log)) > maxRunLogs {
@@ -323,16 +344,113 @@ func (t *Tx) PutCheck(r CheckRow) error {
 		}
 	}
 	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO checks (run_id, task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at,
-			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail, phase, manifest, ports, tries, error, url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id, task_id, n, id, k) DO UPDATE SET argv = excluded.argv, dir = excluded.dir, subject = excluded.subject, state = excluded.state,
 			pid = excluded.pid, pgroup = excluded.pgroup, process_started_at = excluded.process_started_at, started_at = excluded.started_at,
 			finished_at = excluded.finished_at, exit = excluded.exit, signal = excluded.signal, timed_out = excluded.timed_out, killed = excluded.killed,
 			stable = excluded.stable, truncated = excluded.truncated, total = excluded.total, log = excluded.log, log_dropped = excluded.log_dropped,
-			log_sha256 = excluded.log_sha256, tail = excluded.tail`,
+			log_sha256 = excluded.log_sha256, tail = excluded.tail, phase = excluded.phase, manifest = excluded.manifest, ports = excluded.ports,
+			tries = excluded.tries, error = excluded.error, url = excluded.url`,
 		t.runID, r.TaskID, r.N, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
-		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail)
+		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail,
+		phase, r.Manifest, ports, max(r.Tries, 1), r.Error, r.URL)
 	return err
+}
+
+// PutPrerequisite puts a prerequisite's row, new or changed, as PutCheck
+// puts a check's: its log at most MaxLog, and the run's logs at most
+// MaxRunLogs in all, the checks' with the prerequisites'.
+func (t *Tx) PutPrerequisite(r PrerequisiteRow) error {
+	if len(r.Log) > MaxLog {
+		return fmt.Errorf("%w: the log is %d bytes", ErrTooLarge, len(r.Log))
+	}
+	if err := rowText(r.URL, r.Manifest, r.Error); err != nil {
+		return err
+	}
+	argv, err := encode(r.Argv, MaxPayload)
+	if err != nil {
+		return err
+	}
+	if r.LogDropped {
+		r.Log = nil
+	}
+	if len(r.Log) > 0 {
+		var kept int64
+		if err := t.tx.QueryRowContext(t.ctx, `SELECT (SELECT COALESCE(SUM(LENGTH(log)), 0) FROM checks WHERE run_id = ?)
+			+ (SELECT COALESCE(SUM(LENGTH(log)), 0) FROM prerequisites WHERE run_id = ? AND NOT (id = ? AND k = ?))`,
+			t.runID, t.runID, r.ID, r.K).Scan(&kept); err != nil {
+			return err
+		}
+		if kept+int64(len(r.Log)) > maxRunLogs {
+			r.Log, r.LogDropped = nil, true
+		}
+	}
+	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO prerequisites (run_id, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at,
+			exit, signal, timed_out, killed, stable, truncated, total, log, log_dropped, log_sha256, tail, manifest, error, url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, id, k) DO UPDATE SET argv = excluded.argv, dir = excluded.dir, subject = excluded.subject, state = excluded.state,
+			pid = excluded.pid, pgroup = excluded.pgroup, process_started_at = excluded.process_started_at, started_at = excluded.started_at,
+			finished_at = excluded.finished_at, exit = excluded.exit, signal = excluded.signal, timed_out = excluded.timed_out, killed = excluded.killed,
+			stable = excluded.stable, truncated = excluded.truncated, total = excluded.total, log = excluded.log, log_dropped = excluded.log_dropped,
+			log_sha256 = excluded.log_sha256, tail = excluded.tail, manifest = excluded.manifest, error = excluded.error, url = excluded.url`,
+		t.runID, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
+		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail,
+		r.Manifest, r.Error, r.URL)
+	return err
+}
+
+// PutTree puts a tree's row, new or changed: resolved, ready or ended.
+func (t *Tx) PutTree(r TreeRow) error {
+	if err := rowText("", r.Manifest, r.Why, r.Preview); err != nil {
+		return err
+	}
+	ports, err := encodePorts(r.Ports)
+	if err != nil {
+		return err
+	}
+	_, err = t.tx.ExecContext(t.ctx, `INSERT INTO trees (run_id, task_id, n, kind, dir, commit_id, manifest, ports, preview, state, why, interrupted, ended_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id, task_id, n, kind) DO UPDATE SET dir = excluded.dir, commit_id = excluded.commit_id, manifest = excluded.manifest,
+			ports = excluded.ports, preview = excluded.preview, state = excluded.state, why = excluded.why, interrupted = excluded.interrupted,
+			ended_at = excluded.ended_at`,
+		t.runID, r.TaskID, r.N, r.Kind, r.Dir, r.Commit, r.Manifest, ports, r.Preview, r.State, r.Why, b2i(r.Interrupted), stamp(r.EndedAt))
+	return err
+}
+
+// rowText refuses a receipt's or a tree's words past an event's bound,
+// and a receipt's URL past MaxURL.
+func rowText(url string, texts ...string) error {
+	if len(url) > MaxURL {
+		return fmt.Errorf("%w: the URL is %d bytes", ErrTooLarge, len(url))
+	}
+	for _, s := range texts {
+		if len(s) > MaxPayload {
+			return fmt.Errorf("%w: a row's text is %d bytes", ErrTooLarge, len(s))
+		}
+	}
+	return nil
+}
+
+// encodePorts is a tree's ports as a row keeps them: a JSON object, name
+// to number; "" for none.
+func encodePorts(ports map[string]int) (string, error) {
+	if len(ports) == 0 {
+		return "", nil
+	}
+	return encode(ports, MaxPayload)
+}
+
+// decodePorts reads ports as encodePorts wrote them.
+func decodePorts(raw string) (map[string]int, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var ports map[string]int
+	if err := json.Unmarshal([]byte(raw), &ports); err != nil {
+		return nil, err
+	}
+	return ports, nil
 }
 
 // encode marshals v as JSON within max bytes; nil is "".
@@ -366,12 +484,15 @@ func (l *Ledger) Runs(ctx context.Context) ([]RunRow, error) {
 	return l.runs(ctx, "ORDER BY created_at, id")
 }
 
+// runCols are the runs columns a RunRow is read from, in its scan order.
+const runCols = `id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at, paused_why, manifest`
+
 func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow, error) {
 	db, err := l.conn()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, crew_id, crew, base, state, outcome, paused, revision, continued_from, continued_by, created_at, closed_at FROM runs `+where, args...)
+	rows, err := db.QueryContext(ctx, `SELECT `+runCols+` FROM runs `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +502,7 @@ func (l *Ledger) runs(ctx context.Context, where string, args ...any) ([]RunRow,
 		var r RunRow
 		var paused int
 		var created, closed string
-		if err := rows.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed); err != nil {
+		if err := rows.Scan(&r.ID, &r.CrewID, &r.Crew, &r.Base, &r.State, &r.Outcome, &paused, &r.Revision, &r.ContinuedFrom, &r.ContinuedBy, &created, &closed, &r.PausedWhy, &r.Manifest); err != nil {
 			return nil, err
 		}
 		r.Paused, r.CreatedAt, r.ClosedAt = paused != 0, unstamp(created), unstamp(closed)
@@ -437,45 +558,186 @@ func (l *Ledger) Attempts(ctx context.Context, runID string) ([]AttemptRow, erro
 	return out, rows.Err()
 }
 
+// checkCols are the checks columns a CheckRow is read from, in its scan
+// order, the log's own column (or NULL) last; prerequisiteCols the same of
+// a prerequisite's row.
+const (
+	checkCols        = `task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, log_dropped, log_sha256, tail, phase, manifest, ports, tries, error, url, COALESCE(LENGTH(log), 0)`
+	prerequisiteCols = `id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, log_dropped, log_sha256, tail, manifest, error, url, COALESCE(LENGTH(log), 0)`
+)
+
+// scanner is a row to scan: *sql.Row or *sql.Rows.
+type scanner interface{ Scan(dest ...any) error }
+
+// scanCheck reads a CheckRow as checkCols and its log's column give it.
+func scanCheck(sc scanner, runID string) (CheckRow, error) {
+	r := CheckRow{RunID: runID}
+	var argv, pstarted, started, finished, ports string
+	var timedOut, killed, stable, truncated, dropped int
+	var log []byte
+	if err := sc.Scan(&r.TaskID, &r.N, &r.ID, &r.K, &argv, &r.Dir, &r.Subject, &r.State, &r.PID, &r.Group, &pstarted, &started, &finished, &r.Exit, &r.Signal, &timedOut, &killed, &stable, &truncated, &r.Total,
+		&dropped, &r.LogSHA256, &r.Tail, &r.Phase, &r.Manifest, &ports, &r.Tries, &r.Error, &r.URL, &r.LogBytes, &log); err != nil {
+		return CheckRow{}, err
+	}
+	r.LogDropped = dropped != 0
+	if argv != "" {
+		if err := json.Unmarshal([]byte(argv), &r.Argv); err != nil {
+			return CheckRow{}, err
+		}
+	}
+	p, err := decodePorts(ports)
+	if err != nil {
+		return CheckRow{}, err
+	}
+	r.Ports = p
+	r.ProcessStartedAt, r.StartedAt, r.FinishedAt = unstamp(pstarted), unstamp(started), unstamp(finished)
+	r.TimedOut, r.Killed, r.Stable, r.Truncated = timedOut != 0, killed != 0, stable != 0, truncated != 0
+	r.Log = log
+	return r, nil
+}
+
+// scanPrerequisite reads a PrerequisiteRow as prerequisiteCols and its
+// log's column give it.
+func scanPrerequisite(sc scanner, runID string) (PrerequisiteRow, error) {
+	r := PrerequisiteRow{RunID: runID}
+	var argv, pstarted, started, finished string
+	var timedOut, killed, stable, truncated, dropped int
+	var log []byte
+	if err := sc.Scan(&r.ID, &r.K, &argv, &r.Dir, &r.Subject, &r.State, &r.PID, &r.Group, &pstarted, &started, &finished, &r.Exit, &r.Signal, &timedOut, &killed, &stable, &truncated, &r.Total,
+		&dropped, &r.LogSHA256, &r.Tail, &r.Manifest, &r.Error, &r.URL, &r.LogBytes, &log); err != nil {
+		return PrerequisiteRow{}, err
+	}
+	r.LogDropped = dropped != 0
+	if argv != "" {
+		if err := json.Unmarshal([]byte(argv), &r.Argv); err != nil {
+			return PrerequisiteRow{}, err
+		}
+	}
+	r.ProcessStartedAt, r.StartedAt, r.FinishedAt = unstamp(pstarted), unstamp(started), unstamp(finished)
+	r.TimedOut, r.Killed, r.Stable, r.Truncated = timedOut != 0, killed != 0, stable != 0, truncated != 0
+	r.Log = log
+	return r, nil
+}
+
+// logColumn is the log's column as a reader asks for it: the blob, or
+// NULL when the logs do not come along.
+func logColumn(withLog bool) string {
+	if withLog {
+		return "log"
+	}
+	return "NULL"
+}
+
 // Checks reads the checks of a run, or of one attempt when taskID is set
-// (n then too); withLog says whether the log blobs come along.
+// (n then too), the steps of its trees among them, by task, attempt, id
+// and k; withLog says whether the log blobs come along (LogBytes always
+// does).
 func (l *Ledger) Checks(ctx context.Context, runID, taskID string, n int, withLog bool) ([]CheckRow, error) {
 	where, args := "WHERE run_id = ?", []any{runID}
 	if taskID != "" {
 		where, args = where+" AND task_id = ? AND n = ?", append(args, taskID, n)
 	}
-	logCol := "NULL"
-	if withLog {
-		logCol = "log"
-	}
 	db, err := l.conn()
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT task_id, n, id, k, argv, dir, subject, state, pid, pgroup, process_started_at, started_at, finished_at, exit, signal, timed_out, killed, stable, truncated, total, `+logCol+`, log_dropped, log_sha256, tail
-		FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
+	rows, err := db.QueryContext(ctx, `SELECT `+checkCols+`, `+logColumn(withLog)+` FROM checks `+where+` ORDER BY task_id, n, id, k`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []CheckRow
 	for rows.Next() {
-		r := CheckRow{RunID: runID}
-		var argv, pstarted, started, finished string
-		var timedOut, killed, stable, truncated, dropped int
-		var log []byte
-		if err := rows.Scan(&r.TaskID, &r.N, &r.ID, &r.K, &argv, &r.Dir, &r.Subject, &r.State, &r.PID, &r.Group, &pstarted, &started, &finished, &r.Exit, &r.Signal, &timedOut, &killed, &stable, &truncated, &r.Total, &log, &dropped, &r.LogSHA256, &r.Tail); err != nil {
+		r, err := scanCheck(rows, runID)
+		if err != nil {
 			return nil, err
 		}
-		r.LogDropped = dropped != 0
-		if argv != "" {
-			if err := json.Unmarshal([]byte(argv), &r.Argv); err != nil {
-				return nil, err
-			}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Check reads one receipt of an attempt, its log with it; ok is false
+// when there is no such row.
+func (l *Ledger) Check(ctx context.Context, runID, taskID string, n int, id string, k int) (CheckRow, bool, error) {
+	db, err := l.conn()
+	if err != nil {
+		return CheckRow{}, false, err
+	}
+	r, err := scanCheck(db.QueryRowContext(ctx, `SELECT `+checkCols+`, log FROM checks WHERE run_id = ? AND task_id = ? AND n = ? AND id = ? AND k = ?`, runID, taskID, n, id, k), runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CheckRow{}, false, nil
+	}
+	if err != nil {
+		return CheckRow{}, false, err
+	}
+	return r, true, nil
+}
+
+// Prerequisites reads a run's prerequisites' receipts, by id and k;
+// withLog says whether the log blobs come along.
+func (l *Ledger) Prerequisites(ctx context.Context, runID string, withLog bool) ([]PrerequisiteRow, error) {
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT `+prerequisiteCols+`, `+logColumn(withLog)+` FROM prerequisites WHERE run_id = ? ORDER BY id, k`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PrerequisiteRow
+	for rows.Next() {
+		r, err := scanPrerequisite(rows, runID)
+		if err != nil {
+			return nil, err
 		}
-		r.ProcessStartedAt, r.StartedAt, r.FinishedAt = unstamp(pstarted), unstamp(started), unstamp(finished)
-		r.TimedOut, r.Killed, r.Stable, r.Truncated = timedOut != 0, killed != 0, stable != 0, truncated != 0
-		r.Log = log
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Prerequisite reads one receipt of a run's prerequisite, its log with
+// it; ok is false when there is no such row.
+func (l *Ledger) Prerequisite(ctx context.Context, runID, id string, k int) (PrerequisiteRow, bool, error) {
+	db, err := l.conn()
+	if err != nil {
+		return PrerequisiteRow{}, false, err
+	}
+	r, err := scanPrerequisite(db.QueryRowContext(ctx, `SELECT `+prerequisiteCols+`, log FROM prerequisites WHERE run_id = ? AND id = ? AND k = ?`, runID, id, k), runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PrerequisiteRow{}, false, nil
+	}
+	if err != nil {
+		return PrerequisiteRow{}, false, err
+	}
+	return r, true, nil
+}
+
+// Trees reads a run's trees, by task, attempt and kind.
+func (l *Ledger) Trees(ctx context.Context, runID string) ([]TreeRow, error) {
+	db, err := l.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT task_id, n, kind, dir, commit_id, manifest, ports, preview, state, why, interrupted, ended_at FROM trees WHERE run_id = ? ORDER BY task_id, n, kind`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TreeRow
+	for rows.Next() {
+		r := TreeRow{RunID: runID}
+		var ports, ended string
+		var interrupted int
+		if err := rows.Scan(&r.TaskID, &r.N, &r.Kind, &r.Dir, &r.Commit, &r.Manifest, &ports, &r.Preview, &r.State, &r.Why, &interrupted, &ended); err != nil {
+			return nil, err
+		}
+		p, err := decodePorts(ports)
+		if err != nil {
+			return nil, err
+		}
+		r.Ports, r.Interrupted, r.EndedAt = p, interrupted != 0, unstamp(ended)
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -554,12 +816,17 @@ func (l *Ledger) Events(ctx context.Context, runID string, after int64, limit in
 
 // Recovered is what Recover concluded for one run.
 type Recovered struct {
-	RunID       string
-	Attempts    map[string]int // attempts concluded, by their new state
-	Checks      int            // checks interrupted
-	Commands    int            // commands left uncertain
-	Interrupted bool           // the run itself was running
+	RunID         string
+	Attempts      map[string]int // attempts concluded, by their new state
+	Checks        int            // checks interrupted, a tree's steps among them
+	Prerequisites int            // prerequisites interrupted
+	Trees         int            // trees ended: interrupted before their end was recorded
+	Commands      int            // commands left uncertain
+	Interrupted   bool           // the run itself was running
 }
+
+// treeLeftOpen is why a tree the recovery ends was not ended by the owner.
+const treeLeftOpen = "the owner stopped before the tree was ended"
 
 // Recover concludes what the owner left open when it last stopped, for
 // every run that was running or has a row left open (a stopped run's
@@ -570,8 +837,14 @@ type Recovered struct {
 // fresh checkout); a check started or running is interrupted (its process
 // may be alive still, so it is reported, never killed); a command accepted
 // is uncertain; a run running is interrupted, a run already stopped or
-// finished keeps its state. One `recovered` event per run touched says
-// so. A second call finds nothing open and writes nothing.
+// finished keeps its state. A prerequisite started or running is
+// interrupted as a check is, and a tree not ended (the owner stopped
+// between its attempt's close and its end) is ended and interrupted, its
+// open step rows with it, each with a `tree.ended` event of its own;
+// nothing is run for it (its ports are nobody's now, its cleanup is not
+// run). Every payload Recover writes is bounded by its shape, never by
+// the rows. One `recovered` event per run touched says so. A second call
+// finds nothing open and writes nothing.
 func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 	if ro, why := l.ReadOnly(); ro {
 		return nil, fmt.Errorf("%w: %s", ErrReadOnly, why)
@@ -579,9 +852,11 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 	runs, err := l.runs(ctx, `WHERE state = ?
 		OR EXISTS (SELECT 1 FROM attempts a WHERE a.run_id = runs.id AND a.state IN (?, ?, ?, ?, ?))
 		OR EXISTS (SELECT 1 FROM checks c WHERE c.run_id = runs.id AND c.state IN (?, ?))
+		OR EXISTS (SELECT 1 FROM prerequisites p WHERE p.run_id = runs.id AND p.state IN (?, ?))
+		OR EXISTS (SELECT 1 FROM trees tr WHERE tr.run_id = runs.id AND tr.state != ?)
 		OR EXISTS (SELECT 1 FROM commands m WHERE m.run_id = runs.id AND m.status = ?)
 		ORDER BY created_at, id`,
-		RunRunning, AttemptReserved, AttemptLaunched, AttemptRunning, AttemptSubmitting, AttemptVerifying, CheckStarted, CheckRunning, CommandAccepted)
+		RunRunning, AttemptReserved, AttemptLaunched, AttemptRunning, AttemptSubmitting, AttemptVerifying, CheckStarted, CheckRunning, CheckStarted, CheckRunning, TreeEnded, CommandAccepted)
 	if err != nil {
 		return nil, err
 	}
@@ -610,6 +885,15 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 			}
 			n, _ := res.RowsAffected()
 			rec.Checks = int(n)
+			res, err = t.tx.ExecContext(ctx, "UPDATE prerequisites SET state = ?, finished_at = ? WHERE run_id = ? AND state IN (?, ?)", CheckInterrupted, now, run.ID, CheckStarted, CheckRunning)
+			if err != nil {
+				return err
+			}
+			n, _ = res.RowsAffected()
+			rec.Prerequisites = int(n)
+			if rec.Trees, err = t.endTrees(now); err != nil {
+				return err
+			}
 			res, err = t.tx.ExecContext(ctx, "UPDATE commands SET status = ? WHERE run_id = ? AND status = ?", CommandUncertain, run.ID, CommandAccepted)
 			if err != nil {
 				return err
@@ -631,13 +915,55 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 	return out, nil
 }
 
-// ErrNotPrunable says a run's rows must stay: the run is open, a
+// endTrees ends the trees of the transaction's run not ended yet, as the
+// recovery finds them: ended and interrupted, with why, each with a
+// `tree.ended` event of a fixed shape. It returns how many.
+func (t *Tx) endTrees(now string) (int, error) {
+	type key struct {
+		task, kind string
+		n          int
+	}
+	rows, err := t.tx.QueryContext(t.ctx, "SELECT task_id, n, kind FROM trees WHERE run_id = ? AND state != ? ORDER BY task_id, n, kind", t.runID, TreeEnded)
+	if err != nil {
+		return 0, err
+	}
+	var open []key
+	for rows.Next() {
+		var k key
+		if err := rows.Scan(&k.task, &k.n, &k.kind); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		open = append(open, k)
+	}
+	if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
+		return 0, err
+	}
+	if len(open) == 0 {
+		return 0, nil
+	}
+	if _, err := t.tx.ExecContext(t.ctx, "UPDATE trees SET state = ?, interrupted = 1, why = ?, ended_at = ? WHERE run_id = ? AND state != ?", TreeEnded, treeLeftOpen, now, t.runID, TreeEnded); err != nil {
+		return 0, err
+	}
+	for _, k := range open {
+		if err := t.Event("tree.ended", map[string]any{"tree": k.kind, "task": k.task, "attempt": k.n, "why": treeLeftOpen, "interrupted": true, "recovered": true}); err != nil {
+			return 0, err
+		}
+	}
+	return len(open), nil
+}
+
+// ErrNotPrunable says a run's rows must stay: the run is open, a tree of
+// it is still ending or a prerequisite of it still running, a
 // continuation names it as its source, or another run imports one of its
 // results.
 var ErrNotPrunable = errors.New("ledger: the run is still needed")
 
-// Prune deletes a run's rows, its tasks', attempts', checks', commands'
-// and events' with them, once the run is closed and nothing cites it.
+// Prune deletes a run's rows, its tasks', attempts', checks',
+// prerequisites', trees', commands' and events' with them, once the run
+// is closed, every tree of it ended, no prerequisite of it running, and
+// nothing cites it: a finished run can still be ending a tree, and its
+// rows are what the end and the recovery write.
 func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	if l.readOnly {
 		return fmt.Errorf("%w: %s", ErrReadOnly, l.why)
@@ -661,6 +987,17 @@ func (l *Ledger) Prune(ctx context.Context, runID string) error {
 	}
 	if closed == "" || state == RunRunning {
 		return fmt.Errorf("%w: it is %s", ErrNotPrunable, state)
+	}
+	var trees, prerequisites int
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM trees WHERE run_id = ? AND state != ?), (SELECT COUNT(*) FROM prerequisites WHERE run_id = ? AND state IN (?, ?))`,
+		runID, TreeEnded, runID, CheckStarted, CheckRunning).Scan(&trees, &prerequisites); err != nil {
+		return err
+	}
+	switch {
+	case trees > 0:
+		return fmt.Errorf("%w: a tree of it is still ending", ErrNotPrunable)
+	case prerequisites > 0:
+		return fmt.Errorf("%w: a prerequisite of it is still running", ErrNotPrunable)
 	}
 	var cited int
 	if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM runs WHERE continued_from = ?) + (SELECT COUNT(*) FROM tasks WHERE imported_from LIKE ?)`,
