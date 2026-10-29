@@ -102,9 +102,9 @@ func (s *Server) handleAttemptSteps(w http.ResponseWriter, r *http.Request) {
 // handleStepLog answers one receipt's log of an attempt: 200 text/plain,
 // the log as the ledger keeps it (at most 1 MiB), its SHA-256 in
 // X-Conductor-Log-SHA256; 404 not_found for a run, attempt or row the
-// ledger has not, or a step that has no log yet (it runs); 410 log_dropped
-// for a log not kept past the run's bound (its hash and tail are on the
-// row).
+// ledger has not, or a step that has no log (it runs, or it ended with
+// none); 410 log_dropped for a log not kept past the run's bound (its hash
+// and tail are on the row).
 func (s *Server) handleStepLog(w http.ResponseWriter, r *http.Request) {
 	runID, taskID, id := r.PathValue("run"), r.PathValue("task"), r.PathValue("id")
 	n, okN := pathNumber(r.PathValue("n"))
@@ -175,9 +175,11 @@ func (s *Server) handlePrerequisiteLog(w http.ResponseWriter, r *http.Request) {
 	writeLog(w, row.State, row.Log, row.LogDropped, row.LogSHA256)
 }
 
-// writeLog answers a receipt's log: 404 while the step has none yet, 410
-// once dropped, else the bytes the ledger keeps (at most ledger.MaxLog: it
-// takes no more) with their SHA-256.
+// writeLog answers a receipt's log: 404 while the step has none yet, and
+// for one that ended with none (no hash: a check the attempt closed under,
+// a step the recovery concluded), 410 once dropped, else the bytes the
+// ledger keeps (at most ledger.MaxLog: it takes no more) with their
+// SHA-256. An empty log that was kept has its hash and is answered, empty.
 func writeLog(w http.ResponseWriter, state string, log []byte, dropped bool, sha string) {
 	switch {
 	case state == ledger.CheckStarted || state == ledger.CheckRunning:
@@ -185,6 +187,9 @@ func writeLog(w http.ResponseWriter, state string, log []byte, dropped bool, sha
 		return
 	case dropped:
 		writeError(w, http.StatusGone, "log_dropped", "the log was not kept: the run's logs were at their bound; its hash and tail are on the step")
+		return
+	case sha == "":
+		writeError(w, http.StatusNotFound, "not_found", "the step has no log: it ended before one was kept")
 		return
 	}
 	h := w.Header()
@@ -196,18 +201,24 @@ func writeLog(w http.ResponseWriter, state string, log []byte, dropped bool, sha
 }
 
 // taskFromLedger is a task of a run the engine does not hold, as the
-// ledger has it (crew.LoadedTask): ErrNoLedger without one, ErrRunNotFound
-// and ErrTaskNotFound for what the ledger has not.
+// ledger has it (crew.LoadedTask), a result a continuation imported read
+// from the run that holds its attempt (crew.LoadImports): ErrNoLedger
+// without one, ErrRunNotFound and ErrTaskNotFound for what the ledger has
+// not.
 func (s *Server) taskFromLedger(ctx context.Context, runID, taskID string) (crew.TaskState, []crew.AttemptState, error) {
 	if s.ledger == nil {
 		return crew.TaskState{}, nil, crew.ErrNoLedger
 	}
-	from, ok, err := crew.SQLLedger(s.ledger).Load(ctx, runID)
+	ld := crew.SQLLedger(s.ledger)
+	from, ok, err := ld.Load(ctx, runID)
 	if err != nil {
 		return crew.TaskState{}, nil, err
 	}
 	if !ok {
 		return crew.TaskState{}, nil, crew.ErrRunNotFound
+	}
+	if err := crew.LoadImports(ctx, ld, &from); err != nil {
+		return crew.TaskState{}, nil, err
 	}
 	st, attempts, ok := crew.LoadedTask(from, taskID)
 	if !ok {

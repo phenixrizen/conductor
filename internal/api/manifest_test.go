@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -343,4 +344,164 @@ func TestTheReceiptRoutesSayWhatTheRowsSay(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A setup step and a check that each write 2 MiB come back through the log
+// route as the ledger keeps them (EN1 PR-2's test, read through the route
+// as the independent review of #422 asked): at most MaxLog bytes, the
+// dropped line and the output's last bytes inside them, a Content-Length
+// that matches, and the hash header the SHA-256 of the body served, as the
+// receipt says.
+func TestTwoMiBOfOutputComeBackThroughTheLogRoute(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	big := func(letter, end string) []string {
+		return []string{"sh", "-c", `head -c 2097152 /dev/zero | tr '\000' ` + letter + `; echo; echo ` + end}
+	}
+	c := manifestRunCrew(e.root, "")
+	c.Manifest.Setup = []crew.Check{{ID: "deps", Argv: big("s", "SETUP-END")}}
+	c.Tasks[0].Checks = []crew.Check{{ID: "unit", Argv: big("c", "CHECK-END")}}
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), c, "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil) })
+	a := runningAttempt(t, e, run.ID, "build", 1)
+	sid := a["sessionId"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+sid+"/task/result", e.agentToken(sid), map[string]any{"summary": "built"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("result: %d %v", resp.StatusCode, out)
+	}
+	taskVia(t, e, run.ID, "build", "succeeded", func(task map[string]any) bool { return task["state"] == "succeeded" })
+	steps := stepsOf(t, e, run.ID, "build", 1)
+	if len(steps) != 3 {
+		t.Fatalf("the steps: %v", steps)
+	}
+	for _, step := range steps {
+		end := "SETUP-END\n"
+		if step["phase"] == "check" {
+			end = "CHECK-END\n"
+		}
+		path := "/api/runs/" + run.ID + "/tasks/build/attempts/1/steps/" + step["id"].(string) + "/" + strconv.Itoa(int(step["k"].(float64))) + "/log"
+		resp, body := e.raw(path, adminToken, nil)
+		if resp.StatusCode != http.StatusOK || len(body) > ledger.MaxLog || !bytes.Contains(body, []byte(" bytes dropped …\n")) || !bytes.HasSuffix(body, []byte(end)) ||
+			resp.Header.Get("Content-Length") != strconv.Itoa(len(body)) || resp.Header.Get(logHashHeader) != shaHex(body) ||
+			step["logSha256"] != shaHex(body) || step["logBytes"] != float64(len(body)) || step["exit"] != float64(0) {
+			t.Fatalf("%s: %d, %d bytes (at most %d), Content-Length %s, hash %s (the body's %s, the step's %v), ends %q", path, resp.StatusCode, len(body), ledger.MaxLog,
+				resp.Header.Get("Content-Length"), resp.Header.Get(logHashHeader), shaHex(body), step["logSha256"], body[max(0, len(body)-12):])
+		}
+	}
+}
+
+// A receipt that ended without a log answers 404, never an empty 200 with
+// an empty hash (Codex's review of #422 and the independent one): a check
+// the attempt closed under, and a step and a prerequisite still open when
+// the server ended, which the recovery concludes interrupted at the next
+// start. A log kept empty (a step that printed nothing) has its hash and
+// answers 200, empty.
+func TestAReceiptWithoutALogIsNotFound(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), manifestRunCrew(e.root, filepath.Join(t.TempDir(), "down")), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningAttempt(t, e, run.ID, "build", 1)
+	if resp, out := e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	if _, err := e.srv.ledger.Transition(context.Background(), run.ID, func(tx *ledger.Tx) error {
+		now := tx.Now()
+		for _, row := range []ledger.CheckRow{
+			{RunID: run.ID, TaskID: "build", N: 1, ID: "unit", K: 1, Phase: ledger.PhaseCheck, State: ledger.CheckInterrupted, Exit: -1, StartedAt: now, FinishedAt: now, Error: "the attempt closed under the check"},
+			{RunID: run.ID, TaskID: "build", N: 1, ID: "slow", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckRunning, Exit: -1, StartedAt: now},
+			{RunID: run.ID, TaskID: "build", N: 1, ID: "quiet", K: 1, Phase: ledger.PhaseSetup, State: ledger.CheckFinished, StartedAt: now, FinishedAt: now, LogSHA256: shaHex(nil)},
+		} {
+			if err := tx.PutCheck(row); err != nil {
+				return err
+			}
+		}
+		return tx.PutPrerequisite(ledger.PrerequisiteRow{RunID: run.ID, ID: "late", K: 1, State: ledger.CheckRunning, Exit: -1, StartedAt: now})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	again := e.restart()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		again.srv.Shutdown(ctx)
+	})
+	base := "/api/runs/" + run.ID
+	for _, path := range []string{base + "/tasks/build/attempts/1/steps/unit/1/log", base + "/tasks/build/attempts/1/steps/slow/1/log", base + "/prerequisites/late/1/log"} {
+		resp, body := again.raw(path, adminToken, nil)
+		if resp.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "not_found") || resp.Header.Get(logHashHeader) != "" {
+			t.Fatalf("%s: %d %s, hash %q", path, resp.StatusCode, body, resp.Header.Get(logHashHeader))
+		}
+	}
+	for _, step := range stepsOf(t, again, run.ID, "build", 1) {
+		if id := step["id"]; (id == "slow" || id == "unit") && step["state"] != ledger.CheckInterrupted {
+			t.Fatalf("%s after the recovery: %v", id, step)
+		}
+	}
+	resp, body := again.raw(base+"/tasks/build/attempts/1/steps/quiet/1/log", adminToken, nil)
+	if resp.StatusCode != http.StatusOK || len(body) != 0 || resp.Header.Get(logHashHeader) != shaHex(nil) || resp.Header.Get("Content-Length") != "0" {
+		t.Fatalf("a log kept empty: %d %q, hash %q", resp.StatusCode, body, resp.Header.Get(logHashHeader))
+	}
+}
+
+// A continued run's task whose result was imported by reference reads the
+// same from the ledger as while the engine held the run (Codex's review of
+// #422): its summary, issues and time come from the attempt row in the
+// run that made it, which the task row names (importedFrom).
+func TestAnImportedResultReadsTheSameAfterTheRunIsLetGo(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), managedCrew(e.root), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := runningAttempt(t, e, run.ID, "build", 1)
+	sid := a["sessionId"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+sid+"/task/result", e.agentToken(sid), map[string]any{"summary": "built it", "issues": []string{"the docs lag"}}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("result: %d %v", resp.StatusCode, out)
+	}
+	taskVia(t, e, run.ID, "build", "succeeded", func(task map[string]any) bool { return task["state"] == "succeeded" })
+	if resp, out := e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	resp, out := e.do("POST", "/api/runs/"+run.ID+"/resume", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("continue: %d %v", resp.StatusCode, out)
+	}
+	next := out["run"].(map[string]any)["id"].(string)
+	taskVia(t, e, next, "build", "kept", func(task map[string]any) bool { return task["state"] == "succeeded" })
+	read := func(when string) map[string]any {
+		resp, out := e.do("GET", "/api/runs/"+next+"/tasks/build", adminToken, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: the task: %d %v", when, resp.StatusCode, out)
+		}
+		task := out["task"].(map[string]any)
+		res, _ := task["result"].(map[string]any)
+		issues, _ := res["issues"].([]any)
+		if task["importedFrom"] != run.ID+"/build/1" || res["summary"] != "built it" || len(issues) != 1 || issues[0] != "the docs lag" || res["at"] == nil || res["attempt"] != float64(1) {
+			t.Fatalf("%s: the imported result: %v", when, task)
+		}
+		return res
+	}
+	held := read("held")
+	if resp, out := e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+	e.srv.runs.ForgetForTest(next)
+	if _, ok := e.srv.runs.Get(next); ok {
+		t.Fatal("the continuation is still held")
+	}
+	if got := read("let go"); got["at"] != held["at"] || got["commit"] != held["commit"] {
+		t.Fatalf("the imported result let go: %v, held %v", got, held)
+	}
 }
