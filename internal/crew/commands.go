@@ -469,15 +469,25 @@ func (e *Engine) Pause(ctx context.Context, runID, actor string, cmd Command, pa
 	if !paused {
 		intent = "unpause"
 	}
-	var was pauseMark
+	// was is the pause as the change found it, put back when the commit is
+	// refused; nil when no change was made (a stale revision, a run stopped
+	// or continued: act writes the refusal's receipt alone), which leaves
+	// nothing to put back. A mark of nothing would clear the run's pause
+	// and its prerequisites' state, and the pump, which dispatches only on
+	// passed, would wait for good (Codex's review of #422).
+	var was *pauseMark
 	return e.act(ctx, runID, actor, cmd, intent, nil, func(r *run) (*task, []event, error) {
 		if r.stoppedAt != nil {
 			return nil, nil, ErrRunStopped
 		}
-		was = r.pauseMarkOf()
+		m := r.pauseMarkOf()
+		was = &m
 		return nil, r.setPaused(paused), nil
 	}, func(r *run) {
-		r.restorePause(was)
+		if was == nil {
+			return
+		}
+		r.restorePause(*was)
 		r.note(session.ActivityError, "the ledger could not record the %s", intent)
 	})
 }

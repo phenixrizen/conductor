@@ -553,6 +553,60 @@ func TestARefusedUnpauseWhileAGenerationEndsStartsNothing(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A stale command whose receipt the ledger refuses made no change, so its
+// refusal puts nothing back (Codex's review of #422, round 2): the run
+// keeps its prerequisites' state, with a project manifest's prerequisite
+// or with none, the refusal pauses it as any refused commit does, and an
+// unpause after dispatches again.
+func TestAStaleCommandWhoseReceiptIsRefusedPutsNothingBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		m    *Manifest
+	}{
+		{"no manifest", nil},
+		{"a prerequisite", &Manifest{Prerequisites: []Check{shStep("tools", "true")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			tasks := []Task{work("build", "lead"), work("test", "lead", "build")}
+			c := repoCrew(dir, tasks...)
+			if tc.m != nil {
+				c = repoManifestCrew(dir, *tc.m, tasks...)
+			}
+			run := launchManaged(t, e, c)
+			a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			r := runOf(t, e, run.ID)
+			ctx := context.Background()
+			if _, err := e.Pause(ctx, run.ID, "admin", Command{ID: "p1"}, true); err != nil {
+				t.Fatal(err)
+			}
+			// An unpause expecting a revision the run has passed: refused
+			// stale, no change made, and the commit of that refusal's
+			// receipt refused by the ledger.
+			l.mu.Lock()
+			l.failOn, l.failOnce = "command.unpause", true
+			l.mu.Unlock()
+			if _, err := e.Pause(ctx, run.ID, "admin", Command{ID: "p2", ExpectedRevision: 1}, false); err == nil {
+				t.Fatal("a receipt the ledger refused was taken")
+			}
+			if st, _, _ := prereqState(e, r); st != prereqPassed {
+				t.Fatalf("the prerequisites after the refused receipt: %q", st)
+			}
+			if got, _ := e.Get(run.ID); !got.Paused || !strings.Contains(got.PausedWhy, "disk full") {
+				t.Fatalf("the run after the refused receipt: paused %v %q", got.Paused, got.PausedWhy)
+			}
+			commitResult(t, e, a, "built.txt", "yes\n", "built")
+			waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+			if _, err := e.Pause(ctx, run.ID, "admin", Command{ID: "p3"}, false); err != nil {
+				t.Fatal(err)
+			}
+			waitAttempt(t, e, run.ID, "test", ledger.AttemptRunning)
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
 // A prerequisite's running row the ledger refuses ends its process with
 // its group and fails it with the ledger's words, which pause the run
 // (Codex's review of #422): nothing runs that the ledger does not record.
