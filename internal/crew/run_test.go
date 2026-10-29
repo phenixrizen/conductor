@@ -1135,7 +1135,7 @@ func TestALaunchingRunIsNeverForgotten(t *testing.T) {
 	var forgotten []string
 	e.OnForget = func(run Run) { forgotten = append(forgotten, run.ID) }
 	// Launch keeps its run first (add), then starts what starts at once.
-	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), "", "")
+	launching := e.add(testCrew(manual("lead", ""), after("tests", "", "lead")), prepared{}, "")
 	var first string
 	for i := range maxRuns {
 		run, err := e.Launch(t.Context(), testCrew(manual("lead", "")))

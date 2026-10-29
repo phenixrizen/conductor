@@ -339,7 +339,11 @@ func (e *Engine) continued(r *run) error {
 }
 
 // setPaused pauses or resumes the run's dispatch, noting it; nothing when
-// it is so already. The caller holds e.mu, in a transaction.
+// it is so already. An unpause clears the pause's words and runs the
+// project manifest's prerequisites again, once committed, unless a
+// generation of them is in flight (steps.go): a host fixed in between is
+// seen, and failing again they pause again. The caller holds e.mu, in a
+// transaction.
 func (r *run) setPaused(paused bool) []event {
 	if r.paused == paused {
 		return nil
@@ -349,9 +353,29 @@ func (r *run) setPaused(paused bool) []event {
 	if paused {
 		r.note(session.ActivityStatus, "dispatch paused")
 	} else {
+		r.pausedWhy = ""
+		r.rearmPrerequisites()
 		r.note(session.ActivityStatus, "dispatch resumed")
 	}
 	return []event{{"run.paused", map[string]any{"paused": paused}}}
+}
+
+// pauseMark is what a pause or an unpause changes, to put back when its
+// commit is refused.
+type pauseMark struct {
+	paused      bool
+	why, prereq string
+	start       bool
+}
+
+// pauseMarkOf is r's pause as it stands. The caller holds e.mu.
+func (r *run) pauseMarkOf() pauseMark {
+	return pauseMark{paused: r.paused, why: r.pausedWhy, prereq: r.prereq, start: r.prereqStart}
+}
+
+// restorePause puts r's pause back as m had it. The caller holds e.mu.
+func (r *run) restorePause(m pauseMark) {
+	r.paused, r.pausedWhy, r.prereq, r.prereqStart = m.paused, m.why, m.prereq, m.start
 }
 
 // cancelTask cancels t: its attempt in flight is closed (its session
@@ -440,15 +464,15 @@ func (e *Engine) Pause(ctx context.Context, runID, actor string, cmd Command, pa
 	if !paused {
 		intent = "unpause"
 	}
-	var was bool
+	var was pauseMark
 	return e.act(ctx, runID, actor, cmd, intent, nil, func(r *run) (*task, []event, error) {
 		if r.stoppedAt != nil {
 			return nil, nil, ErrRunStopped
 		}
-		was = r.paused
+		was = r.pauseMarkOf()
 		return nil, r.setPaused(paused), nil
 	}, func(r *run) {
-		r.paused = was
+		r.restorePause(was)
 		r.note(session.ActivityError, "the ledger could not record the %s", intent)
 	})
 }

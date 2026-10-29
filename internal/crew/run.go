@@ -219,12 +219,20 @@ type Run struct {
 	// behind the ledger or level with it. Absent for a legacy run, whose
 	// JSON is unchanged.
 	Managed *Managed `json:"managed,omitempty"`
-	// Paused says a managed run's dispatch is paused; Outcome, once every
-	// task is terminal, is succeeded, failed or cancelled; Tasks are its
-	// tasks (task.go).
-	Paused  bool        `json:"paused,omitempty"`
-	Outcome string      `json:"outcome,omitempty"`
-	Tasks   []TaskState `json:"tasks,omitempty"`
+	// Paused says a managed run's dispatch is paused, and PausedWhy what
+	// paused it when the run did (a project manifest's step, the ledger);
+	// Outcome, once every task is terminal, is succeeded, failed or
+	// cancelled; Tasks are its tasks (task.go).
+	Paused    bool        `json:"paused,omitempty"`
+	PausedWhy string      `json:"pausedWhy,omitempty"`
+	Outcome   string      `json:"outcome,omitempty"`
+	Tasks     []TaskState `json:"tasks,omitempty"`
+	// Manifest is a managed run's project manifest and how its
+	// prerequisites go (steps.go); absent without one. Cleaning counts its
+	// trees being ended: Outcome set means every attempt is closed, not
+	// that every tree has ended.
+	Manifest *RunManifest `json:"manifest,omitempty"`
+	Cleaning int          `json:"cleaning,omitempty"`
 	// Chat is the run's chat, oldest first, at most session.MaxRunChat
 	// messages: on a run read alone (Get) and in its record, not in a list.
 	Chat []proto.ChatMessage `json:"chat,omitempty"`
@@ -263,6 +271,9 @@ type Engine struct {
 	// repository at once (task.go).
 	ledger Ledger
 	gitMu  sync.Mutex
+	// exec is what a tree runs on the machine (steps.go: treeExec), native
+	// unless a test replaces it.
+	exec treeExec
 	// checkSem bounds the checks running at once (checkSlots).
 	checkSem chan struct{}
 
@@ -330,6 +341,13 @@ type Engine struct {
 	// is marked and before its ledger rows are read: a test lands a
 	// change there.
 	beforeContinue func(runID string)
+	// beforeTreeEnd, when set, runs in endTree once the tree is quiet and
+	// before its end is recorded: a test ends the engine there.
+	beforeTreeEnd func(kind string)
+	// beforePrereqEnd, when set, runs as a generation of the prerequisites
+	// ends, after its last commit and before it is counted out: a test
+	// lands an unpause there.
+	beforePrereqEnd func()
 }
 
 // sessionMember is the member a session is, and its run.
@@ -344,21 +362,47 @@ type sessionMember struct {
 type run struct {
 	// managed says the run is a managed one (a crew with tasks, #334).
 	managed bool
-	// The managed run's tasks (plan order), its setup (the project
-	// manifest's setup phase, effectiveManifest), the commit it
-	// started from, whether its dispatch is paused, its attempts in flight,
-	// its outcome once every task is terminal, the goroutines verifying
-	// results (a stop waits for them) and its ledger revision (task.go).
-	plan     []Task
-	setup    []Check
-	base     string
-	tasks    []*task
-	paused   bool
-	active   int
-	outcome  string
-	checks   sync.WaitGroup
-	revision int64
-	crewJSON string // the crew as launched, for the ledger's run row
+	// The managed run's tasks (plan order), the commit it started from
+	// (read once, at the launch, or the continuation's), whether its
+	// dispatch is paused and why when the run paused it, its attempts in
+	// flight, its outcome once every task is terminal, the goroutines
+	// verifying results (a stop waits for them) and its ledger revision
+	// (task.go).
+	plan      []Task
+	base      string
+	tasks     []*task
+	paused    bool
+	pausedWhy string
+	active    int
+	outcome   string
+	checks    sync.WaitGroup
+	revision  int64
+	crewJSON  string // the crew as launched, for the ledger's run row
+	// The run's project manifest (steps.go): the crew's effective one as
+	// launched (manifest, with File for the file form; a legacy setup
+	// lifted), its revision, and the manifest at the base (baseMan),
+	// whose prerequisites the run runs. prereq is their state (pending →
+	// running → passed | failed), prereqGen the generation the run's,
+	// prereqs the generations in flight (0 or 1), prereqCancel the one in
+	// flight's cancel, prereqStart that the commit in flight starts one,
+	// prereqK each prerequisite's runs, prereqRows their latest receipts.
+	manifest     Manifest
+	manifestRev  int64
+	baseMan      resolvedManifest
+	prereq       string
+	prereqGen    int
+	prereqs      int
+	prereqStart  bool
+	prereqCancel context.CancelFunc
+	prereqK      map[string]int
+	prereqRows   map[string]prereqReceipt
+	// teardown is the context the trees end under (endTree), made with the
+	// run beside ctx and outliving it; trees counts the trees ending, and
+	// pendingTrees are the ends a close handed over, started by its commit.
+	teardown       context.Context
+	teardownCancel context.CancelFunc
+	trees          flight
+	pendingTrees   []treeEnd
 	// messages are the members' messages to one another (messages.go), in
 	// sequence, a continuation's carried from the run it continues.
 	messages []*message
@@ -477,7 +521,7 @@ type member struct {
 // them again with lookup (the server's registry).
 func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool)) *Engine {
 	return &Engine{launcher: l, lookup: lookup, await: awaitReady, now: time.Now,
-		runs: map[string]*run{}}
+		runs: map[string]*run{}, exec: nativeExec()}
 }
 
 // Launch is LaunchHeld for a caller that needs nothing more of the run once
@@ -522,11 +566,15 @@ func (e *Engine) LaunchNamed(ctx context.Context, c Crew, label string) (*Run, f
 	if err := ValidateLabel(label); err != nil {
 		return nil, noop, err
 	}
-	prefix, err := e.prepare(ctx, c)
+	// A managed crew's base is read once, here (prepare), and is the
+	// commit its manifest is validated at, the run records and its
+	// prerequisites and first attempts start from, whatever HEAD does
+	// after.
+	p, err := e.prepare(ctx, c, "")
 	if err != nil {
 		return nil, noop, err
 	}
-	r := e.add(c, prefix, label)
+	r := e.add(c, p, label)
 	release := sync.OnceFunc(func() { e.launched(r) })
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
@@ -551,11 +599,11 @@ func (e *Engine) LaunchAdopting(ctx context.Context, c Crew, self, sessionID str
 	if _, _, ok := e.MemberOf(sessionID); ok {
 		return nil, noop, invalidf("the session is a member of a run already")
 	}
-	prefix, err := e.prepare(ctx, c)
+	p, err := e.prepare(ctx, c, "")
 	if err != nil {
 		return nil, noop, err
 	}
-	r := e.add(c, prefix, "")
+	r := e.add(c, p, "")
 	release := sync.OnceFunc(func() { e.launched(r) })
 	if e.afterAdd != nil {
 		e.afterAdd(r.id)
@@ -583,43 +631,88 @@ func (c Crew) member(name string) *Member {
 	return nil
 }
 
+// prepared is what a launch learns of its crew before the run is made:
+// where cwd lies in its repository (prefix), and, for a managed crew, the
+// commit the run starts from and its project manifest there.
+type prepared struct {
+	prefix string
+	base   string
+	man    resolvedManifest
+}
+
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
 // its cwd lies in its repository (the prefix). A project manifest that names
-// what this build does not run yet is refused (runnableManifest).
-func (e *Engine) prepare(ctx context.Context, c Crew) (prefix string, err error) {
+// what this build does not run yet is refused (runnableManifest). For a
+// managed crew it pins the base: base when given (a continuation's own),
+// else HEAD of cwd, read once here; the file form's manifest is read and
+// held to its rules at that commit, so a broken file refuses the launch
+// before a run exists, with the file and the commit named.
+func (e *Engine) prepare(ctx context.Context, c Crew, base string) (prepared, error) {
 	if err := c.validateWithID(); err != nil {
-		return "", err
+		return prepared{}, err
 	}
 	if err := c.runnableManifest(); err != nil {
-		return "", err
+		return prepared{}, err
 	}
 	if c.Managed() {
 		if e.ledger == nil {
-			return "", ErrNoLedger
+			return prepared{}, ErrNoLedger
 		}
 		if err := e.ledger.Available(); err != nil {
-			return "", fmt.Errorf("%w: %v", ErrNoLedger, err)
+			return prepared{}, fmt.Errorf("%w: %v", ErrNoLedger, err)
 		}
 	}
 	if err := c.Launchable(); err != nil {
-		return "", err
+		return prepared{}, err
 	}
 	if c.Isolation != IsolationWorktree {
-		return "", nil
+		return prepared{}, nil
 	}
 	if err := checkGit(); err != nil {
-		return "", err
+		return prepared{}, err
 	}
 	if !filepath.IsAbs(c.Cwd) {
-		return "", invalidf("with worktrees, cwd must be an absolute path")
+		return prepared{}, invalidf("with worktrees, cwd must be an absolute path")
 	}
 	if err := checkWorktreesDir(c.Cwd); err != nil {
-		return "", err
+		return prepared{}, err
 	}
 	if err := CheckRepo(ctx, c.Cwd); err != nil {
-		return "", err
+		return prepared{}, err
 	}
-	return repoPrefix(ctx, c.Cwd)
+	prefix, err := repoPrefix(ctx, c.Cwd)
+	if err != nil {
+		return prepared{}, err
+	}
+	p := prepared{prefix: prefix}
+	if !c.Managed() {
+		return p, nil
+	}
+	if base == "" {
+		head, err := headCommit(ctx, c.Cwd)
+		if err != nil {
+			return prepared{}, fmt.Errorf("reading the repository's commit: %w", err)
+		}
+		base = head
+	}
+	if !fullCommit(base) {
+		return prepared{}, fmt.Errorf("the repository's commit %q is not a commit id", base)
+	}
+	p.base = base
+	m := c.effectiveManifest()
+	if !m.File {
+		p.man = resolvedManifest{m: m, source: sourceCrew, revision: c.ManifestRevision}
+		return p, nil
+	}
+	rec, blob, err := resolveManifest(ctx, c.Cwd, base, prefix, c.Tasks)
+	if err != nil {
+		return prepared{}, err
+	}
+	if err := rec.runnable(); err != nil {
+		return prepared{}, fmt.Errorf("%s at %s: %w", prefix+manifestFile, short(base), err)
+	}
+	p.man = resolvedManifest{m: rec, source: sourceFile, digest: blob}
+	return p, nil
 }
 
 // ResumeRun starts a new run of a stopped (or finished) run's crew in which
@@ -715,7 +808,7 @@ func (e *Engine) ResumeRecord(ctx context.Context, rec Run) (*Run, error) {
 // start under their start rules. With old, the run the engine holds that is
 // resumed, its bookkeeping (resumedBy, resuming) and its note.
 func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, label, fromID string, old *run) (*Run, error) {
-	prefix, err := e.prepare(ctx, c)
+	p, err := e.prepare(ctx, c, "")
 	if err != nil {
 		if old != nil {
 			e.mu.Lock()
@@ -724,7 +817,7 @@ func (e *Engine) resumeInto(ctx context.Context, c Crew, keeps map[string]kept, 
 		}
 		return nil, err
 	}
-	r := e.add(c, prefix, label)
+	r := e.add(c, p, label)
 	defer e.launched(r)
 	e.mu.Lock()
 	r.resumedFrom = fromID
@@ -852,16 +945,20 @@ func (e *Engine) startImmediate(ctx context.Context, r *run) (*Run, error) {
 
 // add makes and keeps a run of c with every member pending, launching until
 // the caller calls launched.
-func (e *Engine) add(c Crew, prefix, label string) *run {
+func (e *Engine) add(c Crew, p prepared, label string) *run {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
+	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: p.prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed()}
 	if r.managed {
-		// The setup phase of the crew's project manifest, a legacy setup
-		// lifted into it: the one phase this build runs.
-		r.plan, r.setup = slices.Clone(c.Tasks), c.effectiveManifest().Setup
+		// The crew's project manifest as launched, a legacy setup lifted
+		// into it, and the manifest at the pinned base, whose prerequisites
+		// the run runs (steps.go).
+		r.plan, r.base = slices.Clone(c.Tasks), p.base
 		r.tasks = newTasks(c.Tasks)
 		r.crewJSON = crewAsLaunched(c)
+		r.manifest, r.manifestRev, r.baseMan = c.effectiveManifest(), c.ManifestRevision, p.man
+		r.prereq, r.prereqK, r.prereqRows = prereqPassed, map[string]int{}, map[string]prereqReceipt{}
+		r.teardown, r.teardownCancel = context.WithCancel(context.Background())
 	}
 	r.chat = session.NewChatRoom(func(m session.ChatMessage) {
 		if e.OnRunChat != nil {
@@ -1524,7 +1621,8 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	wg.Wait()
 	// The handoffs left are dropped; one being typed ends with its session.
 	waitFor(ctx, &r.deliveries)
-	// A managed run's checks end with the context the stop cancelled.
+	// A managed run's checks, and its prerequisites (r.starts), end with
+	// the context the stop cancelled.
 	waitFor(ctx, &r.checks)
 	e.mu.Lock()
 	if r.stoppedAt == nil {
@@ -1543,10 +1641,12 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 	if r.managed {
 		// The stop's end is reported once its record is committed; one
 		// the ledger refused is the stop's error, the run stopped all the
-		// same.
+		// same. The trees of the attempts it closed end after it, which
+		// the stop waits for as long as its context lasts.
 		if err := e.recordStop(r); err != nil {
 			errs = append(errs, fmt.Errorf("the ledger could not record the stop: %w", err))
 		}
+		e.waitTrees(ctx, r)
 		return errors.Join(errs...)
 	}
 	e.noteEnd(r.id)
@@ -1599,12 +1699,14 @@ func (e *Engine) evict() {
 // idle reports whether nothing runs in r. The caller holds e.mu; it reads the
 // sessions, which never call into the engine while they hold their locks.
 func (e *Engine) idle(r *run) bool {
-	if r.managed && (r.stoppedAt == nil && r.outcome == "" || r.endPending || r.dirty()) {
+	if r.managed && (r.stoppedAt == nil && r.outcome == "" || r.endPending || r.dirty() || r.prereqs > 0 || r.trees.n > 0) {
 		// A managed run goes on between sessions: an attempt in its
 		// setup, a result being verified. Nothing runs in it once it is
 		// stopped or every task is terminal, and that is committed: a
 		// change the ledger has not taken yet is kept for the commit
-		// that carries it.
+		// that carries it. A generation of its prerequisites in flight,
+		// or a tree being ended, holds it too: forgotten, their last
+		// commits would race the ledger with nobody to wait for them.
 		return false
 	}
 	for _, m := range r.members {
@@ -1671,6 +1773,9 @@ func (e *Engine) forget(r *run) {
 		}
 	}
 	r.cancel()
+	if r.teardownCancel != nil {
+		r.teardownCancel()
+	}
 	if e.OnForget != nil {
 		e.OnForget(r.snapshot(false, false))
 	}
@@ -1824,9 +1929,11 @@ func (r *run) snapshot(withDiffs, withChat bool) Run {
 	}
 	if r.managed {
 		out.Managed = &Managed{Revision: r.revision}
-		out.Paused = r.paused
+		out.Paused, out.PausedWhy = r.paused, r.pausedWhy
 		out.Outcome = r.outcome
 		out.Tasks = r.taskStates()
+		out.Manifest = r.manifestState()
+		out.Cleaning = r.trees.n
 	}
 	if withChat {
 		for _, m := range r.chat.History() {

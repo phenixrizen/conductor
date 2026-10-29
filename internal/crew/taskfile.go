@@ -42,6 +42,14 @@ type TaskFile struct {
 	Inputs    []TaskInput   `json:"inputs,omitempty"`
 	Checks    []Check       `json:"checks,omitempty"`
 	Previous  *TaskPrevious `json:"previous,omitempty"`
+	// Unusable is the attempt right before this one when its worktree
+	// could not be made usable: not counted, and this one starts where it
+	// started (or where the checkpoint it refused was made: Previous names
+	// the checkpoint then).
+	Unusable *TaskUnusable `json:"unusable,omitempty"`
+	// Manifest is the project manifest that made the worktree usable (its
+	// identity; steps.go), absent without one. Never cut.
+	Manifest *TaskManifest `json:"manifest,omitempty"`
 	// Repair is set when a review asked for changes: the review, the
 	// commit it reviewed (where this attempt starts) and its findings.
 	Repair *TaskRepair `json:"repair,omitempty"`
@@ -93,7 +101,9 @@ type TaskInput struct {
 	Verdict string `json:"verdict,omitempty"`
 }
 
-// TaskPrevious is the attempt before this one at the same task.
+// TaskPrevious is the last attempt counted before this one at the same
+// task (an attempt whose worktree could not be made usable is not; see
+// TaskFile.Unusable).
 type TaskPrevious struct {
 	Attempt int    `json:"attempt"`
 	State   string `json:"state"`
@@ -104,29 +114,50 @@ type TaskPrevious struct {
 	// branch for what holds up.
 	Result string `json:"result,omitempty"`
 	Branch string `json:"branch,omitempty"`
+	// Checkpoint is the checkpoint the attempt saved, on Branch, when the
+	// attempt after it, made there, could not be made usable: it is not
+	// where this one starts.
+	Checkpoint string `json:"checkpoint,omitempty"`
+}
+
+// TaskUnusable is an attempt whose worktree could not be made usable: the
+// stage it failed at (a manifest step, or "manifest") and why.
+type TaskUnusable struct {
+	Attempt int    `json:"attempt"`
+	Stage   string `json:"stage"`
+	Error   string `json:"error,omitempty"`
+}
+
+// TaskManifest is the project manifest that made a tree usable: the crew's
+// at its revision, or conductor.manifest.json at the tree's commit, its
+// blob.
+type TaskManifest struct {
+	Source   string `json:"source"`
+	Revision int64  `json:"revision,omitempty"`
+	Digest   string `json:"digest,omitempty"`
 }
 
 // taskFile renders a's task files: task.md for the agent, task.json for
 // tools, and, when they would pass maxTaskFile, task-more.json with what
-// was cut from them (fitTaskFile). It takes e.mu.
-func (e *Engine) taskFile(r *run, a *attempt) (md, js, more []byte, err error) {
+// was cut from them (fitTaskFile); tr is a's worktree when the run has a
+// project manifest, whose identity the files name. It takes e.mu.
+func (e *Engine) taskFile(r *run, a *attempt, tr *tree) (md, js, more []byte, err error) {
 	e.mu.Lock()
 	t := a.t
 	f := TaskFile{Run: r.id, Crew: r.crewID, CrewName: r.name, Goal: r.goal, Task: t.def.ID, Attempt: a.n, MaxAttempts: maxAttemptsPerTask + t.extra, Member: a.m.def.Name, Role: a.m.def.Prompt, Kind: t.def.Kind,
 		Instructions: t.def.Instructions, Worktree: a.worktree, Branch: a.branch, Prefix: r.prefix, Start: a.start, Checks: append([]Check(nil), t.def.Checks...), WrittenAt: time.Now().UTC()}
+	if tr != nil {
+		f.Manifest = tr.man.task()
+	}
 	for _, in := range a.inputs {
 		f.Inputs = append(f.Inputs, TaskInput{Task: in.task, Attempt: in.attempt, Commit: in.commit, Branch: in.branch, Summary: in.summary, Verdict: in.verdict})
 	}
-	for _, p := range t.attempts {
-		if p.n == a.n-1 && t.kept(p.n) {
-			f.Previous = &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
-			if p.result != "" && p.result != a.start {
-				f.Previous.Result, f.Previous.Branch = p.result, p.branch
-			}
+	f.Previous = previousOf(t, a)
+	if u := t.unusableBefore(a); u != nil {
+		f.Unusable = &TaskUnusable{Attempt: u.n, Stage: u.stage, Error: u.err}
+		if u.checkpoint != "" && f.Previous != nil {
+			f.Previous.Checkpoint, f.Previous.Branch = u.checkpoint, u.branch
 		}
-	}
-	if rf := t.refused; f.Previous == nil && rf != nil && rf.n == a.n-1 && t.kept(rf.n) {
-		f.Previous = &TaskPrevious{Attempt: rf.n, State: ledger.AttemptFailed, Stage: rf.stage, Error: rf.err, Result: rf.result, Branch: rf.branch}
 	}
 	f.StartFrom = startFrom(r, t, a)
 	if rp := t.repair; rp != nil {
@@ -137,6 +168,47 @@ func (e *Engine) taskFile(r *run, a *attempt) (md, js, more []byte, err error) {
 	}
 	e.mu.Unlock()
 	return fitTaskFile(f)
+}
+
+// previousOf is the attempt before a as a's task file names it: the last
+// counted attempt kept before a in this run (one whose worktree could not
+// be made usable is passed over); for a continuation's first attempt, the
+// one the uncounted attempt's own task file named, or the attempt whose
+// result was refused before its checks. The caller holds e.mu.
+func previousOf(t *task, a *attempt) *TaskPrevious {
+	var p *attempt
+	for _, x := range t.attempts {
+		if x.n < a.n && t.kept(x.n) && !x.uncounted {
+			p = x
+		}
+	}
+	if p != nil {
+		prev := &TaskPrevious{Attempt: p.n, State: p.state, Stage: p.stage, Error: p.err}
+		if p.result != "" && p.result != a.start {
+			prev.Result, prev.Branch = p.result, p.branch
+		}
+		return prev
+	}
+	if u := t.unusableBefore(a); u != nil {
+		if u.prev == nil {
+			return nil
+		}
+		prev := *u.prev
+		return &prev
+	}
+	if rf := t.refused; rf != nil && rf.n == a.n-1 && t.kept(rf.n) {
+		return &TaskPrevious{Attempt: rf.n, State: ledger.AttemptFailed, Stage: rf.stage, Error: rf.err, Result: rf.result, Branch: rf.branch}
+	}
+	return nil
+}
+
+// unusableBefore is the task's unusable attempt when it is the one right
+// before a, nil otherwise.
+func (t *task) unusableBefore(a *attempt) *unusable {
+	if u := t.unusable; u != nil && u.n == a.n-1 && t.kept(u.n) {
+		return u
+	}
+	return nil
 }
 
 // fitTaskFile renders f, cutting what is needed least until task.md and
@@ -306,6 +378,13 @@ func taskMarkdown(f TaskFile) string {
 	if f.Prefix != "" {
 		fmt.Fprintf(&b, " The crew works in `%s` inside it; that is your working directory.", f.Prefix)
 	}
+	if m := f.Manifest; m != nil {
+		if m.Source == sourceFile {
+			fmt.Fprintf(&b, " The project manifest `%s` as this commit holds it (the blob %s) made the tree usable before your session started.", manifestFile, short(m.Digest))
+		} else {
+			fmt.Fprintf(&b, " The crew's project manifest (revision %d) made the tree usable before your session started.", m.Revision)
+		}
+	}
 	b.WriteString("\n\n")
 	if len(f.Inputs) > 0 {
 		b.WriteString("## Inputs\n\nThe results this task starts from:\n\n")
@@ -370,18 +449,36 @@ func taskMarkdown(f TaskFile) string {
 		}
 		b.WriteString("\n")
 	}
-	if p := f.Previous; p != nil {
-		fmt.Fprintf(&b, "## The attempt before\n\nAttempt %d %s", p.Attempt, p.State)
-		if p.Stage != "" {
-			fmt.Fprintf(&b, " at %s", p.Stage)
+	if p, u := f.Previous, f.Unusable; p != nil || u != nil {
+		b.WriteString("## The attempt before\n\n")
+		if p != nil {
+			fmt.Fprintf(&b, "Attempt %d %s", p.Attempt, p.State)
+			if p.Stage != "" {
+				fmt.Fprintf(&b, " at %s", p.Stage)
+			}
+			if p.Error != "" {
+				fmt.Fprintf(&b, ": %s", p.Error)
+			}
+			if p.Result != "" {
+				fmt.Fprintf(&b, ". Its result, the commit %s on the branch %s, is not where you start: take from it what holds up, and fix what was refused", p.Result, p.Branch)
+			}
+			b.WriteString("\n\n")
 		}
-		if p.Error != "" {
-			fmt.Fprintf(&b, ": %s", p.Error)
+		if u != nil {
+			if p != nil && p.Checkpoint != "" {
+				fmt.Fprintf(&b, "Attempt %d's checkpoint, the commit %s on the branch %s, could not be made usable: attempt %d failed at %s", p.Attempt, p.Checkpoint, p.Branch, u.Attempt, u.Stage)
+				if u.Error != "" {
+					fmt.Fprintf(&b, ": %s", u.Error)
+				}
+				b.WriteString(". It is not where you start: take from it what holds up.\n\n")
+			} else {
+				fmt.Fprintf(&b, "Attempt %d could not be made usable: it failed at %s", u.Attempt, u.Stage)
+				if u.Error != "" {
+					fmt.Fprintf(&b, ": %s", u.Error)
+				}
+				b.WriteString(". The project manifest, or the host, failed there before its agent could act: it was not counted, and you start where it started.\n\n")
+			}
 		}
-		if p.Result != "" {
-			fmt.Fprintf(&b, ". Its result, the commit %s on the branch %s, is not where you start: take from it what holds up, and fix what was refused", p.Result, p.Branch)
-		}
-		b.WriteString("\n\n")
 	}
 	if f.More != "" {
 		fmt.Fprintf(&b, "## Cut to fit\n\nThis file keeps within %d KiB: %s are in `%s/%s`, in full. Read it.\n\n", maxTaskFile>>10, strings.Join(f.Cut, ", "), taskDir, f.More)
@@ -449,9 +546,12 @@ func crewAsLaunched(c Crew) string {
 }
 
 // startFrom says in words what a's start commit is (TaskFile.StartFrom,
-// #355): the commit a review asked changes of; the attempt before's result
-// or checkpoint; an input's result, or the commit a review approved; the
-// run's base; "" for none of those. The caller holds e.mu.
+// #355): the commit a review asked changes of; where the checkpointed
+// attempt started when an attempt at its checkpoint could not be made
+// usable; the last counted attempt's result or checkpoint, or where it
+// started when its result was refused; an input's result, or the commit a
+// review approved; the run's base; "" for none of those. The caller holds
+// e.mu.
 func startFrom(r *run, t *task, a *attempt) string {
 	if a.start == "" {
 		return ""
@@ -459,10 +559,17 @@ func startFrom(r *run, t *task, a *attempt) string {
 	if rp := t.repair; rp != nil && rp.commit == a.start {
 		return fmt.Sprintf("the commit review %q asked changes of", rp.review)
 	}
-	for _, p := range t.attempts {
-		if p.n != a.n-1 || !t.kept(p.n) {
-			continue
+	u := t.unusableBefore(a)
+	if u != nil && u.checkpoint != "" && u.next == a.start {
+		return fmt.Sprintf("where attempt %d started: its checkpoint %s could not be made usable", u.checkpointN, short(u.checkpoint))
+	}
+	var p *attempt
+	for _, x := range t.attempts {
+		if x.n < a.n && t.kept(x.n) && !x.uncounted {
+			p = x
 		}
+	}
+	if p != nil {
 		if p.result == a.start {
 			return fmt.Sprintf("attempt %d's result", p.n)
 		}
@@ -472,8 +579,12 @@ func startFrom(r *run, t *task, a *attempt) string {
 		if p.result != "" && refusedBeforeChecks(p.stage) && p.start == a.start {
 			return fmt.Sprintf("where attempt %d started: its result was refused at %s", p.n, p.stage)
 		}
+	} else if u != nil && u.prev != nil && u.prevResult != "" && u.prevResult == a.start && !refusedBeforeChecks(u.prev.Stage) {
+		return fmt.Sprintf("attempt %d's result", u.prev.Attempt)
 	}
-	if rf := t.refused; rf != nil && rf.n == a.n-1 && rf.start == a.start && t.kept(rf.n) {
+	// A continuation's first attempt after a refused result, an uncounted
+	// one in between or not.
+	if rf := t.refused; rf != nil && (rf.n == a.n-1 || u != nil && u.prev != nil && u.prev.Attempt == rf.n) && rf.start == a.start && t.kept(rf.n) {
 		return fmt.Sprintf("where attempt %d started: its result was refused at %s", rf.n, rf.stage)
 	}
 	if t.checkpoint != nil && t.checkpoint.commit == a.start && t.kept(t.checkpoint.n) {

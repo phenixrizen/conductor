@@ -36,7 +36,7 @@ func (f *fakeLauncher) endRuns() {
 			p.End(0)
 		}
 		if !f.t.Failed() {
-			waitRuns(runs)
+			waitRuns(f.engine, runs)
 		}
 	})
 }
@@ -65,13 +65,15 @@ func cancelRuns(e *Engine) []*run {
 	return runs
 }
 
-// waitRuns waits out the starts, handoffs and checks under way in runs,
-// which cancelRuns ended: none is added after it (each Add is made under
-// e.mu by code that refuses a stopping run).
-func waitRuns(runs []*run) {
+// waitRuns waits out the starts (the prerequisites among them), handoffs
+// and checks under way in runs, which cancelRuns ended: none is added after
+// it (each Add is made under e.mu by code that refuses a stopping run);
+// then the trees being ended, whose last commits follow their attempts'.
+func waitRuns(e *Engine, runs []*run) {
 	for _, r := range runs {
 		waitFor(context.Background(), &r.starts)
 		waitFor(context.Background(), &r.deliveries)
 		waitFor(context.Background(), &r.checks)
+		e.waitTrees(context.Background(), r)
 	}
 }

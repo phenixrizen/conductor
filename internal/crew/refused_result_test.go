@@ -43,6 +43,16 @@ func TestAResultThatBreaksTheSetupHandsTheNextAttemptWhereItStarted(t *testing.T
 	if l.count(run.ID, "check.started") != 0 {
 		t.Fatal("a check ran after the setup failed")
 	}
+	// The receipts: the setup in the worktree (k 1) and in the checkout
+	// (k 2), where it failed, and no check; attempt 2's setup again k 1.
+	rows := l.stepRows(run.ID, "build", 1)
+	if len(rows) != 2 || rows[0].ID != "deps" || rows[0].K != 1 || rows[0].Dir != a.Attempt.Worktree || rows[0].Exit != 0 ||
+		rows[1].K != 2 || rows[1].Dir != a.Attempt.Worktree+".check" || rows[1].Exit != 1 || rows[1].Error != "deps exited 1" || rows[1].Phase != ledger.PhaseSetup {
+		t.Fatalf("attempt 1's receipts:\n%s", rowWords(rows))
+	}
+	if rows := l.stepRows(run.ID, "build", 2); len(rows) != 1 || rows[0].ID != "deps" || rows[0].K != 1 || rows[0].Exit != 0 {
+		t.Fatalf("attempt 2's receipts:\n%s", rowWords(rows))
+	}
 	stopRun(t, e, run.ID)
 }
 
@@ -416,6 +426,11 @@ func TestARefusalOutlivesAContinuationThatMadeNoAttempt(t *testing.T) {
 	p := a2.Attempt.Start
 	if row := l.attemptRow(t, run.ID, "build", 1); p != row.ResultCommit || p == a1.Attempt.Start {
 		t.Fatalf("attempt 2 starts at %s, attempt 1's result is %s", short(p), short(row.ResultCommit))
+	}
+	// A check shares no id with the setup here: its k is 1, after the
+	// setup's own rows in the worktree and the checkout.
+	if rows := l.stepRows(run.ID, "build", 1); len(rows) != 3 || rows[2].Phase != ledger.PhaseCheck || rows[2].ID != "ok" || rows[2].K != 1 || rows[2].Exit != 1 || rows[1].ID != "deps" || rows[1].K != 2 {
+		t.Fatalf("attempt 1's receipts:\n%s", rowWords(rows))
 	}
 	ctx := context.Background()
 	if err := e.PauseRun(ctx, run.ID, true); err != nil {

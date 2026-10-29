@@ -31,6 +31,10 @@ type fakeLedger struct {
 	checks   []ledger.CheckRow
 	commands map[string]ledger.CommandRow
 	messages map[string]ledger.MessageRow
+	// prerequisites are every prerequisite's row as put, in order, and
+	// trees each tree's row as last put, by run, task, attempt and kind.
+	prerequisites []ledger.PrerequisiteRow
+	trees         map[string]ledger.TreeRow
 	// commandCap, when set, is how many commands a run takes (the ledger's
 	// 4096), for a test of the cap.
 	commandCap int
@@ -86,6 +90,8 @@ type fakeTx struct {
 	checks   []ledger.CheckRow
 	commands []ledger.CommandRow
 	messages []ledger.MessageRow
+	prereqs  []ledger.PrerequisiteRow
+	trees    []ledger.TreeRow
 	// settles are the outcomes of commands taken before, applied at commit.
 	settles []ledger.CommandRow
 	// continued is the run this transaction's run continues, marked at commit.
@@ -93,7 +99,7 @@ type fakeTx struct {
 }
 
 func newFakeLedger() *fakeLedger {
-	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}, messages: map[string]ledger.MessageRow{}}
+	return &fakeLedger{runs: map[string]ledger.RunRow{}, tasks: map[string]ledger.TaskRow{}, attempts: map[string]ledger.AttemptRow{}, commands: map[string]ledger.CommandRow{}, messages: map[string]ledger.MessageRow{}, trees: map[string]ledger.TreeRow{}}
 }
 
 func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, error) {
@@ -248,6 +254,10 @@ func (l *fakeLedger) Transition(ctx context.Context, runID string, fn func(Ledge
 		l.attempts[fmt.Sprintf("%s/%s/%d", a.RunID, a.TaskID, a.N)] = a
 	}
 	l.checks = append(l.checks, tx.checks...)
+	l.prerequisites = append(l.prerequisites, tx.prereqs...)
+	for _, tr := range tx.trees {
+		l.trees[fmt.Sprintf("%s/%s/%d/%s", tr.RunID, tr.TaskID, tr.N, tr.Kind)] = tr
+	}
 	for _, c := range tx.commands {
 		l.commands[c.RunID+"/"+c.Actor+"/"+c.ID] = c
 	}
@@ -280,6 +290,11 @@ func (tx *fakeTx) PutAttempt(r ledger.AttemptRow) error {
 	return nil
 }
 func (tx *fakeTx) PutCheck(r ledger.CheckRow) error { tx.checks = append(tx.checks, r); return nil }
+func (tx *fakeTx) PutPrerequisite(r ledger.PrerequisiteRow) error {
+	tx.prereqs = append(tx.prereqs, r)
+	return nil
+}
+func (tx *fakeTx) PutTree(r ledger.TreeRow) error { tx.trees = append(tx.trees, r); return nil }
 
 // kinds is the kinds of the run's events, in order.
 func (l *fakeLedger) kinds(runID string) []string {
@@ -1067,10 +1082,20 @@ func TestTheSetupRunsInTheChecksCheckoutAndMayChangeNothingTracked(t *testing.T)
 	commitAll(t, a.Attempt.Worktree, "built")
 	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
 	// The check finds what the setup made in the checkout, listed as an
-	// untracked output.
+	// untracked output. The setup ran once there: one row of phase setup in
+	// the checkout, after the worktree's.
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
-	if n := l.count(run.ID, "check.setup"); n != 1 {
-		t.Fatalf("check.setup events: %d", n)
+	var inCheckout int
+	for _, row := range l.stepRows(run.ID, "build", 1) {
+		if row.Phase == ledger.PhaseSetup && row.Dir == a.Attempt.Worktree+".check" {
+			inCheckout++
+			if row.K != 2 || row.State != ledger.CheckFinished || row.Exit != 0 {
+				t.Fatalf("the checkout's setup row: %+v", row)
+			}
+		}
+	}
+	if inCheckout != 1 {
+		t.Fatalf("setup rows in the checkout: %d\n%s", inCheckout, rowWords(l.stepRows(run.ID, "build", 1)))
 	}
 	stopRun(t, e, run.ID)
 
@@ -1092,7 +1117,8 @@ func TestTheSetupRunsInTheChecksCheckoutAndMayChangeNothingTracked(t *testing.T)
 	if next.Attempt.Start != a2.Attempt.Start {
 		t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(next.Attempt.Start), short(a2.Attempt.Start))
 	}
-	if row := l2.attemptRow(t, run2.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "setup" || row.Error != "the setup changed tracked files: README" {
+	// The checkout is compared after each step: the change is that step's.
+	if row := l2.attemptRow(t, run2.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "setup deps" || row.Error != "setup deps changed tracked files: README" {
 		t.Fatalf("after a setup that changes tracked content: %+v", row)
 	}
 	if l2.count(run2.ID, "check.started") != 0 {
