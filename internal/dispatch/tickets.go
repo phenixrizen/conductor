@@ -75,8 +75,8 @@ type ticketCreated struct {
 // edit set, in the order an operation records them, with the values the
 // schema gives a new row before its create's set rows; ticketScalars
 // their columns. closed_at follows the status. The acceptance columns
-// are PR-3's, and source and the four columns IN1a reserves are written
-// by nothing here.
+// are AcceptTicket's and UnacceptTicket's (acceptance.go), and source and
+// the four columns IN1a reserves are written by nothing here.
 var (
 	ticketDefaults = []fieldValue{{"title", ""}, {"description", ""}, {"acceptance", ""}, {"status", TicketBacklog}, {"priority", "0"},
 		{"horizon", ""}, {"owner", ""}, {"parent_id", ""}, {"milestone_id", ""}, {"closed_at", ""}}
@@ -91,8 +91,10 @@ var (
 // assignees and MaxTicketLabels labels (bound), a member named twice
 // invalid; its number allocated from the project's next_number in this
 // transaction, so numbers go in order and never twice, its key
-// <project>-<number>. A status of done or cancelled sets closed_at. One
-// create row records what never changes, then one set row per field the
+// <project>-<number>. A status of done or cancelled sets closed_at; done
+// is refused close_policy unless the project's close policy requires
+// nothing, since a new ticket has no acceptance and no link. One create
+// row records what never changes, then one set row per field the
 // schema's default does not already hold, then one add row per member.
 // An archived project refuses it (archived). The receipt carries its id
 // and key.
@@ -153,6 +155,14 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 		if closed(status) {
 			setField(after, "closed_at", stamp(t.now))
 		}
+		// Made done, it meets its project's close policy as made: no
+		// acceptance and no link yet, so only a policy that requires
+		// nothing lets it.
+		if status == TicketDone {
+			if st := closeState(p.CloseRequires, Ticket{Owner: n.Owner, Acceptance: n.Acceptance}, false); len(st.Missing) > 0 {
+				return policyRefusal("a new ticket", st)
+			}
+		}
 		number, err := allocateNumber(t, p.ID)
 		if err != nil {
 			return err
@@ -190,17 +200,21 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 // and labels, in one operation, each field checked as CreateTicket checks
 // it and the references after the revision check. One row per field that
 // changes, its prior the value it replaces; a status moving to done or
-// cancelled sets closed_at and one moving out of them clears it (the
-// close policy's gate on done is PR-3's). Members: removes, then adds,
-// one row each; a member there already is not added again nor one absent
-// removed; a remove's prior names the tags of the member's adds it
-// removes (the observed-remove rule); an add that leaves its set past its
-// bound is refused, a remove never, so a set past its bound (a merge may
-// leave one) refuses an add and allows a remove, and an add list longer
-// than the bound is refused before any of its members is looked up or
-// written. A member both added and removed, or named twice, is invalid;
-// an edit that changes nothing is refused invalid. A deleted ticket is
-// not_found; an archived project refuses it (archived).
+// cancelled sets closed_at and one moving out of them clears it. A move
+// to done is entered only when the project's close policy is met by the
+// ticket as the edit leaves it (an owner or criteria the same edit sets
+// included): close_policy otherwise, the receipt's Missing naming what
+// is lacking; any other move is allowed, and no move touches the
+// acceptance. Members: removes, then adds, one row each; a member there
+// already is not added again nor one absent removed; a remove's prior
+// names the tags of the member's adds it removes (the observed-remove
+// rule); an add that leaves its set past its bound is refused, a remove
+// never, so a set past its bound (a merge may leave one) refuses an add
+// and allows a remove, and an add list longer than the bound is refused
+// before any of its members is looked up or written. A member both added
+// and removed, or named twice, is invalid; an edit that changes nothing
+// is refused invalid. A deleted ticket is not_found; an archived project
+// refuses it (archived).
 func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -290,6 +304,19 @@ func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit)
 				setField(after, "closed_at", stamp(t.now))
 			} else {
 				setField(after, "closed_at", "")
+			}
+		}
+		// The gate: done is entered only when the policy is met by the
+		// ticket as this edit leaves it.
+		if status != tk.Status && status == TicketDone {
+			draft := tk
+			draft.Owner, draft.Acceptance = valueOf(after, "owner"), valueOf(after, "acceptance")
+			st, err := closeOf(t.ctx, t.tx, p, draft)
+			if err != nil {
+				return err
+			}
+			if len(st.Missing) > 0 {
+				return policyRefusal(tk.Key, st)
 			}
 		}
 		base := ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID}
@@ -845,6 +872,41 @@ func rowTags(ids []string, adds map[string]addOf) []Tag {
 		tags = append(tags, Tag{k.actor, k.opID, k.n})
 	}
 	return tags
+}
+
+// readTicket reads the ticket with the key as a read shows it, deleted or
+// not: its row; its assignees, by actor; its live labels, by name, a
+// membership whose label is a tombstone reading as absent; and its
+// milestone as none when the milestone is a tombstone. A merge may leave
+// either (the field rules: the label's delete or the milestone's did not
+// see the add or the set from another replica), and the rows are kept and
+// read, never undone. ErrNotFound when there is none. q is a read
+// transaction or an operation's, so the parts describe one state.
+func readTicket(ctx context.Context, q queryer, key string) (Ticket, error) {
+	tk, err := ticketByKey(ctx, q, key)
+	if isNoRows(err) {
+		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	if tk.Assignees, err = readTexts(ctx, q, "SELECT actor FROM ticket_assignees WHERE ticket_id = ? ORDER BY actor", tk.ID); err != nil {
+		return Ticket{}, err
+	}
+	if tk.Labels, err = readTexts(ctx, q, `SELECT labels.id FROM ticket_labels JOIN labels ON labels.id = ticket_labels.label_id
+		WHERE ticket_labels.ticket_id = ? AND labels.deleted_at = '' ORDER BY labels.name, labels.id`, tk.ID); err != nil {
+		return Ticket{}, err
+	}
+	if tk.MilestoneID != "" {
+		var live int
+		if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM milestones WHERE id = ? AND deleted_at = ''", tk.MilestoneID).Scan(&live); err != nil {
+			return Ticket{}, err
+		}
+		if live == 0 {
+			tk.MilestoneID = ""
+		}
+	}
+	return tk, nil
 }
 
 // readTexts reads the one text column of the rows a query gives; none is

@@ -639,6 +639,17 @@ func setField(fields []fieldValue, column, value string) {
 	}
 }
 
+// valueOf is the value of the column among fields, "" when it is not
+// among them.
+func valueOf(fields []fieldValue, column string) string {
+	for _, f := range fields {
+		if f.column == column {
+			return f.value
+		}
+	}
+	return ""
+}
+
 // columns is the columns of fields, in their order.
 func columns(fields []fieldValue) []string {
 	out := make([]string, len(fields))

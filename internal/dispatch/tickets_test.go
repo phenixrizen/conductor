@@ -43,7 +43,7 @@ func edit(s *Store, opID, key string, e TicketEdit) (Receipt, error) {
 func TestCreateATicketWithEveryField(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
-	pid := newProject(t, s, "CND")
+	pid := newOpenProject(t, s, "CND")
 	parentID, parentKey := newTicket(t, s, "CND", "Parent")
 	l1, l2 := insertLabel(t, s, pid, "api", false), insertLabel(t, s, pid, "ui", false)
 	m := insertMilestone(t, s, pid, "1.0", false)
@@ -88,7 +88,8 @@ func TestCreateATicketWithEveryField(t *testing.T) {
 		created.Key != "CND-2" || created.CreatedBy != "Alice B" || !created.CreatedAt.Equal(tk.CreatedAt) {
 		t.Fatalf("the create row's value: %s %v", rows[0].Value, err)
 	}
-	// Made done or cancelled, it is closed at once.
+	// Made done or cancelled, it is closed at once (the project's close
+	// policy requires nothing, so done is allowed at once).
 	for i, status := range []string{TicketDone, TicketCancelled} {
 		rc, err := s.CreateTicket(ctx, testOp(opID("closed", i)), NewTicket{Project: "CND", Title: "Closed already", Status: status})
 		want(t, rc, err, StatusDone, "")
@@ -248,7 +249,7 @@ func TestEditSetsSeveralFieldsInOneOperation(t *testing.T) {
 
 func TestClosedAtIsSetAndCleared(t *testing.T) {
 	s := openStore(t, storeDir(t))
-	newProject(t, s, "CND")
+	newOpenProject(t, s, "CND")
 	_, key := newTicket(t, s, "CND", "First")
 	status := func(opID, status string) []string {
 		t.Helper()
@@ -818,5 +819,63 @@ func TestAControlCharacterInAMarkdownFieldIsRefused(t *testing.T) {
 	for i, title := range []string{"a\nb", "a\tb"} {
 		rc, err := edit(s, opID("title", i), key, TicketEdit{Set: TicketSet{Title: ptr(title)}})
 		want(t, rc, err, StatusFailed, RefusalInvalid)
+	}
+}
+
+// Every write on a deleted ticket but its undelete is not_found: a
+// comment, a relation from it or to it, a link, an acceptance, removes
+// included; once undeleted, each is allowed again.
+func TestEveryWriteOnADeletedTicketIsNotFound(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	s.SetRunExists(func(string) bool { return true })
+	_, key := makeTicket(t, s, NewTicket{Project: "CND", Title: "Deleted", Owner: "Alice"})
+	var live []string
+	for i := range 4 {
+		_, k := newTicket(t, s, "CND", fmt.Sprintf("Live %d", i))
+		live = append(live, k)
+	}
+	rc, err := s.AddComment(ctx, testOp("c1"), key, "Before")
+	want(t, rc, err, StatusDone, "")
+	comment := rc.ID
+	rc, err = relate(s, "r1", key, RelationBlocks, live[0])
+	want(t, rc, err, StatusDone, "")
+	relation := rc.ID
+	rc, err = relate(s, "r2", live[1], RelationBlocks, key)
+	want(t, rc, err, StatusDone, "")
+	incoming := rc.ID
+	rc, err = s.AddLink(ctx, testOp("l1"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"})
+	want(t, rc, err, StatusDone, "")
+	link := rc.ID
+	rc, err = s.AcceptTicket(ctx, testOp("a1"), key, "")
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.DeleteTicket(ctx, testOp("d1"), key)
+	want(t, rc, err, StatusDone, "")
+	writes := []func(string) (Receipt, error){
+		func(id string) (Receipt, error) { return s.AddComment(ctx, testOp(id), key, "After") },
+		func(id string) (Receipt, error) { return s.EditComment(ctx, testOp(id), key, comment, "After") },
+		func(id string) (Receipt, error) { return s.DeleteComment(ctx, testOp(id), key, comment) },
+		func(id string) (Receipt, error) { return relate(s, id, key, RelationRelates, live[2]) },
+		func(id string) (Receipt, error) { return relate(s, id, live[3], RelationRelates, key) },
+		func(id string) (Receipt, error) { return s.RemoveRelation(ctx, testOp(id), key, relation) },
+		// From the live end of a relation whose other end is deleted.
+		func(id string) (Receipt, error) { return s.RemoveRelation(ctx, testOp(id), live[1], incoming) },
+		func(id string) (Receipt, error) {
+			return s.AddLink(ctx, testOp(id), key, NewLink{Kind: LinkExternal, URL: "https://example.com/issues/2"})
+		},
+		func(id string) (Receipt, error) { return s.RemoveLink(ctx, testOp(id), key, link) },
+		func(id string) (Receipt, error) { return s.AcceptTicket(ctx, testOp(id), key, "") },
+		func(id string) (Receipt, error) { return s.UnacceptTicket(ctx, testOp(id), key) },
+	}
+	for i, w := range writes {
+		rc, err := w(opID("deleted", i))
+		want(t, rc, err, StatusFailed, RefusalNotFound)
+	}
+	rc, err = s.UndeleteTicket(ctx, testOp("u1"), key)
+	want(t, rc, err, StatusDone, "")
+	for i, w := range writes {
+		rc, err := w(opID("undeleted", i))
+		want(t, rc, err, StatusDone, "")
 	}
 }

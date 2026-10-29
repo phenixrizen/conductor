@@ -152,8 +152,9 @@ const (
 
 // A ticket's statuses (Owner decisions, 4: six, fixed in this item).
 // Any status may follow any other, but done is entered only when the
-// project's close policy is met (PR-3's gate); a move to done or
-// cancelled sets closed_at, a move out of them clears it.
+// project's close policy is met (EditTicket's gate, acceptance.go); a
+// move to done or cancelled sets closed_at, a move out of them clears
+// it.
 const (
 	TicketBacklog    = "backlog"
 	TicketReady      = "ready"
@@ -278,9 +279,10 @@ type Project struct {
 // ""), apart from its assignees (person:<name> or agent:<catalog id>);
 // its parent and milestone (ids of its project's rows, or ""); the
 // acceptance recorded for its owner against its criteria as they stood
-// (PR-3); its source (native; Program item IN1a adds its own and fills
-// the four columns it reserves); when it was closed and deleted (a
-// tombstone, whose references stay, inactive, until its undelete).
+// (AcceptTicket); its source (native; Program item IN1a adds its own
+// and fills the four columns it reserves); when it was closed and
+// deleted (a tombstone, whose references stay, inactive, until its
+// undelete).
 // Labels are the ids of its live labels.
 type Ticket struct {
 	ID               string    `json:"id"`
