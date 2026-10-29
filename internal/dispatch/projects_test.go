@@ -187,6 +187,51 @@ func TestEditAProject(t *testing.T) {
 	want(t, rc, err, StatusFailed, RefusalNotFound)
 }
 
+// project.archive and project.unarchive compare the project's revision
+// with the one expected: one behind it is stale_revision, a failed
+// receipt kept under its id that changes nothing; the one it holds goes
+// through.
+func TestArchiveAndUnarchiveCheckTheRevision(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	rc, err := s.EditProject(ctx, testOp("e1"), "CND", ProjectEdit{Name: ptr("Conductor")})
+	want(t, rc, err, StatusDone, "")
+	expecting := func(id string, rev int64) Op {
+		op := testOp(id)
+		op.ExpectedRev = rev
+		return op
+	}
+	for _, c := range []struct {
+		stale, fresh string
+		f            func(context.Context, Op, string) (Receipt, error)
+	}{
+		{"archive-stale", "archive", s.ArchiveProject},
+		{"unarchive-stale", "unarchive", s.UnarchiveProject},
+	} {
+		before := projectOf(t, s, "CND")
+		rc, err := c.f(ctx, expecting(c.stale, before.Rev-1), "CND")
+		want(t, rc, err, StatusFailed, RefusalStaleRevision)
+		if after := projectOf(t, s, "CND"); !after.ArchivedAt.Equal(before.ArchivedAt) || after.Rev != before.Rev {
+			t.Fatalf("%s changed the project: %+v, before %+v", c.stale, after, before)
+		}
+		if rows := changesOf(t, s, "test", c.stale); len(rows) != 0 {
+			t.Fatalf("%s wrote %+v", c.stale, rows)
+		}
+		if kept, found, err := s.Receipt(ctx, "test", c.stale); err != nil || !found || kept.Refusal != RefusalStaleRevision {
+			t.Fatalf("%s's receipt: %+v %v %v", c.stale, kept, found, err)
+		}
+		rc, err = c.f(ctx, expecting(c.fresh, before.Rev), "CND")
+		want(t, rc, err, StatusDone, "")
+		if rc.Rev != before.Rev+1 {
+			t.Fatalf("%s: %+v", c.fresh, rc)
+		}
+	}
+	if p := projectOf(t, s, "CND"); !p.ArchivedAt.IsZero() || p.Rev != 4 {
+		t.Fatalf("after an archive and an unarchive: %+v", p)
+	}
+}
+
 // An archived project refuses every write under it, its own edits
 // included, until it is unarchived.
 func TestAnArchivedProjectRefusesWritesUnderIt(t *testing.T) {
