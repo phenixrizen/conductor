@@ -55,7 +55,8 @@ func recoverLedger(ctx context.Context, ld *ledger.Ledger, records *crew.Records
 		log.Warn("the ledger's recovery failed", "err", err)
 	}
 	for _, r := range recovered {
-		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks, "commands", r.Commands)
+		log.Info("a managed run was left open by the last server's end", "run", r.RunID, "interrupted", r.Interrupted, "attempts", r.Attempts, "checks", r.Checks,
+			"prerequisites", r.Prerequisites, "trees", r.Trees, "commands", r.Commands)
 	}
 	syncRecords(rctx, ld, records, log)
 }

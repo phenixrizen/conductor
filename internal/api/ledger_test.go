@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rocksolidlabs/conductor/internal/config"
+	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
 )
 
@@ -113,5 +114,62 @@ func TestALedgerThatCannotOpenAnswersUnavailable(t *testing.T) {
 	}
 	if resp, _ := e.do("GET", "/api/crews", adminToken, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the legacy API: %d", resp.StatusCode)
+	}
+}
+
+// syncRecords rebuilds a managed run's record from the ledger when it is
+// missing or lags it: the run read after a run.paused commit carries the
+// row's words, and none again after the unpause's.
+func TestARecordRebuiltFromTheLedgerKeepsThePausesWords(t *testing.T) {
+	e := newTestEnv(t, nil)
+	ctx := context.Background()
+	ld := e.srv.ledger
+	const runID = "team-00000001"
+	why := "attempt 2 could not be made usable at setup deps: deps exited 1"
+	put := func(paused bool, words string) {
+		if _, err := ld.Transition(ctx, runID, func(tx *ledger.Tx) error {
+			r, ok, err := tx.Run()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				r = ledger.RunRow{ID: runID, CrewID: "team", Crew: `{"id":"team","name":"Team","tasks":[{"id":"build","member":"lead","kind":"work"}]}`, State: ledger.RunRunning, CreatedAt: tx.Now()}
+			}
+			r.Paused, r.PausedWhy = paused, words
+			if err := tx.PutRun(r); err != nil {
+				return err
+			}
+			return tx.Event("run.paused", map[string]any{"paused": paused, "why": words})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() crew.Run {
+		t.Helper()
+		rec, ok, err := e.srv.records.Get(runID)
+		if err != nil || !ok {
+			t.Fatalf("the record: %v %v", ok, err)
+		}
+		return rec
+	}
+	// Missing: rebuilt with the words.
+	first := "the prerequisite node failed: node exited 127"
+	put(true, first)
+	syncRecords(ctx, ld, e.srv.records, e.srv.log)
+	if rec := read(); !rec.Paused || rec.PausedWhy != first || rec.Managed == nil || rec.Managed.Revision != 1 {
+		t.Fatalf("a missing record rebuilt: paused %v %q %+v", rec.Paused, rec.PausedWhy, rec.Managed)
+	}
+	// Lagging a run.paused commit with other words: rebuilt as the row has
+	// it.
+	put(true, why)
+	syncRecords(ctx, ld, e.srv.records, e.srv.log)
+	if rec := read(); !rec.Paused || rec.PausedWhy != why || rec.Managed.Revision != 2 {
+		t.Fatalf("a lagging record rebuilt: paused %v %q", rec.Paused, rec.PausedWhy)
+	}
+	// Unpaused: no words.
+	put(false, "")
+	syncRecords(ctx, ld, e.srv.records, e.srv.log)
+	if rec := read(); rec.Paused || rec.PausedWhy != "" {
+		t.Fatalf("after the unpause: paused %v %q", rec.Paused, rec.PausedWhy)
 	}
 }

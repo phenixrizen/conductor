@@ -188,7 +188,12 @@ func (s *Server) taskError(w http.ResponseWriter, what, id string, err error) {
 }
 
 // handleGetTask answers a managed run's task with every attempt: 200
-// {task, attempts}; 404 for an unknown run or task.
+// {task, attempts}, each attempt with what it submitted and its receipts
+// (steps, from the ledger); for a run the engine does not hold (let go,
+// or run by a server before this one) the ledger's (manifest.go:
+// taskFromLedger), with no preview; 404 for an unknown run or task; 503
+// ledger_unavailable when the run is not held and there is no ledger to
+// read it from.
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	runID, taskID := r.PathValue("run"), r.PathValue("task")
 	if !crew.ValidRunID(runID) || !crew.ValidTaskID(taskID) {
@@ -196,6 +201,12 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, attempts, err := s.runs.TaskOf(runID, taskID)
+	if errors.Is(err, crew.ErrRunNotFound) {
+		st, attempts, err = s.taskFromLedger(r.Context(), runID, taskID)
+	}
+	if err == nil {
+		err = s.withSteps(r.Context(), runID, taskID, attempts)
+	}
 	if err != nil {
 		s.taskError(w, "get", runID, err)
 		return
