@@ -191,8 +191,9 @@ const (
 	// TakeRemote replaces the local change with the remote one: the later
 	// scalar, a remove that names the local add's tag.
 	TakeRemote
-	// KeepBoth keeps both: two adds of a set, a log's rows, an add a
-	// remove did not see.
+	// KeepBoth keeps both: two adds of a set, two removes, a log's rows,
+	// an add and a remove that did not see it (the add stands, and the
+	// remove stands for the tags it names), from either side.
 	KeepBoth
 )
 
@@ -211,7 +212,8 @@ func (w Winner) String() string {
 // Merge is what two changes of one field of one entity, one held by this
 // replica and one arriving, make together, by the field's class. A
 // change whose identity the replica holds, and a second create of an id
-// it has, are dropped.
+// it has, are dropped. The two replicas get the same rows whichever of
+// them merges: Merge(a, b) and Merge(b, a) are mirrors.
 func Merge(local, remote ChangeRow) Winner {
 	if TagOf(local) == TagOf(remote) {
 		return KeepLocal
@@ -231,7 +233,7 @@ func Merge(local, remote ChangeRow) Winner {
 			if names(remote, TagOf(local)) {
 				return TakeRemote
 			}
-			return KeepLocal
+			return KeepBoth
 		case local.Op == OpRemove && remote.Op == OpAdd:
 			if names(local, TagOf(remote)) {
 				return KeepLocal
@@ -266,8 +268,8 @@ const MaxParentDepth = 8
 // and To its new parent ("" to clear); From the blocker and To the
 // blocked; From the ticket and To the run; From the ticket of a
 // tombstone set, Deleted whether it is deleted after it. A remove names
-// in Tags the adds it removes, as its change row's prior does (none
-// names every add of the member).
+// in Tags the adds of its member it removes, as its change row's prior
+// does, and removes those alone: one naming none removes nothing.
 type EdgeChange struct {
 	At      time.Time
 	Actor   string
@@ -298,6 +300,11 @@ func (e EdgeChange) Tag() Tag { return Tag{e.Actor, e.OpID, e.N} }
 // the state a batch found; the row tables hold the admitted edges, and a
 // refused add is undone there with a Repair row. Tombstoned tickets keep
 // their parent and their relations, so those walks take them as edges.
+// A remove removes the adds of its member it names, whatever their place
+// in the order: one that sorts before an add it names (its writer's clock
+// behind the adder's) removes that add when it comes, as the
+// observed-remove rule removes it whatever the clocks say, so a removed
+// add is neither admitted nor refused.
 func Reconcile(changes []EdgeChange) []EdgeChange {
 	log := append([]EdgeChange(nil), changes...)
 	sort.SliceStable(log, func(i, j int) bool {
@@ -313,6 +320,20 @@ func Reconcile(changes []EdgeChange) []EdgeChange {
 	byRun := map[string][]*link{}
 	byTicket := map[string][]*link{}
 	deleted := map[string]bool{}
+	// removed is every tag a remove has named, by its member, for the
+	// adds that sort after the remove that names them.
+	type member struct{ kind, from, to string }
+	removed := map[member]map[Tag]bool{}
+	remove := func(e EdgeChange) {
+		m := member{e.Kind, e.From, e.To}
+		if removed[m] == nil {
+			removed[m] = map[Tag]bool{}
+		}
+		for _, t := range e.Tags {
+			removed[m][t] = true
+		}
+	}
+	isRemoved := func(e EdgeChange) bool { return removed[member{e.Kind, e.From, e.To}][e.Tag()] }
 	// holder is a live ticket other than except whose admitted, unremoved
 	// link holds the run.
 	holder := func(run, except string) *link {
@@ -341,6 +362,9 @@ func Reconcile(changes []EdgeChange) []EdgeChange {
 		case EdgeBlocks:
 			switch e.Op {
 			case OpAdd:
+				if isRemoved(e) {
+					continue
+				}
 				if e.From == e.To || reachesBlocks(blocks, e.To, e.From) {
 					refused = append(refused, e)
 					continue
@@ -350,37 +374,33 @@ func Reconcile(changes []EdgeChange) []EdgeChange {
 				}
 				blocks[e.From][e.To] = append(blocks[e.From][e.To], e.Tag())
 			case OpRemove:
-				tags := blocks[e.From][e.To]
-				if len(e.Tags) == 0 {
-					tags = nil
-				} else {
-					kept := tags[:0:0]
-					for _, t := range tags {
-						if !hasTag(e.Tags, t) {
-							kept = append(kept, t)
-						}
+				remove(e)
+				var kept []Tag
+				for _, t := range blocks[e.From][e.To] {
+					if !hasTag(e.Tags, t) {
+						kept = append(kept, t)
 					}
-					tags = kept
 				}
-				if len(tags) == 0 {
+				if len(kept) == 0 {
 					delete(blocks[e.From], e.To)
 				} else {
-					blocks[e.From][e.To] = tags
+					blocks[e.From][e.To] = kept
 				}
 			}
 		case EdgeRun:
 			switch e.Op {
 			case OpAdd:
-				l := &link{e: e}
-				if holder(e.To, e.From) != nil {
+				l := &link{e: e, removed: isRemoved(e)}
+				if !l.removed && holder(e.To, e.From) != nil {
 					l.refused = true
 					refused = append(refused, e)
 				}
 				byRun[e.To] = append(byRun[e.To], l)
 				byTicket[e.From] = append(byTicket[e.From], l)
 			case OpRemove:
+				remove(e)
 				for _, l := range byRun[e.To] {
-					if l.e.From == e.From && (len(e.Tags) == 0 || hasTag(e.Tags, l.e.Tag())) {
+					if l.e.From == e.From && hasTag(e.Tags, l.e.Tag()) {
 						l.removed = true
 					}
 				}
@@ -494,11 +514,13 @@ const ActorMerge = "merge"
 // (admitted false), the edge is undone in the row tables, the parent
 // cleared to "" or the relation or link removed; admitted once an earlier
 // change arrives (admitted true), restored. Its op id is the edge's own
-// identity and n numbers the row among that edge's repairs, since an
-// edge's standing may change more than once; the caller fills the
-// project.
+// identity, its tag as JSON, which no two tags share (a join of the parts
+// with '.' would, since an op id and an attempt's actor may each hold
+// one), and n numbers the row among that edge's repairs, since an edge's
+// standing may change more than once; the caller fills the project.
 func Repair(e EdgeChange, admitted bool, at time.Time, n int) ChangeRow {
 	fields := map[string]string{EdgeParent: "parent_id", EdgeBlocks: "relations", EdgeRun: "links"}
+	tag, _ := json.Marshal(e.Tag())
 	value, _ := json.Marshal(struct {
 		Kind     string `json:"kind"`
 		From     string `json:"from"`
@@ -508,6 +530,6 @@ func Repair(e EdgeChange, admitted bool, at time.Time, n int) ChangeRow {
 	}{e.Kind, e.From, e.To, e.Tag(), admitted})
 	return ChangeRow{
 		Entity: EntityTicket, EntityID: e.From, TicketID: e.From, Field: fields[e.Kind], Op: OpReconcile, Value: string(value),
-		At: at, Actor: ActorMerge, OpID: e.Actor + "." + e.OpID + "." + strconv.Itoa(e.N), N: n,
+		At: at, Actor: ActorMerge, OpID: string(tag), N: n,
 	}
 }

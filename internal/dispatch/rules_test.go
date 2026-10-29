@@ -95,16 +95,39 @@ func TestMergeByClass(t *testing.T) {
 	removeNone.Prior = EncodeTags(nil)
 	check("two adds", Merge(a1, b1), KeepBoth)
 	check("an observed add is removed", Merge(a1, removeA1), TakeRemote)
-	check("an add the remove did not see survives", Merge(b1, removeA1), KeepLocal)
+	check("an add the remove did not see survives, the remove standing for what it names", Merge(b1, removeA1), KeepBoth)
 	check("a remove that saw the add drops it", Merge(removeA1, a1), KeepLocal)
 	check("a remove that did not see the add keeps both", Merge(removeA1, b1), KeepBoth)
-	check("a remove naming nothing", Merge(a1, removeNone), KeepLocal)
+	check("a remove naming nothing", Merge(a1, removeNone), KeepBoth)
+	check("a remove naming nothing, from its side", Merge(removeNone, a1), KeepBoth)
 	check("two removes", Merge(removeA1, removeNone), KeepBoth)
 	// The plan's case: two adds of one member from two actors with equal
-	// at, one removed, leave the member present: b1 survives.
-	present := Merge(a1, removeA1) != TakeRemote || Merge(b1, removeA1) == KeepLocal
-	if !present {
+	// at, one removed, leave the member present: b1 survives, merged from
+	// either side.
+	if Merge(b1, removeA1) == TakeRemote || Merge(removeA1, b1) == KeepLocal {
 		t.Error("the member removed though an add of it was not seen")
+	}
+	// A merge makes the same rows whichever side merges: every pair of a
+	// set's changes is answered from the two sides as mirrors, keep both
+	// both ways, or take remote one way and keep local the other.
+	removeB1 := row("ticket", "labels", OpRemove, t2, "a", "v", 0)
+	removeB1.Prior = EncodeTags([]Tag{TagOf(b1)})
+	removeBoth := row("ticket", "labels", OpRemove, t2, "c", "u", 0)
+	removeBoth.Prior = EncodeTags([]Tag{TagOf(a1), TagOf(b1)})
+	set := []struct {
+		name string
+		c    ChangeRow
+	}{{"a1", a1}, {"b1", b1}, {"remove a1", removeA1}, {"remove b1", removeB1}, {"remove both", removeBoth}, {"remove none", removeNone}}
+	mirror := map[Winner]Winner{KeepBoth: KeepBoth, TakeRemote: KeepLocal, KeepLocal: TakeRemote}
+	for i, x := range set {
+		for j, y := range set {
+			if i == j {
+				continue
+			}
+			if xy, yx := Merge(x.c, y.c), Merge(y.c, x.c); yx != mirror[xy] {
+				t.Errorf("Merge(%s, %s) = %v but Merge(%s, %s) = %v", x.name, y.name, xy, y.name, x.name, yx)
+			}
+		}
 	}
 	// An unknown field is kept as it is.
 	check("unknown", Merge(row("ticket", "nothing", OpSet, t1, "a", "x", 0), row("ticket", "nothing", OpSet, t2, "b", "y", 0)), KeepLocal)
@@ -316,9 +339,31 @@ func TestReconcileBlocks(t *testing.T) {
 	add2 := blocks(2, "b", "A", "B")
 	both(t, "two tags, one removed", []EdgeChange{add, add2, unblocks(3, "a", add), blocks(4, "b", "B", "A")}, "B→A")
 	both(t, "two tags, both removed", []EdgeChange{add, add2, unblocks(3, "a", add), unblocks(4, "b", add2), blocks(5, "b", "B", "A")}, "")
-	// A remove naming no tag removes every add of the member.
+	// A remove of every tag names them all.
 	all := edge(3, "a", EdgeBlocks, OpRemove, "A", "B")
+	all.Tags = []Tag{add.Tag(), add2.Tag()}
 	both(t, "a remove of every tag", []EdgeChange{add, add2, all, blocks(4, "b", "B", "A")}, "")
+	// A remove naming no tag removes nothing, as Merge and the set rule
+	// read it: the edge stands, so the reverse edge is refused.
+	none := edge(3, "a", EdgeBlocks, OpRemove, "A", "B")
+	both(t, "a remove naming no tag", []EdgeChange{add, none, blocks(4, "b", "B", "A")}, "B→A")
+	addRow := ChangeRow{Entity: EntityTicket, Field: "relations", Op: OpAdd, At: add.At, Actor: add.Actor, OpID: add.OpID, N: add.N}
+	noneRow := ChangeRow{Entity: EntityTicket, Field: "relations", Op: OpRemove, At: none.At, Actor: none.Actor, OpID: none.OpID, N: none.N, Prior: EncodeTags(none.Tags)}
+	if Merge(addRow, noneRow) == TakeRemote || Merge(noneRow, addRow) == KeepLocal {
+		t.Error("Merge and Reconcile disagree on a remove naming no tag: Merge removes the add")
+	}
+	// A remove that sorts before the add it names (its writer's clock
+	// behind the adder's) removes it all the same, as the set rule does
+	// whatever the clocks say: the add never stands, and the reverse edge
+	// is admitted.
+	late := blocks(20, "b", "A", "B")
+	early := unblocks(10, "a", late)
+	both(t, "a remove before its add", []EdgeChange{early, late, blocks(30, "a", "B", "A")}, "")
+	// Only the member it names: the same tag on another member's add is
+	// not removed.
+	elsewhere := unblocks(10, "a", late)
+	elsewhere.From, elsewhere.To = "C", "D"
+	both(t, "a remove of another member", []EdgeChange{elsewhere, late, blocks(30, "a", "B", "A")}, "B→A")
 	// A refused add stays refused when the edge that refused it goes
 	// later (serial), and a remove of a refused add changes nothing.
 	both(t, "serial", []EdgeChange{add, blocks(2, "b", "B", "A"), unblocks(3, "a", add)}, "B→A")
@@ -353,6 +398,14 @@ func TestReconcileRunLinks(t *testing.T) {
 	both(t, "undeleted, free", []EdgeChange{first, tombstone(2, "a", "T1", true), tombstone(3, "a", "T1", false), link(4, "b", "T2", "R")}, "T2→R")
 	second := link(3, "b", "T2", "R")
 	both(t, "undeleted after the other let go", []EdgeChange{first, tombstone(2, "a", "T1", true), second, unlink(4, "b", second), tombstone(5, "a", "T1", false), link(6, "b", "T3", "R")}, "T3→R")
+	// A remove naming no tag removes nothing: the run stays held.
+	none := edge(2, "a", EdgeRun, OpRemove, "T1", "R")
+	both(t, "a remove naming no tag", []EdgeChange{first, none, link(3, "b", "T2", "R")}, "T2→R")
+	// A remove that sorts before the link it names removes it all the
+	// same: the link never holds the run, and another ticket takes it.
+	late := link(20, "a", "T1", "R")
+	early := unlink(10, "b", late)
+	both(t, "a remove before its link", []EdgeChange{early, late, link(30, "b", "T2", "R")}, "")
 	// Every refused edge of the undelete case is the link, the edge.
 	out := Reconcile([]EdgeChange{first, tombstone(2, "a", "T1", true), second, tombstone(4, "a", "T1", false)})
 	if len(out) != 1 || out[0].Kind != EdgeRun || out[0].Tag() != first.Tag() {
@@ -372,8 +425,12 @@ func TestRepairRowsCarryTheMergeActor(t *testing.T) {
 	} {
 		for n, admitted := range []bool{false, true} {
 			r := Repair(c.e, admitted, at, n)
+			var tag Tag
+			if err := json.Unmarshal([]byte(r.OpID), &tag); err != nil || tag != c.e.Tag() {
+				t.Fatalf("the repair row's op id %q is not the edge's tag: %+v %v", r.OpID, tag, err)
+			}
 			if r.Actor != ActorMerge || r.Op != OpReconcile || r.Entity != EntityTicket || r.EntityID != c.e.From || r.TicketID != c.e.From ||
-				r.Field != c.field || r.N != n || !r.At.Equal(at) || r.OpID != c.e.Actor+"."+c.e.OpID+".0" || r.Prior != "" {
+				r.Field != c.field || r.N != n || !r.At.Equal(at) || r.Prior != "" {
 				t.Fatalf("the repair row of %+v: %+v", c.e, r)
 			}
 			var value struct {
@@ -387,6 +444,31 @@ func TestRepairRowsCarryTheMergeActor(t *testing.T) {
 			if Class(r.Entity, r.Field) == "" {
 				t.Fatalf("the repair row's field %s has no class", r.Field)
 			}
+		}
+	}
+}
+
+// Two edges whose actor and op id differ only in where a '.' falls (an
+// op id may hold one, and so may a crew member's name in an attempt's
+// actor) get two repair identities: a join of the parts with '.' would
+// give both agent:a.b.c.0, and the second repair row would trip the log's
+// UNIQUE(actor, op_id, n).
+func TestRepairIdentitiesNeverCollide(t *testing.T) {
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	a := blocks(1, "agent:a.b", "A", "B")
+	a.OpID = "c"
+	b := blocks(1, "agent:a", "C", "D")
+	b.OpID = "b.c"
+	ra, rb := Repair(a, false, at, 0), Repair(b, false, at, 0)
+	if TagOf(ra) == TagOf(rb) {
+		t.Fatalf("two edges' repairs share the identity %+v", TagOf(ra))
+	}
+	// In a store's log, both rows are kept.
+	s := openStore(t, storeDir(t))
+	for _, r := range []ChangeRow{ra, rb} {
+		if _, err := s.db.Exec(`INSERT INTO changes (entity, entity_id, ticket_id, field, op, value, at, actor, op_id, n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			r.Entity, r.EntityID, r.TicketID, r.Field, r.Op, r.Value, stamp(r.At), r.Actor, r.OpID, r.N); err != nil {
+			t.Fatalf("the repair row of %s: %v", r.EntityID, err)
 		}
 	}
 }
