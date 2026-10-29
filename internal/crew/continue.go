@@ -682,8 +682,16 @@ func Recovered(rec Run, from Loaded) Run {
 	rec.Managed = &Managed{Revision: from.Run.Revision}
 	rec.Paused, rec.PausedWhy, rec.Outcome, rec.NeedsInput = from.Run.Paused, from.Run.PausedWhy, from.Run.Outcome, 0
 	// Nothing runs after the server's end: a tree it left ending is the
-	// recovery's (ledger.Recover), not the run's.
+	// recovery's (ledger.Recover), not the run's, and so is a prerequisite
+	// it left running, which the recovery interrupted.
 	rec.Cleaning = 0
+	if m := rec.Manifest; m != nil {
+		for i := range m.Prerequisites {
+			if m.Prerequisites[i].State == "running" && from.Run.State != ledger.RunRunning {
+				m.Prerequisites[i].State = "interrupted"
+			}
+		}
+	}
 	rows := map[string]ledger.TaskRow{}
 	for _, row := range from.Tasks {
 		rows[row.ID] = row

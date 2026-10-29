@@ -230,10 +230,11 @@ func TestAContinuationIsRefusedWhereItMustBe(t *testing.T) {
 // recovery: interrupted, each task as its rows say, the sessions ended.
 func TestRecoveredRecordSaysWhatTheLedgerConcluded(t *testing.T) {
 	now := time.Now().UTC()
-	rec := Run{ID: "r-00000001", State: RunRunning, NeedsInput: 1,
-		Members: []MemberState{{Name: "lead", Status: MemberRunning, NeedsInput: true}, {Name: "writer", Status: MemberPending}},
-		Tasks:   []TaskState{{ID: "build", State: ledger.TaskSucceeded, Attempts: 1}, {ID: "docs", State: ledger.TaskRunning, Attempts: 1}, {ID: "site", State: ledger.TaskVerifying, Attempts: 2}, {ID: "late", State: ledger.TaskBlocked}}}
-	from := Loaded{Run: ledger.RunRow{ID: rec.ID, State: ledger.RunInterrupted, Revision: 9, Paused: true},
+	rec := Run{ID: "r-00000001", State: RunRunning, NeedsInput: 1, Cleaning: 2,
+		Manifest: &RunManifest{Source: "crew", Revision: 1, Prerequisites: []PrerequisiteState{{ID: "node", K: 1, State: "passed"}, {ID: "tools", K: 1, State: "running"}}},
+		Members:  []MemberState{{Name: "lead", Status: MemberRunning, NeedsInput: true}, {Name: "writer", Status: MemberPending}},
+		Tasks:    []TaskState{{ID: "build", State: ledger.TaskSucceeded, Attempts: 1}, {ID: "docs", State: ledger.TaskRunning, Attempts: 1}, {ID: "site", State: ledger.TaskVerifying, Attempts: 2}, {ID: "late", State: ledger.TaskBlocked}}}
+	from := Loaded{Run: ledger.RunRow{ID: rec.ID, State: ledger.RunInterrupted, Revision: 9, Paused: true, PausedWhy: "the prerequisite tools failed: tools exited 1"},
 		Tasks: []ledger.TaskRow{{ID: "build", State: ledger.TaskSucceeded, Attempts: 1, ResultCommit: "abc"}, {ID: "docs", State: ledger.TaskRunning, Attempts: 1}, {ID: "site", State: ledger.TaskVerifying, Attempts: 2}, {ID: "late", State: ledger.TaskBlocked, Reason: "needs site"}},
 		Attempts: []ledger.AttemptRow{
 			{TaskID: "build", N: 1, State: ledger.AttemptSucceeded, ResultCommit: "abc", LaunchedAt: now},
@@ -243,6 +244,11 @@ func TestRecoveredRecordSaysWhatTheLedgerConcluded(t *testing.T) {
 	out := Recovered(rec, from)
 	if out.State != RunInterrupted || out.Managed == nil || out.Managed.Revision != 9 || !out.Paused || out.NeedsInput != 0 {
 		t.Fatalf("the run: %+v", out)
+	}
+	// Nothing runs after the server's end: no tree is cleaning, a
+	// prerequisite left running was interrupted; the pause keeps its words.
+	if p := out.Manifest.Prerequisites; out.Cleaning != 0 || out.PausedWhy != from.Run.PausedWhy || p[0].State != "passed" || p[1].State != "interrupted" {
+		t.Fatalf("the run: cleaning %d, paused %q, prerequisites %+v", out.Cleaning, out.PausedWhy, p)
 	}
 	if m := out.Members[0]; m.Status != MemberEnded || m.NeedsInput || m.Ended == nil {
 		t.Fatalf("lead: %+v", m)
