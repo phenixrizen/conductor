@@ -347,9 +347,9 @@ func (r *run) setPaused(paused bool) []event {
 	r.paused = paused
 	r.markRun()
 	if paused {
-		r.note(session.ActivityStatus, "dispatch paused")
+		r.note(session.ActivityStatus, "scheduling paused")
 	} else {
-		r.note(session.ActivityStatus, "dispatch resumed")
+		r.note(session.ActivityStatus, "scheduling resumed")
 	}
 	return []event{{"run.paused", map[string]any{"paused": paused}}}
 }

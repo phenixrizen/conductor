@@ -112,8 +112,9 @@ type Task struct {
 	Checks       []Check  `json:"checks,omitempty"` // run against the result; none for a review
 }
 
-// Check is a command the controller runs: against a result (Task.Checks)
-// or in a new worktree (Crew.Setup). An argv array, never a shell line.
+// Check is a command the controller runs: against a result (Task.Checks),
+// or a step of a project manifest (Manifest, whose setup phase Crew.Setup was).
+// An argv array, never a shell line.
 type Check struct {
 	ID             string   `json:"id"`
 	Argv           []string `json:"argv"`
@@ -136,8 +137,18 @@ type Crew struct {
 	Tasks []Task `json:"tasks,omitempty"`
 	// Setup is run in every new attempt worktree before its member starts,
 	// each entry an argv array, never a shell line: what a fresh worktree
-	// lacks (a dependency install). Only with Tasks.
+	// lacks (a dependency install). Only with Tasks. It is the project
+	// manifest's setup phase as a crew saved before manifests holds it
+	// (effectiveManifest), and is never set beside Manifest.
 	Setup []Check `json:"setup,omitempty"`
+	// Manifest is the crew's project manifest (manifest.go): what makes a fresh
+	// tree usable, how it is checked and cleaned up. Only with Tasks.
+	Manifest *Manifest `json:"manifest,omitempty"`
+	// ManifestRevision is the server's count of the crew's manifest changes
+	// (manifestRevision), set by the store whatever a save carries: on the
+	// crew, not inside the optional Manifest, so a save that removes the
+	// manifest keeps it and a number names one manifest of the crew for good.
+	ManifestRevision int64 `json:"manifestRevision,omitempty"`
 	// Yolo overrides the server's yolo default for the crew's runs: nil
 	// follows it, false launches every member without its agent's yolo
 	// recipe, true with it. A launch fixes the choice on the run.
@@ -264,6 +275,9 @@ func (c Crew) Validate() error {
 	if c.ViewLinkTTLSeconds < 0 || c.ViewLinkTTLSeconds > maxLinkTTL {
 		return invalidf("viewLinkTtlSeconds must be between 0 and %d", maxLinkTTL)
 	}
+	if c.ManifestRevision < 0 {
+		return invalidf("manifestRevision must not be negative")
+	}
 	if len(c.Members) > maxMembers {
 		return invalidf("too many members (at most %d)", maxMembers)
 	}
@@ -329,12 +343,13 @@ func (c Crew) checkStarts(names []string) error {
 }
 
 // checkTasks checks the tasks of a managed crew against its members, and
-// that a crew without tasks has no task-started member and no setup: ids
-// well formed and unique, at most maxTasks, every task's member known and
-// its needs known with no cycle, a review needing one work task and
-// having no checks, every member with a task, the checks and the setup
-// within their bounds, isolation worktree, every member started by its
-// tasks.
+// that a crew without tasks has no task-started member, no setup and no
+// project manifest: ids well formed and unique, at most maxTasks, every
+// task's member known and its needs known with no cycle, a review needing
+// one work task and having no checks, every member with a task, the checks
+// and the setup within their bounds, isolation worktree, every member
+// started by its tasks; then the project manifest, never beside a setup, by
+// its own rules (Manifest.validate).
 func (c Crew) checkTasks(names []string) error {
 	if len(c.Tasks) == 0 {
 		if len(c.Setup) > 0 {
@@ -344,6 +359,9 @@ func (c Crew) checkTasks(names []string) error {
 			if m.Start.When == StartTask {
 				return invalidf("member %s: start.when %q is only for a crew with tasks", quote(m.Name), StartTask)
 			}
+		}
+		if c.hasManifest() {
+			return invalidf("a project manifest is only set with tasks")
 		}
 		return nil
 	}
@@ -466,23 +484,43 @@ func (c Crew) checkTasks(names []string) error {
 			return invalidf("member %s: has no task; every member of a crew with tasks does one", quote(m.Name))
 		}
 	}
+	if c.hasManifest() {
+		if len(c.Setup) > 0 {
+			return invalidf("setup is the project manifest's setup phase: put it there")
+		}
+		if err := c.Manifest.validate("project manifest", taskChecks(c.Tasks), false); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-// validate checks a check or setup command: its id, argv (within the
-// member-args bounds, never empty) and timeout. what names it in the error.
+// validate checks a check, a setup command or a manifest's step: its id,
+// argv (validateArgv) and timeout. what names it in the error.
 func (ch Check) validate(what string) error {
 	if !taskIDPattern.MatchString(ch.ID) {
 		return invalidf("%s: id %s must match %s", what, quote(ch.ID), taskIDPattern)
 	}
-	if len(ch.Argv) == 0 || ch.Argv[0] == "" {
+	if err := validateArgv(what, ch.Argv); err != nil {
+		return err
+	}
+	if ch.TimeoutSeconds < 0 || ch.TimeoutSeconds > maxCheckTimeout {
+		return invalidf("%s: timeoutSeconds must be between 1 and %d (%d when left out)", what, maxCheckTimeout, defaultCheckTimeout)
+	}
+	return nil
+}
+
+// validateArgv checks the argv of a check or a probe: within the
+// member-args bounds and never empty. what names it in the error.
+func validateArgv(what string, argv []string) error {
+	if len(argv) == 0 || argv[0] == "" {
 		return invalidf("%s: argv must name a program", what)
 	}
-	if len(ch.Argv) > maxArgs {
+	if len(argv) > maxArgs {
 		return invalidf("%s: too many argv entries (at most %d)", what, maxArgs)
 	}
 	total := 0
-	for i, a := range ch.Argv {
+	for i, a := range argv {
 		if strings.ContainsRune(a, 0) {
 			return invalidf("%s: argv[%d] contains NUL", what, i)
 		}
@@ -493,9 +531,6 @@ func (ch Check) validate(what string) error {
 	}
 	if total > maxArgsBytes {
 		return invalidf("%s: argv must be at most %d bytes in all", what, maxArgsBytes)
-	}
-	if ch.TimeoutSeconds < 0 || ch.TimeoutSeconds > maxCheckTimeout {
-		return invalidf("%s: timeoutSeconds must be between 1 and %d (%d when left out)", what, maxCheckTimeout, defaultCheckTimeout)
 	}
 	return nil
 }
@@ -628,6 +663,10 @@ func (c Crew) clone() Crew {
 	c.Members = slices.Clone(c.Members)
 	for i := range c.Members {
 		c.Members[i].Args = slices.Clone(c.Members[i].Args)
+	}
+	if c.Manifest != nil {
+		rec := c.Manifest.clone()
+		c.Manifest = &rec
 	}
 	return c
 }

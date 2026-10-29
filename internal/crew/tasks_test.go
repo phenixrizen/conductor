@@ -115,7 +115,7 @@ func TestValidateRejectsBadTasks(t *testing.T) {
 }
 
 // A crew with tasks goes through the store whole; a crew without encodes
-// as it did, with no tasks or setup key.
+// as it did, with no tasks, setup, manifest or manifestRevision key.
 func TestACrewWithTasksRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.Open(dir)
@@ -142,7 +142,7 @@ func TestACrewWithTasksRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(legacy), "tasks") || strings.Contains(string(legacy), "setup") {
+	if strings.Contains(string(legacy), "tasks") || strings.Contains(string(legacy), "setup") || strings.Contains(string(legacy), "manifest") {
 		t.Fatalf("a legacy crew's JSON names tasks: %s", legacy)
 	}
 	if !strings.Contains(string(legacy), `"when":"immediately"`) {

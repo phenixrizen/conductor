@@ -269,8 +269,9 @@ func (s *Store) Put(c Crew) error {
 // Create saves c as a new crew. Its ID comes from its name, lower case with
 // every other run of characters a dash and at most 40 of them ("crew" when
 // nothing is left), then -2, -3 and so on when a file has it already, usable
-// or not. CreatedAt and UpdatedAt are now. The ID and times c holds are
-// ignored.
+// or not. CreatedAt and UpdatedAt are now, and ManifestRevision 1 when the
+// crew has a project manifest (a legacy setup counts), else 0. The ID, times
+// and revision c holds are ignored.
 func (s *Store) Create(c Crew) (Crew, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,6 +284,7 @@ func (s *Store) Create(c Crew) (Crew, error) {
 	c.ID = freeID(taken, cmp.Or(slug(c.Name), "crew"), "")
 	c.CreatedAt = s.now()
 	c.UpdatedAt = c.CreatedAt
+	c.ManifestRevision = manifestRevision(nil, c)
 	if err := s.commit(c); err != nil {
 		return Crew{}, err
 	}
@@ -290,8 +292,10 @@ func (s *Store) Create(c Crew) (Crew, error) {
 }
 
 // Update replaces the crew with the given ID by c. The ID and CreatedAt stay
-// as they were, whatever c holds, and UpdatedAt is now. A file that cannot be
-// used is not replaced (ErrUnreadable).
+// as they were, whatever c holds, and UpdatedAt is now. ManifestRevision is
+// the stored crew's, one more when the project manifest changed (a removal
+// included), whatever c holds (manifestRevision). A file that cannot be used
+// is not replaced (ErrUnreadable).
 func (s *Store) Update(id string, c Crew) (Crew, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,6 +304,7 @@ func (s *Store) Update(id string, c Crew) (Crew, error) {
 		return Crew{}, err
 	}
 	c.ID, c.CreatedAt, c.UpdatedAt = id, old.CreatedAt, s.now()
+	c.ManifestRevision = manifestRevision(&old, c)
 	if err := s.commit(c); err != nil {
 		return Crew{}, err
 	}
@@ -307,8 +312,8 @@ func (s *Store) Update(id string, c Crew) (Crew, error) {
 }
 
 // Duplicate saves a copy of the crew with the given ID as a new crew: its ID
-// is <id>-copy (then <id>-copy-2 and so on), its name "<name> copy", and its
-// CreatedAt and UpdatedAt now.
+// is <id>-copy (then <id>-copy-2 and so on), its name "<name> copy", its
+// CreatedAt and UpdatedAt now, and its ManifestRevision a new crew's.
 func (s *Store) Duplicate(id string) (Crew, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -325,6 +330,7 @@ func (s *Store) Duplicate(id string) (Crew, error) {
 	c.Name = copyName(src.Name)
 	c.CreatedAt = s.now()
 	c.UpdatedAt = c.CreatedAt
+	c.ManifestRevision = manifestRevision(nil, c)
 	if err := s.commit(c); err != nil {
 		return Crew{}, err
 	}
@@ -355,12 +361,13 @@ func (s *Store) Delete(id string) (bool, error) {
 }
 
 // Seed saves the crews of list whose ids have no file in the crews
-// directory, and returns the ids it added and the ids it skipped, each in
-// list's order. A file with the id, usable or not (taken), is left alone
-// whatever it holds: seeding twice changes nothing, a crew edited after a
-// seed stays as the editor left it, and a file the store cannot read is
-// never overwritten. The first crew that cannot be saved stops the seed,
-// naming it; the ones saved before it stay.
+// directory, each with a new crew's ManifestRevision, and returns the ids it
+// added and the ids it skipped, each in list's order. A file with the id,
+// usable or not (taken), is left alone whatever it holds: seeding twice
+// changes nothing, a crew edited after a seed stays as the editor left
+// it, and a file the store cannot read is never overwritten. The first
+// crew that cannot be saved stops the seed, naming it; the ones saved
+// before it stay.
 func (s *Store) Seed(list []Crew) (added, skipped []string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -374,6 +381,7 @@ func (s *Store) Seed(list []Crew) (added, skipped []string, err error) {
 			skipped = append(skipped, c.ID)
 			continue
 		}
+		c.ManifestRevision = manifestRevision(nil, c)
 		if err := s.commit(c); err != nil {
 			return added, skipped, fmt.Errorf("seed %s: %w", c.ID, err)
 		}
@@ -444,13 +452,17 @@ func (c Crew) validateWithID() error {
 }
 
 // canonical returns the form of c the store checks and keeps: a copy sharing
-// no slice with c, its name without surrounding space, and its members listed
-// as [] rather than null when there are none.
+// no slice with c, its name without surrounding space, its members listed
+// as [] rather than null when there are none, and a project manifest with
+// nothing in it left out, as a crew without one.
 func (c Crew) canonical() Crew {
 	c = c.clone()
 	c.Name = strings.TrimSpace(c.Name)
 	if c.Members == nil {
 		c.Members = []Member{}
+	}
+	if c.Manifest != nil && c.Manifest.empty() {
+		c.Manifest = nil
 	}
 	return c
 }
