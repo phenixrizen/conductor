@@ -47,6 +47,9 @@ func TestSkillText(t *testing.T) {
 		`"${CONDUCTOR_BIN:-conductor}" task result --summary "what you did" --issue "what is left"`,
 		`"${CONDUCTOR_BIN:-conductor}" task result --verdict needs_changes --finding "major internal/api/users.go:42 the handler ignores the error"`,
 		"A done, a handoff or\nthe end of your turn finishes nothing; only a submitted result does.",
+		// A project manifest's tree (EN1 PR-3): its ports, its preview and
+		// its state directory, in the environment.
+		"CONDUCTOR_PORT_<NAME> holds each of its ports", "CONDUCTOR_PREVIEW_URL its preview", "CONDUCTOR_STATE_DIR (.conductor/state)",
 		"task_context, task_result,\nmessage_send, inbox_read, inbox_ack, task_blocked and task_checkpoint",
 		`"${CONDUCTOR_BIN:-conductor}" task send --to docs "the API is under internal/api/users.go; the handler names are final"`,
 		`"${CONDUCTOR_BIN:-conductor}" task inbox`,
