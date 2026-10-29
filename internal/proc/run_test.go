@@ -287,6 +287,47 @@ func (b *blockedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// gatedWriter keeps what it is given once its gate is open: its first
+// Write waits for it, as a writer whose goroutine has not run yet.
+type gatedWriter struct {
+	gate chan struct{}
+	buf  bytes.Buffer
+}
+
+func (g *gatedWriter) Write(p []byte) (int, error) {
+	<-g.gate
+	return g.buf.Write(p)
+}
+
+// A writer that falls behind, however many chunks the output comes in,
+// loses nothing within its limit once it runs: the head waits for it in
+// memory, at most the limit's bytes, and the tail is kept as it comes. The
+// log is the head, the dropped line and the output's last bytes, whole.
+func TestALogWriterThatFallsBehindLosesNothingWithinItsLimit(t *testing.T) {
+	const limit = 64 << 10
+	w := &gatedWriter{gate: make(chan struct{})}
+	l := newLogSink(w, limit)
+	var out bytes.Buffer
+	for i := range 4096 {
+		chunk := bytes.Repeat([]byte{byte('a' + i%26)}, 64)
+		out.Write(chunk)
+		if n, err := l.Write(chunk); n != len(chunk) || err != nil {
+			t.Fatalf("write %d: %d %v", i, n, err)
+		}
+	}
+	close(w.gate)
+	if why := l.finish(time.Minute); why != "" {
+		t.Fatalf("the log is short: %s", why)
+	}
+	head, tail := logBounds(limit)
+	all := out.Bytes()
+	line := "\n… " + strconv.Itoa(len(all)-int(head)-int(tail)) + " bytes dropped …\n"
+	want := string(all[:head]) + line + string(all[len(all)-int(tail):])
+	if got := w.buf.String(); got != want || len(got) > limit {
+		t.Fatalf("a log of %d bytes, want %d of a limit of %d", len(got), len(want), limit)
+	}
+}
+
 // A Log writer that blocks holds up neither the process nor Run: the run
 // ends with the log cut and says so.
 func TestRunLeavesAStalledLogWriterBehind(t *testing.T) {
