@@ -257,10 +257,6 @@ const (
 	EdgeTombstone = "tombstone"
 )
 
-// MaxParentDepth is how long a parent chain may be, in tickets, from the
-// deepest ticket of a subtree to the root.
-const MaxParentDepth = 8
-
 // EdgeChange is one source change of the edges an invariant spans, as
 // Reconcile replays them: its identity and place in the one order (At,
 // Actor, OpID, N), its Kind, its Op (set for a parent or a tombstone,

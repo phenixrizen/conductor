@@ -2,7 +2,6 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -24,7 +23,7 @@ func (s *Store) AddPerson(ctx context.Context, op Op, name string) (Receipt, err
 		Name string `json:"name"`
 	}{name}
 	return s.Apply(ctx, op, "person.add", args, func(t *tx) error {
-		if err := checkName("name", name, MaxPersonName); err != nil {
+		if err := checkField("person.name", "name", name); err != nil {
 			return err
 		}
 		var held int
@@ -37,12 +36,12 @@ func (s *Store) AddPerson(ctx context.Context, op Op, name string) (Receipt, err
 		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO people (name, created_at) VALUES (?, ?)", name, stamp(t.now)); err != nil {
 			return err
 		}
-		value, err := json.Marshal(Person{Name: name, CreatedAt: t.now})
+		value, err := encodeValue(Person{Name: name, CreatedAt: t.now})
 		if err != nil {
 			return err
 		}
 		t.created(name, "")
-		return t.record(ChangeRow{Entity: EntityPerson, EntityID: name, Op: OpCreate, Value: string(value)})
+		return t.record(ChangeRow{Entity: EntityPerson, EntityID: name, Op: OpCreate, Value: value})
 	})
 }
 

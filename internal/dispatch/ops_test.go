@@ -587,11 +587,25 @@ func TestABadOperationIsAnError(t *testing.T) {
 	if _, err := s.AddPerson(ctx, Op{Actor: "", ID: "a1"}, "Alice"); !errors.Is(err, ErrBadActor) {
 		t.Fatalf("no actor: %v", err)
 	}
+	// The display name an operation records is a name: at most MaxByName
+	// characters, no control character; none at all is the actor alone.
+	for _, by := range []string{strings.Repeat("é", MaxByName+1), "a\nb", "a\x00b", "\xff"} {
+		if _, err := s.AddPerson(ctx, Op{Actor: "test", ID: "b1", By: by}, "Alice"); !errors.Is(err, ErrBadBy) {
+			t.Fatalf("by %q: %v", by, err)
+		}
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM ops"); n != 0 {
+		t.Fatalf("%d receipts of refused operations", n)
+	}
+	for i, by := range []string{"", strings.Repeat("é", MaxByName)} {
+		rc, err := s.AddPerson(ctx, Op{Actor: "test", ID: opID("by", i), By: by}, opID("Person ", i))
+		want(t, rc, err, StatusDone, "")
+	}
 	for _, id := range []string{"a", strings.Repeat("a", 32), "A.b_c~d-e", "01"} {
 		rc, err := s.AddPerson(ctx, Op{Actor: "test", ID: id}, "Person "+id)
 		want(t, rc, err, StatusDone, "")
 	}
-	if n := count(t, s, "SELECT COUNT(*) FROM ops"); n != 4 {
+	if n := count(t, s, "SELECT COUNT(*) FROM ops"); n != 6 {
 		t.Fatalf("%d receipts", n)
 	}
 }

@@ -34,6 +34,7 @@ var OpIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
 var (
 	ErrBadOpID  = errors.New("dispatch: an operation id is 1 to 32 letters, digits, '.', '_', '~' or '-'")
 	ErrBadActor = errors.New("dispatch: an operation names its actor")
+	ErrBadBy    = fmt.Errorf("dispatch: an operation's display name is at most %d characters, with no control character", MaxByName)
 )
 
 // Op is what a client sends with a change: who asks (Actor: the admin's
@@ -56,7 +57,9 @@ const (
 )
 
 // The refusals a failed receipt names: the store's rules. read_only and
-// op_conflict are answered without a row, the rest kept.
+// op_conflict are answered without a row, the rest kept. key_taken is a
+// project's create naming a key another project holds (the API's 409
+// key_taken).
 const (
 	RefusalNotFound      = "not_found"
 	RefusalInvalid       = "invalid"
@@ -69,6 +72,7 @@ const (
 	RefusalArchived      = "archived"
 	RefusalRunLinked     = "run_linked"
 	RefusalExpired       = "expired"
+	RefusalKeyTaken      = "key_taken"
 )
 
 // Receipt is what an operation gets and what the store keeps under
@@ -91,16 +95,6 @@ type Receipt struct {
 	Refusal string   `json:"refusal,omitempty"`
 	Missing []string `json:"missing,omitempty"`
 }
-
-// MaxReceipt bounds a receipt's JSON, a repeat's answer included;
-// maxReceiptWords a refusal's words in it, in characters, which are cut
-// further by their size as JSON (fitWords) when the receipt would not
-// fit, so a refusal that quotes its input, or a read-only store's why,
-// stays inside.
-const (
-	MaxReceipt      = 4 << 10
-	maxReceiptWords = 1000
-)
 
 // Refusal is an operation refused by the store's rules: the code a
 // failed receipt names, the words, and for close_policy what is missing.
@@ -170,15 +164,6 @@ type ChangeRow struct {
 	OpID      string    `json:"opId"`
 	N         int       `json:"n"`
 }
-
-// MaxChangeValue bounds a change row's value and prior: a text value
-// meets it by its field's bound, a structured one by its shape.
-const MaxChangeValue = 64 << 10
-
-// maxReceipts is how many receipts the store keeps: the newest, prune
-// dropping the rest. A resend older than that is answered by the changes
-// log, which keeps the operation's identity for good.
-const maxReceipts = 20000
 
 // revTables names the table of each entity with a rev column, and
 // whether the row has an updated_at to move with it.
@@ -372,6 +357,9 @@ func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, chang
 	}
 	if op.Actor == "" {
 		return Receipt{}, ErrBadActor
+	}
+	if checkField("op.by", "by", op.By) != nil {
+		return Receipt{}, ErrBadBy
 	}
 	fp, err := fingerprint(intent, args)
 	if err != nil {
