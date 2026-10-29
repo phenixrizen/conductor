@@ -518,6 +518,70 @@ export interface RunAttempt {
   submitted?: SubmittedResult
   /** The attempt's last checkpoint (#334, row 10). */
   checkpoint?: AttemptCheckpoint
+  /** The attempt's receipts (its trees' steps and its checks, by when each started), in a task's own read alone (`runTask`). */
+  steps?: RunStep[]
+}
+
+/**
+ * A receipt (EN1, project manifests): a step of a manifest's phase in one of an attempt's trees, a task's check, or one of the run's
+ * prerequisites, as the ledger keeps it but for its log, whose size and SHA-256 it says (`stepLog`, `prerequisiteLog`).
+ */
+export interface RunStep {
+  phase: 'check' | 'setup' | 'service' | 'ready' | 'verify' | 'cleanup' | 'prerequisite'
+  id: string
+  /** The k-th run of this id on the attempt (or, for a prerequisite, in the run), whatever its phase. */
+  k: number
+  state: 'started' | 'running' | 'finished' | 'interrupted'
+  argv?: string[]
+  /** A readiness probe over HTTP's expanded URL: its command, with no argv. */
+  url?: string
+  /** Where it ran: the tree's working directory, or the crew's for a prerequisite. */
+  dir?: string
+  /** The commit it ran at. */
+  subject?: string
+  /** The manifest that ran it, `crew:<revision>` or `file:<blob>`; absent for a task's check. */
+  manifest?: string
+  /** Once it ended. */
+  exit?: number
+  timedOut?: boolean
+  /** Milliseconds, once it ended. */
+  duration?: number
+  /** The words of its failure. */
+  error?: string
+  ports?: Record<string, number>
+  tries: number
+  startedAt: string
+  finishedAt?: string
+  logBytes: number
+  /** The log was not kept (the run's logs were at their bound): its route answers 410; the hash stays. */
+  logDropped?: boolean
+  logSha256?: string
+}
+
+/** A prerequisite of a run as it goes (`RunInfo.manifest`): pending, running while its generation runs, passed, failed or interrupted. */
+export interface RunPrerequisite {
+  id: string
+  /** Its latest run's k, absent before its first. */
+  k?: number
+  state: 'pending' | 'running' | 'passed' | 'failed' | 'interrupted'
+  exit?: number
+  error?: string
+  /** Milliseconds. */
+  duration?: number
+}
+
+/** A run's project manifest: the crew's at its revision, or `conductor.manifest.json` at the run's base (its blob). */
+export interface RunManifest {
+  source: 'crew' | 'file'
+  revision?: number
+  digest?: string
+  prerequisites?: RunPrerequisite[]
+}
+
+/** A receipt's log as `stepLog` and `prerequisiteLog` read it: its text and the SHA-256 the server sent beside it. */
+export interface StepLog {
+  text: string
+  sha256: string
 }
 
 /** A finding of a review. */
@@ -583,6 +647,12 @@ export interface RunInfo {
   managed?: { revision: number }
   /** A managed run whose dispatch is paused: attempts in flight go on, none starts. */
   paused?: boolean
+  /** Why the run paused itself (a project manifest's step that failed, the ledger), absent for a person's pause. */
+  pausedWhy?: string
+  /** A managed run's project manifest and how its prerequisites go; absent without one. */
+  manifest?: RunManifest
+  /** The run's trees being ended: an outcome means every attempt is closed, not that every tree has ended. */
+  cleaning?: number
   /** A managed run's outcome once every task is terminal: it is `finished` then, its idle sessions kept for a look. */
   outcome?: 'succeeded' | 'failed' | 'cancelled'
   /** A managed run's tasks, in the crew's order. */
@@ -656,7 +726,10 @@ export interface GitCheck {
 }
 
 export function useSessions() {
-  const { request } = useApi()
+  const { request, requestText } = useApi()
+  /** A receipt's log, with the SHA-256 the server sent in `X-Conductor-Log-SHA256`. */
+  const readLog = (path: string): Promise<StepLog> =>
+    requestText(path).then((r) => ({ text: r.text, sha256: r.headers.get('X-Conductor-Log-SHA256') ?? '' }))
 
   return {
     list: () => request<{ sessions: SessionInfo[] }>('/api/sessions').then((r) => r.sessions ?? []),
@@ -759,8 +832,18 @@ export function useSessions() {
      */
     broadcastRun: (runId: string, body: { text: string; members?: string[]; byName?: string }) =>
       request<BroadcastResult>(`/api/runs/${encodeURIComponent(runId)}/broadcast`, { method: 'POST', body }),
-    /** A managed run's task with every attempt, each with what it submitted (#334). */
+    /** A managed run's task with every attempt, each with what it submitted (#334) and its receipts; a run the server let go answers from its ledger. */
     runTask: (runId: string, taskId: string) => request<{ task: RunTask; attempts: RunAttempt[] }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}`),
+    /** An attempt's receipts, by when each started (EN1). */
+    runSteps: (runId: string, taskId: string, n: number) =>
+      request<{ steps: RunStep[] }>(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/attempts/${n}/steps`).then((r) => r.steps ?? []),
+    /** A run's prerequisites' receipts, by when each started. */
+    runPrerequisites: (runId: string) => request<{ steps: RunStep[] }>(`/api/runs/${encodeURIComponent(runId)}/prerequisites`).then((r) => r.steps ?? []),
+    /** One receipt's log of an attempt (at most 1 MiB) with its SHA-256; 410 `log_dropped` when the run's logs were at their bound. */
+    stepLog: (runId: string, taskId: string, n: number, id: string, k: number) =>
+      readLog(`/api/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/attempts/${n}/steps/${encodeURIComponent(id)}/${k}/log`),
+    /** One prerequisite receipt's log with its SHA-256. */
+    prerequisiteLog: (runId: string, id: string, k: number) => readLog(`/api/runs/${encodeURIComponent(runId)}/prerequisites/${encodeURIComponent(id)}/${k}/log`),
     /**
      * Pauses or resumes a managed run's dispatch, as a command with a receipt (docs/protocol.md, "Commands with receipts"): the same
      * `commandId` again answers with the same receipt; `expectedRevision` refuses the command once the run moved on (409 `stale_revision`).
