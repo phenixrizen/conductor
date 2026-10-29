@@ -224,7 +224,17 @@ var schema = []string{
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (actor, id)
 	)`,
-	`CREATE VIRTUAL TABLE tickets_fts USING fts5(key, title, description, acceptance, comments, tokenize = 'unicode61 remove_diacritics 2')`,
+	// The search index (query.go), with two options of FTS5's beside the
+	// plan's tokenizer. prefix keeps an index of every term's first one and
+	// first two characters: a search's last term is a prefix, and FTS5
+	// otherwise merges the list of every term a short prefix begins, which
+	// for the first letter typed in a search box is hundreds of terms
+	// (BenchmarkList). content = '' with contentless_delete keeps no copy of
+	// the text the tables hold already, so the rewrite of an entry
+	// (indexTicket) neither reads its old text back to unindex it nor
+	// writes a copy of the new, which pays for the prefix indexes'
+	// postings (BenchmarkCommentEdit). The store reads only rowids from it.
+	`CREATE VIRTUAL TABLE tickets_fts USING fts5(key, title, description, acceptance, comments, tokenize = 'unicode61 remove_diacritics 2', prefix = '1 2', content = '', contentless_delete = 1)`,
 	`CREATE INDEX tickets_project_status_updated ON tickets (project_id, status, updated_at)`,
 	`CREATE INDEX tickets_project_priority ON tickets (project_id, priority)`,
 	`CREATE INDEX tickets_milestone ON tickets (milestone_id)`,

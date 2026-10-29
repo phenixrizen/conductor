@@ -167,10 +167,32 @@ const (
 	benchSearchTarget   = 50 * time.Millisecond
 )
 
+// mostBegun is the prefix of n letters that the most words of the
+// vocabulary begin with: a search box's first keystrokes at their
+// slowest, since a search's last term is a prefix and FTS5 reads the list
+// of every term it begins, or its prefix index's list of them all.
+func mostBegun(words []string, n int) string {
+	counts := map[string]int{}
+	best := ""
+	for _, w := range words {
+		p := w[:n]
+		counts[p]++
+		if counts[p] > counts[best] {
+			best = p
+		}
+	}
+	return best
+}
+
 // BenchmarkList reads pages of 10,000 tickets in three projects: run with
 // go test -run '^$' -bench BenchmarkList -benchmem ./internal/dispatch/.
-// "filtered" and "search" are the plan's two targets; the others show
-// the list's other common pages.
+// "filtered" and "search" are the plan's two targets, at a list's default
+// page and at the list view's page of MaxListLimit; the searches of one
+// letter and of two are a search box's first keystrokes, held to the
+// full-text target as the search of every project is. The others show
+// the list's other common pages, a search of one letter of every project
+// among them: no page sends one, since a search box searches its project
+// and the CLI and a saved view of every project send whole words.
 func BenchmarkList(b *testing.B) {
 	s, err := Open(b.TempDir())
 	if err != nil {
@@ -186,17 +208,24 @@ func BenchmarkList(b *testing.B) {
 	// Two words of the search, one common and one less so, the last typed
 	// halfway: what a person looking for a ticket types.
 	search := words[3] + " " + words[40][:len(words[40])-1]
+	letter, letters := mostBegun(words, 1), mostBegun(words, 2)
+	filtered := Filter{Status: []string{TicketReady, TicketInProgress, TicketInReview}, Labels: []string{labels[0].ID, labels[1].ID},
+		Sort: SortPriority, Desc: true}
 	for _, c := range []struct {
 		name   string
 		q      Query
 		target time.Duration
 	}{
-		{"filtered", Query{Project: "BENA", Filter: Filter{Status: []string{TicketReady, TicketInProgress, TicketInReview}, Labels: []string{labels[0].ID, labels[1].ID},
-			Sort: SortPriority, Desc: true}}, benchFilteredTarget},
+		{"filtered", Query{Project: "BENA", Filter: filtered}, benchFilteredTarget},
+		{"filtered-200", Query{Project: "BENA", Filter: filtered, Limit: MaxListLimit}, benchFilteredTarget},
 		{"search", Query{Project: "BENA", Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}}, benchSearchTarget},
+		{"search-200", Query{Project: "BENA", Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
+		{"search-one-letter-200", Query{Project: "BENA", Filter: Filter{Q: letter, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
+		{"search-two-letters-200", Query{Project: "BENA", Filter: Filter{Q: letters, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
 		{"project", Query{Project: "BENA", Filter: Filter{Sort: SortUpdated, Desc: true}}, 0},
 		{"every-project-by-title", Query{Filter: Filter{Sort: SortTitle}, Limit: MaxListLimit}, 0},
-		{"search-every-project", Query{Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}}, 0},
+		{"search-every-project", Query{Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}}, benchSearchTarget},
+		{"search-one-letter-every-project-200", Query{Filter: Filter{Q: letter, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, 0},
 		{"assignee-by-milestone", Query{Project: "BENB", Filter: Filter{Assignees: []string{"agent:claude"}, Sort: SortMilestone}}, 0},
 	} {
 		b.Run(c.name, func(b *testing.B) {
@@ -220,6 +249,83 @@ func BenchmarkList(b *testing.B) {
 				if per > c.target {
 					b.Logf("%s: %v a page, past the target of %v", c.name, per, c.target)
 				}
+			}
+		})
+	}
+}
+
+// BenchmarkCommentEdit edits a comment of a ticket of n comments, as
+// comment.edit does: the operation rewrites the ticket's search entry
+// whole (indexTicket), the body of every live comment in it, while it
+// holds the store's one connection, so its time grows with the ticket's
+// comment text. A comment's add and delete rewrite the entry the same
+// way, and so does an edit of the ticket's title, description or
+// acceptance criteria. "comments-3" is a ticket of the seed's largest
+// kind; the others hold comments as long as a comment may be, up to the
+// bound of MaxComments. Run with
+// go test -run '^$' -bench BenchmarkCommentEdit -benchtime 3x ./internal/dispatch/.
+func BenchmarkCommentEdit(b *testing.B) {
+	r := rand.New(rand.NewSource(1))
+	words := benchWords(r, 4000)
+	z := rand.NewZipf(r, 1.07, 2, uint64(len(words)-1))
+	// body is the vocabulary's words, as many as fit in size bytes.
+	body := func(size int) string {
+		var sb strings.Builder
+		for {
+			w := words[z.Uint64()]
+			if sb.Len()+len(w)+1 > size {
+				return sb.String()
+			}
+			sb.WriteString(w)
+			sb.WriteByte(' ')
+		}
+	}
+	for _, c := range []struct{ n, size int }{{3, 400}, {200, MaxCommentBody}, {1000, MaxCommentBody}, {MaxComments - 1, MaxCommentBody}} {
+		b.Run(fmt.Sprintf("comments-%d", c.n), func(b *testing.B) {
+			s, err := Open(b.TempDir())
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() { s.Close() })
+			ctx := context.Background()
+			if rc, err := s.CreateProject(ctx, testOp("p"), NewProject{Key: "BEN", Name: "BEN"}); err != nil || rc.Status != StatusDone {
+				b.Fatalf("the project: %+v %v", rc, err)
+			}
+			rc, err := s.CreateTicket(ctx, testOp("t"), NewTicket{Project: "BEN", Title: "Many comments", Description: body(1500)})
+			if err != nil || rc.Status != StatusDone {
+				b.Fatalf("the ticket: %+v %v", rc, err)
+			}
+			id, key := rc.ID, rc.Key
+			// The comments in one transaction, as a restore would leave them,
+			// and the entry as an operation writes it.
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer tx.Rollback()
+			var last string
+			at := time.Now()
+			for i := range c.n {
+				last = newID()
+				if _, err := tx.ExecContext(ctx, "INSERT INTO comments (id, ticket_id, author, by, body, created_at, rev) VALUES (?, ?, 'admin', 'Bench', ?, ?, 1)",
+					last, id, body(c.size), stamp(at.Add(time.Duration(i)*time.Millisecond))); err != nil {
+					b.Fatal(err)
+				}
+			}
+			if err := indexTicket(ctx, tx, id); err != nil {
+				b.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				b.Fatal(err)
+			}
+			bodies := [2]string{body(c.size), body(c.size)}
+			i := 0
+			for b.Loop() {
+				rc, err := s.EditComment(ctx, testOp(fmt.Sprintf("e%d", i)), key, last, bodies[i%2])
+				if err != nil || rc.Status != StatusDone {
+					b.Fatalf("the edit: %+v %v", rc, err)
+				}
+				i++
 			}
 		})
 	}

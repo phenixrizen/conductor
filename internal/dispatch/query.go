@@ -396,8 +396,21 @@ func (q Query) plan() (p listPlan, none bool, err error) {
 	in := func(column string, n int) string {
 		return column + " IN (" + strings.TrimSuffix(strings.Repeat("?, ", n), ", ") + ")"
 	}
-	if !q.Deleted {
+	switch {
+	case q.Deleted:
+	case q.Project != "":
 		cond("t.deleted_at = ''")
+	default:
+		// A list of every project keeps its tombstones out without the
+		// index of deleted_at (SQLite's unary plus keeps a term from
+		// choosing an index). That index's one value names almost every
+		// ticket, and through it the planner read every live ticket's row,
+		// wide with its description. Without it, the planner reads by
+		// another term (a parent's index or an owner's, the rowids a search
+		// matched), which names fewer rows, or reads tickets_list's
+		// entries, which hold every column a list filters or sorts by but
+		// the title (BenchmarkList).
+		cond("+t.deleted_at = ''")
 	}
 	if q.Project != "" {
 		cond("t.project_id = (SELECT id FROM projects WHERE key = ?)", q.Project)
