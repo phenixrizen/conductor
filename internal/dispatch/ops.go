@@ -92,10 +92,11 @@ type Receipt struct {
 	Missing []string `json:"missing,omitempty"`
 }
 
-// MaxReceipt bounds a receipt's JSON; maxReceiptWords a refusal's words
-// in it, in characters, which are cut further by their size as JSON
-// (fitWords) when the receipt would not fit, so a refusal that quotes its
-// input stays inside.
+// MaxReceipt bounds a receipt's JSON, a repeat's answer included;
+// maxReceiptWords a refusal's words in it, in characters, which are cut
+// further by their size as JSON (fitWords) when the receipt would not
+// fit, so a refusal that quotes its input, or a read-only store's why,
+// stays inside.
 const (
 	MaxReceipt      = 4 << 10
 	maxReceiptWords = 1000
@@ -394,7 +395,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		return Receipt{}, nil, ErrClosed
 	}
 	if s.readOnly || s.db == nil {
-		return Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: RefusalReadOnly, Error: words(s.why)}, nil, nil
+		return fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: RefusalReadOnly, Error: words(s.why)}), nil, nil
 	}
 	dbtx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -510,11 +511,13 @@ func words(s string) string {
 
 // fitWords is rc with its words cut further, at a character and marked
 // with "…", to the longest that leaves the receipt within MaxReceipt as
-// JSON: a character's size there is not its count (JSON writes <, >, &,
-// U+2028, U+2029 and a control character as six bytes, and UTF-8 takes up
-// to four), so 1,000 characters can take 6 KiB.
+// JSON with Repeat set, the larger of its two answers (the first, and a
+// repeat's), so both fit: a character's size there is not its count
+// (JSON writes <, >, &, U+2028, U+2029 and a control character as six
+// bytes, and UTF-8 takes up to four), so 1,000 characters can take 6 KiB.
 func fitWords(rc Receipt) Receipt {
 	size := func(rc Receipt) int {
+		rc.Repeat = true
 		b, _ := json.Marshal(rc)
 		return len(b)
 	}

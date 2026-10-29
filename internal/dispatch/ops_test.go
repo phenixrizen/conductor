@@ -634,15 +634,28 @@ func TestAReceiptStaysUnderItsBound(t *testing.T) {
 		if len(body) > MaxReceipt {
 			t.Fatalf("words %d: the receipt is %d bytes", i, len(body))
 		}
-		longer := rc
-		longer.Error = w[:len(cut)+utf8.RuneLen([]rune(w[len(cut):])[0])] + "…"
-		if b, _ := json.Marshal(longer); len(b) <= MaxReceipt {
-			t.Fatalf("words %d were cut shorter than they must be: %d bytes with one more character", i, len(b))
-		}
 		again, err := s.Apply(ctx, op, "test.refuse", nil, func(x *tx) error { return errors.New("not run again") })
 		want(t, again, err, StatusFailed, RefusalClosePolicy)
 		if !again.Repeat || again.Error != rc.Error {
 			t.Fatalf("words %d: the repeat %+v", i, again)
 		}
+		// The repeat's answer, its flag set, is the larger of the two, and
+		// the words are fitted to it, so it stays under the bound too.
+		if b, _ := json.Marshal(again); len(b) > MaxReceipt {
+			t.Fatalf("words %d: the repeat's receipt is %d bytes", i, len(b))
+		}
+		longer := again
+		longer.Error = w[:len(cut)+utf8.RuneLen([]rune(w[len(cut):])[0])] + "…"
+		if b, _ := json.Marshal(longer); len(b) <= MaxReceipt {
+			t.Fatalf("words %d were cut shorter than they must be: %d bytes with one more character", i, len(b))
+		}
+	}
+	// A read-only store's refusal quotes why it is read-only, which may
+	// hold the database's path: its receipt is fitted the same way.
+	ro := &Store{readOnly: true, why: strings.Repeat("<", maxReceiptWords)}
+	rc, err = ro.Apply(ctx, testOp(strings.Repeat("o", 32)), "test.refuse", nil, func(x *tx) error { return errors.New("not run") })
+	want(t, rc, err, StatusFailed, RefusalReadOnly)
+	if b, _ := json.Marshal(rc); len(b) > MaxReceipt || !strings.HasSuffix(rc.Error, "…") {
+		t.Fatalf("the read-only refusal's receipt is %d bytes: %q", len(b), rc.Error)
 	}
 }
