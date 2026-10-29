@@ -583,6 +583,44 @@ func TestAssigneesAndLabelsPastTheirBoundsAreRefused(t *testing.T) {
 	}
 }
 
+// An edit's add list longer than its set's bound is refused before any
+// of its members is looked up or written, as a create's is: whatever the
+// members are, the bound answers, and no per-member work runs under the
+// write lock first.
+func TestAnAddListPastItsBoundIsRefusedBeforeItsMembers(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	pid := newProject(t, s, "CND")
+	oid := newProject(t, s, "OTH")
+	_, key := newTicket(t, s, "CND", "First")
+	// One label of another project among 21: invalid, were the labels
+	// looked up before the list was counted.
+	labels := []string{insertLabel(t, s, oid, "other", false)}
+	for i := range MaxTicketLabels {
+		labels = append(labels, insertLabel(t, s, pid, fmt.Sprintf("l%d", i), false))
+	}
+	rc, err := edit(s, "l21", key, TicketEdit{Add: TicketMembers{Labels: labels}})
+	want(t, rc, err, StatusFailed, RefusalBound)
+	// Nine assignees while every write to the set's table fails: the
+	// refusal comes before the first write, so the edit is refused bound
+	// rather than failed by the database.
+	if _, err := s.db.Exec(`CREATE TRIGGER no_assignee BEFORE INSERT ON ticket_assignees BEGIN SELECT RAISE(ABORT, 'an assignee was written'); END`); err != nil {
+		t.Fatal(err)
+	}
+	var people []string
+	for i := range MaxAssignees + 1 {
+		people = append(people, fmt.Sprintf("person:P%d", i))
+	}
+	rc, err = edit(s, "a9", key, TicketEdit{Add: TicketMembers{Assignees: people}})
+	want(t, rc, err, StatusFailed, RefusalBound)
+	// At its bound the list does reach the writes, and the trigger.
+	if _, err := edit(s, "a8", key, TicketEdit{Add: TicketMembers{Assignees: people[:MaxAssignees]}}); err == nil || !strings.Contains(err.Error(), "an assignee was written") {
+		t.Fatalf("eight assignees, every write failing: %v", err)
+	}
+	if tk := ticketOf(t, s, key); len(tk.Assignees) != 0 || len(tk.Labels) != 0 || tk.Rev != 1 {
+		t.Fatalf("after the refusals: %+v", tk)
+	}
+}
+
 // Whatever actor added a member, a remove can take it away: the add
 // carries its actor in the tag the remove names in its prior. An actor
 // of 64 KiB, which made that prior too large to write, is refused before

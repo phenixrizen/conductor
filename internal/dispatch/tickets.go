@@ -195,10 +195,11 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 // removed; a remove's prior names the tags of the member's adds it
 // removes (the observed-remove rule); an add that leaves its set past its
 // bound is refused, a remove never, so a set past its bound (a merge may
-// leave one) refuses an add and allows a remove. A member both added and
-// removed, or named twice, is invalid; an edit that changes nothing is
-// refused invalid. A deleted ticket is not_found; an archived project
-// refuses it (archived).
+// leave one) refuses an add and allows a remove, and an add list longer
+// than the bound is refused before any of its members is looked up or
+// written. A member both added and removed, or named twice, is invalid;
+// an edit that changes nothing is refused invalid. A deleted ticket is
+// not_found; an archived project refuses it (archived).
 func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -248,6 +249,16 @@ func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit)
 			}
 		}
 		if err := checkMembers(e.Add, e.Remove); err != nil {
+			return err
+		}
+		// An add list longer than its set's bound leaves the set past it,
+		// whatever the set holds (the members it adds are distinct, and
+		// each is a live member after the operation), so it is refused
+		// before any member is looked up or written, as a create's is.
+		if err := checkCount("assignees", len(e.Add.Assignees), MaxAssignees); err != nil {
+			return err
+		}
+		if err := checkCount("labels", len(e.Add.Labels), MaxTicketLabels); err != nil {
 			return err
 		}
 		// The references, after the revision check (ticket).
