@@ -1773,7 +1773,7 @@ its run, and on no other.
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
 | `GET /api/runs/{run}/commands/{command}` | admin | a command's receipt from the managed runs' ledger (#334): `{command: {id, intent, status, receipt?, createdAt}}`, `status` one of `accepted`, `done`, `failed`, `uncertain`; `404 not_found` for a run or command unknown, or one that is not the admin's; `400 invalid_request` for a command id that is not 1 to 32 of letters, digits, `.`, `_`, `~` and `-`. A read: it never acts, so a client that lost a reply looks here before it sends again |
 | `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`); `404 not_found` for an unknown run or task; `400 invalid_request` for an id that is not shaped as one |
-| `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's dispatch (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
+| `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's scheduling (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
 | `POST /api/runs/{run}/tasks/{task}/cancel` | admin | cancel a task: its attempt in flight ends (its session stopped once the cancel is recorded), the task is `cancelled`, what needs it is blocked for good, and the run ends when every task is terminal; body `{commandId, expectedRevision?}`; `200 {receipt}` with the task; `409 task_state` with the receipt for a task already succeeded, failed or cancelled |
 | `POST /api/runs/{run}/tasks/{task}/retry` | admin | allow a failed or cancelled task one more attempt: it is `blocked` or `ready` again (a repair it carries stays), the run open again; `200 {receipt}`; `409 task_state` with the receipt otherwise |
 | `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
@@ -2181,7 +2181,7 @@ dispatch, a session, a line, a check) follows the commit; a run's
 transactions commit in order, each with the state as it was; while one
 commits, the run as read is one change ahead of the ledger, and a commit
 the ledger refuses is undone or, where it cannot be, pauses the run's
-dispatch and says so in the run log. The run's `managed.revision` follows
+scheduling and says so in the run log. The run's `managed.revision` follows
 each commit. A submitted result is kept whole in the attempt's row (its
 summary, issues, verdict and findings), so a review's findings outlive the
 server.
@@ -2229,7 +2229,7 @@ answer and on every repeat), `task` the task as it stands after the command
 (`{id, state, reason?, attempts, result?: {attempt, commit?}}`, the reason
 at most 2,000 characters; the run has the rest, so a receipt always fits
 what the ledger keeps),
-`paused` whether the run's dispatch is, and `revision` the run's ledger
+`paused` whether the run's scheduling is, and `revision` the run's ledger
 revision after it. The same id sent again with the same content answers with
 the same receipt and `repeat: true`, never a second change, also for a
 failed one; the same id with other content is `409 command_conflict`.
