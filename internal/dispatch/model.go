@@ -79,7 +79,8 @@ const (
 	MaxMilestoneDescription = 4 << 10
 	// MaxMilestones bounds a project's live milestones.
 	MaxMilestones = 100
-	// MaxRelations bounds a ticket's live relations.
+	// MaxRelations bounds a ticket's live relations whose other end is
+	// live: one to a deleted ticket is inactive and counts for nothing.
 	MaxRelations = 100
 	// MaxCommentBody bounds a comment's body (Markdown), in bytes.
 	MaxCommentBody = 16 << 10

@@ -267,7 +267,11 @@ func TestBlockedIsComputedFromLiveBlockers(t *testing.T) {
 }
 
 // A ticket holds at most MaxRelations live relations, at either end,
-// whichever end adds the next; a remove is never refused.
+// whichever end adds the next; a remove is never refused. A relation whose
+// other end is deleted is inactive and counts for nothing, so the deleted
+// ticket's place is free; its undelete brings the relation back and may
+// leave the ticket past its bound, refusing its next add and never a
+// remove.
 func TestRelationsPastTheirBoundAreRefused(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
@@ -318,4 +322,45 @@ func TestRelationsPastTheirBoundAreRefused(t *testing.T) {
 	if rs, err := s.Relations(ctx, hub); err != nil || len(rs) != MaxRelations {
 		t.Fatalf("the hub's relations: %d %v", len(rs), err)
 	}
+	// A spoke deleted: its relation stays, inactive, and the hub takes one
+	// more in its place, then refuses the next.
+	rc, err = s.DeleteTicket(ctx, testOp("del"), "CND-1000")
+	want(t, rc, err, StatusDone, "")
+	_, more := newTicket(t, s, "CND", "More")
+	rc, err = relate(s, "while-deleted", hub, RelationRelates, more)
+	want(t, rc, err, StatusDone, "")
+	taken := rc.ID
+	rs, err := s.Relations(ctx, hub)
+	if err != nil || len(rs) != MaxRelations+1 {
+		t.Fatalf("the hub's relations with a spoke deleted: %d %v", len(rs), err)
+	}
+	var inactive []string
+	for _, r := range rs {
+		if !r.Other.DeletedAt.IsZero() {
+			inactive = append(inactive, r.Other.Key)
+		}
+	}
+	if len(inactive) != 1 || inactive[0] != "CND-1000" {
+		t.Fatalf("the inactive relations: %v", inactive)
+	}
+	_, beyond := newTicket(t, s, "CND", "Beyond")
+	rc, err = relate(s, "past3", hub, RelationRelates, beyond)
+	want(t, rc, err, StatusFailed, RefusalBound)
+	if !strings.Contains(rc.Error, fmt.Sprintf("this would make %d", MaxRelations+1)) {
+		t.Fatalf("the refusal's words: %q", rc.Error)
+	}
+	// The spoke's undelete brings its relation back whole: the hub stands
+	// past its bound, which refuses its next add and allows a remove.
+	rc, err = s.UndeleteTicket(ctx, testOp("undel"), "CND-1000")
+	want(t, rc, err, StatusDone, "")
+	if rs, err := s.Relations(ctx, hub); err != nil || len(rs) != MaxRelations+1 {
+		t.Fatalf("the hub's relations after the undelete: %d %v", len(rs), err)
+	}
+	rc, err = relate(s, "past4", hub, RelationRelates, beyond)
+	want(t, rc, err, StatusFailed, RefusalBound)
+	if !strings.Contains(rc.Error, fmt.Sprintf("this would make %d", MaxRelations+2)) {
+		t.Fatalf("the refusal's words past the bound: %q", rc.Error)
+	}
+	rc, err = s.RemoveRelation(ctx, testOp("x2"), hub, taken)
+	want(t, rc, err, StatusDone, "")
 }

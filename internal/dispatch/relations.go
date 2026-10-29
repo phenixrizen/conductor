@@ -48,11 +48,11 @@ type RelatedTicket struct {
 // since a relation of that kind reads the same from either end; a blocks
 // edge that would close a cycle is refused cycle, the walk taking
 // tombstoned tickets' relations as edges, so an undelete never makes one;
-// at most MaxRelations live relations on either ticket (bound). One add
-// row on the first ticket, its value the relation whole; both tickets'
-// revs are bumped. An expected revision is the first ticket's; an
-// archived project refuses it (archived). The receipt carries the
-// relation's id.
+// at most MaxRelations active relations on either ticket (bound), one to
+// a deleted ticket counting for nothing (relationCount). One add row on
+// the first ticket, its value the relation whole; both tickets' revs are
+// bumped. An expected revision is the first ticket's; an archived
+// project refuses it (archived). The receipt carries the relation's id.
 func (s *Store) AddRelation(ctx context.Context, op Op, key, kind, to string) (Receipt, error) {
 	args := struct {
 		Key  string `json:"key"`
@@ -231,12 +231,19 @@ func (t *tx) blocksAlready(blocker, blocked string) (bool, error) {
 	return n > 0, err
 }
 
-// relationCount counts the live relations of the ticket with the id, at
-// either end, a member counted once however many rows a merge left it.
+// relationCount counts the active relations of the live ticket with the
+// id, at either end: a member counted once however many rows a merge left
+// it, and a relation whose other end is deleted not at all, since it is
+// inactive and counts for nothing while that ticket is deleted. The
+// cycle walk still takes it as an edge (blocksAlready). That ticket's
+// undelete brings the relation back whole and may leave this one past its
+// bound, as a merge may, which refuses its next add until it is under it
+// again and never a remove.
 func (t *tx) relationCount(ticketID string) (int, error) {
 	var n int
-	err := t.tx.QueryRowContext(t.ctx, `SELECT COUNT(*) FROM (SELECT DISTINCT from_id, to_id, kind FROM relations
-		WHERE (from_id = ? OR to_id = ?) AND deleted_at = '')`, ticketID, ticketID).Scan(&n)
+	err := t.tx.QueryRowContext(t.ctx, `SELECT COUNT(*) FROM (SELECT DISTINCT r.from_id, r.to_id, r.kind FROM relations r
+		JOIN tickets src ON src.id = r.from_id JOIN tickets dst ON dst.id = r.to_id
+		WHERE (r.from_id = ? OR r.to_id = ?) AND r.deleted_at = '' AND src.deleted_at = '' AND dst.deleted_at = '')`, ticketID, ticketID).Scan(&n)
 	return n, err
 }
 
