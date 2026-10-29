@@ -285,3 +285,128 @@ func (t *tx) project(key string) (Project, error) {
 	}
 	return p, err
 }
+
+// ProjectView is a project as its page reads it, from one read
+// transaction (Project): its row, its live labels by name, its live
+// milestones by target, and the live saved views its pages offer (its
+// own and every project's), each view's query the JSON it is.
+type ProjectView struct {
+	Project    Project     `json:"project"`
+	Labels     []Label     `json:"labels"`
+	Milestones []Milestone `json:"milestones"`
+	Views      []View      `json:"views"`
+}
+
+// Project reads the project with the key, archived or not, with its
+// labels, milestones and views (ProjectView), in one read transaction.
+// ErrNotFound when there is no such project.
+func (s *Store) Project(ctx context.Context, key string) (ProjectView, error) {
+	var v ProjectView
+	err := s.read(ctx, func(q queryer) error {
+		p, err := projectByKey(ctx, q, key)
+		if isNoRows(err) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		v.Project = p
+		if v.Labels, err = labelsOf(ctx, q, p.ID); err != nil {
+			return err
+		}
+		if v.Milestones, err = milestonesOf(ctx, q, p.ID); err != nil {
+			return err
+		}
+		v.Views, err = projectViews(ctx, q, p.ID)
+		return err
+	})
+	if err != nil {
+		return ProjectView{}, err
+	}
+	return v, nil
+}
+
+// ProjectSummary is a project as the projects page lists it: without its
+// description, folder, tracker URL and close policy, which its read
+// carries, and with how many of its live tickets are open (neither done
+// nor cancelled) and how many done; a cancelled ticket counts in neither.
+type ProjectSummary struct {
+	ID         string    `json:"id"`
+	Key        string    `json:"key"`
+	Name       string    `json:"name"`
+	Tracker    string    `json:"tracker"`
+	ArchivedAt time.Time `json:"archivedAt,omitzero"`
+	Open       int       `json:"open"`
+	Done       int       `json:"done"`
+	Rev        int64     `json:"rev"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// ProjectPage is a page of the projects, and Next, the cursor of the
+// page after it, "" on the last.
+type ProjectPage struct {
+	Projects []ProjectSummary `json:"projects"`
+	Next     string           `json:"next,omitempty"`
+}
+
+// projectsSort is the sort a cursor of the projects names.
+const projectsSort = "projects"
+
+// Projects reads a page of the projects by key, with their counts
+// (ProjectSummary), in one statement: the archived ones among them only
+// when archived is set; at most limit (MaxProjectPage when 0, at most
+// MaxProjectPage), after the page whose Next is next ("" for the first
+// page). ErrBadQuery for a limit or a cursor out of range.
+func (s *Store) Projects(ctx context.Context, archived bool, limit int, next string) (ProjectPage, error) {
+	if limit == 0 {
+		limit = MaxProjectPage
+	}
+	if limit < 1 || limit > MaxProjectPage {
+		return ProjectPage{}, badQuery("a page is 1 to %d projects, not %d", MaxProjectPage, limit)
+	}
+	after := ""
+	if next != "" {
+		c, err := decodeCursor(next)
+		if err != nil {
+			return ProjectPage{}, err
+		}
+		key, ok := "", len(c.Keys) == 1 && c.ID == "" && !c.Desc
+		if ok {
+			key, ok = c.Keys[0].(string)
+		}
+		if c.Sort != projectsSort || !ok || !ValidKey(key) {
+			return ProjectPage{}, badQuery("the cursor is not a page of the projects")
+		}
+		after = key
+	}
+	page := ProjectPage{Projects: []ProjectSummary{}}
+	err := s.read(ctx, func(q queryer) error {
+		rows, err := q.QueryContext(ctx, `SELECT p.id, p.key, p.name, p.tracker, p.archived_at, p.rev, p.updated_at,
+				(SELECT COUNT(*) FROM tickets t WHERE t.project_id = p.id AND t.deleted_at = '' AND t.status NOT IN (?, ?)),
+				(SELECT COUNT(*) FROM tickets t WHERE t.project_id = p.id AND t.deleted_at = '' AND t.status = ?)
+			FROM projects p WHERE (? OR p.archived_at = '') AND p.key > ? ORDER BY p.key LIMIT ?`,
+			TicketDone, TicketCancelled, TicketDone, archived, after, limit+1)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ps ProjectSummary
+			var archivedAt, updated string
+			if err := rows.Scan(&ps.ID, &ps.Key, &ps.Name, &ps.Tracker, &archivedAt, &ps.Rev, &updated, &ps.Open, &ps.Done); err != nil {
+				return err
+			}
+			if len(page.Projects) == limit {
+				page.Next = encodeCursor(cursor{Sort: projectsSort, Keys: []any{page.Projects[limit-1].Key}})
+				break
+			}
+			ps.ArchivedAt, ps.UpdatedAt = unstamp(archivedAt), unstamp(updated)
+			page.Projects = append(page.Projects, ps)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return ProjectPage{}, err
+	}
+	return page, nil
+}

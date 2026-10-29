@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -885,5 +886,307 @@ func TestEveryWriteOnADeletedTicketIsNotFound(t *testing.T) {
 	for i, w := range writes {
 		rc, err := w(opID("undeleted", i))
 		want(t, rc, err, StatusDone, "")
+	}
+}
+
+func TestTheTicketReadIsWhole(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	rc, err := s.CreateLabel(ctx, testOp("l1"), "CND", NewLabel{Name: "api", Color: "blue"})
+	api := mustDone(t, "label", rc, err).ID
+	rc, err = s.CreateMilestone(ctx, testOp("m1"), "CND", NewMilestone{Name: "Beta", Target: "2026-12-01"})
+	beta := mustDone(t, "milestone", rc, err).ID
+	_, parent := newTicket(t, s, "CND", "The parent")                                                                                   // CND-1
+	_, key := makeTicket(t, s, NewTicket{Project: "CND", Title: "The ticket", Description: "What it is", Acceptance: "When it is done", // CND-2
+		Priority: 3, Horizon: HorizonNow, Owner: "Alice", Assignees: []string{"person:Bob", "agent:claude"}, Labels: []string{api}, Milestone: beta, Parent: parent})
+	// 55 children, the second deleted: 50 of the 54 live ones read, by
+	// number, and the count of all.
+	for i := range 55 {
+		makeTicket(t, s, NewTicket{Project: "CND", Title: fmt.Sprintf("Child %d", i+1), Parent: key}) // CND-3 to CND-57
+	}
+	rc, err = s.DeleteTicket(ctx, testOp("d4"), "CND-4")
+	mustDone(t, "delete a child", rc, err)
+	// It blocks CND-58; CND-59 blocks it; it relates to CND-60, deleted.
+	for _, title := range []string{"Blocked by it", "Its blocker", "Related"} {
+		newTicket(t, s, "CND", title)
+	}
+	for i, r := range [][3]string{{key, RelationBlocks, "CND-58"}, {"CND-59", RelationBlocks, key}, {key, RelationRelates, "CND-60"}} {
+		rc, err := s.AddRelation(ctx, testOp(opID("r", i)), r[0], r[1], r[2])
+		mustDone(t, "relation", rc, err)
+	}
+	rc, err = s.DeleteTicket(ctx, testOp("d60"), "CND-60")
+	mustDone(t, "delete CND-60", rc, err)
+	rc, err = s.AddLink(ctx, testOp("k1"), key, NewLink{Kind: LinkDelivery, URL: "https://example.com/pull/1"})
+	mustDone(t, "link", rc, err)
+	// Attachments come with their own change; a live row and a tombstone,
+	// written as it will write them.
+	tid := ticketOf(t, s, key).ID
+	now := stamp(time.Now())
+	for i, deleted := range []string{"", now} {
+		if _, err := s.db.Exec("INSERT INTO attachments (id, ticket_id, name, size, sha256, content_type, created_at, created_by, deleted_at) VALUES (?, ?, ?, 5, ?, 'text/plain', ?, 'Tester', ?)",
+			newID(), tid, fmt.Sprintf("file%d.txt", i), strings.Repeat("ab", 32), now, deleted); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 60 comments, the 59th deleted: the last 50 read, numbered 11 to 60,
+	// the tombstone among them.
+	var c59 string
+	for i := range 60 {
+		rc, err := s.AddComment(ctx, testOp(opID("c", i)), key, fmt.Sprintf("Comment %d", i+1))
+		if id := mustDone(t, "comment", rc, err).ID; i == 58 {
+			c59 = id
+		}
+	}
+	rc, err = s.DeleteComment(ctx, testOp("dc"), key, c59)
+	mustDone(t, "delete a comment", rc, err)
+
+	v, err := s.Ticket(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Key != key || v.Title != "The ticket" || v.Description != "What it is" || v.Acceptance != "When it is done" || v.Owner != "Alice" ||
+		v.Priority != 3 || v.Horizon != HorizonNow || v.MilestoneID != beta || v.Rev != ticketOf(t, s, key).Rev {
+		t.Fatalf("the row: %+v", v.Ticket)
+	}
+	if strings.Join(v.Assignees, " ") != "agent:claude person:Bob" || strings.Join(v.Labels, " ") != api {
+		t.Fatalf("the sets: %v %v", v.Assignees, v.Labels)
+	}
+	if v.Parent == nil || v.Parent.Key != parent || v.Parent.Title != "The parent" || v.Parent.Status != TicketBacklog || !v.Parent.DeletedAt.IsZero() {
+		t.Fatalf("the parent: %+v", v.Parent)
+	}
+	if v.Children.Total != 54 || len(v.Children.Tickets) != MaxTicketChildren || v.Children.Tickets[0].Key != "CND-3" || v.Children.Tickets[1].Key != "CND-5" ||
+		v.Children.Tickets[MaxTicketChildren-1].Key != "CND-53" {
+		t.Fatalf("the children: %d of %d, %+v", len(v.Children.Tickets), v.Children.Total, v.Children.Tickets[:2])
+	}
+	var rels []string
+	for _, r := range v.Relations {
+		rels = append(rels, fmt.Sprintf("%s:%s:deleted=%v", r.Kind, r.Other.Key, !r.Other.DeletedAt.IsZero()))
+	}
+	if strings.Join(rels, " ") != "blocks:CND-58:deleted=false blocks:CND-59:deleted=false relates:CND-60:deleted=true" {
+		t.Fatalf("the relations: %v", rels)
+	}
+	if !v.Blocked {
+		t.Fatal("not blocked by CND-59")
+	}
+	if len(v.Links) != 1 || v.Links[0].Kind != LinkDelivery || len(v.Attachments) != 1 || v.Attachments[0].Name != "file0.txt" {
+		t.Fatalf("the links %+v and attachments %+v", v.Links, v.Attachments)
+	}
+	if len(v.Comments) != MaxTicketComments || v.Comments[0].N != 11 || v.Comments[0].Body != "Comment 11" || v.Comments[49].N != 60 ||
+		v.Comments[48].ID != c59 || v.Comments[48].DeletedAt.IsZero() {
+		t.Fatalf("the comments: %d, first %+v", len(v.Comments), v.Comments[0])
+	}
+	if strings.Join(v.Close.Requires, " ") != RequireAcceptance || strings.Join(v.Close.Missing, " ") != RequireAcceptance || !v.Close.Met.Delivery {
+		t.Fatalf("the close state: %+v", v.Close)
+	}
+	// A deleted parent reads as such; a deleted ticket reads whole but its
+	// children, whose references to it are inactive (they keep it).
+	rc, err = s.DeleteTicket(ctx, testOp("dp"), parent)
+	mustDone(t, "delete the parent", rc, err)
+	if v, err = s.Ticket(ctx, key); err != nil || v.Parent == nil || v.Parent.DeletedAt.IsZero() {
+		t.Fatalf("a deleted parent: %+v %v", v.Parent, err)
+	}
+	rc, err = s.DeleteTicket(ctx, testOp("dk"), key)
+	mustDone(t, "delete the ticket", rc, err)
+	if v, err = s.Ticket(ctx, key); err != nil || v.DeletedAt.IsZero() || v.Children.Total != 0 || len(v.Children.Tickets) != 0 || len(v.Comments) != MaxTicketComments {
+		t.Fatalf("a deleted ticket: %+v %v", v.Children, err)
+	}
+	if page, err := s.Children(ctx, key, 0, ""); err != nil || page.Total != 54 {
+		t.Fatalf("a deleted ticket's children by the list: %d %v", page.Total, err)
+	}
+	if _, err := s.Ticket(ctx, "CND-999"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no ticket: %v", err)
+	}
+}
+
+// pausedRead starts a read of the ticket with the key that stops at
+
+// betweenReads, once its row is read, until release is closed; answers a
+
+// channel of what it read.
+
+func pausedRead(t *testing.T, s *Store, key string) (reached, release chan struct{}, read chan TicketView) {
+	t.Helper()
+	reached, release, read = make(chan struct{}), make(chan struct{}), make(chan TicketView, 1)
+	var once sync.Once
+	s.betweenReads = func() {
+		once.Do(func() {
+			close(reached)
+			<-release
+		})
+	}
+	go func() {
+		v, err := s.Ticket(context.Background(), key)
+		if err != nil {
+			t.Errorf("the paused read: %v", err)
+		}
+		read <- v
+	}()
+	return reached, release, read
+}
+
+// commentsOfView is the bodies of a ticket read's comments.
+
+func commentsOfView(v TicketView) string {
+	var bodies []string
+	for _, c := range v.Comments {
+		bodies = append(bodies, c.Body)
+	}
+	return strings.Join(bodies, ", ")
+}
+
+func TestACompositeReadAnswersOneState(t *testing.T) {
+	cases := []struct {
+		name string
+		// write commits a comment and a status to the ticket while the read
+		// is paused, and waits until it has, or until it is waiting on the
+		// paused read.
+		write func(t *testing.T, s *Store, key string) (wait func())
+	}{
+		{"a second store on the file", func(t *testing.T, s *Store, key string) func() {
+			other := openStore(t, s.dir)
+			ctx := context.Background()
+			rc, err := other.AddComment(ctx, testOp("c2"), key, "Second")
+			mustDone(t, "the other store's comment", rc, err)
+			rc, err = edit(other, "e1", key, TicketEdit{Set: TicketSet{Status: ptr(TicketReady)}})
+			mustDone(t, "the other store's status", rc, err)
+			return func() {}
+		}},
+		{"the writer in this process", func(t *testing.T, s *Store, key string) func() {
+			// The store's one connection is the paused read's: the writes
+			// wait for it, seen on the pool's count of waits.
+			waits := s.db.Stats().WaitCount
+			done := make(chan error, 1)
+			go func() {
+				ctx := context.Background()
+				rc, err := s.AddComment(ctx, testOp("c2"), key, "Second")
+				if err == nil && rc.Status != StatusDone {
+					err = fmt.Errorf("the comment: %+v", rc)
+				}
+				if err == nil {
+					rc, err = edit(s, "e1", key, TicketEdit{Set: TicketSet{Status: ptr(TicketReady)}})
+					if err == nil && rc.Status != StatusDone {
+						err = fmt.Errorf("the status: %+v", rc)
+					}
+				}
+				done <- err
+			}()
+			deadline := time.Now().Add(time.Minute)
+			for s.db.Stats().WaitCount == waits {
+				if time.Now().After(deadline) {
+					t.Fatal("the write never waited on the read")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			return func() {
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := openStore(t, storeDir(t))
+			ctx := context.Background()
+			newOpenProject(t, s, "CND")
+			_, key := newTicket(t, s, "CND", "Read whole")
+			rc, err := s.AddComment(ctx, testOp("c1"), key, "First")
+			mustDone(t, "comment", rc, err)
+			before := ticketOf(t, s, key)
+			reached, release, read := pausedRead(t, s, key)
+			<-reached
+			wait := c.write(t, s, key)
+			close(release)
+			v := <-read
+			wait()
+			s.betweenReads = nil
+			// The state before the commits, whole: its rev and status, and the
+			// comments without the new one.
+			if v.Rev != before.Rev || v.Status != TicketBacklog || commentsOfView(v) != "First" || v.Close.Met.Acceptance {
+				t.Fatalf("the paused read: rev %d (before %d), %s, %q", v.Rev, before.Rev, v.Status, commentsOfView(v))
+			}
+			// The next read, the new state.
+			after, err := s.Ticket(ctx, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Rev != before.Rev+1 || after.Status != TicketReady || commentsOfView(after) != "First, Second" {
+				t.Fatalf("the next read: rev %d, %s, %q", after.Rev, after.Status, commentsOfView(after))
+			}
+		})
+	}
+}
+
+func TestHistoryPagesTheTicketsChanges(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	tid, key := newTicket(t, s, "CND", "History")
+	_, other := newTicket(t, s, "CND", "Another")
+	for i := range 6 {
+		rc, err := edit(s, opID("e", i), key, TicketEdit{Set: TicketSet{Priority: ptr(1 + i%4), Horizon: ptr(Horizons[1+i%3])}})
+		mustDone(t, "edit", rc, err)
+		rc, err = edit(s, opID("o", i), other, TicketEdit{Set: TicketSet{Priority: ptr(1 + i%4)}})
+		mustDone(t, "edit another", rc, err)
+	}
+	rc, err := s.AddComment(ctx, testOp("c1"), key, "A comment's rows are its ticket's history")
+	mustDone(t, "comment", rc, err)
+	want := texts(t, s, "SELECT CAST(seq AS TEXT) FROM changes WHERE ticket_id = ? ORDER BY seq", tid)
+	var got []string
+	var after int64
+	pages := 0
+	for {
+		page, err := s.History(ctx, key, after, 4)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range page.Changes {
+			if c.TicketID != tid || c.At.IsZero() || c.OpID == "" {
+				t.Fatalf("a change: %+v", c)
+			}
+			got = append(got, fmt.Sprint(c.Seq))
+		}
+		pages++
+		if page.Next == 0 {
+			break
+		}
+		after = page.Next
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") || pages != (len(want)+3)/4 {
+		t.Fatalf("%d pages of %v, want %v", pages, got, want)
+	}
+	// A page ends before the change that would take its text past its
+	// bound, so descriptions at their bound page too.
+	big := func(c byte) string { return strings.Repeat(string(c), MaxTicketDescription) }
+	for i := range 12 {
+		rc, err := edit(s, opID("d", i), key, TicketEdit{Set: TicketSet{Description: ptr(big(byte('a' + i)))}})
+		mustDone(t, "a description at its bound", rc, err)
+	}
+	page, err := s.History(ctx, key, 0, MaxHistoryPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := 0
+	for _, c := range page.Changes {
+		text += len(c.Value) + len(c.Prior)
+	}
+	if page.Next == 0 || text > maxHistoryText || len(page.Changes) >= len(want)+12 {
+		t.Fatalf("a page of %d changes, %d bytes of text, next %d", len(page.Changes), text, page.Next)
+	}
+	rest, err := s.History(ctx, key, page.Next, MaxHistoryPage)
+	if err != nil || len(rest.Changes) == 0 || rest.Changes[0].Seq <= page.Next {
+		t.Fatalf("the page after: %d changes %v", len(rest.Changes), err)
+	}
+	for _, c := range []struct {
+		after int64
+		limit int
+	}{{0, MaxHistoryPage + 1}, {0, -1}, {-1, 10}} {
+		if _, err := s.History(ctx, key, c.after, c.limit); !errors.Is(err, ErrBadQuery) {
+			t.Errorf("after %d limit %d: %v", c.after, c.limit, err)
+		}
+	}
+	if _, err := s.History(ctx, "CND-99", 0, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no ticket: %v", err)
 	}
 }

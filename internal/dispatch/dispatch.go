@@ -79,6 +79,12 @@ type Store struct {
 	// pruned counts the receipts prune dropped, for the tests of the
 	// pruning goroutine (PR-4).
 	pruned atomic.Int64
+	// betweenReads, when set, runs inside Ticket's read transaction once
+	// the ticket's row is read and before the rest of the read (its
+	// relations, children, links, attachments, comments and close state):
+	// a test commits a change there and sees the read answer the state
+	// before it whole.
+	betweenReads func()
 	// beforeReceipt, when set, runs inside an operation's transaction,
 	// the write lock held, once the change is made (or refused and
 	// undone) and before the receipt is written and the transaction
