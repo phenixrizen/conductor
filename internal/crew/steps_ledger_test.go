@@ -6,9 +6,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
 // twoMiB is a line of sh writing 2 MiB of the letter, then the end mark.
@@ -163,5 +166,106 @@ func TestACancelDuringASetupStepEndsItsTreeOnce(t *testing.T) {
 		t.Fatalf("cleaning %d after the tree ended", r.Cleaning)
 	}
 	open(t, gate)
+	stopRun(t, e, run.ID)
+}
+
+// A cancel that commits while the attempt's session is being launched
+// (Server.Launch looks at its context only at its start) ends the worktree
+// only once the launch has returned and the session it made, stopped for
+// the attempt the cancel closed, has ended: the launch holds the tree, and
+// the tree's end waits for the session the launch names (Codex's review of
+// #422, round 5). The launch is held after its process is made, until the
+// tree's end has begun.
+func TestACancelDuringTheLaunchEndsTheTreeAfterItsSession(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	hold, held := make(chan struct{}), make(chan *session.Local, 1)
+	fl.mu.Lock()
+	fl.launchHold, fl.launchHeld = hold, held
+	fl.mu.Unlock()
+	// At the worktree's end, whether the session the launch made had ended.
+	var mu sync.Mutex
+	var sess *session.Local
+	var seen, endedFirst bool
+	e.beforeTreeEnd = func(kind string) {
+		if kind != ledger.TreeWorktree {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		seen = true
+		if sess == nil {
+			return
+		}
+		select {
+		case <-sess.Ended():
+			endedFirst = true
+		default:
+		}
+	}
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Setup: []Check{shStep("deps", "true")}}, work("build", "lead")))
+	var s *session.Local
+	select {
+	case s = <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no launch was held")
+	}
+	t.Cleanup(func() {
+		select {
+		case <-hold:
+		default:
+			close(hold)
+		}
+	})
+	mu.Lock()
+	sess = s
+	mu.Unlock()
+	r := runOf(t, e, run.ID)
+	e.mu.Lock()
+	a := r.task("build").attempts[0]
+	if len(a.trees) != 1 || a.trees[0].kind != ledger.TreeWorktree || a.sessionID != "" {
+		e.mu.Unlock()
+		t.Fatalf("the attempt while its launch is held: %d trees, session %q", len(a.trees), a.sessionID)
+	}
+	tr := a.trees[0]
+	e.mu.Unlock()
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	// The tree's end has begun with the launch still held: the session
+	// cannot end before the launch returns.
+	waitFake(t, "the worktree's end to begin", func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return tr.ending
+	})
+	close(hold)
+	waitFake(t, "the worktree's end", func() bool {
+		row, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree)
+		return row.State == ledger.TreeEnded
+	})
+	waitTreesEnded(t, e, run.ID)
+	mu.Lock()
+	saw, ok := seen, endedFirst
+	mu.Unlock()
+	if !saw || !ok {
+		t.Fatalf("the worktree ended before the session its launch made had ended (its end seen: %v)", saw)
+	}
+	select {
+	case <-s.Ended():
+	default:
+		t.Fatal("the session the launch made is still running")
+	}
+	kinds := l.kinds(run.ID)
+	launched, ended := slices.Index(kinds, "attempt.launched"), slices.Index(kinds, "tree.ended")
+	if launched < 0 || ended < launched || l.count(run.ID, "tree.ended") != 1 {
+		t.Fatalf("the tree's end and the launch, in the ledger: %v", kinds)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskCancelled || ts.Attempt.State != ledger.AttemptCancelled {
+		t.Fatalf("the task: %+v %+v", ts, ts.Attempt)
+	}
+	if got, _ := e.Get(run.ID); got.Cleaning != 0 {
+		t.Fatalf("cleaning %d after the tree ended", got.Cleaning)
+	}
 	stopRun(t, e, run.ID)
 }

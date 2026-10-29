@@ -130,9 +130,12 @@ func (rm resolvedManifest) row() string {
 
 // tree is a directory the engine makes usable through the run's project
 // manifest: an attempt's worktree, or the checkout of its result. busy is
-// held while one of its phases or checks runs (hold), handed is set once it
-// is handed to endTree, ending once its end begins (nothing holds it
-// after) and ended once its end is recorded; the three under e.mu.
+// held while one of its phases or checks runs, and in a worktree through
+// its session's launch (hold). Under e.mu: handed is set once it is handed
+// to endTree, ending once its end begins (nothing holds it after), ended
+// once its end is recorded, and session names the session its end waits
+// for, one being stopped (set by handTrees, or by the launch's record when
+// the close came during the launch).
 type tree struct {
 	kind   string // ledger.TreeWorktree | ledger.TreeCheckout
 	dir    string // the worktree or the checkout
@@ -141,8 +144,9 @@ type tree struct {
 	man    resolvedManifest
 	a      *attempt
 	busy   sync.WaitGroup
-	// handed, ending and ended: see above.
+	// handed, ending, ended and session: see above.
 	handed, ending, ended bool
+	session               string
 }
 
 // treeExec is everything a tree does on the machine that runs it: a
@@ -293,9 +297,9 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 	return t, nil
 }
 
-// hold marks t busy for a phase or a check about to run in it, unless its
-// end has begun (false: the attempt closed). The caller ends it with
-// t.busy.Done.
+// hold marks t busy for a phase, a check or a launch about to run in it,
+// unless its end has begun (false: the attempt closed). The caller ends it
+// with t.busy.Done.
 func (e *Engine) hold(t *tree) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -779,19 +783,20 @@ func (e *Engine) failUnusable(r *run, a *attempt, stage, errText string) []event
 	return events
 }
 
-// treeEnd is a tree handed to endTree: why it ends, and the session it
-// waits for (one being stopped), "" for none.
+// treeEnd is a tree handed to endTree, and why it ends.
 type treeEnd struct {
-	t       *tree
-	why     string
-	session string
+	t   *tree
+	why string
 }
 
 // handTrees queues a's trees for endTree, each once, as a's close is
 // made: the commit that makes the close durable starts them (transact).
 // A worktree whose session the close stops (a cancel, a withdrawal, a stop,
-// a failure that stops it) waits for that session's end. The caller holds
-// e.mu, in a transaction's change.
+// a failure that stops it) waits for that session's end (t.session). One
+// closed while its session is being launched has none yet: the launch
+// holds the tree until it records the session it made, which it stops and
+// names on the tree then (dispatch). The caller holds e.mu, in a
+// transaction's change.
 func (e *Engine) handTrees(r *run, a *attempt) {
 	stopping := a.sessionID != "" && (r.stopping || slices.Contains(r.pendingStops, a.sessionID))
 	why := fmt.Sprintf("attempt %d %s%s", a.n, a.state, suffix(a.stage, a.err))
@@ -800,11 +805,10 @@ func (e *Engine) handTrees(r *run, a *attempt) {
 			continue
 		}
 		t.handed = true
-		h := treeEnd{t: t, why: why}
 		if stopping && t.kind == ledger.TreeWorktree {
-			h.session = a.sessionID
+			t.session = a.sessionID
 		}
-		r.pendingTrees = append(r.pendingTrees, h)
+		r.pendingTrees = append(r.pendingTrees, treeEnd{t: t, why: why})
 	}
 }
 
@@ -820,12 +824,14 @@ func (e *Engine) startTrees(r *run) {
 
 // endTree ends a tree, once, after its attempt's close is committed: under
 // r.teardown, never the attempt's context (ended by then), it marks the
-// tree ending, waits for it to be quiet (the phase or check that held it
-// returned; the session being stopped ended, bounded by stopTimeout) and
-// records tree.ended with the tree's row ended. Nothing runs in it after:
-// it has no services and no cleanup steps yet. A refused commit is kept
-// for the run's next (transact), and a row left not ended is concluded by
-// the recovery at the next start.
+// tree ending, waits for it to be quiet (the phase, check or launch that
+// held it returned; then the session being stopped ended, bounded by
+// stopTimeout, read once the hold is let go: a launch the close came
+// during names its session on the tree only then) and records tree.ended
+// with the tree's row ended. Nothing runs in it after: it has no services
+// and no cleanup steps yet. A refused commit is kept for the run's next
+// (transact), and a row left not ended is concluded by the recovery at the
+// next start.
 func (e *Engine) endTree(r *run, h treeEnd) {
 	t := h.t
 	defer func() {
@@ -838,8 +844,11 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 	t.ending = true
 	e.mu.Unlock()
 	t.busy.Wait()
-	if h.session != "" {
-		if l, ok := e.lookup(h.session); ok {
+	e.mu.Lock()
+	sid := t.session
+	e.mu.Unlock()
+	if sid != "" {
+		if l, ok := e.lookup(sid); ok {
 			select {
 			case <-l.Ended():
 			case <-time.After(stopTimeout):

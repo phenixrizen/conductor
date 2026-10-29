@@ -1554,14 +1554,25 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	}
 	// The manifest's setup phase, in the worktree, before the member
 	// starts: a step that fails here is the host's or the manifest's, not
-	// the agent's, which has typed nothing yet.
+	// the agent's, which has typed nothing yet. The worktree stays held
+	// through the launch, until its session is recorded: a close that
+	// comes meanwhile stops no session, there being none yet, so the
+	// tree's end waits on the hold and then for the session the record
+	// stops (endTree).
+	held := false
+	release := func() {
+		if held {
+			held = false
+			tr.busy.Done()
+		}
+	}
 	if tr != nil {
 		if !e.hold(tr) {
 			return // closed meanwhile: its tree is ending
 		}
-		stage, err := e.prepareTree(ctx, r, a, tr)
-		tr.busy.Done()
-		if err != nil {
+		held = true
+		if stage, err := e.prepareTree(ctx, r, a, tr); err != nil {
+			release()
 			fail(stage, err, false, true)
 			return
 		}
@@ -1570,6 +1581,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: fmt.Sprintf("%s · %s #%d", m.def.Name, t.def.ID, a.n), Cwd: cwd, Args: slices.Clone(m.def.Args),
 		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: t.def.ID, Attempt: a.n}, Yolo: r.yolo, Reservation: res})
 	if err != nil {
+		release()
 		fail("launch", err, false, false)
 		return
 	}
@@ -1580,6 +1592,15 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		a.sessionID, a.launchedAt = id, started
 		if a.closedAt.IsZero() {
 			a.state = ledger.AttemptLaunched
+		} else {
+			// Closed during the launch (a cancel, a withdrawal, a stop
+			// cut short): the session goes with the commit that carries
+			// this change, and the worktree's end, held until now, waits
+			// for it.
+			r.pendingStops = append(r.pendingStops, id)
+			if tr != nil {
+				tr.session = id
+			}
 		}
 		m.state.SessionID, m.state.Started, m.state.Status, m.state.Ended, m.state.Err = id, &started, MemberStarting, nil, ""
 		m.state.Task, m.state.Attempt = t.def.ID, a.n
@@ -1589,6 +1610,7 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 		stopping = r.stopping
 		return ev("attempt.launched", map[string]any{"task": t.def.ID, "attempt": a.n, "session": id})
 	}, nil)
+	release()
 	go e.watchAttempt(r, a, local)
 	// Closed before its session is stopped, so the stage is the launch's,
 	// not the watcher's "session ended".
