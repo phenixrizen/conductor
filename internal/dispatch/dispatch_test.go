@@ -1,0 +1,409 @@
+package dispatch
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestOpenMakesTheSchemaWhole(t *testing.T) {
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	if ro, why := s.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("the directory: %v %v", fi, err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, File)); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the database: %v %v", fi, err)
+	}
+	rows, err := s.db.Query("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence' AND name NOT LIKE 'tickets\\_fts\\_%' ESCAPE '\\' ORDER BY name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		got = append(got, n)
+	}
+	rows.Close()
+	if strings.Join(got, " ") != strings.Join(tables, " ") {
+		t.Fatalf("tables %v", got)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM schema_version"); n != 1 {
+		t.Fatalf("%d schema_version rows", n)
+	}
+	var version int
+	if err := s.db.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil || version != Version {
+		t.Fatalf("version %d %v", version, err)
+	}
+	var mode string
+	if err := s.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil || mode != "wal" {
+		t.Fatalf("journal_mode %q %v", mode, err)
+	}
+	var fk, sync int
+	if err := s.db.QueryRow("PRAGMA foreign_keys").Scan(&fk); err != nil || fk != 1 {
+		t.Fatalf("foreign_keys %d %v", fk, err)
+	}
+	if err := s.db.QueryRow("PRAGMA synchronous").Scan(&sync); err != nil || sync != 2 {
+		t.Fatalf("synchronous %d %v", sync, err)
+	}
+	// The FTS index is there with its tokenizer: diacritics removed.
+	if _, err := s.db.Exec("INSERT INTO tickets_fts (rowid, key, title, description, acceptance, comments) VALUES (1, 'CND-1', 'Crème brûlée', '', '', '')"); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, s, `SELECT COUNT(*) FROM tickets_fts WHERE tickets_fts MATCH '"creme"'`); n != 1 {
+		t.Fatalf("the FTS match found %d", n)
+	}
+	rc, err := s.AddPerson(context.Background(), testOp("a1"), "Alice")
+	want(t, rc, err, StatusDone, "")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Closed with its write-ahead log checkpointed, and opened again
+	// whole: the schema is found, not made again.
+	if fi, err := os.Stat(filepath.Join(dir, File+"-wal")); err == nil && fi.Size() != 0 {
+		t.Fatalf("the WAL holds %d bytes after Close", fi.Size())
+	}
+	again := openStore(t, dir)
+	if ro, why := again.ReadOnly(); ro {
+		t.Fatalf("read-only after a reopen: %s", why)
+	}
+	if n := count(t, again, "SELECT COUNT(*) FROM schema_version"); n != 1 {
+		t.Fatalf("%d schema_version rows after a reopen", n)
+	}
+	people, err := again.People(context.Background())
+	if err != nil || len(people) != 1 || people[0].Name != "Alice" || people[0].CreatedAt.IsZero() {
+		t.Fatalf("people after a reopen: %+v %v", people, err)
+	}
+}
+
+func TestANewerDatabaseOpensReadOnly(t *testing.T) {
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	rc, err := s.AddPerson(context.Background(), testOp("a1"), "Alice")
+	want(t, rc, err, StatusDone, "")
+	if _, err := s.db.Exec("UPDATE schema_version SET version = ?", Version+1); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	again := openStore(t, dir)
+	ro, why := again.ReadOnly()
+	if !ro || !strings.Contains(why, "newer") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	// A write is refused read_only with the words, and written nowhere.
+	rc, err = again.AddPerson(context.Background(), testOp("a2"), "Bob")
+	want(t, rc, err, StatusFailed, RefusalReadOnly)
+	if !strings.Contains(rc.Error, "newer") {
+		t.Fatalf("the refusal's words: %q", rc.Error)
+	}
+	if _, found, err := again.Receipt(context.Background(), "test", "a2"); found || err != nil {
+		t.Fatalf("a receipt was kept: %v %v", found, err)
+	}
+	if err := again.Checkpoint(context.Background()); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("a checkpoint: %v", err)
+	}
+	// A read works.
+	if people, err := again.People(context.Background()); err != nil || len(people) != 1 {
+		t.Fatalf("a read: %+v %v", people, err)
+	}
+	if rc, found, err := again.Receipt(context.Background(), "test", "a1"); !found || err != nil || rc.Status != StatusDone {
+		t.Fatalf("the receipt kept: %+v %v %v", rc, found, err)
+	}
+}
+
+func TestADamagedDatabaseOpensReadOnly(t *testing.T) {
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	for i := range 20 {
+		rc, err := s.AddPerson(context.Background(), testOp(opID("a", i)), fmt.Sprintf("Person %02d %s", i, strings.Repeat("x", 40)))
+		want(t, rc, err, StatusDone, "")
+	}
+	// The receipts' root page: a page of content past the header and the
+	// schema, so the database opens and fails its check.
+	var page, pageSize int64
+	if err := s.db.QueryRow("SELECT rootpage FROM sqlite_master WHERE name = 'ops'").Scan(&page); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	path := filepath.Join(dir, File)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte(strings.Repeat("\xff", int(pageSize))), (page-1)*pageSize); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	again, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open failed on a damaged database: %v", err)
+	}
+	defer again.Close()
+	ro, why := again.ReadOnly()
+	if !ro || !strings.Contains(why, "check") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	rc, err := again.AddPerson(context.Background(), testOp("b1"), "Bob")
+	want(t, rc, err, StatusFailed, RefusalReadOnly)
+	if !strings.Contains(rc.Error, "check") {
+		t.Fatalf("the refusal's words: %q", rc.Error)
+	}
+}
+
+func TestASymbolicLinkRefusesOpen(t *testing.T) {
+	dir := storeDir(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "elsewhere.sqlite"), filepath.Join(dir, File)); err != nil {
+		t.Skip(err)
+	}
+	s, err := Open(dir)
+	if err == nil {
+		s.Close()
+		t.Fatal("a symbolic link opened")
+	}
+	if !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("refused as: %v", err)
+	}
+}
+
+func TestADirectoryThatCannotBeMadeRefusesOpen(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Open(filepath.Join(file, "dispatch")); err == nil {
+		s.Close()
+		t.Fatal("a directory under a file opened")
+	}
+}
+
+func TestCheckpointOnAnOpenStore(t *testing.T) {
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	for i := range 3 {
+		rc, err := s.AddPerson(context.Background(), testOp(opID("a", i)), fmt.Sprintf("Person %d", i))
+		want(t, rc, err, StatusDone, "")
+	}
+	wal := filepath.Join(dir, File+"-wal")
+	if fi, err := os.Stat(wal); err != nil || fi.Size() == 0 {
+		t.Fatalf("no write-ahead log after writes: %v %v", fi, err)
+	}
+	if err := s.Checkpoint(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(wal); err == nil && fi.Size() != 0 {
+		t.Fatalf("the WAL holds %d bytes after Checkpoint", fi.Size())
+	}
+	rc, err := s.AddPerson(context.Background(), testOp("after"), "After")
+	want(t, rc, err, StatusDone, "")
+	if people, err := s.People(context.Background()); err != nil || len(people) != 4 {
+		t.Fatalf("people after the checkpoint: %+v %v", people, err)
+	}
+}
+
+// Eight stores opened at once on one empty directory all open writable:
+// the second and later wait for the first's schema transaction on the
+// write lock, then read the version it wrote and find nothing to do.
+func TestEightOpenersMakeTheSchemaOnce(t *testing.T) {
+	dir := storeDir(t)
+	const n = 8
+	stores := make([]*Store, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stores[i], errs[i] = Open(dir)
+		}()
+	}
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("opener %d: %v", i, errs[i])
+		}
+		t.Cleanup(func() { stores[i].Close() })
+		if ro, why := stores[i].ReadOnly(); ro {
+			t.Fatalf("opener %d is read-only: %s", i, why)
+		}
+	}
+	for i, s := range stores {
+		rc, err := s.AddPerson(context.Background(), testOp(opID("o", i)), fmt.Sprintf("Person %d", i))
+		want(t, rc, err, StatusDone, "")
+	}
+	if n := count(t, stores[0], "SELECT COUNT(*) FROM schema_version"); n != 1 {
+		t.Fatalf("%d schema_version rows", n)
+	}
+	for i, s := range stores {
+		people, err := s.People(context.Background())
+		if err != nil || len(people) != n {
+			t.Fatalf("store %d sees %d people: %v", i, len(people), err)
+		}
+	}
+}
+
+// rawConn is a second connection on the store's file, to hold its write
+// lock as another process would.
+func rawConn(t *testing.T, s *Store) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", dsn(s.path, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+func TestAWriterHoldingTheDatabasePastTheTimeoutOpensReadOnly(t *testing.T) {
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	raw := rawConn(t, s)
+	hold, err := raw.BeginTx(context.Background(), nil) // BEGIN IMMEDIATE: the write lock
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := busyTimeout
+	busyTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { busyTimeout = old })
+	second, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	ro, why := second.ReadOnly()
+	if !ro || !strings.Contains(why, "another writer holds the database") {
+		t.Fatalf("read-only %v: %s", ro, why)
+	}
+	rc, err := second.AddPerson(context.Background(), testOp("b1"), "Bob")
+	want(t, rc, err, StatusFailed, RefusalReadOnly)
+	if err := hold.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	// It reads; the first store writes on.
+	if _, err := second.People(context.Background()); err != nil {
+		t.Fatalf("a read: %v", err)
+	}
+	rc, err = s.AddPerson(context.Background(), testOp("a1"), "Alice")
+	want(t, rc, err, StatusDone, "")
+}
+
+func TestAWriterLettingGoWhileOpenWaitsLeavesItWritable(t *testing.T) {
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	raw := rawConn(t, s)
+	hold, err := raw.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The lock is let go once Open is past the check and on its way to
+	// the schema transaction: with the default busy timeout, a lock
+	// still held then is waited for, never refused.
+	released := make(chan error, 1)
+	beforePrepareTx = func() {
+		beforePrepareTx = nil
+		go func() { released <- hold.Rollback() }()
+	}
+	t.Cleanup(func() { beforePrepareTx = nil })
+	second, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := <-released; err != nil {
+		t.Fatal(err)
+	}
+	if ro, why := second.ReadOnly(); ro {
+		t.Fatalf("read-only: %s", why)
+	}
+	if n := count(t, second, "SELECT COUNT(*) FROM schema_version"); n != 1 {
+		t.Fatalf("%d schema_version rows", n)
+	}
+	rc, err := second.AddPerson(context.Background(), testOp("b1"), "Bob")
+	want(t, rc, err, StatusDone, "")
+	if people, err := s.People(context.Background()); err != nil || len(people) != 1 {
+		t.Fatalf("the first store sees %+v %v", people, err)
+	}
+}
+
+// The unique indexes are those of the keys never minted twice and
+// nothing else: every other uniqueness is a rule in the operation, so
+// that no index refuses a replicated add.
+func TestTheUniqueIndexesAreTheKeysNeverMintedTwice(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	rows, err := s.db.Query(`SELECT m.name, i.name FROM sqlite_master m JOIN pragma_index_list(m.name) i
+		WHERE m.type = 'table' AND i."unique" = 1 AND m.name NOT LIKE 'tickets\_fts%' ESCAPE '\' ORDER BY m.name, i.name`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexes [][2]string
+	for rows.Next() {
+		var table, index string
+		if err := rows.Scan(&table, &index); err != nil {
+			t.Fatal(err)
+		}
+		indexes = append(indexes, [2]string{table, index})
+	}
+	rows.Close()
+	var got []string
+	for _, ix := range indexes {
+		cols, err := s.db.Query("SELECT name FROM pragma_index_info(?) ORDER BY seqno", ix[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for cols.Next() {
+			var c string
+			cols.Scan(&c)
+			names = append(names, c)
+		}
+		cols.Close()
+		got = append(got, ix[0]+"("+strings.Join(names, ", ")+")")
+	}
+	want := []string{
+		"attachments(id)", "changes(actor, op_id, n)", "comments(id)", "labels(id)", "links(id)", "milestones(id)",
+		"ops(actor, id)", "people(name)", "projects(id)", "projects(key)", "relations(id)", "ticket_assignees(ticket_id, actor)",
+		"ticket_labels(ticket_id, label_id)", "tickets(id)", "tickets(key)", "tickets(project_id, number)", "uploads(id)", "views(id)",
+	}
+	if strings.Join(got, "; ") != strings.Join(want, "; ") {
+		t.Fatalf("unique indexes:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestAClosedStoreRefusesEverything(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPerson(context.Background(), testOp("a1"), "Alice"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a write: %v", err)
+	}
+	if _, err := s.People(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a read: %v", err)
+	}
+	if err := s.Checkpoint(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a checkpoint: %v", err)
+	}
+	if _, err := s.prune(context.Background(), time.Now()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a pruning: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("a second Close: %v", err)
+	}
+}
