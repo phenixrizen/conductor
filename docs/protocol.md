@@ -1777,7 +1777,7 @@ its run, and on no other.
 | `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log` | admin | one receipt's log: `200 text/plain`, the bytes the ledger keeps (at most 1 MiB: the output's head, a line saying how many bytes were dropped, and its last bytes), their SHA-256 in `X-Conductor-Log-SHA256` (exposed to a dev origin's script); `404 not_found` for a row the ledger has not, or one still running; `410 log_dropped` for a log not kept past the run's 64 MiB of logs (its hash and tail stay on the row); fetched with the bearer header, never as a link the browser follows |
 | `GET /api/runs/{run}/prerequisites` | admin | a run's prerequisites' receipts from the ledger: `{steps}` as the steps route answers them, each of phase `prerequisite`, `k` counting its runs in the run; `404 not_found` for a run the ledger has not; `503 ledger_unavailable` |
 | `GET /api/runs/{run}/prerequisites/{id}/{k}/log` | admin | one prerequisite receipt's log, as a step's log route answers it |
-| `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's dispatch (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
+| `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's scheduling (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
 | `POST /api/runs/{run}/tasks/{task}/cancel` | admin | cancel a task: its attempt in flight ends (its session stopped once the cancel is recorded), the task is `cancelled`, what needs it is blocked for good, and the run ends when every task is terminal; body `{commandId, expectedRevision?}`; `200 {receipt}` with the task; `409 task_state` with the receipt for a task already succeeded, failed or cancelled |
 | `POST /api/runs/{run}/tasks/{task}/retry` | admin | allow a failed or cancelled task one more attempt: it is `blocked` or `ready` again (a repair it carries stays), the run open again; `200 {receipt}`; `409 task_state` with the receipt otherwise |
 | `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
@@ -2240,7 +2240,7 @@ dispatch, a session, a line, a check) follows the commit; a run's
 transactions commit in order, each with the state as it was; while one
 commits, the run as read is one change ahead of the ledger, and a commit
 the ledger refuses is undone or, where it cannot be, pauses the run's
-dispatch and says so in the run log. The run's `managed.revision` follows
+scheduling and says so in the run log. The run's `managed.revision` follows
 each commit. A submitted result is kept whole in the attempt's row (its
 summary, issues, verdict and findings), so a review's findings outlive the
 server.
@@ -2254,7 +2254,7 @@ is dispatched: the launch answers while they run (the run's
 `manifest.prerequisites[].state` says `running`), and nothing is dispatched
 until they passed; they run again at each unpause (unless a run of them is
 under way, whose result stands) and in a continuation. One that fails pauses
-the run's dispatch with its words and spends nothing. The setup steps run in
+the run's scheduling with its words and spends nothing. The setup steps run in
 each new worktree, the manifest resolved for it at the attempt's start commit
 and the task files written first (`task.json`'s `manifest`, `{source,
 revision | digest}`, and a sentence in `task.md`), before the session; and in
@@ -2267,7 +2267,7 @@ in an attempt's worktree, or a manifest that cannot be resolved there (stage
 `setup <id>` or `manifest`), is the host's or the manifest's, not the agent's:
 the attempt is `failed` and not counted (`attempt.failed` with `uncounted:
 true`; the task `ready` with "attempt 2 could not be made usable at setup
-deps: …" and one more attempt allowed), the run's dispatch pauses with the
+deps: …" and one more attempt allowed), the run's scheduling pauses with the
 same words (the run's `pausedWhy`), and the next attempt, once a person
 unpauses, starts where that one started, its task file naming the uncounted
 attempt (`unusable`) beside the last counted one (`previous`). One at a
@@ -2342,7 +2342,7 @@ answer and on every repeat), `task` the task as it stands after the command
 (`{id, state, reason?, attempts, result?: {attempt, commit?}}`, the reason
 at most 2,000 characters; the run has the rest, so a receipt always fits
 what the ledger keeps),
-`paused` whether the run's dispatch is, and `revision` the run's ledger
+`paused` whether the run's scheduling is, and `revision` the run's ledger
 revision after it. The same id sent again with the same content answers with
 the same receipt and `repeat: true`, never a second change, also for a
 failed one; the same id with other content is `409 command_conflict`.

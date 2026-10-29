@@ -1296,7 +1296,7 @@ last submitted commit as its result (asked first), **Cancel** a task (asked
 first), **Copy branch**. A row opens the task: its result (summary, issues, a
 review's findings) and every attempt with where it started, what it submitted
 and what failed it. The header says `3/7 tasks`, `1 failed`, `2 running`,
-`1 checking` and `paused`, and **Pause** holds the dispatch (attempts in
+`1 checking` and `paused`, and **Pause** holds scheduling (attempts in
 flight go on, no task starts) until **Resume**. Every one of these is a
 command with a receipt: the browser mints an id, a reply lost to the network
 is asked for once more with the same id and answered as the first, and a

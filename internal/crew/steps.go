@@ -590,7 +590,7 @@ func (e *Engine) prerequisiteRefused(r *run, gen int, ch Check, err error) {
 
 // pauseManifest pauses r's dispatch for a project manifest's failure: the
 // pause and its words on the run (pausedWhy, written on its row with the
-// pause), in the run log ("dispatch paused: <why>") and in the event. The
+// pause), in the run log ("scheduling paused: <why>") and in the event. The
 // caller holds e.mu, in a transaction's change.
 func (e *Engine) pauseManifest(r *run, why string) []event {
 	why = session.CleanMessage(why)
@@ -598,7 +598,7 @@ func (e *Engine) pauseManifest(r *run, why string) []event {
 		r.paused, r.pausedWhy = true, why
 		r.markRun()
 	}
-	r.note(session.ActivityError, "dispatch paused: %s", why)
+	r.note(session.ActivityError, "scheduling paused: %s", why)
 	return []event{{"run.paused", map[string]any{"paused": true, "why": why}}}
 }
 

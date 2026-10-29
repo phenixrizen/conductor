@@ -50,7 +50,7 @@ describe('taskWords', () => {
     expect(taskWords(t, run)).toEqual({ text, tone })
   })
   it('says why a ready task does not start, and what a continuation takes up', () => {
-    expect(taskWords(task({ state: 'ready' }), { paused: true })).toEqual({ text: 'ready, the dispatch is paused', tone: 'warning' })
+    expect(taskWords(task({ state: 'ready' }), { paused: true })).toEqual({ text: 'ready, scheduling is paused', tone: 'warning' })
     expect(taskWords(task({ state: 'ready' }), { stoppedAt: 'x' })).toEqual({ text: 'ready, the run is stopped', tone: 'muted' })
     expect(taskWords(task({ state: 'ready', reason: 'attempt 2 was interrupted by the server\'s end: the run continues it' }), { state: 'interrupted' })).toEqual({
       text: "attempt 2 was interrupted by the server's end: the run continues it; taken up when the run is continued",

@@ -834,7 +834,7 @@ func (e *Engine) pauseDispatch(r *run, err error) bool {
 		r.paused, r.pausedWhy = true, why
 		r.markRun()
 	}
-	r.note(session.ActivityError, "dispatch paused: %s", why)
+	r.note(session.ActivityError, "scheduling paused: %s", why)
 	return true
 }
 
