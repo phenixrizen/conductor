@@ -648,3 +648,184 @@ func TestFreeNameReportsWhatItCannotCheck(t *testing.T) {
 		t.Fatalf("freeName: %q %v", name, err)
 	}
 }
+
+// storedKeys returns the top-level keys of the crew's file.
+func storedKeys(t *testing.T, st *store.Store, id string) map[string]json.RawMessage {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(st.Dir(), "crews", id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		t.Fatal(err)
+	}
+	return keys
+}
+
+// The store counts a crew's recipe changes itself, whatever a save
+// carries: a changed recipe is one more, an unchanged one keeps its
+// number, a removal is a change the counter keeps, and a recipe put on
+// again, after a restart too, is one past it, never 1 again.
+func TestTheStoreCountsTheRecipesRevisions(t *testing.T) {
+	s, st := newStore(t)
+	first := recipeCrew()
+	first.RecipeRevision = 9
+	created, err := s.Create(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.RecipeRevision != 1 {
+		t.Fatalf("a new crew with a recipe: revision %d", created.RecipeRevision)
+	}
+	id := created.ID
+	update := func(c Crew, want int64) Crew {
+		t.Helper()
+		got, err := s.Update(id, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RecipeRevision != want {
+			t.Fatalf("revision %d, want %d", got.RecipeRevision, want)
+		}
+		read, err := s.Get(id)
+		if err != nil || read.RecipeRevision != want {
+			t.Fatalf("read back: %d %v", read.RecipeRevision, err)
+		}
+		return got
+	}
+	// Another field changed: the recipe keeps its number, and a number the
+	// value carries is not the store's.
+	c := created
+	c.Goal, c.RecipeRevision = "another goal", 99
+	update(c, 1)
+	// The recipe changed.
+	c.Recipe = fullRecipe()
+	c.Recipe.Setup[0].Argv = []string{"npm", "install"}
+	update(c, 2)
+	update(c, 2)
+	// Taken off: a change, and the counter stays on the crew.
+	c.Recipe = nil
+	update(c, 3)
+	if keys := storedKeys(t, st, id); string(keys["recipeRevision"]) != "3" || keys["recipe"] != nil {
+		t.Fatalf("the file after the removal: %v", keys)
+	}
+	update(c, 3)
+	// Put on again after a restart, the first recipe's content included.
+	s = reopen(t, st)
+	c.Recipe = fullRecipe()
+	update(c, 4)
+	c.Recipe = &Recipe{}
+	update(c, 5)
+	if keys := storedKeys(t, st, id); keys["recipe"] != nil {
+		t.Fatalf("an empty recipe is kept: %s", keys["recipe"])
+	}
+}
+
+// A legacy crew's file stays as it is through a save that changes nothing
+// of its setup: no recipe and no counter. Lifted into the recipe's setup
+// phase, the setup is the same recipe, still 0.
+func TestALegacySetupKeepsItsFileAndItsRevision(t *testing.T) {
+	s, st := newStore(t)
+	legacy := managedCrew()
+	legacy.ID = "legacy"
+	if err := s.Put(legacy); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Goal = "a new goal"
+	if saved, err := s.Update("legacy", got); err != nil || saved.RecipeRevision != 0 {
+		t.Fatalf("a legacy save: %v %v", saved.RecipeRevision, err)
+	}
+	keys := storedKeys(t, st, "legacy")
+	if keys["recipe"] != nil || keys["recipeRevision"] != nil || keys["setup"] == nil {
+		t.Fatalf("the legacy file after a save: %v", keys)
+	}
+	lifted := got
+	lifted.Recipe, lifted.Setup = &Recipe{Setup: got.Setup}, nil
+	if saved, err := s.Update("legacy", lifted); err != nil || saved.RecipeRevision != 0 || saved.Recipe == nil || len(saved.Setup) != 0 {
+		t.Fatalf("the lifted setup: %+v %v", saved, err)
+	}
+	if keys := storedKeys(t, st, "legacy"); keys["recipeRevision"] != nil || keys["setup"] != nil || keys["recipe"] == nil {
+		t.Fatalf("the lifted file: %v", keys)
+	}
+	lifted.Recipe = &Recipe{Setup: []Check{{ID: "deps", Argv: []string{"npm", "install"}}}}
+	if saved, err := s.Update("legacy", lifted); err != nil || saved.RecipeRevision != 1 {
+		t.Fatalf("a changed setup: %v %v", saved.RecipeRevision, err)
+	}
+	// A counter below zero is not the store's: refused.
+	bad := legacy
+	bad.RecipeRevision = -1
+	if err := s.Put(bad); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "recipeRevision must not be negative") {
+		t.Fatalf("a negative revision: %v", err)
+	}
+}
+
+// A new crew, made, copied or seeded, starts at 1 with a recipe (a legacy
+// setup counts) and at 0 without.
+func TestANewCrewsRevisionStartsAtOneWithARecipe(t *testing.T) {
+	s, _ := newStore(t)
+	for _, tc := range []struct {
+		name string
+		c    Crew
+		want int64
+	}{
+		{"a recipe", recipeCrew(), 1},
+		{"a legacy setup", managedCrew(), 1},
+		{"tasks alone", func() Crew { c := managedCrew(); c.Setup = nil; return c }(), 0},
+		{"an empty recipe", func() Crew { c := managedCrew(); c.Setup, c.Recipe = nil, &Recipe{}; return c }(), 0},
+		{"no tasks", validCrew("x", "Plain"), 0},
+	} {
+		got, err := s.Create(tc.c)
+		if err != nil || got.RecipeRevision != tc.want {
+			t.Errorf("create, %s: %d %v", tc.name, got.RecipeRevision, err)
+			continue
+		}
+		if tc.name == "an empty recipe" && got.Recipe != nil {
+			t.Errorf("an empty recipe is kept: %+v", got.Recipe)
+		}
+	}
+	src, err := s.Create(recipeCrew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.Recipe.Setup[0].ID = "install"
+	if src, err = s.Update(src.ID, src); err != nil || src.RecipeRevision != 2 {
+		t.Fatalf("the source: %d %v", src.RecipeRevision, err)
+	}
+	if dup, err := s.Duplicate(src.ID); err != nil || dup.RecipeRevision != 1 || dup.Recipe == nil || dup.Recipe.Setup[0].ID != "install" {
+		t.Fatalf("a copy: %+v %v", dup, err)
+	}
+	seeded := recipeCrew()
+	seeded.ID, seeded.RecipeRevision = "seeded", 7
+	plain := validCrew("seeded-plain", "Plain")
+	plain.RecipeRevision = 7
+	if added, _, err := s.Seed([]Crew{seeded, plain}); err != nil || len(added) != 2 {
+		t.Fatalf("seed: %v %v", added, err)
+	}
+	if got, err := s.Get("seeded"); err != nil || got.RecipeRevision != 1 {
+		t.Fatalf("a seeded recipe: %d %v", got.RecipeRevision, err)
+	}
+	if got, err := s.Get("seeded-plain"); err != nil || got.RecipeRevision != 0 {
+		t.Fatalf("a seeded crew without one: %d %v", got.RecipeRevision, err)
+	}
+}
+
+// The store's copies share no recipe with what went in or came out.
+func TestTheStoresCopiesShareNoRecipe(t *testing.T) {
+	s, _ := newStore(t)
+	c := recipeCrew()
+	created, err := s.Create(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Recipe.Setup[0].Argv[0] = "changed"
+	created.Recipe.Ready[0].Argv[0] = "changed"
+	got, err := s.Get(created.ID)
+	if err != nil || got.Recipe.Setup[0].Argv[0] != "npm" || got.Recipe.Ready[0].Argv[0] != "pg_isready" || created.Recipe == c.Recipe {
+		t.Fatalf("the stored recipe: %+v %v", got.Recipe, err)
+	}
+}
