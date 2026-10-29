@@ -80,18 +80,18 @@ func TestAcceptAndUnaccept(t *testing.T) {
 	if ticketOf(t, s, key).Status != TicketDone {
 		t.Fatal("an acceptance moved the status")
 	}
-	// With no display name, the actor accepted it.
-	rc, err = s.AcceptTicket(ctx, Op{Actor: "admin", ID: "a3"}, key, "")
+	// With no display name, the actor accepted it, with a note again.
+	rc, err = s.AcceptTicket(ctx, Op{Actor: "admin", ID: "a3"}, key, "Still right")
 	want(t, rc, err, StatusDone, "")
-	if by := ticketOf(t, s, key).AcceptedBy; by != "admin" {
-		t.Fatalf("accepted by %q", by)
+	if tk := ticketOf(t, s, key); tk.AcceptedBy != "admin" || tk.AcceptedNote != "Still right" {
+		t.Fatalf("accepted by %q, the note %q", tk.AcceptedBy, tk.AcceptedNote)
 	}
-	// Unaccept: every field cleared, one row each with its prior; the
-	// status stays.
+	// Unaccept: every field cleared, the note among them, one row each
+	// with its prior; the status stays.
 	rc, err = s.UnacceptTicket(ctx, testOp("u1"), key)
 	want(t, rc, err, StatusDone, "")
-	if got := rowsOf(t, s, "u1"); len(got) != 4 || got[1] != "set:accepted_by=<admin" || got[2] != "set:accepted_for=<Alice" ||
-		got[3] != "set:accepted_criteria=<"+criteriaHash("It works.") {
+	if got := rowsOf(t, s, "u1"); len(got) != 5 || !strings.HasPrefix(got[0], "set:accepted_at=<") || got[1] != "set:accepted_by=<admin" ||
+		got[2] != "set:accepted_for=<Alice" || got[3] != "set:accepted_criteria=<"+criteriaHash("It works.") || got[4] != "set:accepted_note=<Still right" {
 		t.Fatalf("the unaccept's rows: %v", got)
 	}
 	tk = ticketOf(t, s, key)
@@ -257,7 +257,8 @@ func TestDoneWaitsForTheOwnersAcceptance(t *testing.T) {
 
 // done waits for a delivery link where the policy requires one: refused,
 // then allowed once a live delivery link is there (another kind counts
-// for nothing); a policy of both names both missing, in order.
+// for nothing, and so does another ticket's delivery link); a policy of
+// both names both missing, in order.
 func TestDoneWaitsForADeliveryLink(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
@@ -276,8 +277,22 @@ func TestDoneWaitsForADeliveryLink(t *testing.T) {
 	want(t, rc, err, StatusDone, "")
 	rc, err = addLink(s, "l2", key, NewLink{Kind: LinkRun, Ref: "run1"})
 	want(t, rc, err, StatusDone, "")
+	// Another ticket's delivery link is that ticket's: it meets that
+	// ticket's policy and leaves this one's unmet.
+	_, elsewhere := newTicket(t, s, "DEL", "Shipped elsewhere")
+	rc, err = addLink(s, "l-elsewhere", elsewhere, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/8"})
+	want(t, rc, err, StatusDone, "")
+	if st := closeOfKey(t, s, elsewhere); !st.Met.Delivery || len(st.Missing) != 0 {
+		t.Fatalf("the other ticket's own link: %+v", st)
+	}
+	if st := closeOfKey(t, s, key); st.Met.Delivery || !slices.Equal(st.Missing, []string{RequireDelivery}) {
+		t.Fatalf("another ticket's link met this one's policy: %+v", st)
+	}
 	rc, err = setStatus(s, "d2", key, TicketDone)
 	want(t, rc, err, StatusFailed, RefusalClosePolicy)
+	if !slices.Equal(rc.Missing, []string{RequireDelivery}) {
+		t.Fatalf("the refusal with another ticket's link: %+v", rc)
+	}
 	// A merge is a delivery link a person adds.
 	rc, err = addLink(s, "l3", key, NewLink{Kind: LinkDelivery, URL: "https://github.com/rocksolidlabs/conductor/pull/9"})
 	want(t, rc, err, StatusDone, "")

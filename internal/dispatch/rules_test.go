@@ -560,6 +560,41 @@ func exec(t *testing.T, s *Store, query string, args ...any) {
 	}
 }
 
+// fill writes, by hand in one transaction, links external links of the
+// ticket with the id and relations relates relations from it to as many
+// live tickets of the project, made here (keys from <project>-1000): a
+// set brought near its bound without the operations that would make it.
+func fill(t *testing.T, s *Store, project, projectID, ticketID string, links, relations int) {
+	t.Helper()
+	now := stamp(time.Now())
+	x, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Rollback()
+	for i := range links {
+		url := fmt.Sprintf("https://example.com/filled/%d", i)
+		if _, err := x.Exec("INSERT INTO links (id, ticket_id, kind, ref, url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			newID(), ticketID, LinkExternal, url, url, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range relations {
+		other := newID()
+		if _, err := x.Exec("INSERT INTO tickets (id, project_id, number, key, title, created_at, updated_at, rev) VALUES (?, ?, ?, ?, 'Filled', ?, ?, 1)",
+			other, projectID, 1000+i, fmt.Sprintf("%s-%d", project, 1000+i), now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := x.Exec("INSERT INTO relations (id, from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+			newID(), ticketID, other, RelationRelates, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := x.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // relation writes the relation the replica's relation.add made: its row
 // and its add row on its from ticket. It returns the relation's id.
 func (r replica) relation(t *testing.T, s *Store, opID, projectID, from, to, kind string) string {
@@ -693,8 +728,8 @@ func TestTwoAddsOfOneMemberReadAsTheLaterAdd(t *testing.T) {
 		if err != nil || len(ls) != 1 || ls[0].ID != links[c.later.actor] || ls[0].URL != "https://"+c.later.actor+".example.com/pull/7" || ls[0].Note != "from "+c.later.actor {
 			t.Fatalf("%s: the links %+v %v", c.name, ls, err)
 		}
-		// One member: a local add of it is refused, and a bound counts it
-		// once.
+		// One member: a local add of it is refused. (It takes one place in
+		// a bound: TestAMemberOfTwoAddsTakesOnePlaceInItsBound.)
 		rc, err := relate(s, "again", a, RelationBlocks, "CND-2")
 		want(t, rc, err, StatusFailed, RefusalInvalid)
 		rc, err = addLink(s, "again-l", a, NewLink{Kind: LinkDelivery, Ref: "#7", URL: "https://example.com/x"})
@@ -721,6 +756,44 @@ func TestTwoAddsOfOneMemberReadAsTheLaterAdd(t *testing.T) {
 		if n := count(t, s, "SELECT COUNT(*) FROM relations WHERE deleted_at = ''") + count(t, s, "SELECT COUNT(*) FROM links WHERE deleted_at = ''"); n != 0 {
 			t.Fatalf("%s: %d live rows of the members after their removes", c.name, n)
 		}
+	}
+}
+
+// A member two replicas added takes one place in its ticket's bound,
+// however many rows it has: with the rest of each bound but one place
+// written by hand, the ticket takes one more link and one more relation,
+// the last places, and refuses the next of each.
+func TestAMemberOfTwoAddsTakesOnePlaceInItsBound(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	pid := newProject(t, s, "CND")
+	aID, a := newTicket(t, s, "CND", "A")
+	bID, _ := newTicket(t, s, "CND", "B")
+	early := replica{"replica-a", time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
+	late := replica{"replica-b", early.at.Add(time.Second)}
+	for i, r := range []replica{early, late} {
+		r.relation(t, s, opID("r", i), pid, aID, bID, RelationBlocks)
+		r.link(t, s, opID("l", i), pid, aID, NewLink{Kind: LinkDelivery, Ref: "#7", URL: "https://example.com/pull/7"})
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND deleted_at = ''", aID) +
+		count(t, s, "SELECT COUNT(*) FROM relations WHERE from_id = ? AND deleted_at = ''", aID); n != 4 {
+		t.Fatalf("%d live rows of the two members, want two each", n)
+	}
+	fill(t, s, "CND", pid, aID, MaxLinks-2, MaxRelations-2)
+	rc, err := addLink(s, "last-l", a, NewLink{Kind: LinkExternal, URL: "https://example.com/last"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "past-l", a, NewLink{Kind: LinkExternal, URL: "https://example.com/past"})
+	want(t, rc, err, StatusFailed, RefusalBound)
+	if !strings.Contains(rc.Error, fmt.Sprintf("this would make %d", MaxLinks+1)) {
+		t.Fatalf("the links' refusal: %q", rc.Error)
+	}
+	_, last := newTicket(t, s, "CND", "Last")
+	rc, err = relate(s, "last-r", a, RelationRelates, last)
+	want(t, rc, err, StatusDone, "")
+	_, past := newTicket(t, s, "CND", "Past")
+	rc, err = relate(s, "past-r", a, RelationRelates, past)
+	want(t, rc, err, StatusFailed, RefusalBound)
+	if !strings.Contains(rc.Error, fmt.Sprintf("this would make %d", MaxRelations+1)) {
+		t.Fatalf("the relations' refusal: %q", rc.Error)
 	}
 }
 

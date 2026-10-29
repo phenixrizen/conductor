@@ -13,25 +13,36 @@ import (
 )
 
 // A comment's number is derived at read: 1 to k with no gap under 50
-// concurrent adds, in the order (created_at, author, id); a comment the
-// test inserts with an earlier created_at (a replica's, say) takes its
-// place and the later ones renumber, no row rewritten.
+// concurrent adds, in the order (created_at, author, id), and among its
+// own ticket's comments alone, another ticket's made among them numbered
+// apart; a comment the test inserts with an earlier created_at (a
+// replica's, say) takes its place and the later ones renumber, no row
+// rewritten.
 func TestCommentsAreNumberedAtReadWithNoGap(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
 	newProject(t, s, "CND")
 	tid, key := newTicket(t, s, "CND", "Talked about")
+	otherID, other := newTicket(t, s, "CND", "Talked about too")
+	comment := func(ticket, op, body string) error {
+		rc, err := s.AddComment(ctx, testOp(op), ticket, body)
+		if err == nil && rc.Status != StatusDone {
+			err = fmt.Errorf("%s: %+v", body, rc)
+		}
+		return err
+	}
 	var wg sync.WaitGroup
-	errs := make(chan error, 50)
+	errs := make(chan error, 75)
 	for i := range 50 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rc, err := s.AddComment(ctx, testOp(opID("c", i)), key, fmt.Sprintf("comment %d", i))
-			if err == nil && rc.Status != StatusDone {
-				err = fmt.Errorf("comment %d: %+v", i, rc)
+			// Every other one comments on the other ticket first, so the two
+			// tickets' comments are made among each other's.
+			if i%2 == 0 {
+				errs <- comment(other, opID("o", i), fmt.Sprintf("other %d", i))
 			}
-			errs <- err
+			errs <- comment(key, opID("c", i), fmt.Sprintf("comment %d", i))
 		}()
 	}
 	wg.Wait()
@@ -57,6 +68,16 @@ func TestCommentsAreNumberedAtReadWithNoGap(t *testing.T) {
 			if c.CreatedAt.Before(p.CreatedAt) || (c.CreatedAt.Equal(p.CreatedAt) && (c.Author < p.Author || (c.Author == p.Author && c.ID < p.ID))) {
 				t.Fatalf("comments %d and %d out of order: %+v %+v", i, i+1, p, c)
 			}
+		}
+	}
+	// The other ticket's 25, made among these, are its own 1 to 25.
+	ocs, err := s.Comments(ctx, other, 0, MaxCommentPage)
+	if err != nil || len(ocs) != 25 {
+		t.Fatalf("the other ticket's comments: %d %v", len(ocs), err)
+	}
+	for i, c := range ocs {
+		if c.N != i+1 || c.TicketID != otherID {
+			t.Fatalf("the other ticket's comment %d: %+v", i, c)
 		}
 	}
 	// A comment written earlier than all, as a replica's add would bring

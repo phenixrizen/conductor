@@ -219,8 +219,9 @@ func TestLinksPastTheirBoundAreRefused(t *testing.T) {
 // from then on: after a second deleted ticket's link names the run too,
 // and after the first deleted ticket's undelete, which removes its link
 // with one changes row; with the deleted tickets' links alone it names
-// the later-linked tombstone; and no other ticket's rev moves on a
-// delete or an undelete.
+// the later-linked tombstone, by its add's place in the log, whichever
+// was deleted later or numbered higher; and no other ticket's rev moves
+// on a delete or an undelete.
 func TestARunsTicketThroughDeletesAndUndeletes(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
@@ -336,8 +337,9 @@ func TestARunsTicketThroughDeletesAndUndeletes(t *testing.T) {
 	// A live ticket wins over a tombstone whose link is newer: P links
 	// run2 and is deleted, Q links it and is deleted, P's undelete keeps
 	// its link (no live ticket holds the run), and the lookup answers P.
+	// Q is made first, so P is the higher-numbered.
+	qID, q := newTicket(t, s, "CND", "Q")
 	pID, p := newTicket(t, s, "CND", "P")
-	_, q := newTicket(t, s, "CND", "Q")
 	for i, step := range []func() (Receipt, error){
 		func() (Receipt, error) { return addLink(s, "p-link", p, NewLink{Kind: LinkRun, Ref: "run2"}) },
 		func() (Receipt, error) { return s.DeleteTicket(ctx, testOp("p-del"), p) },
@@ -355,5 +357,16 @@ func TestARunsTicketThroughDeletesAndUndeletes(t *testing.T) {
 	}
 	if tk, found, err := s.RunTicket(ctx, "run2"); err != nil || !found || tk.ID != pID || !tk.DeletedAt.IsZero() {
 		t.Fatalf("run2's ticket: %s %v %v, want %s live", tk.Key, found, err, p)
+	}
+	// P deleted again: with the two tombstones' links alone the lookup
+	// answers Q, the later-linked, though P is both the later-deleted and
+	// the higher-numbered.
+	rc, err = s.DeleteTicket(ctx, testOp("p-del2"), p)
+	want(t, rc, err, StatusDone, "")
+	if np, nq := ticketOf(t, s, p).Number, ticketOf(t, s, q).Number; np <= nq {
+		t.Fatalf("P is numbered %d and Q %d", np, nq)
+	}
+	if tk, found, err := s.RunTicket(ctx, "run2"); err != nil || !found || tk.ID != qID || tk.DeletedAt.IsZero() {
+		t.Fatalf("run2's ticket: %s %v %v, want %s deleted", tk.Key, found, err, q)
 	}
 }
