@@ -193,7 +193,12 @@ author; the `dco` check proves it.
   committed with it.
 - Every shipped feature gets its `docs/features.md` entry.
 
-## Licence
+## Licence, marks, security
 
 Contributions are under the Apache License 2.0 (`LICENSE`), the licence of
-this repository; there is no copyright assignment.
+this repository; there is no copyright assignment. The marks (the Conductor
+name, the junction mark and the logos, and the RockSolid Labs name and
+logos) are `TRADEMARKS.md`'s: it names their owner and says what may be done
+with them without asking and what may not. A vulnerability is `SECURITY.md`'s:
+it goes through the private channel named there, never an issue, a pull
+request or a public comment.

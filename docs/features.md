@@ -3058,6 +3058,72 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   names (Conductor, Yardmaster, Brakeman #356, Switchman) in the README,
   `docs/architecture.md`, `docs/repository-map.md` and AGENTS.md; the
   architecture's crew-runs section gains the managed run.
+- **Governance: contributing under the DCO, the marks' owner, security
+  reporting and the open-core pull request checklist (Program item B; #386
+  and #387, 2026-10-28).** The plan is `docs/plans/governance.md` (PR #383).
+  PR-1 (#386, PR #388, merged 2026-10-29 01:38Z): `CONTRIBUTING.md` (what to
+  read first, who decides, issues and pull requests with the fork path for a
+  contributor without write access, the sign-off and the repair of a branch
+  that lacks it, the checks, the four open-core rules, the checklist, the
+  rules for code, the licence); the `DCO` text (1.1, verbatim); `AGENTS.md`
+  naming the maintainers, the owners of the `rocksolidlabs` organization,
+  where it said the owner, with the sign-off bullet and the fork path; the
+  pull request template's five boxes and its sign-off line;
+  `scripts/dco_check.py` (every commit of `base..head`, merges included,
+  carries a `Signed-off-by` with the author's name and address; exit 1 names
+  each commit that does not and the fix, exit 2 a read that failed; it reads
+  the repository named and its whole history, whatever the environment
+  selects, cuts or rewrites) with its tests; the `dco` job in `ci.yml` among
+  `required-checks`' needs; the preflight step, first; `docs/checks.md`.
+  PR-2 (#387): `TRADEMARKS.md` (the marks; their owner, RockSolid Labs,
+  Inc.; what the licence does not grant; what is allowed without asking and
+  what is not; how a fork renames itself and where the marks are written
+  in; the spelling; the address), `SECURITY.md` (GitHub's private
+  vulnerability reporting first and the mailbox second; what to include; an
+  acknowledgement within seven days, the fix as an ordinary pull request
+  that names the change and not the vulnerability, the advisory published
+  when the fix has shipped, no bounty; the scope; the supported versions;
+  the rule for everyone working here), `NOTICE`'s owner paragraph (twelve
+  lines still; the packages and the image copy it unchanged), the issue
+  chooser's "Report a vulnerability" link, and the pointers in
+  `CONTRIBUTING.md`, `AGENTS.md`, the task template, `docs/design/brand.md`
+  and `docs/repository-map.md`. Decisions (the plan, Owner decisions):
+  "RockSolid Labs", and "RockSolid Labs, Inc." for the entity (O11); the
+  check is a CI job, not the DCO GitHub App (O13); the maintainers are the
+  organization's owners (B1); the certificate's text at the root (B2); the
+  sign-off is the author's own, merges included, no bot exemption (B3);
+  four rule boxes and the checks box, the sign-off as a line (B4);
+  conductor@rocksolidlabs.io for the marks and as the security fallback
+  (B5); an acknowledgement within seven days, no bounty (B6); the private
+  repositories unnamed (B7); the railroad names of Conductor's parts
+  neither claimed nor disclaimed (B8); the README left to stream A (B9);
+  nothing on `main` re-signed (B10); two PRs in order (B11); the one
+  force-push of the acceptance check (B12); the fork path (B13); the
+  cutover by closing and reopening every open PR (B14). Observed:
+  acceptance observation 1, the red half: the throwaway PR #389
+  (`issue-386-unsigned`, one commit without `-s`) ran
+  https://github.com/rocksolidlabs/conductor/actions/runs/40782459422 with
+  `dco` red, its log naming the commit and the fix, and `required-checks`
+  red; the fix (`git rebase --signoff origin/main`, then the check exit 0
+  with four commits counted, the same tree) was run locally and not pushed,
+  since it is the force-push B12 authorizes and the agent's rules forbid,
+  so the green half on that branch waits for a maintainer, and #389 was
+  closed as it was. The green case on a real PR: PR #388's own run
+  https://github.com/rocksolidlabs/conductor/actions/runs/40782335246,
+  `dco` printing `3 commits signed off by their authors`, every job green.
+  Observation 2: `TRADEMARKS.md` and `NOTICE` both name RockSolid Labs,
+  Inc.; a maintainer's review approval on PR-2 approves the wording.
+  Observation 3: PR-2's body is the first opened after PR-1 merged and
+  carries the template's four rule boxes and the sign-off line.
+  Observation 4, prepared: the throwaway PR #390 (`issue-386-before`, cut
+  from `main` before the job) ran
+  https://github.com/rocksolidlabs/conductor/actions/runs/40782472193 with
+  no `dco` job at all; the cutover had not run when this entry was written
+  (#390 open, never closed and reopened), so its reopened run is still to
+  be observed and its URL added here. Private vulnerability reporting read
+  `enabled: false` on 2026-10-28; a maintainer turns it on before PR-2
+  merges. `internal/crew`'s `TestAContinuation*` flaked at `TempDir`
+  cleanup on the throwaway and plan runs (#281, one line each).
 - **The repository moved to rocksolidlabs/conductor (#380, 2026-10-27).** The
   GitHub transfer (the ruleset, the `live` environment, the workflows, the
   labels, the issues and the advisories came along; the old URLs answer 301)
