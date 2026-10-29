@@ -2,10 +2,10 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // openStore opens a store under dir and closes it with the test.
@@ -28,12 +28,11 @@ func storeDir(t *testing.T) string {
 // testOp is an operation of the actor test by Tester, with the given id.
 func testOp(id string) Op { return Op{Actor: "test", ID: id, By: "Tester"} }
 
-// newProject makes the minimal project row this change's schema allows
-// (the create intent comes with PR-2) through Apply, as project.create
-// will: one create row, the project's rev 1. It returns the project's id.
+// newProject makes a project through project.create, its name its key,
+// and returns its id.
 func newProject(t *testing.T, s *Store, key string) string {
 	t.Helper()
-	rc, err := createProject(s, testOp("project-"+key), key)
+	rc, err := s.CreateProject(context.Background(), testOp("project-"+key), NewProject{Key: key, Name: key})
 	if err != nil {
 		t.Fatalf("project %s: %v", key, err)
 	}
@@ -43,57 +42,107 @@ func newProject(t *testing.T, s *Store, key string) string {
 	return rc.ID
 }
 
-func createProject(s *Store, op Op, key string) (Receipt, error) {
-	id := newID()
-	return s.Apply(context.Background(), op, "project.create", map[string]string{"key": key}, func(x *tx) error {
-		if !ValidKey(key) {
-			return refuse(RefusalInvalid, "%s is not a project key", key)
-		}
-		if _, err := x.tx.ExecContext(x.ctx, "INSERT INTO projects (id, key, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", id, key, key, stamp(x.now), stamp(x.now)); err != nil {
-			return err
-		}
-		x.created(id, key)
-		value, _ := json.Marshal(map[string]string{"id": id, "key": key, "name": key})
-		return x.record(ChangeRow{Entity: EntityProject, EntityID: id, ProjectID: id, Op: OpCreate, Value: string(value)})
-	})
-}
-
-// createTicket makes the minimal ticket row this change's schema allows
-// through Apply, as ticket.create will: its number allocated in the
-// transaction, one create row.
-func createTicket(s *Store, op Op, projectID, title string) (Receipt, error) {
-	id := newID()
-	return s.Apply(context.Background(), op, "ticket.create", map[string]string{"project": projectID, "title": title}, func(x *tx) error {
-		n, err := allocateNumber(x, projectID)
-		if err != nil {
-			return err
-		}
-		var key string
-		if err := x.tx.QueryRowContext(x.ctx, "SELECT key FROM projects WHERE id = ?", projectID).Scan(&key); err != nil {
-			return err
-		}
-		tkey := TicketKey(key, n)
-		if _, err := x.tx.ExecContext(x.ctx, "INSERT INTO tickets (id, project_id, number, key, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			id, projectID, n, tkey, title, stamp(x.now), stamp(x.now)); err != nil {
-			return err
-		}
-		x.created(id, tkey)
-		value, _ := json.Marshal(map[string]any{"id": id, "key": tkey, "number": n, "title": title})
-		return x.record(ChangeRow{Entity: EntityTicket, EntityID: id, TicketID: id, ProjectID: projectID, Op: OpCreate, Value: string(value)})
-	})
-}
-
-func newTicket(t *testing.T, s *Store, projectID, title string) (id, key string) {
+// newTicket makes a ticket of the project with the key through
+// ticket.create, and returns its id and key.
+func newTicket(t *testing.T, s *Store, project, title string) (id, key string) {
 	t.Helper()
-	rc, err := createTicket(s, testOp("ticket-"+newID()), projectID, title)
+	return makeTicket(t, s, NewTicket{Project: project, Title: title})
+}
+
+// makeTicket makes a ticket through ticket.create, and returns its id and
+// key.
+func makeTicket(t *testing.T, s *Store, n NewTicket) (id, key string) {
+	t.Helper()
+	rc, err := s.CreateTicket(context.Background(), testOp("ticket-"+newID()), n)
 	if err != nil {
-		t.Fatalf("ticket %s: %v", title, err)
+		t.Fatalf("ticket %s: %v", n.Title, err)
 	}
 	if rc.Status != StatusDone {
-		t.Fatalf("ticket %s: %+v", title, rc)
+		t.Fatalf("ticket %s: %+v", n.Title, rc)
 	}
 	return rc.ID, rc.Key
 }
+
+// ticketOf reads the ticket with the key, its sets with it: the
+// assignees by actor, the live labels by id.
+func ticketOf(t *testing.T, s *Store, key string) Ticket {
+	t.Helper()
+	tk, err := ticketByKey(context.Background(), s.db, key)
+	if err != nil {
+		t.Fatalf("ticket %s: %v", key, err)
+	}
+	tk.Assignees = texts(t, s, "SELECT actor FROM ticket_assignees WHERE ticket_id = ? ORDER BY actor", tk.ID)
+	tk.Labels = texts(t, s, "SELECT label_id FROM ticket_labels JOIN labels ON labels.id = label_id WHERE ticket_id = ? AND labels.deleted_at = '' ORDER BY label_id", tk.ID)
+	return tk
+}
+
+// projectOf reads the project with the key.
+func projectOf(t *testing.T, s *Store, key string) Project {
+	t.Helper()
+	p, err := projectByKey(context.Background(), s.db, key)
+	if err != nil {
+		t.Fatalf("project %s: %v", key, err)
+	}
+	return p
+}
+
+// texts reads the one text column of the rows a query gives.
+func texts(t *testing.T, s *Store, query string, args ...any) []string {
+	t.Helper()
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// insertLabel writes a label's row of the project as the test needs it,
+// label.create being PR-3's: live, or a tombstone when deleted. It
+// returns the label's id.
+func insertLabel(t *testing.T, s *Store, projectID, name string, deleted bool) string {
+	t.Helper()
+	id, now := newID(), stamp(time.Now())
+	if _, err := s.db.Exec("INSERT INTO labels (id, project_id, name, color, created_at, deleted_at, rev) VALUES (?, ?, ?, 'gray', ?, ?, 1)",
+		id, projectID, name, now, deletedStamp(deleted, now)); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// insertMilestone writes a milestone's row of the project as the test
+// needs it, milestone.create being PR-3's. It returns the milestone's
+// id.
+func insertMilestone(t *testing.T, s *Store, projectID, name string, deleted bool) string {
+	t.Helper()
+	id, now := newID(), stamp(time.Now())
+	if _, err := s.db.Exec("INSERT INTO milestones (id, project_id, name, created_at, updated_at, deleted_at, rev) VALUES (?, ?, ?, ?, ?, ?, 1)",
+		id, projectID, name, now, now, deletedStamp(deleted, now)); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func deletedStamp(deleted bool, now string) string {
+	if deleted {
+		return now
+	}
+	return ""
+}
+
+// ptr is a pointer to v, for the fields an edit sets.
+func ptr[T any](v T) *T { return &v }
 
 // field is a scalar field set by setFields, in order.
 type field struct{ name, value string }

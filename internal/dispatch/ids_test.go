@@ -1,12 +1,12 @@
 package dispatch
 
 import (
+	"context"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestAProjectKeyIsRefusedOutsideThePattern(t *testing.T) {
@@ -19,9 +19,10 @@ func TestAProjectKeyIsRefusedOutsideThePattern(t *testing.T) {
 		}
 	}
 	s := openStore(t, storeDir(t))
-	rc, err := createProject(s, testOp("p1"), "cnd")
+	ctx := context.Background()
+	rc, err := s.CreateProject(ctx, testOp("p1"), NewProject{Key: "cnd", Name: "Conductor"})
 	want(t, rc, err, StatusFailed, RefusalInvalid)
-	rc, err = createProject(s, testOp("p2"), "CND")
+	rc, err = s.CreateProject(ctx, testOp("p2"), NewProject{Key: "CND", Name: "Conductor"})
 	want(t, rc, err, StatusDone, "")
 	if rc.Key != "CND" || len(rc.ID) != IDLen {
 		t.Fatalf("the create's receipt: %+v", rc)
@@ -78,6 +79,7 @@ func TestNewIDShape(t *testing.T) {
 func TestNumbersAreAllocatedInOrderUnderConcurrentCreates(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	pid := newProject(t, s, "CND")
+	ctx := context.Background()
 	const n = 50
 	keys := make([]string, n)
 	errs := make([]error, n)
@@ -86,7 +88,7 @@ func TestNumbersAreAllocatedInOrderUnderConcurrentCreates(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rc, err := createTicket(s, testOp(opID("t", i)), pid, opID("Ticket ", i))
+			rc, err := s.CreateTicket(ctx, testOp(opID("t", i)), NewTicket{Project: "CND", Title: opID("Ticket ", i)})
 			if err == nil && rc.Status != StatusDone {
 				err = &Refusal{Code: rc.Refusal, Words: rc.Error}
 			}
@@ -134,20 +136,21 @@ func TestNumbersAreAllocatedInOrderUnderConcurrentCreates(t *testing.T) {
 		t.Fatalf("next_number %d %v", next, err)
 	}
 	// A second project allocates from 1, apart.
-	other := newProject(t, s, "OTH")
-	if _, key := newTicket(t, s, other, "Other"); key != "OTH-1" {
+	newProject(t, s, "OTH")
+	if _, key := newTicket(t, s, "OTH", "Other"); key != "OTH-1" {
 		t.Fatalf("the other project's first key %q", key)
 	}
 }
 
 func TestAKeyIsKeptThroughADelete(t *testing.T) {
 	s := openStore(t, storeDir(t))
-	pid := newProject(t, s, "CND")
-	id, key := newTicket(t, s, pid, "First")
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	id, key := newTicket(t, s, "CND", "First")
 	if key != "CND-1" {
 		t.Fatalf("key %q", key)
 	}
-	rc, err := setFields(s, testOp("del"), EntityTicket, id, field{"deleted_at", stamp(time.Now())})
+	rc, err := s.DeleteTicket(ctx, testOp("del"), "CND-1")
 	want(t, rc, err, StatusDone, "")
 	var kept string
 	var number int64
@@ -159,20 +162,23 @@ func TestAKeyIsKeptThroughADelete(t *testing.T) {
 		t.Fatalf("after the delete: %s %d %q", kept, number, deleted)
 	}
 	// The number is never reassigned: the next ticket is CND-2.
-	if _, key := newTicket(t, s, pid, "Second"); key != "CND-2" {
+	if _, key := newTicket(t, s, "CND", "Second"); key != "CND-2" {
 		t.Fatalf("the next key %q", key)
 	}
-	rc, err = setFields(s, testOp("undel"), EntityTicket, id, field{"deleted_at", ""})
+	rc, err = s.UndeleteTicket(ctx, testOp("undel"), "CND-1")
 	want(t, rc, err, StatusDone, "")
-	if err := s.db.QueryRow("SELECT key FROM tickets WHERE id = ?", id).Scan(&kept); err != nil || kept != "CND-1" {
-		t.Fatalf("after the undelete: %q %v", kept, err)
+	if err := s.db.QueryRow("SELECT key, deleted_at FROM tickets WHERE id = ?", id).Scan(&kept, &deleted); err != nil || kept != "CND-1" || deleted != "" {
+		t.Fatalf("after the undelete: %q %q %v", kept, deleted, err)
+	}
+	if _, key := newTicket(t, s, "CND", "Third"); key != "CND-3" {
+		t.Fatalf("the key after the undelete %q", key)
 	}
 }
 
 func TestTheReplicationRangeReadsBackAsZero(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	pid := newProject(t, s, "CND")
-	newTicket(t, s, pid, "First")
+	newTicket(t, s, "CND", "First")
 	var from, to, next int64
 	if err := s.db.QueryRow("SELECT number_from, number_to, next_number FROM projects WHERE id = ?", pid).Scan(&from, &to, &next); err != nil {
 		t.Fatal(err)
@@ -184,11 +190,22 @@ func TestTheReplicationRangeReadsBackAsZero(t *testing.T) {
 
 func TestAllocatingFromNoProjectIsAnError(t *testing.T) {
 	s := openStore(t, storeDir(t))
-	_, err := createTicket(s, testOp("t1"), "no-such-project", "Orphan")
+	ctx := context.Background()
+	_, err := s.Apply(ctx, testOp("t1"), "test.allocate", nil, func(x *tx) error {
+		_, err := allocateNumber(x, "no-such-project")
+		return err
+	})
 	if err == nil || !strings.Contains(err.Error(), "no such project") {
-		t.Fatalf("a ticket of no project: %v", err)
+		t.Fatalf("allocating from no project: %v", err)
 	}
 	if n := count(t, s, "SELECT COUNT(*) FROM ops"); n != 0 {
 		t.Fatalf("%d receipts after a database error", n)
+	}
+	// A ticket of a project with no row is refused before any number is
+	// allocated.
+	rc, err := s.CreateTicket(ctx, testOp("t2"), NewTicket{Project: "NOPE", Title: "Orphan"})
+	want(t, rc, err, StatusFailed, RefusalNotFound)
+	if n := count(t, s, "SELECT COUNT(*) FROM tickets"); n != 0 {
+		t.Fatalf("%d tickets", n)
 	}
 }

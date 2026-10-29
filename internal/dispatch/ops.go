@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -33,7 +34,8 @@ var OpIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
 // answers 400 invalid_request, as it answers a bad command id.
 var (
 	ErrBadOpID  = errors.New("dispatch: an operation id is 1 to 32 letters, digits, '.', '_', '~' or '-'")
-	ErrBadActor = errors.New("dispatch: an operation names its actor")
+	ErrBadActor = fmt.Errorf("dispatch: an operation names its actor in at most %d bytes, with no control character", MaxActor)
+	ErrBadBy    = fmt.Errorf("dispatch: an operation's display name is at most %d characters, with no control character", MaxByName)
 )
 
 // Op is what a client sends with a change: who asks (Actor: the admin's
@@ -41,12 +43,22 @@ var (
 // attempt's under agent:<member>), the id it minted, the entity's
 // revision it expects (0 for none), and the display name recorded as by
 // on the change rows, which travels in the body as byName does for a
-// broadcast.
+// broadcast. The actor is at most MaxActor bytes and the display name at
+// most MaxByName characters, neither with a control character.
 type Op struct {
 	Actor       string
 	ID          string
 	ExpectedRev int64
 	By          string
+}
+
+// author is the name a row the operation makes records as its creator
+// (created_by): the display name, else the actor.
+func (op Op) author() string {
+	if op.By != "" {
+		return op.By
+	}
+	return op.Actor
 }
 
 // The statuses of a receipt.
@@ -56,7 +68,9 @@ const (
 )
 
 // The refusals a failed receipt names: the store's rules. read_only and
-// op_conflict are answered without a row, the rest kept.
+// op_conflict are answered without a row, the rest kept. key_taken is a
+// project's create naming a key another project holds (the API's 409
+// key_taken).
 const (
 	RefusalNotFound      = "not_found"
 	RefusalInvalid       = "invalid"
@@ -69,6 +83,7 @@ const (
 	RefusalArchived      = "archived"
 	RefusalRunLinked     = "run_linked"
 	RefusalExpired       = "expired"
+	RefusalKeyTaken      = "key_taken"
 )
 
 // Receipt is what an operation gets and what the store keeps under
@@ -91,16 +106,6 @@ type Receipt struct {
 	Refusal string   `json:"refusal,omitempty"`
 	Missing []string `json:"missing,omitempty"`
 }
-
-// MaxReceipt bounds a receipt's JSON, a repeat's answer included;
-// maxReceiptWords a refusal's words in it, in characters, which are cut
-// further by their size as JSON (fitWords) when the receipt would not
-// fit, so a refusal that quotes its input, or a read-only store's why,
-// stays inside.
-const (
-	MaxReceipt      = 4 << 10
-	maxReceiptWords = 1000
-)
 
 // Refusal is an operation refused by the store's rules: the code a
 // failed receipt names, the words, and for close_policy what is missing.
@@ -170,15 +175,6 @@ type ChangeRow struct {
 	OpID      string    `json:"opId"`
 	N         int       `json:"n"`
 }
-
-// MaxChangeValue bounds a change row's value and prior: a text value
-// meets it by its field's bound, a structured one by its shape.
-const MaxChangeValue = 64 << 10
-
-// maxReceipts is how many receipts the store keeps: the newest, prune
-// dropping the rest. A resend older than that is answered by the changes
-// log, which keeps the operation's identity for good.
-const maxReceipts = 20000
 
 // revTables names the table of each entity with a rev column, and
 // whether the row has an updated_at to move with it.
@@ -362,16 +358,22 @@ func fingerprint(intent string, args any) (string, error) {
 // 0) meaning the operation ran, and the resend is answered done and Repeat
 // with no rev, id or key whatever its content; none means the receipt was
 // a refusal's, and the resend runs as a new operation. An error is the
-// database's own, a bad op id or actor, or the store closed: nothing was
-// written, and nothing is answered; a read-only store answers a read_only
-// refusal, written nowhere. OnChange's listeners run after the commit, on
-// this goroutine.
+// database's own, a bad op id, actor or display name, or the store
+// closed: nothing was written, and nothing is answered; a read-only store
+// answers a read_only refusal, written nowhere. OnChange's listeners run
+// after the commit, on this goroutine.
 func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, change func(*tx) error) (Receipt, error) {
 	if !OpIDPattern.MatchString(op.ID) {
 		return Receipt{}, ErrBadOpID
 	}
-	if op.Actor == "" {
+	if checkField("op.actor", "the actor", op.Actor) != nil {
 		return Receipt{}, ErrBadActor
+	}
+	// The author is held to the display name's rule whichever of the two
+	// it is, so a row's created_by meets its bound: an actor within
+	// MaxActor always does.
+	if checkField("op.by", "by", op.author()) != nil {
+		return Receipt{}, ErrBadBy
 	}
 	fp, err := fingerprint(intent, args)
 	if err != nil {
@@ -597,4 +599,75 @@ func (s *Store) prune(ctx context.Context, now time.Time) (int, error) {
 	n, _ := res.RowsAffected()
 	s.pruned.Add(n)
 	return int(n), nil
+}
+
+// fieldValue is a scalar field's column and its value as a change row
+// records it: a text field's text as it is, a number in decimal, a
+// structured field's JSON. Its column takes that value as it is (SQLite
+// stores a decimal in an INTEGER column as the integer), so the row is
+// what its change rows make.
+type fieldValue struct{ column, value string }
+
+// fieldValues is a copy of fields, to change without touching them.
+func fieldValues(fields []fieldValue) []fieldValue { return append([]fieldValue(nil), fields...) }
+
+// setField sets the column's value among fields, in place.
+func setField(fields []fieldValue, column, value string) {
+	for i := range fields {
+		if fields[i].column == column {
+			fields[i].value = value
+		}
+	}
+}
+
+// columns is the columns of fields, in their order.
+func columns(fields []fieldValue) []string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		out[i] = f.column
+	}
+	return out
+}
+
+// scalars reads the columns of the row with the id, as text: a number
+// in decimal. table and the columns are the code's, never a client's.
+func (t *tx) scalars(table, id string, cols []string) ([]fieldValue, error) {
+	values := make([]string, len(cols))
+	dest := make([]any, len(cols))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	if err := t.tx.QueryRowContext(t.ctx, "SELECT "+strings.Join(cols, ", ")+" FROM "+table+" WHERE id = ?", id).Scan(dest...); err != nil {
+		return nil, err
+	}
+	out := make([]fieldValue, len(cols))
+	for i, c := range cols {
+		out[i] = fieldValue{c, values[i]}
+	}
+	return out, nil
+}
+
+// setScalars writes each field of the row base names whose value in
+// after differs from before's, in after's order: its column set, and one
+// set row naming the field, its value and its prior. A field unchanged
+// writes nothing. table and the columns are the code's, never a client's.
+func (t *tx) setScalars(table string, base ChangeRow, before, after []fieldValue) error {
+	prior := map[string]string{}
+	for _, f := range before {
+		prior[f.column] = f.value
+	}
+	for _, f := range after {
+		if prior[f.column] == f.value {
+			continue
+		}
+		if _, err := t.tx.ExecContext(t.ctx, "UPDATE "+table+" SET "+f.column+" = ? WHERE id = ?", f.value, base.EntityID); err != nil {
+			return err
+		}
+		row := base
+		row.Field, row.Op, row.Value, row.Prior = f.column, OpSet, f.value, prior[f.column]
+		if err := t.record(row); err != nil {
+			return err
+		}
+	}
+	return nil
 }
