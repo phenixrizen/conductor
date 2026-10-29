@@ -691,7 +691,9 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 // short by the server's end) or be missing (rec empty): then the run is
 // built from the crew as launched and the manifest its row keeps, its log
 // empty. Its prerequisites are read from their receipts
-// (recoveredPrerequisites), whatever the record said of them.
+// (recoveredPrerequisites), whatever the record said of them, and nothing
+// is cleaning: a record that said otherwise at the ledger's revision is
+// written again too (UnderWay).
 func Recovered(rec Run, from Loaded) Run {
 	if rec.ID == "" {
 		rec = Run{ID: from.Run.ID, CrewID: from.Run.CrewID, StartedAt: from.Run.CreatedAt, State: RunRunning}
@@ -755,6 +757,29 @@ func Recovered(rec Run, from Loaded) Run {
 		}
 	}
 	return rec
+}
+
+// UnderWay reports whether rec, a managed run's record, says something of
+// the run is under way that only the server running it can be doing: a
+// tree being ended, or a prerequisite running. A record at the ledger's
+// revision can say so: the journal can write it between a commit and the
+// end of what that commit finished (a tree's tree.ended and the drop of
+// its count, a generation's last row and its end), and the server can end
+// before the next. Nothing runs after the server's end, so the server's
+// start writes such a record again as the ledger has it (Recovered), as it
+// does one that lags (Codex's review of #422, round 2).
+func UnderWay(rec Run) bool {
+	if rec.Cleaning != 0 {
+		return true
+	}
+	if m := rec.Manifest; m != nil {
+		for _, p := range m.Prerequisites {
+			if p.State == "running" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // recoveredPrerequisites is a run's prerequisites as their receipts say

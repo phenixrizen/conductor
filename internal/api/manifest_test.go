@@ -171,6 +171,93 @@ func TestTheReceiptRoutesAnswerFromTheLedger(t *testing.T) {
 	}
 }
 
+// A record at the ledger's revision that says a tree is being ended or a
+// prerequisite runs is written again at the next start as the ledger has
+// it (Codex's review of #422, round 2): the journal can write it between
+// a commit and the end of what that commit finished, the server can end
+// before the next, and the recovery, finding nothing open, moves no
+// revision. Nothing runs after the server's end: the run reads with
+// nothing cleaning and its prerequisites as their receipts say, at the
+// revision it had.
+func TestARecordThatSaysSomethingRunsIsWrittenAgainAtTheNextStart(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	run, release, err := e.srv.runs.LaunchNamed(t.Context(), manifestRunCrew(e.root, filepath.Join(t.TempDir(), "down")), "")
+	release()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := runningAttempt(t, e, run.ID, "build", 1)
+	sid := a["sessionId"].(string)
+	if resp, out := e.do("POST", "/api/sessions/"+sid+"/task/result", e.agentToken(sid), map[string]any{"summary": "built"}); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("result: %d %v", resp.StatusCode, out)
+	}
+	taskVia(t, e, run.ID, "build", "succeeded", func(task map[string]any) bool { return task["state"] == "succeeded" })
+	deadline := time.Now().Add(10 * time.Second)
+	for got, _ := e.srv.runs.Get(run.ID); got.Cleaning != 0; got, _ = e.srv.runs.Get(run.ID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the run's trees still ending after 10 s: cleaning %d", got.Cleaning)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	e.srv.Shutdown(ctx)
+	ld, err := ledger.Open(filepath.Join(e.srv.store.Dir(), "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := ld.Run(ctx, run.ID)
+	ld.Close()
+	if err != nil || !ok {
+		t.Fatalf("the run's row: %v %v", ok, err)
+	}
+	for _, tc := range []struct {
+		name string
+		set  func(*crew.Run)
+	}{
+		{"a tree being ended", func(rec *crew.Run) { rec.Cleaning = 2 }},
+		{"a prerequisite running", func(rec *crew.Run) {
+			rec.Manifest.Prerequisites[0] = crew.PrerequisiteState{ID: "tools", K: 1, State: "running"}
+		}},
+	} {
+		// The record as the journal can have written it, at the ledger's
+		// revision.
+		records, err := crew.NewRecords(e.srv.store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, ok, err := records.Get(run.ID)
+		if err != nil || !ok || rec.Manifest == nil || len(rec.Manifest.Prerequisites) != 1 {
+			t.Fatalf("%s: the record: %v %v %+v", tc.name, ok, err, rec.Manifest)
+		}
+		rec.Managed = &crew.Managed{Revision: row.Revision}
+		tc.set(&rec)
+		if !crew.UnderWay(rec) {
+			t.Fatalf("%s: the record does not say so", tc.name)
+		}
+		if err := records.Save(rec); err != nil {
+			t.Fatal(err)
+		}
+		records.Close()
+		again := e.restart()
+		resp, out := again.do("GET", "/api/runs/"+run.ID, adminToken, nil)
+		got, _ := out["run"].(map[string]any)
+		if resp.StatusCode != http.StatusOK || out["record"] != true || got == nil {
+			t.Fatalf("%s: the run after the restart: %d %v", tc.name, resp.StatusCode, out)
+		}
+		managed, _ := got["managed"].(map[string]any)
+		prereqs, _ := got["manifest"].(map[string]any)["prerequisites"].([]any)
+		if got["cleaning"] != nil || managed == nil || managed["revision"] != float64(row.Revision) || len(prereqs) != 1 {
+			t.Fatalf("%s: the run after the restart: cleaning %v, managed %v, prerequisites %v", tc.name, got["cleaning"], managed, prereqs)
+		}
+		if p := prereqs[0].(map[string]any); p["id"] != "tools" || p["state"] != "passed" || p["k"] != float64(1) || p["exit"] != float64(0) {
+			t.Fatalf("%s: the prerequisite after the restart: %v", tc.name, p)
+		}
+		again.srv.Shutdown(ctx)
+	}
+}
+
 // A task's read for a run the engine does not hold answers from the
 // ledger: after a restart (a second server on the same data directory,
 // the first shut down), a task with two attempts, the first uncounted at
