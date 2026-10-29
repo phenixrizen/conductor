@@ -19,6 +19,12 @@ A step that fails, a machine that cannot be reached, or a run of a subset of
 the steps (--only) is a failed or partial receipt: nothing is skipped
 silently. A run of a subset still checks the revision out on each remote
 machine: the steps named test the head, never the machine's last checkout.
+
+`origin/main` is fetched before anything runs, a subset too. The `dco` step
+judges `origin/main..HEAD`, and a ref behind GitHub's main puts main's own
+commits in that range: red for commits that are not the branch's, with a fix
+that would replay them as the branch's. So the base the receipt names is
+GitHub's main at the run's start, and a fetch that fails stops the run.
 """
 
 import argparse
@@ -42,6 +48,10 @@ RECEIPT_VERSION = 1
 # The order is CI's: the web build first, since the Go binary embeds it.
 GATE_JOBS = ("required-checks",)
 LINUX_STEPS = [
+    # First: it takes a second, the rest an hour, so an unsigned commit is the
+    # first line of the receipt (CONTRIBUTING.md, Sign-off). origin/main is
+    # fetched before the run starts (main).
+    {"name": "dco", "covers": "dco", "argv": ["python3", "scripts/dco_check.py", "--base", "origin/main", "--head", "HEAD"]},
     {"name": "web-typecheck", "covers": "web", "argv": ["make", "web-typecheck"]},
     {"name": "web-test", "covers": "web", "argv": ["npm", "--prefix", "web", "test"]},
     {"name": "web-build", "covers": "web", "argv": ["make", "web-build"]},
@@ -440,6 +450,13 @@ def main(argv=None):
         print("preflight: commit all changes first; receipts bind to the committed head", file=sys.stderr)
         return 2
     head = git("rev-parse", "HEAD")
+    # origin/main as GitHub has it, before the base is read and the dco step
+    # judges origin/main..HEAD (the docstring).
+    try:
+        git("fetch", "--quiet", "origin", "main")
+    except Error as e:
+        print(f"preflight: git fetch origin main failed: {e}", file=sys.stderr)
+        return 2
     try:
         base = git("rev-parse", "origin/main")
     except Error:

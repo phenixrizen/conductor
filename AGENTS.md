@@ -13,6 +13,12 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
   `npm ci` in `desktop/`), committed with it; CI checks it is current. A
   package that ships without its licence text gets the upstream text in
   `scripts/notices/`.
+- Every commit is signed off (`git commit -s`): the line certifies the
+  Developer Certificate of Origin in `DCO`, and its name and address are
+  the commit author's. CI's `dco` job fails a pull request with a commit
+  that lacks it. `git rebase --signoff origin/main` fixes a branch of your
+  own commits; `CONTRIBUTING.md` (Sign-off) says how, and how a merge
+  commit or another author's commit is repaired.
 - Commands are argv arrays. Never build a shell string from user input.
 - Compare tokens with `share.Equal`; store only hashes; never log query strings.
 - Server session working directories go through `resolveCwd` (a launch
@@ -37,12 +43,18 @@ Conductor runs coding agents in PTYs and shares browser terminals. One Go module
   app's job too, not yet done). Docs, setup screens, Settings text, test
   instructions and by-hand checklists follow this; a check that would need
   such a step on WSL is done from a machine that is not WSL, or waits for the
-  app. The owner has said this twice; do not raise it again.
+  app. The maintainers have said this twice; do not raise it again.
 
 ## Working an issue
 
 GitHub Issues are the backlog; the Project board is a view of them. One
-issue, one branch, one pull request, and CI is the only gate.
+issue, one branch, one pull request, and CI is the only gate. The
+maintainers are the owners of the `rocksolidlabs` GitHub organization
+(`CONTRIBUTING.md`, Who decides); they merge and decide. The assignment,
+branch-on-origin and Project board bullets below are the maintainers' and
+the agents they run, who have write access; a contributor without it
+follows `CONTRIBUTING.md`'s fork path, and a maintainer assigns the issue
+and moves the board for them.
 
 - Take the issue you were given, or else the top unassigned issue labelled
   `ready`. Assign yourself. Never hold two open issues at once.
@@ -50,9 +62,9 @@ issue, one branch, one pull request, and CI is the only gate.
   (`gh issue develop N --name issue-N`), in a worktree of its own. The
   branch on origin is the claim: one that already exists is someone's work,
   so ask before touching it.
-- Open a draft PR at the first commit. `Fixes #N` finishes the issue;
-  `Part of #N` leaves it open. Say in the PR body which agent or person made
-  it, with a session link when there is one.
+- Open a draft PR at the first commit, and tick the template's checklist.
+  `Fixes #N` finishes the issue; `Part of #N` leaves it open. Say in the PR
+  body which agent or person made it, with a session link when there is one.
 - Keep the Project board current: an issue goes on it when it is filed
   (Backlog, or Ready), moves to In progress when its branch is cut and to
   In review when its PR is pushed; Done follows the merge by itself. New
@@ -61,10 +73,10 @@ issue, one branch, one pull request, and CI is the only gate.
   (`docs/checks.md`). Report a check that did not run as not run, never as
   passed. Mark the PR ready when it is complete and green.
 - Answer every review comment: fix it, or reply why not, then resolve the
-  thread. The owner merges. Merged is done, and GitHub closes the issue.
+  thread. A maintainer merges. Merged is done, and GitHub closes the issue.
 - Blocked or handing off: push, leave one PR comment saying what is left,
   and unassign yourself.
-- Work the owner asks for directly gets an issue first (search for an
+- Work a maintainer asks for directly gets an issue first (search for an
   existing one).
 - **A bug in the stream you are working is fixed in that stream, never
   filed and left.** The stream is the whole piece of work, not the PR in
@@ -76,13 +88,13 @@ issue, one branch, one pull request, and CI is the only gate.
   files them. (2026-10-24: the harness's live check found five defects in
   the harness and filed them as #351 to #355 instead of fixing them.)
 - A product defect outside the stream, one the stream's code did not
-  cause and does not need, gets its own issue, and the owner decides when.
+  cause and does not need, gets its own issue, and a maintainer decides when.
 - A test that fails in the PR's own checks is fixed in that PR and named in
   its body under its own heading; no issue. A flake seen once that blocks
   nothing goes as one line into the single standing flaky-tests issue
   (#281), fixed when someone is in that file anyway; no issue per flake.
 - Vulnerabilities go in a GitHub Draft Security Advisory, never in an
-  issue, PR, commit message or doc, until the owner decides on disclosure.
+  issue, PR, commit message or doc, until a maintainer decides on disclosure.
 
 ## Tests that do not flake
 

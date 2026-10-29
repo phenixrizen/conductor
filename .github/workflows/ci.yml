@@ -252,11 +252,28 @@ jobs:
       - run: xvfb-run --auto-servernum npm run test:e2e
         working-directory: desktop
 
+  dco:
+    # Every commit of a pull request is signed off by its author
+    # (CONTRIBUTING.md, Sign-off). The job runs on every event and only
+    # its check step is conditional: required-checks reads a skipped job
+    # as a failure, and a push to main carries GitHub's merge commits,
+    # which nobody signs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/dco_check.py --base "$BASE" --head "$HEAD"
+
   # The one check branch protection requires: green only when every job
   # above passed.
   required-checks:
     if: always()
-    needs: [web, go, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke]
+    needs: [web, go, vuln, build-matrix, e2e, pebble, desktop-test, desktop-smoke, dco]
     runs-on: ubuntu-latest
     steps:
       - name: Every job passed
