@@ -21,13 +21,18 @@ const apart = (a: { x: number; y: number; width: number; height: number }, b: { 
 test('the open session is marked on the rail, and two squares of one agent differ', async ({ page, api, state }) => {
   const q1 = join(state.root, 'q1-rail')
   const q2 = join(state.root, 'q2-rail')
+  const q3 = join(state.root, 'q3-rail')
   mkdirSync(q1, { recursive: true })
   mkdirSync(q2, { recursive: true })
-  // Two Claude Code sessions in one folder, one in another, and a Codex in the first.
+  mkdirSync(q3, { recursive: true })
+  // Two Claude Code sessions in one folder, one in another, a Codex in the first and a Codex in a third. The second Codex is the
+  // spec's own: a Codex alone on the rail keeps its initials (CX), so without it the first one's letters hung on whatever Codex
+  // another spec had running at the time.
   const a = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rail a', cwd: q1 })
   const b = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rail b', cwd: q1 })
   const c = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'e2e rail c', cwd: q2 })
   const x = await api.ok<Session>('POST', '/api/sessions', { agentId: 'codex', name: 'e2e rail codex', cwd: q1 })
+  const y = await api.ok<Session>('POST', '/api/sessions', { agentId: 'codex', name: 'e2e rail codex 2', cwd: q3 })
   try {
     await page.goto(`/sessions/${a.id}`)
     await page.locator('[data-sidebar-collapse]').click()
@@ -41,12 +46,14 @@ test('the open session is marked on the rail, and two squares of one agent diffe
     await expect(square(b.id).locator('[data-rail-current]')).toHaveCount(0)
     await expect(square(c.id).locator('[data-rail-current]')).toHaveCount(0)
     // The two in q1-rail share its letters and get ordinals; the one in q2-rail shows Q2 alone; Codex in q1-rail shows Q1 with an
-    // ordinal of its own (three Q1 squares), never the same as either Claude Code's.
+    // ordinal of its own (three Q1 squares), never the same as either Claude Code's; the other Codex shows Q3 alone.
     await expect(letters(a.id)).toHaveText('Q1')
     await expect(letters(b.id)).toHaveText('Q1')
     await expect(letters(c.id)).toHaveText('Q2')
     await expect(letters(x.id)).toHaveText('Q1')
+    await expect(letters(y.id)).toHaveText('Q3')
     await expect(square(c.id).locator('[data-rail-ordinal]')).toHaveCount(0)
+    await expect(square(y.id).locator('[data-rail-ordinal]')).toHaveCount(0)
     const ordinals = await Promise.all([a, b, x].map((s) => square(s.id).locator('[data-rail-ordinal]').textContent()))
     expect(ordinals.map((o) => Number(o)).sort()).toEqual([1, 2, 3])
     // The bar stands in the rail's margin, inside the rail's box and clear of the ordinal badge in the square's top-left corner and of
@@ -72,6 +79,6 @@ test('the open session is marked on the rail, and two squares of one agent diffe
       expect(bg, mode).not.toMatch(/rgba\(\d+, \d+, \d+, 0\)|transparent/)
     }
   } finally {
-    for (const s of [a, b, c, x]) await api.stopSession(s.id)
+    for (const s of [a, b, c, x, y]) await api.stopSession(s.id)
   }
 })
