@@ -1758,7 +1758,7 @@ its run, and on no other.
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create, so a crew as `GET` answers it goes back without `id`, `createdAt`, `updatedAt` and `manifestRevision`; `id` and `createdAt` never change, `updatedAt` is now, and `manifestRevision` is one more when the project manifest, a `setup` included, changed (a removal too) and stays as it was otherwise; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times and the `manifestRevision` of a new crew (1 with a project manifest or a `setup`, absent without), whatever the original's; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 1 MiB; `404` when unknown; `409 crew_unreadable` when its file cannot be used |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, one whose project manifest names what this build does not run yet (anything beyond its prerequisites and setup phase, or a placeholder in a setup step; the message says which, as the crew limits below have it), or, with the file form, whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing, broken or names what this build does not run (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, one whose project manifest names what this build does not run yet (services, `ready` probes, a `preview`, `verify` or `cleanup` steps; the message says which, as the crew limits below have it), or, with the file form, whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing, broken or names what this build does not run (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
 | `GET /api/crews/{id}/runs` | admin | `{runs, live}`: the crew's runs, newest first, each as `GET /api/runs/{run}` answers it (without diffs): the `live` first ones the server holds, then the records of runs the server no longer holds, saved under `runs/<id>.json` in the data directory, at most 500 kept (the oldest by start dropped), never a terminal's contents; a run's record is written from its launch on (again a couple of seconds after each change, and as it ends, a reopened run again when it ends again) and read back after a restart, where the record of a run that was running when the server last stopped is marked `interrupted` (its running members `ended` with that `error`), never relaunched on its own; `404 not_found` for a crew neither saved nor recorded |
 | `POST /api/sessions/{id}/paste` | admin | answer a viewer's paste invite for a server session: `{offer, role, label?}`, `offer` a `cpi1.` blob (the viewer's SDP with every candidate gathered, deflated and base64url-encoded, ≤ 64 KiB), reply `201 {answer, role}` with the session's blob of the same form, which the viewer pastes back; the data channel then runs with no server between the two, as a host's does (hello over it, welcome, scrollback, input by role); at most 16 such peers a session, idle ones dropped after two minutes; `400 invalid_offer` for a blob that is not an offer, `400 hosted_session` for a hosted session (shared from its own machine), `409 session_ended` |
 | `GET /api/ice` | none (rate-limited) | `{stun}`: the configured ICE servers' `stun:` URLs, for a viewer gathering a paste invite's offer before it has any session; a TURN server's credentials never leave the server |
@@ -1920,7 +1920,9 @@ legacy `setup` keeps its own rule, unique within `setup`). `env` is at most
 32 names of the host's variables, each matching
 `^[A-Za-z_][A-Za-z0-9_]{0,127}$`, unique, never `CONDUCTOR_*` and never a
 loader (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`): the manifest
-holds names, the values stay the host's. `ports` is at most 8 names matching
+holds names, the values stay the host's, and a name leaves the host only when
+the server's `envPassthrough` allows it (Project manifests, under Managed
+runs). `ports` is at most 8 names matching
 `^[a-z][a-z0-9_]{0,15}$`, unique, each `CONDUCTOR_PORT_<NAME>` (its upper
 case) in a tree. `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` are
 placeholders, expanded literally inside one argv element, a probe's `url` and
@@ -1940,10 +1942,11 @@ update body as `id` is: a new crew starts at 1 with a manifest (a `setup`
 counts) and 0 without; a save that changes the manifest, a removal included,
 makes it one more, and one that does not leaves it, so a number names one
 manifest of a crew for good. This build runs a manifest's prerequisites and its
-setup phase, from the crew or from `conductor.manifest.json` (Project manifests,
-under Managed runs): the launch of a crew whose manifest names `env`, `ports`,
-services, `ready`, a `preview`, `verify` or `cleanup` steps, or a placeholder in
-a setup step, is refused with `400 invalid_crew` saying what this build does
+setup phase, passes its `env` names on, gives each tree its ports and its state
+directory and expands its placeholders, from the crew or from
+`conductor.manifest.json` (Project manifests, under Managed runs): the launch of
+a crew whose manifest names services, `ready` probes, a `preview`, `verify` or
+`cleanup` steps is refused with `400 invalid_crew` saying what this build does
 not run yet ("this build does not run a project manifest's services yet"),
 never accepted and skipped; the file form is held to the same at the run's base
 when it launches and at every tree's commit.
@@ -2207,7 +2210,9 @@ make, is larger than the ledger keeps as JSON. The crew's setup steps
 (its project manifest's `setup`, or its legacy `setup`) run in it first (a
 step that fails there is not counted: Project manifests below), and the
 session's process receives `CONDUCTOR_TASK`,
-`CONDUCTOR_ATTEMPT` and `CONDUCTOR_TASK_FILE` beside the crew variables. The
+`CONDUCTOR_ATTEMPT` and `CONDUCTOR_TASK_FILE` beside the crew variables (with
+a project manifest, the tree's own names and the manifest's approved `env`
+names too: Project manifests below). The
 line typed once the session is ready says where the task file is and how to
 submit. A `done` finishes nothing (one reminder line is typed per attempt, when
 the session is not waiting); a `handoff` is noted in the run log, never typed;
@@ -2258,10 +2263,48 @@ carried ended is finished at its start and runs none, each `pending`, until a
 retry reopens it), and when a retry or an acceptance reopens a run whose end
 cut a run of them short (`interrupted`).
 One that fails pauses the run's scheduling with its words and spends
-nothing. The setup steps run in
+nothing. Before their commands, the manifest's `env` names are checked, the
+values never read beyond their presence nor recorded: each must be in the
+server's `envPassthrough` and set in the server's environment, both as the
+server started (nothing reloads either), else the run pauses before any
+command runs with "the prerequisites failed: NPM_TOKEN is not in the
+server's envPassthrough" or "the prerequisites failed: the host has no
+NPM_TOKEN: set it where the server starts, start it again and continue the
+run", and an unpause alone finds the host as it was; a continuation of the
+run, on a server started again with it, checks them again. A prerequisite's
+command is given the approved names.
+
+Every tree is resolved before anything is written or runs in it. Its
+manifest's `env` names are checked again, as for the prerequisites, so a
+manifest at a result commit adds no name the server does not allow or the
+host does not have: the tree fails at `manifest` with those words, by the
+attribution below. Its ports are drawn on the server's loopback (a bind of
+`127.0.0.1:0`, the number taken and the port let go), each leased to the
+tree from its `manifest.resolved` to its `tree.ended`: no two live trees of
+the server share a number (one another tree holds is drawn again, at most 16
+times a port), and so an attempt's worktree and its checkout never do. Its
+state directory is `.conductor/state` under its working directory (in a
+checkout with `.conductor`'s `.gitignore` of `*` beside it, so the
+comparisons after its steps and checks list nothing of it), its own and no
+other tree's. Its manifest is expanded: `${CONDUCTOR_PORT_<NAME>}` and
+`${CONDUCTOR_STATE_DIR}` are put in literally inside each argv element, a
+probe's `url` and `preview`, and the expanded form is held to the bounds the
+manifest's own is (an argv element at most 4096 bytes and an argv 8 KiB in
+all, a `url` 2048, `preview` 512): one past its bound fails the tree at
+`manifest` with the size it expands to ("preview expands to 61,440 bytes,
+more than 512"), before anything is written or run in it. A step and a
+check run in a tree are given the tree's names, `CONDUCTOR_PORT_<NAME>` (the
+port's name in upper case) for each port, `CONDUCTOR_STATE_DIR` (its absolute
+path), with a preview `CONDUCTOR_PREVIEW_URL`, and `CONDUCTOR_RUN`,
+`CONDUCTOR_TASK` and `CONDUCTOR_ATTEMPT`, and no other `CONDUCTOR_` name, a
+token least of all; and the manifest's approved `env` names, and no other
+name of the server's passthrough. The attempt's session is given the tree's
+names and the approved names beside its own (a session keeps its crew's
+names and the passthrough every session has). The setup steps run in
 each new worktree, the manifest resolved for it at the attempt's start commit
 and the task files written first (`task.json`'s `manifest`, `{source,
-revision | digest}`, and a sentence in `task.md`), before the session; and in
+revision | digest, ports?}`, the ports by name, and sentences in `task.md`
+naming the manifest, the ports and the state directory), before the session; and in
 the checkout of a result, the manifest read at the result commit (a result
 that changes `conductor.manifest.json` is checked by the one it changed),
 before the checks, the checkout compared with the result after each step,
@@ -2289,18 +2332,22 @@ run of its id on the attempt, a check's included, so a legacy setup step that
 shares a check's id keeps every row), the manifest that ran it
 (`crew:<revision>` or `file:<blob>`), where it ran, its command, exit, timing,
 log (at most 1 MiB: the output's head, a line saying how many bytes were
-dropped, its last bytes) and SHA-256, and the words of its failure. A row the
+dropped, its last bytes) and SHA-256, the words of its failure, and its
+tree's ports (a check run in a tree carries them too). A row the
 ledger refuses fails its step ("the ledger could not record the step deps:
 …"), a refused `running` row ending the step's process first, so nothing runs
 that the ledger does not record. The
 events: `manifest.resolved {tree, task, attempt, source, revision | digest,
-env}`; `step.started {phase, id, k, manifest}`, `step.running {…, pid, group}`
+env}` and, for a tree with ports or a preview, `manifest.ports {tree, task,
+attempt, ports, preview}` in the same transaction, with the ports' lease;
+`step.started {phase, id, k, manifest}`, `step.running {…, pid, group}`
 and `step.finished {…, exit, timedOut, duration, error, interrupted}`, each
 with `task`, `attempt` and `tree` but for a prerequisite's;
 `prerequisites.passed {manifest}` before the first `attempt.reserved`;
 `run.paused {paused, why}`; and `tree.ended {tree, task, attempt, why}` once
-an attempt's close is committed and the tree is quiet, each tree once
-(nothing is removed). The run's JSON gains `pausedWhy`, `manifest`
+an attempt's close is committed and the tree is quiet, each tree once, its
+ports let go in that transaction (nothing is removed: the state directory
+stays). The run's JSON gains `pausedWhy`, `manifest`
 (`{source, revision?, digest?, prerequisites: [{id, k?, state, exit?, error?,
 duration?}]}`, `state` `pending`, `running`, `passed`, `failed` or
 `interrupted`) and `cleaning` (its trees being ended: an `outcome` says every
