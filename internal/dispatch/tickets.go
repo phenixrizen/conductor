@@ -951,19 +951,21 @@ func readTexts(ctx context.Context, q queryer, query string, args ...any) ([]str
 // (Ticket): its row and its two sets; its parent's key, title and status,
 // and DeletedAt when the parent is a tombstone (the reference then
 // inactive); its first live children by number and how many it has; its
-// relations both ways, each with its other end; whether a live, open
-// ticket blocks it; its live links and attachments; its last comments,
-// each with its number; and its close policy's state, computed now.
+// first relations both ways, the active ones first, each with its other
+// end, and how many it has (RelationsTotal); whether a live, open ticket
+// blocks it; its live links and attachments; its last comments, each
+// with its number; and its close policy's state, computed now.
 type TicketView struct {
 	Ticket
-	Parent      *RelatedTicket   `json:"parent,omitempty"`
-	Children    TicketChildren   `json:"children"`
-	Relations   []TicketRelation `json:"relations"`
-	Blocked     bool             `json:"blocked"`
-	Links       []Link           `json:"links"`
-	Attachments []Attachment     `json:"attachments"`
-	Comments    []Comment        `json:"comments"`
-	Close       CloseState       `json:"close"`
+	Parent         *RelatedTicket   `json:"parent,omitempty"`
+	Children       TicketChildren   `json:"children"`
+	Relations      []TicketRelation `json:"relations"`
+	RelationsTotal int              `json:"relationsTotal"`
+	Blocked        bool             `json:"blocked"`
+	Links          []Link           `json:"links"`
+	Attachments    []Attachment     `json:"attachments"`
+	Comments       []Comment        `json:"comments"`
+	Close          CloseState       `json:"close"`
 }
 
 // TicketChildren is the first MaxTicketChildren live children of a
@@ -982,7 +984,11 @@ type TicketChildren struct {
 // reference to a tombstone is inactive, and its children keep their
 // parent (Children finds them). The last MaxTicketComments comments come
 // with it, tombstones among them so the numbers have no gap; the earlier
-// ones are paged by Comments. ErrNotFound when there is no such ticket.
+// ones are paged by Comments. The first MaxTicketRelations relations come
+// with it, the active ones first, and how many it has: relations to
+// deleted tickets count for nothing toward MaxRelations, so a ticket may
+// hold any number, and Relations reads them all. ErrNotFound when there
+// is no such ticket.
 func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
 	var v TicketView
 	err := s.read(ctx, func(q queryer) error {
@@ -1006,9 +1012,11 @@ func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
 		if v.Children, err = childrenOf(ctx, q, tk); err != nil {
 			return err
 		}
-		if v.Relations, err = relationsOf(ctx, q, tk.ID); err != nil {
+		rels, err := relationsOf(ctx, q, tk.ID)
+		if err != nil {
 			return err
 		}
+		v.Relations, v.RelationsTotal = firstRelations(rels, MaxTicketRelations), len(rels)
 		if v.Blocked, err = blockedOf(ctx, q, tk.ID); err != nil {
 			return err
 		}
@@ -1061,6 +1069,24 @@ func childrenOf(ctx context.Context, q queryer, tk Ticket) (TicketChildren, erro
 	rows.Close()
 	err = q.QueryRowContext(ctx, "SELECT COUNT(*) FROM tickets WHERE parent_id = ? AND deleted_at = ''", tk.ID).Scan(&out.Total)
 	return out, err
+}
+
+// firstRelations is the first n of a ticket's relations as its read
+// carries them: the active ones, whose other end is live, before those
+// whose other end is deleted, each in the order they come (Relations).
+func firstRelations(all []TicketRelation, n int) []TicketRelation {
+	out := make([]TicketRelation, 0, min(len(all), n))
+	for _, active := range []bool{true, false} {
+		for _, tr := range all {
+			if len(out) == n {
+				return out
+			}
+			if tr.Other.DeletedAt.IsZero() == active {
+				out = append(out, tr)
+			}
+		}
+	}
+	return out
 }
 
 // lastComments reads the last n comments of the ticket with the id, in

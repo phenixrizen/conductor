@@ -963,8 +963,8 @@ func TestTheTicketReadIsWhole(t *testing.T) {
 	for _, r := range v.Relations {
 		rels = append(rels, fmt.Sprintf("%s:%s:deleted=%v", r.Kind, r.Other.Key, !r.Other.DeletedAt.IsZero()))
 	}
-	if strings.Join(rels, " ") != "blocks:CND-58:deleted=false blocks:CND-59:deleted=false relates:CND-60:deleted=true" {
-		t.Fatalf("the relations: %v", rels)
+	if strings.Join(rels, " ") != "blocks:CND-58:deleted=false blocks:CND-59:deleted=false relates:CND-60:deleted=true" || v.RelationsTotal != 3 {
+		t.Fatalf("the relations: %v of %d", rels, v.RelationsTotal)
 	}
 	if !v.Blocked {
 		t.Fatal("not blocked by CND-59")
@@ -997,6 +997,80 @@ func TestTheTicketReadIsWhole(t *testing.T) {
 	if _, err := s.Ticket(ctx, "CND-999"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("no ticket: %v", err)
 	}
+}
+
+func TestTheTicketReadCarriesItsRelationsWithinTheirBound(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	_, hub := newTicket(t, s, "CND", "The hub")
+	n := 0
+	relate := func(to string) {
+		t.Helper()
+		n++
+		rc, err := s.AddRelation(ctx, testOp(opID("r", n)), hub, RelationRelates, to)
+		mustDone(t, "relate", rc, err)
+	}
+	life := func(what string, keys []string, do func(context.Context, Op, string) (Receipt, error)) {
+		t.Helper()
+		for _, k := range keys {
+			n++
+			rc, err := do(ctx, testOp(opID(what, n)), k)
+			mustDone(t, what, rc, err)
+		}
+	}
+	// The hub related to MaxRelations tickets, its bound. A relation to a
+	// deleted ticket counts for nothing toward the bound, so deleting ten
+	// of them lets the hub relate to three more, and it holds more
+	// relations than the bound with no merge, as many as such rounds make.
+	var made []string
+	for range MaxRelations {
+		_, k := newTicket(t, s, "CND", "Related")
+		relate(k)
+		made = append(made, k)
+	}
+	gone := made[:10]
+	life("delete", gone, s.DeleteTicket)
+	for range 3 {
+		_, k := newTicket(t, s, "CND", "Related after")
+		relate(k)
+		made = append(made, k)
+	}
+	read := func(want []string, inactive int) {
+		t.Helper()
+		v, err := s.Ticket(ctx, hub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(v.Relations) != MaxTicketRelations || v.RelationsTotal != MaxRelations+3 {
+			t.Fatalf("the read carries %d relations of %d, want %d of %d", len(v.Relations), v.RelationsTotal, MaxTicketRelations, MaxRelations+3)
+		}
+		got, dead := make([]string, len(v.Relations)), 0
+		for i, r := range v.Relations {
+			got[i] = r.Other.Key
+			if !r.Other.DeletedAt.IsZero() {
+				dead++
+			}
+		}
+		if strings.Join(got, " ") != strings.Join(want, " ") || dead != inactive {
+			t.Fatalf("the relations read: %v (%d inactive), want %v (%d)", got, dead, want, inactive)
+		}
+		all, err := s.Relations(ctx, hub)
+		if err != nil || len(all) != MaxRelations+3 {
+			t.Fatalf("Relations reads %d of them: %v", len(all), err)
+		}
+	}
+	// The read carries the 93 active ones, in the order they were made,
+	// then the inactive ones, made first, as many as fit: seven of the ten,
+	// Relations reading the other three.
+	read(append(slices.Clone(made[10:]), made[:7]...), 7)
+	// The undelete makes the ten active again, the hub past its bound: the
+	// read carries the first made, and the hub's next relation is refused.
+	life("undelete", gone, s.UndeleteTicket)
+	read(made[:MaxTicketRelations], 0)
+	_, k := newTicket(t, s, "CND", "One more")
+	rc, err := s.AddRelation(ctx, testOp("r-more"), hub, RelationRelates, k)
+	want(t, rc, err, StatusFailed, RefusalBound)
 }
 
 // pausedRead starts a read of the ticket with the key that stops at

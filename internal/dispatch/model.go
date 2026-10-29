@@ -172,6 +172,15 @@ const (
 	// MaxTicketComments is how many of a ticket's comments its read
 	// carries, the last; the rest are paged (Comments).
 	MaxTicketComments = 50
+	// MaxTicketRelations is how many of a ticket's relations its read
+	// carries: the active ones first, then those whose other end is
+	// deleted, each in the order Relations reads them, which reads the
+	// rest. A local write keeps a ticket's active relations within
+	// MaxRelations, but a relation to a deleted ticket counts for nothing
+	// toward it and an undelete or a merge may take a ticket past it, so a
+	// ticket may hold any number: its read carries this many and says how
+	// many there are.
+	MaxTicketRelations = MaxRelations
 	// DefaultHistoryPage is a page of a ticket's history when a read names
 	// none, in changes.
 	DefaultHistoryPage = 100
