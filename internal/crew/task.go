@@ -83,8 +83,10 @@ type Ledger interface {
 	Available() error
 	// Receipt reads a command's receipt (commands.go).
 	Receipt(ctx context.Context, runID, actor, id string) (ledger.CommandRow, bool, error)
-	// Load reads a run with its tasks and attempts, for a continuation
-	// (continue.go); ok is false for a run the ledger has no row of.
+	// Load reads a run with its tasks, attempts, messages and
+	// prerequisites' receipts (without their logs), for a continuation, a
+	// recovered record and a task read (continue.go); ok is false for a run
+	// the ledger has no row of.
 	Load(ctx context.Context, runID string) (from Loaded, ok bool, err error)
 }
 
@@ -125,7 +127,11 @@ func (s sqlLedger) Load(ctx context.Context, runID string) (Loaded, bool, error)
 	if err != nil {
 		return Loaded{}, true, err
 	}
-	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages}, true, nil
+	prereqs, err := s.l.Prerequisites(ctx, runID, false)
+	if err != nil {
+		return Loaded{}, true, err
+	}
+	return Loaded{Run: row, Tasks: tasks, Attempts: attempts, Messages: messages, Prerequisites: prereqs}, true, nil
 }
 
 // UseLedger gives the engine the ledger managed runs are written to. Set

@@ -43,13 +43,16 @@ import (
 // keeps no step receipt: it runs as it did before manifests.
 
 // The prerequisites' states (run.prereq): pending once armed, running
-// from its generation's first step, then passed or failed. The pump
-// dispatches only on passed.
+// from its generation's first step, then passed or failed; interrupted
+// when the commit that finished the run, or a stop, ended the generation
+// before its verdict, with none in flight. The pump dispatches only on
+// passed.
 const (
-	prereqPending = "pending"
-	prereqRunning = "running"
-	prereqPassed  = "passed"
-	prereqFailed  = "failed"
+	prereqPending     = "pending"
+	prereqRunning     = "running"
+	prereqPassed      = "passed"
+	prereqFailed      = "failed"
+	prereqInterrupted = "interrupted"
 )
 
 // The default timeouts of the manifest's phases, in seconds, when a step
@@ -276,20 +279,13 @@ func (e *Engine) hold(t *tree) bool {
 // prepareTree runs t's setup phase, each step a receipt (runStep), in the
 // tree's working directory, stopping at the first that fails; in a
 // checkout the tree is compared with the result after each step, which ran
-// alone in it, so a change is that step's. It returns the stage of a
-// failure ("setup <id>") with its words, "" and nil when every step
-// passed. The caller holds t (hold).
+// alone in it, so a change is that step's, in its receipt (runStep). It
+// returns the stage of a failure ("setup <id>") with its words, "" and nil
+// when every step passed. The caller holds t (hold).
 func (e *Engine) prepareTree(ctx context.Context, r *run, a *attempt, t *tree) (string, error) {
 	for _, ch := range t.man.m.Setup {
-		stage := "setup " + ch.ID
 		if _, err := e.runStep(ctx, r, a, t, ledger.PhaseSetup, ch, 0); err != nil {
-			return stage, err
-		}
-		if t.kind == ledger.TreeCheckout {
-			moved, changed, _, cerr := checkoutIntact(ctx, t.dir, t.commit)
-			if words := intactWords(moved, changed, cerr); words != "" {
-				return stage, fmt.Errorf("setup %s %s", ch.ID, words)
-			}
+			return "setup " + ch.ID, err
 		}
 	}
 	return "", nil
@@ -302,14 +298,19 @@ func (e *Engine) prepareTree(ctx context.Context, r *run, a *attempt, t *tree) (
 // The row is put started before the process (step.started), running with
 // the pid once it exists (step.running) and finished with the exit, the
 // timing, the head and tail, the log (at most ledger.MaxLog, its SHA-256
-// over the bytes kept) and the words of its failure (step.finished). The
-// error is those words, nil for a pass; a row the ledger refuses fails
-// the step ("the ledger could not record the step"). A step whose context
-// ended before it began is not run and puts no row; one whose context
-// ends under it is killed with its group and recorded interrupted, with
-// why. A prerequisite's first row marks the generation running, and its
-// failure pauses the run's dispatch with its words, in the transaction of
-// its finished row, when the generation is still the run's.
+// over the bytes kept) and the words of its failure (step.finished). A
+// setup step in a checkout is compared with the result before its finished
+// row (it ran alone in the tree): a change is its failure, in its receipt
+// as in the attempt's words. The error is those words, nil for a pass; a
+// row the ledger refuses fails the step ("the ledger could not record the
+// step"), a refused running row ending the process with its group first,
+// so nothing runs that the ledger does not record (its row and event go
+// with the next commit). A step whose context ended before it began is not
+// run and puts no row; one whose context ends under it is killed with its
+// group and recorded interrupted, with why. A prerequisite's first row
+// marks the generation running, and its failure pauses the run's dispatch
+// with its words, in the transaction of its finished row, when the
+// generation is still the run's.
 func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase string, ch Check, gen int) (proc.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return proc.Result{Exit: -1, Canceled: true}, fmt.Errorf("%s was not run: %w", ch.ID, err)
@@ -371,15 +372,24 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 		return proc.Result{Exit: -1}, fmt.Errorf("the ledger could not record the step %s: %w", ch.ID, err)
 	}
 	var log bytes.Buffer
-	res := e.runCommand(ctx, dir, ch.Argv, stepTimeout(phase, ch), &log, func(p proc.Process) {
+	// The step's own context: a running row the ledger refuses ends the
+	// process under it (Started is called on this goroutine, before any
+	// output is read).
+	stepCtx, endStep := context.WithCancel(ctx)
+	defer endStep()
+	var refused error
+	res := e.runCommand(stepCtx, dir, ch.Argv, stepTimeout(phase, ch), &log, func(p proc.Process) {
 		running := row
 		running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
-		_ = e.transact(context.Background(), r, func() tx {
+		if err := e.transact(context.Background(), r, func() tx {
 			keep(running)
 			out := ev("step.running", payload(map[string]any{"pid": p.PID, "group": p.Group}))
 			out.more = put(running)
 			return out
-		}, nil)
+		}, nil); err != nil {
+			refused = err
+			endStep()
+		}
 	})
 	fin := row
 	fin.FinishedAt = time.Now().UTC()
@@ -390,14 +400,23 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 	sum := sha256.Sum256(fin.Log)
 	fin.LogSHA256 = hex.EncodeToString(sum[:])
 	fin.Tail = string(lastOutput(res, checkTail))
+	fin.State = ledger.CheckFinished
 	interrupted := ctx.Err() != nil
 	var words string
-	if interrupted {
-		fin.State = ledger.CheckInterrupted
-		words = e.interruptedWhy(r, a, ch)
-	} else {
-		fin.State = ledger.CheckFinished
+	switch {
+	case interrupted:
+	case refused != nil:
+		words = fmt.Sprintf("the ledger could not record the step %s: %v", ch.ID, refused)
+	default:
 		words = stepWords(phase, ch, res)
+		if words == "" && t != nil && t.kind == ledger.TreeCheckout && phase == ledger.PhaseSetup {
+			fin.Stable, words = checkoutAfter(ctx, t, phase, ch)
+			interrupted = ctx.Err() != nil
+		}
+	}
+	if interrupted {
+		fin.State, fin.Stable = ledger.CheckInterrupted, false
+		words = e.interruptedWhy(r, a, ch)
 	}
 	fin.Error = session.CleanMessage(words)
 	err := e.transact(context.Background(), r, func() tx {
@@ -443,6 +462,18 @@ func stepWords(phase string, ch Check, res proc.Result) string {
 		return fmt.Sprintf("%s exited %d%s", ch.ID, res.Exit, tailWords(lastOutput(res, checkTail)))
 	}
 	return ""
+}
+
+// checkoutAfter compares the checkout t with its result after a step of
+// phase that passed, alone in it: whether the checkout is as the result
+// has it, and else the step's failure ("setup deps changed tracked files:
+// …"), the words of its receipt and of the attempt alike.
+func checkoutAfter(ctx context.Context, t *tree, phase string, ch Check) (stable bool, words string) {
+	moved, changed, _, err := checkoutIntact(ctx, t.dir, t.commit)
+	if w := intactWords(moved, changed, err); w != "" {
+		return false, fmt.Sprintf("%s %s %s", phase, ch.ID, w)
+	}
+	return true, ""
 }
 
 // interruptedWhy says why a step's context ended under it: the run
@@ -499,10 +530,23 @@ func (r *run) armPrerequisites() {
 // one armed here as it ends (prerequisites), one at a time. The caller
 // holds e.mu, in a transaction's change.
 func (r *run) rearmPrerequisites() {
-	if len(r.baseMan.m.Prerequisites) == 0 || r.outcome != "" || (r.prereq != prereqPassed && r.prereq != prereqFailed) {
-		return
+	switch {
+	case len(r.baseMan.m.Prerequisites) == 0 || r.outcome != "":
+	case r.prereq == prereqPassed || r.prereq == prereqFailed || r.prereq == prereqInterrupted:
+		r.prereq, r.prereqStart = prereqPending, true
 	}
-	r.prereq, r.prereqStart = prereqPending, true
+}
+
+// reopenPrerequisites arms them again as a retry or an acceptance reopens a
+// finished run whose finishing commit ended a generation before its
+// verdict (interrupted): the pump dispatches only on passed, so the run
+// would wait for good. A generation still ending as the run reopens runs
+// them again itself as it ends (prerequisites); one that passed or failed
+// stands. The caller holds e.mu, in a transaction's change.
+func (r *run) reopenPrerequisites() {
+	if r.prereq == prereqInterrupted && r.outcome == "" && !r.stopping {
+		r.prereq, r.prereqStart = prereqPending, true
+	}
 }
 
 // startPrerequisites starts a generation of r's prerequisites, armed and
@@ -531,7 +575,13 @@ func (e *Engine) startPrerequisites(r *run) {
 // dropped, its rows kept. The count of generations in flight drops once
 // its last commit is in, so the run is held (idle) until then; a
 // generation armed meanwhile (an unpause after this one's result) starts
-// then.
+// then. That end is taken under r.txMu, as a transaction's change is, so
+// it reads the run as committed: never an unpause or a retry whose change
+// is made and whose commit is under way, which the ledger may yet refuse
+// and its undo put back. A generation that ends with no verdict (the
+// commit that finished the run, or a stop, ended it under its steps) leaves
+// them interrupted, or, in a run a retry or an acceptance has reopened
+// since, pending, and starts them again.
 func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r *run, gen int) {
 	defer r.starts.Done()
 	defer func() {
@@ -539,14 +589,22 @@ func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r
 		if e.beforePrereqEnd != nil {
 			e.beforePrereqEnd()
 		}
+		r.txMu.Lock()
+		defer r.txMu.Unlock()
 		e.mu.Lock()
+		defer e.mu.Unlock()
 		r.prereqs--
 		if r.prereqGen == gen {
 			r.prereqCancel = nil
+			if r.prereq == prereqPending || r.prereq == prereqRunning {
+				r.prereq = prereqInterrupted
+				if r.outcome == "" && !r.stopping && r.ctx.Err() == nil {
+					r.prereq = prereqPending
+				}
+			}
 		}
 		e.startPrerequisites(r)
 		r.touch()
-		e.mu.Unlock()
 	}()
 	for _, ch := range r.baseMan.m.Prerequisites {
 		if _, err := e.runStep(ctx, r, nil, nil, ledger.PhasePrerequisite, ch, gen); err != nil {

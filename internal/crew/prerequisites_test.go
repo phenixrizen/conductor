@@ -414,3 +414,180 @@ func TestAPrerequisiteTheLedgerCouldNotRecordPauses(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// The sole task cancelled while a prerequisite is held at its gate
+// finishes the run, and the commit that finishes it ends the generation
+// with no verdict: the prerequisites read interrupted, none in flight. A
+// retry reopens the run and runs them again (k 2), and the task is
+// dispatched once they pass (the independent review of #422 and Codex's:
+// the run stayed open with nothing ever dispatched).
+func TestARetryAfterTheRunsEndRunsThePrerequisitesAgain(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	gate, pidFile := filepath.Join(t.TempDir(), "gate"), filepath.Join(t.TempDir(), "pid")
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{gatedPrerequisite("tools", gate, pidFile)}}, work("build", "lead")))
+	pidIn(t, pidFile)
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	r := runOf(t, e, run.ID)
+	waitTrue(t, "the generation's end", func() bool { st, _, n := prereqState(e, r); return st == prereqInterrupted && n == 0 })
+	if got, _ := e.Get(run.ID); got.Outcome != ledger.OutcomeCancelled || got.Manifest == nil || got.Manifest.Prerequisites[0].State != "interrupted" {
+		t.Fatalf("the finished run: %q %+v", got.Outcome, got.Manifest)
+	}
+	open(t, gate)
+	if err := e.RetryTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	rows := l.prereqRows(run.ID)
+	if len(rows) != 2 || rows[0].State != ledger.CheckInterrupted || rows[1].K != 2 || rows[1].State != ledger.CheckFinished || rows[1].Exit != 0 {
+		t.Fatalf("the prerequisites: %+v", rows)
+	}
+	kinds := l.kinds(run.ID)
+	if p, a := slices.Index(kinds, "prerequisites.passed"), slices.Index(kinds, "attempt.reserved"); p < 0 || p > a || slices.Index(kinds, "task.retried") > p {
+		t.Fatalf("the retry, the prerequisites and the dispatch: %v", kinds)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A retry that lands after the interrupted generation's last commit and
+// before its end starts no second generation beside it; the ending one,
+// finding the run reopened, runs them again as it ends, and the task is
+// dispatched once they pass.
+func TestARetryWhileTheInterruptedGenerationEndsRunsThemAgain(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	gate, pidFile := filepath.Join(t.TempDir(), "gate"), filepath.Join(t.TempDir(), "pid")
+	ending, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	e.beforePrereqEnd = func() {
+		once.Do(func() {
+			ending <- struct{}{}
+			<-release
+		})
+	}
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{gatedPrerequisite("tools", gate, pidFile)}}, work("build", "lead")))
+	pidIn(t, pidFile)
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	<-ending
+	open(t, gate)
+	if err := e.RetryTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	r := runOf(t, e, run.ID)
+	if st, gen, n := prereqState(e, r); st != prereqRunning || gen != 1 || n != 1 {
+		t.Fatalf("beside the ending generation: %s, generation %d, %d in flight", st, gen, n)
+	}
+	close(release)
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if rows := l.prereqRows(run.ID); len(rows) != 2 || rows[0].State != ledger.CheckInterrupted || rows[1].K != 2 || rows[1].Exit != 0 {
+		t.Fatalf("the prerequisites: %+v", rows)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// An unpause the ledger refuses while a failed generation is ending starts
+// no generation (Codex's review of #422): the generation's end waits for
+// the unpause's commit and reads the run as its undo left it, never the
+// change the ledger did not take, so no prerequisite runs on it.
+func TestARefusedUnpauseWhileAGenerationEndsStartsNothing(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	var mu sync.Mutex
+	runs := 0
+	e.exec.run = func(ctx context.Context, s proc.Spec) proc.Result {
+		if len(s.Argv) == 3 && s.Argv[2] == "exit 1" {
+			mu.Lock()
+			runs++
+			mu.Unlock()
+		}
+		return proc.Run(ctx, s)
+	}
+	ending, proceed, resumed := make(chan struct{}, 1), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.beforePrereqEnd = func() {
+		once.Do(func() {
+			ending <- struct{}{}
+			<-proceed
+			resumed <- struct{}{}
+		})
+	}
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{shStep("tools", "exit 1")}}, work("build", "lead")))
+	<-ending
+	waitFake(t, "the pause committed", func() bool { return l.count(run.ID, "run.paused") == 1 })
+	// The unpause's change is made and its commit held in the ledger, which
+	// then refuses it.
+	l.mu.Lock()
+	l.blockOn, l.blocked, l.release = "run.paused[paused=false]", make(chan struct{}, 1), make(chan struct{})
+	l.failOn, l.failOnce = "run.paused[paused=false]", true
+	blocked, release := l.blocked, l.release
+	l.mu.Unlock()
+	unpaused := make(chan error, 1)
+	go func() { unpaused <- e.PauseRun(context.Background(), run.ID, false) }()
+	<-blocked
+	// The generation's end goes on with the unpause's commit under way, and
+	// only then does the ledger refuse it.
+	close(proceed)
+	<-resumed
+	close(release)
+	if err := <-unpaused; err == nil {
+		t.Fatal("the unpause was not refused")
+	}
+	r := runOf(t, e, run.ID)
+	waitTrue(t, "the generation's end", func() bool { _, _, n := prereqState(e, r); return n == 0 })
+	if st, gen, _ := prereqState(e, r); st != prereqFailed || gen != 1 {
+		t.Fatalf("after the refused unpause: %s, generation %d", st, gen)
+	}
+	if got, _ := e.Get(run.ID); !got.Paused {
+		t.Fatalf("the run after the refused unpause: %+v", got)
+	}
+	mu.Lock()
+	n := runs
+	mu.Unlock()
+	if rows := l.prereqRows(run.ID); n != 1 || len(rows) != 1 {
+		t.Fatalf("%d runs of the prerequisite, rows %+v", n, rows)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A prerequisite's running row the ledger refuses ends its process with
+// its group and fails it with the ledger's words, which pause the run
+// (Codex's review of #422): nothing runs that the ledger does not record.
+// The refused row and its event go with the next commit; unpaused, they
+// run again (k 2) and the run goes on.
+func TestARefusedRunningRowEndsAndFailsThePrerequisite(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	gate := filepath.Join(t.TempDir(), "gate")
+	l.mu.Lock()
+	l.failOn, l.failOnce = "step.running[phase=prerequisite]", true
+	l.mu.Unlock()
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{shStep("tools", gated(gate))}}, work("build", "lead")))
+	words := "the ledger could not record the step tools: ledger: disk full (injected)"
+	waitTrue(t, "the run paused", func() bool {
+		r, _ := e.Get(run.ID)
+		return r.Paused && r.PausedWhy == "the prerequisite tools failed: "+words
+	})
+	r := runOf(t, e, run.ID)
+	waitTrue(t, "the generation's end", func() bool { st, _, n := prereqState(e, r); return st == prereqFailed && n == 0 })
+	rows := l.prereqRows(run.ID)
+	if len(rows) != 1 || rows[0].State != ledger.CheckFinished || rows[0].Error != words || rows[0].PID == 0 {
+		t.Fatalf("the prerequisite's row: %+v", rows)
+	}
+	if alive(rows[0].PID) {
+		t.Fatalf("the prerequisite's process %d outlived its refused row", rows[0].PID)
+	}
+	if n := l.count(run.ID, "step.running"); n != 1 {
+		t.Fatalf("the refused row's event, carried by the next commit: %d in %v", n, l.kinds(run.ID))
+	}
+	open(t, gate)
+	pauseRun(t, e, run.ID, false)
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if rows := l.prereqRows(run.ID); len(rows) != 2 || rows[1].K != 2 || rows[1].Exit != 0 || rows[1].Error != "" {
+		t.Fatalf("the prerequisites after the unpause: %+v", rows)
+	}
+	stopRun(t, e, run.ID)
+}

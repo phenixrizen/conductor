@@ -130,6 +130,22 @@ func (l *fakeLedger) Load(ctx context.Context, runID string) (Loaded, bool, erro
 		}
 	}
 	slices.SortFunc(out.Messages, func(a, b ledger.MessageRow) int { return int(a.Seq - b.Seq) })
+	// The prerequisites' rows as the ledger keeps them: each (id, k) as
+	// last put, without its log.
+	at := map[string]int{}
+	for _, p := range l.prerequisites {
+		if p.RunID != runID {
+			continue
+		}
+		p.Log = nil
+		key := fmt.Sprintf("%s/%d", p.ID, p.K)
+		if i, ok := at[key]; ok {
+			out.Prerequisites[i] = p
+			continue
+		}
+		at[key] = len(out.Prerequisites)
+		out.Prerequisites = append(out.Prerequisites, p)
+	}
 	return out, true, nil
 }
 
@@ -1089,7 +1105,7 @@ func TestTheSetupRunsInTheChecksCheckoutAndMayChangeNothingTracked(t *testing.T)
 	for _, row := range l.stepRows(run.ID, "build", 1) {
 		if row.Phase == ledger.PhaseSetup && row.Dir == a.Attempt.Worktree+".check" {
 			inCheckout++
-			if row.K != 2 || row.State != ledger.CheckFinished || row.Exit != 0 {
+			if row.K != 2 || row.State != ledger.CheckFinished || row.Exit != 0 || row.Error != "" || !row.Stable {
 				t.Fatalf("the checkout's setup row: %+v", row)
 			}
 		}
@@ -1117,9 +1133,28 @@ func TestTheSetupRunsInTheChecksCheckoutAndMayChangeNothingTracked(t *testing.T)
 	if next.Attempt.Start != a2.Attempt.Start {
 		t.Fatalf("attempt 2 starts at %s, not where attempt 1 did (%s)", short(next.Attempt.Start), short(a2.Attempt.Start))
 	}
-	// The checkout is compared after each step: the change is that step's.
-	if row := l2.attemptRow(t, run2.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "setup deps" || row.Error != "setup deps changed tracked files: README" {
+	// The checkout is compared after each step: the change is that step's,
+	// in its receipt and its event as in the attempt's words (Codex's
+	// review of #422: the receipt said exit 0 and nothing else).
+	changed := "setup deps changed tracked files: README"
+	if row := l2.attemptRow(t, run2.ID, "build", 1); row.State != ledger.AttemptFailed || row.Stage != "setup deps" || row.Error != changed {
 		t.Fatalf("after a setup that changes tracked content: %+v", row)
+	}
+	var receipt *ledger.CheckRow
+	for _, row := range l2.stepRows(run2.ID, "build", 1) {
+		if row.Phase == ledger.PhaseSetup && row.Dir == a2.Attempt.Worktree+".check" {
+			receipt = &row
+		}
+	}
+	if receipt == nil || receipt.K != 2 || receipt.State != ledger.CheckFinished || receipt.Exit != 0 || receipt.Error != changed || receipt.Stable {
+		t.Fatalf("the checkout's setup receipt: %+v\n%s", receipt, rowWords(l2.stepRows(run2.ID, "build", 1)))
+	}
+	found := false
+	for _, p := range l2.payloads(run2.ID, "step.finished") {
+		found = found || p["tree"] == ledger.TreeCheckout && p["id"] == "deps" && p["error"] == changed
+	}
+	if !found {
+		t.Fatalf("no step.finished of the checkout's setup says why: %v", l2.payloads(run2.ID, "step.finished"))
 	}
 	if l2.count(run2.ID, "check.started") != 0 {
 		t.Fatal("a check ran after the setup changed the checkout")

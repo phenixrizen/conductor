@@ -382,7 +382,8 @@ type run struct {
 	// launched (manifest, with File for the file form; a legacy setup
 	// lifted), its revision, and the manifest at the base (baseMan),
 	// whose prerequisites the run runs. prereq is their state (pending →
-	// running → passed | failed), prereqGen the generation the run's,
+	// running → passed | failed, or interrupted when the run finished or
+	// stopped under a generation), prereqGen the generation the run's,
 	// prereqs the generations in flight (0 or 1), prereqCancel the one in
 	// flight's cancel, prereqStart that the commit in flight starts one,
 	// prereqK each prerequisite's runs, prereqRows their latest receipts.

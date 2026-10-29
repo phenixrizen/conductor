@@ -403,8 +403,9 @@ func (e *Engine) cancelTask(r *run, t *task) []event {
 }
 
 // retryTask gives failed or cancelled t one more attempt: it is blocked
-// or ready again (a repair it carries stays), the run open. The caller
-// holds e.mu, in a transaction.
+// or ready again (a repair it carries stays), the run open, and the
+// prerequisites its end interrupted armed again. The caller holds e.mu,
+// in a transaction.
 func (e *Engine) retryTask(r *run, t *task) []event {
 	if len(t.attempts)+t.prior >= maxAttemptsPerTask+t.extra {
 		t.extra++
@@ -415,6 +416,7 @@ func (e *Engine) retryTask(r *run, t *task) []event {
 		r.outcome = ""
 		r.markRun()
 	}
+	r.reopenPrerequisites()
 	r.ready()
 	r.note(session.ActivityStatus, "task %s: retried, one more attempt allowed", t.def.ID)
 	return []event{{"task.retried", map[string]any{"task": t.def.ID}}}
@@ -450,6 +452,9 @@ func (e *Engine) acceptTask(r *run, t *task, actor string) ([]event, error) {
 	}
 	r.ready()
 	e.settleRun(r)
+	// Still open (what needs the task goes on): the prerequisites the
+	// run's end interrupted are armed again.
+	r.reopenPrerequisites()
 	r.note(session.ActivityStatus, "task %s: attempt %d's result accepted by %s", t.def.ID, last.n, actor)
 	events := []event{{"task.accepted", map[string]any{"task": t.def.ID, "attempt": last.n, "actor": actor, "commit": last.result}}}
 	if r.outcome != "" {

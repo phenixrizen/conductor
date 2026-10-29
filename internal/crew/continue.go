@@ -27,13 +27,54 @@ import (
 // never known (uncertain) waits for a person: its task fails with why, and
 // a retry allows one more attempt. Nothing is retried on its own.
 
-// Loaded is a run as the ledger has it, for a continuation and for the
-// record written after a recovery.
+// Loaded is a run as the ledger has it, for a continuation, for the record
+// written after a recovery and for a task read of a run the engine does
+// not hold. Prerequisites are its prerequisites' receipts, without their
+// logs. Imported are the attempt rows its tasks' results were imported
+// from by reference, by the reference (run/task/n), read from the runs
+// that hold them (LoadImports): empty unless read.
 type Loaded struct {
-	Run      ledger.RunRow
-	Tasks    []ledger.TaskRow
-	Attempts []ledger.AttemptRow
-	Messages []ledger.MessageRow
+	Run           ledger.RunRow
+	Tasks         []ledger.TaskRow
+	Attempts      []ledger.AttemptRow
+	Messages      []ledger.MessageRow
+	Prerequisites []ledger.PrerequisiteRow
+	Imported      map[string]ledger.AttemptRow
+}
+
+// LoadImports reads into from.Imported the attempt rows of the results its
+// tasks imported by reference (a continuation's: the row stays in the run
+// that made it, which the task row's ImportedFrom names), so a task read
+// from the ledger says what such a result's attempt submitted, as the run
+// reports it while the engine holds it. A run the ledger has not is passed
+// over (the result reads with its commit alone); a read that fails is the
+// error.
+func LoadImports(ctx context.Context, l Ledger, from *Loaded) error {
+	runs := map[string][]ledger.AttemptRow{}
+	for _, row := range from.Tasks {
+		runID, taskID, n, ok := parseImport(row.ImportedFrom)
+		if !ok || taskID != row.ID || n != row.ResultAttempt || runID == from.Run.ID {
+			continue
+		}
+		attempts, read := runs[runID]
+		if !read {
+			src, found, err := l.Load(ctx, runID)
+			if err != nil {
+				return fmt.Errorf("the ledger could not read run %s: %w", runID, err)
+			}
+			if found {
+				attempts = src.Attempts
+			}
+			runs[runID] = attempts
+		}
+		if ra := byN(attempts, taskID, n); ra.N == n {
+			if from.Imported == nil {
+				from.Imported = map[string]ledger.AttemptRow{}
+			}
+			from.Imported[row.ImportedFrom] = ra
+		}
+	}
+	return nil
 }
 
 // candidate is a result a continuation verifies again: the interrupted
@@ -648,7 +689,9 @@ func (e *Engine) dispatchCandidate(ctx context.Context, r *run, a *attempt, c ca
 // sessions ended with the server. The server writes it in place of the
 // record the run last saved, which may lag the ledger (a snapshot cut
 // short by the server's end) or be missing (rec empty): then the run is
-// built from the crew as launched, its log empty.
+// built from the crew as launched, its log empty. Its prerequisites are
+// read from their receipts (recoveredPrerequisites), whatever the record
+// said of them.
 func Recovered(rec Run, from Loaded) Run {
 	if rec.ID == "" {
 		rec = Run{ID: from.Run.ID, CrewID: from.Run.CrewID, StartedAt: from.Run.CreatedAt, State: RunRunning}
@@ -661,6 +704,7 @@ func Recovered(rec Run, from Loaded) Run {
 			for _, t := range c.Tasks {
 				rec.Tasks = append(rec.Tasks, TaskState{ID: t.ID, Member: t.Member, Kind: t.Kind, Needs: slices.Clone(t.Needs), State: ledger.TaskBlocked})
 			}
+			rec.Manifest = launchedManifest(c, from.Prerequisites)
 		}
 		if !from.Run.ClosedAt.IsZero() && from.Run.State == ledger.RunStopped {
 			at := from.Run.ClosedAt
@@ -683,14 +727,13 @@ func Recovered(rec Run, from Loaded) Run {
 	rec.Paused, rec.PausedWhy, rec.Outcome, rec.NeedsInput = from.Run.Paused, from.Run.PausedWhy, from.Run.Outcome, 0
 	// Nothing runs after the server's end: a tree it left ending is the
 	// recovery's (ledger.Recover), not the run's, and so is a prerequisite
-	// it left running, which the recovery interrupted.
+	// it left running, which the recovery interrupted. The prerequisites
+	// are as their receipts say, not as a record that lags them.
 	rec.Cleaning = 0
 	if m := rec.Manifest; m != nil {
-		for i := range m.Prerequisites {
-			if m.Prerequisites[i].State == "running" && from.Run.State != ledger.RunRunning {
-				m.Prerequisites[i].State = "interrupted"
-			}
-		}
+		read := *m
+		read.Prerequisites = recoveredPrerequisites(m.Prerequisites, from.Prerequisites, from.Run.State == ledger.RunRunning)
+		rec.Manifest = &read
 	}
 	rows := map[string]ledger.TaskRow{}
 	for _, row := range from.Tasks {
@@ -699,7 +742,7 @@ func Recovered(rec Run, from Loaded) Run {
 	for i := range rec.Tasks {
 		t := &rec.Tasks[i]
 		row, ok := rows[t.ID]
-		taskStateOfRow(t, row, ok, from.Attempts)
+		taskStateOfRow(t, row, ok, from.Attempts, from.Imported)
 	}
 	now := time.Now().UTC()
 	for i := range rec.Members {
@@ -714,13 +757,97 @@ func Recovered(rec Run, from Loaded) Run {
 	return rec
 }
 
+// recoveredPrerequisites is a run's prerequisites as their receipts say
+// once nothing runs (after the server's end), in the order listed (the
+// record's, which is the manifest's): each with its latest receipt's k,
+// and the state of that receipt when the generation that ran last reached
+// it (passed or failed with its exit, words and time; interrupted), else
+// pending. Generations go one at a time and each begins with the first
+// prerequisite, so the last began with the first's latest receipt, and a
+// receipt that started before it is an earlier generation's. A receipt
+// still open in a run the ledger has running is running.
+func recoveredPrerequisites(listed []PrerequisiteState, rows []ledger.PrerequisiteRow, runRunning bool) []PrerequisiteState {
+	latest := map[string]ledger.PrerequisiteRow{}
+	for _, row := range rows {
+		if row.K > latest[row.ID].K {
+			latest[row.ID] = row
+		}
+	}
+	var since time.Time
+	if len(listed) > 0 {
+		since = latest[listed[0].ID].StartedAt
+	}
+	var out []PrerequisiteState
+	for _, p := range listed {
+		ps := PrerequisiteState{ID: p.ID, State: "pending"}
+		row, ok := latest[p.ID]
+		if ok {
+			ps.K = row.K
+		}
+		switch {
+		case !ok || row.StartedAt.Before(since):
+		case row.State == ledger.CheckFinished:
+			exit := row.Exit
+			ps.Exit, ps.Error, ps.Duration = &exit, row.Error, row.FinishedAt.Sub(row.StartedAt).Milliseconds()
+			ps.State = "passed"
+			if row.Error != "" {
+				ps.State = "failed"
+			}
+		case row.State == ledger.CheckInterrupted || !runRunning:
+			ps.State, ps.Error = "interrupted", row.Error
+		default:
+			ps.State = "running"
+		}
+		out = append(out, ps)
+	}
+	return out
+}
+
+// launchedManifest is the project manifest of a run whose record is
+// missing, as the crew as launched and the prerequisites' receipts say it:
+// the crew's at its revision with its prerequisites, or the file's, its
+// blob and its prerequisites named by their receipts, in the order they
+// first ran (the file at the base is not read again); nil for a crew with
+// none. The states are recoveredPrerequisites'.
+func launchedManifest(c Crew, rows []ledger.PrerequisiteRow) *RunManifest {
+	m := c.effectiveManifest()
+	if m.empty() {
+		return nil
+	}
+	rm := &RunManifest{Source: sourceCrew, Revision: c.ManifestRevision}
+	var ids []string
+	for _, ch := range m.Prerequisites {
+		ids = append(ids, ch.ID)
+	}
+	if m.File {
+		rm = &RunManifest{Source: sourceFile}
+		ids = nil
+		ran := slices.Clone(rows)
+		slices.SortStableFunc(ran, func(x, y ledger.PrerequisiteRow) int { return x.StartedAt.Compare(y.StartedAt) })
+		for _, row := range ran {
+			if !slices.Contains(ids, row.ID) {
+				ids = append(ids, row.ID)
+			}
+			if blob, ok := strings.CutPrefix(row.Manifest, sourceFile+":"); ok {
+				rm.Digest = blob
+			}
+		}
+	}
+	for _, id := range ids {
+		rm.Prerequisites = append(rm.Prerequisites, PrerequisiteState{ID: id, State: "pending"})
+	}
+	return rm
+}
+
 // taskStateOfRow is st, a task as a record or the crew has it, as the
 // ledger has it: its row's state, reason, attempts and import (when it has
 // a row), its result's attempt decoded (a snapshot's own kept when it is
-// the same attempt), its last attempt (attemptStateOfRow), and the state
-// the recovery concluded for the task of an attempt it found interrupted
-// or uncertain. Recovered and LoadedTask build a task this one way.
-func taskStateOfRow(st *TaskState, row ledger.TaskRow, hasRow bool, attempts []ledger.AttemptRow) {
+// the same attempt; one a continuation imported read from imported, the
+// rows LoadImports reads by reference), its last attempt
+// (attemptStateOfRow), and the state the recovery concluded for the task
+// of an attempt it found interrupted or uncertain. Recovered and
+// LoadedTask build a task this one way.
+func taskStateOfRow(st *TaskState, row ledger.TaskRow, hasRow bool, attempts []ledger.AttemptRow, imported map[string]ledger.AttemptRow) {
 	if hasRow {
 		st.State, st.Reason, st.Attempts, st.ImportedFrom = row.State, row.Reason, row.Attempts, row.ImportedFrom
 		switch {
@@ -729,6 +856,9 @@ func taskStateOfRow(st *TaskState, row ledger.TaskRow, hasRow bool, attempts []l
 			st.Result = nil
 		case st.Result == nil || st.Result.Attempt != row.ResultAttempt:
 			ra := byN(attempts, st.ID, row.ResultAttempt)
+			if imp, ok := imported[row.ImportedFrom]; ok && row.ImportedFrom != "" {
+				ra = imp
+			}
 			res := decodeResult(ra.Result)
 			st.Result = &ResultState{Attempt: row.ResultAttempt, Commit: row.ResultCommit, Summary: res.Summary, Issues: res.Issues, Verdict: row.Verdict, Findings: res.Findings, At: ra.ClosedAt}
 		}
@@ -774,10 +904,11 @@ func attemptStateOfRow(la ledger.AttemptRow) AttemptState {
 
 // LoadedTask is a task of a run the engine does not hold (let go, or the
 // server started since), as the ledger has it: the task as the run would
-// report it, from the crew as launched and its rows (taskStateOfRow), and
-// every attempt of it in order with what it submitted (attemptStateOfRow).
-// It has no preview: nothing answers behind a tree the engine let go. ok
-// is false when the run has no such task.
+// report it, from the crew as launched and its rows (taskStateOfRow; a
+// result a continuation imported read from from.Imported, which
+// LoadImports fills), and every attempt of it in order with what it
+// submitted (attemptStateOfRow). It has no preview: nothing answers behind
+// a tree the engine let go. ok is false when the run has no such task.
 func LoadedTask(from Loaded, taskID string) (TaskState, []AttemptState, bool) {
 	st := TaskState{ID: taskID}
 	known := false
@@ -805,7 +936,7 @@ func LoadedTask(from Loaded, taskID string) (TaskState, []AttemptState, bool) {
 	} else {
 		st.State = ledger.TaskBlocked
 	}
-	taskStateOfRow(&st, row, hasRow, from.Attempts)
+	taskStateOfRow(&st, row, hasRow, from.Attempts, from.Imported)
 	var attempts []AttemptState
 	for _, a := range from.Attempts {
 		if a.TaskID != taskID {

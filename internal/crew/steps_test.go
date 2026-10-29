@@ -460,3 +460,35 @@ func TestAWorktreeAtACheckpointThatCannotBeMadeUsableRefusesIt(t *testing.T) {
 		stopRun(t, e2, next.ID)
 	})
 }
+
+// A setup step's running row the ledger refuses ends its process with its
+// group and fails the step with the ledger's words (Codex's review of
+// #422), as a refused started row does: in a worktree the attempt is not
+// counted and the run pauses with those words.
+func TestARefusedRunningRowEndsAndFailsTheSetupStep(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	gate := filepath.Join(t.TempDir(), "gate")
+	t.Cleanup(func() { open(t, gate) })
+	l.mu.Lock()
+	l.failOn, l.failOnce = "step.running[phase=setup]", true
+	l.mu.Unlock()
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Setup: []Check{shStep("deps", gated(gate))}}, work("build", "lead")))
+	attemptFailed(t, e, run.ID, "build", 1)
+	words := "the ledger could not record the step deps: ledger: disk full (injected)"
+	rows := l.stepRows(run.ID, "build", 1)
+	if len(rows) != 1 || rows[0].State != ledger.CheckFinished || rows[0].Error != words || rows[0].PID == 0 {
+		t.Fatalf("the step:\n%s", rowWords(rows))
+	}
+	if alive(rows[0].PID) {
+		t.Fatalf("the setup step's process %d outlived its refused row", rows[0].PID)
+	}
+	if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "setup deps" || row.Error != words {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && strings.Contains(r.PausedWhy, words) })
+	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskReady {
+		t.Fatalf("the task after an uncounted attempt: %+v", ts)
+	}
+	stopRun(t, e, run.ID)
+}
