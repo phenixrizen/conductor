@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -255,4 +256,91 @@ func TestATasksReadAfterARestartAnswersFromTheLedger(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
 	again.srv.Shutdown(ctx2)
+}
+
+// gitIn runs git in dir as the test's repository is made (gitRepo).
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// commitManifest commits conductor.manifest.json in dir and returns its
+// blob id.
+func commitManifest(t *testing.T, dir, content string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "conductor.manifest.json"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "add", "-A")
+	gitIn(t, dir, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "the manifest")
+	return gitIn(t, dir, "rev-parse", "HEAD:conductor.manifest.json")
+}
+
+// The routes say what the rows say once the engine has let the run go: a
+// step whose program could not start, with its words; and the two
+// manifests one attempt's trees ran (the worktree's file at its start, the
+// checkout's at the result), each step naming its own.
+func TestTheReceiptRoutesSayWhatTheRowsSay(t *testing.T) {
+	t.Run("a program that cannot start", func(t *testing.T) {
+		e := readyEnv(t, nil)
+		e.gitRepo(t)
+		c := manifestRunCrew(e.root, "")
+		c.Manifest = &crew.Manifest{Setup: []crew.Check{{ID: "deps", Argv: []string{filepath.Join(t.TempDir(), "no-such-program")}}}}
+		run, release, err := e.srv.runs.LaunchNamed(t.Context(), c, "")
+		release()
+		if err != nil {
+			t.Fatal(err)
+		}
+		taskVia(t, e, run.ID, "build", "failed at its setup", func(task map[string]any) bool {
+			a, _ := task["attempt"].(map[string]any)
+			return a != nil && a["state"] == "failed" && a["stage"] == "setup deps"
+		})
+		if resp, out := e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("stop: %d %v", resp.StatusCode, out)
+		}
+		e.srv.runs.ForgetForTest(run.ID)
+		steps := stepsOf(t, e, run.ID, "build", 1)
+		if len(steps) != 1 || !strings.HasPrefix(steps[0]["error"].(string), "deps could not run: ") || !strings.Contains(steps[0]["error"].(string), "no-such-program") {
+			t.Fatalf("the step: %v", steps)
+		}
+	})
+	t.Run("two manifests on one attempt", func(t *testing.T) {
+		e := readyEnv(t, nil)
+		e.gitRepo(t)
+		first := commitManifest(t, e.root, `{"schema": 1, "setup": [{"id": "deps", "argv": ["sh", "-c", "echo first"]}]}`)
+		c := manifestRunCrew(e.root, "")
+		c.Manifest = &crew.Manifest{File: true}
+		run, release, err := e.srv.runs.LaunchNamed(t.Context(), c, "")
+		release()
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := runningAttempt(t, e, run.ID, "build", 1)
+		second := commitManifest(t, a["worktree"].(string), `{"schema": 1, "setup": [{"id": "install", "argv": ["sh", "-c", "echo second"]}]}`)
+		sid := a["sessionId"].(string)
+		if resp, out := e.do("POST", "/api/sessions/"+sid+"/task/result", e.agentToken(sid), map[string]any{"summary": "a new manifest"}); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("result: %d %v", resp.StatusCode, out)
+		}
+		taskVia(t, e, run.ID, "build", "succeeded", func(task map[string]any) bool { return task["state"] == "succeeded" })
+		if resp, out := e.do("POST", "/api/runs/"+run.ID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+			t.Fatalf("stop: %d %v", resp.StatusCode, out)
+		}
+		e.srv.runs.ForgetForTest(run.ID)
+		steps := stepsOf(t, e, run.ID, "build", 1)
+		if len(steps) != 3 || steps[0]["id"] != "deps" || steps[0]["manifest"] != "file:"+first || steps[1]["id"] != "install" || steps[1]["manifest"] != "file:"+second {
+			t.Fatalf("the steps: %v", steps)
+		}
+		for _, s := range steps[:2] {
+			resp, body := e.raw("/api/runs/"+run.ID+"/tasks/build/attempts/1/steps/"+s["id"].(string)+"/1/log", adminToken, nil)
+			if resp.StatusCode != http.StatusOK || resp.Header.Get(logHashHeader) != shaHex(body) || len(body) == 0 {
+				t.Fatalf("%s's log: %d %q", s["id"], resp.StatusCode, body)
+			}
+		}
+	})
 }
