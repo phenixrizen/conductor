@@ -2140,3 +2140,125 @@ func TestAForgottenRunsRecordKeepsItsChat(t *testing.T) {
 	}
 	e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil)
 }
+
+// recipeCrewBody is a crew with tasks as the web client sends it, its
+// member on agent, with the project recipe given.
+func (e *testEnv) recipeCrewBody(name, agent string, recipe any) map[string]any {
+	return map[string]any{
+		"name": name, "goal": "ship it", "cwd": e.root, "where": "server", "isolation": "worktree",
+		"members": []any{map[string]any{"name": "lead", "agentId": agent, "prompt": "", "start": map[string]any{"when": "task"}}},
+		"tasks": []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it.",
+			"checks": []any{map[string]any{"id": "unit", "argv": []any{"true"}}}}},
+		"recipe": recipe,
+	}
+}
+
+// asJSON is v as a client reads it back: through JSON.
+func asJSON(t *testing.T, v any) any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A crew's project recipe goes in by the crew body and reads back as sent,
+// with the server's count of its changes beside it: 1 when created, 2 once
+// changed, kept by a save that leaves it as it was. The count is the
+// server's: a body that carries it is refused as one carrying id is.
+func TestACrewsProjectRecipeRoundTripsWithItsRevision(t *testing.T) {
+	e := newTestEnv(t, nil)
+	recipe := map[string]any{
+		"prerequisites": []any{map[string]any{"id": "node", "argv": []any{"node", "--version"}, "timeoutSeconds": 30}},
+		"env":           []any{"NPM_TOKEN"},
+		"ports":         []any{"web"},
+		"setup":         []any{map[string]any{"id": "deps", "argv": []any{"npm", "ci"}}},
+		"services":      []any{map[string]any{"id": "web", "argv": []any{"npm", "start", "--", "--port", "${CONDUCTOR_PORT_WEB}"}}},
+		"ready":         []any{map[string]any{"id": "up", "url": "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", "intervalSeconds": 1}},
+		"preview":       "http://localhost:${CONDUCTOR_PORT_WEB}/",
+		"verify":        []any{map[string]any{"id": "e2e", "argv": []any{"npm", "run", "e2e"}}},
+		"cleanup":       []any{map[string]any{"id": "clean", "argv": []any{"rm", "-rf", "${CONDUCTOR_STATE_DIR}/db"}}},
+	}
+	created := e.sendCrew("POST", "/api/crews", e.recipeCrewBody("Recipes", "cat", recipe), http.StatusCreated)
+	id, _ := created["id"].(string)
+	if !reflect.DeepEqual(created["recipe"], asJSON(t, recipe)) || created["recipeRevision"] != 1.0 {
+		t.Fatalf("created: %v %v", created["recipe"], created["recipeRevision"])
+	}
+	if got := e.crew(id); !reflect.DeepEqual(got, created) {
+		t.Fatalf("read back: %v", got)
+	}
+	changed := e.recipeCrewBody("Recipes", "cat", map[string]any{"setup": []any{map[string]any{"id": "deps", "argv": []any{"npm", "install"}}}})
+	updated := e.sendCrew("PUT", "/api/crews/"+id, changed, http.StatusOK)
+	if updated["recipeRevision"] != 2.0 || !reflect.DeepEqual(updated["recipe"], asJSON(t, changed["recipe"])) {
+		t.Fatalf("updated: %v %v", updated["recipe"], updated["recipeRevision"])
+	}
+	if got := e.crew(id); got["recipeRevision"] != 2.0 || !reflect.DeepEqual(got["recipe"], updated["recipe"]) {
+		t.Fatalf("read back after the update: %v", got)
+	}
+	changed["goal"] = "ship it again"
+	if again := e.sendCrew("PUT", "/api/crews/"+id, changed, http.StatusOK); again["recipeRevision"] != 2.0 {
+		t.Fatalf("an unchanged recipe: %v", again["recipeRevision"])
+	}
+	if stored := e.storedCrew(id); stored["recipeRevision"] != 2.0 || stored["recipe"] == nil {
+		t.Fatalf("the file: %v", stored)
+	}
+
+	// The count is the server's.
+	carrying := e.recipeCrewBody("Recipes", "cat", recipe)
+	carrying["recipeRevision"] = 7
+	resp, out := e.do("PUT", "/api/crews/"+id, adminToken, carrying)
+	wantAPIError(t, "a body carrying recipeRevision", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "recipeRevision"`)
+	resp, out = e.do("POST", "/api/crews", adminToken, carrying)
+	wantAPIError(t, "a create carrying recipeRevision", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "recipeRevision"`)
+	// A recipe is decoded as strictly as the rest of the body.
+	resp, out = e.do("POST", "/api/crews", adminToken, e.recipeCrewBody("Recipes", "cat", map[string]any{"setups": []any{}}))
+	wantAPIError(t, "an unknown field of the recipe", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "setups"`)
+	// setup is the recipe's setup phase: a crew has one or the other.
+	both := e.recipeCrewBody("Recipes", "cat", recipe)
+	both["setup"] = []any{map[string]any{"id": "old", "argv": []any{"true"}}}
+	resp, out = e.do("PUT", "/api/crews/"+id, adminToken, both)
+	wantAPIError(t, "setup beside a recipe", resp, out, http.StatusBadRequest, "invalid_crew", "setup is the project recipe's setup phase: put it there")
+	// A rule of the recipe is a rule of the crew.
+	resp, out = e.do("POST", "/api/crews", adminToken, e.recipeCrewBody("Recipes", "cat", map[string]any{"preview": "http://example.com/"}))
+	wantAPIError(t, "a preview off the loopback", resp, out, http.StatusBadRequest, "invalid_crew", "must be http or https on 127.0.0.1, localhost or [::1]")
+	if got := e.crew(id); got["recipeRevision"] != 2.0 || got["goal"] != "ship it again" {
+		t.Fatalf("after the refusals: %v", got)
+	}
+}
+
+// The launch of a project recipe this build does not run yet is refused
+// with words that say so, and nothing is made; one with its setup phase
+// alone launches, its setup run as a legacy setup is.
+func TestALaunchOfAProjectRecipeThisBuildDoesNotRunIsRefused(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	services := e.sendCrew("POST", "/api/crews", e.recipeCrewBody("Services", "ready-cat",
+		map[string]any{"services": []any{map[string]any{"id": "web", "argv": []any{"npm", "start"}}}}), http.StatusCreated)
+	resp, out := e.do("POST", "/api/crews/"+services["id"].(string)+"/launch", adminToken, nil)
+	wantAPIError(t, "a recipe with a service", resp, out, http.StatusBadRequest, "invalid_crew", "this build does not run a project recipe's services yet")
+	if _, err := os.Stat(filepath.Join(e.root, ".conductor", "worktrees")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a refused launch made the worktrees: %v", err)
+	}
+	if runs := e.srv.runs.List(); len(runs) != 0 {
+		t.Fatalf("a refused launch kept a run: %+v", runs)
+	}
+	setupOnly := e.sendCrew("POST", "/api/crews", e.recipeCrewBody("Setup", "ready-cat",
+		map[string]any{"setup": []any{map[string]any{"id": "deps", "argv": []any{"sh", "-c", "echo dep > dep.txt"}}}}), http.StatusCreated)
+	resp, out = e.do("POST", "/api/crews/"+setupOnly["id"].(string)+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("a recipe with its setup alone: %d %v", resp.StatusCode, out)
+	}
+	runID := out["run"].(map[string]any)["id"].(string)
+	a := runningAttempt(t, e, runID, "build", 1)
+	if _, err := os.Stat(filepath.Join(a["worktree"].(string), "dep.txt")); err != nil {
+		t.Fatalf("the recipe's setup did not run in the worktree: %v", err)
+	}
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+}

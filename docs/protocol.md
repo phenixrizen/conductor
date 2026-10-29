@@ -1892,6 +1892,53 @@ the body first: a crew that breaks one of these rules is refused with
 and an unknown `id` (`404`); an agent the catalog does not have is `400 invalid_crew` whatever else
 holds. An error message quotes at most 80 characters of a value, with `…` where
 it was cut. A crew with `tasks` is a managed one (#334): every member's `start.when` is `task` (refused in a crew without tasks), `isolation` is `worktree`, at most 128 tasks, each `{id, member, kind, instructions, needs?, checks?}` with an `id` matching `^[a-z0-9][a-z0-9_-]{0,39}$` and unique, a `member` of the crew, a `kind` of `work` or `review`, `instructions` of at most 8000 characters, `needs` naming other tasks with no cycle (a review needs exactly one work task), and at most 8 `checks`, none for a review, each `{id, argv, timeoutSeconds?}` with an `id` as a task's, `argv` naming a program within the member-args bounds (at most 32 entries of 4096 bytes, 8 KiB in all; never a shell line) and `timeoutSeconds` 1 to 3600 (600 when left out); every member has a task; `setup`, only with tasks, is at most 8 such commands run in every new attempt worktree. A crew with tasks launches as a managed run (Managed runs below) when `crews.managed` is on (`409 managed_off` otherwise) and the ledger is the server's (`503 ledger_unavailable` otherwise); a managed run's members are never started, added or resumed by hand (`409 managed_run`), and its record is continued, not resumed, by the resume route.
+A crew with tasks may have a project recipe, `recipe`
+(`docs/plans/project-recipes.md`): what makes a fresh tree of the project
+usable (a tree is an attempt's worktree or the checkout of its result), how
+it is checked and how it is cleaned up; it is not an agent's recipes (the
+catalog's yolo, trust and session recipes). `setup` is its legacy form, the
+recipe's setup phase as a crew saved before recipes holds it: a crew has one
+or the other ("setup is the project recipe's setup phase: put it there"),
+and a recipe, as `setup`, is only set with tasks; one with nothing in it is
+none. A recipe is `{file?, prerequisites?, env?, ports?, setup?, services?,
+ready?, preview?, verify?, cleanup?}`. `file: true` reads
+`conductor.recipe.json` from the crew's directory at each tree's commit, with
+nothing else set. `prerequisites`, `setup`, `verify` and `cleanup` are at most
+8 steps each and `services` at most 4, each step `{id, argv,
+timeoutSeconds?}` held to a check's bounds; left out, a prerequisite's
+timeout is 60 s, a setup or verify step's 600 s and a cleanup step's 60 s, and
+a service has none (it runs as long as its tree; `timeoutSeconds` is refused
+on it). `ready` is at most 8 probes `{id, argv | url, timeoutSeconds?,
+intervalSeconds?}`, never both `argv` and `url`, the timeout 1 to 3600 (60
+when left out) and the interval 1 to 60 (2). Every id matches a check's,
+is unique across the recipe's lists and is none of the tasks' check ids (a
+legacy `setup` keeps its own rule, unique within `setup`). `env` is at most
+32 names of the host's variables, each matching
+`^[A-Za-z_][A-Za-z0-9_]{0,127}$`, unique, never `CONDUCTOR_*` and never a
+loader (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`): the recipe
+holds names, the values stay the host's. `ports` is at most 8 names matching
+`^[a-z][a-z0-9_]{0,15}$`, unique, each `CONDUCTOR_PORT_<NAME>` (its upper
+case) in a tree. `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` are
+placeholders, expanded literally inside one argv element, a probe's `url` and
+`preview` and nowhere else; one naming no port of the recipe is refused, and
+so is any in a prerequisite ("a prerequisite runs before any tree: no
+placeholders"). A probe's `url` (at most 2048 bytes) and `preview` (at most
+512) are `http` or `https` on `127.0.0.1`, `localhost` or `[::1]`, with a port
+of 1 to 65535 or a port placeholder, and no space or control character. A
+recipe is at most 64 KiB as JSON. `conductor.recipe.json` is read at a
+commit, a regular file of at most 256 KiB, decoded strictly (an unknown field
+refused), and says `"schema": 1` (a larger one needs a newer Conductor);
+a crew's recipe leaves `schema` out. `recipeRevision` is the server's count
+of the crew's recipe changes, read with the crew and refused in a create or
+update body as `id` is: a new crew starts at 1 with a recipe (a `setup`
+counts) and 0 without; a save that changes the recipe, a removal included,
+makes it one more, and one that does not leaves it, so a number names one
+recipe of a crew for good. This build runs a recipe's setup phase alone, as
+it runs `setup`: the launch of a crew whose recipe names prerequisites,
+`env`, `ports`, services, `ready`, a `preview`, `verify` or `cleanup` steps,
+the file form, or a placeholder in a setup step is refused with
+`400 invalid_crew` saying what this build does not run yet ("this build does
+not run a project recipe's services yet"), never accepted and skipped.
 
 ### Crew runs
 
@@ -2127,8 +2174,9 @@ session is stopped first. An attempt is a fresh member session, named
 need's result commit, the run's base (`HEAD` of `cwd` at launch), or its own
 last attempt's result when that failed a check. A result refused before its
 checks ran (its checkout refused: the crew's directory a symbolic link or a
-file, or a commit git would not check out; or the crew's `setup` failing or
-changing tracked files there) is no tree to build on: the next attempt starts where
+file, or a commit git would not check out; or the crew's setup, its
+project recipe's `setup` phase or its legacy `setup`, failing or changing
+tracked files there) is no tree to build on: the next attempt starts where
 that attempt started, and its task file names the refused result and its
 branch (`previous.result`, `previous.branch`). A work task's result, with
 checks or none, is refused at checkout when the crew's directory in its tree
@@ -2147,8 +2195,8 @@ task's goal, role and instructions take more than 40 KiB as `task.json`
 keeps them, or a task needs the same task twice, so a task file always
 fits. A result is refused at submission (`400
 bad_result`, nothing changed) when it, or the repair a review's findings
-make, is larger than the ledger keeps as JSON. The crew's `setup`
-commands run in it first, and the session's process receives `CONDUCTOR_TASK`,
+make, is larger than the ledger keeps as JSON. The crew's setup steps
+(its project recipe's `setup`, or its legacy `setup`) run in it first, and the session's process receives `CONDUCTOR_TASK`,
 `CONDUCTOR_ATTEMPT` and `CONDUCTOR_TASK_FILE` beside the crew variables. The
 line typed once the session is ready says where the task file is and how to
 submit. A `done` finishes nothing (one reminder line is typed per attempt, when
@@ -2164,7 +2212,7 @@ descend from every input (a review's `HEAD` must be the candidate's), and the
 result tree may hold no `.conductor` directory anywhere and no submodule;
 otherwise the submit is refused with why, and the attempt goes on. A work
 task's checks then run in a detached checkout of the result commit
-(`<worktree>.check`), after the crew's `setup` there (what the worker had,
+(`<worktree>.check`), after the crew's setup steps there (what the worker had,
 the checks have; a setup that changes tracked content fails the attempt),
 one at a time across the server (`checks.maxConcurrent`), each recorded
 before it starts and after it ends with its exit, timing, log (at most 1 MiB,

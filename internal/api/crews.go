@@ -25,8 +25,8 @@ const (
 )
 
 // crewInput is the body of POST /api/crews and PUT /api/crews/{id}: a crew
-// without what the server sets. A client that sends id, createdAt or updatedAt
-// is refused like one that sends any other unknown field.
+// without what the server sets. A client that sends id, createdAt, updatedAt
+// or recipeRevision is refused like one that sends any other unknown field.
 type crewInput struct {
 	Name               string        `json:"name"`
 	Goal               string        `json:"goal"`
@@ -38,8 +38,12 @@ type crewInput struct {
 	Yolo               *bool         `json:"yolo"`
 	Members            []crew.Member `json:"members"`
 	// Tasks and Setup make a managed crew (#334): validated with the rest.
-	Tasks []crew.Task  `json:"tasks,omitempty"`
-	Setup []crew.Check `json:"setup,omitempty"`
+	// Recipe is its project recipe, of which Setup is the legacy form: a
+	// crew has one or the other. The store counts its changes itself
+	// (crew.Crew.RecipeRevision), never from the body.
+	Tasks  []crew.Task  `json:"tasks,omitempty"`
+	Setup  []crew.Check `json:"setup,omitempty"`
+	Recipe *crew.Recipe `json:"recipe,omitempty"`
 }
 
 // handleListCrews lists one page of the saved crews' summaries, ordered by
@@ -198,6 +202,7 @@ func (s *Server) readCrew(w http.ResponseWriter, r *http.Request) (crew.Crew, bo
 	c := crew.Crew{
 		Name: in.Name, Goal: in.Goal, Cwd: in.Cwd, Where: in.Where, Isolation: in.Isolation,
 		OpenAfterLaunch: in.OpenAfterLaunch, ViewLinkTTLSeconds: in.ViewLinkTTLSeconds, Yolo: in.Yolo, Members: in.Members, Tasks: in.Tasks, Setup: in.Setup,
+		Recipe: in.Recipe,
 	}
 	trimmed := c
 	trimmed.Name = strings.TrimSpace(c.Name)
