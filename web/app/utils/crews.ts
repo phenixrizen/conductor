@@ -1,4 +1,4 @@
-import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewProbe, CrewRecipe, CrewStart, CrewSummary, CrewTask, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewProbe, CrewManifest, CrewStart, CrewSummary, CrewTask, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
@@ -6,8 +6,8 @@ import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from '.
 
 /**
  * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
- * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and recipeRevision) or members carrying page state can be passed as
- * they are. The project recipe goes when it holds something, and the legacy setup only while the crew still has one.
+ * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and manifestRevision) or members carrying page state can be passed as
+ * they are. The project manifest goes when it holds something, and the legacy setup only while the crew still has one.
  */
 export function toCrewInput(c: Omit<CrewInput, 'tasks'> & { tasks?: ReadonlyArray<CrewTask | DraftTask> }): CrewInput {
   const out: CrewInput = {
@@ -23,16 +23,16 @@ export function toCrewInput(c: Omit<CrewInput, 'tasks'> & { tasks?: ReadonlyArra
   }
   if (c.tasks) out.tasks = plainTasks(c.tasks).map(toCrewTask)
   if (c.setup?.length) out.setup = c.setup.map(toCrewCheck)
-  if (c.recipe) {
-    const recipe = toCrewRecipe(c.recipe)
-    if (!recipeEmpty(recipe)) out.recipe = recipe
+  if (c.manifest) {
+    const manifest = toCrewManifest(c.manifest)
+    if (!manifestEmpty(manifest)) out.manifest = manifest
   }
   return out
 }
 
-/** A project recipe as the server accepts it: its fields and nothing else, each list's entries by toCrewCheck and toCrewProbe, empty ones left out. */
-export function toCrewRecipe(r: CrewRecipe): CrewRecipe {
-  const out: CrewRecipe = {}
+/** A project manifest as the server accepts it: its fields and nothing else, each list's entries by toCrewCheck and toCrewProbe, empty ones left out. */
+export function toCrewManifest(r: CrewManifest): CrewManifest {
+  const out: CrewManifest = {}
   if (r.schema) out.schema = r.schema
   if (r.file) out.file = true
   if (r.prerequisites?.length) out.prerequisites = r.prerequisites.map(toCrewCheck)
@@ -57,20 +57,20 @@ export function toCrewProbe(p: CrewProbe): CrewProbe {
   return out
 }
 
-/** Whether a project recipe holds nothing: a crew with an empty recipe has none (the server leaves it out). */
-export function recipeEmpty(r: CrewRecipe): boolean {
+/** Whether a project manifest holds nothing: a crew with an empty manifest has none (the server leaves it out). */
+export function manifestEmpty(r: CrewManifest): boolean {
   return !r.schema && !r.file && !r.prerequisites?.length && !r.env?.length && !r.ports?.length && !r.setup?.length && !r.services?.length && !r.ready?.length && !r.preview && !r.verify?.length && !r.cleanup?.length
 }
 
 /**
- * A loaded crew as the editor holds it: a legacy setup lifted into its project recipe's setup phase, so the editor has one place for it;
- * a crew with a recipe, or without a setup, as it is. Saved so, the setup is the same recipe to the server, whose count of its changes
- * (recipeRevision) stays where it was.
+ * A loaded crew as the editor holds it: a legacy setup lifted into its project manifest's setup phase, so the editor has one place for it;
+ * a crew with a manifest, or without a setup, as it is. Saved so, the setup is the same manifest to the server, whose count of its changes
+ * (manifestRevision) stays where it was.
  */
-export function liftSetup<T extends { setup?: CrewCheck[]; recipe?: CrewRecipe }>(c: T): T {
-  if (!c.setup?.length || (c.recipe && !recipeEmpty(c.recipe))) return c
+export function liftSetup<T extends { setup?: CrewCheck[]; manifest?: CrewManifest }>(c: T): T {
+  if (!c.setup?.length || (c.manifest && !manifestEmpty(c.manifest))) return c
   const { setup, ...rest } = c
-  return { ...rest, recipe: { ...c.recipe, setup: setup.map((ch) => ({ ...ch, argv: [...ch.argv] })) } } as T
+  return { ...rest, manifest: { ...c.manifest, setup: setup.map((ch) => ({ ...ch, argv: [...ch.argv] })) } } as T
 }
 
 /** A task as the server accepts it: its fields and nothing else; empty needs and checks left out. */
@@ -189,7 +189,7 @@ export function memberNameFrom(text: string, taken: readonly string[] = []): str
 /** A task's or a check's id as the server accepts it (internal/crew taskIDPattern): no dot, since an attempt's branch is `crew/<run>/<task>.<n>`. */
 export const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/
 
-/** The server's bounds on tasks and their project recipe (internal/crew). */
+/** The server's bounds on tasks and their project manifest (internal/crew). */
 export const TASK_LIMITS = {
   tasks: 128,
   instructions: 8000,
@@ -200,18 +200,18 @@ export const TASK_LIMITS = {
   arg: 4096,
   argvBytes: 8192,
   taskText: 40 << 10,
-  /** Prerequisites, setup, ready, verify and cleanup steps of a project recipe, each. */
-  recipeSteps: 8,
-  recipeServices: 4,
-  recipeEnv: 32,
-  recipePorts: 8,
+  /** Prerequisites, setup, ready, verify and cleanup steps of a project manifest, each. */
+  manifestSteps: 8,
+  manifestServices: 4,
+  manifestEnv: 32,
+  manifestPorts: 8,
   probeTimeout: 3600,
   probeTimeoutDefault: 60,
   probeInterval: 60,
   probeIntervalDefault: 2,
   probeUrl: 2048,
   preview: 512,
-  recipeJson: 64 << 10,
+  manifestJson: 64 << 10,
 } as const
 
 /** Why the server would refuse a task or check id, or '' when it is fine. */
@@ -226,7 +226,7 @@ const bytes = (s: string) => new TextEncoder().encode(s).length
 
 /**
  * How many bytes v takes as JSON as the server writes it (Go's encoding/json, compact, with <, > and & as they are: internal/crew
- * encodeRecipe). JSON.stringify's own text is off both ways: the server escapes U+2028 and U+2029, six bytes each where JSON.stringify keeps
+ * encodeManifest). JSON.stringify's own text is off both ways: the server escapes U+2028 and U+2029, six bytes each where JSON.stringify keeps
  * the three-byte character, and a lone surrogate, which JSON.stringify sends as a six-byte escape, reaches the server as U+FFFD, three bytes.
  */
 function serverJsonBytes(v: unknown): number {
@@ -268,11 +268,11 @@ export function checkProblems(c: DraftCheck, what: string, taken: readonly strin
 /** The variables never passed to a child (internal/pty blocked): a loader that would change what a program runs. */
 export const BLOCKED_ENV: readonly string[] = ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']
 
-/** A variable name a project recipe's env may give (internal/crew envNamePattern). */
-export const RECIPE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+/** A variable name a project manifest's env may give (internal/crew envNamePattern). */
+export const MANIFEST_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
 
-/** A project recipe's port name (internal/crew portNamePattern): CONDUCTOR_PORT_<NAME> is its upper case. */
-export const RECIPE_PORT_NAME = /^[a-z][a-z0-9_]{0,15}$/
+/** A project manifest's port name (internal/crew portNamePattern): CONDUCTOR_PORT_<NAME> is its upper case. */
+export const MANIFEST_PORT_NAME = /^[a-z][a-z0-9_]{0,15}$/
 
 /** A placeholder: ${CONDUCTOR_PORT_<NAME>}, whatever the name, or ${CONDUCTOR_STATE_DIR} (internal/crew placeholderPattern). */
 const PLACEHOLDER = /\$\{CONDUCTOR_(?:PORT_([A-Za-z0-9_]*)|STATE_DIR)\}/g
@@ -291,7 +291,7 @@ function argvProblems(argv: readonly string[], what: string): string[] {
   return out
 }
 
-/** The port placeholders in s that name no port of the recipe (ports: their upper-case names). */
+/** The port placeholders in s that name no port of the manifest (ports: their upper-case names). */
 function strayPlaceholders(s: string, ports: ReadonlySet<string>): string[] {
   return [...s.matchAll(PLACEHOLDER)].filter((m) => m[0] !== '${CONDUCTOR_STATE_DIR}' && !ports.has(m[1] ?? '')).map((m) => m[0])
 }
@@ -303,50 +303,50 @@ function urlProblems(u: string, what: string, most: number, ports: ReadonlySet<s
   if (!m) return [`${what} must be http or https on 127.0.0.1, localhost or [::1]`]
   const port = m[1]
   if (port && !port.startsWith('$') && (Number(port) < 1 || Number(port) > 65535)) return [`${what}: the port must be 1 to 65535`]
-  return strayPlaceholders(u, ports).map((p) => `${what}: ${p} names no port of the recipe`)
+  return strayPlaceholders(u, ports).map((p) => `${what}: ${p} names no port of the manifest`)
 }
 
 /** A whole number from 0 to most: a timeout or an interval left out (0) or within its bound. */
 const withinBound = (n: number | undefined, most: number) => n === undefined || (Number.isInteger(n) && n >= 0 && n <= most)
 
-/** What a crew looks like to the project recipe's rules: its recipe, its legacy setup and its tasks (a saved crew's or the editor's). */
-export interface RecipeShape {
-  recipe?: CrewRecipe
+/** What a crew looks like to the project manifest's rules: its manifest, its legacy setup and its tasks (a saved crew's or the editor's). */
+export interface ManifestShape {
+  manifest?: CrewManifest
   setup?: readonly CrewCheck[]
   tasks?: ReadonlyArray<CrewTask | DraftTask>
 }
 
 /**
- * Why the server would refuse a crew's project recipe (internal/crew Recipe.validate, and checkTasks around it), every problem in the server's
- * order; empty when it would be accepted or there is none. A recipe needs tasks, never sits beside a setup, and is held to its bounds: the
- * lists' counts, each step as a check, ids unique across the recipe and none a task's check id, the env and port names, the URLs, and the
- * placeholders (one naming no port, and any in a prerequisite). The server reads conductor.recipe.json itself: with `file`, nothing else is set.
+ * Why the server would refuse a crew's project manifest (internal/crew Manifest.validate, and checkTasks around it), every problem in the server's
+ * order; empty when it would be accepted or there is none. A manifest needs tasks, never sits beside a setup, and is held to its bounds: the
+ * lists' counts, each step as a check, ids unique across the manifest and none a task's check id, the env and port names, the URLs, and the
+ * placeholders (one naming no port, and any in a prerequisite). The server reads conductor.manifest.json itself: with `file`, nothing else is set.
  */
-export function recipeProblems(c: RecipeShape): string[] {
-  const r = c.recipe
-  if (!r || recipeEmpty(r)) return []
+export function manifestProblems(c: ManifestShape): string[] {
+  const r = c.manifest
+  if (!r || manifestEmpty(r)) return []
   const tasks = plainTasks(c.tasks ?? [])
-  if (!tasks.length) return ['A project recipe needs tasks']
+  if (!tasks.length) return ['A project manifest needs tasks']
   const out: string[] = []
-  if (c.setup?.length) out.push("Setup commands beside a project recipe: setup is the recipe's setup phase, put it there")
-  if (r.schema) out.push('A project recipe in the crew leaves schema out: it is only set in conductor.recipe.json')
+  if (c.setup?.length) out.push("Setup commands beside a project manifest: setup is the manifest's setup phase, put it there")
+  if (r.schema) out.push('A project manifest in the crew leaves schema out: it is only set in conductor.manifest.json')
   if (r.file) {
-    if (!recipeEmpty({ ...r, file: false })) out.push("With conductor.recipe.json, the recipe is the file at each tree's commit: set nothing else")
+    if (!manifestEmpty({ ...r, file: false })) out.push("With conductor.manifest.json, the manifest is the file at each tree's commit: set nothing else")
     return out
   }
   const env = r.env ?? []
-  if (env.length > TASK_LIMITS.recipeEnv) out.push(`At most ${TASK_LIMITS.recipeEnv} env names`)
+  if (env.length > TASK_LIMITS.manifestEnv) out.push(`At most ${TASK_LIMITS.manifestEnv} env names`)
   for (const [i, name] of env.entries()) {
-    if (!RECIPE_ENV_NAME.test(name)) out.push(`Env ${name || i + 1}: letters, digits and _, not starting with a digit, at most 128`)
+    if (!MANIFEST_ENV_NAME.test(name)) out.push(`Env ${name || i + 1}: letters, digits and _, not starting with a digit, at most 128`)
     else if (name.startsWith('CONDUCTOR_')) out.push(`Env ${name} is Conductor's own: a CONDUCTOR_ name never comes from the host`)
     else if (BLOCKED_ENV.includes(name)) out.push(`Env ${name} is a loader's variable, never passed on`)
     else if (env.slice(0, i).includes(name)) out.push(`Env ${name} is named twice`)
   }
   const portNames = r.ports ?? []
-  if (portNames.length > TASK_LIMITS.recipePorts) out.push(`At most ${TASK_LIMITS.recipePorts} ports`)
+  if (portNames.length > TASK_LIMITS.manifestPorts) out.push(`At most ${TASK_LIMITS.manifestPorts} ports`)
   const ports = new Set<string>()
   for (const [i, name] of portNames.entries()) {
-    if (!RECIPE_PORT_NAME.test(name)) out.push(`Port ${name || i + 1}: lower-case letters, digits and _, starting with a letter, at most 16`)
+    if (!MANIFEST_PORT_NAME.test(name)) out.push(`Port ${name || i + 1}: lower-case letters, digits and _, starting with a letter, at most 16`)
     else if (portNames.slice(0, i).includes(name)) out.push(`Port ${name} is named twice`)
     ports.add(name.toUpperCase())
   }
@@ -366,14 +366,14 @@ export function recipeProblems(c: RecipeShape): string[] {
       out.push(...checkProblems(ch, what, ids))
       takeId(what, ch.id)
       if (rule === 'prerequisite' && ch.argv.some((a) => a.match(PLACEHOLDER))) out.push(`${what}: a prerequisite runs before any tree: no placeholders`)
-      for (const a of ch.argv) for (const p of strayPlaceholders(a, ports)) out.push(`${what}: ${p} names no port of the recipe`)
+      for (const a of ch.argv) for (const p of strayPlaceholders(a, ports)) out.push(`${what}: ${p} names no port of the manifest`)
     }
   }
-  steps(r.prerequisites, 'Prerequisite', 'prerequisites', TASK_LIMITS.recipeSteps, 'prerequisite')
-  steps(r.setup, 'Setup step', 'setup steps', TASK_LIMITS.recipeSteps, 'tree')
-  steps(r.services, 'Service', 'services', TASK_LIMITS.recipeServices, 'service')
+  steps(r.prerequisites, 'Prerequisite', 'prerequisites', TASK_LIMITS.manifestSteps, 'prerequisite')
+  steps(r.setup, 'Setup step', 'setup steps', TASK_LIMITS.manifestSteps, 'tree')
+  steps(r.services, 'Service', 'services', TASK_LIMITS.manifestServices, 'service')
   const ready = r.ready ?? []
-  if (ready.length > TASK_LIMITS.recipeSteps) out.push(`At most ${TASK_LIMITS.recipeSteps} ready probes`)
+  if (ready.length > TASK_LIMITS.manifestSteps) out.push(`At most ${TASK_LIMITS.manifestSteps} ready probes`)
   for (const [i, p] of ready.entries()) {
     const what = `Ready probe ${i + 1}`
     const idErr = taskIdError(p.id, ids)
@@ -382,7 +382,7 @@ export function recipeProblems(c: RecipeShape): string[] {
     if (argv.length && p.url) out.push(`${what}: a probe has a command or a URL, not both`)
     else if (argv.length) {
       out.push(...argvProblems(argv, what))
-      for (const a of argv) for (const ph of strayPlaceholders(a, ports)) out.push(`${what}: ${ph} names no port of the recipe`)
+      for (const a of argv) for (const ph of strayPlaceholders(a, ports)) out.push(`${what}: ${ph} names no port of the manifest`)
     } else if (p.url) out.push(...urlProblems(p.url, `${what}: the URL`, TASK_LIMITS.probeUrl, ports))
     else out.push(`${what}: give it a command or a URL`)
     if (!withinBound(p.timeoutSeconds, TASK_LIMITS.probeTimeout)) out.push(`${what}: the timeout is 1 to ${TASK_LIMITS.probeTimeout} seconds`)
@@ -390,10 +390,10 @@ export function recipeProblems(c: RecipeShape): string[] {
     takeId(what, p.id)
   }
   if (r.preview) out.push(...urlProblems(r.preview, 'The preview', TASK_LIMITS.preview, ports))
-  steps(r.verify, 'Verify step', 'verify steps', TASK_LIMITS.recipeSteps, 'tree')
-  steps(r.cleanup, 'Cleanup step', 'cleanup steps', TASK_LIMITS.recipeSteps, 'tree')
-  const size = serverJsonBytes(toCrewRecipe(r))
-  if (size > TASK_LIMITS.recipeJson) out.push(`The project recipe is ${size} bytes as JSON, more than ${TASK_LIMITS.recipeJson}`)
+  steps(r.verify, 'Verify step', 'verify steps', TASK_LIMITS.manifestSteps, 'tree')
+  steps(r.cleanup, 'Cleanup step', 'cleanup steps', TASK_LIMITS.manifestSteps, 'tree')
+  const size = serverJsonBytes(toCrewManifest(r))
+  if (size > TASK_LIMITS.manifestJson) out.push(`The project manifest is ${size} bytes as JSON, more than ${TASK_LIMITS.manifestJson}`)
   return out
 }
 

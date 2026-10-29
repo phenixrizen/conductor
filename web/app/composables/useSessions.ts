@@ -317,11 +317,11 @@ export interface CrewMember {
 }
 
 /**
- * A command the controller runs (#334): against a task's result (`CrewTask.checks`), or a step of a project recipe (`CrewRecipe`, whose setup
+ * A command the controller runs (#334): against a task's result (`CrewTask.checks`), or a step of a project manifest (`CrewManifest`, whose setup
  * phase `CrewInfo.setup` was). An argv array, never a shell line.
  */
 export interface CrewCheck {
-  /** `^[a-z0-9][a-z0-9_-]{0,39}$`, unique among a task's checks; a recipe's step's unique across the recipe and none of the tasks' check ids. */
+  /** `^[a-z0-9][a-z0-9_-]{0,39}$`, unique among a task's checks; a manifest's step's unique across the manifest and none of the tasks' check ids. */
   id: string
   /** The program and its arguments: at most 32 of 4096 bytes, 8 KiB in all. */
   argv: string[]
@@ -330,11 +330,11 @@ export interface CrewCheck {
 }
 
 /**
- * A project recipe's readiness probe: a command run until it exits 0, or a URL on this machine fetched until it answers under 300, every
+ * A project manifest's readiness probe: a command run until it exits 0, or a URL on this machine fetched until it answers under 300, every
  * `intervalSeconds`, for at most `timeoutSeconds`. It has `argv` or `url`, never both.
  */
 export interface CrewProbe {
-  /** As a check's: unique across the recipe. */
+  /** As a check's: unique across the manifest. */
   id: string
   argv?: string[]
   /** http or https on 127.0.0.1, localhost or [::1], at most 2048 bytes; `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` expand in it. */
@@ -346,15 +346,15 @@ export interface CrewProbe {
 }
 
 /**
- * A project recipe (docs/plans/project-recipes.md): what makes a fresh tree of the project (an attempt's worktree, or the checkout of its
+ * A project manifest (docs/plans/project-manifests.md): what makes a fresh tree of the project (an attempt's worktree, or the checkout of its
  * result) usable, how it is checked and how it is cleaned up. Not an agent's recipes (the catalog's yolo, trust and session recipes).
  * `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` expand inside one argv element, a probe's URL and the preview. This build runs
- * the setup phase alone and refuses the launch of a recipe that names more (400 invalid_crew).
+ * the setup phase alone and refuses the launch of a manifest that names more (400 invalid_crew).
  */
-export interface CrewRecipe {
-  /** Only in conductor.recipe.json (1); never in a crew's. */
+export interface CrewManifest {
+  /** Only in conductor.manifest.json (1); never in a crew's. */
   schema?: number
-  /** Read conductor.recipe.json from the crew's directory at each tree's commit; nothing else is set then. */
+  /** Read conductor.manifest.json from the crew's directory at each tree's commit; nothing else is set then. */
   file?: boolean
   /** At most 8, run once per run before any tree, with no placeholders; 60 s each when no timeout is given. */
   prerequisites?: CrewCheck[]
@@ -413,12 +413,12 @@ export interface CrewInfo {
   members: CrewMember[]
   /** At most 128; present, the crew is managed (#334): every member starts by its tasks and `isolation` is `worktree`. */
   tasks?: CrewTask[]
-  /** At most 8 commands run in every new attempt worktree before its member starts; only with tasks. The project recipe's setup phase as a crew saved before recipes holds it: never beside `recipe`. */
+  /** At most 8 commands run in every new attempt worktree before its member starts; only with tasks. The project manifest's setup phase as a crew saved before manifests holds it: never beside `manifest`. */
   setup?: CrewCheck[]
-  /** The crew's project recipe; only with tasks. The whole recipe is at most 64 KiB as JSON. */
-  recipe?: CrewRecipe
-  /** The server's count of the crew's recipe changes (`crew:<revision>` in a receipt): never sent back. */
-  recipeRevision?: number
+  /** The crew's project manifest; only with tasks. The whole manifest is at most 64 KiB as JSON. */
+  manifest?: CrewManifest
+  /** The server's count of the crew's manifest changes (`crew:<revision>` in a receipt): never sent back. */
+  manifestRevision?: number
   createdAt: string
   updatedAt: string
 }
@@ -436,7 +436,7 @@ export interface CrewSummary {
 }
 
 /** Body of POST /api/crews and PUT /api/crews/{id}: a crew without what the server sets. The server rejects unknown fields, these four included. */
-export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'recipeRevision'>
+export type CrewInput = Omit<CrewInfo, 'id' | 'createdAt' | 'updatedAt' | 'manifestRevision'>
 
 /** A member of a crew run, as the run routes report it. */
 export interface RunMember {

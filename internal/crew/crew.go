@@ -113,7 +113,7 @@ type Task struct {
 }
 
 // Check is a command the controller runs: against a result (Task.Checks),
-// or a step of a project recipe (Recipe, whose setup phase Crew.Setup was).
+// or a step of a project manifest (Manifest, whose setup phase Crew.Setup was).
 // An argv array, never a shell line.
 type Check struct {
 	ID             string   `json:"id"`
@@ -138,17 +138,17 @@ type Crew struct {
 	// Setup is run in every new attempt worktree before its member starts,
 	// each entry an argv array, never a shell line: what a fresh worktree
 	// lacks (a dependency install). Only with Tasks. It is the project
-	// recipe's setup phase as a crew saved before recipes holds it
-	// (effectiveRecipe), and is never set beside Recipe.
+	// manifest's setup phase as a crew saved before manifests holds it
+	// (effectiveManifest), and is never set beside Manifest.
 	Setup []Check `json:"setup,omitempty"`
-	// Recipe is the crew's project recipe (recipe.go): what makes a fresh
+	// Manifest is the crew's project manifest (manifest.go): what makes a fresh
 	// tree usable, how it is checked and cleaned up. Only with Tasks.
-	Recipe *Recipe `json:"recipe,omitempty"`
-	// RecipeRevision is the server's count of the crew's recipe changes
-	// (recipeRevision), set by the store whatever a save carries: on the
-	// crew, not inside the optional Recipe, so a save that removes the
-	// recipe keeps it and a number names one recipe of the crew for good.
-	RecipeRevision int64 `json:"recipeRevision,omitempty"`
+	Manifest *Manifest `json:"manifest,omitempty"`
+	// ManifestRevision is the server's count of the crew's manifest changes
+	// (manifestRevision), set by the store whatever a save carries: on the
+	// crew, not inside the optional Manifest, so a save that removes the
+	// manifest keeps it and a number names one manifest of the crew for good.
+	ManifestRevision int64 `json:"manifestRevision,omitempty"`
 	// Yolo overrides the server's yolo default for the crew's runs: nil
 	// follows it, false launches every member without its agent's yolo
 	// recipe, true with it. A launch fixes the choice on the run.
@@ -275,8 +275,8 @@ func (c Crew) Validate() error {
 	if c.ViewLinkTTLSeconds < 0 || c.ViewLinkTTLSeconds > maxLinkTTL {
 		return invalidf("viewLinkTtlSeconds must be between 0 and %d", maxLinkTTL)
 	}
-	if c.RecipeRevision < 0 {
-		return invalidf("recipeRevision must not be negative")
+	if c.ManifestRevision < 0 {
+		return invalidf("manifestRevision must not be negative")
 	}
 	if len(c.Members) > maxMembers {
 		return invalidf("too many members (at most %d)", maxMembers)
@@ -344,12 +344,12 @@ func (c Crew) checkStarts(names []string) error {
 
 // checkTasks checks the tasks of a managed crew against its members, and
 // that a crew without tasks has no task-started member, no setup and no
-// project recipe: ids well formed and unique, at most maxTasks, every
+// project manifest: ids well formed and unique, at most maxTasks, every
 // task's member known and its needs known with no cycle, a review needing
 // one work task and having no checks, every member with a task, the checks
 // and the setup within their bounds, isolation worktree, every member
-// started by its tasks; then the project recipe, never beside a setup, by
-// its own rules (Recipe.validate).
+// started by its tasks; then the project manifest, never beside a setup, by
+// its own rules (Manifest.validate).
 func (c Crew) checkTasks(names []string) error {
 	if len(c.Tasks) == 0 {
 		if len(c.Setup) > 0 {
@@ -360,8 +360,8 @@ func (c Crew) checkTasks(names []string) error {
 				return invalidf("member %s: start.when %q is only for a crew with tasks", quote(m.Name), StartTask)
 			}
 		}
-		if c.hasRecipe() {
-			return invalidf("a project recipe is only set with tasks")
+		if c.hasManifest() {
+			return invalidf("a project manifest is only set with tasks")
 		}
 		return nil
 	}
@@ -484,18 +484,18 @@ func (c Crew) checkTasks(names []string) error {
 			return invalidf("member %s: has no task; every member of a crew with tasks does one", quote(m.Name))
 		}
 	}
-	if c.hasRecipe() {
+	if c.hasManifest() {
 		if len(c.Setup) > 0 {
-			return invalidf("setup is the project recipe's setup phase: put it there")
+			return invalidf("setup is the project manifest's setup phase: put it there")
 		}
-		if err := c.Recipe.validate("project recipe", taskChecks(c.Tasks), false); err != nil {
+		if err := c.Manifest.validate("project manifest", taskChecks(c.Tasks), false); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validate checks a check, a setup command or a recipe's step: its id,
+// validate checks a check, a setup command or a manifest's step: its id,
 // argv (validateArgv) and timeout. what names it in the error.
 func (ch Check) validate(what string) error {
 	if !taskIDPattern.MatchString(ch.ID) {
@@ -664,9 +664,9 @@ func (c Crew) clone() Crew {
 	for i := range c.Members {
 		c.Members[i].Args = slices.Clone(c.Members[i].Args)
 	}
-	if c.Recipe != nil {
-		rec := c.Recipe.clone()
-		c.Recipe = &rec
+	if c.Manifest != nil {
+		rec := c.Manifest.clone()
+		c.Manifest = &rec
 	}
 	return c
 }
