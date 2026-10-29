@@ -3108,7 +3108,11 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   with four commits counted, the same tree) was run locally and not pushed,
   since it is the force-push B12 authorizes and the agent's rules forbid,
   so the green half on that branch waits for a maintainer, and #389 was
-  closed as it was. The green case on a real PR: PR #388's own run
+  closed as it was: it is reopened first (a push to a closed pull request's
+  branch fires no run, and a pull request whose branch was force-pushed
+  while it was closed cannot be reopened until the branch is put back as it
+  was), then the force-push, whose run is the green half. The green case on
+  a real PR: PR #388's own run
   https://github.com/rocksolidlabs/conductor/actions/runs/40782335246,
   `dco` printing `3 commits signed off by their authors`, every job green.
   Observation 2: `TRADEMARKS.md` and `NOTICE` both name RockSolid Labs,
@@ -3120,10 +3124,12 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   https://github.com/rocksolidlabs/conductor/actions/runs/40782472193 with
   no `dco` job at all; the cutover had not run when this entry was written
   (#390 open, never closed and reopened), so its reopened run is still to
-  be observed and its URL added here. Private vulnerability reporting read
-  `enabled: false` on 2026-10-28; a maintainer turns it on before PR-2
-  merges. `internal/crew`'s `TestAContinuation*` flaked at `TempDir`
-  cleanup on the throwaway and plan runs (#281, one line each).
+  be observed. Issue #414 carries both missing URLs, the green half's and
+  the reopened run's, into this entry once a maintainer has run B12 and
+  B14. Private vulnerability reporting read `enabled: false` on 2026-10-28;
+  a maintainer turns it on before PR-2 merges. `internal/crew`'s
+  `TestAContinuation*` flaked at `TempDir` cleanup on the throwaway and plan
+  runs (#281, one line each).
 - **The repository moved to rocksolidlabs/conductor (#380, 2026-10-27).** The
   GitHub transfer (the ruleset, the `live` environment, the workflows, the
   labels, the issues and the advisories came along; the old URLs answer 301)
