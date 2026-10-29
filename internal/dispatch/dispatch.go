@@ -121,9 +121,14 @@ type Change struct {
 // a newer Conductor wrote, one that fails its check, or one another
 // writer holds past busyTimeout opens read-only, read when it can be and
 // never written, and ReadOnly says why. It fails only when the directory
-// cannot be made or the database file is a symbolic link. The receipts
-// are pruned at open (prune).
+// cannot be made or the database file is a symbolic link. A relative dir
+// is taken under the working directory, and the store keeps it absolute.
+// The receipts are pruned at open (prune).
 func Open(dir string) (*Store, error) {
+	dir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -223,12 +228,15 @@ func open(ctx context.Context, path string, readOnly bool) (*sql.DB, error) {
 	return db, nil
 }
 
-// dsn is the connection string: the file as a URI (its path escaped, so a
-// directory with '#', '?' or '%' in its name is the directory it is), the
-// pragmas every connection needs (the busy timeout, foreign keys on, a
-// full sync, WAL; on darwin a full fsync, since a plain fsync there does
-// not reach the disk), BEGIN IMMEDIATE for every transaction, and
-// read-only mode when the store is.
+// dsn is the connection string: the file, whose path is absolute (Open
+// makes it so: a relative one's first element would be read as the URI's
+// authority, which SQLite refuses), as a URI with an empty authority, its
+// path with forward slashes and escaped, so a directory with '#', '?' or
+// '%' in its name is the directory it is, and a Windows drive after a
+// '/' (file:///C:/…); the pragmas every connection needs (the busy
+// timeout, foreign keys on, a full sync, WAL; on darwin a full fsync,
+// since a plain fsync there does not reach the disk), BEGIN IMMEDIATE for
+// every transaction, and read-only mode when the store is.
 func dsn(path string, readOnly bool) string {
 	q := url.Values{}
 	pragmas := []string{fmt.Sprintf("busy_timeout(%d)", busyTimeout/time.Millisecond), "foreign_keys(1)", "synchronous(FULL)", "journal_mode(WAL)"}
@@ -243,7 +251,11 @@ func dsn(path string, readOnly bool) string {
 	if readOnly {
 		q.Set("mode", "ro")
 	}
-	u := url.URL{Scheme: "file", Path: path, RawQuery: q.Encode()}
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	u := url.URL{Scheme: "file", Path: p, RawQuery: q.Encode()}
 	return u.String()
 }
 
@@ -357,7 +369,10 @@ func (s *Store) conn() (*sql.DB, error) {
 }
 
 // Checkpoint moves the write-ahead log into the database and truncates
-// it, for an export of a running server (Program item C6).
+// it, for an export of a running server (Program item C6), and returns
+// nil only when it did: a checkpoint another connection keeps from
+// finishing past the busy timeout (a reader on a snapshot, a writer) is
+// an error, the log still holding what it held.
 func (s *Store) Checkpoint(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -367,13 +382,28 @@ func (s *Store) Checkpoint(ctx context.Context) error {
 	case s.db == nil || s.readOnly:
 		return fmt.Errorf("%w: %s", ErrReadOnly, s.why)
 	}
-	_, err := s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
-	return err
+	return checkpoint(ctx, s.db)
 }
 
-// Close checkpoints the write-ahead log into the database and closes it.
-// A read or a write after it begins gets ErrClosed; one in flight gets
-// the database's own error, never a panic.
+// checkpoint runs wal_checkpoint(TRUNCATE) and reads its result, which is
+// where SQLite reports a checkpoint kept from finishing (its first
+// column; the log's frames and those moved after it), never as an error.
+func checkpoint(ctx context.Context, db *sql.DB) error {
+	var busy, frames, moved int
+	if err := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &frames, &moved); err != nil {
+		return err
+	}
+	if busy != 0 {
+		return fmt.Errorf("dispatch: another connection kept the checkpoint from finishing: %d of the log's %d frames moved", moved, frames)
+	}
+	return nil
+}
+
+// Close checkpoints the write-ahead log into the database and closes it,
+// returning the checkpoint's error, one another connection kept from
+// finishing included, beside the close's. A read or a write after it
+// begins gets ErrClosed; one in flight gets the database's own error,
+// never a panic.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -384,7 +414,7 @@ func (s *Store) Close() error {
 	var errs []error
 	if s.db != nil {
 		if !s.readOnly {
-			if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			if err := checkpoint(context.Background(), s.db); err != nil {
 				errs = append(errs, err)
 			}
 		}

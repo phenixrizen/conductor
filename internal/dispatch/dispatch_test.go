@@ -262,7 +262,14 @@ func TestEightOpenersMakeTheSchemaOnce(t *testing.T) {
 // lock as another process would.
 func rawConn(t *testing.T, s *Store) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", dsn(s.path, false))
+	return rawConnAt(t, s.path)
+}
+
+// rawConnAt is a connection on the database file at path, made when
+// missing.
+func rawConnAt(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,12 +312,20 @@ func TestAWriterHoldingTheDatabasePastTheTimeoutOpensReadOnly(t *testing.T) {
 }
 
 func TestAWriterLettingGoWhileOpenWaitsLeavesItWritable(t *testing.T) {
+	// The write lock is held on a fresh file in an empty directory, so the
+	// opener that waits on it is the one that makes the schema.
 	dir := storeDir(t)
-	s := openStore(t, dir)
-	raw := rawConn(t, s)
-	hold, err := raw.BeginTx(context.Background(), nil)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := rawConnAt(t, filepath.Join(dir, File))
+	hold, err := raw.BeginTx(context.Background(), nil) // BEGIN IMMEDIATE: the write lock
 	if err != nil {
 		t.Fatal(err)
+	}
+	var made int
+	if err := hold.QueryRow("SELECT COUNT(*) FROM sqlite_master").Scan(&made); err != nil || made != 0 {
+		t.Fatalf("the file held is not fresh: %d entries %v", made, err)
 	}
 	// The lock is let go once Open is past the check and on its way to
 	// the schema transaction: with the default busy timeout, a lock
@@ -321,24 +336,139 @@ func TestAWriterLettingGoWhileOpenWaitsLeavesItWritable(t *testing.T) {
 		go func() { released <- hold.Rollback() }()
 	}
 	t.Cleanup(func() { beforePrepareTx = nil })
-	second, err := Open(dir)
+	s, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer s.Close()
 	if err := <-released; err != nil {
 		t.Fatal(err)
 	}
-	if ro, why := second.ReadOnly(); ro {
+	if ro, why := s.ReadOnly(); ro {
 		t.Fatalf("read-only: %s", why)
 	}
-	if n := count(t, second, "SELECT COUNT(*) FROM schema_version"); n != 1 {
+	// The opener that waited made the schema, whole and once.
+	if n := count(t, s, "SELECT COUNT(*) FROM schema_version"); n != 1 {
 		t.Fatalf("%d schema_version rows", n)
 	}
-	rc, err := second.AddPerson(context.Background(), testOp("b1"), "Bob")
+	if got := tableNames(t, s); strings.Join(got, " ") != strings.Join(tables, " ") {
+		t.Fatalf("tables %v", got)
+	}
+	rc, err := s.AddPerson(context.Background(), testOp("b1"), "Bob")
 	want(t, rc, err, StatusDone, "")
-	if people, err := s.People(context.Background()); err != nil || len(people) != 1 {
-		t.Fatalf("the first store sees %+v %v", people, err)
+	// A store opened after it finds the schema made.
+	again := openStore(t, dir)
+	if ro, why := again.ReadOnly(); ro {
+		t.Fatalf("the next store is read-only: %s", why)
+	}
+	if n := count(t, again, "SELECT COUNT(*) FROM schema_version"); n != 1 {
+		t.Fatalf("%d schema_version rows after the next open", n)
+	}
+	if people, err := again.People(context.Background()); err != nil || len(people) != 1 {
+		t.Fatalf("the next store sees %+v %v", people, err)
+	}
+}
+
+// A checkpoint another connection keeps from finishing is an error, never
+// taken for done: wal_checkpoint says so in its result row and not as an
+// error, and an export that trusted it would copy a file the log still
+// holds commits for. Close says so too, and closes.
+func TestACheckpointKeptFromFinishingIsAnError(t *testing.T) {
+	old := busyTimeout
+	busyTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { busyTimeout = old })
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	ctx := context.Background()
+	rc, err := s.AddPerson(ctx, testOp("a1"), "Alice")
+	want(t, rc, err, StatusDone, "")
+	reader, err := rawConn(t, s).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	// A reader holds a snapshot while the store writes on.
+	read := func() {
+		t.Helper()
+		var n int
+		if _, err := reader.ExecContext(ctx, "BEGIN"); err != nil {
+			t.Fatal(err)
+		}
+		if err := reader.QueryRowContext(ctx, "SELECT COUNT(*) FROM people").Scan(&n); err != nil || n == 0 {
+			t.Fatalf("the reader read %d: %v", n, err)
+		}
+	}
+	read()
+	rc, err = s.AddPerson(ctx, testOp("a2"), "Bob")
+	want(t, rc, err, StatusDone, "")
+	if err := s.Checkpoint(ctx); err == nil || !strings.Contains(err.Error(), "kept the checkpoint from finishing") {
+		t.Fatalf("a checkpoint a reader kept from finishing: %v", err)
+	}
+	// The reader lets go: the checkpoint finishes and empties the log.
+	if _, err := reader.ExecContext(ctx, "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Checkpoint(ctx); err != nil {
+		t.Fatalf("the checkpoint once the reader let go: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, File+"-wal")); err == nil && fi.Size() != 0 {
+		t.Fatalf("the WAL holds %d bytes after the checkpoint", fi.Size())
+	}
+	read()
+	rc, err = s.AddPerson(ctx, testOp("a3"), "Carol")
+	want(t, rc, err, StatusDone, "")
+	if err := s.Close(); err == nil || !strings.Contains(err.Error(), "kept the checkpoint from finishing") {
+		t.Fatalf("a Close whose checkpoint a reader kept from finishing: %v", err)
+	}
+	if _, err := s.People(ctx); !errors.Is(err, ErrClosed) {
+		t.Fatalf("a read after the Close: %v", err)
+	}
+	if _, err := reader.ExecContext(ctx, "COMMIT"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The database is opened by a file: URI built from the absolute path: a
+// relative directory is the one it names under the working directory
+// (made relative, its first element would be the URI's authority, which
+// SQLite refuses), and a directory whose name holds what a URI reads as
+// syntax ('#', '?', '%', a space) is the directory it is.
+func TestADirectoryOpensWhateverItsPathForm(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	for _, dir := range []string{filepath.Join("data", "dispatch"), filepath.Join(root, "a #b ?c %d", "dispatch")} {
+		s, err := Open(dir)
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		t.Cleanup(func() { s.Close() })
+		if ro, why := s.ReadOnly(); ro {
+			t.Fatalf("%s is read-only: %s", dir, why)
+		}
+		rc, err := s.AddPerson(context.Background(), testOp("a1"), "Alice")
+		want(t, rc, err, StatusDone, "")
+		if !filepath.IsAbs(s.Dir()) {
+			t.Fatalf("the store's directory %q", s.Dir())
+		}
+		abs := dir
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, dir)
+		}
+		if fi, err := os.Stat(filepath.Join(abs, File)); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: the database %v %v", dir, fi, err)
+		}
+	}
+	// Every form as the URI SQLite is given: the path escaped, after
+	// file:// and its empty authority, a Windows drive (as filepath.Abs
+	// and ToSlash give it there) after a '/'.
+	for path, want := range map[string]string{
+		"/srv/data/dispatch/dispatch.sqlite":   "file:///srv/data/dispatch/dispatch.sqlite",
+		"/a #b ?c %d/dispatch/dispatch.sqlite": "file:///a%20%23b%20%3Fc%20%25d/dispatch/dispatch.sqlite",
+		"C:/Users/x/dispatch/dispatch.sqlite":  "file:///C:/Users/x/dispatch/dispatch.sqlite",
+	} {
+		if uri, _, _ := strings.Cut(dsn(path, false), "?"); uri != want {
+			t.Errorf("the URI of %s: %s, want %s", path, uri, want)
+		}
 	}
 }
 

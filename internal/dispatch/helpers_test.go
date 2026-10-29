@@ -161,6 +161,26 @@ func changesOf(t *testing.T, s *Store, actor, opID string) []ChangeRow {
 	return out
 }
 
+// tableNames is every table of the store's schema but the FTS index's
+// own and SQLite's, by name: what the schema's tables are listed against.
+func tableNames(t *testing.T, s *Store) []string {
+	t.Helper()
+	rows, err := s.db.Query("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'sqlite_sequence' AND name NOT LIKE 'tickets\\_fts\\_%' ESCAPE '\\' ORDER BY name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	return names
+}
+
 // count counts the rows a query gives.
 func count(t *testing.T, s *Store, query string, args ...any) int {
 	t.Helper()
