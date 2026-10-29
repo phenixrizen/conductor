@@ -1,4 +1,4 @@
-# Project recipes: a fresh attempt worktree made usable, predictably
+# Project manifests: a fresh attempt worktree made usable, predictably
 
 Program item EN1 (the Program, section 4.3). Main at b6d017d (PR #381,
 2026-10-28). A plan reviewed before its code; the PRs below are cut into
@@ -10,11 +10,12 @@ dispatches each task as an *attempt*, a fresh member session in a git
 worktree of its own, `<cwd>/.conductor/worktrees/<run>/<task>.<n>`, and
 decides a submitted result by its *checks*, run in a detached *checkout* of
 the result commit, `<worktree>.check`. A *tree* below is either of those two
-directories. A *project recipe* is what this plan adds: what makes a fresh
+directories. A *project manifest* is what this plan adds: what makes a fresh
 tree of a project usable, how it is checked and how it is cleaned up. It is
 not an *agent recipe*: those are the catalog's (`internal/catalog`: an
 agent's yolo, trust and session recipes), and docs and UI say "project
-recipe" every time (decision D6 of the Program, section 3.1). "Workspace"
+manifest" every time (decision D6 of the Program, section 3.1, under the
+name the owner gave it on 2026-10-29; it was "project recipe"). "Workspace"
 names something else in the Program (section 1.2) and is not used here for
 a tree.
 
@@ -22,10 +23,10 @@ a tree.
 
 The twelve articles of the Program, section 2.1:
 
-1. No premium code, no licence check: a recipe is crew data or a file in
+1. No premium code, no licence check: a manifest is crew data or a file in
    the repository, and nothing around it asks who the user is or what is
    registered.
-2. The open-source build is fully useful on its own: recipes are one of the
+2. The open-source build is fully useful on its own: manifests are one of the
    things the article names; every phase, receipt, route and screen here
    lands in rocksolidlabs/conductor.
 3. Paid features gated by hosted dependencies: not touched; nothing here is
@@ -39,10 +40,10 @@ The twelve articles of the Program, section 2.1:
    over HTTP uses `net/http`).
 6. No feature build tag: none added; `internal/proc` keeps its unix/other
    platform split and the service runner follows it.
-7. The free default is what main does today: a crew without a recipe or
-   `setup` runs as before, untouched; a crew with `setup` and no `recipe`
+7. The free default is what main does today: a crew without a manifest or
+   `setup` runs as before, untouched; a crew with `setup` and no `manifest`
    keeps running, readable and launchable as it is stored, its `setup`
-   lifted into the recipe's `setup` phase, so it gains what the item adds
+   lifted into the manifest's `setup` phase, so it gains what the item adds
    (its output kept, every run of it a receipt, a failure in a fresh
    worktree uncounted and named) and loses nothing. "The changes" says
    what a legacy `setup` keeps (its ids' rule) and "The PRs" names the
@@ -56,7 +57,7 @@ The twelve articles of the Program, section 2.1:
     `web/app/utils/protocol.ts` are not touched, so the three-places rule
     does not apply; `docs/protocol.md`'s HTTP API section is updated with
     each PR that changes a body); no new dependency, so no `make notices`.
-11. Names: "project recipe" beside the catalog's "agent recipes"; a tree is
+11. Names: "project manifest" beside the catalog's "agent recipes"; a tree is
     a worktree or a checkout, never a workspace. The stored event kind
     `attempt.workspace` keeps its name: it is a ledger kind, not a doc.
 12. Execution behind one seam: every step and service runs through
@@ -88,10 +89,10 @@ again in the checks' checkout before the task's checks (`Engine.verify`,
   before the first attempt starts.
 
 After this item, a person who opens a crew's Setup tab finds a **Project
-recipe** section under the tasks (the Setup commands box is its `setup`
-phase), or ticks "read `conductor.recipe.json` from the repository" and
-commits that file beside the code, so every commit carries the recipe that
-builds it. A recipe says what the host must have (prerequisites, and the
+manifest** section under the tasks (the Setup commands box is its `setup`
+phase), or ticks "read `conductor.manifest.json` from the repository" and
+commits that file beside the code, so every commit carries the manifest that
+builds it. A manifest says what the host must have (prerequisites, and the
 names of environment variables the host passes on), what a fresh tree needs
 (setup), which services each tree runs and on which ports, how to know they
 are ready, where the preview is, what to verify beyond the tasks' own
@@ -106,13 +107,13 @@ dispatch with the step named, and nothing is spent. Each attempt's worktree
 is made usable before its agent types a line: setup, then the services with
 ports of its own, then the readiness probes; the task file names the ports,
 the preview URL and the attempt's state directory. The checks' checkout gets
-the same, then the task's checks, then the recipe's verify steps. Every step
-is a receipt in the ledger: its command, where it ran, which recipe it came
+the same, then the task's checks, then the manifest's verify steps. Every step
+is a receipt in the ledger: its command, where it ran, which manifest it came
 from, its exit, timing, log and SHA-256, read from the run page and the API.
 When a tree ends, however it ends (a result taken, a check failed, a cancel,
 a stop, a withdrawal, the server shutting down), its services are ended, the
 cleanup steps run and its ports are released. A step that fails in a tree the
-agent has not touched is the host's or the recipe's problem: the attempt is
+agent has not touched is the host's or the manifest's problem: the attempt is
 not counted, the task says which step failed and why, and the dispatch pauses
 for a person. A step that fails in the checkout of the agent's result is the
 result's problem, as a failing check is today; one that fails in a worktree
@@ -122,15 +123,15 @@ starts where the checkpointed one did.
 
 ## The changes
 
-### `internal/crew`: the recipe (new file `recipe.go`)
+### `internal/crew`: the manifest (new file `manifest.go`)
 
 ```go
-// Recipe is a project recipe: what makes a fresh tree of this project
+// Manifest is a project manifest: what makes a fresh tree of this project
 // usable, how it is checked and how it is cleaned up. Not an agent's
 // recipes (internal/catalog: yolo, trust, session).
-type Recipe struct {
-	Schema        int      `json:"schema,omitempty"`   // 1; required in conductor.recipe.json, absent in a crew's
-	File          bool     `json:"file,omitempty"`     // read conductor.recipe.json at the tree's commit; every other field empty then
+type Manifest struct {
+	Schema        int      `json:"schema,omitempty"`   // 1; required in conductor.manifest.json, absent in a crew's
+	File          bool     `json:"file,omitempty"`     // read conductor.manifest.json at the tree's commit; every other field empty then
 	Prerequisites []Check  `json:"prerequisites,omitempty"`
 	Env           []string `json:"env,omitempty"`
 	Ports         []string `json:"ports,omitempty"`
@@ -154,17 +155,17 @@ type Probe struct {
 }
 ```
 
-`Crew` gains `Recipe *Recipe` (`json:"recipe,omitempty"`) and
-`RecipeRevision int64` (`json:"recipeRevision,omitempty"`): the server's
-count of the crew's recipe changes, on the crew and not inside the optional
-`Recipe`, so a save that removes the recipe keeps it (the store, below).
+`Crew` gains `Manifest *Manifest` (`json:"manifest,omitempty"`) and
+`ManifestRevision int64` (`json:"manifestRevision,omitempty"`): the server's
+count of the crew's manifest changes, on the crew and not inside the optional
+`Manifest`, so a save that removes the manifest keeps it (the store, below).
 `Check` is the existing `{id, argv, timeoutSeconds}`. The limits, enforced by
-`Recipe.validate` from `Crew.checkTasks`, the first problem returned as an
+`Manifest.validate` from `Crew.checkTasks`, the first problem returned as an
 `ErrInvalid` the API answers `400 invalid_crew`:
 
-- A recipe needs tasks, as `setup` does. `setup` and `recipe` are exclusive:
-  a crew with both is refused ("setup is the recipe's setup phase: put it
-  there"). `Crew.effectiveRecipe()` lifts a legacy `setup` into a `Recipe`
+- A manifest needs tasks, as `setup` does. `setup` and `manifest` are exclusive:
+  a crew with both is refused ("setup is the manifest's setup phase: put it
+  there"). `Crew.effectiveManifest()` lifts a legacy `setup` into a `Manifest`
   with that one phase, so the engine sees one shape and a legacy `setup`
   gets the receipts and the attribution below (article 7).
 - Lists: `prerequisites`, `setup`, `verify`, `cleanup` and `ready` at most 8
@@ -174,7 +175,7 @@ count of the crew's recipe changes, on the crew and not inside the optional
   entries of 4096 bytes, 8 KiB in all, timeout 1–3600). Defaults when 0:
   prerequisites 60 s, setup 600 s, verify 600 s, cleanup 60 s; a service has
   no timeout (it lives as long as its tree) but its command must start.
-- Ids are unique across every list of the recipe and distinct from every
+- Ids are unique across every list of the manifest and distinct from every
   task's check ids: a step row shares the ledger's `checks` table and its
   key with the task's checks (below), so "tests" cannot be both. A legacy
   `setup` keeps main's rule (its ids unique within `setup`; a task's check
@@ -184,29 +185,29 @@ count of the crew's recipe changes, on the crew and not inside the optional
   row's problem, Save held until the id is changed, and the crew as stored
   stays launchable.
 - `env`: names `^[A-Za-z_][A-Za-z0-9_]{0,127}$`, never `CONDUCTOR_*`, never
-  a blocked loader (`pty.Blocked`). The recipe holds names; values are the
+  a blocked loader (`pty.Blocked`). The manifest holds names; values are the
   host's, and whether a name may leave the host is the server's
-  `envPassthrough`'s, checked for every recipe resolved (`allowedEnv`,
-  below), never the recipe's own say.
+  `envPassthrough`'s, checked for every manifest resolved (`allowedEnv`,
+  below), never the manifest's own say.
 - `ports`: names `^[a-z][a-z0-9_]{0,15}$`, unique. Each becomes
   `CONDUCTOR_PORT_<NAME>` (upper case) in a tree.
 - Placeholders `${CONDUCTOR_PORT_<NAME>}` and `${CONDUCTOR_STATE_DIR}` are
   expanded literally inside one argv element, inside a probe's URL and
   inside `preview`, and nowhere else (`expand`); a placeholder naming no
-  port of the recipe is refused at validation, and so is any placeholder
+  port of the manifest is refused at validation, and so is any placeholder
   in a prerequisite's argv: the prerequisites run once per run in the
   crew's working directory before any tree exists, with no ports and no
   state directory to expand, so `expand` is never applied to them, and a
   `${CONDUCTOR_STATE_DIR}` there, which would otherwise be passed on as
   a literal, is refused with "a prerequisite runs before any tree: no
-  placeholders" (the editor's `recipeProblems` says the same under the
+  placeholders" (the editor's `manifestProblems` says the same under the
   row). There is no shell: a step
   that wants one names it in its argv, as checks do today. The bounds above
   hold on the expanded form too: `resolveTree` expands every argv, URL and
-  `preview` of the recipe once, when the ports and the state directory are
+  `preview` of the manifest once, when the ports and the state directory are
   known, and holds each expanded argv element to 4096 bytes and each argv
   to 8 KiB, an expanded URL to 2048 and the expanded `preview` to 512; one
-  past its bound fails the tree at `recipe` ("preview expands to 61,440
+  past its bound fails the tree at `manifest` ("preview expands to 61,440
   bytes, more than 512"), attributed by the tree's rule, before anything is
   written or run. A port expands to at most five digits, shorter than its
   placeholder, but the state directory is a path of up to the platform's
@@ -223,29 +224,29 @@ count of the crew's recipe changes, on the crew and not inside the optional
   interval as its `Timeout`, `CheckRedirect` answering
   `http.ErrUseLastResponse` so no redirect is ever followed (a `3xx` is
   the try's status, not under 300, and the probe tries again: a service,
-  or a checked-in recipe at a result commit, answering `302 Location:
+  or a checked-in manifest at a result commit, answering `302 Location:
   http://<anywhere>` makes the server fetch nothing off the loopback), and
   the body closed unread, so nothing of it is kept or bounded by its size;
   any status under 300 passes.
-- `schema` must be 1 in `conductor.recipe.json`; a larger one is refused
-  with "needs a newer Conductor"; in a crew's recipe it is left out: a crew
+- `schema` must be 1 in `conductor.manifest.json`; a larger one is refused
+  with "needs a newer Conductor"; in a crew's manifest it is left out: a crew
   file is read with `store.LoadLimit`, which decodes strictly
   (`store.DecodeStrict`, unknown fields refused), so an older binary refuses
   a crew with a field it does not know, as for every crew field.
-  `recipeRevision` is the server's: a request body that carries it is
+  `manifestRevision` is the server's: a request body that carries it is
   refused as an unknown field, as one that carries `id`, `createdAt` or
   `updatedAt` is (`crewInput`'s rule, `internal/api/crews.go`, below), and
   `toCrewInput` never sends it, as it never sends `id`; the store sets it
   on what it saves whatever the `Crew` value handed to `Update` carries.
-- The recipe as JSON is at most 64 KiB (`maxRecipeJSON`); the file
-  `conductor.recipe.json` at most 256 KiB as a blob (`maxRecipeFile`),
+- The manifest as JSON is at most 64 KiB (`maxManifestJSON`); the file
+  `conductor.manifest.json` at most 256 KiB as a blob (`maxManifestFile`),
   read and decoded strictly with `DisallowUnknownFields`.
 
-The file form (`File: true`): the recipe of a tree is
-`<prefix>conductor.recipe.json` as the tree's commit holds it, read with
+The file form (`File: true`): the manifest of a tree is
+`<prefix>conductor.manifest.json` as the tree's commit holds it, read with
 `git -C <repo> show <commit>:<path>` through `gitcli.Run` (the C locale, no
 hooks or filters), its size checked first with `cat-file -s`, its identity
-the blob id from `rev-parse <commit>:<path>` (`resolveRecipe(ctx, repo,
+the blob id from `rev-parse <commit>:<path>` (`resolveManifest(ctx, repo,
 commit, prefix)`). A launch with `File` reads and validates the base
 commit's file in `Engine.prepare`, so a broken file refuses the launch (`400
 invalid_crew`, the file and the commit named) before a run exists. The base
@@ -254,26 +255,26 @@ is pinned first: `LaunchNamed` reads HEAD once for a managed crew
 hands it down, `prepare(ctx, c, base)` validating the file at that commit
 and `startManaged` recording it as `r.base` instead of reading HEAD a second
 time, so the commit validated, the commit recorded and the commit the
-prerequisites and the first attempts resolve their recipe at are one,
+prerequisites and the first attempts resolve their manifest at are one,
 whatever HEAD does meanwhile; `ContinueRun` passes `from.Run.Base`, the
 commit `startContinued` restores, so a continuation is prepared at its own
 base and never at the directory's HEAD. The attempt's worktree uses the file
 at the attempt's start commit; the checkout uses the file at the result
-commit (so a task that changes the recipe is checked by the recipe it
+commit (so a task that changes the manifest is checked by the manifest it
 changed); the prerequisites use the base's. A tree whose commit has no such
-file is a named recipe failure ("the commit does not hold
-conductor.recipe.json"), attributed as any step of that tree would be. A
-recipe's identity is recorded with every step it ran: `crew:<revision>` or
+file is a named manifest failure ("the commit does not hold
+conductor.manifest.json"), attributed as any step of that tree would be. A
+manifest's identity is recorded with every step it ran: `crew:<revision>` or
 `file:<blob>`.
 
 `internal/crew/store.go`: `Update` compares the incoming crew's
-`effectiveRecipe()` with the stored one's as JSON and sets `RecipeRevision`
-to the old one plus one when they differ, a removal included (a recipe taken
-off the crew is a change the counter keeps, so the next recipe put on the
+`effectiveManifest()` with the stored one's as JSON and sets `ManifestRevision`
+to the old one plus one when they differ, a removal included (a manifest taken
+off the crew is a change the counter keeps, so the next manifest put on the
 crew is one past the removed one's number and never `crew:1` again: a
-number names one recipe of a crew for good, which is what a receipt's
-identity promises); an unchanged recipe keeps it. `Create` gives a new crew
-whose effective recipe is not empty 1, else 0; a legacy crew's `setup` never
+number names one manifest of a crew for good, which is what a receipt's
+identity promises); an unchanged manifest keeps it. `Create` gives a new crew
+whose effective manifest is not empty 1, else 0; a legacy crew's `setup` never
 changed since is 0 and its steps record `crew:0`, one content as any number
 is. A legacy crew's JSON on disk is unchanged (the existing round-trip test
 keeps proving it: the counter is `omitempty` and an unchanged save leaves it
@@ -283,7 +284,7 @@ keeps proving it: the counter is `omitempty` and an unchanged save leaves it
 
 A `tree` is the engine's record of one directory it makes usable: its kind
 (`worktree` or `checkout`), its directory and the crew's working directory
-in it (`<dir>/<prefix>`), its commit, the recipe resolved for it, its ports
+in it (`<dir>/<prefix>`), its commit, the manifest resolved for it, its ports
 (`map[string]int`), its state directory, its services (`[]service`, an
 interface of the engine's own, `Done() <-chan struct{}`, `Result()
 proc.Result` and `Stop(ctx) error`, which `*proc.Service` satisfies), its
@@ -303,18 +304,18 @@ network for a tree that is not on the server's machine.
 with the step named; its first step is `resolveTree`, which the dispatch
 runs before the task files are written, so the files carry what it made:
 
-1. `resolveTree`: the recipe resolved (until PR-5, one naming a phase this
+1. `resolveTree`: the manifest resolved (until PR-5, one naming a phase this
    build does not run yet, or a placeholder it does not expand yet, is
    refused here with `prepare`'s words, so a result commit or a
    continuation's candidate cannot bring in a `verify` or a `cleanup` the
    engine would skip, or a `${CONDUCTOR_STATE_DIR}` it would pass on as
    it is); its `env` names checked, each for
    permission and for presence (`allowedEnv`: a name the host does not allow
-   fails the tree at `recipe`, "NPM_TOKEN is not in the server's
+   fails the tree at `manifest`, "NPM_TOKEN is not in the server's
    envPassthrough", and one allowed but not set in the server's environment
    fails it there too, "the host has no NPM_TOKEN", since `pty.BuildEnv`
    passes silently over an absent name; both before any step or session
-   starts, in the checkout as in the worktree, so a result's recipe cannot
+   starts, in the checkout as in the worktree, so a result's manifest cannot
    add a name the operator did not allow or the host does not have, and the
    failure is attributed by its tree's rule); the ports allocated (each
    name: `treeExec.port`, natively a bind of `127.0.0.1:0` whose number is
@@ -325,8 +326,8 @@ runs before the task files are written, so the files carry what it made:
    directory, through an `os.Root` at that directory as the task files are
    written (their `.gitignore` beside it in a checkout too), so it is inside
    what a guest would be handed (Boxcar constraint 3) and `.conductor/`'s
-   exclusion keeps it out of the status. `recipe.resolved` and
-   `recipe.ports` are recorded in one transaction.
+   exclusion keeps it out of the status. `manifest.resolved` and
+   `manifest.ports` are recorded in one transaction.
 2. The `setup` steps, each through `runStep` (below), in the tree's working
    directory.
 3. The `services`, each: its row put as `started` (event `step.started`)
@@ -365,11 +366,11 @@ runs before the task files are written, so the files carry what it made:
    teardown has begun, and never once the number may be another tree's,
    the port lease being released only in `tree.ended`, after the clear.
    The checkout's preview is its own rows' alone. The URL stays for the
-   record in the `trees` row, the `recipe.ports` and `tree.ready` events
+   record in the `trees` row, the `manifest.ports` and `tree.ready` events
    and the task file.
 
 `runStep(ctx, r, a, t, phase, ch) proc.Result` is today's `runSetup` with a
-receipt: a `ledger.CheckRow` with `Phase`, `Recipe`, `Ports`, `Error` and
+receipt: a `ledger.CheckRow` with `Phase`, `Manifest`, `Ports`, `Error` and
 the tree's directory (a `PrerequisiteRow` when there is no attempt), put as
 `started` before the process (event `step.started`), `running` with the pid
 once it exists (`step.running`, through `treeExec.run`'s `Started`, as
@@ -475,10 +476,10 @@ or the cut-off, and a `tree.ended` the ledger's close beat all the same is
 finished by `Recover` at the next start from the tree's `trees` row
 (below: the row `ended` and `interrupted`, its open step rows
 `interrupted`, its services reported), the ports being nobody's by then. A
-recipe whose cleanup needs longer keeps its receipts at a stop from the UI
+manifest whose cleanup needs longer keeps its receipts at a stop from the UI
 and loses the cut step's at a shutdown, which the run log says.
 
-`prerequisites(r)` runs the recipe's prerequisites once per run, in the
+`prerequisites(r)` runs the manifest's prerequisites once per run, in the
 crew's working directory, on a goroutine of the run's own counted in
 `r.starts` (so a stop waits for it as for a dispatch, and `r.ctx` ends it,
 its row `interrupted`), gated by `r.prereq`, a run flag the pump checks:
@@ -506,7 +507,7 @@ prerequisite ended", and the goroutine's last commit clears the count;
 until then the run stays held, and the shutdown's stop loop stops it as
 any other. `startManaged` sets `r.prereq` `pending` after `run.created`
 and starts the goroutine, and the launch answers at once with the run
-(`Run.Recipe.prerequisites[].state` says `running`); `startContinued` does
+(`Run.Manifest.prerequisites[].state` says `running`); `startContinued` does
 the same for a continuation; an unpause's commit sets it back to `pending`
 and starts the goroutine again, so a host fixed in between is seen, and
 failing again they pause again. One generation at a time: each start
@@ -523,11 +524,11 @@ the same class as a step: a row of the ledger's new `prerequisites` table
 (the `checks` columns without `task_id` and `n`, keyed `(run_id, id, k)`,
 `k` counting its runs in the run: 2 at the first unpause; a continuation is
 a run of its own and starts at 1), put `started`, `running` and `finished`
-through `runStep` as a step is, with its log, SHA-256, words and recipe
+through `runStep` as a step is, with its log, SHA-256, words and manifest
 identity; the events are `step.started`, `step.running` and `step.finished`
-with `phase: prerequisite`. It also checks the recipe's `env` names: each
+with `phase: prerequisite`. It also checks the manifest's `env` names: each
 must be set in the server's environment and allowed by the server's
-`envPassthrough` (`config.EnvPassthrough`, the host-managed list; the recipe
+`envPassthrough` (`config.EnvPassthrough`, the host-managed list; the manifest
 names what the project needs, the host decides what leaves it); a name
 missing on either side is a prerequisite failure naming it ("the host has no
 NPM_TOKEN", "NPM_TOKEN is not in the server's envPassthrough"), and the
@@ -535,31 +536,31 @@ first says what fixes it, "set it where the server starts, start it again
 and continue the run": the server's environment is read once, at its start
 (`pty.ParentEnv` is `os.Environ`), `envPassthrough` holds names, not values,
 and nothing reloads either while it runs, so an unpause alone finds the same
-host (R13). A failure pauses the run's dispatch (`pauseRecipe`, below) with
-the step named, `r.prereq` left `failed`; `prerequisites.passed {recipe}` is
-recorded, with the recipe's identity, before the first `attempt.reserved` of
+host (R13). A failure pauses the run's dispatch (`pauseManifest`, below) with
+the step named, `r.prereq` left `failed`; `prerequisites.passed {manifest}` is
+recorded, with the manifest's identity, before the first `attempt.reserved` of
 the run. The values are never recorded.
 
 ### `internal/crew/task.go` and `verify.go`: where the phases run
 
 `Engine.dispatch` replaces its setup loop with `prepareTree` on the attempt's
 worktree: the worktree made and checked as today, then `resolveTree` (the
-recipe, the `env` names, the ports, the preview and the state directory),
+manifest, the `env` names, the ports, the preview and the state directory),
 then the task files written once, carrying them (`writeTaskFiles` refuses
 a second write, so nothing is written before the tree's facts are known),
 then `attempt.workspace` recorded, then the `setup`, `services` and
 `ready` phases and `tree.ready`, then `Launch`. A tree that fails there
 closes the attempt with `fail`, stage `<phase> <id>` (`setup deps`,
-`service db`, `ready web`, or `recipe` for a recipe that could not be read
+`service db`, `ready web`, or `manifest` for a manifest that could not be read
 or names an `env` the host does not allow), and the new argument
 `uncounted`: `closeAttempt` then grants the task one more attempt
 (`t.extra++`, as a withdrawal does; the task row's `Extra` is persisted, so
 a continuation counts it too), leaves the task `ready` with the reason
 "attempt 2 could not be made usable at setup deps: deps exited 1: …" and
-pauses the dispatch with the same words (`pauseRecipe`), in the one
+pauses the dispatch with the same words (`pauseManifest`), in the one
 transaction that closes the attempt. The next attempt starts where the
 uncounted one would have: `startCommit` passes over an uncounted attempt
-(one failed at a recipe stage with no result: its `StartCommit` is on its
+(one failed at a manifest stage with no result: its `StartCommit` is on its
 row from its reservation and its stage from its close, so a continuation's
 `last` passes over the same rows, as it reads a refusal) and decides from
 the kept attempt before it, as if the uncounted one had not been made:
@@ -577,7 +578,7 @@ One start commit no checkout verified is a checkpoint's: `startCommit`
 starts the attempt after one that failed without a result at that
 attempt's checkpoint, and a continuation's first attempt at the task's
 (`t.checkpoint`), a commit the agent made at its worktree's HEAD and saved
-(`checkpoints.go`), which no recipe ran at. A recipe failure in a worktree
+(`checkpoints.go`), which no manifest ran at. A manifest failure in a worktree
 at the task's checkpoint commit (`a.start == t.checkpoint.commit`) is not
 the host's by R2: it refuses the checkpoint as #370 refuses a result. The
 attempt closes failed at `<phase> <id>`, uncounted as above (the agent
@@ -604,12 +605,12 @@ file`, `launch`, `prompt`) keep today's accounting.
 The attempt's session gets the tree's names through `LaunchSpec.Inject`
 (`CONDUCTOR_PORT_<NAME>`, `CONDUCTOR_STATE_DIR`, `CONDUCTOR_PREVIEW_URL`;
 the API merges them after `crewInject`'s, unfiltered as `pty.Inject`'s are)
-and the recipe's `env` names through `LaunchSpec.Allow`, the names
+and the manifest's `env` names through `LaunchSpec.Allow`, the names
 `allowedEnv` approved and no other (`pty.BuildEnv` takes `extraAllow` as
 permission, so the engine intersects first; appended to the passthrough
 the session builds from `cfg.EnvPassthrough` and the agent's). A step's
 `proc.Spec.Allow` carries the same approved names.
-The task file (`taskfile.go`) gains `TaskFile.Recipe` (`{source, revision,
+The task file (`taskfile.go`) gains `TaskFile.Manifest` (`{source, revision,
 digest, ports, preview, services}`: the identity, the ports by name, the
 preview URL of at most 512 bytes expanded (the bound above) and the service
 ids; the state directory is not in it, being `.conductor/state` under the
@@ -618,7 +619,7 @@ environment), never
 cut and at most 2 KiB as the sum of its parts at their largest (a 512-byte
 preview, 8 ports, 4 ids, the identity: about 1.2 KiB), which the extended
 largest-of-each-part test proves (`TestTheTaskFileIsCutToFit`). "Where you
-are" in `task.md` gains the sentences: which recipe made the tree usable,
+are" in `task.md` gains the sentences: which manifest made the tree usable,
 the services and their ports, the preview, that the state directory is
 `.conductor/state` and that `CONDUCTOR_PORT_<NAME>` names each port. The
 attempt's trees end when the attempt closes, whatever closed it:
@@ -640,7 +641,7 @@ been running beside the probes, where a change is the phase's and no one
 step's: stage `ready` with no id, the words naming what could have made
 it, "tracked files changed while the services db, web ran and the probe
 web was tried: …", since the engine cannot tell a service's write from a
-probe's. Then the task's checks and the recipe's `verify` steps as one
+probe's. Then the task's checks and the manifest's `verify` steps as one
 list, each under the server's check slot and compared after (`verify`
 steps are checks of the crew's: rows of phase `verify`, stage `verify
 <id>` on failure, the next attempt starting at the result with the step's
@@ -649,7 +650,7 @@ or a verify step is attributed to it, as today, and in a tree with
 services the words name them as the other possible author ("check unit,
 or a service of the tree (db, web), changed tracked files: …"), the
 accounting being the result's either way, since the services are the
-result's recipe's. Then `accept`, as today.
+result's manifest's. Then `accept`, as today.
 The trees end after the decision, never before it: an
 attempt owns the trees it made (`a.trees`: its worktree from `dispatch`, its
 checkout from `verify`; a candidate's attempt the checkout alone), and the
@@ -662,24 +663,24 @@ under the checkout's `busy`, so when it calls `accept` the checkout is quiet
 and its `endTree` waits for the commit alone; the worktree's finds the
 succeeded attempt's session idle (R4) and cleans beside it. A failure in the
 checkout keeps today's attribution: it is the result's, counted, and a
-failure before the checks (`setup`, `service`, `ready`, `recipe`) is a
+failure before the checks (`setup`, `service`, `ready`, `manifest`) is a
 refused result, the next attempt starting where the refused one started
 (#370's rule): `refusedBeforeChecks` gains the words `service <id>`, `ready
-<id>`, `ready` (the phase's comparison, above) and `recipe` beside `setup
+<id>`, `ready` (the phase's comparison, above) and `manifest` beside `setup
 <id>`, so `startCommit` and a
 continuation's refusal (`continue.go` reads the same function) see them. The
 same `npm ci` against a dead registry is so uncounted in a fresh worktree
 and counted in a checkout, and the plan accepts the one attempt that costs:
-the checkout's recipe ran at a commit the agent changed, the worktree's at
+the checkout's manifest ran at a commit the agent changed, the worktree's at
 one it had not, which is the only line the engine can draw without guessing
 (R2); the next attempt tells the two apart by itself, failing uncounted and
 pausing in its own fresh worktree when the host is at fault; and a pause on
 every refused result would have a person click through each bad lockfile an
 agent commits. A continuation's `dispatchCandidate` verifies through the
-same path, so a candidate's checkout gets its recipe, in an attempt of its
+same path, so a candidate's checkout gets its manifest, in an attempt of its
 own (`reverify` numbers it after the task's, uncounted).
 
-`pauseRecipe(r, why)` is `pauseDispatch` with words of its own: `r.paused`
+`pauseManifest(r, why)` is `pauseDispatch` with words of its own: `r.paused`
 set and marked, `r.pausedWhy` kept and on the run row (`paused_why`,
 below, so the ledger holds the words, not the record alone), the run log's
 line "dispatch paused: <why>", the event `run.paused {why}`. An unpause
@@ -691,8 +692,8 @@ generation at a time, above), so the pump, which runs under
 `e.mu` and cannot wait on a process, dispatches nothing until they pass,
 however it is pumped meanwhile; a host fixed in between is seen, and
 failing again they pause again. The API's run gains `pausedWhy` and
-`cleaning`; `Run.Recipe` (`{source, revision, digest, prerequisites: [{id,
-k, state, exit, error, duration}]}`) says which recipe the run has and how
+`cleaning`; `Run.Manifest` (`{source, revision, digest, prerequisites: [{id,
+k, state, exit, error, duration}]}`) says which manifest the run has and how
 its prerequisites go (`running` while they do); `AttemptState` gains
 `preview` (in the run's read: the worktree's URL from its `tree.ready` to
 its clear, the attempt's close or an earlier `service.ended` of the
@@ -700,10 +701,10 @@ worktree's own, empty otherwise and empty for a stopping run, step 5 of
 `prepareTree`) and
 `steps` (in the task's read alone,
 `Engine.TaskOf`, as `submitted` is): `[{phase, id, k, state, argv, url,
-dir, subject, recipe, exit, timedOut, duration, error, ports, tries,
+dir, subject, manifest, exit, timedOut, duration, error, ports, tries,
 startedAt, finishedAt, logBytes, logSha256}]`, the receipt whole but for
 the log: the command (a probe over HTTP: `GET` and its expanded URL), where
-it ran, the commit, which recipe produced it (the worktree's and the
+it ran, the commit, which manifest produced it (the worktree's and the
 checkout's may differ), its outcome and its words.
 
 ### `internal/crew/ledger`: one migration
@@ -712,7 +713,7 @@ checkout's may differ), its outcome and its words.
 gives C10 (the Runtime seam's `where` column) version 5; whichever of the
 two lands second takes 6. The migration, in `migrations`, is SQL alone and
 conservative: `ALTER TABLE checks ADD COLUMN phase TEXT NOT NULL DEFAULT
-'check'`, `recipe TEXT NOT NULL DEFAULT ''`, `ports TEXT NOT NULL DEFAULT
+'check'`, `manifest TEXT NOT NULL DEFAULT ''`, `ports TEXT NOT NULL DEFAULT
 ''` (a JSON object, name to number), `tries INTEGER NOT NULL DEFAULT 1`,
 `error TEXT NOT NULL DEFAULT ''` (the words of the failure, bounded as the
 events' are, so a step whose program could not start, which has no output,
@@ -738,8 +739,8 @@ referencing `runs` on delete cascade: a prerequisite has no attempt to hang
 a `checks` row on (the table's foreign key), and gets a row of the same
 shape; and `CREATE TABLE trees`, a tree's lifecycle, which no receipt row
 holds: keyed `(run_id, task_id, n, kind)`, `run_id` referencing `runs` on
-delete cascade, with `dir`, `commit_id`, `recipe`, `ports`, `preview`,
-`state` (`resolved`, put in the `recipe.resolved` transaction; `ready`, in
+delete cascade, with `dir`, `commit_id`, `manifest`, `ports`, `preview`,
+`state` (`resolved`, put in the `manifest.resolved` transaction; `ready`, in
 `tree.ready`'s; `ended`, in `tree.ended`'s), `why`, `interrupted` and
 `ended_at`, so a tree the owner left between its attempt's close and its
 `tree.ended` is found at the next start whatever its run's state. Every row
@@ -759,7 +760,7 @@ where no step shares its id, so the existing tests' assertions on it
 change only where one does (`refused_result_test.go`, `managed_test.go`,
 "The PRs"); a
 continuation's checkout is an attempt of its own (`reverify`), so its rows
-start at k 1 under that attempt. `CheckRow` gains `Phase`, `Recipe`, `Ports
+start at k 1 under that attempt. `CheckRow` gains `Phase`, `Manifest`, `Ports
 map[string]int`, `Tries`, `Error` and `URL`; `PutCheck` and `Checks` carry
 them (`Checks` orders by task, attempt, id and `k`, as today; the route
 sorts by `started_at` itself); `PrerequisiteRow`, `PutPrerequisite` and
@@ -825,7 +826,7 @@ name but `CONDUCTOR_RUN`, `CONDUCTOR_TASK`, `CONDUCTOR_ATTEMPT`,
 `CONDUCTOR_STATE_DIR`, `CONDUCTOR_PREVIEW_URL` and `CONDUCTOR_PORT_<NAME>`
 (`injectable`), so no token can come in by this door; `Spec.Env` keeps
 refusing every `CONDUCTOR_*` name. `Spec.Allow` already exists and carries
-the recipe's `env` names.
+the manifest's `env` names.
 
 `Spec.LogLimit` bounds everything the `Log` writer receives, the dropped
 line and the tail included: `logSink` keeps the tail to `LogTail` or a
@@ -859,22 +860,22 @@ behind its `service` interface, so C10 wraps `Serve` with `Run`.
 ### `internal/api`
 
 `crews.go`: `crewInput`, the body of `POST /api/crews` and `PUT
-/api/crews/{id}`, gains `Recipe *crew.Recipe` (`json:"recipe,omitempty"`)
+/api/crews/{id}`, gains `Manifest *crew.Manifest` (`json:"manifest,omitempty"`)
 and `readCrew` maps it into the `Crew` beside `Tasks` and `Setup`: the
 body is decoded strictly and the `Crew` is built field by field, so a
-recipe reaches the store by this one door and by no other, and
-`recipeRevision` stays out of `crewInput`, refused in a body as `id` is.
+manifest reaches the store by this one door and by no other, and
+`manifestRevision` stays out of `crewInput`, refused in a body as `id` is.
 This lands with the model in PR-1, so the API accepts what PR-1 lets the
 web app send.
 
 `runs.go`: `Launch` passes `LaunchSpec.Inject` and `Allow` into
 `createSessionRequest` (two new unexported fields); `sessions.go` appends
 `allow` to the passthrough and merges `inject` after `crewInject`. New
-`recipe.go`: `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps`
+`manifest.go`: `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps`
 (`requireAdmin`; `{steps: [...]}` as `AttemptState.Steps`, from
 `ledger.Checks` without logs, sorted by `started_at` in the handler, so a
 run the engine has let go still answers, each step's `argv`, `url`, `dir`,
-`subject`, `recipe` and `error` from its row), `GET …/steps/{id}/{k}/log`
+`subject`, `manifest` and `error` from its row), `GET …/steps/{id}/{k}/log`
 (`text/plain`, the row's log, at most 1 MiB, `X-Conductor-Log-SHA256`;
 `404` for a row without one, `410 log_dropped` for one dropped past
 `MaxRunLogs`), and the same pair for the prerequisites, `GET
@@ -887,7 +888,7 @@ key: `checks.maxConcurrent` is reused as it is, and `envPassthrough`
 reaches the engine, which holds no config, through a setter of its own,
 `Engine.SetEnvPassthrough(names)` (new, PR-3), which `server.go` calls
 beside `SetCheckConcurrency` when it gives the engine the ledger, before
-the first launch; `allowedEnv` intersects a recipe's names with what it
+the first launch; `allowedEnv` intersects a manifest's names with what it
 was given, and allows none before the call.
 `middleware`'s CORS block (`server.go`) adds `Access-Control-Expose-Headers:
 X-Conductor-Log-SHA256`, so the hash reaches the app's script where the
@@ -918,42 +919,42 @@ record (`syncRecords`), and this is its counterpart for the task.
   returns the body alone: `$fetch.raw` with the bearer header and the same
   error normalisation, returning `{ text, headers }`, so a caller can read
   a response header.
-- `composables/useSessions.ts`: `CrewRecipe`, `CrewProbe`, `RunStep`,
-  `RunAttempt.preview` and `.steps`, `RunInfo.recipe`, `.pausedWhy`,
+- `composables/useSessions.ts`: `CrewManifest`, `CrewProbe`, `RunStep`,
+  `RunAttempt.preview` and `.steps`, `RunInfo.manifest`, `.pausedWhy`,
   `.cleaning`; `runSteps(run, task, n)`, `runPrerequisites(run)`,
   `stepLog(run, task, n, id, k)` and `prerequisiteLog(run, id, k)`, the
   last two fetching the log as text through `requestText` (the bearer
   header: a link the browser followed would carry no token and get `401`)
   and returning it with `X-Conductor-Log-SHA256`.
-- `utils/crews.ts`: `toCrewInput` sends `recipe` (and `setup` only when
+- `utils/crews.ts`: `toCrewInput` sends `manifest` (and `setup` only when
   the draft still has one), `liftSetup` turns a loaded crew's `setup` into
-  `recipe.setup` for the editor, `recipeProblems` mirrors every rule above
+  `manifest.setup` for the editor, `manifestProblems` mirrors every rule above
   (ids across lists and against the tasks' checks, the names, the URLs,
-  the placeholders, the counts) and `TASK_LIMITS` gains the recipe's
+  the placeholders, the counts) and `TASK_LIMITS` gains the manifest's
   numbers.
-- `components/CrewRecipeEditor.vue` (new), shown by `CrewEditor.vue` under
+- `components/CrewManifestEditor.vue` (new), shown by `CrewEditor.vue` under
   the tasks of a managed crew and taking over `CrewTasksTable.vue`'s Setup
-  foot: a "Project recipe" heading with one line saying what it is and that
+  foot: a "Project manifest" heading with one line saying what it is and that
   the catalog's agent recipes are something else; the file switch ("Read
-  `conductor.recipe.json` from the repository at each attempt's commit",
+  `conductor.manifest.json` from the repository at each attempt's commit",
   which hides the lists); the phases as `CrewCheckList` lists
   (`what="prerequisite"`, `"setup step"`, `"service"`, `"verify step"`,
   `"cleanup step"`), the probes as a list of their own (id, argv or URL,
   interval, timeout), `env` and `ports` as chip inputs, the preview URL;
   each row's first problem under it, the Save gate and the Launch button's
-  reason as the tasks table has them (`taskProblems` gains the recipe's).
+  reason as the tasks table has them (`taskProblems` gains the manifest's).
 - `components/RunAttemptSteps.vue` (new) in `RunTasks.vue`'s attempt detail,
   for a run the engine holds and one it has let go alike (the attempt rows
   come from the task read, which answers from the ledger for the latter):
   the attempt's steps in order with phase, id, outcome in words (`stepWords`
   in `utils/tasks.ts`: "exited 0 in 4.2 s", "timed out after 60 s", "ready
   after 3 tries", "running since …", "interrupted"), the command (a probe
-  over HTTP: `GET` and its URL), where it ran, the recipe that produced it
+  over HTTP: `GET` and its URL), where it ran, the manifest that produced it
   (`crew:3`, `file: <short blob>`) and the ports, and a "Log" button that
   fetches the log (`stepLog`) and shows it in a `UModal` with its SHA-256
   and a Save action that downloads it from a blob URL; the run's
   prerequisites the same way at the top of `RunTasks.vue` while the run has
-  a recipe; "Open preview" on a task row and in its → actions and the
+  a manifest; "Open preview" on a task row and in its → actions and the
   palette row while the attempt's `preview` is set, between its worktree's
   `tree.ready` and the attempt's close, or a worktree service's own exit
   before it, and never before or after (step 5 of `prepareTree`); it
@@ -969,16 +970,16 @@ record (`syncRecords`), and this is its counterpart for the task.
 
 ### Docs, skill and examples
 
-`docs/protocol.md`: the crew body (`recipe`, its rules, `setup` as its
+`docs/protocol.md`: the crew body (`manifest`, its rules, `setup` as its
 legacy), "Managed runs" (the phases and where they run, the attribution
 rule, the receipt routes, the events), the run and task JSON.
 `docs/architecture.md`'s crew-runs section and `docs/repository-map.md`
-(`internal/crew`: `recipe.go`, `steps.go`; `internal/proc`: `Serve`;
+(`internal/crew`: `manifest.go`, `steps.go`; `internal/proc`: `Serve`;
 `internal/crew/ledger`: the schema number, which PR-2 sets when it bumps
 `Version`, the row saying 3 on main).
 `internal/agents/skill.go`'s "Your task" gains one sentence on the ports,
 the preview and the state directory. The example crew run by tasks
-(`internal/crew/examples.go`, `example-todo-app-tasks`) gains a recipe
+(`internal/crew/examples.go`, `example-todo-app-tasks`) gains a manifest
 with one prerequisite, `python3 --version`, so the feature is seen on the
 first real run (`Seed` skips crews loaded before, so nobody's copy changes).
 `docs/features.md` gets the item's entry in the last PR, a bullet beside
@@ -990,8 +991,8 @@ rest.
 ## Events, orderings and invariants
 
 The attempt's states and stages (`internal/crew/ledger/rows.go`) are not
-changed; new stage words are `<phase> <id>` for the five recipe phases and
-`recipe` for one that could not be resolved, beside today's `worktree`,
+changed; new stage words are `<phase> <id>` for the five manifest phases and
+`manifest` for one that could not be resolved, beside today's `worktree`,
 `task file`, `setup <id>`, `launch`, `prompt`, `checkout`, `check <id>` and
 `withdrawn`. A step row runs `started → running → finished | interrupted`,
 as a check's does; a service row stays `running` until `finished` at its
@@ -1005,8 +1006,8 @@ unpauses; the prerequisites run again).
 The order of a tree, each line a transaction committed before the next
 side effect, in the run's own order (`transact`):
 
-1. `recipe.resolved {tree, task, attempt, source, revision | digest, env}`
-   and `recipe.ports {tree, task, attempt, ports, preview}`, the ports
+1. `manifest.resolved {tree, task, attempt, source, revision | digest, env}`
+   and `manifest.ports {tree, task, attempt, ports, preview}`, the ports
    leased on the engine and the tree's `trees` row put `resolved` in the
    same change; for a worktree, the task files are written after this
    commit and `attempt.workspace` after them.
@@ -1038,7 +1039,7 @@ side effect, in the run's own order (`transact`):
 
 The run's: `run.created` → each prerequisite's `step.started`,
 `step.running` and `step.finished` (phase `prerequisite`, a row each) →
-`prerequisites.passed {recipe}` (or `run.paused {why}` in one transaction
+`prerequisites.passed {manifest}` (or `run.paused {why}` in one transaction
 with the failing one's `step.finished`) → the first `attempt.reserved`;
 `r.prereq` is `pending` from `run.created`, `running` from the first
 `step.started` and `passed` or `failed` with the last commit, and the pump
@@ -1071,7 +1072,7 @@ Invariants, each with a test in "Tests per surface":
   can find it, and it is neither stopped nor reported, except that one
   still holding the step's output fails the step with `proc`'s words ("a
   process that left the group still holds the output"), as a check fails
-  today (`checkWords`, `runSetup`), so a recipe that daemonizes reads it in
+  today (`checkWords`, `runSetup`), so a manifest that daemonizes reads it in
   its own receipt. A service is a foreground process: one whose command
   exits before the tree is ready, a daemonizer included, fails the tree at
   `service <id>` with "exited 0 before the tree was ready: a service must
@@ -1088,16 +1089,16 @@ Invariants, each with a test in "Tests per surface":
   (`r.stopping`) reads with none, so a read never offers a
   URL behind which a service has been stopped or has died, nor one whose
   port the lease has let go.
-- Every row of a phase other than `check` names the recipe that ran it;
-  the identity is recorded (`recipe.resolved`) before the first step of the
+- Every row of a phase other than `check` names the manifest that ran it;
+  the identity is recorded (`manifest.resolved`) before the first step of the
   tree starts. A receipt's key is its attempt, its id and `k`, and `dir`
   names its tree; a prerequisite's is the run, its id and `k`, a row of the
   same class with its log and hash, read by a route after the engine has
   let the run go.
-- A recipe's `env` name reaches a step or a session only when the server's
+- A manifest's `env` name reaches a step or a session only when the server's
   `envPassthrough` allows it and the host has it set, in every tree,
-  whichever commit's recipe named it; a name failing either test fails its
-  tree at `recipe` before anything runs.
+  whichever commit's manifest named it; a name failing either test fails its
+  tree at `manifest` before anything runs.
 - The pump dispatches nothing while `r.prereq` is not `passed`, whatever
   pumps it; the launch and the continuation answer before the
   prerequisites have run; at most one generation of them is in flight,
@@ -1123,9 +1124,9 @@ Invariants, each with a test in "Tests per surface":
   probes together at `ready`, the check or a running service after a
   check; no stage is asserted that the comparison before it cannot
   establish.
-- An attempt that fails in a recipe phase of its own worktree is never
+- An attempt that fails in a manifest phase of its own worktree is never
   counted against its task, and the run dispatches nothing after it until a
-  person unpauses; an attempt that fails in a recipe phase of its checkout
+  person unpauses; an attempt that fails in a manifest phase of its checkout
   is counted and attributed as a failing check or refused result is today.
 - `endTree` runs exactly once per tree, under the run's teardown context,
   after the attempt's close is committed and the tree is quiet (no step,
@@ -1140,13 +1141,13 @@ Invariants, each with a test in "Tests per surface":
   reserve left; `Run.Outcome` set means every
   attempt is closed, not that every cleanup is done (`cleaning` says).
 - A continuation reruns the prerequisites, verifies a candidate in a
-  checkout with the candidate's recipe, and makes nothing of a tree the run
+  checkout with the candidate's manifest, and makes nothing of a tree the run
   it continues left (its services are the recovered rows above).
 - The migration changes no existing value's meaning: a version-4 row reads
-  as a task's check with no recipe, no ports and one try, and a version-4
+  as a task's check with no manifest, no ports and one try, and a version-4
   run row with no pause words.
 - Every tree the engine resolved has a `trees` row from the
-  `recipe.resolved` transaction on, `ended` only in the `tree.ended` one; a
+  `manifest.resolved` transaction on, `ended` only in the `tree.ended` one; a
   row not `ended` at the next start is concluded by `Recover` whatever the
   run's state, a finished run's included, so no tree is left half ended
   and unreported.
@@ -1156,24 +1157,24 @@ No wire protocol is touched; no replication, so no conflict rules.
 ## Out of scope
 
 - Removing a worktree, a checkout or a state directory: Conductor removes
-  nothing it made (`worktree.go`'s rule stands); cleanup is the recipe's own
+  nothing it made (`worktree.go`'s rule stands); cleanup is the manifest's own
   commands, the services ended and the ports released. A `conductor crew
   clean` is a later item.
 - A preview reachable from another machine (the phone on the LAN, a shared
   link) and the in-app capture of it: item PV1 builds on `preview`.
 - A preview that is not an HTTP server on the loopback (a static build
   opened from disk, a screenshot): a static build is served by a service
-  such as `python3 -m http.server`, on a port of the recipe's; PV1 owns the
+  such as `python3 -m http.server`, on a port of the manifest's; PV1 owns the
   rest.
 - Any sandbox for steps and services: they run as the user, like checks;
   the Boxcar seam (item C10, F) is where that would come.
 - Sharing caches between trees: the user's own caches (`HOME` is passed to
   every step and session) are shared as today; nothing inside a tree is
   shared, and no symlinking of `node_modules` or the like is offered.
-- Recipes for crews that start by rules (legacy crews): a recipe needs
+- Manifests for crews that start by rules (legacy crews): a manifest needs
   tasks, as `setup` does.
-- Recipe templates, a recipe catalog, a CLI that runs a recipe by hand.
-- Hosted crews: `Crew.Launchable` keeps refusing them; the recipe runner
+- Manifest templates, a manifest catalog, a CLI that runs a manifest by hand.
+- Hosted crews: `Crew.Launchable` keeps refusing them; the manifest runner
   lives in the engine, so a host launch site gets it with the engine.
 - Linking receipts to tickets (DS2) and the Runtime `where` column (C10).
 
@@ -1187,28 +1188,28 @@ workflow change: those suites are not run for these PRs. The tests wait on
 the mechanism (a ledger row's state, a file a step writes, `Service.Done`),
 never on the clock, and use a bound only as the sum of the code's own caps.
 
-Go, `internal/crew` (`recipe_test.go`, `steps_test.go`, the `managedEngine`
+Go, `internal/crew` (`manifest_test.go`, `steps_test.go`, the `managedEngine`
 harness with its fake ledger and `sessiontest.FakeProc`):
 
 - The validation table: every limit above, each list's count, ids across
   lists and against a task's checks, a bad env name, a `CONDUCTOR_` name, a
   loader, a bad port name, a placeholder naming no port, a probe with both
-  argv and url, a URL off the loopback, `setup` beside `recipe`, a recipe
-  without tasks, `schema` 2 in a file, a file over 256 KiB, a crew's recipe
-  over 64 KiB; `effectiveRecipe` lifting `setup`; `expand` on argv, URL and
+  argv and url, a URL off the loopback, `setup` beside `manifest`, a manifest
+  without tasks, `schema` 2 in a file, a file over 256 KiB, a crew's manifest
+  over 64 KiB; `effectiveManifest` lifting `setup`; `expand` on argv, URL and
   preview, never splitting an element; the expanded bounds: twenty
   `${CONDUCTOR_STATE_DIR}` in a `preview` of 457 bytes, which validation
   accepts, expand past 512 with any real state directory (the test's
   temporary one is near 100 bytes; no long directory is needed to show it)
-  and fail the tree at `recipe` with the expanded size in its words,
+  and fail the tree at `manifest` with the expanded size in its words,
   uncounted in the worktree and counted in a checkout, nothing written or
   run; the same for an argv element past 4096 and a probe URL past 2048
   (more placeholders).
-- `store_test.go`: the revision bumped on a changed recipe and kept on an
-  unchanged save, a `RecipeRevision` on the value handed to `Update`
+- `store_test.go`: the revision bumped on a changed manifest and kept on an
+  unchanged save, a `ManifestRevision` on the value handed to `Update`
   ignored, a legacy crew's JSON
-  unchanged; the counter kept by a save that removes the recipe and, the
-  store reopened, one past it when a different recipe is added again
+  unchanged; the counter kept by a save that removes the manifest and, the
+  store reopened, one past it when a different manifest is added again
   (update, remove, reopen, re-add: 2, 3 and 4, never 1 again).
 - The attempt's worktree: setup, services (a shell loop writing its pid to
   the state directory, `.conductor/state` in the tree), a probe by file and
@@ -1216,9 +1217,9 @@ harness with its fake ledger and `sessiontest.FakeProc`):
   `CONDUCTOR_PORT_*` in a step's environment (a step that writes `env` to a
   file) and in the session's (`FakeProc`'s spec), exactly the injectable
   `CONDUCTOR_` names and no token, the task file's section and
-  `task.json`'s `recipe` as the files are on disk before the launch (the
+  `task.json`'s `manifest` as the files are on disk before the launch (the
   ports and the preview in them), every row in the fake ledger with its
-  phase, recipe identity, ports, words and log; a service's `started` row
+  phase, manifest identity, ports, words and log; a service's `started` row
   before its process and the service stopped when its `running` row is
   refused.
 - Escaped descendants: a service whose command `setsid`s a child and exits
@@ -1235,9 +1236,9 @@ harness with its fake ledger and `sessiontest.FakeProc`):
   numbers from a range and answers probes from a map, and every engine
   test runs on it, so the engine reaches no network but through the
   executor.
-- The `env` rule in every tree: a file recipe at a result commit that adds
-  a name not in `envPassthrough` is refused at `recipe`, counted; the same
-  name in the worktree's recipe fails uncounted and pauses; a name allowed
+- The `env` rule in every tree: a file manifest at a result commit that adds
+  a name not in `envPassthrough` is refused at `manifest`, counted; the same
+  name in the worktree's manifest fails uncounted and pauses; a name allowed
   but unset in the server's environment the same way in a result's
   checkout (refused, counted) and in the next attempt's worktree
   (uncounted, paused); a session's and a step's environment carry the
@@ -1269,7 +1270,7 @@ harness with its fake ledger and `sessiontest.FakeProc`):
   service that writes one during it, failed at `check <id>` with the
   service named as the other possible author, counted as a failing check.
 - A step whose program could not start: its `error` on the row and in the
-  route after the engine let the run go (`ForgetForTest`); two recipe
+  route after the engine let the run go (`ForgetForTest`); two manifest
   identities on one attempt (the worktree's blob and the checkout's) read
   from the route the same way; a probe over HTTP read there with its
   expanded URL.
@@ -1314,19 +1315,19 @@ harness with its fake ledger and `sessiontest.FakeProc`):
 - A legacy crew with a `setup` id equal to a task's check id still
   launches, with three rows of that id on the attempt, `setup` k 1 (the
   worktree) and k 2 (the checkout) and `check` k 3, each with its phase
-  and none overwritten; `effectiveRecipe` lifts it with the receipts and
+  and none overwritten; `effectiveManifest` lifts it with the receipts and
   the uncounted close.
-- The file recipe: read at the start commit for the worktree and at the
+- The file manifest: read at the start commit for the worktree and at the
   result for the checkout (a result that changes the file is checked by the
   new one), the blob id recorded, a result that breaks the file refused at
-  `recipe`, a launch with a broken file at the base refused before a run
+  `manifest`, a launch with a broken file at the base refused before a run
   exists, a commit without the file a named failure; a launch prepared at
   the pinned base when HEAD moves between `prepare` and the launch
-  (`afterAdd`), the run's base and its recipe the pinned commit's; a
+  (`afterAdd`), the run's base and its manifest the pinned commit's; a
   continuation whose recorded base holds a valid file while HEAD holds
   none or a broken one continues; a result commit that adds a phase this
   build does not run yet (PR-2 to PR-4), or `${CONDUCTOR_STATE_DIR}` in a
-  step's argv before PR-3, refused at `recipe`, counted.
+  step's argv before PR-3, refused at `manifest`, counted.
 - Ports: two trees in flight never share one; a lease released at
   `tree.ended`; a number held by a live tree drawn again; the attempt's
   `preview` empty before `tree.ready` (a probe held at a gate), the URL
@@ -1349,7 +1350,7 @@ harness with its fake ledger and `sessiontest.FakeProc`):
   parts (an extension of the existing largest-of-each-part test).
 
 Go, `internal/crew/ledger`: the migration from a version-4 fixture (the
-rows read back as phase `check`, no recipe, no ports, one try, no error,
+rows read back as phase `check`, no manifest, no ports, one try, no error,
 the version bumped, the `recovered` event unchanged); `PutCheck` and
 `Checks` with the new columns; `PutPrerequisite`, `Prerequisites`, a
 prerequisite row concluded by `Recover`, a stopped run whose only open row
@@ -1378,7 +1379,7 @@ killed with it, `Inject` names accepted and a token name refused, a
 `run_test.go` (PR-2): `TestRunKeepsHeadAndTail` holds the whole log to
 `LogLimit`, the dropped line and the tail inside it.
 
-Go, `internal/api` (`recipe_test.go`): the steps route and the log route
+Go, `internal/api` (`manifest_test.go`): the steps route and the log route
 (`200`, the hash header, `404`, `410`, admin only, a run the engine let
 go, the hash header exposed to a dev origin), the prerequisites pair the
 same, the task read for a run the engine let go (`ForgetForTest`) and,
@@ -1416,19 +1417,19 @@ the generation ended by that commit): the stop loop stops it as any
 other, the step's pid gone and its row `interrupted` before the ledger
 closes (PR-2).
 
-vitest: `crews.test.ts` (`recipeProblems` item for item against the Go
-table, `toCrewInput` with a recipe and with a lifted `setup`), `tasks.test.ts`
+vitest: `crews.test.ts` (`manifestProblems` item for item against the Go
+table, `toCrewInput` with a manifest and with a lifted `setup`), `tasks.test.ts`
 (`stepWords`, `taskActions.preview` offered by the attempt's `preview`
 alone, the paused words),
 `composables/useApi.test.ts` (`requestText` from a stubbed `$fetch.raw`:
 the text, the header, an error normalised as `request`'s).
 
-Playwright: `recipe-editor.spec.ts` (a crew saved with every phase, read
-back as sent; a Setup commands box of an old crew shown as the recipe's
-setup and saved as `recipe`; an id used twice blocks Save with its words;
+Playwright: `manifest-editor.spec.ts` (a crew saved with every phase, read
+back as sent; a Setup commands box of an old crew shown as the manifest's
+setup and saved as `manifest`; an id used twice blocks Save with its words;
 the file switch saves `file: true` and hides the lists; `tasks-editor.spec.ts`
-updated for the moved Setup box); `recipe.spec.ts` (the stub workers as in
-`tasks.spec.ts`: a recipe whose setup writes under `.conductor/`, a
+updated for the moved Setup box); `manifest.spec.ts` (the stub workers as in
+`tasks.spec.ts`: a manifest whose setup writes under `.conductor/`, a
 `python3 -m http.server` service on `${CONDUCTOR_PORT_WEB}` with a URL probe
 and a preview; the Tasks view's steps and their logs; Open preview answering
 from the test while the attempt runs, and gone from the row, the → actions
@@ -1445,7 +1446,7 @@ through the route and compares). One Playwright run per worktree,
 By hand, which no test reaches: a real project on the WSL box and the Mac
 (the live-check pattern of #350): a Node project with `npm ci` as setup,
 its dev server as a service with a preview opened in the browser, a
-`conductor.recipe.json` committed and a task that edits it; the host broken
+`conductor.manifest.json` committed and a task that edits it; the host broken
 on purpose (a variable unset: the server started again with it set and the
 run continued, which no test with `t.Setenv` can show; the registry
 unreachable: the run unpaused) and the run's words read; a server killed
@@ -1464,7 +1465,7 @@ The eight of the Program, section 2.5:
    service behind its own interface (`service`), never as a
    `*proc.Service`.
 3. An attempt's context is files relative to its worktree: the task file
-   gains the ports, the preview and the recipe's identity; the state
+   gains the ports, the preview and the manifest's identity; the state
    directory is `.conductor/state` inside the tree's working directory, so
    a tree mounted or copied into a guest carries it; nothing a tree needs
    lives only in the server's memory (the port lease is a server-side
@@ -1485,16 +1486,16 @@ The eight of the Program, section 2.5:
    rows record today (a pid, a group, a start time, reported after a crash,
    never acted on).
 8. hostagent is a launch site as much as api: not touched; managed runs
-   are refused on a host today (`Crew.Launchable`), and the recipe runner is
+   are refused on a host today (`Crew.Launchable`), and the manifest runner is
    the engine's, so a host launch site gets it with the engine, not from
    `internal/api`.
 
 ## Open-core checklist
 
-- [x] Article 1: no premium code and no licence check; a recipe is data,
+- [x] Article 1: no premium code and no licence check; a manifest is data,
       and the only question asked of the host is whether a tool or a
       variable is there.
-- [x] Article 2: project recipes, every phase, receipt, route and screen,
+- [x] Article 2: project manifests, every phase, receipt, route and screen,
       ship in the open-source repository.
 - [x] Article 3: nothing here is gated; nothing here is paid.
 - [x] Article 4: stop ends services and runs cleanup; inspect gains the
@@ -1509,41 +1510,41 @@ checks. Sizes are changed lines including tests. `internal/crew` tests use
 the existing harness; no PR touches `internal/proto`, `web/app/utils/protocol.ts`,
 `.github` or `scripts`.
 
-**PR-1 — crew: the project recipe model.** `Recipe`, `Probe`, the validation
-table, `effectiveRecipe`, `expand`, `resolveRecipe` (the file form read at a
+**PR-1 — crew: the project manifest model.** `Manifest`, `Probe`, the validation
+table, `effectiveManifest`, `expand`, `resolveManifest` (the file form read at a
 commit, bounded, decoded strictly, its blob id), the store's revision,
-`Crew.Recipe` with `setup` as its legacy; the crew body in
+`Crew.Manifest` with `setup` as its legacy; the crew body in
 `docs/protocol.md`; the web types and `toCrewInput`, `liftSetup`,
-`recipeProblems` and `TASK_LIMITS`. Nothing runs a recipe yet: the engine
-reads `effectiveRecipe().Setup` where it read `Setup`, so behaviour is
-main's, and `Engine.prepare` refuses a launch whose recipe names a phase,
+`manifestProblems` and `TASK_LIMITS`. Nothing runs a manifest yet: the engine
+reads `effectiveManifest().Setup` where it read `Setup`, so behaviour is
+main's, and `Engine.prepare` refuses a launch whose manifest names a phase,
 form or placeholder the engine does not run yet (`400 invalid_crew`, "this
-build does not run a recipe's services yet"; prerequisites, `env`, `ports`,
+build does not run a manifest's services yet"; prerequisites, `env`, `ports`,
 services, `ready`, `preview`, `verify`, `cleanup`, the file form, and
-`${CONDUCTOR_STATE_DIR}` in any argv, "this build does not expand a recipe's
+`${CONDUCTOR_STATE_DIR}` in any argv, "this build does not expand a manifest's
 placeholders yet": `expand` lands in PR-3 and the runner passes argv as it
 is (`runCommand`, `verify.go`), so a `mkdir ${CONDUCTOR_STATE_DIR}/cache`
 in a `setup` step, which needs no port and no refused field, would make a
 directory of that literal name; a `${CONDUCTOR_PORT_<NAME>}` needs `ports`,
-refused here; so a recipe saved early is never accepted and silently
+refused here; so a manifest saved early is never accepted and silently
 skipped or half run); each later PR lifts the refusal for what it runs,
-PR-2 applies the same check in `resolveTree` to every recipe it resolves (a
-result commit's, a candidate's, a file recipe's), and PR-5 removes both.
+PR-2 applies the same check in `resolveTree` to every manifest it resolves (a
+result commit's, a candidate's, a file manifest's), and PR-5 removes both.
 Touches `internal/crew`, `internal/api` (`crewInput` and `readCrew`,
 above), `docs`, `web/app/composables`, `web/app/utils`.
-Tests: `recipe_test.go` (the refusal per phase, for a setup-only recipe
+Tests: `manifest_test.go` (the refusal per phase, for a setup-only manifest
 with `${CONDUCTOR_STATE_DIR}` in a step's argv, and the validation table's
 refusal of a placeholder in a prerequisite), `store_test.go`,
-`api/crews_test.go` (a create and an update round trip with a recipe, read
-back as sent with `recipeRevision` 1 and then 2; a body carrying
-`recipeRevision` refused `400 invalid_request` as an unknown field;
-`setup` beside `recipe` refused `400 invalid_crew`), `crews.test.ts`
-(`recipeProblems` refusing the prerequisite's placeholder among the
+`api/crews_test.go` (a create and an update round trip with a manifest, read
+back as sent with `manifestRevision` 1 and then 2; a body carrying
+`manifestRevision` refused `400 invalid_request` as an unknown field;
+`setup` beside `manifest` refused `400 invalid_crew`), `crews.test.ts`
+(`manifestProblems` refusing the prerequisite's placeholder among the
 rest). Depends on nothing. Parallel with nothing
 (every later PR builds on it). About 1,000 lines.
 
 **PR-2 — ledger and engine: every step a receipt, every failure named and
-attributed.** The migration (`phase`, `recipe`, `ports`, `tries`, `error`,
+attributed.** The migration (`phase`, `manifest`, `ports`, `tries`, `error`,
 `url`, the `prerequisites` and `trees` tables), `CheckRow`'s,
 `PrerequisiteRow`'s and `TreeRow`'s fields, `Recover`'s services,
 prerequisites and trees; `steps.go` with `tree`, the tree executor with
@@ -1552,15 +1553,15 @@ phase alone, `runStep` and the attempt's `k` allocation (`verify.go`'s
 `K: 1` replaced), `endTree` with no cleanup steps yet (the ports and
 services come later; here it waits for the tree to be quiet and records
 `tree.ended`) and its hand-off from `endAttempt`, the `uncounted` close, the
-successor's start and `pauseRecipe`, the prerequisites on their goroutine
+successor's start and `pauseManifest`, the prerequisites on their goroutine
 with `r.prereq` and the pump's gate (commands only; `env` comes in PR-3),
 `r.prereqs` in `idle` and the terminal run's end of a generation,
-`refusedBeforeChecks`'s new words, `Run.Recipe`, `pausedWhy` on the run
+`refusedBeforeChecks`'s new words, `Run.Manifest`, `pausedWhy` on the run
 row and in `Recovered`, `AttemptState.Steps`; the four receipt routes and
 the task read's ledger fallback (`handleGetTask`, `crew.LoadedTask`); the
 task file's section with
-the recipe's identity; the refusal lifted for prerequisites, `setup` and the
-file form, and applied by `resolveTree` to every resolved recipe; the base
+the manifest's identity; the refusal lifted for prerequisites, `setup` and the
+file form, and applied by `resolveTree` to every resolved manifest; the base
 pinned through `prepare` and `startManaged`, `ContinueRun` passing its own;
 the `Access-Control-Expose-Headers` line; `proc.Spec.LogLimit` bounding
 the log whole, so a step's or a check's 2 MiB of output is a row the
@@ -1580,8 +1581,8 @@ the log route's hash header the SHA-256 of the body it serves),
 `steps_test.go` (receipts, the attribution
 both ways, the pause and the unpause, the prerequisites and their gate, one
 generation at a time, the successor's start, the pinned base, a result
-commit or a file recipe bringing in an unsupported phase or the
-state-directory placeholder, refused at `recipe`, the tree rows and the
+commit or a file manifest bringing in an unsupported phase or the
+state-directory placeholder, refused at `manifest`, the tree rows and the
 crash before the first cleanup row), `composables/useApi.test.ts`, the
 existing cases that change with the lift: `refused_result_test.go` (rows
 now, and a check's `k` asserted as allocated: past a legacy setup step's
@@ -1592,13 +1593,13 @@ rows of the same id, 1 otherwise),
 the stage `setup` becomes `setup <id>`, the checkout compared after each
 step) and
 `ledger_bounds_test.go` (`TestALaunchAndASetupThatHappenedKeepTheirEvents`:
-`attempt.setup` becomes `step.finished`); `api/recipe_test.go` (the task
+`attempt.setup` becomes `step.finished`); `api/manifest_test.go` (the task
 read's fallback after `ForgetForTest` and after a restart);
 `api/ledger_test.go` (`syncRecords` and the pause words);
 `api/shutdown_test.go`'s third case. Depends on PR-1. About 2,100 lines.
 
 **PR-3 — the host's names, the ports and the state directory.**
-`proc.Spec.Inject` with `injectable`, `Spec.Allow` carried from the recipe's
+`proc.Spec.Inject` with `injectable`, `Spec.Allow` carried from the manifest's
 `env`; `LaunchSpec.Inject` and `Allow` through `createLocalSession`;
 `Engine.SetEnvPassthrough` and its call in `server.go`; the
 `env` checks in the prerequisites and, for permission and presence, in
@@ -1663,11 +1664,11 @@ tree),
 `api/shutdown_test.go`'s second case, `-race -count=30`. Depends on PR-4.
 About 800 lines.
 
-**PR-6 — the crew editor's Project recipe section.** `CrewRecipeEditor.vue`,
+**PR-6 — the crew editor's Project manifest section.** `CrewManifestEditor.vue`,
 the probes list, the chip inputs, the file switch, the lifted `setup`, the
 Save gate and Launch reason; `tasks-editor.spec.ts` updated for the moved
 box. Touches `web/app/components`, `web/app/utils`, `web/e2e`. Tests:
-`crews.test.ts` additions, `recipe-editor.spec.ts`. Depends on PR-5: the
+`crews.test.ts` additions, `manifest-editor.spec.ts`. Depends on PR-5: the
 editor offers every phase, so it lands once the engine runs every phase
 and the launch refusal is gone, and after PR-2's edits to
 `useSessions.ts`, which its components import (`web/` is one package with
@@ -1681,7 +1682,7 @@ the palette, the header's `paused: why` and `cleaning up`, `stepWords`,
 the example crew's prerequisite, the `docs/features.md` entry. Touches
 `web/app/components`, `web/app/utils`, `web/app/pages`, `web/e2e`,
 `internal/crew` (`examples.go` and its test), `docs`. Tests:
-`tasks.test.ts`, `examples_test.go`, `recipe.spec.ts`. Depends on PR-5 and
+`tasks.test.ts`, `examples_test.go`, `manifest.spec.ts`. Depends on PR-5 and
 PR-6. About 1,200 lines.
 
 ## Owner decisions
@@ -1690,8 +1691,14 @@ Dated 2026-10-28. The defaults below are this plan's, inside the twelve
 articles; the owner decides R1 to R13 at the plan's review, and one
 overturned is rewritten here before the PRs are cut.
 
-- **R1, two forms.** A recipe is either the crew's (`crew.recipe`, edited
-  in the UI, revisioned by the server) or a file, `conductor.recipe.json`
+- **The name, 2026-10-29, the owner's.** "Project recipe" became "project
+  manifest", overturning the name D6 kept; the catalog's agent recipes keep
+  theirs. The checked-in file is `conductor.manifest.json`, the crew's field
+  `manifest`, the Go and TypeScript names follow it (`Manifest`,
+  `CrewManifest`, `manifestRevision`), and this plan is
+  `docs/plans/project-manifests.md`.
+- **R1, two forms.** A manifest is either the crew's (`crew.manifest`, edited
+  in the UI, revisioned by the server) or a file, `conductor.manifest.json`
   in the crew's directory, read at each tree's commit, so it is versioned
   with the code and a task may change it; a crew has one or the other.
   Reason: `Crew.Setup` is crew data and stays so (article 7); "versioned"
@@ -1699,7 +1706,7 @@ overturned is rewritten here before the PRs are cut.
 - **R2, attribution by tree.** A step that fails in a tree at a commit the
   agent has not touched (the attempt's worktree at its start: an input, a
   result a checkout verified, a repair commit, the base) is the host's
-  or the recipe's failure: not counted, the dispatch paused; one that fails
+  or the manifest's failure: not counted, the dispatch paused; one that fails
   in the checkout of the agent's result is the result's, counted, as a
   failing check is; and one that fails in a worktree at a checkpoint
   commit, the agent's own and verified by nothing, refuses the checkpoint
@@ -1707,7 +1714,7 @@ overturned is rewritten here before the PRs are cut.
   the checkpointed one started ("where the phases run"). Reason: it is the
   one line the engine can draw without
   guessing, and it keeps #370's refused-result rule whole.
-- **R3, pause, do not retry.** A recipe failure pauses the run's dispatch
+- **R3, pause, do not retry.** A manifest failure pauses the run's dispatch
   with the step named rather than retrying by itself. Reason: a missing
   tool or a dead registry needs a person, and a loop would spend nothing
   but time; an unpause reruns the prerequisites so a fix is seen.
@@ -1715,13 +1722,13 @@ overturned is rewritten here before the PRs are cut.
   ends its services and runs its cleanup, also when the task succeeded and
   the session stays idle for inspection. Reason: one predictable rule;
   looking at a result afterwards is PV1's business.
-- **R5, the host manages the values.** A recipe names its `env`; a name
+- **R5, the host manages the values.** A manifest names its `env`; a name
   reaches a step or a session only when the server's `envPassthrough`
   allows it, and a value is never stored. Reason: a checked-in file must
   not be able to pull a secret the server's operator did not allow.
 - **R6, one table for a tree's steps.** Receipts of a tree are rows of the
   ledger's `checks` table with a `phase`, in one migration of six columns,
-  not a table of their own; step ids are unique across the recipe and
+  not a table of their own; step ids are unique across the manifest and
   distinct from the tasks' check ids (a legacy `setup`'s keep main's rule).
   The prerequisites, which no attempt owns and the `checks` table's foreign
   key therefore cannot hold, get the one other receipt table,
@@ -1730,7 +1737,7 @@ overturned is rewritten here before the PRs are cut.
   `Recover` and the tests. Reason: the row is already the receipt shape,
   `Recover`, `Prune` and the readers already handle it, and C10's `where`
   lands on both once for every kind of step.
-- **R7, Conductor removes nothing.** Cleanup is the recipe's commands, the
+- **R7, Conductor removes nothing.** Cleanup is the manifest's commands, the
   services ended and the ports released; worktrees, checkouts and state
   directories stay for inspection; a process that outlived the owner is
   reported at the next start and never signalled. Reason: `worktree.go`'s
@@ -1740,7 +1747,7 @@ overturned is rewritten here before the PRs are cut.
   `CONDUCTOR_PORT_<NAME>`, `CONDUCTOR_STATE_DIR` and
   `CONDUCTOR_PREVIEW_URL`, through an allowlisted `Inject`, as the task's
   names do. Reason: one prefix for everything Conductor puts in an
-  environment, and the existing refusal of `CONDUCTOR_*` in a recipe's or
+  environment, and the existing refusal of `CONDUCTOR_*` in a manifest's or
   catalog's own `env` stays what it is.
 - **R9, the preview opens in a new tab**, on the server's loopback, not
   proxied and not in the editor's iframe. Reason: mixed content under TLS,
@@ -1752,7 +1759,7 @@ overturned is rewritten here before the PRs are cut.
 - **R11, the migration's number** is the one after main's when the PR is
   cut; the Program gives C10 version 5, and the second of the two to land
   takes 6.
-- **R12, the file's name** is `conductor.recipe.json`, in the crew's
+- **R12, the file's name** is `conductor.manifest.json`, in the crew's
   directory, not under `.conductor/` (a commit tracking `.conductor/` is
   refused by dispatch today, and that stays).
 - **R13, a value the host lacks is fixed by a restart.** The server's
@@ -1774,9 +1781,9 @@ usable the same way every time, a step that fails is named as the step it
 is, and a tree is cleaned up after a failure and after a cancellation. That
 is observed, never ticked, on the open-source build with no cloud account:
 
-1. On a real project with a committed `conductor.recipe.json` (setup,
+1. On a real project with a committed `conductor.manifest.json` (setup,
    two services with ports, a probe, a preview, a cleanup), a managed crew
-   launched from the UI: every attempt's task file names the recipe's blob,
+   launched from the UI: every attempt's task file names the manifest's blob,
    its ports and its preview before the agent's first line; the receipts
    for every phase are read from the run page with their logs.
 2. The host broken on purpose, in two ways. A required variable unset: the
@@ -1796,7 +1803,7 @@ is observed, never ticked, on the open-source build with no cloud account:
    in its task file.
 5. The server killed mid-service and started again: the next start's log
    names the service's pid as possibly alive; the continuation reruns the
-   prerequisites and verifies the candidate with its recipe.
+   prerequisites and verifies the candidate with its manifest.
 
 Done means all five seen on the WSL box and 1 to 3 on the Mac (the owner's
 machines; the owner runs or watches 1 to 3, and reads the receipts), with
