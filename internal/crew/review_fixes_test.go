@@ -121,7 +121,6 @@ func TestAReviewHasNoCheckpointAndAlwaysStartsAtItsCandidate(t *testing.T) {
 func TestAContinuationCarriesRepairsAllowancesImportsAndMessages(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
-	abandonAtEnd(t, e)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead"), review("review", "critic", "build"), work("docs", "writer", "build")))
 	ctx := context.Background()
 	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)

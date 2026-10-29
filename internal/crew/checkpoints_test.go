@@ -113,7 +113,6 @@ func TestACheckpointIsKeptAndTheNextAttemptStartsThere(t *testing.T) {
 func TestAContinuationStartsAtTheLastCheckpoint(t *testing.T) {
 	dir := newRepo(t)
 	e, _, l := managedEngine(t)
-	abandonAtEnd(t, e)
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
 	ctx := context.Background()
 	b := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
