@@ -2376,12 +2376,17 @@ was not recorded ended and `interrupted` (with a `tree.ended` of its own, its
 cleanup not run), a command accepted and not settled
 `uncertain`, and a run that was running `interrupted`. Then every managed
 run whose record lags the ledger (a snapshot cut short by the server's
-end) or has none is written again as the ledger has it (`crew.Recovered`):
+end), has none, or says a tree is being ended or a prerequisite runs (a
+record at the ledger's revision can, written between a commit and the end
+of what it finished, and nothing runs after the server's end) is written
+again as the ledger has it (`crew.Recovered`):
 its state (`interrupted` when the recovery found it running), each task as
 its row and its last attempt say (a task whose attempt was interrupted is
 `ready` with why, one whose attempt is uncertain `failed` with why), its
 prerequisites as their receipts say (the last run of them, a prerequisite it
-did not reach `pending`), the members' sessions ended; it reads so, read-only, until it is continued. `POST /api/runs/{run}/resume` on a managed run
+did not reach `pending`; with no record, the manifest and its prerequisites
+as the run's ledger row keeps the one at its base), nothing `cleaning`, the
+members' sessions ended; it reads so, read-only, until it is continued. `POST /api/runs/{run}/resume` on a managed run
 (interrupted, stopped, or finished with an outcome; the engine's or its
 record) makes its continuation (`crew.ContinueRun`): a new run of the crew
 as launched, from the same base, named in the old run's `resumedBy` (the
