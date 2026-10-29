@@ -550,6 +550,9 @@ func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r
 	}()
 	for _, ch := range r.baseMan.m.Prerequisites {
 		if _, err := e.runStep(ctx, r, nil, nil, ledger.PhasePrerequisite, ch, gen); err != nil {
+			if ctx.Err() == nil {
+				e.prerequisiteRefused(r, gen, ch, err)
+			}
 			return
 		}
 	}
@@ -564,6 +567,24 @@ func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r
 	}, nil)
 	if passed || err != nil {
 		e.afterTransact(r, err)
+	}
+}
+
+// prerequisiteRefused ends a generation that stopped at ch with err but
+// without its failure recorded with the step (the ledger refused the
+// step's row): when it is still the run's, the prerequisites are failed
+// and the dispatch pauses with why, so the run never waits on a
+// generation that has ended, and an unpause runs them again.
+func (e *Engine) prerequisiteRefused(r *run, gen int, ch Check, err error) {
+	terr := e.transact(context.Background(), r, func() tx {
+		if gen != r.prereqGen || r.prereq == prereqFailed || r.stopping || r.outcome != "" {
+			return tx{}
+		}
+		r.prereq = prereqFailed
+		return tx{events: e.pauseManifest(r, fmt.Sprintf("the prerequisite %s failed: %v", ch.ID, err))}
+	}, nil)
+	if terr != nil {
+		e.afterTransact(r, terr)
 	}
 }
 

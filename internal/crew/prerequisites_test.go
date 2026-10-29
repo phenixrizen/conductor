@@ -390,3 +390,27 @@ func TestAnUnpauseRightAfterAFailureRunsThemAgain(t *testing.T) {
 	}
 	stopRun(t, e, run.ID)
 }
+
+// A prerequisite's row the ledger refuses ends its generation failed and
+// pauses the dispatch with why; unpaused, they run again and the run goes
+// on.
+func TestAPrerequisiteTheLedgerCouldNotRecordPauses(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	l.mu.Lock()
+	l.failOn, l.failOnce = "step.started[phase=prerequisite]", true
+	l.mu.Unlock()
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{shStep("tools", "true")}}, work("build", "lead")))
+	waitTrue(t, "the run paused", func() bool {
+		r, _ := e.Get(run.ID)
+		return r.Paused && strings.Contains(r.PausedWhy, "the ledger could not record the step tools")
+	})
+	r := runOf(t, e, run.ID)
+	waitTrue(t, "the generation's end", func() bool { st, _, n := prereqState(e, r); return st == prereqFailed && n == 0 })
+	pauseRun(t, e, run.ID, false)
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if rows := l.prereqRows(run.ID); len(rows) != 1 || rows[0].K != 2 || rows[0].State != ledger.CheckFinished {
+		t.Fatalf("the prerequisites: %+v", rows)
+	}
+	stopRun(t, e, run.ID)
+}
