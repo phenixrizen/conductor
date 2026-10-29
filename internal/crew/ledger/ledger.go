@@ -34,7 +34,7 @@ const (
 
 // Version is the schema this binary writes. A database of a later version
 // opens read-only; an earlier one is brought to it (migrations).
-const Version = 4
+const Version = 5
 
 // migrations bring a database from the version keyed to the next, in one
 // transaction with the version's change: 1 to 2 adds the attempts'
@@ -47,6 +47,25 @@ var migrations = map[int][]string{
 	// Version 4 (#334, the withdrawal): the last attempt of a task a
 	// withdrawal took back, filled in by backfillWithdrawn.
 	3: {"ALTER TABLE tasks ADD COLUMN withdrawn INTEGER NOT NULL DEFAULT 0"},
+	// Version 5 (EN1, project manifests, #394): every step of a project
+	// manifest is a receipt. A checks row gains the phase it ran in (a
+	// task's check, or a manifest phase), the manifest that ran it, the
+	// tree's ports, its tries, the words of its failure and a probe's URL;
+	// a run its pause's words; the prerequisites, which no attempt owns,
+	// get a receipt table of the same shape, and the trees a table of
+	// their lifecycle. Every row a version 4 database holds is a task's
+	// check, so the defaults are true of it: no backfill.
+	4: {
+		"ALTER TABLE checks ADD COLUMN phase TEXT NOT NULL DEFAULT 'check'",
+		"ALTER TABLE checks ADD COLUMN manifest TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE checks ADD COLUMN ports TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE checks ADD COLUMN tries INTEGER NOT NULL DEFAULT 1",
+		"ALTER TABLE checks ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE checks ADD COLUMN url TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE runs ADD COLUMN paused_why TEXT NOT NULL DEFAULT ''",
+		prerequisitesTable,
+		treesTable,
+	},
 }
 
 // migrationsGo run after a version's statements, in the same transaction:
@@ -70,6 +89,63 @@ const messagesTable = `CREATE TABLE messages (
 		delivered_at TEXT NOT NULL DEFAULT '',
 		acked_at TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, seq)
+	)`
+
+// prerequisitesTable holds a run's prerequisites' receipts (version 5):
+// the checks' columns but for the attempt's (task_id, n), the phase, the
+// ports and the tries, keyed by the run, the prerequisite's id and k, its
+// run's number in the run. A prerequisite runs before any attempt, so no
+// checks row can hold it (that table's key is an attempt's).
+const prerequisitesTable = `CREATE TABLE prerequisites (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		id TEXT NOT NULL,
+		k INTEGER NOT NULL,
+		argv TEXT NOT NULL,
+		dir TEXT NOT NULL DEFAULT '',
+		subject TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL,
+		pid INTEGER NOT NULL DEFAULT 0,
+		pgroup INTEGER NOT NULL DEFAULT 0,
+		process_started_at TEXT NOT NULL DEFAULT '',
+		started_at TEXT NOT NULL,
+		finished_at TEXT NOT NULL DEFAULT '',
+		exit INTEGER NOT NULL DEFAULT -1,
+		signal TEXT NOT NULL DEFAULT '',
+		timed_out INTEGER NOT NULL DEFAULT 0,
+		killed INTEGER NOT NULL DEFAULT 0,
+		stable INTEGER NOT NULL DEFAULT 0,
+		truncated INTEGER NOT NULL DEFAULT 0,
+		total INTEGER NOT NULL DEFAULT 0,
+		log BLOB,
+		log_dropped INTEGER NOT NULL DEFAULT 0,
+		log_sha256 TEXT NOT NULL DEFAULT '',
+		tail TEXT NOT NULL DEFAULT '',
+		manifest TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		url TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, id, k)
+	)`
+
+// treesTable holds the lifecycle of each tree a run made usable (version
+// 5): an attempt's worktree or the checkout of its result, from the
+// transaction that resolved its manifest (resolved) to the one that ended
+// it (ended), so a tree the owner left between the two is found at the
+// next start whatever its run's state.
+const treesTable = `CREATE TABLE trees (
+		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+		task_id TEXT NOT NULL,
+		n INTEGER NOT NULL,
+		kind TEXT NOT NULL,
+		dir TEXT NOT NULL DEFAULT '',
+		commit_id TEXT NOT NULL DEFAULT '',
+		manifest TEXT NOT NULL DEFAULT '',
+		ports TEXT NOT NULL DEFAULT '',
+		preview TEXT NOT NULL DEFAULT '',
+		state TEXT NOT NULL,
+		why TEXT NOT NULL DEFAULT '',
+		interrupted INTEGER NOT NULL DEFAULT 0,
+		ended_at TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (run_id, task_id, n, kind)
 	)`
 
 // LockWait is how long a ledger keeps trying for the owner lock held by
@@ -468,8 +544,10 @@ func (l *Ledger) release() {
 	}
 }
 
-// schema is version 1. Times are RFC 3339 text in UTC; JSON is text; a
-// run's rows go with it (ON DELETE CASCADE) when the owner prunes it.
+// schema is the database as Version has it, made whole for a new one (an
+// older one is brought to it by migrations). Times are RFC 3339 text in
+// UTC; JSON is text; a run's rows go with it (ON DELETE CASCADE) when the
+// owner prunes it.
 var schema = []string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE runs (
@@ -484,7 +562,8 @@ var schema = []string{
 		continued_from TEXT NOT NULL DEFAULT '',
 		continued_by TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL,
-		closed_at TEXT NOT NULL DEFAULT ''
+		closed_at TEXT NOT NULL DEFAULT '',
+		paused_why TEXT NOT NULL DEFAULT ''
 	)`,
 	`CREATE TABLE tasks (
 		run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -551,6 +630,12 @@ var schema = []string{
 		log_dropped INTEGER NOT NULL DEFAULT 0,
 		log_sha256 TEXT NOT NULL DEFAULT '',
 		tail TEXT NOT NULL DEFAULT '',
+		phase TEXT NOT NULL DEFAULT 'check',
+		manifest TEXT NOT NULL DEFAULT '',
+		ports TEXT NOT NULL DEFAULT '',
+		tries INTEGER NOT NULL DEFAULT 1,
+		error TEXT NOT NULL DEFAULT '',
+		url TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (run_id, task_id, n, id, k),
 		FOREIGN KEY (run_id, task_id, n) REFERENCES attempts(run_id, task_id, n) ON DELETE CASCADE
 	)`,
@@ -574,4 +659,6 @@ var schema = []string{
 		PRIMARY KEY (run_id, seq)
 	)`,
 	messagesTable,
+	prerequisitesTable,
+	treesTable,
 }

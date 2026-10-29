@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -53,10 +54,10 @@ func (f fixture) put(t *testing.T, l *Ledger) {
 }
 
 // asVersion3 makes the database one a version 3 Conductor wrote, what
-// version 4 added dropped, and opens it again: the migration runs.
+// versions 4 and 5 added dropped, and opens it again: the migration runs.
 func asVersion3(t *testing.T, l *Ledger, dir string) *Ledger {
 	t.Helper()
-	for _, stmt := range []string{"ALTER TABLE tasks DROP COLUMN withdrawn", "UPDATE schema_version SET version = 3"} {
+	for _, stmt := range append(slices.Clone(version5Added), "ALTER TABLE tasks DROP COLUMN withdrawn", "UPDATE schema_version SET version = 3") {
 		if _, err := l.db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
@@ -311,7 +312,7 @@ func TestAFailedBackfillRollsTheMigrationBack(t *testing.T) {
 		attempts: []AttemptRow{{TaskID: "docs", N: 2, State: AttemptFailed}},
 	}
 	f.put(t, l)
-	for _, stmt := range []string{"ALTER TABLE tasks DROP COLUMN withdrawn", "UPDATE schema_version SET version = 3"} {
+	for _, stmt := range append(slices.Clone(version5Added), "ALTER TABLE tasks DROP COLUMN withdrawn", "UPDATE schema_version SET version = 3") {
 		if _, err := l.db.Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
