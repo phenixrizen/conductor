@@ -139,6 +139,15 @@ const (
 	// MaxByName bounds the display name an operation records as by, and
 	// a row as created_by, in characters: a person's name's bound.
 	MaxByName = 60
+	// MaxActor bounds an operation's actor, in bytes: admin, merge, and
+	// agent:<member> at most 46 (a crew member's name is at most 40
+	// characters). Every change row records it, and a member's add
+	// carries it in the tag a later remove names in its prior, so an
+	// actor with no bound could make that remove too large to write, and
+	// its member impossible to remove. It is at most MaxByName, so an
+	// actor a row records as created_by in place of a display name
+	// (Op.author) meets that field's bound too.
+	MaxActor = 60
 )
 
 // A ticket's statuses (Owner decisions, 4: six, fixed in this item).
@@ -429,8 +438,8 @@ type textRule struct {
 }
 
 // fieldRules is every text field's rule, by entity and column: the
-// schema table's bounds and shapes. op.by is an operation's display
-// name.
+// schema table's bounds and shapes. op.actor and op.by are an
+// operation's actor and its display name.
 var fieldRules = map[string]textRule{
 	"project.name":            {max: MaxProjectName, chars: true, required: true, kind: kindName},
 	"project.description":     {max: MaxProjectDescription, kind: kindMarkdown},
@@ -453,6 +462,7 @@ var fieldRules = map[string]textRule{
 	"view.name":               {max: MaxViewName, chars: true, required: true, kind: kindName},
 	"view.query":              {max: MaxViewQuery, required: true, kind: kindJSON},
 	"op.by":                   {max: MaxByName, chars: true, kind: kindName},
+	"op.actor":                {max: MaxActor, required: true, kind: kindName},
 }
 
 // checkField checks s, a value of the field key names (entity.column),

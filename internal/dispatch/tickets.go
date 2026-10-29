@@ -157,10 +157,7 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 			return err
 		}
 		id, key := newID(), TicketKey(p.Key, number)
-		by := t.op.By
-		if by == "" {
-			by = t.op.Actor
-		}
+		by := t.op.author()
 		if _, err := t.tx.ExecContext(t.ctx, "INSERT INTO tickets (id, project_id, number, key, title, created_at, created_by, updated_at) VALUES (?, ?, ?, ?, '', ?, ?, ?)",
 			id, p.ID, number, key, stamp(t.now), by, stamp(t.now)); err != nil {
 			return err

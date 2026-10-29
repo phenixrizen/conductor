@@ -586,8 +586,12 @@ func TestABadOperationIsAnError(t *testing.T) {
 			t.Fatalf("op id %q: %v", op.ID, err)
 		}
 	}
-	if _, err := s.AddPerson(ctx, Op{Actor: "", ID: "a1"}, "Alice"); !errors.Is(err, ErrBadActor) {
-		t.Fatalf("no actor: %v", err)
+	// The actor is at most MaxActor bytes, with no control character:
+	// every change row records it, and every member's tag.
+	for _, actor := range []string{"", strings.Repeat("a", MaxActor+1), strings.Repeat("é", MaxActor/2+1), "a\nb", "a\x00b", "\xff"} {
+		if _, err := s.AddPerson(ctx, Op{Actor: actor, ID: "a1"}, "Alice"); !errors.Is(err, ErrBadActor) {
+			t.Fatalf("actor %q: %v", actor, err)
+		}
 	}
 	// The display name an operation records is a name: at most MaxByName
 	// characters, no control character; none at all is the actor alone.
@@ -603,11 +607,15 @@ func TestABadOperationIsAnError(t *testing.T) {
 		rc, err := s.AddPerson(ctx, Op{Actor: "test", ID: opID("by", i), By: by}, opID("Person ", i))
 		want(t, rc, err, StatusDone, "")
 	}
+	for i, actor := range []string{strings.Repeat("a", MaxActor), strings.Repeat("é", MaxActor/2)} {
+		rc, err := s.AddPerson(ctx, Op{Actor: actor, ID: opID("actor", i)}, opID("Actor ", i))
+		want(t, rc, err, StatusDone, "")
+	}
 	for _, id := range []string{"a", strings.Repeat("a", 32), "A.b_c~d-e", "01"} {
 		rc, err := s.AddPerson(ctx, Op{Actor: "test", ID: id}, "Person "+id)
 		want(t, rc, err, StatusDone, "")
 	}
-	if n := count(t, s, "SELECT COUNT(*) FROM ops"); n != 6 {
+	if n := count(t, s, "SELECT COUNT(*) FROM ops"); n != 8 {
 		t.Fatalf("%d receipts", n)
 	}
 }

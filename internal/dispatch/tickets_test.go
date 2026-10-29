@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -579,6 +580,54 @@ func TestAssigneesAndLabelsPastTheirBoundsAreRefused(t *testing.T) {
 	want(t, rc, err, StatusDone, "")
 	if a := ticketOf(t, s, eight).Assignees; len(a) != MaxAssignees || !slices.Contains(a, "person:Extra") || slices.Contains(a, "person:P0") {
 		t.Fatalf("after a swap: %v", a)
+	}
+}
+
+// Whatever actor added a member, a remove can take it away: the add
+// carries its actor in the tag the remove names in its prior. An actor
+// of 64 KiB, which made that prior too large to write, is refused before
+// anything is written; one at its bound, at its worst as JSON ('<' is
+// six bytes in a tag, U+2028 six for its three), leaves the remove far
+// inside MaxChangeValue. With no display name the actor is the ticket's
+// created_by, within that field's bound.
+func TestAMemberAddedByAnyActorCanBeRemoved(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	pid := newProject(t, s, "CND")
+	label := insertLabel(t, s, pid, "api", false)
+	members := NewTicket{Project: "CND", Title: "Members", Assignees: []string{"person:Alice"}, Labels: []string{label}}
+	if _, err := s.CreateTicket(ctx, Op{Actor: strings.Repeat("a", 64<<10), ID: "huge", By: "Tester"}, members); !errors.Is(err, ErrBadActor) {
+		t.Fatalf("an actor of 64 KiB: %v", err)
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM tickets"); n != 0 {
+		t.Fatalf("%d tickets made by a refused actor", n)
+	}
+	for i, actor := range []string{strings.Repeat("<", MaxActor), strings.Repeat("\u2028", MaxActor/3), "agent:" + strings.Repeat("m", 40)} {
+		create, remove := opID("c", i), opID("r", i)
+		rc, err := s.CreateTicket(ctx, Op{Actor: actor, ID: create}, members)
+		want(t, rc, err, StatusDone, "")
+		key := rc.Key
+		if by := ticketOf(t, s, key).CreatedBy; by != actor || checkField("op.by", "by", by) != nil {
+			t.Fatalf("created by %q", by)
+		}
+		tags := map[string]Tag{}
+		for _, row := range changesOf(t, s, actor, create) {
+			if row.Op == OpAdd {
+				tags[row.Value] = TagOf(row)
+			}
+		}
+		if len(tags) != 2 || tags["person:Alice"].Actor != actor || tags[label].Actor != actor {
+			t.Fatalf("the adds' tags: %+v", tags)
+		}
+		rc, err = edit(s, remove, key, TicketEdit{Remove: TicketMembers{Assignees: []string{"person:Alice"}, Labels: []string{label}}})
+		want(t, rc, err, StatusDone, "")
+		if got, want := rowsOf(t, s, remove), []string{"remove:assignees=person:Alice<" + EncodeTags([]Tag{tags["person:Alice"]}),
+			"remove:labels=" + label + "<" + EncodeTags([]Tag{tags[label]})}; !slices.Equal(got, want) {
+			t.Fatalf("the removes:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		if tk := ticketOf(t, s, key); len(tk.Assignees) != 0 || len(tk.Labels) != 0 {
+			t.Fatalf("after the removes: %+v", tk)
+		}
 	}
 }
 

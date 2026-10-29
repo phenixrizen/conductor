@@ -34,7 +34,7 @@ var OpIDPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{1,32}$`)
 // answers 400 invalid_request, as it answers a bad command id.
 var (
 	ErrBadOpID  = errors.New("dispatch: an operation id is 1 to 32 letters, digits, '.', '_', '~' or '-'")
-	ErrBadActor = errors.New("dispatch: an operation names its actor")
+	ErrBadActor = fmt.Errorf("dispatch: an operation names its actor in at most %d bytes, with no control character", MaxActor)
 	ErrBadBy    = fmt.Errorf("dispatch: an operation's display name is at most %d characters, with no control character", MaxByName)
 )
 
@@ -43,12 +43,22 @@ var (
 // attempt's under agent:<member>), the id it minted, the entity's
 // revision it expects (0 for none), and the display name recorded as by
 // on the change rows, which travels in the body as byName does for a
-// broadcast.
+// broadcast. The actor is at most MaxActor bytes and the display name at
+// most MaxByName characters, neither with a control character.
 type Op struct {
 	Actor       string
 	ID          string
 	ExpectedRev int64
 	By          string
+}
+
+// author is the name a row the operation makes records as its creator
+// (created_by): the display name, else the actor.
+func (op Op) author() string {
+	if op.By != "" {
+		return op.By
+	}
+	return op.Actor
 }
 
 // The statuses of a receipt.
@@ -348,18 +358,21 @@ func fingerprint(intent string, args any) (string, error) {
 // 0) meaning the operation ran, and the resend is answered done and Repeat
 // with no rev, id or key whatever its content; none means the receipt was
 // a refusal's, and the resend runs as a new operation. An error is the
-// database's own, a bad op id or actor, or the store closed: nothing was
-// written, and nothing is answered; a read-only store answers a read_only
-// refusal, written nowhere. OnChange's listeners run after the commit, on
-// this goroutine.
+// database's own, a bad op id, actor or display name, or the store
+// closed: nothing was written, and nothing is answered; a read-only store
+// answers a read_only refusal, written nowhere. OnChange's listeners run
+// after the commit, on this goroutine.
 func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, change func(*tx) error) (Receipt, error) {
 	if !OpIDPattern.MatchString(op.ID) {
 		return Receipt{}, ErrBadOpID
 	}
-	if op.Actor == "" {
+	if checkField("op.actor", "the actor", op.Actor) != nil {
 		return Receipt{}, ErrBadActor
 	}
-	if checkField("op.by", "by", op.By) != nil {
+	// The author is held to the display name's rule whichever of the two
+	// it is, so a row's created_by meets its bound: an actor within
+	// MaxActor always does.
+	if checkField("op.by", "by", op.author()) != nil {
 		return Receipt{}, ErrBadBy
 	}
 	fp, err := fingerprint(intent, args)

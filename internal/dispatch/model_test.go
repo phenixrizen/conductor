@@ -14,8 +14,10 @@ import (
 )
 
 // planBounds is every text bound of the plan's schema table, by the
-// field's rule: the number and its unit as the plan gives them. The test
-// below fails when model.go's rules and these differ, either way.
+// field's rule: the number and its unit as the plan gives them, and an
+// operation's two, op.by (a person's name's bound) and op.actor
+// (MaxActor, which the plan leaves to the code). The test below fails
+// when model.go's rules and these differ, either way.
 var planBounds = map[string]struct {
 	max   int
 	chars bool
@@ -41,6 +43,7 @@ var planBounds = map[string]struct {
 	"view.name":               {60, true},
 	"view.query":              {8 << 10, false},
 	"op.by":                   {60, true},
+	"op.actor":                {60, false},
 }
 
 // atBound is a value of the rule's kind exactly at its bound, and past
@@ -127,7 +130,7 @@ func TestEachKindOfTextRefusesWhatItCannotHold(t *testing.T) {
 		}
 		refused(key, "a\xffb", RefusalInvalid)
 	}
-	for _, key := range []string{"ticket.title", "project.name", "person.name", "label.name", "milestone.name", "view.name", "op.by"} {
+	for _, key := range []string{"ticket.title", "project.name", "person.name", "label.name", "milestone.name", "view.name", "op.by", "op.actor"} {
 		allowed(key, "A name — with <brackets> & \u2028")
 		for _, c := range append(controls, "\n", "\t") {
 			refused(key, "a"+c+"b", RefusalInvalid)
