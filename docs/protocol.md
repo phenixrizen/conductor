@@ -1758,7 +1758,7 @@ its run, and on no other.
 | `PUT /api/crews/{id}` | admin | replace a crew's fields with the body, shaped as for create, so a crew as `GET` answers it goes back without `id`, `createdAt`, `updatedAt` and `manifestRevision`; `id` and `createdAt` never change, `updatedAt` is now, and `manifestRevision` is one more when the project manifest, a `setup` included, changed (a removal too) and stays as it was otherwise; reply `{crew}`; `400 invalid_crew` as for create; `404` when unknown; `409 crew_unreadable` when its file cannot be used (it is not replaced) |
 | `DELETE /api/crews/{id}` | admin | delete a crew; `204`, `404` when unknown |
 | `POST /api/crews/{id}/duplicate` | admin | save a copy of a crew as `<id>-copy` (then `<id>-copy-2`…) named `<name> copy`, with new times and the `manifestRevision` of a new crew (1 with a project manifest or a `setup`, absent without), whatever the original's; reply `201 {crew}`; `400 invalid_crew` when one of its agents is no longer in the catalog or the copy would be over 1 MiB; `404` when unknown; `409 crew_unreadable` when its file cannot be used |
-| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, one whose project manifest names what this build does not run yet (anything beyond its setup phase, the file form, or a placeholder in a setup step; the message says which, as the crew limits below have it), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
+| `POST /api/crews/{id}/launch` | admin | launch a crew as a run (see Crew runs); an optional body `{label}` names the run (at most 60 characters, no control characters, trimmed; kept on the run as `label` and by a resume; `400 invalid_request` for a bad label or an unknown field, the body at most 4 KiB); reply `201 {run}` once the session of every member that starts immediately exists, each member `starting` until its prompt is typed; the run's `yolo` is the crew's, else the server's, fixed for every member of the run, one started or added later included; a crew with `viewLinkTtlSeconds` also gets a run link with role `view`, label `launch` and that lifetime, created as `POST /api/runs/{run}/links` would (noted in the run log), and the reply is `201 {run, viewLink: {link, token, url}}`: the token is in this reply only (a link the store refuses leaves the launch standing, without `viewLink`, with an `error` entry in the run log); `400 invalid_crew` for a crew with no members, one that runs on a host, one whose project manifest names what this build does not run yet (anything beyond its prerequisites and setup phase, or a placeholder in a setup step; the message says which, as the crew limits below have it), or, with the file form, whose `conductor.manifest.json` at the run's base (`HEAD` of `cwd`, read once) is missing, broken or names what this build does not run (the file and the commit named), an agent the catalog does not have, an agent whose program is not installed on the server (`command[0]` does not resolve, by the check of `GET /api/catalog`'s `available`, so a lookup that does not answer within 2 s does not refuse; the message names the member and the agent), arguments to an agent that takes none, or with `isolation: worktree` a `.conductor` or `.conductor/worktrees` in `cwd` that is a symbolic link, or a symbolic link on the way to a member's directory in its worktree; `400 invalid_cwd` as for a session; `409 not_a_repo` with `isolation: worktree` when `cwd` is in no git working tree (`git -C <cwd> rev-parse --show-toplevel` fails), or in one whose `HEAD` is no commit, each with its own message, and a `rev-parse` failure other than 'not a git repository' (a repository owned by another user, or one that cannot be read) says what git said; `500 launch_failed` with `git is not installed on the server` with `isolation: worktree` when `git` is not on the server's `PATH`, before anything is made; `409 run_stopped` when the run is stopped while its sessions start (the run stays, stopped); a member whose session cannot be created answers as `POST /api/sessions` would, naming the member; `500 launch_failed` otherwise; `404` when unknown; `409 crew_unreadable` when its file cannot be used; `503 store_unavailable` without a data directory; `400 invalid_crew` also for a member whose agent's program the identity probe found to be another one (a known impostor, or a verified probe that matched nothing), the message naming the member, the agent, what the program is not and what it printed; a pending or failed probe refuses nothing |
 | `GET /api/crews/{id}/runs` | admin | `{runs, live}`: the crew's runs, newest first, each as `GET /api/runs/{run}` answers it (without diffs): the `live` first ones the server holds, then the records of runs the server no longer holds, saved under `runs/<id>.json` in the data directory, at most 500 kept (the oldest by start dropped), never a terminal's contents; a run's record is written from its launch on (again a couple of seconds after each change, and as it ends, a reopened run again when it ends again) and read back after a restart, where the record of a run that was running when the server last stopped is marked `interrupted` (its running members `ended` with that `error`), never relaunched on its own; `404 not_found` for a crew neither saved nor recorded |
 | `POST /api/sessions/{id}/paste` | admin | answer a viewer's paste invite for a server session: `{offer, role, label?}`, `offer` a `cpi1.` blob (the viewer's SDP with every candidate gathered, deflated and base64url-encoded, ≤ 64 KiB), reply `201 {answer, role}` with the session's blob of the same form, which the viewer pastes back; the data channel then runs with no server between the two, as a host's does (hello over it, welcome, scrollback, input by role); at most 16 such peers a session, idle ones dropped after two minutes; `400 invalid_offer` for a blob that is not an offer, `400 hosted_session` for a hosted session (shared from its own machine), `409 session_ended` |
 | `GET /api/ice` | none (rate-limited) | `{stun}`: the configured ICE servers' `stun:` URLs, for a viewer gathering a paste invite's offer before it has any session; a TURN server's credentials never leave the server |
@@ -1772,7 +1772,11 @@ its run, and on no other.
 | `POST /api/runs/{run}/broadcast` | admin | type a line into members of the run: body `{text, members?, byName?}`, `members` empty or missing for every member; reply `{sent, skipped}`, `sent` the names typed into and `skipped` entries `{member, reason}` with `reason` `needs_input`, `not_running`, `unknown` or `no_enter` (typed, its carriage return left out because a question came up; see Crew runs); `400 invalid_request` for a text with nothing left, or over 4096 bytes, once made one line; `404` when unknown |
 | `GET /api/runs/{run}/links` | admin | `{links, published?, republish?}`: the run's share links, each with `runId` and `active`, the viewers attached through it to its members' sessions; with a switchyard configured, `published` says a member is published there now, and `republish: true` that a running member's publication the switchyard ended has not been made again, which the next run link does; `404` when unknown |
 | `GET /api/runs/{run}/commands/{command}` | admin | a command's receipt from the managed runs' ledger (#334): `{command: {id, intent, status, receipt?, createdAt}}`, `status` one of `accepted`, `done`, `failed`, `uncertain`; `404 not_found` for a run or command unknown, or one that is not the admin's; `400 invalid_request` for a command id that is not 1 to 32 of letters, digits, `.`, `_`, `~` and `-`. A read: it never acts, so a client that lost a reply looks here before it sends again |
-| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`); `404 not_found` for an unknown run or task; `400 invalid_request` for an id that is not shaped as one |
+| `GET /api/runs/{run}/tasks/{task}` | admin | a managed run's task with every attempt (#334, row 6): `{task, attempts}`, `task` as the run reports it (Managed runs) and `attempts` each `{n, sessionId?, worktree?, branch?, start?, result?, state, stage?, error?, startedAt?, endedAt?, submitted?, checkpoint?, steps?}`, `submitted` what the attempt submitted (`{summary, commit, issues, verdict, findings}`) and `steps` its receipts as the steps route below answers them; for a run the server no longer holds (evicted, or run by a server before this one) the task and its attempts as the ledger has them, with no preview; `404 not_found` for a run or task neither the server nor the ledger has; `503 ledger_unavailable` for a run not held when there is no ledger to read; `400 invalid_request` for an id that is not shaped as one |
+| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps` | admin | an attempt's receipts from the ledger (Project manifests below): `{steps}`, by when each started, each `{phase, id, k, state, argv?, url?, dir?, subject?, manifest?, exit?, timedOut?, duration?, error?, ports?, tries, startedAt, finishedAt?, logBytes, logDropped?, logSha256?}`, the row whole but for its log (`duration` in milliseconds; `exit` once it finished); a run the server let go answers the same; `404 not_found` for a run or attempt the ledger has not; `503 ledger_unavailable`; `400 invalid_request` for an id or number that is not shaped as one |
+| `GET /api/runs/{run}/tasks/{task}/attempts/{n}/steps/{id}/{k}/log` | admin | one receipt's log: `200 text/plain`, the bytes the ledger keeps (at most 1 MiB: the output's head, a line saying how many bytes were dropped, and its last bytes), their SHA-256 in `X-Conductor-Log-SHA256` (exposed to a dev origin's script); `404 not_found` for a row the ledger has not, or one still running; `410 log_dropped` for a log not kept past the run's 64 MiB of logs (its hash and tail stay on the row); fetched with the bearer header, never as a link the browser follows |
+| `GET /api/runs/{run}/prerequisites` | admin | a run's prerequisites' receipts from the ledger: `{steps}` as the steps route answers them, each of phase `prerequisite`, `k` counting its runs in the run; `404 not_found` for a run the ledger has not; `503 ledger_unavailable` |
+| `GET /api/runs/{run}/prerequisites/{id}/{k}/log` | admin | one prerequisite receipt's log, as a step's log route answers it |
 | `POST /api/runs/{run}/pause`, `POST /api/runs/{run}/unpause` | admin | pause a managed run's dispatch (attempts in flight go on, none starts) or resume it; body `{commandId, expectedRevision?}` (Commands with receipts below); reply `200 {receipt}`; `409 run_stopped` with the receipt once the run is stopped |
 | `POST /api/runs/{run}/tasks/{task}/cancel` | admin | cancel a task: its attempt in flight ends (its session stopped once the cancel is recorded), the task is `cancelled`, what needs it is blocked for good, and the run ends when every task is terminal; body `{commandId, expectedRevision?}`; `200 {receipt}` with the task; `409 task_state` with the receipt for a task already succeeded, failed or cancelled |
 | `POST /api/runs/{run}/tasks/{task}/retry` | admin | allow a failed or cancelled task one more attempt: it is `blocked` or `ready` again (a repair it carries stays), the run open again; `200 {receipt}`; `409 task_state` with the receipt otherwise |
@@ -1935,12 +1939,14 @@ of the crew's manifest changes, read with the crew and refused in a create or
 update body as `id` is: a new crew starts at 1 with a manifest (a `setup`
 counts) and 0 without; a save that changes the manifest, a removal included,
 makes it one more, and one that does not leaves it, so a number names one
-manifest of a crew for good. This build runs a manifest's setup phase alone, as
-it runs `setup`: the launch of a crew whose manifest names prerequisites,
-`env`, `ports`, services, `ready`, a `preview`, `verify` or `cleanup` steps,
-the file form, or a placeholder in a setup step is refused with
-`400 invalid_crew` saying what this build does not run yet ("this build does
-not run a project manifest's services yet"), never accepted and skipped.
+manifest of a crew for good. This build runs a manifest's prerequisites and its
+setup phase, from the crew or from `conductor.manifest.json` (Project manifests,
+under Managed runs): the launch of a crew whose manifest names `env`, `ports`,
+services, `ready`, a `preview`, `verify` or `cleanup` steps, or a placeholder in
+a setup step, is refused with `400 invalid_crew` saying what this build does
+not run yet ("this build does not run a project manifest's services yet"),
+never accepted and skipped; the file form is held to the same at the run's base
+when it launches and at every tree's commit.
 
 ### Crew runs
 
@@ -2198,7 +2204,9 @@ keeps them, or a task needs the same task twice, so a task file always
 fits. A result is refused at submission (`400
 bad_result`, nothing changed) when it, or the repair a review's findings
 make, is larger than the ledger keeps as JSON. The crew's setup steps
-(its project manifest's `setup`, or its legacy `setup`) run in it first, and the session's process receives `CONDUCTOR_TASK`,
+(its project manifest's `setup`, or its legacy `setup`) run in it first (a
+step that fails there is not counted: Project manifests below), and the
+session's process receives `CONDUCTOR_TASK`,
 `CONDUCTOR_ATTEMPT` and `CONDUCTOR_TASK_FILE` beside the crew variables. The
 line typed once the session is ready says where the task file is and how to
 submit. A `done` finishes nothing (one reminder line is typed per attempt, when
@@ -2215,7 +2223,8 @@ result tree may hold no `.conductor` directory anywhere and no submodule;
 otherwise the submit is refused with why, and the attempt goes on. A work
 task's checks then run in a detached checkout of the result commit
 (`<worktree>.check`), after the crew's setup steps there (what the worker had,
-the checks have; a setup that changes tracked content fails the attempt),
+the checks have; a setup step that changes tracked content fails the attempt
+at that step, the checkout compared after each),
 one at a time across the server (`checks.maxConcurrent`), each recorded
 before it starts and after it ends with its exit, timing, log (at most 1 MiB,
 its SHA-256 and a tail) and whether it left the checkout as it found it:
@@ -2235,6 +2244,60 @@ dispatch and says so in the run log. The run's `managed.revision` follows
 each commit. A submitted result is kept whole in the attempt's row (its
 summary, issues, verdict and findings), so a review's findings outlive the
 server.
+
+**Project manifests.** A crew's project manifest (its `manifest`, or
+`conductor.manifest.json` at a tree's commit with `file`; a legacy `setup` is
+its setup phase) makes each tree of a managed run usable, a tree being an
+attempt's worktree or the checkout of its result. Its prerequisites run once
+per run, in the crew's directory at the run's base, before the first attempt
+is dispatched: the launch answers while they run (the run's
+`manifest.prerequisites[].state` says `running`), and nothing is dispatched
+until they passed; they run again at each unpause (unless a run of them is
+under way, whose result stands) and in a continuation. One that fails pauses
+the run's dispatch with its words and spends nothing. The setup steps run in
+each new worktree, the manifest resolved for it at the attempt's start commit
+and the task files written first (`task.json`'s `manifest`, `{source,
+revision | digest}`, and a sentence in `task.md`), before the session; and in
+the checkout of a result, the manifest read at the result commit (a result
+that changes `conductor.manifest.json` is checked by the one it changed),
+before the checks, the checkout compared with the result after each step
+(`setup deps changed tracked files: …`). A step's timeout is 60 s for a
+prerequisite and 600 s for a setup step when it gives none. A step that fails
+in an attempt's worktree, or a manifest that cannot be resolved there (stage
+`setup <id>` or `manifest`), is the host's or the manifest's, not the agent's:
+the attempt is `failed` and not counted (`attempt.failed` with `uncounted:
+true`; the task `ready` with "attempt 2 could not be made usable at setup
+deps: …" and one more attempt allowed), the run's dispatch pauses with the
+same words (the run's `pausedWhy`), and the next attempt, once a person
+unpauses, starts where that one started, its task file naming the uncounted
+attempt (`unusable`) beside the last counted one (`previous`). One at a
+checkpoint the agent saved (a commit of its own that nothing verified)
+refuses the checkpoint instead, the run not paused (`attempt.failed` with
+`checkpoint`): the next attempt starts at once where the checkpointed attempt
+started, its task file naming the checkpoint as not usable
+(`previous.checkpoint`) and carrying no checkpoint section; a second failure
+there pauses. One in the checkout is the result's, counted: a result refused
+before its checks (stage `setup <id>` or `manifest`), the next attempt
+starting where the refused one did. Every step is a receipt in the ledger (the
+steps and prerequisites routes above): its phase, its id and `k` (the k-th
+run of its id on the attempt, a check's included, so a legacy setup step that
+shares a check's id keeps every row), the manifest that ran it
+(`crew:<revision>` or `file:<blob>`), where it ran, its command, exit, timing,
+log (at most 1 MiB: the output's head, a line saying how many bytes were
+dropped, its last bytes) and SHA-256, and the words of its failure. The
+events: `manifest.resolved {tree, task, attempt, source, revision | digest,
+env}`; `step.started {phase, id, k, manifest}`, `step.running {…, pid, group}`
+and `step.finished {…, exit, timedOut, duration, error, interrupted}`, each
+with `task`, `attempt` and `tree` but for a prerequisite's;
+`prerequisites.passed {manifest}` before the first `attempt.reserved`;
+`run.paused {paused, why}`; and `tree.ended {tree, task, attempt, why}` once
+an attempt's close is committed and the tree is quiet, each tree once
+(nothing is removed). The run's JSON gains `pausedWhy`, `manifest`
+(`{source, revision?, digest?, prerequisites: [{id, k?, state, exit?, error?,
+duration?}]}`, `state` `pending`, `running`, `passed`, `failed` or
+`interrupted`) and `cleaning` (its trees being ended: an `outcome` says every
+attempt is closed, not that every tree has ended). A run whose crew has no
+manifest and no `setup` makes no tree and keeps no step receipt.
 
 An agent reads its task and submits its result through its session's task
 routes (`GET /api/sessions/{id}/task`, `POST /api/sessions/{id}/task/result`
@@ -2302,7 +2365,9 @@ the same changes without a receipt.
 takes the ledger's owner lock, it concludes what the last server left open
 (the ledger's recovery): an attempt reserved and not launched is
 `uncertain`, one launched, running, submitting or verifying `interrupted`,
-a check under way `interrupted`, a command accepted and not settled
+a check, a step or a prerequisite under way `interrupted`, a tree whose end
+was not recorded ended and `interrupted` (with a `tree.ended` of its own, its
+cleanup not run), a command accepted and not settled
 `uncertain`, and a run that was running `interrupted`. Then every managed
 run whose record lags the ledger (a snapshot cut short by the server's
 end) or has none is written again as the ledger has it (`crew.Recovered`):
