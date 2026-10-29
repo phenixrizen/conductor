@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strconv"
 	"time"
@@ -327,8 +328,12 @@ func (s *Store) DeleteTicket(ctx context.Context, op Op, key string) (Receipt, e
 // (ticket.undelete) by the reverse of its delete's one row: deleted_at
 // cleared, its prior the stamp it clears, so every reference to it is
 // active again. The parent and blocks walks take tombstones as edges, so
-// an undelete never makes a cycle or a chain past MaxParentDepth. A live
-// ticket is invalid; an archived project refuses it (archived).
+// an undelete never makes a cycle or a chain past MaxParentDepth. One
+// reference may not come back: a run link of its naming a run another
+// live ticket has linked meanwhile (a tombstone holds no run) is removed
+// in the same operation, one remove row naming its tags, so a run
+// belongs to one live ticket at most. A live ticket is invalid; an
+// archived project refuses it (archived).
 func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -345,8 +350,11 @@ func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt,
 		if before[0].value == "" {
 			return refuse(RefusalInvalid, "%s is not deleted", tk.Key)
 		}
-		return t.setScalars("tickets", ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID},
-			before, []fieldValue{{"deleted_at", ""}})
+		if err := t.setScalars("tickets", ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID},
+			before, []fieldValue{{"deleted_at", ""}}); err != nil {
+			return err
+		}
+		return t.releaseRuns(tk)
 	})
 }
 
@@ -730,6 +738,113 @@ func scanTicket(row interface{ Scan(...any) error }) (Ticket, error) {
 // when there is none.
 func ticketByKey(ctx context.Context, q queryer, key string) (Ticket, error) {
 	return scanTicket(q.QueryRowContext(ctx, "SELECT "+ticketColumns+" FROM tickets WHERE key = ?", key))
+}
+
+// ticketByID reads the ticket with the id, deleted or not; sql.ErrNoRows
+// when there is none.
+func ticketByID(ctx context.Context, q queryer, id string) (Ticket, error) {
+	return scanTicket(q.QueryRowContext(ctx, "SELECT "+ticketColumns+" FROM tickets WHERE id = ?", id))
+}
+
+// addOf is where the add that made a row of a set stands in the log: its
+// at as stamped, and its tag, which a remove of the row's member names.
+type addOf struct {
+	at  string
+	tag Tag
+}
+
+// addsOf reads the adds that made the given rows of a ticket's set field
+// (relations, links: a set whose rows have ids of their own), by the
+// row's id, which the add's value carries. A row with no add in the log
+// (one written by hand, never by an operation) is not among them.
+func addsOf(ctx context.Context, q queryer, ticketID, field string, ids []string) (map[string]addOf, error) {
+	out := map[string]addOf{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	rows, err := q.QueryContext(ctx, "SELECT value, at, actor, op_id, n FROM changes WHERE entity = ? AND entity_id = ? AND field = ? AND op = ?",
+		EntityTicket, ticketID, field, OpAdd)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value string
+		var a addOf
+		if err := rows.Scan(&value, &a.at, &a.tag.Actor, &a.tag.OpID, &a.tag.N); err != nil {
+			return nil, err
+		}
+		var v struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal([]byte(value), &v) == nil && want[v.ID] {
+			out[v.ID] = a
+		}
+	}
+	return out, rows.Err()
+}
+
+// foldKey is where a set row stands among its member's rows: the log's
+// one order of the adds that made them (at, actor, op_id, n), a row with
+// no add standing at its created_at before any add of the same moment,
+// and the row's id breaking the last tie.
+type foldKey struct {
+	at, actor, opID string
+	n               int
+	id              string
+}
+
+// keyOf is the fold key of the row with the id, made at createdAt.
+func keyOf(id, createdAt string, adds map[string]addOf) foldKey {
+	if a, ok := adds[id]; ok {
+		return foldKey{a.at, a.tag.Actor, a.tag.OpID, a.tag.N, id}
+	}
+	return foldKey{at: createdAt, id: id}
+}
+
+// after reports whether k stands after o.
+func (k foldKey) after(o foldKey) bool {
+	switch {
+	case k.at != o.at:
+		return k.at > o.at
+	case k.actor != o.actor:
+		return k.actor > o.actor
+	case k.opID != o.opID:
+		return k.opID > o.opID
+	case k.n != o.n:
+		return k.n > o.n
+	}
+	return k.id > o.id
+}
+
+// rowTags is the tags of the adds that made the rows with the ids, in the
+// log's order: what a remove of their member names in its prior. A row
+// with no add names none.
+func rowTags(ids []string, adds map[string]addOf) []Tag {
+	var keys []foldKey
+	for _, id := range ids {
+		if a, ok := adds[id]; ok {
+			keys = append(keys, foldKey{a.at, a.tag.Actor, a.tag.OpID, a.tag.N, id})
+		}
+	}
+	slices.SortFunc(keys, func(a, b foldKey) int {
+		if a.after(b) {
+			return 1
+		}
+		if b.after(a) {
+			return -1
+		}
+		return 0
+	})
+	tags := []Tag{}
+	for _, k := range keys {
+		tags = append(tags, Tag{k.actor, k.opID, k.n})
+	}
+	return tags
 }
 
 // readTexts reads the one text column of the rows a query gives; none is

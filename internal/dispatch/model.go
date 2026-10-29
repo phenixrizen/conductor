@@ -211,6 +211,9 @@ const (
 	RelationRelates = "relates"
 )
 
+// RelationKinds is the kinds of a relation.
+var RelationKinds = []string{RelationBlocks, RelationRelates}
+
 // LabelColors is the twelve colours a label may have, by name: the UI
 // maps each to one of the brand's scales (docs/design/brand.md) at a
 // shade, so the store keeps a name and never a value a client chose.

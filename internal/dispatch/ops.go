@@ -89,11 +89,12 @@ const (
 // Receipt is what an operation gets and what the store keeps under
 // (actor, op id): the id and intent, the status (done, or failed with
 // the refusal's name and its words), the subject's rev after the
-// operation, the id and key of what a create made, what a close_policy
-// refusal lacks (Missing), and whether this answer is the one given
-// before (Repeat). It carries no entity, which the caller reads after
-// the commit, so no receipt grows with a description; it is at most
-// MaxReceipt bytes as JSON.
+// operation, the id and key of what a create made (an add's id is the
+// row it made; a run_linked refusal's key is the ticket that holds the
+// run), what a close_policy refusal lacks (Missing), and whether this
+// answer is the one given before (Repeat). It carries no entity, which
+// the caller reads after the commit, so no receipt grows with a
+// description; it is at most MaxReceipt bytes as JSON.
 type Receipt struct {
 	OpID    string   `json:"opId"`
 	Intent  string   `json:"intent"`
@@ -108,13 +109,16 @@ type Receipt struct {
 }
 
 // Refusal is an operation refused by the store's rules: the code a
-// failed receipt names, the words, and for close_policy what is missing.
-// A change returns one; Apply keeps it as the failed receipt. Any other
-// error a change returns is the database's, and nothing is written.
+// failed receipt names, the words, for close_policy what is missing, and
+// for run_linked the key of the ticket that holds the run (the receipt's
+// Key). A change returns one; Apply keeps it as the failed receipt. Any
+// other error a change returns is the database's, and nothing is
+// written.
 type Refusal struct {
 	Code    string
 	Words   string
 	Missing []string
+	Key     string
 }
 
 func (r *Refusal) Error() string { return r.Code + ": " + r.Words }
@@ -207,6 +211,9 @@ type tx struct {
 	touched []touched
 	keys    map[string]string // project id → key, resolved once per operation
 	id, key string
+	// runExists is the store's sight of the engine's runs (SetRunExists),
+	// nil when none was given.
+	runExists func(id string) bool
 }
 
 // touched is an entity a change row named, with the ticket and the
@@ -254,18 +261,30 @@ func (t *tx) record(c ChangeRow) error {
 		return err
 	}
 	t.seq, t.n = seq, t.n+1
+	return t.touch(c.Entity, c.EntityID, c.TicketID, c.ProjectID)
+}
+
+// touch marks an entity the operation changed, for the rev bump and
+// OnChange, once however many rows name it; record calls it for every
+// row, and an operation calls it alone for an entity it changed through
+// another's row: a relation's add is a row of its from ticket's and
+// changes its to ticket's page too, so it counts for both. The first
+// entity touched is the operation's subject, whose rev the receipt
+// carries.
+func (t *tx) touch(entity, id, ticket, projectID string) error {
 	key := ""
-	if c.ProjectID != "" {
-		if key, err = t.projectKey(c.ProjectID); err != nil {
+	if projectID != "" {
+		var err error
+		if key, err = t.projectKey(projectID); err != nil {
 			return err
 		}
 	}
 	for _, e := range t.touched {
-		if e.entity == c.Entity && e.id == c.EntityID {
+		if e.entity == entity && e.id == id {
 			return nil
 		}
 	}
-	t.touched = append(t.touched, touched{c.Entity, c.EntityID, c.TicketID, key})
+	t.touched = append(t.touched, touched{entity, id, ticket, key})
 	return nil
 }
 
@@ -429,7 +448,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	if ran > 0 {
 		return Receipt{OpID: op.ID, Intent: intent, Status: StatusDone, Repeat: true}, nil, nil
 	}
-	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent}
+	t := &tx{ctx: ctx, tx: dbtx, now: time.Now().UTC(), op: op, intent: intent, runExists: s.runExists}
 	// The change runs under a savepoint: a refusal undoes it and keeps the
 	// transaction, and with it the write lock, for its receipt, so no other
 	// writer (a second store on the file) runs the same operation between
@@ -453,7 +472,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		if _, err := dbtx.ExecContext(ctx, "ROLLBACK TO change"); err != nil {
 			return Receipt{}, nil, cancelledAs(ctx, err)
 		}
-		rc := fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: ref.Code, Error: words(ref.Words), Missing: ref.Missing})
+		rc := fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: ref.Code, Error: words(ref.Words), Missing: ref.Missing, Key: ref.Key})
 		if err := s.commitReceipt(ctx, dbtx, op, intent, fp, t.now, rc); err != nil {
 			return Receipt{}, nil, err
 		}

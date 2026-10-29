@@ -62,11 +62,15 @@ type Store struct {
 	// db is nil when there is nothing to read: a database that cannot be
 	// opened at all.
 	db *sql.DB
-	// mu orders the writers and guards closed, db, readOnly and why.
+	// mu orders the writers and guards closed, db, readOnly, why and
+	// runExists.
 	mu       sync.Mutex
 	closed   bool
 	readOnly bool
 	why      string
+	// runExists is the engine's sight of its runs, which the API gives
+	// the store (SetRunExists): the store's only sight of the engine.
+	runExists func(id string) bool
 
 	// lmu guards listeners, what OnChange registered.
 	lmu       sync.Mutex
