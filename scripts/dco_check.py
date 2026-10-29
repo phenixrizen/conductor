@@ -22,19 +22,42 @@ is no path to exit 0 without every commit read and judged.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 
 # One record per commit, oldest first: the record separator, then the six
-# fields split by the unit separator; %B is the whole message. git is told to
-# write UTF-8 whatever i18n.logOutputEncoding or i18n.commitEncoding says, and
-# the bytes are decoded as UTF-8 whatever the locale, so a non-ASCII name or
-# subject is judged the same on a laptop and on the runner.
+# fields split by the unit separator; %B is the whole message. Both ends of
+# the pipe are pinned. git is told to write UTF-8 whatever
+# i18n.logOutputEncoding or i18n.commitEncoding says, and the bytes are
+# decoded as UTF-8 whatever the locale, so a non-ASCII name or subject is
+# judged the same on a laptop and on the runner; and it is told to write the
+# records and nothing else (--no-show-signature): log.showSignature in a
+# developer's configuration would put a signed commit's verification lines
+# ("gpg: Signature made ...", "No signature") on stdout before its record,
+# and a branch signed off in full would fail the read.
 RECORD = "\x1e"
 UNIT = "\x1f"
 FORMAT = "%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%s%x1f%B"
 FIELDS = 6
 KEY = "signed-off-by"
+
+# The repository is the one --repo names and no other. These are the
+# variables by which git selects a repository over -C (a hook exports
+# GIT_DIR; a shell may hold any of them): they are dropped from the
+# environment git log runs in, or the check would read another repository
+# in silence.
+REPOSITORY_VARIABLES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
 
 
 class Error(Exception):
@@ -93,10 +116,16 @@ def problems(commits):
 
 
 def read(repo, base, head):
-    """The commits of base..head in repo, oldest first, as git logs them."""
-    argv = ["git", "-C", repo, "log", "--reverse", "--encoding=UTF-8", "--format=" + FORMAT, f"{base}..{head}"]
+    """The commits of base..head in repo, oldest first, as git logs them: the
+    records alone, in UTF-8 (the comment at FORMAT), read from repo whatever
+    repository the environment would select (REPOSITORY_VARIABLES)."""
+    argv = [
+        "git", "-C", repo, "log", "--reverse", "--encoding=UTF-8", "--no-show-signature",
+        "--format=" + FORMAT, f"{base}..{head}",
+    ]
+    env = {k: v for k, v in os.environ.items() if k not in REPOSITORY_VARIABLES}
     try:
-        p = subprocess.run(argv, capture_output=True)
+        p = subprocess.run(argv, capture_output=True, env=env)
     except OSError as e:
         raise Error(f"git could not be run: {e}") from None
     if p.returncode:

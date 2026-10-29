@@ -6,6 +6,7 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -153,10 +154,11 @@ class Repo:
         self.dir = directory
         self.env = git_env()
 
-    def git(self, *args, who=ADA, text=True):
+    def git(self, *args, who=ADA, text=True, config=()):
         argv = [
             "git", "-c", f"user.name={who[0]}", "-c", f"user.email={who[1]}",
-            "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", "-C", self.dir, *args,
+            "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main",
+            *(x for kv in config for x in ("-c", kv)), "-C", self.dir, *args,
         ]
         p = subprocess.run(argv, capture_output=True, env=self.env)
         if p.returncode:
@@ -167,9 +169,12 @@ class Repo:
         Path(self.dir, name).write_text(content, encoding="utf-8")
         self.git("add", name)
 
-    def commit(self, name, message, who=ADA, signoff=False):
+    def commit(self, name, message, who=ADA, signoff=False, key=None):
+        """A commit of one file; with key, signed with that SSH private key."""
         self.write(name, message + "\n")
-        self.git("commit", "-q", *(["-s"] if signoff else []), "-m", message, who=who)
+        config = ("gpg.format=ssh", f"user.signingkey={key}") if key else ()
+        flags = (["-s"] if signoff else []) + (["-S"] if key else [])
+        self.git("commit", "-q", *flags, "-m", message, who=who, config=config)
         return self.head()
 
     def head(self):
@@ -306,6 +311,48 @@ class Repository(unittest.TestCase):
         [c] = d.read(r.dir, base, "HEAD")
         self.assertEqual((c.author_name, c.subject), (lovelace[0], subject))
         self.assertEqual(d.signoffs(c.message), [lovelace])
+
+    def test_the_repository_read_is_the_one_named_whatever_the_environment_selects(self):
+        # A hook exports GIT_DIR, a shell may hold GIT_WORK_TREE beside it, and
+        # either overrides -C: the mechanism first, on a bare rev-parse, then
+        # the read under the same environment.
+        r, base = self.repo()
+        one = r.commit("one.txt", "one, signed", signoff=True)
+        other, _ = self.repo()
+        other.commit("other.txt", "another repository's commit, unsigned")
+        selects = {"GIT_DIR": str(Path(other.dir, ".git")), "GIT_WORK_TREE": other.dir}
+        p = subprocess.run(
+            ["git", "-C", r.dir, "rev-parse", "HEAD"], capture_output=True, text=True, env={**git_env(), **selects}
+        )
+        self.assertEqual(p.stdout.strip(), other.head())
+        with mock.patch.dict(os.environ, selects):
+            [c] = d.read(r.dir, base, "HEAD")
+            self.assertEqual(c.sha, one)
+            code, out, err = self.check(r, base)
+        self.assertEqual((code, out), (0, "1 commit signed off by its author\n"), err)
+
+    def test_a_signed_commits_verification_lines_never_reach_the_records(self):
+        # log.showSignature in a developer's configuration makes git log write a
+        # signed commit's verification lines to stdout before its record: the
+        # mechanism first, with a throwaway SSH key, so the test cannot pass for
+        # nothing on a git that ignored the setting; then the read under it.
+        if not shutil.which("ssh-keygen"):
+            self.skipTest("ssh-keygen is not installed, so no commit can be signed")
+        r, base = self.repo()
+        keys = tempfile.TemporaryDirectory()
+        self.addCleanup(keys.cleanup)
+        key = Path(keys.name, "key")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True, capture_output=True)
+        subjects = ("one, signed with the key", "two, plain", "three, signed with the key")
+        r.commit("one.txt", subjects[0], signoff=True, key=key)
+        r.commit("two.txt", subjects[1], signoff=True)
+        r.commit("three.txt", subjects[2], signoff=True, key=key)
+        r.git("config", "log.showSignature", "true")
+        raw = r.git("log", "--reverse", "--format=%x1e%H", f"{base}..HEAD", text=False)
+        self.assertTrue(raw and not raw.startswith(b"\x1e"), raw)
+        code, out, err = self.check(r, base)
+        self.assertEqual((code, out), (0, "3 commits signed off by their authors\n"), err)
+        self.assertEqual([c.message for c in d.read(r.dir, base, "HEAD")], [signed(s) for s in subjects])
 
     def test_a_record_that_does_not_parse_fails_the_read(self):
         r, base = self.repo()
