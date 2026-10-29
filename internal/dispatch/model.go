@@ -211,6 +211,11 @@ const (
 	RelationRelates = "relates"
 )
 
+// LabelColors is the twelve colours a label may have, by name: the UI
+// maps each to one of the brand's scales (docs/design/brand.md) at a
+// shade, so the store keeps a name and never a value a client chose.
+var LabelColors = []string{"gray", "brown", "red", "orange", "amber", "yellow", "lime", "green", "teal", "cyan", "blue", "indigo"}
+
 // The kinds of a link (DS2 adds plan, candidate, check and finding, DR1
 // decision).
 const (
@@ -234,6 +239,9 @@ const (
 	MilestoneOpen   = "open"
 	MilestoneClosed = "closed"
 )
+
+// targetLayout is a milestone's target date: YYYY-MM-DD.
+const targetLayout = "2006-01-02"
 
 // Project is a project's row: its key (CND), chosen at creation and
 // never changed; its name, its description (Markdown) and its folder;
@@ -583,6 +591,34 @@ func checkAssignee(actor string) error {
 		return nil
 	}
 	return refuse(RefusalInvalid, "an assignee is person:<name> or agent:<catalog id>, not %q", actor)
+}
+
+// checkColor checks a label's colour: one of LabelColors.
+func checkColor(color string) error {
+	if !slices.Contains(LabelColors, color) {
+		return refuse(RefusalInvalid, "the colour %q is none of %s", color, strings.Join(LabelColors, ", "))
+	}
+	return nil
+}
+
+// checkTarget checks a milestone's target: a date as YYYY-MM-DD, or ""
+// for none.
+func checkTarget(target string) error {
+	if target == "" {
+		return nil
+	}
+	if _, err := time.Parse(targetLayout, target); err != nil {
+		return refuse(RefusalInvalid, "the target %q is not a date as YYYY-MM-DD", target)
+	}
+	return nil
+}
+
+// checkMilestoneState checks a milestone's state: open or closed.
+func checkMilestoneState(state string) error {
+	if state != MilestoneOpen && state != MilestoneClosed {
+		return refuse(RefusalInvalid, "the state %q is neither open nor closed", state)
+	}
+	return nil
 }
 
 // checkTracker checks a project's tracker and its URL together: a native

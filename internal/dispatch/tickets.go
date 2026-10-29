@@ -353,30 +353,53 @@ func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt,
 // ticket reads the ticket with the key inside the operation and its
 // project, in the order the store's rules ask: not_found when there is
 // none, or when it is deleted and deleted is false (every write on a
-// deleted ticket but its undelete); then the revision expected; then
-// archived when its project is.
+// deleted ticket but its undelete); then the revision expected, the
+// ticket's; then archived when its project is.
 func (t *tx) ticket(key string, deleted bool) (Ticket, Project, error) {
-	tk, err := ticketByKey(t.ctx, t.tx, key)
-	if isNoRows(err) {
-		return Ticket{}, Project{}, refuse(RefusalNotFound, "no ticket %s", key)
-	}
+	tk, err := t.ticketRow(key, deleted)
 	if err != nil {
 		return Ticket{}, Project{}, err
-	}
-	if !deleted && !tk.DeletedAt.IsZero() {
-		return Ticket{}, Project{}, refuse(RefusalNotFound, "%s is deleted", tk.Key)
 	}
 	if err := t.expect(tk.Rev); err != nil {
 		return Ticket{}, Project{}, err
 	}
-	p, err := projectByID(t.ctx, t.tx, tk.ProjectID)
+	p, err := t.open(tk)
 	if err != nil {
 		return Ticket{}, Project{}, err
 	}
-	if !p.ArchivedAt.IsZero() {
-		return Ticket{}, Project{}, refuse(RefusalArchived, "%s is archived", p.Key)
-	}
 	return tk, p, nil
+}
+
+// ticketRow reads the ticket with the key inside the operation: not_found
+// when there is none, or when it is deleted and deleted is false. An
+// operation on a row of the ticket's own (a comment's edit) reads the
+// ticket so, then its row, whose revision it expects, then the project
+// (open).
+func (t *tx) ticketRow(key string, deleted bool) (Ticket, error) {
+	tk, err := ticketByKey(t.ctx, t.tx, key)
+	if isNoRows(err) {
+		return Ticket{}, refuse(RefusalNotFound, "no ticket %s", key)
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	if !deleted && !tk.DeletedAt.IsZero() {
+		return Ticket{}, refuse(RefusalNotFound, "%s is deleted", tk.Key)
+	}
+	return tk, nil
+}
+
+// open reads the ticket's project inside the operation: archived when it
+// is, since an archived project refuses every write under it.
+func (t *tx) open(tk Ticket) (Project, error) {
+	p, err := projectByID(t.ctx, t.tx, tk.ProjectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if !p.ArchivedAt.IsZero() {
+		return Project{}, refuse(RefusalArchived, "%s is archived", p.Key)
+	}
+	return p, nil
 }
 
 // setText checks a ticket's text field by its rule and sets it among the
@@ -707,4 +730,23 @@ func scanTicket(row interface{ Scan(...any) error }) (Ticket, error) {
 // when there is none.
 func ticketByKey(ctx context.Context, q queryer, key string) (Ticket, error) {
 	return scanTicket(q.QueryRowContext(ctx, "SELECT "+ticketColumns+" FROM tickets WHERE key = ?", key))
+}
+
+// readTexts reads the one text column of the rows a query gives; none is
+// an empty list.
+func readTexts(ctx context.Context, q queryer, query string, args ...any) ([]string, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }

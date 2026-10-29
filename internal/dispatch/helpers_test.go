@@ -42,6 +42,21 @@ func newProject(t *testing.T, s *Store, key string) string {
 	return rc.ID
 }
 
+// newOpenProject makes a project through project.create whose close
+// policy requires nothing, so its tickets may be made done at once, its
+// name its key, and returns its id.
+func newOpenProject(t *testing.T, s *Store, key string) string {
+	t.Helper()
+	rc, err := s.CreateProject(context.Background(), testOp("project-"+key), NewProject{Key: key, Name: key, CloseRequires: &[]string{}})
+	if err != nil {
+		t.Fatalf("project %s: %v", key, err)
+	}
+	if rc.Status != StatusDone {
+		t.Fatalf("project %s: %+v", key, rc)
+	}
+	return rc.ID
+}
+
 // newTicket makes a ticket of the project with the key through
 // ticket.create, and returns its id and key.
 func newTicket(t *testing.T, s *Store, project, title string) (id, key string) {
@@ -109,8 +124,8 @@ func texts(t *testing.T, s *Store, query string, args ...any) []string {
 }
 
 // insertLabel writes a label's row of the project as the test needs it,
-// label.create being PR-3's: live, or a tombstone when deleted. It
-// returns the label's id.
+// past label.create's rules (a tombstone at once, say): live, or a
+// tombstone when deleted. It returns the label's id.
 func insertLabel(t *testing.T, s *Store, projectID, name string, deleted bool) string {
 	t.Helper()
 	id, now := newID(), stamp(time.Now())
@@ -122,8 +137,8 @@ func insertLabel(t *testing.T, s *Store, projectID, name string, deleted bool) s
 }
 
 // insertMilestone writes a milestone's row of the project as the test
-// needs it, milestone.create being PR-3's. It returns the milestone's
-// id.
+// needs it, past milestone.create's rules (a tombstone at once, say). It
+// returns the milestone's id.
 func insertMilestone(t *testing.T, s *Store, projectID, name string, deleted bool) string {
 	t.Helper()
 	id, now := newID(), stamp(time.Now())
