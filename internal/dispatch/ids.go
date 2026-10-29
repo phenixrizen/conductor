@@ -23,6 +23,21 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// validID reports whether id is an id's shape (IDLen lower-case hex
+// characters): what a query names a label, a milestone or a cursor's row
+// by.
+func validID(id string) bool {
+	if len(id) != IDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // KeyPattern is a project's key: one upper-case letter, then one to five
 // upper-case letters or digits (CND). It is chosen at creation and never
 // changed.

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -211,6 +212,11 @@ type tx struct {
 	touched []touched
 	keys    map[string]string // project id → key, resolved once per operation
 	id, key string
+	// searched is every ticket whose search entry the operation must
+	// rewrite, in the order the rows named them: one whose create, title,
+	// description or acceptance a row records, or whose comment a row
+	// records (searchedBy).
+	searched []string
 	// runExists is the store's sight of the engine's runs (SetRunExists),
 	// nil when none was given.
 	runExists func(id string) bool
@@ -261,7 +267,28 @@ func (t *tx) record(c ChangeRow) error {
 		return err
 	}
 	t.seq, t.n = seq, t.n+1
+	if id := searchedBy(c); id != "" && !slices.Contains(t.searched, id) {
+		t.searched = append(t.searched, id)
+	}
 	return t.touch(c.Entity, c.EntityID, c.TicketID, c.ProjectID)
+}
+
+// searchedFields is a ticket's fields its search entry holds beside its
+// key (which never changes) and its comments.
+var searchedFields = map[string]bool{"title": true, "description": true, "acceptance": true}
+
+// searchedBy is the ticket whose search entry a change row changes, ""
+// for none: a ticket's create and a set of a field the entry holds; a
+// comment's every row (its create, its body, its delete), since the entry
+// holds the ticket's live comments.
+func searchedBy(c ChangeRow) string {
+	switch {
+	case c.Entity == EntityTicket && (c.Op == OpCreate || (c.Op == OpSet && searchedFields[c.Field])):
+		return c.EntityID
+	case c.Entity == EntityComment:
+		return c.TicketID
+	}
+	return ""
 }
 
 // recordRemove records the remove of a member of one of a ticket's sets:
@@ -522,6 +549,14 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		}
 		return rc, nil, nil
 	}
+	// The search entries the change made stale, rewritten in its
+	// transaction, so a read never finds a ticket the search does not,
+	// nor the reverse.
+	for _, id := range t.searched {
+		if err := indexTicket(ctx, dbtx, id); err != nil {
+			return Receipt{}, nil, cancelledAs(ctx, err)
+		}
+	}
 	rev, err := t.bump()
 	if err != nil {
 		return Receipt{}, nil, cancelledAs(ctx, err)
@@ -642,9 +677,10 @@ func (s *Store) Receipt(ctx context.Context, actor, id string) (rc Receipt, foun
 }
 
 // prune drops every receipt but the newest maxReceipts, by their time,
-// and reports how many went; it runs at open and, later, on the store's
-// own schedule (PR-4). now is the maintenance clock those callers share
-// with the sweep (PR-7); the pruning is by count and reads nothing of it.
+// and reports how many went, counted on the pruned counter; it runs at
+// open and every pruneEvery on the store's goroutine (pruning). now is
+// the maintenance clock those callers share with the sweep (PR-7); the
+// pruning is by count and reads nothing of it.
 func (s *Store) prune(ctx context.Context, now time.Time) (int, error) {
 	_ = now
 	s.mu.Lock()
