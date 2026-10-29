@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -67,4 +68,42 @@ func (s *Store) People(ctx context.Context) ([]Person, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// knowPeople adds to the directory, inside the operation, each name it
+// gives that the directory lacks: the owner (none when ""), and the name
+// of each person: assignee among the actors (an agent: one names no
+// person). A name typed that is not there is added (decision D4: people
+// are local labels until identity exists, and the name is the person),
+// so the pickers offer every name a ticket carries, whichever client set
+// it. Each name added is one person's create row, as person.add writes
+// it; a name there already writes nothing. An operation calls it after
+// its own rows, so its subject stays the entity its receipt names.
+func (t *tx) knowPeople(owner string, actors []string) error {
+	names := []string{}
+	if owner != "" {
+		names = append(names, owner)
+	}
+	for _, a := range actors {
+		if name, ok := strings.CutPrefix(a, actorPerson); ok {
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		res, err := t.tx.ExecContext(t.ctx, "INSERT INTO people (name, created_at) VALUES (?, ?) ON CONFLICT (name) DO NOTHING", name, stamp(t.now))
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue
+		}
+		value, err := encodeValue(Person{Name: name, CreatedAt: t.now})
+		if err != nil {
+			return err
+		}
+		if err := t.record(ChangeRow{Entity: EntityPerson, EntityID: name, Op: OpCreate, Value: value}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

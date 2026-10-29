@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strconv"
 	"time"
@@ -74,8 +75,8 @@ type ticketCreated struct {
 // edit set, in the order an operation records them, with the values the
 // schema gives a new row before its create's set rows; ticketScalars
 // their columns. closed_at follows the status. The acceptance columns
-// are PR-3's, and source and the four columns IN1a reserves are written
-// by nothing here.
+// are AcceptTicket's and UnacceptTicket's (acceptance.go), and source and
+// the four columns IN1a reserves are written by nothing here.
 var (
 	ticketDefaults = []fieldValue{{"title", ""}, {"description", ""}, {"acceptance", ""}, {"status", TicketBacklog}, {"priority", "0"},
 		{"horizon", ""}, {"owner", ""}, {"parent_id", ""}, {"milestone_id", ""}, {"closed_at", ""}}
@@ -90,11 +91,14 @@ var (
 // assignees and MaxTicketLabels labels (bound), a member named twice
 // invalid; its number allocated from the project's next_number in this
 // transaction, so numbers go in order and never twice, its key
-// <project>-<number>. A status of done or cancelled sets closed_at. One
-// create row records what never changes, then one set row per field the
-// schema's default does not already hold, then one add row per member.
-// An archived project refuses it (archived). The receipt carries its id
-// and key.
+// <project>-<number>. A status of done or cancelled sets closed_at; done
+// is refused close_policy unless the project's close policy requires
+// nothing, since a new ticket has no acceptance and no link. One create
+// row records what never changes, then one set row per field the
+// schema's default does not already hold, then one add row per member,
+// then a person's create row for each name it gives (its owner, a
+// person: assignee) that the directory lacks (knowPeople). An archived
+// project refuses it (archived). The receipt carries its id and key.
 func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, error) {
 	return s.Apply(ctx, op, "ticket.create", n, func(t *tx) error {
 		p, err := t.project(n.Project)
@@ -152,6 +156,14 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 		if closed(status) {
 			setField(after, "closed_at", stamp(t.now))
 		}
+		// Made done, it meets its project's close policy as made: no
+		// acceptance and no link yet, so only a policy that requires
+		// nothing lets it.
+		if status == TicketDone {
+			if st := closeState(p.CloseRequires, Ticket{Owner: n.Owner, Acceptance: n.Acceptance}, false); len(st.Missing) > 0 {
+				return policyRefusal("a new ticket", st)
+			}
+		}
 		number, err := allocateNumber(t, p.ID)
 		if err != nil {
 			return err
@@ -176,10 +188,14 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 		if err := t.setScalars("tickets", base, ticketDefaults, after); err != nil {
 			return err
 		}
-		if err := t.members(base, assigneeSet, n.Assignees, nil); err != nil {
+		assignees, err := t.members(base, assigneeSet, n.Assignees, nil)
+		if err != nil {
 			return err
 		}
-		return t.members(base, labelSet, n.Labels, nil)
+		if _, err := t.members(base, labelSet, n.Labels, nil); err != nil {
+			return err
+		}
+		return t.knowPeople(n.Owner, assignees)
 	})
 }
 
@@ -189,17 +205,23 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 // and labels, in one operation, each field checked as CreateTicket checks
 // it and the references after the revision check. One row per field that
 // changes, its prior the value it replaces; a status moving to done or
-// cancelled sets closed_at and one moving out of them clears it (the
-// close policy's gate on done is PR-3's). Members: removes, then adds,
-// one row each; a member there already is not added again nor one absent
-// removed; a remove's prior names the tags of the member's adds it
-// removes (the observed-remove rule); an add that leaves its set past its
-// bound is refused, a remove never, so a set past its bound (a merge may
-// leave one) refuses an add and allows a remove, and an add list longer
-// than the bound is refused before any of its members is looked up or
-// written. A member both added and removed, or named twice, is invalid;
-// an edit that changes nothing is refused invalid. A deleted ticket is
-// not_found; an archived project refuses it (archived).
+// cancelled sets closed_at and one moving out of them clears it. A move
+// to done is entered only when the project's close policy is met by the
+// ticket as the edit leaves it (an owner or criteria the same edit sets
+// included): close_policy otherwise, the receipt's Missing naming what
+// is lacking; any other move is allowed, and no move touches the
+// acceptance. Members: removes, then adds, one row each; a member there
+// already is not added again nor one absent removed; a remove's prior
+// names the tags of the member's adds it removes (the observed-remove
+// rule); an add that leaves its set past its bound is refused, a remove
+// never, so a set past its bound (a merge may leave one) refuses an add
+// and allows a remove, and an add list longer than the bound is refused
+// before any of its members is looked up or written. A member both added
+// and removed, or named twice, is invalid; an edit that changes nothing
+// is refused invalid. A name the edit gives (a new owner, a person:
+// assignee added) that the directory lacks is added to it, after the
+// ticket's rows (knowPeople). A deleted ticket is not_found; an archived
+// project refuses it (archived).
 func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -291,14 +313,38 @@ func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit)
 				setField(after, "closed_at", "")
 			}
 		}
+		// The gate: done is entered only when the policy is met by the
+		// ticket as this edit leaves it.
+		if status != tk.Status && status == TicketDone {
+			draft := tk
+			draft.Owner, draft.Acceptance = valueOf(after, "owner"), valueOf(after, "acceptance")
+			st, err := closeOf(t.ctx, t.tx, p, draft)
+			if err != nil {
+				return err
+			}
+			if len(st.Missing) > 0 {
+				return policyRefusal(tk.Key, st)
+			}
+		}
 		base := ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID}
 		if err := t.setScalars("tickets", base, before, after); err != nil {
 			return err
 		}
-		if err := t.members(base, assigneeSet, e.Add.Assignees, e.Remove.Assignees); err != nil {
+		assignees, err := t.members(base, assigneeSet, e.Add.Assignees, e.Remove.Assignees)
+		if err != nil {
 			return err
 		}
-		return t.members(base, labelSet, e.Add.Labels, e.Remove.Labels)
+		if _, err := t.members(base, labelSet, e.Add.Labels, e.Remove.Labels); err != nil {
+			return err
+		}
+		// The names this edit gives: the owner when it changes it, the
+		// assignees it adds. An edit that changes nothing gives none, and
+		// is refused as such.
+		newOwner := ""
+		if o := valueOf(after, "owner"); o != tk.Owner {
+			newOwner = o
+		}
+		return t.knowPeople(newOwner, assignees)
 	})
 }
 
@@ -327,8 +373,12 @@ func (s *Store) DeleteTicket(ctx context.Context, op Op, key string) (Receipt, e
 // (ticket.undelete) by the reverse of its delete's one row: deleted_at
 // cleared, its prior the stamp it clears, so every reference to it is
 // active again. The parent and blocks walks take tombstones as edges, so
-// an undelete never makes a cycle or a chain past MaxParentDepth. A live
-// ticket is invalid; an archived project refuses it (archived).
+// an undelete never makes a cycle or a chain past MaxParentDepth. One
+// reference may not come back: a run link of its naming a run another
+// live ticket has linked meanwhile (a tombstone holds no run) is removed
+// in the same operation, one remove row naming its tags, so a run
+// belongs to one live ticket at most. A live ticket is invalid; an
+// archived project refuses it (archived).
 func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -345,38 +395,64 @@ func (s *Store) UndeleteTicket(ctx context.Context, op Op, key string) (Receipt,
 		if before[0].value == "" {
 			return refuse(RefusalInvalid, "%s is not deleted", tk.Key)
 		}
-		return t.setScalars("tickets", ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID},
-			before, []fieldValue{{"deleted_at", ""}})
+		if err := t.setScalars("tickets", ChangeRow{Entity: EntityTicket, EntityID: tk.ID, TicketID: tk.ID, ProjectID: tk.ProjectID},
+			before, []fieldValue{{"deleted_at", ""}}); err != nil {
+			return err
+		}
+		return t.releaseRuns(tk)
 	})
 }
 
 // ticket reads the ticket with the key inside the operation and its
 // project, in the order the store's rules ask: not_found when there is
 // none, or when it is deleted and deleted is false (every write on a
-// deleted ticket but its undelete); then the revision expected; then
-// archived when its project is.
+// deleted ticket but its undelete); then the revision expected, the
+// ticket's; then archived when its project is.
 func (t *tx) ticket(key string, deleted bool) (Ticket, Project, error) {
-	tk, err := ticketByKey(t.ctx, t.tx, key)
-	if isNoRows(err) {
-		return Ticket{}, Project{}, refuse(RefusalNotFound, "no ticket %s", key)
-	}
+	tk, err := t.ticketRow(key, deleted)
 	if err != nil {
 		return Ticket{}, Project{}, err
-	}
-	if !deleted && !tk.DeletedAt.IsZero() {
-		return Ticket{}, Project{}, refuse(RefusalNotFound, "%s is deleted", tk.Key)
 	}
 	if err := t.expect(tk.Rev); err != nil {
 		return Ticket{}, Project{}, err
 	}
-	p, err := projectByID(t.ctx, t.tx, tk.ProjectID)
+	p, err := t.open(tk)
 	if err != nil {
 		return Ticket{}, Project{}, err
 	}
-	if !p.ArchivedAt.IsZero() {
-		return Ticket{}, Project{}, refuse(RefusalArchived, "%s is archived", p.Key)
-	}
 	return tk, p, nil
+}
+
+// ticketRow reads the ticket with the key inside the operation: not_found
+// when there is none, or when it is deleted and deleted is false. An
+// operation on a row of the ticket's own (a comment's edit) reads the
+// ticket so, then its row, whose revision it expects, then the project
+// (open).
+func (t *tx) ticketRow(key string, deleted bool) (Ticket, error) {
+	tk, err := ticketByKey(t.ctx, t.tx, key)
+	if isNoRows(err) {
+		return Ticket{}, refuse(RefusalNotFound, "no ticket %s", key)
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	if !deleted && !tk.DeletedAt.IsZero() {
+		return Ticket{}, refuse(RefusalNotFound, "%s is deleted", tk.Key)
+	}
+	return tk, nil
+}
+
+// open reads the ticket's project inside the operation: archived when it
+// is, since an archived project refuses every write under it.
+func (t *tx) open(tk Ticket) (Project, error) {
+	p, err := projectByID(t.ctx, t.tx, tk.ProjectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if !p.ArchivedAt.IsZero() {
+		return Project{}, refuse(RefusalArchived, "%s is archived", p.Key)
+	}
+	return p, nil
 }
 
 // setText checks a ticket's text field by its rule and sets it among the
@@ -581,61 +657,62 @@ var (
 
 // members removes and then adds members of one set of the ticket base
 // names, one row each (a remove's prior the tags of the member's adds it
-// removes, its value the member; an add's value the member, its row's
-// identity its tag); a member there already is not added again, nor one
-// absent removed. An operation that adds leaves the set at its bound at
-// most (bound), however far past it the set stood before; one that only
-// removes is never refused.
-func (t *tx) members(base ChangeRow, set memberSet, add, remove []string) error {
+// removes, in more rows when they are more than one prior holds, its
+// value the member; an add's value the member, its row's identity its
+// tag), and gives the members it added; a member there already is not
+// added again, nor one absent removed. An operation that adds leaves the
+// set at its bound at most (bound), however far past it the set stood
+// before; one that only removes is never refused.
+func (t *tx) members(base ChangeRow, set memberSet, add, remove []string) ([]string, error) {
 	ticketID := base.EntityID
 	for _, m := range remove {
 		there, err := t.isMember(set, ticketID, m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !there {
 			continue
 		}
 		tags, err := t.liveTags(ticketID, set.field, m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := t.tx.ExecContext(t.ctx, "DELETE FROM "+set.table+" WHERE ticket_id = ? AND "+set.column+" = ?", ticketID, m); err != nil {
-			return err
+			return nil, err
 		}
 		row := base
-		row.Field, row.Op, row.Value, row.Prior = set.field, OpRemove, m, EncodeTags(tags)
-		if err := t.record(row); err != nil {
-			return err
+		row.Field, row.Value = set.field, m
+		if err := t.recordRemove(row, tags); err != nil {
+			return nil, err
 		}
 	}
-	added := 0
+	var added []string
 	for _, m := range add {
 		there, err := t.isMember(set, ticketID, m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if there {
 			continue
 		}
 		if err := set.add(t, ticketID, m); err != nil {
-			return err
+			return nil, err
 		}
 		row := base
 		row.Field, row.Op, row.Value = set.field, OpAdd, m
 		if err := t.record(row); err != nil {
-			return err
+			return nil, err
 		}
-		added++
+		added = append(added, m)
 	}
-	if added == 0 {
-		return nil
+	if len(added) == 0 {
+		return nil, nil
 	}
 	var n int
 	if err := t.tx.QueryRowContext(t.ctx, set.count, ticketID).Scan(&n); err != nil {
-		return err
+		return nil, err
 	}
-	return checkCount(set.field, n, set.max)
+	return added, checkCount(set.field, n, set.max)
 }
 
 // isMember reports whether the ticket's set holds the member.
@@ -707,4 +784,165 @@ func scanTicket(row interface{ Scan(...any) error }) (Ticket, error) {
 // when there is none.
 func ticketByKey(ctx context.Context, q queryer, key string) (Ticket, error) {
 	return scanTicket(q.QueryRowContext(ctx, "SELECT "+ticketColumns+" FROM tickets WHERE key = ?", key))
+}
+
+// ticketByID reads the ticket with the id, deleted or not; sql.ErrNoRows
+// when there is none.
+func ticketByID(ctx context.Context, q queryer, id string) (Ticket, error) {
+	return scanTicket(q.QueryRowContext(ctx, "SELECT "+ticketColumns+" FROM tickets WHERE id = ?", id))
+}
+
+// addOf is where the add that made a row of a set stands in the log: its
+// at as stamped, and its tag, which a remove of the row's member names.
+type addOf struct {
+	at  string
+	tag Tag
+}
+
+// addsOf reads the adds that made the given rows of a ticket's set field
+// (relations, links: a set whose rows have ids of their own), by the
+// row's id, which the add's value carries. A row with no add in the log
+// (one written by hand, never by an operation) is not among them.
+func addsOf(ctx context.Context, q queryer, ticketID, field string, ids []string) (map[string]addOf, error) {
+	out := map[string]addOf{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	want := map[string]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	rows, err := q.QueryContext(ctx, "SELECT value, at, actor, op_id, n FROM changes WHERE entity = ? AND entity_id = ? AND field = ? AND op = ?",
+		EntityTicket, ticketID, field, OpAdd)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value string
+		var a addOf
+		if err := rows.Scan(&value, &a.at, &a.tag.Actor, &a.tag.OpID, &a.tag.N); err != nil {
+			return nil, err
+		}
+		var v struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal([]byte(value), &v) == nil && want[v.ID] {
+			out[v.ID] = a
+		}
+	}
+	return out, rows.Err()
+}
+
+// foldKey is where a set row stands among its member's rows: the log's
+// one order of the adds that made them (at, actor, op_id, n), a row with
+// no add standing at its created_at before any add of the same moment,
+// and the row's id breaking the last tie.
+type foldKey struct {
+	at, actor, opID string
+	n               int
+	id              string
+}
+
+// keyOf is the fold key of the row with the id, made at createdAt.
+func keyOf(id, createdAt string, adds map[string]addOf) foldKey {
+	if a, ok := adds[id]; ok {
+		return foldKey{a.at, a.tag.Actor, a.tag.OpID, a.tag.N, id}
+	}
+	return foldKey{at: createdAt, id: id}
+}
+
+// after reports whether k stands after o.
+func (k foldKey) after(o foldKey) bool {
+	switch {
+	case k.at != o.at:
+		return k.at > o.at
+	case k.actor != o.actor:
+		return k.actor > o.actor
+	case k.opID != o.opID:
+		return k.opID > o.opID
+	case k.n != o.n:
+		return k.n > o.n
+	}
+	return k.id > o.id
+}
+
+// rowTags is the tags of the adds that made the rows with the ids, in the
+// log's order: what a remove of their member names in its prior. A row
+// with no add names none.
+func rowTags(ids []string, adds map[string]addOf) []Tag {
+	var keys []foldKey
+	for _, id := range ids {
+		if a, ok := adds[id]; ok {
+			keys = append(keys, foldKey{a.at, a.tag.Actor, a.tag.OpID, a.tag.N, id})
+		}
+	}
+	slices.SortFunc(keys, func(a, b foldKey) int {
+		if a.after(b) {
+			return 1
+		}
+		if b.after(a) {
+			return -1
+		}
+		return 0
+	})
+	tags := []Tag{}
+	for _, k := range keys {
+		tags = append(tags, Tag{k.actor, k.opID, k.n})
+	}
+	return tags
+}
+
+// readTicket reads the ticket with the key as a read shows it, deleted or
+// not: its row; its assignees, by actor; its live labels, by name, a
+// membership whose label is a tombstone reading as absent; and its
+// milestone as none when the milestone is a tombstone. A merge may leave
+// either (the field rules: the label's delete or the milestone's did not
+// see the add or the set from another replica), and the rows are kept and
+// read, never undone. ErrNotFound when there is none. q is a read
+// transaction or an operation's, so the parts describe one state.
+func readTicket(ctx context.Context, q queryer, key string) (Ticket, error) {
+	tk, err := ticketByKey(ctx, q, key)
+	if isNoRows(err) {
+		return Ticket{}, ErrNotFound
+	}
+	if err != nil {
+		return Ticket{}, err
+	}
+	if tk.Assignees, err = readTexts(ctx, q, "SELECT actor FROM ticket_assignees WHERE ticket_id = ? ORDER BY actor", tk.ID); err != nil {
+		return Ticket{}, err
+	}
+	if tk.Labels, err = readTexts(ctx, q, `SELECT labels.id FROM ticket_labels JOIN labels ON labels.id = ticket_labels.label_id
+		WHERE ticket_labels.ticket_id = ? AND labels.deleted_at = '' ORDER BY labels.name, labels.id`, tk.ID); err != nil {
+		return Ticket{}, err
+	}
+	if tk.MilestoneID != "" {
+		var live int
+		if err := q.QueryRowContext(ctx, "SELECT COUNT(*) FROM milestones WHERE id = ? AND deleted_at = ''", tk.MilestoneID).Scan(&live); err != nil {
+			return Ticket{}, err
+		}
+		if live == 0 {
+			tk.MilestoneID = ""
+		}
+	}
+	return tk, nil
+}
+
+// readTexts reads the one text column of the rows a query gives; none is
+// an empty list.
+func readTexts(ctx context.Context, q queryer, query string, args ...any) ([]string, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }

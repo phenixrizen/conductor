@@ -79,7 +79,8 @@ const (
 	MaxMilestoneDescription = 4 << 10
 	// MaxMilestones bounds a project's live milestones.
 	MaxMilestones = 100
-	// MaxRelations bounds a ticket's live relations.
+	// MaxRelations bounds a ticket's live relations whose other end is
+	// live: one to a deleted ticket is inactive and counts for nothing.
 	MaxRelations = 100
 	// MaxCommentBody bounds a comment's body (Markdown), in bytes.
 	MaxCommentBody = 16 << 10
@@ -120,7 +121,9 @@ const (
 	// MaxChangeValue bounds a change row's value and prior, in bytes: a
 	// text value meets it by its field's bound, a structured one by its
 	// shape (the largest, a link's add, is under 16 KiB with every field
-	// at its bound, which model_test.go measures).
+	// at its bound, which model_test.go measures), and a remove's prior,
+	// the tags of the adds it removes, by going into as many rows as it
+	// needs (recordRemove).
 	MaxChangeValue = 64 << 10
 	// MaxReceipt bounds a receipt's JSON, a repeat's answer included.
 	MaxReceipt = 4 << 10
@@ -152,8 +155,9 @@ const (
 
 // A ticket's statuses (Owner decisions, 4: six, fixed in this item).
 // Any status may follow any other, but done is entered only when the
-// project's close policy is met (PR-3's gate); a move to done or
-// cancelled sets closed_at, a move out of them clears it.
+// project's close policy is met (EditTicket's gate, acceptance.go); a
+// move to done or cancelled sets closed_at, a move out of them clears
+// it.
 const (
 	TicketBacklog    = "backlog"
 	TicketReady      = "ready"
@@ -211,6 +215,14 @@ const (
 	RelationRelates = "relates"
 )
 
+// RelationKinds is the kinds of a relation.
+var RelationKinds = []string{RelationBlocks, RelationRelates}
+
+// LabelColors is the twelve colours a label may have, by name: the UI
+// maps each to one of the brand's scales (docs/design/brand.md) at a
+// shade, so the store keeps a name and never a value a client chose.
+var LabelColors = []string{"gray", "brown", "red", "orange", "amber", "yellow", "lime", "green", "teal", "cyan", "blue", "indigo"}
+
 // The kinds of a link (DS2 adds plan, candidate, check and finding, DR1
 // decision).
 const (
@@ -234,6 +246,9 @@ const (
 	MilestoneOpen   = "open"
 	MilestoneClosed = "closed"
 )
+
+// targetLayout is a milestone's target date: YYYY-MM-DD.
+const targetLayout = "2006-01-02"
 
 // Project is a project's row: its key (CND), chosen at creation and
 // never changed; its name, its description (Markdown) and its folder;
@@ -267,9 +282,10 @@ type Project struct {
 // ""), apart from its assignees (person:<name> or agent:<catalog id>);
 // its parent and milestone (ids of its project's rows, or ""); the
 // acceptance recorded for its owner against its criteria as they stood
-// (PR-3); its source (native; Program item IN1a adds its own and fills
-// the four columns it reserves); when it was closed and deleted (a
-// tombstone, whose references stay, inactive, until its undelete).
+// (AcceptTicket); its source (native; Program item IN1a adds its own
+// and fills the four columns it reserves); when it was closed and
+// deleted (a tombstone, whose references stay, inactive, until its
+// undelete).
 // Labels are the ids of its live labels.
 type Ticket struct {
 	ID               string    `json:"id"`
@@ -583,6 +599,34 @@ func checkAssignee(actor string) error {
 		return nil
 	}
 	return refuse(RefusalInvalid, "an assignee is person:<name> or agent:<catalog id>, not %q", actor)
+}
+
+// checkColor checks a label's colour: one of LabelColors.
+func checkColor(color string) error {
+	if !slices.Contains(LabelColors, color) {
+		return refuse(RefusalInvalid, "the colour %q is none of %s", color, strings.Join(LabelColors, ", "))
+	}
+	return nil
+}
+
+// checkTarget checks a milestone's target: a date as YYYY-MM-DD, or ""
+// for none.
+func checkTarget(target string) error {
+	if target == "" {
+		return nil
+	}
+	if _, err := time.Parse(targetLayout, target); err != nil {
+		return refuse(RefusalInvalid, "the target %q is not a date as YYYY-MM-DD", target)
+	}
+	return nil
+}
+
+// checkMilestoneState checks a milestone's state: open or closed.
+func checkMilestoneState(state string) error {
+	if state != MilestoneOpen && state != MilestoneClosed {
+		return refuse(RefusalInvalid, "the state %q is neither open nor closed", state)
+	}
+	return nil
 }
 
 // checkTracker checks a project's tracker and its URL together: a native

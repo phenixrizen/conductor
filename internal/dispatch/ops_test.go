@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -404,6 +405,75 @@ func TestChangesRowsOnePerFieldWithPriorAndN(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "no row") {
 		t.Fatalf("a row of no entity: %v", err)
+	}
+}
+
+// A remove's tags go into the fewest priors within MaxChangeValue, in
+// their order: none is one empty list; tags whose list is MaxChangeValue
+// bytes exactly are one prior, and a byte more two; every prior but the
+// last is too full to take the next tag.
+func TestTagPriorsCutAtTheRowBound(t *testing.T) {
+	if got := tagPriors(nil); len(got) != 1 || got[0] != "[]" {
+		t.Fatalf("no tags: %q", got)
+	}
+	// A tag whose op id is as long as op ids get and whose actor is size
+	// bytes.
+	tag := func(i, size int) Tag {
+		actor := fmt.Sprintf("replica-%04d-", i)
+		return Tag{Actor: actor + strings.Repeat("r", size-len(actor)), OpID: fmt.Sprintf("%032d", i)}
+	}
+	// Tags added until their list is past the bound, then actors cut by a
+	// byte, one at a time, until it is the bound exactly; size counts the
+	// list's bytes as it goes, and the list as encoded is checked after.
+	var tags []Tag
+	size := len("[]")
+	for i := 0; size <= MaxChangeValue; i++ {
+		tg := tag(i, MaxActor)
+		if len(tags) > 0 {
+			size += len(",")
+		}
+		size += len(EncodeTags([]Tag{tg})) - len("[]")
+		tags = append(tags, tg)
+	}
+	for i := 0; size > MaxChangeValue; i++ {
+		tags[i] = tag(i, MaxActor-1)
+		size--
+	}
+	if n := len(EncodeTags(tags)); n != MaxChangeValue {
+		t.Fatalf("the list is %d bytes", n)
+	}
+	if got := tagPriors(tags); len(got) != 1 || got[0] != EncodeTags(tags) {
+		t.Fatalf("at the bound: %d priors", len(got))
+	}
+	tags[0] = tag(0, MaxActor)
+	last := len(tags) - 1
+	if got := tagPriors(tags); len(got) != 2 || got[0] != EncodeTags(tags[:last]) || got[1] != EncodeTags(tags[last:]) {
+		t.Fatalf("a byte past the bound: %d priors", len(got))
+	}
+	// Many, of every actor's length: each prior within the bound and every
+	// one but the last too full for the next tag, the tags named once each,
+	// in order.
+	var many []Tag
+	for i := range 2000 {
+		many = append(many, tag(i, 20+i%(MaxActor-19)))
+	}
+	priors := tagPriors(many)
+	var named []Tag
+	for i, p := range priors {
+		part := Tags(p)
+		if len(p) > MaxChangeValue || len(part) == 0 {
+			t.Fatalf("prior %d: %d bytes, %d tags", i, len(p), len(part))
+		}
+		if i < len(priors)-1 {
+			next := len(EncodeTags([]Tag{many[len(named)+len(part)]})) - len("[]")
+			if len(p)+len(",")+next <= MaxChangeValue {
+				t.Fatalf("prior %d, %d bytes, could take the next tag of %d", i, len(p), next)
+			}
+		}
+		named = append(named, part...)
+	}
+	if len(priors) < 2 || !slices.Equal(named, many) {
+		t.Fatalf("%d priors name %d of the %d tags", len(priors), len(named), len(many))
 	}
 }
 

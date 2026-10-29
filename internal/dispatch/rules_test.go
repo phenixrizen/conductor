@@ -1,8 +1,11 @@
 package dispatch
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -517,5 +520,580 @@ func TestTheOneOrderOfTheLog(t *testing.T) {
 	}
 	if !Less(ab[0], ab[1]) || Less(ab[1], ab[0]) || Less(ab[0], ab[0]) {
 		t.Fatal("Less is not a strict order")
+	}
+}
+
+// The uniqueness rules on the store, in both delivery orders. What the
+// schema keeps unique beyond the minted keys is a rule of the operation,
+// never an index, so a merge (Program item CS1's) may bring a second
+// label of one name, a second add of one relation or link, a second
+// create of one person, a reference to what another replica deleted. The
+// rows another replica's operation made are written here by hand, as
+// that merge would write them (its row, its change rows under its actor
+// and time), before or after this store's own operation or each other;
+// the store's reads and local operations answer the same whichever came
+// first.
+
+// replica is another replica's writer: its actor and the time of its
+// operation.
+type replica struct {
+	actor string
+	at    time.Time
+}
+
+// change writes one change row of the replica's operation opID, n as
+// given.
+func (r replica) change(t *testing.T, s *Store, opID string, n int, c ChangeRow) {
+	t.Helper()
+	if _, err := s.db.Exec(`INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Entity, c.EntityID, c.TicketID, c.ProjectID, c.Field, c.Op, c.Value, c.Prior, stamp(r.at), r.actor, r.actor, opID, n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// exec runs a statement of the merge's on s.
+func exec(t *testing.T, s *Store, query string, args ...any) {
+	t.Helper()
+	if _, err := s.db.Exec(query, args...); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+}
+
+// fill writes, by hand in one transaction, links external links of the
+// ticket with the id and relations relates relations from it to as many
+// live tickets of the project, made here (keys from <project>-1000): a
+// set brought near its bound without the operations that would make it.
+func fill(t *testing.T, s *Store, project, projectID, ticketID string, links, relations int) {
+	t.Helper()
+	now := stamp(time.Now())
+	x, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Rollback()
+	for i := range links {
+		url := fmt.Sprintf("https://example.com/filled/%d", i)
+		if _, err := x.Exec("INSERT INTO links (id, ticket_id, kind, ref, url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+			newID(), ticketID, LinkExternal, url, url, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range relations {
+		other := newID()
+		if _, err := x.Exec("INSERT INTO tickets (id, project_id, number, key, title, created_at, updated_at, rev) VALUES (?, ?, ?, ?, 'Filled', ?, ?, 1)",
+			other, projectID, 1000+i, fmt.Sprintf("%s-%d", project, 1000+i), now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := x.Exec("INSERT INTO relations (id, from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+			newID(), ticketID, other, RelationRelates, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := x.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// relation writes the relation the replica's relation.add made: its row
+// and its add row on its from ticket. It returns the relation's id.
+func (r replica) relation(t *testing.T, s *Store, opID, projectID, from, to, kind string) string {
+	t.Helper()
+	rel := Relation{ID: newID(), FromID: from, ToID: to, Kind: kind, CreatedAt: r.at, CreatedBy: r.actor}
+	exec(t, s, "INSERT INTO relations (id, from_id, to_id, kind, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?)", rel.ID, from, to, kind, stamp(r.at), r.actor)
+	value, err := encodeValue(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.change(t, s, opID, 0, ChangeRow{Entity: EntityTicket, EntityID: from, TicketID: from, ProjectID: projectID, Field: "relations", Op: OpAdd, Value: value})
+	return rel.ID
+}
+
+// link writes the link the replica's link.add made: its row and its add
+// row. It returns the link's id.
+func (r replica) link(t *testing.T, s *Store, opID, projectID, ticketID string, l NewLink) string {
+	t.Helper()
+	ln := Link{ID: newID(), TicketID: ticketID, Kind: l.Kind, Ref: l.Ref, URL: l.URL, Note: l.Note, CreatedAt: r.at, CreatedBy: r.actor}
+	exec(t, s, "INSERT INTO links (id, ticket_id, kind, ref, url, note, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		ln.ID, ticketID, ln.Kind, ln.Ref, ln.URL, ln.Note, stamp(r.at), r.actor)
+	value, err := encodeValue(ln)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.change(t, s, opID, 0, ChangeRow{Entity: EntityTicket, EntityID: ticketID, TicketID: ticketID, ProjectID: projectID, Field: "links", Op: OpAdd, Value: value})
+	return ln.ID
+}
+
+// label writes the label the replica's label.create made: its row, its
+// create row and its two set rows. It returns the label's id.
+func (r replica) label(t *testing.T, s *Store, opID, projectID, name, color string) string {
+	t.Helper()
+	id := newID()
+	exec(t, s, "INSERT INTO labels (id, project_id, name, color, created_at, rev) VALUES (?, ?, ?, ?, ?, 1)", id, projectID, name, color, stamp(r.at))
+	value, err := encodeValue(labelCreated{ID: id, ProjectID: projectID, CreatedAt: r.at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ChangeRow{Entity: EntityLabel, EntityID: id, ProjectID: projectID}
+	for n, c := range []ChangeRow{{Op: OpCreate, Value: value}, {Field: "name", Op: OpSet, Value: name}, {Field: "color", Op: OpSet, Value: color}} {
+		row := base
+		row.Field, row.Op, row.Value = c.Field, c.Op, c.Value
+		r.change(t, s, opID, n, row)
+	}
+	return id
+}
+
+// Two creates of one label name in one project, on two replicas, leave
+// both labels, whichever arrives first and whether one of them is this
+// store's own: the local rule refused only what its writer saw. A local
+// create of that name is refused while either lives; renaming one frees
+// nothing of the other's.
+func TestTwoCreatesOfOneLabelNameLeaveBothLabels(t *testing.T) {
+	b := replica{"replica-b", time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
+	c := replica{"replica-c", time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC)}
+	var reads []string
+	for _, order := range []string{"local, then b", "b, then c", "c, then b"} {
+		s := openStore(t, storeDir(t))
+		ctx := context.Background()
+		pid := newProject(t, s, "CND")
+		switch order {
+		case "local, then b":
+			newLabel(t, s, "CND", "api")
+			b.label(t, s, "lb", pid, "api", "red")
+		case "b, then c":
+			b.label(t, s, "lb", pid, "api", "red")
+			c.label(t, s, "lc", pid, "api", "green")
+		case "c, then b":
+			c.label(t, s, "lc", pid, "api", "green")
+			b.label(t, s, "lb", pid, "api", "red")
+		}
+		labels, err := s.Labels(ctx, "CND")
+		if err != nil || len(labels) != 2 || labels[0].Name != "api" || labels[1].Name != "api" || labels[0].ID == labels[1].ID {
+			t.Fatalf("%s: the labels %+v %v", order, labels, err)
+		}
+		if order != "local, then b" {
+			// Read in the order of their making, whatever the arrival.
+			reads = append(reads, labels[0].Color+","+labels[1].Color)
+		}
+		rc, err := s.CreateLabel(ctx, testOp("third"), "CND", NewLabel{Name: "API", Color: "blue"})
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+		rc, err = s.EditLabel(ctx, testOp("rename"), "CND", labels[0].ID, LabelEdit{Name: ptr("backend")})
+		want(t, rc, err, StatusDone, "")
+		rc, err = s.CreateLabel(ctx, testOp("third2"), "CND", NewLabel{Name: "api", Color: "blue"})
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+	}
+	if reads[0] != reads[1] || reads[0] != "green,red" {
+		t.Fatalf("the two arrival orders read %v", reads)
+	}
+}
+
+// Two adds of one relation and of one link from two replicas (the
+// link's with two URLs and two notes) leave one member with two tags:
+// read as the later add's row (its id, and the link's URL and note), in
+// both delivery orders; a local remove through that id names both tags
+// and takes every row of the member, so it is gone on every replica.
+func TestTwoAddsOfOneMemberReadAsTheLaterAdd(t *testing.T) {
+	early := replica{"replica-a", time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
+	late := replica{"replica-b", early.at.Add(time.Second)}
+	// At one moment the greater actor's add is the later.
+	tieLow := replica{"replica-a", early.at}
+	tieHigh := replica{"replica-z", early.at}
+	for _, c := range []struct {
+		name          string
+		first, second replica
+		later         replica
+	}{
+		{"early, then late", early, late, late},
+		{"late, then early", late, early, late},
+		{"a tie, low then high", tieLow, tieHigh, tieHigh},
+		{"a tie, high then low", tieHigh, tieLow, tieHigh},
+	} {
+		s := openStore(t, storeDir(t))
+		ctx := context.Background()
+		pid := newProject(t, s, "CND")
+		aID, a := newTicket(t, s, "CND", "A")
+		bID, _ := newTicket(t, s, "CND", "B")
+		rels := map[string]string{}
+		links := map[string]string{}
+		for i, r := range []replica{c.first, c.second} {
+			op := opID("add", i)
+			rels[r.actor] = r.relation(t, s, op+"r", pid, aID, bID, RelationBlocks)
+			links[r.actor] = r.link(t, s, op+"l", pid, aID, NewLink{Kind: LinkDelivery, Ref: "#7", URL: "https://" + r.actor + ".example.com/pull/7", Note: "from " + r.actor})
+		}
+		rs, err := s.Relations(ctx, a)
+		if err != nil || len(rs) != 1 || rs[0].ID != rels[c.later.actor] {
+			t.Fatalf("%s: the relations %+v %v, want %s", c.name, rs, err, rels[c.later.actor])
+		}
+		ls, err := s.Links(ctx, a)
+		if err != nil || len(ls) != 1 || ls[0].ID != links[c.later.actor] || ls[0].URL != "https://"+c.later.actor+".example.com/pull/7" || ls[0].Note != "from "+c.later.actor {
+			t.Fatalf("%s: the links %+v %v", c.name, ls, err)
+		}
+		// One member: a local add of it is refused. (It takes one place in
+		// a bound: TestAMemberOfTwoAddsTakesOnePlaceInItsBound.)
+		rc, err := relate(s, "again", a, RelationBlocks, "CND-2")
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+		rc, err = addLink(s, "again-l", a, NewLink{Kind: LinkDelivery, Ref: "#7", URL: "https://example.com/x"})
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+		// A local remove through the standing id names both tags, in the
+		// log's order, and leaves no live row of the member.
+		tags := func(suffix string) string {
+			first, second := Tag{c.first.actor, "add0" + suffix, 0}, Tag{c.second.actor, "add1" + suffix, 0}
+			if c.second.at.Before(c.first.at) || (c.second.at.Equal(c.first.at) && c.second.actor < c.first.actor) {
+				first, second = second, first
+			}
+			return EncodeTags([]Tag{first, second})
+		}
+		rc, err = s.RemoveRelation(ctx, testOp("x-r"), a, rs[0].ID)
+		want(t, rc, err, StatusDone, "")
+		if rows := changesOf(t, s, "test", "x-r"); len(rows) != 1 || rows[0].Prior != tags("r") {
+			t.Fatalf("%s: the relation's remove %+v, want the prior %s", c.name, rows, tags("r"))
+		}
+		rc, err = s.RemoveLink(ctx, testOp("x-l"), a, ls[0].ID)
+		want(t, rc, err, StatusDone, "")
+		if rows := changesOf(t, s, "test", "x-l"); len(rows) != 1 || rows[0].Prior != tags("l") {
+			t.Fatalf("%s: the link's remove %+v, want the prior %s", c.name, rows, tags("l"))
+		}
+		if n := count(t, s, "SELECT COUNT(*) FROM relations WHERE deleted_at = ''") + count(t, s, "SELECT COUNT(*) FROM links WHERE deleted_at = ''"); n != 0 {
+			t.Fatalf("%s: %d live rows of the members after their removes", c.name, n)
+		}
+	}
+}
+
+// A member two replicas added takes one place in its ticket's bound,
+// however many rows it has: with the rest of each bound but one place
+// written by hand, the ticket takes one more link and one more relation,
+// the last places, and refuses the next of each.
+func TestAMemberOfTwoAddsTakesOnePlaceInItsBound(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	pid := newProject(t, s, "CND")
+	aID, a := newTicket(t, s, "CND", "A")
+	bID, _ := newTicket(t, s, "CND", "B")
+	early := replica{"replica-a", time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)}
+	late := replica{"replica-b", early.at.Add(time.Second)}
+	for i, r := range []replica{early, late} {
+		r.relation(t, s, opID("r", i), pid, aID, bID, RelationBlocks)
+		r.link(t, s, opID("l", i), pid, aID, NewLink{Kind: LinkDelivery, Ref: "#7", URL: "https://example.com/pull/7"})
+	}
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND deleted_at = ''", aID) +
+		count(t, s, "SELECT COUNT(*) FROM relations WHERE from_id = ? AND deleted_at = ''", aID); n != 4 {
+		t.Fatalf("%d live rows of the two members, want two each", n)
+	}
+	fill(t, s, "CND", pid, aID, MaxLinks-2, MaxRelations-2)
+	rc, err := addLink(s, "last-l", a, NewLink{Kind: LinkExternal, URL: "https://example.com/last"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "past-l", a, NewLink{Kind: LinkExternal, URL: "https://example.com/past"})
+	want(t, rc, err, StatusFailed, RefusalBound)
+	if !strings.Contains(rc.Error, fmt.Sprintf("this would make %d", MaxLinks+1)) {
+		t.Fatalf("the links' refusal: %q", rc.Error)
+	}
+	_, last := newTicket(t, s, "CND", "Last")
+	rc, err = relate(s, "last-r", a, RelationRelates, last)
+	want(t, rc, err, StatusDone, "")
+	_, past := newTicket(t, s, "CND", "Past")
+	rc, err = relate(s, "past-r", a, RelationRelates, past)
+	want(t, rc, err, StatusFailed, RefusalBound)
+	if !strings.Contains(rc.Error, fmt.Sprintf("this would make %d", MaxRelations+1)) {
+		t.Fatalf("the relations' refusal: %q", rc.Error)
+	}
+}
+
+// A member more replicas added than one row's prior can name, each add's
+// tag as long as tags get, is removed whole all the same, by each path a
+// remove takes: a link, a relation, an assignee through ticket.edit, and a
+// run link a ticket's undelete releases. The remove's tags go into as
+// many rows as they need, each prior within MaxChangeValue, every add's
+// tag named once, in the log's order, and no live row of the member is
+// left.
+func TestAMemberOfManyReplicasAddsIsRemovedWhole(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	s.SetRunExists(runs("run1"))
+	pid := newProject(t, s, "CND")
+	aID, a := newTicket(t, s, "CND", "A")
+	bID, _ := newTicket(t, s, "CND", "B")
+	rID, r := newTicket(t, s, "CND", "Ran first")
+	_, live := newTicket(t, s, "CND", "Runs it now")
+	// 200 replicas, each actor MaxActor bytes, most of them '<', which a
+	// tag escapes to six, and each op id 32: 200 tags of 355 bytes, more
+	// than one prior holds.
+	const replicas = 200
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	// adds writes every replica's add of one member, in one transaction as
+	// a merge would bring them, a millisecond apart: row writes the add's
+	// own row of the member, when it has one, and gives the add's value. It
+	// gives the adds' tags in the log's order.
+	adds := func(prefix, ticketID, field string, row func(x *sql.Tx, actor string, when time.Time) string) []Tag {
+		t.Helper()
+		x, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer x.Rollback()
+		var tags []Tag
+		for i := range replicas {
+			actor := fmt.Sprintf("replica-%04d-", i)
+			actor += strings.Repeat("<", MaxActor-len(actor))
+			opID := prefix + fmt.Sprintf("%0*d", 32-len(prefix), i)
+			when := at.Add(time.Duration(i) * time.Millisecond)
+			if _, err := x.Exec(`INSERT INTO changes (entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n)
+				VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, 0)`,
+				EntityTicket, ticketID, ticketID, pid, field, OpAdd, row(x, actor, when), stamp(when), actor, actor, opID); err != nil {
+				t.Fatal(err)
+			}
+			tags = append(tags, Tag{actor, opID, 0})
+		}
+		if err := x.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(EncodeTags(tags)); n <= MaxChangeValue {
+			t.Fatalf("the %d tags are %d bytes: one prior holds them", len(tags), n)
+		}
+		return tags
+	}
+	link := func(ticketID, kind, ref, url string) func(*sql.Tx, string, time.Time) string {
+		return func(x *sql.Tx, actor string, when time.Time) string {
+			l := Link{ID: newID(), TicketID: ticketID, Kind: kind, Ref: ref, URL: url, CreatedAt: when, CreatedBy: actor}
+			if _, err := x.Exec("INSERT INTO links (id, ticket_id, kind, ref, url, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				l.ID, l.TicketID, l.Kind, l.Ref, l.URL, stamp(when), actor); err != nil {
+				t.Fatal(err)
+			}
+			value, err := encodeValue(l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+	}
+	// removedWhole checks the rows the operation opID wrote after its first
+	// skip: each a remove of the field, all of one value, each prior within
+	// MaxChangeValue, naming the tags between them once each, in order.
+	removedWhole := func(opID, field string, skip int, tags []Tag) {
+		t.Helper()
+		rows := changesOf(t, s, "test", opID)
+		if len(rows) < skip+2 {
+			t.Fatalf("%s: %d rows, want the tags in more than one", opID, len(rows))
+		}
+		var named []Tag
+		for _, row := range rows[skip:] {
+			if row.Op != OpRemove || row.Field != field || row.Value != rows[skip].Value || len(row.Prior) > MaxChangeValue {
+				t.Fatalf("%s: a row %s:%s, its prior %d bytes", opID, row.Op, row.Field, len(row.Prior))
+			}
+			named = append(named, Tags(row.Prior)...)
+		}
+		if !slices.Equal(named, tags) {
+			t.Fatalf("%s: the rows name %d tags, want the %d adds' in order", opID, len(named), len(tags))
+		}
+	}
+	// A link.
+	tags := adds("link", aID, "links", link(aID, LinkDelivery, "#7", "https://example.com/pull/7"))
+	ls, err := s.Links(ctx, a)
+	if err != nil || len(ls) != 1 {
+		t.Fatalf("the links: %d %v", len(ls), err)
+	}
+	rc, err := s.RemoveLink(ctx, testOp("x-link"), a, ls[0].ID)
+	want(t, rc, err, StatusDone, "")
+	removedWhole("x-link", "links", 0, tags)
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND deleted_at = ''", aID); n != 0 {
+		t.Fatalf("%d live rows of the link", n)
+	}
+	// A relation.
+	tags = adds("rela", aID, "relations", func(x *sql.Tx, actor string, when time.Time) string {
+		rel := Relation{ID: newID(), FromID: aID, ToID: bID, Kind: RelationBlocks, CreatedAt: when, CreatedBy: actor}
+		if _, err := x.Exec("INSERT INTO relations (id, from_id, to_id, kind, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+			rel.ID, rel.FromID, rel.ToID, rel.Kind, stamp(when), actor); err != nil {
+			t.Fatal(err)
+		}
+		value, err := encodeValue(rel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	})
+	rs, err := s.Relations(ctx, a)
+	if err != nil || len(rs) != 1 {
+		t.Fatalf("the relations: %d %v", len(rs), err)
+	}
+	rc, err = s.RemoveRelation(ctx, testOp("x-rel"), a, rs[0].ID)
+	want(t, rc, err, StatusDone, "")
+	removedWhole("x-rel", "relations", 0, tags)
+	if n := count(t, s, "SELECT COUNT(*) FROM relations WHERE deleted_at = ''"); n != 0 {
+		t.Fatalf("%d live rows of the relation", n)
+	}
+	// An assignee: one membership row however many adds.
+	exec(t, s, "INSERT INTO ticket_assignees (ticket_id, actor, added_at) VALUES (?, 'person:Alice', ?)", aID, stamp(at))
+	tags = adds("asgn", aID, "assignees", func(*sql.Tx, string, time.Time) string { return "person:Alice" })
+	rc, err = edit(s, "x-asgn", a, TicketEdit{Remove: TicketMembers{Assignees: []string{"person:Alice"}}})
+	want(t, rc, err, StatusDone, "")
+	removedWhole("x-asgn", "assignees", 0, tags)
+	if as := ticketOf(t, s, a).Assignees; len(as) != 0 {
+		t.Fatalf("the assignees: %v", as)
+	}
+	// A run link the undelete releases, a live ticket having taken the run
+	// while its ticket was deleted: the undelete's own row, then the
+	// remove's.
+	tags = adds("runl", rID, "links", link(rID, LinkRun, "run1", ""))
+	rc, err = s.DeleteTicket(ctx, testOp("del-r"), r)
+	want(t, rc, err, StatusDone, "")
+	rc, err = addLink(s, "l-live", live, NewLink{Kind: LinkRun, Ref: "run1"})
+	want(t, rc, err, StatusDone, "")
+	rc, err = s.UndeleteTicket(ctx, testOp("undel-r"), r)
+	want(t, rc, err, StatusDone, "")
+	if rows := changesOf(t, s, "test", "undel-r"); rows[0].Op != OpSet || rows[0].Field != "deleted_at" {
+		t.Fatalf("the undelete's first row: %s:%s", rows[0].Op, rows[0].Field)
+	}
+	removedWhole("undel-r", "links", 1, tags)
+	if n := count(t, s, "SELECT COUNT(*) FROM links WHERE ticket_id = ? AND deleted_at = ''", rID); n != 0 {
+		t.Fatalf("%d live rows of the released link", n)
+	}
+}
+
+// A second person.add of a held name is dropped: the name is the person,
+// so two replicas adding one name add one row. Each replica holds its own
+// create and drops the other's, in either order, and the directory reads
+// one name; the row is never written twice (people.name is the key a
+// second insert would trip, which is why the merge must drop it).
+func TestASecondPersonAddOfAHeldNameIsDropped(t *testing.T) {
+	ctx := context.Background()
+	stores := map[string]*Store{}
+	creates := map[string]ChangeRow{}
+	for _, actor := range []string{"replica-a", "replica-b"} {
+		s := openStore(t, storeDir(t))
+		rc, err := s.AddPerson(ctx, Op{Actor: actor, ID: "p1"}, "Alice")
+		want(t, rc, err, StatusDone, "")
+		stores[actor] = s
+		creates[actor] = changesOf(t, s, actor, "p1")[0]
+	}
+	for local, other := range map[string]string{"replica-a": "replica-b", "replica-b": "replica-a"} {
+		s := stores[local]
+		if got := Merge(creates[local], creates[other]); got != KeepLocal {
+			t.Fatalf("%s receiving %s's create: %v", local, other, got)
+		}
+		if _, err := s.db.Exec("INSERT INTO people (name, created_at) VALUES ('Alice', ?)", stamp(creates[other].At)); err == nil {
+			t.Fatalf("%s: a second row of a held name was written", local)
+		}
+		people, err := s.People(ctx)
+		if err != nil || len(people) != 1 || people[0].Name != "Alice" {
+			t.Fatalf("%s: the directory %+v %v", local, people, err)
+		}
+		// A local add of it is refused, as any held name is.
+		rc, err := s.AddPerson(ctx, testOp("p2"), "Alice")
+		want(t, rc, err, StatusFailed, RefusalInvalid)
+	}
+}
+
+// A membership of a tombstoned label reads absent: a label deleted on one
+// replica while another added it to a ticket (the delete's cascade did
+// not see the add) leaves the membership row, read as absent in both
+// orders and counting for nothing toward the ticket's bound.
+func TestAMembershipOfATombstonedLabelReadsAbsent(t *testing.T) {
+	ctx := context.Background()
+	b := replica{"replica-b", time.Now().UTC()}
+	for _, order := range []string{"added here, deleted there", "deleted here, added there"} {
+		s := openStore(t, storeDir(t))
+		pid := newProject(t, s, "CND")
+		label := newLabel(t, s, "CND", "api")
+		keep := newLabel(t, s, "CND", "ui")
+		tid, key := makeTicket(t, s, NewTicket{Project: "CND", Title: "Labelled", Labels: []string{keep}})
+		switch order {
+		case "added here, deleted there":
+			rc, err := edit(s, "add", key, TicketEdit{Add: TicketMembers{Labels: []string{label}}})
+			want(t, rc, err, StatusDone, "")
+			exec(t, s, "UPDATE labels SET deleted_at = ? WHERE id = ?", stamp(b.at), label)
+			b.change(t, s, "del", 0, ChangeRow{Entity: EntityLabel, EntityID: label, ProjectID: pid, Field: "deleted_at", Op: OpSet, Value: stamp(b.at)})
+		case "deleted here, added there":
+			rc, err := s.DeleteLabel(ctx, testOp("del"), "CND", label)
+			want(t, rc, err, StatusDone, "")
+			exec(t, s, "INSERT INTO ticket_labels (ticket_id, label_id) VALUES (?, ?)", tid, label)
+			b.change(t, s, "add", 0, ChangeRow{Entity: EntityTicket, EntityID: tid, TicketID: tid, ProjectID: pid, Field: "labels", Op: OpAdd, Value: label})
+		}
+		if n := count(t, s, "SELECT COUNT(*) FROM ticket_labels WHERE ticket_id = ? AND label_id = ?", tid, label); n != 1 {
+			t.Fatalf("%s: the membership row is not there to read", order)
+		}
+		tk, err := readTicket(ctx, s.db, key)
+		if err != nil || !slices.Equal(tk.Labels, []string{keep}) {
+			t.Fatalf("%s: the ticket's labels %v %v", order, tk.Labels, err)
+		}
+		if labels, err := s.Labels(ctx, "CND"); err != nil || len(labels) != 1 || labels[0].ID != keep {
+			t.Fatalf("%s: the project's labels %+v %v", order, labels, err)
+		}
+	}
+}
+
+// A milestone_id set on one replica while the milestone was deleted on
+// another (the delete's clears are scalar sets of the tickets it saw, and
+// it did not see this one) names the tombstone and reads as none, in
+// both orders.
+func TestAMilestoneSetWhileDeletedElsewhereReadsAsNone(t *testing.T) {
+	ctx := context.Background()
+	b := replica{"replica-b", time.Now().UTC()}
+	for _, order := range []string{"set here, deleted there", "deleted here, set there"} {
+		s := openStore(t, storeDir(t))
+		pid := newProject(t, s, "CND")
+		m := newMilestone(t, s, "CND", "1.0")
+		tid, key := newTicket(t, s, "CND", "Planned")
+		switch order {
+		case "set here, deleted there":
+			rc, err := edit(s, "set", key, TicketEdit{Set: TicketSet{Milestone: ptr(m)}})
+			want(t, rc, err, StatusDone, "")
+			exec(t, s, "UPDATE milestones SET deleted_at = ? WHERE id = ?", stamp(b.at), m)
+			b.change(t, s, "del", 0, ChangeRow{Entity: EntityMilestone, EntityID: m, ProjectID: pid, Field: "deleted_at", Op: OpSet, Value: stamp(b.at)})
+		case "deleted here, set there":
+			rc, err := s.DeleteMilestone(ctx, testOp("del"), "CND", m)
+			want(t, rc, err, StatusDone, "")
+			exec(t, s, "UPDATE tickets SET milestone_id = ? WHERE id = ?", m, tid)
+			b.change(t, s, "set", 0, ChangeRow{Entity: EntityTicket, EntityID: tid, TicketID: tid, ProjectID: pid, Field: "milestone_id", Op: OpSet, Value: m})
+		}
+		if raw := ticketOf(t, s, key).MilestoneID; raw != m {
+			t.Fatalf("%s: the row names %q, not the tombstone", order, raw)
+		}
+		tk, err := readTicket(ctx, s.db, key)
+		if err != nil || tk.MilestoneID != "" {
+			t.Fatalf("%s: the milestone read %q %v", order, tk.MilestoneID, err)
+		}
+	}
+}
+
+// A relation added on one replica to a ticket deleted on another is live
+// and inactive in both orders: kept, read with its other end deleted,
+// blocking nothing; and active again after the undelete.
+func TestARelationToATicketDeletedElsewhereIsInactiveUntilItsUndelete(t *testing.T) {
+	ctx := context.Background()
+	b := replica{"replica-b", time.Now().UTC()}
+	for _, order := range []string{"related here, deleted there", "deleted here, related there"} {
+		s := openStore(t, storeDir(t))
+		pid := newProject(t, s, "CND")
+		_, x := newTicket(t, s, "CND", "Blocked")
+		xID := ticketOf(t, s, x).ID
+		yID, y := newTicket(t, s, "CND", "Blocker")
+		switch order {
+		case "related here, deleted there":
+			rc, err := relate(s, "rel", y, RelationBlocks, x)
+			want(t, rc, err, StatusDone, "")
+			exec(t, s, "UPDATE tickets SET deleted_at = ? WHERE id = ?", stamp(b.at), yID)
+			b.change(t, s, "del", 0, ChangeRow{Entity: EntityTicket, EntityID: yID, TicketID: yID, ProjectID: pid, Field: "deleted_at", Op: OpSet, Value: stamp(b.at)})
+		case "deleted here, related there":
+			rc, err := s.DeleteTicket(ctx, testOp("del"), y)
+			want(t, rc, err, StatusDone, "")
+			b.relation(t, s, "rel", pid, yID, xID, RelationBlocks)
+		}
+		if n := count(t, s, "SELECT COUNT(*) FROM relations WHERE from_id = ? AND to_id = ? AND deleted_at = ''", yID, xID); n != 1 {
+			t.Fatalf("%s: the relation is not live", order)
+		}
+		rs, err := s.Relations(ctx, x)
+		if err != nil || len(rs) != 1 || rs[0].Other.ID != yID || rs[0].Other.DeletedAt.IsZero() {
+			t.Fatalf("%s: the relations %+v %v", order, rs, err)
+		}
+		if blocked, err := s.Blocked(ctx, x); err != nil || blocked {
+			t.Fatalf("%s: blocked by a tombstone: %v %v", order, blocked, err)
+		}
+		rc, err := s.UndeleteTicket(ctx, testOp("undel"), y)
+		want(t, rc, err, StatusDone, "")
+		rs, err = s.Relations(ctx, x)
+		if err != nil || len(rs) != 1 || !rs[0].Other.DeletedAt.IsZero() {
+			t.Fatalf("%s: after the undelete %+v %v", order, rs, err)
+		}
+		if blocked, err := s.Blocked(ctx, x); err != nil || !blocked {
+			t.Fatalf("%s: not blocked after the undelete: %v %v", order, blocked, err)
+		}
 	}
 }

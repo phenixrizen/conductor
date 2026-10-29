@@ -62,11 +62,15 @@ type Store struct {
 	// db is nil when there is nothing to read: a database that cannot be
 	// opened at all.
 	db *sql.DB
-	// mu orders the writers and guards closed, db, readOnly and why.
+	// mu orders the writers and guards closed, db, readOnly, why and
+	// runExists.
 	mu       sync.Mutex
 	closed   bool
 	readOnly bool
 	why      string
+	// runExists is the engine's sight of its runs, which the API gives
+	// the store (SetRunExists): the store's only sight of the engine.
+	runExists func(id string) bool
 
 	// lmu guards listeners, what OnChange registered.
 	lmu       sync.Mutex
@@ -94,6 +98,10 @@ var (
 	ErrUnavailable = errors.New("dispatch: unavailable")
 	// ErrClosed is returned once Close has begun.
 	ErrClosed = errors.New("dispatch: closed")
+	// ErrNotFound is returned by a read of what the store does not hold:
+	// a ticket, project, comment, label or milestone by a key or an id
+	// that names none (the API answers 404 not_found).
+	ErrNotFound = errors.New("dispatch: not found")
 )
 
 // Change says what a commit changed: one per entity the commit changed,
@@ -374,6 +382,28 @@ func (s *Store) conn() (*sql.DB, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnavailable, s.why)
 	}
 	return s.db, nil
+}
+
+// read runs fn in one read transaction, so that a read of more than one
+// statement describes one state, its rev and its rows agreeing, whatever
+// commits between its statements from this process or from a second
+// server on the file: under WAL the transaction reads one snapshot from
+// its first statement to its end. ReadOnly makes the driver begin it as
+// a plain BEGIN whatever _txlock says, so it takes no write lock.
+func (s *Store) read(ctx context.Context, fn func(q queryer) error) error {
+	db, err := s.conn()
+	if err != nil {
+		return err
+	}
+	rtx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer rtx.Rollback()
+	if err := fn(rtx); err != nil {
+		return err
+	}
+	return rtx.Commit()
 }
 
 // Checkpoint moves the write-ahead log into the database and truncates
