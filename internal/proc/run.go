@@ -35,10 +35,14 @@ const (
 	// when Spec says nothing: the first DefaultHead and the last DefaultTail.
 	DefaultHead = 64 << 10
 	DefaultTail = 16 << 10
-	// DefaultLogLimit is how much of the output Spec.Log gets before the
-	// dropped line, when Spec says nothing; LogTail is how much after it.
+	// DefaultLogLimit is how much Spec.Log gets in all when Spec says
+	// nothing: the output's head, the dropped line and the output's last
+	// bytes together. LogTail bounds those last bytes: a quarter of the
+	// limit, or LogTail when that is less; logLine is what is kept for the
+	// dropped line, and the head has the rest.
 	DefaultLogLimit = 1 << 20
 	LogTail         = 256 << 10
+	logLine         = 64
 	// logQueue bounds the chunks of output queued for a Log writer that
 	// does not keep up: past it the log is cut (Result.LogErr), never the
 	// run held up.
@@ -71,11 +75,14 @@ type Spec struct {
 	// the last; DefaultHead and DefaultTail when zero.
 	Head, Tail int
 	// Log, when set, gets the output as it comes, on a goroutine of its
-	// own, so a slow writer never holds the process up: the first LogLimit
-	// bytes (DefaultLogLimit when zero), then a line saying how many bytes
-	// were dropped, then the last LogTail bytes; everything, when there is
-	// less. A writer that falls logQueue chunks behind, or does not return
-	// within WaitDelay at the end, loses the rest (Result.LogErr).
+	// own, so a slow writer never holds the process up, and gets at most
+	// LogLimit bytes in all (DefaultLogLimit when zero): everything when
+	// the output fits; else its head, a line saying how many bytes were
+	// dropped, and its last bytes (a quarter of LogLimit, at most
+	// LogTail), the head being what the other two leave. A writer given a
+	// store's bound as LogLimit holds no more than the store takes when
+	// Run returns. A writer that falls logQueue chunks behind, or does not
+	// return within WaitDelay at the end, loses the rest (Result.LogErr).
 	Log      io.Writer
 	LogLimit int64
 	// Started, when set, is called once the process exists and before any
@@ -388,11 +395,14 @@ func (c *capture) bytes() (head, tail []byte, total int64, truncated bool) {
 
 // logSink feeds a Log writer on a goroutine of its own, through a bounded
 // queue, so that a writer that blocks never holds the output pipe, the
-// process or Run up: the first limit bytes go to the writer as they come,
-// the rest is kept as a tail for finish. A queue that fills cuts the log.
+// process or Run up: the first head bytes go to the writer as they come,
+// the rest is kept as a tail for finish, and the writer gets at most limit
+// bytes in all, the dropped line and the tail included (logBounds). A
+// queue that fills cuts the log.
 type logSink struct {
 	w     io.Writer
 	limit int64
+	head  int64
 	ch    chan []byte
 	done  chan struct{}
 
@@ -406,9 +416,19 @@ type logSink struct {
 }
 
 func newLogSink(w io.Writer, limit int64) *logSink {
-	l := &logSink{w: w, limit: limit, ch: make(chan []byte, logQueue), done: make(chan struct{}), tail: &capture{tailMax: LogTail}}
+	head, tail := logBounds(limit)
+	l := &logSink{w: w, limit: limit, head: head, ch: make(chan []byte, logQueue), done: make(chan struct{}), tail: &capture{tailMax: int(tail)}}
 	go l.run()
 	return l
+}
+
+// logBounds splits a log's limit: the tail is a quarter of it, at most
+// LogTail; logLine bytes are kept for the dropped line; the head has the
+// rest (none, for a limit too small to keep a head beside the two).
+func logBounds(limit int64) (head, tail int64) {
+	tail = min(LogTail, limit/4)
+	head = max(limit-tail-logLine, 0)
+	return head, tail
 }
 
 func (l *logSink) Write(p []byte) (int, error) {
@@ -438,7 +458,7 @@ func (l *logSink) run() {
 		if l.gone() {
 			continue // drained and dropped: Run has returned
 		}
-		if room := l.limit - l.written; room > 0 {
+		if room := l.head - l.written; room > 0 {
 			m := int(min(room, int64(len(p))))
 			if l.err == nil {
 				if _, err := l.w.Write(p[:m]); err != nil {
@@ -458,7 +478,14 @@ func (l *logSink) run() {
 	}
 	_, tail, _, _ := l.tail.bytes()
 	if dropped := l.over - int64(len(tail)); dropped > 0 {
-		if _, err := fmt.Fprintf(l.w, "\n… %d bytes dropped …\n", dropped); err != nil {
+		// Within what the head and the tail leave of the limit: the line
+		// is shorter than logLine, and cut only for a limit too small to
+		// hold it.
+		line := fmt.Sprintf("\n… %d bytes dropped …\n", dropped)
+		if room := l.limit - l.written - int64(len(tail)); int64(len(line)) > room {
+			line = line[:max(room, 0)]
+		}
+		if _, err := io.WriteString(l.w, line); err != nil {
 			l.err = err
 			return
 		}

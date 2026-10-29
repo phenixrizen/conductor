@@ -178,10 +178,36 @@ func TestRunKeepsHeadAndTail(t *testing.T) {
 	if !bytes.HasPrefix(res.Head, []byte("BEGIN\nxxxx")) || !bytes.HasSuffix(res.Tail, []byte("xxxx\nEND\n")) {
 		t.Fatalf("head %q tail %q", res.Head, res.Tail)
 	}
+	// The log whole within LogLimit: its head, the dropped line and the
+	// output's last bytes (a quarter of the limit), the dropped count the
+	// difference between the output and what was kept of it.
 	text := log.String()
-	dropped := total - 4096 - LogTail
-	if !strings.HasPrefix(text, "BEGIN\n") || !strings.HasSuffix(text, "xxxx\nEND\n") || !strings.Contains(text, "\n… "+strconv.Itoa(dropped)+" bytes dropped …\n") || len(text) > 4096+LogTail+64 {
+	head, tail := logBounds(4096)
+	if tail != 1024 || head != 4096-1024-logLine {
+		t.Fatalf("the bounds of 4096: head %d tail %d", head, tail)
+	}
+	line := "\n… " + strconv.Itoa(total-int(head)-int(tail)) + " bytes dropped …\n"
+	if len(text) > 4096 || len(text) != int(head)+len(line)+int(tail) {
+		t.Fatalf("a log of %d bytes for a limit of 4096 (head %d, line %d, tail %d)", len(text), head, len(line), tail)
+	}
+	if !strings.HasPrefix(text, "BEGIN\n") || text[head:int(head)+len(line)] != line || !strings.HasSuffix(text, "xxxx\nEND\n") || text[len(text)-int(tail):] != strings.Repeat("x", int(tail)-len("\nEND\n"))+"\nEND\n" {
 		t.Fatalf("log of %d bytes: %.40q … %q", len(text), text, text[len(text)-40:])
+	}
+	// At the ledger's bound: 2 MiB of output keep within 1 MiB, the tail
+	// LogTail.
+	log.Reset()
+	res = sh(t, time.Minute, "head -c 2097152 /dev/zero | tr '\\000' y; echo; echo END", func(s *Spec) { s.Log, s.LogLimit = &log, 1<<20 })
+	if res.Exit != 0 || res.LogErr != "" {
+		t.Fatalf("%+v", res)
+	}
+	if head, tail := logBounds(1 << 20); log.Len() > 1<<20 || tail != LogTail || !strings.HasSuffix(log.String(), "yyyy\nEND\n") || !strings.Contains(log.String(), " bytes dropped …\n") || log.Len() < int(head) {
+		t.Fatalf("a log of %d bytes for a limit of 1 MiB", log.Len())
+	}
+	// A limit too small for a head: the line is cut to what the tail leaves.
+	log.Reset()
+	res = sh(t, time.Minute, "head -c 1000 /dev/zero | tr '\\000' z", func(s *Spec) { s.Log, s.LogLimit = &log, 40 })
+	if res.Exit != 0 || log.Len() > 40 || !strings.HasSuffix(log.String(), strings.Repeat("z", 10)) {
+		t.Fatalf("a log of %d bytes for a limit of 40: %q", log.Len(), log.String())
 	}
 
 	// Less than the bounds: everything kept, nothing truncated, no
