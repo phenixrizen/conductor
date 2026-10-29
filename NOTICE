@@ -5,8 +5,8 @@ Licensed under the Apache License, Version 2.0: see LICENSE.
 
 Sponsored and maintained by RockSolid Labs, Inc. (https://rocksolidlabs.io).
 
-The RockSolid Labs name and logos (web/public/sponsor, desktop/static/sponsor)
-are trademarks of RockSolid Labs, Inc., shown here with its permission. The
-Conductor name and the junction mark (web/public/brand, docs/design/brand.md)
-are the project's marks. Neither is licensed under the Apache License (its
-section 6): a derived product may not use them to name or promote itself.
+The Conductor name, the junction mark and the logos (web/public/brand,
+docs/design/brand.md) and the RockSolid Labs name and logos (web/public/sponsor,
+desktop/static/sponsor) are trademarks of RockSolid Labs, Inc. The Apache License
+grants no right to use them (its section 6). What is allowed without asking and
+what is not: TRADEMARKS.md in the source repository, github.com/rocksolidlabs/conductor.
