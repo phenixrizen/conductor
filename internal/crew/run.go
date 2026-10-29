@@ -348,6 +348,10 @@ type Engine struct {
 	// ends, after its last commit and before it is counted out: a test
 	// lands an unpause there.
 	beforePrereqEnd func()
+	// beforePrereqRefused, when set, runs as prerequisiteRefused begins,
+	// after the failed step's last commit and before its own change: a
+	// test lands an unpause there.
+	beforePrereqRefused func()
 }
 
 // sessionMember is the member a session is, and its run.
@@ -400,6 +404,11 @@ type run struct {
 	prereqCancel context.CancelFunc
 	prereqK      map[string]int
 	prereqRows   map[string]prereqReceipt
+	// prereqFailedGen is the last generation whose failure the run took,
+	// by its step's finished row (runStep) or by prerequisiteRefused: a
+	// generation fails once, so an unpause since, which armed the
+	// prerequisites again, is not taken back by the same failure.
+	prereqFailedGen int
 	// teardown is the context the trees end under (endTree), made with the
 	// run beside ctx and outliving it; trees counts the trees ending, and
 	// pendingTrees are the ends a close handed over, started by its commit.

@@ -391,6 +391,88 @@ func TestAnUnpauseRightAfterAFailureRunsThemAgain(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// An unpause that lands after a prerequisite's failure and before the
+// generation's look for a row the ledger refused (prerequisiteRefused) is
+// not taken back by that failure. The step's finished row took the
+// failure, whether the ledger took the row or refused it (its rows then go
+// with the unpause's commit), so the look fails nothing a second time. The
+// run stays unpaused, the generation the unpause armed starts as the
+// failed one ends (k 2), and the task is dispatched once they pass
+// (Codex's review of #422, round 4: the look failed the generation again,
+// paused the run over the unpause and left nothing armed to start).
+func TestAnUnpauseAfterAFailureIsNotTakenBack(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refused bool
+	}{
+		{"its row committed", false},
+		{"its row refused", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			if tc.refused {
+				l.mu.Lock()
+				l.failOn, l.failOnce = "step.finished[phase=prerequisite]", true
+				l.mu.Unlock()
+			}
+			ok := filepath.Join(t.TempDir(), "ok")
+			looking, release := make(chan struct{}, 1), make(chan struct{})
+			var once sync.Once
+			e.beforePrereqRefused = func() {
+				once.Do(func() {
+					looking <- struct{}{}
+					<-release
+				})
+			}
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Prerequisites: []Check{shStep("node", `test -e "`+ok+`"`)}}, work("build", "lead")))
+			<-looking
+			why := "the prerequisite node failed: node exited 1"
+			if got, _ := e.Get(run.ID); !got.Paused || got.PausedWhy != why {
+				t.Fatalf("the run at the look: paused %v %q", got.Paused, got.PausedWhy)
+			}
+			l.mu.Lock()
+			failOn := l.failOn
+			l.mu.Unlock()
+			// Committed, the failure's row and pause are in the ledger;
+			// refused, they wait for the next commit, the unpause's.
+			want := 1
+			if tc.refused {
+				want = 0
+			}
+			if failOn != "" || l.count(run.ID, "step.finished") != want || l.count(run.ID, "run.paused") != want {
+				t.Fatalf("the ledger at the look (refusal pending %q): %v", failOn, l.kinds(run.ID))
+			}
+			open(t, ok)
+			pauseRun(t, e, run.ID, false)
+			r := runOf(t, e, run.ID)
+			if st, gen, n := prereqState(e, r); st != prereqPending || gen != 1 || n != 1 {
+				t.Fatalf("armed behind the failed generation: %s, generation %d, %d in flight", st, gen, n)
+			}
+			close(release)
+			waitTrue(t, "the generations' end", func() bool {
+				st, _, n := prereqState(e, r)
+				return n == 0 && (st == prereqPassed || st == prereqFailed)
+			})
+			if st, gen, _ := prereqState(e, r); st != prereqPassed || gen != 2 {
+				t.Fatalf("after the look: %s, generation %d", st, gen)
+			}
+			if got, _ := e.Get(run.ID); got.Paused || got.PausedWhy != "" {
+				t.Fatalf("the unpause was taken back: paused %v %q", got.Paused, got.PausedWhy)
+			}
+			waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			rows := l.prereqRows(run.ID)
+			if len(rows) != 2 || rows[0].K != 1 || rows[0].Exit != 1 || rows[0].Error != "node exited 1" || rows[1].K != 2 || rows[1].Exit != 0 || rows[1].Error != "" {
+				t.Fatalf("the prerequisites: %+v", rows)
+			}
+			if n := l.count(run.ID, "run.paused"); n != 2 {
+				t.Fatalf("%d run.paused events, not the failure's and the unpause's alone: %v", n, l.kinds(run.ID))
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
 // A prerequisite's row the ledger refuses ends its generation failed and
 // pauses the dispatch with why; unpaused, they run again and the run goes
 // on.

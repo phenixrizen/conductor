@@ -453,7 +453,7 @@ func (e *Engine) runStep(ctx context.Context, r *run, a *attempt, t *tree, phase
 		keep(fin)
 		out := ev("step.finished", payload(map[string]any{"exit": res.Exit, "timedOut": res.TimedOut, "duration": res.Duration.String(), "error": fin.Error, "interrupted": interrupted}))
 		if a == nil && !interrupted && words != "" && gen == r.prereqGen && !r.stopping && r.outcome == "" {
-			r.prereq = prereqFailed
+			r.prereq, r.prereqFailedGen = prereqFailed, gen
 			out.events = append(out.events, e.pauseManifest(r, fmt.Sprintf("the prerequisite %s failed: %s", ch.ID, words))...)
 		}
 		out.more = put(fin)
@@ -674,13 +674,24 @@ func (e *Engine) prerequisites(ctx context.Context, cancel context.CancelFunc, r
 // without its failure recorded with the step (the ledger refused the
 // step's row): when it is still the run's, the prerequisites are failed
 // and the dispatch pauses with why, so the run never waits on a
-// generation that has ended, and an unpause runs them again.
+// generation that has ended, and an unpause runs them again. A
+// generation whose failure the run took already (r.prereqFailedGen: its
+// step's finished row took it, committed or ahead of a commit the ledger
+// refused) is not failed again. An unpause since then may have armed
+// the prerequisites again (pending, the generation still in flight), and
+// failing it a second time would pause the run again over that unpause and
+// leave the generation's end nothing armed to start (Codex's review of
+// #422, round 4). The change is then empty, and its commit carries only
+// what a refused one left for the next.
 func (e *Engine) prerequisiteRefused(r *run, gen int, ch Check, err error) {
+	if e.beforePrereqRefused != nil {
+		e.beforePrereqRefused()
+	}
 	terr := e.transact(context.Background(), r, func() tx {
-		if gen != r.prereqGen || r.prereq == prereqFailed || r.stopping || r.outcome != "" {
+		if gen != r.prereqGen || r.prereqFailedGen == gen || r.stopping || r.outcome != "" {
 			return tx{}
 		}
-		r.prereq = prereqFailed
+		r.prereq, r.prereqFailedGen = prereqFailed, gen
 		return tx{events: e.pauseManifest(r, fmt.Sprintf("the prerequisite %s failed: %v", ch.ID, err))}
 	}, nil)
 	if terr != nil {
