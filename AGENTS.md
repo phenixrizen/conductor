@@ -147,6 +147,15 @@ add its rule here.
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
   it before the commit. Wait on the ledger for what the ledger must hold.
+- End what a test started before its directories go. An engine a test
+  abandons (the server that ended, before a continuation) keeps reacting:
+  when the fake launcher ended its processes at cleanup, it failed their
+  attempts and made the next attempt's worktree in a repository
+  `t.TempDir` was removing (`.git: directory not empty`, #391). The fake
+  launcher ends its engine's runs, recording nothing, before the first of
+  its processes (`endRuns` in `internal/crew`); anything else a test leaves
+  running is ended the same way, before the cleanup that removes what it
+  writes to.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
