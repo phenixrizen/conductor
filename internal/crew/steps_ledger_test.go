@@ -158,6 +158,7 @@ func TestACancelDuringASetupStepEndsItsTreeOnce(t *testing.T) {
 	if ts := taskOf(t, e, run.ID, "build"); ts.State != ledger.TaskCancelled {
 		t.Fatalf("the task: %+v", ts)
 	}
+	waitTreesEnded(t, e, run.ID)
 	if r, _ := e.Get(run.ID); r.Cleaning != 0 {
 		t.Fatalf("cleaning %d after the tree ended", r.Cleaning)
 	}

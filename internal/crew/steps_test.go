@@ -1,6 +1,7 @@
 package crew
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -83,6 +84,25 @@ func waitFake(t *testing.T, what string, ok func() bool) {
 			t.Fatalf("not %s after 10 s", what)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitTreesEnded waits up to 10 s for the run's trees being ended to be
+// none, on the count itself (r.trees): a tree's row is ended by its last
+// commit and the count drops after it, once endTree's transaction returns,
+// so a row seen ended does not say the count has dropped (Codex's review
+// of #422, round 2).
+func waitTreesEnded(t *testing.T, e *Engine, runID string) {
+	t.Helper()
+	r := runOf(t, e, runID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	e.waitTrees(ctx, r)
+	e.mu.Lock()
+	n := r.trees.n
+	e.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d trees of %s still being ended after 10 s", n, runID)
 	}
 }
 
@@ -198,6 +218,7 @@ func TestEveryStepOfATreeIsAReceipt(t *testing.T) {
 	if w, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); w.Why != "attempt 1 succeeded" || w.EndedAt.IsZero() {
 		t.Fatalf("the worktree's end: %+v", w)
 	}
+	waitTreesEnded(t, e, run.ID)
 	if r, _ := e.Get(run.ID); r.Cleaning != 0 || r.Manifest == nil || r.Manifest.Source != "crew" || r.Manifest.Revision != 3 {
 		t.Fatalf("the run: cleaning %d, manifest %+v", r.Cleaning, r.Manifest)
 	}
