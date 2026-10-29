@@ -965,7 +965,7 @@ func TestALedgerThatCannotRecordAnAttemptPausesDispatch(t *testing.T) {
 	e, fl, l := managedEngine(t)
 	l.failOn = "attempt.reserved"
 	run := launchManaged(t, e, repoCrew(dir, work("build", "lead")))
-	waitLogged(t, e, run.ID, "dispatch paused", 1, 5*time.Second)
+	waitLogged(t, e, run.ID, "scheduling paused", 1, 5*time.Second)
 	r, _ := e.Get(run.ID)
 	ts := taskOf(t, e, run.ID, "build")
 	if !r.Paused || ts.State != ledger.TaskReady || ts.Attempts != 0 || !strings.Contains(ts.Reason, "the ledger could not record") {
@@ -1305,7 +1305,7 @@ func TestAFailedCommitPausesDispatchUntilUnpaused(t *testing.T) {
 	// The acceptance could not be committed: the run's dispatch pauses,
 	// nothing rests on it, and the pause's own commit carries the rows and
 	// the acceptance's events, before its own.
-	waitLogged(t, e, run.ID, "dispatch paused", 1, 10*time.Second)
+	waitLogged(t, e, run.ID, "scheduling paused", 1, 10*time.Second)
 	r, _ := e.Get(run.ID)
 	if !r.Paused || taskOf(t, e, run.ID, "test").Attempts != 0 {
 		t.Fatalf("after the failed commit: paused=%v test=%+v", r.Paused, taskOf(t, e, run.ID, "test"))
@@ -1530,7 +1530,7 @@ func TestEarlierPendingRowsSurviveALaterUndo(t *testing.T) {
 	l.mu.Unlock()
 	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
 	// The acceptance and the pause it leads to both fail: the rows wait.
-	waitLogged(t, e, run.ID, "dispatch paused", 1, 10*time.Second)
+	waitLogged(t, e, run.ID, "scheduling paused", 1, 10*time.Second)
 	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
 	if err := e.PauseRun(context.Background(), run.ID, false); err == nil {
 		t.Fatal("an unpause the ledger refused was taken")
@@ -1928,7 +1928,7 @@ func TestARunWithAChangeTheLedgerHasNotTakenIsNotEvicted(t *testing.T) {
 	l.failOn = "task.succeeded,run.paused"
 	l.mu.Unlock()
 	submit(t, e, a.Attempt.SessionID, Result{Summary: "built"})
-	waitLogged(t, e, run.ID, "dispatch paused", 1, 10*time.Second)
+	waitLogged(t, e, run.ID, "scheduling paused", 1, 10*time.Second)
 	// Every task terminal and the session gone, but the acceptance not
 	// committed: a launch at the bound must not evict the run.
 	p.End(0)

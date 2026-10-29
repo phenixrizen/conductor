@@ -122,7 +122,7 @@ var (
 	// which the start, add and resume paths of a legacy run do not serve:
 	// a managed run dispatches its own tasks, and continues after a restart
 	// through the ledger, not through a member resumed in its old worktree.
-	ErrManaged = errors.New("the run is managed: its tasks are dispatched by the run, and a member is never started, added or resumed by hand")
+	ErrManaged = errors.New("the run is managed: its tasks are scheduled by the run, and a member is never started, added or resumed by hand")
 	// errNotReady is awaitReady giving up after readyCap.
 	errNotReady = errors.New("not ready")
 )
@@ -344,7 +344,8 @@ type sessionMember struct {
 type run struct {
 	// managed says the run is a managed one (a crew with tasks, #334).
 	managed bool
-	// The managed run's tasks (plan order), its setup, the commit it
+	// The managed run's tasks (plan order), its setup (the project
+	// manifest's setup phase, effectiveManifest), the commit it
 	// started from, whether its dispatch is paused, its attempts in flight,
 	// its outcome once every task is terminal, the goroutines verifying
 	// results (a stop waits for them) and its ledger revision (task.go).
@@ -499,10 +500,12 @@ func (e *Engine) Launch(ctx context.Context, c Crew) (*Run, error) {
 // started are stopped, no run is kept, and the error names the member; when
 // the run is stopped meanwhile, it stays, stopped, and LaunchHeld returns
 // ErrRunStopped, a stop that lands before the first member's start included.
-// A crew with no members, one that runs on a host, one without a valid ID
-// or, with worktrees, one whose <cwd>/.conductor or <cwd>/.conductor/worktrees
-// is a symbolic link is not launched (ErrInvalid), and neither is a member
-// whose directory in its worktree lies through a symbolic link.
+// A crew with no members, one that runs on a host, one without a valid ID,
+// one whose project manifest names what this build does not run yet
+// (runnableManifest) or, with worktrees, one whose <cwd>/.conductor or
+// <cwd>/.conductor/worktrees is a symbolic link is not launched
+// (ErrInvalid), and neither is a member whose directory in its worktree
+// lies through a symbolic link.
 //
 // The run stays exempt from eviction until the caller calls release, which
 // is never nil and must be called once, after an error too (a second call
@@ -581,9 +584,13 @@ func (c Crew) member(name string) *Member {
 }
 
 // prepare checks c as LaunchHeld describes and, with worktrees, finds where
-// its cwd lies in its repository (the prefix).
+// its cwd lies in its repository (the prefix). A project manifest that names
+// what this build does not run yet is refused (runnableManifest).
 func (e *Engine) prepare(ctx context.Context, c Crew) (prefix string, err error) {
 	if err := c.validateWithID(); err != nil {
+		return "", err
+	}
+	if err := c.runnableManifest(); err != nil {
 		return "", err
 	}
 	if c.Managed() {
@@ -850,7 +857,9 @@ func (e *Engine) add(c Crew, prefix, label string) *run {
 	r := &run{crewID: c.ID, name: c.Name, label: label, goal: c.Goal, cwd: c.Cwd, isolation: c.Isolation, prefix: prefix,
 		yolo: c.Yolo != nil && *c.Yolo, changed: e.OnRunChange, startedAt: time.Now().UTC(), ctx: ctx, cancel: cancel, launching: true, managed: c.Managed()}
 	if r.managed {
-		r.plan, r.setup = slices.Clone(c.Tasks), slices.Clone(c.Setup)
+		// The setup phase of the crew's project manifest, a legacy setup
+		// lifted into it: the one phase this build runs.
+		r.plan, r.setup = slices.Clone(c.Tasks), c.effectiveManifest().Setup
 		r.tasks = newTasks(c.Tasks)
 		r.crewJSON = crewAsLaunched(c)
 	}

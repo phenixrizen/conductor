@@ -648,3 +648,184 @@ func TestFreeNameReportsWhatItCannotCheck(t *testing.T) {
 		t.Fatalf("freeName: %q %v", name, err)
 	}
 }
+
+// storedKeys returns the top-level keys of the crew's file.
+func storedKeys(t *testing.T, st *store.Store, id string) map[string]json.RawMessage {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(st.Dir(), "crews", id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		t.Fatal(err)
+	}
+	return keys
+}
+
+// The store counts a crew's manifest changes itself, whatever a save
+// carries: a changed manifest is one more, an unchanged one keeps its
+// number, a removal is a change the counter keeps, and a manifest put on
+// again, after a restart too, is one past it, never 1 again.
+func TestTheStoreCountsTheManifestsRevisions(t *testing.T) {
+	s, st := newStore(t)
+	first := manifestCrew()
+	first.ManifestRevision = 9
+	created, err := s.Create(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ManifestRevision != 1 {
+		t.Fatalf("a new crew with a manifest: revision %d", created.ManifestRevision)
+	}
+	id := created.ID
+	update := func(c Crew, want int64) Crew {
+		t.Helper()
+		got, err := s.Update(id, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ManifestRevision != want {
+			t.Fatalf("revision %d, want %d", got.ManifestRevision, want)
+		}
+		read, err := s.Get(id)
+		if err != nil || read.ManifestRevision != want {
+			t.Fatalf("read back: %d %v", read.ManifestRevision, err)
+		}
+		return got
+	}
+	// Another field changed: the manifest keeps its number, and a number the
+	// value carries is not the store's.
+	c := created
+	c.Goal, c.ManifestRevision = "another goal", 99
+	update(c, 1)
+	// The manifest changed.
+	c.Manifest = fullManifest()
+	c.Manifest.Setup[0].Argv = []string{"npm", "install"}
+	update(c, 2)
+	update(c, 2)
+	// Taken off: a change, and the counter stays on the crew.
+	c.Manifest = nil
+	update(c, 3)
+	if keys := storedKeys(t, st, id); string(keys["manifestRevision"]) != "3" || keys["manifest"] != nil {
+		t.Fatalf("the file after the removal: %v", keys)
+	}
+	update(c, 3)
+	// Put on again after a restart, the first manifest's content included.
+	s = reopen(t, st)
+	c.Manifest = fullManifest()
+	update(c, 4)
+	c.Manifest = &Manifest{}
+	update(c, 5)
+	if keys := storedKeys(t, st, id); keys["manifest"] != nil {
+		t.Fatalf("an empty manifest is kept: %s", keys["manifest"])
+	}
+}
+
+// A legacy crew's file stays as it is through a save that changes nothing
+// of its setup: no manifest and no counter. Lifted into the manifest's setup
+// phase, the setup is the same manifest, still 0.
+func TestALegacySetupKeepsItsFileAndItsRevision(t *testing.T) {
+	s, st := newStore(t)
+	legacy := managedCrew()
+	legacy.ID = "legacy"
+	if err := s.Put(legacy); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Goal = "a new goal"
+	if saved, err := s.Update("legacy", got); err != nil || saved.ManifestRevision != 0 {
+		t.Fatalf("a legacy save: %v %v", saved.ManifestRevision, err)
+	}
+	keys := storedKeys(t, st, "legacy")
+	if keys["manifest"] != nil || keys["manifestRevision"] != nil || keys["setup"] == nil {
+		t.Fatalf("the legacy file after a save: %v", keys)
+	}
+	lifted := got
+	lifted.Manifest, lifted.Setup = &Manifest{Setup: got.Setup}, nil
+	if saved, err := s.Update("legacy", lifted); err != nil || saved.ManifestRevision != 0 || saved.Manifest == nil || len(saved.Setup) != 0 {
+		t.Fatalf("the lifted setup: %+v %v", saved, err)
+	}
+	if keys := storedKeys(t, st, "legacy"); keys["manifestRevision"] != nil || keys["setup"] != nil || keys["manifest"] == nil {
+		t.Fatalf("the lifted file: %v", keys)
+	}
+	lifted.Manifest = &Manifest{Setup: []Check{{ID: "deps", Argv: []string{"npm", "install"}}}}
+	if saved, err := s.Update("legacy", lifted); err != nil || saved.ManifestRevision != 1 {
+		t.Fatalf("a changed setup: %v %v", saved.ManifestRevision, err)
+	}
+	// A counter below zero is not the store's: refused.
+	bad := legacy
+	bad.ManifestRevision = -1
+	if err := s.Put(bad); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "manifestRevision must not be negative") {
+		t.Fatalf("a negative revision: %v", err)
+	}
+}
+
+// A new crew, made, copied or seeded, starts at 1 with a manifest (a legacy
+// setup counts) and at 0 without.
+func TestANewCrewsRevisionStartsAtOneWithAManifest(t *testing.T) {
+	s, _ := newStore(t)
+	for _, tc := range []struct {
+		name string
+		c    Crew
+		want int64
+	}{
+		{"a manifest", manifestCrew(), 1},
+		{"a legacy setup", managedCrew(), 1},
+		{"tasks alone", func() Crew { c := managedCrew(); c.Setup = nil; return c }(), 0},
+		{"an empty manifest", func() Crew { c := managedCrew(); c.Setup, c.Manifest = nil, &Manifest{}; return c }(), 0},
+		{"no tasks", validCrew("x", "Plain"), 0},
+	} {
+		got, err := s.Create(tc.c)
+		if err != nil || got.ManifestRevision != tc.want {
+			t.Errorf("create, %s: %d %v", tc.name, got.ManifestRevision, err)
+			continue
+		}
+		if tc.name == "an empty manifest" && got.Manifest != nil {
+			t.Errorf("an empty manifest is kept: %+v", got.Manifest)
+		}
+	}
+	src, err := s.Create(manifestCrew())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.Manifest.Setup[0].ID = "install"
+	if src, err = s.Update(src.ID, src); err != nil || src.ManifestRevision != 2 {
+		t.Fatalf("the source: %d %v", src.ManifestRevision, err)
+	}
+	if dup, err := s.Duplicate(src.ID); err != nil || dup.ManifestRevision != 1 || dup.Manifest == nil || dup.Manifest.Setup[0].ID != "install" {
+		t.Fatalf("a copy: %+v %v", dup, err)
+	}
+	seeded := manifestCrew()
+	seeded.ID, seeded.ManifestRevision = "seeded", 7
+	plain := validCrew("seeded-plain", "Plain")
+	plain.ManifestRevision = 7
+	if added, _, err := s.Seed([]Crew{seeded, plain}); err != nil || len(added) != 2 {
+		t.Fatalf("seed: %v %v", added, err)
+	}
+	if got, err := s.Get("seeded"); err != nil || got.ManifestRevision != 1 {
+		t.Fatalf("a seeded manifest: %d %v", got.ManifestRevision, err)
+	}
+	if got, err := s.Get("seeded-plain"); err != nil || got.ManifestRevision != 0 {
+		t.Fatalf("a seeded crew without one: %d %v", got.ManifestRevision, err)
+	}
+}
+
+// The store's copies share no manifest with what went in or came out.
+func TestTheStoresCopiesShareNoManifest(t *testing.T) {
+	s, _ := newStore(t)
+	c := manifestCrew()
+	created, err := s.Create(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Manifest.Setup[0].Argv[0] = "changed"
+	created.Manifest.Ready[0].Argv[0] = "changed"
+	got, err := s.Get(created.ID)
+	if err != nil || got.Manifest.Setup[0].Argv[0] != "npm" || got.Manifest.Ready[0].Argv[0] != "pg_isready" || created.Manifest == c.Manifest {
+		t.Fatalf("the stored manifest: %+v %v", got.Manifest, err)
+	}
+}

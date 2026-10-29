@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentInfo, CrewInfo, CrewMember, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, CrewCheck, CrewInfo, CrewMember, CrewManifest, CrewStart, CrewTask, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { FeedEntry } from './events'
-import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers } from './crews'
-import type { TaskShape } from './crews'
+import { argsFrom, broadcastByName, broadcastSelection, broadcastSummary, crewFeed, crewKey, defaultCrew, holdViewLink, joinTileStatus, liftSetup, memberNameError, memberNameFrom, memberStatus, pageAfterDelete, manifestProblems, runCounts, sidebarRunFor, startFrom, startValue, summaryOf, takeViewLink, toCrewInput, toCrewMember, toDraft, taskProblems, taskRowProblems, taskSaveProblems, draftTask, tasksFollowMembers, TASK_LIMITS } from './crews'
+import type { ManifestShape, TaskShape } from './crews'
 import { startSentence, startWords } from './crewWords'
 
 const lead: CrewMember = { name: 'lead', agentId: 'claude', prompt: 'Own the plan for $GOAL.', args: ['--model', 'x'], start: { when: 'immediately' } }
@@ -581,5 +581,170 @@ describe('tasks in the editor', () => {
     expect(startFrom('task')).toEqual({ when: 'task' })
     expect(startWords({ when: 'task' }).text).toBe('By its tasks')
     expect(startSentence([{ name: 'a', start: { when: 'task' } }, { name: 'b', start: { when: 'task' } }])).toBe('each does its tasks')
+  })
+})
+
+describe('project manifests', () => {
+  const task: CrewTask = { id: 'build', member: 'lead', kind: 'work', instructions: 'Build it.', checks: [{ id: 'unit', argv: ['go', 'test', './...'] }] }
+  const managedInfo: CrewInfo = { ...info, members: [{ ...lead, start: { when: 'task' } }], tasks: [task] }
+  /** A project manifest with every phase, valid beside the task's check "unit" (internal/crew manifest_test.go fullManifest). */
+  const fullManifest = (): CrewManifest => ({
+    prerequisites: [{ id: 'node', argv: ['node', '--version'] }],
+    env: ['NPM_TOKEN'],
+    ports: ['web', 'db'],
+    setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 900 }],
+    services: [
+      { id: 'dbserver', argv: ['postgres', '-p', '${CONDUCTOR_PORT_DB}', '-D', '${CONDUCTOR_STATE_DIR}/db'] },
+      { id: 'webserver', argv: ['npm', 'run', 'dev', '--', '--port', '${CONDUCTOR_PORT_WEB}'] },
+    ],
+    ready: [
+      { id: 'dbready', argv: ['pg_isready', '-p', '${CONDUCTOR_PORT_DB}'] },
+      { id: 'webready', url: 'http://127.0.0.1:${CONDUCTOR_PORT_WEB}/health', timeoutSeconds: 120, intervalSeconds: 1 },
+    ],
+    preview: 'http://localhost:${CONDUCTOR_PORT_WEB}/',
+    verify: [{ id: 'e2e', argv: ['npm', 'run', 'e2e'] }],
+    cleanup: [{ id: 'dropdb', argv: ['rm', '-rf', '${CONDUCTOR_STATE_DIR}/db'] }],
+  })
+  type Fixture = ManifestShape & { manifest: CrewManifest; tasks: CrewTask[] }
+  const crew = (): Fixture => ({ tasks: [structuredClone(task)], manifest: fullManifest() })
+  const steps = (prefix: string, n: number): CrewCheck[] => Array.from({ length: n }, (_, i) => ({ id: `${prefix}${i}`, argv: ['true'] }))
+
+  it('sends a manifest as the server takes it, never the revision, and setup only while the crew has one', () => {
+    const saved: CrewInfo = { ...managedInfo, manifest: { ...fullManifest(), env: [], setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 0, pending: 'x' } as CrewCheck] }, manifestRevision: 3 }
+    const sent = wire(toCrewInput(saved))
+    expect(sent).not.toHaveProperty('manifestRevision')
+    expect(sent).not.toHaveProperty('setup')
+    expect(sent.manifest.setup).toEqual([{ id: 'deps', argv: ['npm', 'ci'] }])
+    expect(sent.manifest).not.toHaveProperty('env')
+    expect(sent.manifest.ready).toEqual(fullManifest().ready)
+    expect(Object.keys(sent.manifest)).toEqual(['prerequisites', 'ports', 'setup', 'services', 'ready', 'preview', 'verify', 'cleanup'])
+    // An empty manifest is none; an empty setup is none.
+    expect(wire(toCrewInput({ ...managedInfo, manifest: { setup: [], ready: [] }, setup: [] }))).not.toHaveProperty('manifest')
+    expect(wire(toCrewInput({ ...managedInfo, setup: [] }))).not.toHaveProperty('setup')
+    // A draft of a crew with a manifest is no change until something is edited.
+    const d = toDraft(saved)
+    expect(d.manifest?.setup).toEqual([{ id: 'deps', argv: ['npm', 'ci'] }])
+    expect(crewKey(d)).toBe(crewKey(saved))
+  })
+
+  it('lifts a loaded crew\'s setup into the manifest for the editor, which then sends it as the manifest', () => {
+    const saved: CrewInfo = { ...managedInfo, setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 120 }], manifestRevision: 0 }
+    const lifted = liftSetup(saved)
+    expect(lifted.setup).toBeUndefined()
+    expect(lifted.manifest).toEqual({ setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 120 }] })
+    lifted.manifest!.setup![0]!.argv.push('--quiet')
+    expect(saved.setup![0]!.argv).toEqual(['npm', 'ci'])
+    const sent = wire(toCrewInput(liftSetup(saved)))
+    expect(sent).not.toHaveProperty('setup')
+    expect(sent.manifest).toEqual({ setup: [{ id: 'deps', argv: ['npm', 'ci'], timeoutSeconds: 120 }] })
+    // A crew with a manifest, or without a setup, stays as it is.
+    const withManifest: CrewInfo = { ...managedInfo, manifest: fullManifest() }
+    expect(liftSetup(withManifest)).toBe(withManifest)
+    expect(liftSetup(managedInfo)).toBe(managedInfo)
+  })
+
+  it('has no problem with a manifest with every phase, every list at its bound, the file form alone, or none', () => {
+    expect(manifestProblems(crew())).toEqual([])
+    const c = crew()
+    const r = c.manifest
+    r.prerequisites = steps('p', TASK_LIMITS.manifestSteps)
+    r.setup = steps('s', TASK_LIMITS.manifestSteps)
+    r.verify = steps('v', TASK_LIMITS.manifestSteps)
+    r.cleanup = steps('c', TASK_LIMITS.manifestSteps)
+    r.services = steps('svc', TASK_LIMITS.manifestServices)
+    r.ready = Array.from({ length: TASK_LIMITS.manifestSteps }, (_, i) => ({ id: `r${i}`, url: 'https://[::1]:8443/', timeoutSeconds: TASK_LIMITS.probeTimeout, intervalSeconds: TASK_LIMITS.probeInterval }))
+    r.env = Array.from({ length: TASK_LIMITS.manifestEnv }, (_, i) => `VAR_${i}`)
+    r.ports = ['a', 'b', 'c', 'd', 'e', 'f', 'web', 'p'.repeat(16)]
+    const head = `http://127.0.0.1:\${CONDUCTOR_PORT_${'P'.repeat(16)}}/`
+    r.preview = head + 'x'.repeat(TASK_LIMITS.preview - head.length)
+    expect(manifestProblems(c)).toEqual([])
+    expect(manifestProblems({ tasks: [task], manifest: { file: true } })).toEqual([])
+    expect(manifestProblems({ tasks: [task], manifest: { setup: [{ id: 'deps', argv: ['npm', 'ci'] }] } })).toEqual([])
+    expect(manifestProblems({ tasks: [], manifest: {} })).toEqual([])
+    expect(manifestProblems({ tasks: [task] })).toEqual([])
+  })
+
+  it('names each rule the server holds a manifest to, item for item with internal/crew manifest_test.go', () => {
+    const big = 'x'.repeat(TASK_LIMITS.arg)
+    const cases: Array<[string, (c: Fixture) => void, string]> = [
+      ['a manifest without tasks', (c) => (c.tasks = []), 'A project manifest needs tasks'],
+      ['setup beside the manifest', (c) => (c.setup = [{ id: 'old', argv: ['true'] }]), "setup is the manifest's setup phase, put it there"],
+      ['schema in a crew\'s manifest', (c) => (c.manifest.schema = 1), 'it is only set in conductor.manifest.json'],
+      ['file beside a phase', (c) => (c.manifest.file = true), 'set nothing else'],
+      ['too many prerequisites', (c) => (c.manifest.prerequisites = steps('p', 9)), 'At most 8 prerequisites'],
+      ['too many setup steps', (c) => (c.manifest.setup = steps('s', 9)), 'At most 8 setup steps'],
+      ['too many services', (c) => (c.manifest.services = steps('svc', 5)), 'At most 4 services'],
+      ['too many ready probes', (c) => c.manifest.ready!.push(...Array.from({ length: 7 }, (_, i) => ({ id: `r${i}`, argv: ['true'] }))), 'At most 8 ready probes'],
+      ['too many verify steps', (c) => (c.manifest.verify = steps('v', 9)), 'At most 8 verify steps'],
+      ['too many cleanup steps', (c) => (c.manifest.cleanup = steps('c', 9)), 'At most 8 cleanup steps'],
+      ['too many env names', (c) => c.manifest.env!.push(...Array.from({ length: 32 }, (_, i) => `VAR_${i}`)), 'At most 32 env names'],
+      ['too many ports', (c) => c.manifest.ports!.push('a', 'b', 'c', 'd', 'e', 'f', 'g'), 'At most 8 ports'],
+      ['a step with a bad id', (c) => (c.manifest.setup![0]!.id = 'Deps'), 'Setup step 1: Lower-case'],
+      ['a step with no program', (c) => (c.manifest.cleanup![0]!.argv = []), 'Cleanup step 1: name a program'],
+      ["a step's argv past its bound", (c) => (c.manifest.verify![0]!.argv = ['x', big, big]), 'Verify step 1: the arguments are more than 8 KiB in all'],
+      ["a step's timeout past the bound", (c) => (c.manifest.prerequisites![0]!.timeoutSeconds = 3601), 'Prerequisite 1: the timeout is 1 to 3600'],
+      ['a service with a timeout', (c) => (c.manifest.services![0]!.timeoutSeconds = 60), 'Service 1: a service has no timeout'],
+      ['an id in two lists', (c) => (c.manifest.cleanup![0]!.id = 'deps'), 'Cleanup step 1: Another one has this id'],
+      ["a probe's id taken by a step", (c) => (c.manifest.ready![0]!.id = 'webserver'), 'Ready probe 1: Another one has this id'],
+      ["an id of a task's check", (c) => (c.manifest.setup![0]!.id = 'unit'), 'Setup step 1: unit is also a check of task build'],
+      ['a bad env name', (c) => (c.manifest.env = ['NPM-TOKEN']), 'Env NPM-TOKEN: letters, digits and _'],
+      ['an env name starting with a digit', (c) => (c.manifest.env = ['1PASSWORD']), 'Env 1PASSWORD: letters, digits and _'],
+      ['a CONDUCTOR_ env name', (c) => (c.manifest.env = ['CONDUCTOR_NOTIFY_TOKEN']), "Env CONDUCTOR_NOTIFY_TOKEN is Conductor's own"],
+      ['a loader', (c) => (c.manifest.env = ['PATH', 'LD_PRELOAD']), "Env LD_PRELOAD is a loader's variable"],
+      ['an env name twice', (c) => (c.manifest.env = ['NPM_TOKEN', 'NPM_TOKEN']), 'Env NPM_TOKEN is named twice'],
+      ['a port name in capitals', (c) => (c.manifest.ports = ['Web']), 'Port Web: lower-case letters'],
+      ['a port name past 16', (c) => (c.manifest.ports = ['p'.repeat(17)]), `Port ${'p'.repeat(17)}: lower-case letters`],
+      ['a port name twice', (c) => (c.manifest.ports = ['web', 'db', 'web']), 'Port web is named twice'],
+      ['a placeholder naming no port', (c) => (c.manifest.setup![0]!.argv = ['npm', 'ci', '--port=${CONDUCTOR_PORT_API}']), 'Setup step 1: ${CONDUCTOR_PORT_API} names no port of the manifest'],
+      ['a port placeholder in lower case', (c) => (c.manifest.services![1]!.argv[5] = '${CONDUCTOR_PORT_web}'), 'Service 2: ${CONDUCTOR_PORT_web} names no port of the manifest'],
+      ["a placeholder naming no port in a probe's URL", (c) => (c.manifest.ready![1]!.url = 'http://127.0.0.1:${CONDUCTOR_PORT_API}/'), 'Ready probe 2: the URL: ${CONDUCTOR_PORT_API} names no port'],
+      ['a placeholder naming no port in the preview', (c) => (c.manifest.preview = 'http://localhost:${CONDUCTOR_PORT_UI}/'), 'The preview: ${CONDUCTOR_PORT_UI} names no port'],
+      ['a port placeholder in a prerequisite', (c) => (c.manifest.prerequisites![0]!.argv = ['nc', '-z', '127.0.0.1', '${CONDUCTOR_PORT_DB}']), 'Prerequisite 1: a prerequisite runs before any tree: no placeholders'],
+      ['the state directory in a prerequisite', (c) => (c.manifest.prerequisites![0]!.argv = ['mkdir', '${CONDUCTOR_STATE_DIR}/cache']), 'Prerequisite 1: a prerequisite runs before any tree: no placeholders'],
+      ['a probe with argv and url', (c) => (c.manifest.ready![0]!.url = 'http://127.0.0.1/'), 'Ready probe 1: a probe has a command or a URL, not both'],
+      ['a probe with neither', (c) => (c.manifest.ready![0]!.argv = []), 'Ready probe 1: give it a command or a URL'],
+      ['a probe with a bad id', (c) => (c.manifest.ready![0]!.id = 'db.ready'), 'Ready probe 1: Lower-case'],
+      ["a probe's argv with no program", (c) => (c.manifest.ready![0]!.argv = ['']), 'Ready probe 1: name a program'],
+      ["a probe's URL off the loopback", (c) => (c.manifest.ready![1]!.url = 'http://example.com/health'), 'Ready probe 2: the URL must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL on a host that starts as the loopback", (c) => (c.manifest.ready![1]!.url = 'http://127.0.0.1.example.com/'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL with a user", (c) => (c.manifest.ready![1]!.url = 'http://localhost@example.com/'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL of another scheme", (c) => (c.manifest.ready![1]!.url = 'ftp://127.0.0.1/'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL with a space", (c) => (c.manifest.ready![1]!.url = 'http://127.0.0.1/a b'), 'must be http or https on 127.0.0.1, localhost or [::1]'],
+      ["a probe's URL past 2048", (c) => (c.manifest.ready![1]!.url = 'http://127.0.0.1/' + 'x'.repeat(2048)), 'Ready probe 2: the URL is longer than 2048 bytes'],
+      ["a probe's port of 0", (c) => (c.manifest.ready![1]!.url = 'http://127.0.0.1:0/'), 'the port must be 1 to 65535'],
+      ["a probe's port past 65535", (c) => (c.manifest.ready![1]!.url = 'http://[::1]:65536/'), 'the port must be 1 to 65535'],
+      ["a probe's timeout past the bound", (c) => (c.manifest.ready![1]!.timeoutSeconds = 3601), 'Ready probe 2: the timeout is 1 to 3600 seconds'],
+      ["a probe's negative timeout", (c) => (c.manifest.ready![1]!.timeoutSeconds = -1), 'Ready probe 2: the timeout is 1 to 3600 seconds'],
+      ["a probe's interval past the bound", (c) => (c.manifest.ready![1]!.intervalSeconds = 61), 'Ready probe 2: the interval is 1 to 60 seconds'],
+      ['a preview off the loopback', (c) => (c.manifest.preview = 'https://preview.example.com/'), 'The preview must be http or https on 127.0.0.1, localhost or [::1]'],
+      ['a preview past 512', (c) => (c.manifest.preview = 'http://localhost/' + 'x'.repeat(512)), 'The preview is longer than 512 bytes'],
+      ['a manifest past 64 KiB as JSON', (c) => (c.manifest.setup = Array.from({ length: 8 }, (_, i) => ({ id: `s${i}`, argv: [big, big] }))), 'bytes as JSON, more than 65536'],
+    ]
+    for (const [name, edit, words] of cases) {
+      const c = crew()
+      edit(c)
+      expect(manifestProblems(c).join('\n'), name).toContain(words)
+    }
+    expect(cases).toHaveLength(52)
+  })
+
+  it('counts a manifest as the server writes it as JSON, case for case with internal/crew manifest_test.go', () => {
+    // Eight setup steps of two arguments, the last step's second one `last`: 61,457 bytes as JSON before it. The server writes U+2028 and
+    // U+2029 escaped (six bytes, where JSON.stringify keeps three) and a lone surrogate as U+FFFD (three, where JSON.stringify sends a
+    // six-byte escape), so JSON.stringify's own text would pass the U+2028 and U+2029 manifests past the bound and refuse the lone surrogate's
+    // at it.
+    const sized = (last: string): Fixture => ({
+      tasks: [structuredClone(task)],
+      manifest: { setup: Array.from({ length: 8 }, (_, i) => ({ id: `s${i}`, argv: ['x'.repeat(TASK_LIMITS.arg), i === 7 ? last : 'y'.repeat(4066)] })) },
+    })
+    const past = ['The project manifest is 65537 bytes as JSON, more than 65536']
+    const [ls, ps, lone] = [String.fromCharCode(0x2028), String.fromCharCode(0x2029), String.fromCharCode(0xd800)]
+    expect(manifestProblems(sized('y'.repeat(4079)))).toEqual([])
+    expect(manifestProblems(sized('y'.repeat(4080)))).toEqual(past)
+    expect(manifestProblems(sized('y'.repeat(4073) + ls))).toEqual([])
+    expect(manifestProblems(sized('y'.repeat(4074) + ls))).toEqual(past)
+    expect(manifestProblems(sized('y'.repeat(4074) + ps))).toEqual(past)
+    expect(manifestProblems(sized('y'.repeat(4076) + lone))).toEqual([])
+    expect(manifestProblems(sized('y'.repeat(4077) + lone))).toEqual(past)
   })
 })

@@ -2140,3 +2140,151 @@ func TestAForgottenRunsRecordKeepsItsChat(t *testing.T) {
 	}
 	e.do("POST", "/api/runs/"+next+"/stop", adminToken, nil)
 }
+
+// manifestCrewBody is a crew with tasks as the web client sends it, its
+// member on agent, with the project manifest given.
+func (e *testEnv) manifestCrewBody(name, agent string, manifest any) map[string]any {
+	return map[string]any{
+		"name": name, "goal": "ship it", "cwd": e.root, "where": "server", "isolation": "worktree",
+		"members": []any{map[string]any{"name": "lead", "agentId": agent, "prompt": "", "start": map[string]any{"when": "task"}}},
+		"tasks": []any{map[string]any{"id": "build", "member": "lead", "kind": "work", "instructions": "Build it.",
+			"checks": []any{map[string]any{"id": "unit", "argv": []any{"true"}}}}},
+		"manifest": manifest,
+	}
+}
+
+// asJSON is v as a client reads it back: through JSON.
+func asJSON(t *testing.T, v any) any {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A crew's project manifest goes in by the crew body and reads back as sent,
+// with the server's count of its changes beside it: 1 when created, 2 once
+// changed, kept by a save that leaves it as it was. The count is the
+// server's: a body that carries it is refused as one carrying id is.
+func TestACrewsProjectManifestRoundTripsWithItsRevision(t *testing.T) {
+	e := newTestEnv(t, nil)
+	manifest := map[string]any{
+		"prerequisites": []any{map[string]any{"id": "node", "argv": []any{"node", "--version"}, "timeoutSeconds": 30}},
+		"env":           []any{"NPM_TOKEN"},
+		"ports":         []any{"web"},
+		"setup":         []any{map[string]any{"id": "deps", "argv": []any{"npm", "ci"}}},
+		"services":      []any{map[string]any{"id": "web", "argv": []any{"npm", "start", "--", "--port", "${CONDUCTOR_PORT_WEB}"}}},
+		"ready":         []any{map[string]any{"id": "up", "url": "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", "intervalSeconds": 1}},
+		"preview":       "http://localhost:${CONDUCTOR_PORT_WEB}/",
+		"verify":        []any{map[string]any{"id": "e2e", "argv": []any{"npm", "run", "e2e"}}},
+		"cleanup":       []any{map[string]any{"id": "clean", "argv": []any{"rm", "-rf", "${CONDUCTOR_STATE_DIR}/db"}}},
+	}
+	created := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Manifests", "cat", manifest), http.StatusCreated)
+	id, _ := created["id"].(string)
+	if !reflect.DeepEqual(created["manifest"], asJSON(t, manifest)) || created["manifestRevision"] != 1.0 {
+		t.Fatalf("created: %v %v", created["manifest"], created["manifestRevision"])
+	}
+	if got := e.crew(id); !reflect.DeepEqual(got, created) {
+		t.Fatalf("read back: %v", got)
+	}
+	changed := e.manifestCrewBody("Manifests", "cat", map[string]any{"setup": []any{map[string]any{"id": "deps", "argv": []any{"npm", "install"}}}})
+	updated := e.sendCrew("PUT", "/api/crews/"+id, changed, http.StatusOK)
+	if updated["manifestRevision"] != 2.0 || !reflect.DeepEqual(updated["manifest"], asJSON(t, changed["manifest"])) {
+		t.Fatalf("updated: %v %v", updated["manifest"], updated["manifestRevision"])
+	}
+	if got := e.crew(id); got["manifestRevision"] != 2.0 || !reflect.DeepEqual(got["manifest"], updated["manifest"]) {
+		t.Fatalf("read back after the update: %v", got)
+	}
+	changed["goal"] = "ship it again"
+	if again := e.sendCrew("PUT", "/api/crews/"+id, changed, http.StatusOK); again["manifestRevision"] != 2.0 {
+		t.Fatalf("an unchanged manifest: %v", again["manifestRevision"])
+	}
+	if stored := e.storedCrew(id); stored["manifestRevision"] != 2.0 || stored["manifest"] == nil {
+		t.Fatalf("the file: %v", stored)
+	}
+
+	// The count is the server's.
+	carrying := e.manifestCrewBody("Manifests", "cat", manifest)
+	carrying["manifestRevision"] = 7
+	resp, out := e.do("PUT", "/api/crews/"+id, adminToken, carrying)
+	wantAPIError(t, "a body carrying manifestRevision", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "manifestRevision"`)
+	resp, out = e.do("POST", "/api/crews", adminToken, carrying)
+	wantAPIError(t, "a create carrying manifestRevision", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "manifestRevision"`)
+	// A manifest is decoded as strictly as the rest of the body.
+	resp, out = e.do("POST", "/api/crews", adminToken, e.manifestCrewBody("Manifests", "cat", map[string]any{"setups": []any{}}))
+	wantAPIError(t, "an unknown field of the manifest", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "setups"`)
+	// setup is the manifest's setup phase: a crew has one or the other.
+	both := e.manifestCrewBody("Manifests", "cat", manifest)
+	both["setup"] = []any{map[string]any{"id": "old", "argv": []any{"true"}}}
+	resp, out = e.do("PUT", "/api/crews/"+id, adminToken, both)
+	wantAPIError(t, "setup beside a manifest", resp, out, http.StatusBadRequest, "invalid_crew", "setup is the project manifest's setup phase: put it there")
+	// A rule of the manifest is a rule of the crew.
+	resp, out = e.do("POST", "/api/crews", adminToken, e.manifestCrewBody("Manifests", "cat", map[string]any{"preview": "http://example.com/"}))
+	wantAPIError(t, "a preview off the loopback", resp, out, http.StatusBadRequest, "invalid_crew", "must be http or https on 127.0.0.1, localhost or [::1]")
+	if got := e.crew(id); got["manifestRevision"] != 2.0 || got["goal"] != "ship it again" {
+		t.Fatalf("after the refusals: %v", got)
+	}
+}
+
+// A crew read back goes back by PUT once the fields the server sets are
+// taken out, as docs/protocol.md's crew rows name them: id, createdAt,
+// updatedAt and manifestRevision, which a crew with a legacy setup carries
+// too (1 when created). A body that keeps the count is refused.
+func TestACrewReadBackGoesBackWithoutWhatTheServerSets(t *testing.T) {
+	e := newTestEnv(t, nil)
+	body := e.manifestCrewBody("Legacy", "cat", nil)
+	delete(body, "manifest")
+	body["setup"] = []any{map[string]any{"id": "deps", "argv": []any{"npm", "ci"}}}
+	id, _ := e.sendCrew("POST", "/api/crews", body, http.StatusCreated)["id"].(string)
+	read := e.crew(id)
+	if read["manifestRevision"] != 1.0 {
+		t.Fatalf("a new crew with a setup: %v", read["manifestRevision"])
+	}
+	for _, k := range []string{"id", "createdAt", "updatedAt"} {
+		delete(read, k)
+	}
+	resp, out := e.do("PUT", "/api/crews/"+id, adminToken, read)
+	wantAPIError(t, "a crew read back with its count", resp, out, http.StatusBadRequest, "invalid_request", `unknown field "manifestRevision"`)
+	delete(read, "manifestRevision")
+	read["goal"] = "edited"
+	if saved := e.sendCrew("PUT", "/api/crews/"+id, read, http.StatusOK); saved["manifestRevision"] != 1.0 || saved["goal"] != "edited" || saved["setup"] == nil {
+		t.Fatalf("a crew read back without what the server sets: %v", saved)
+	}
+}
+
+// The launch of a project manifest this build does not run yet is refused
+// with words that say so, and nothing is made; one with its setup phase
+// alone launches, its setup run as a legacy setup is.
+func TestALaunchOfAProjectManifestThisBuildDoesNotRunIsRefused(t *testing.T) {
+	e := readyEnv(t, nil)
+	e.gitRepo(t)
+	services := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Services", "ready-cat",
+		map[string]any{"services": []any{map[string]any{"id": "web", "argv": []any{"npm", "start"}}}}), http.StatusCreated)
+	resp, out := e.do("POST", "/api/crews/"+services["id"].(string)+"/launch", adminToken, nil)
+	wantAPIError(t, "a manifest with a service", resp, out, http.StatusBadRequest, "invalid_crew", "this build does not run a project manifest's services yet")
+	if _, err := os.Stat(filepath.Join(e.root, ".conductor", "worktrees")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a refused launch made the worktrees: %v", err)
+	}
+	if runs := e.srv.runs.List(); len(runs) != 0 {
+		t.Fatalf("a refused launch kept a run: %+v", runs)
+	}
+	setupOnly := e.sendCrew("POST", "/api/crews", e.manifestCrewBody("Setup", "ready-cat",
+		map[string]any{"setup": []any{map[string]any{"id": "deps", "argv": []any{"sh", "-c", "echo dep > dep.txt"}}}}), http.StatusCreated)
+	resp, out = e.do("POST", "/api/crews/"+setupOnly["id"].(string)+"/launch", adminToken, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("a manifest with its setup alone: %d %v", resp.StatusCode, out)
+	}
+	runID := out["run"].(map[string]any)["id"].(string)
+	a := runningAttempt(t, e, runID, "build", 1)
+	if _, err := os.Stat(filepath.Join(a["worktree"].(string), "dep.txt")); err != nil {
+		t.Fatalf("the manifest's setup did not run in the worktree: %v", err)
+	}
+	if resp, out := e.do("POST", "/api/runs/"+runID+"/stop", adminToken, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop: %d %v", resp.StatusCode, out)
+	}
+}

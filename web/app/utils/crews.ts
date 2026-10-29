@@ -1,4 +1,4 @@
-import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewStart, CrewSummary, CrewTask, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
+import type { AgentInfo, BroadcastResult, BroadcastSkipReason, CrewCheck, CrewInfo, CrewInput, CrewMember, CrewProbe, CrewManifest, CrewStart, CrewSummary, CrewTask, JoinRunMember, RunInfo, RunMember, SessionInfo } from '~/composables/useSessions'
 import type { ActivityEntry } from './protocol'
 import { joinArgv, splitArgs } from './argv'
 import { isEnded } from './attention'
@@ -6,7 +6,8 @@ import { EVENT_INFO, feedTime, markOf, type EventColor, type FeedEntry } from '.
 
 /**
  * The body of POST /api/crews and PUT /api/crews/{id}: the fields the server accepts and nothing else, since it rejects unknown fields. A crew read
- * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt and updatedAt) or members carrying page state can be passed as they are.
+ * in full (a CrewInfo from GET /api/crews/{id}, with id, createdAt, updatedAt and manifestRevision) or members carrying page state can be passed as
+ * they are. The project manifest goes when it holds something, and the legacy setup only while the crew still has one.
  */
 export function toCrewInput(c: Omit<CrewInput, 'tasks'> & { tasks?: ReadonlyArray<CrewTask | DraftTask> }): CrewInput {
   const out: CrewInput = {
@@ -21,8 +22,55 @@ export function toCrewInput(c: Omit<CrewInput, 'tasks'> & { tasks?: ReadonlyArra
     members: c.members.map(toCrewMember),
   }
   if (c.tasks) out.tasks = plainTasks(c.tasks).map(toCrewTask)
-  if (c.setup) out.setup = c.setup.map(toCrewCheck)
+  if (c.setup?.length) out.setup = c.setup.map(toCrewCheck)
+  if (c.manifest) {
+    const manifest = toCrewManifest(c.manifest)
+    if (!manifestEmpty(manifest)) out.manifest = manifest
+  }
   return out
+}
+
+/** A project manifest as the server accepts it: its fields and nothing else, each list's entries by toCrewCheck and toCrewProbe, empty ones left out. */
+export function toCrewManifest(r: CrewManifest): CrewManifest {
+  const out: CrewManifest = {}
+  if (r.schema) out.schema = r.schema
+  if (r.file) out.file = true
+  if (r.prerequisites?.length) out.prerequisites = r.prerequisites.map(toCrewCheck)
+  if (r.env?.length) out.env = [...r.env]
+  if (r.ports?.length) out.ports = [...r.ports]
+  if (r.setup?.length) out.setup = r.setup.map(toCrewCheck)
+  if (r.services?.length) out.services = r.services.map(toCrewCheck)
+  if (r.ready?.length) out.ready = r.ready.map(toCrewProbe)
+  if (r.preview) out.preview = r.preview
+  if (r.verify?.length) out.verify = r.verify.map(toCrewCheck)
+  if (r.cleanup?.length) out.cleanup = r.cleanup.map(toCrewCheck)
+  return out
+}
+
+/** A readiness probe as the server accepts it: an empty argv, an empty URL and a zero timeout or interval left out. */
+export function toCrewProbe(p: CrewProbe): CrewProbe {
+  const out: CrewProbe = { id: p.id }
+  if (p.argv?.length) out.argv = [...p.argv]
+  if (p.url) out.url = p.url
+  if (p.timeoutSeconds) out.timeoutSeconds = p.timeoutSeconds
+  if (p.intervalSeconds) out.intervalSeconds = p.intervalSeconds
+  return out
+}
+
+/** Whether a project manifest holds nothing: a crew with an empty manifest has none (the server leaves it out). */
+export function manifestEmpty(r: CrewManifest): boolean {
+  return !r.schema && !r.file && !r.prerequisites?.length && !r.env?.length && !r.ports?.length && !r.setup?.length && !r.services?.length && !r.ready?.length && !r.preview && !r.verify?.length && !r.cleanup?.length
+}
+
+/**
+ * A loaded crew as the editor holds it: a legacy setup lifted into its project manifest's setup phase, so the editor has one place for it;
+ * a crew with a manifest, or without a setup, as it is. Saved so, the setup is the same manifest to the server, whose count of its changes
+ * (manifestRevision) stays where it was.
+ */
+export function liftSetup<T extends { setup?: CrewCheck[]; manifest?: CrewManifest }>(c: T): T {
+  if (!c.setup?.length || (c.manifest && !manifestEmpty(c.manifest))) return c
+  const { setup, ...rest } = c
+  return { ...rest, manifest: { ...c.manifest, setup: setup.map((ch) => ({ ...ch, argv: [...ch.argv] })) } } as T
 }
 
 /** A task as the server accepts it: its fields and nothing else; empty needs and checks left out. */
@@ -141,8 +189,30 @@ export function memberNameFrom(text: string, taken: readonly string[] = []): str
 /** A task's or a check's id as the server accepts it (internal/crew taskIDPattern): no dot, since an attempt's branch is `crew/<run>/<task>.<n>`. */
 export const TASK_ID = /^[a-z0-9][a-z0-9_-]{0,39}$/
 
-/** The server's bounds on tasks (internal/crew). */
-export const TASK_LIMITS = { tasks: 128, instructions: 8000, checks: 8, timeout: 3600, timeoutDefault: 600, argv: 32, arg: 4096, argvBytes: 8192, taskText: 40 << 10 } as const
+/** The server's bounds on tasks and their project manifest (internal/crew). */
+export const TASK_LIMITS = {
+  tasks: 128,
+  instructions: 8000,
+  checks: 8,
+  timeout: 3600,
+  timeoutDefault: 600,
+  argv: 32,
+  arg: 4096,
+  argvBytes: 8192,
+  taskText: 40 << 10,
+  /** Prerequisites, setup, ready, verify and cleanup steps of a project manifest, each. */
+  manifestSteps: 8,
+  manifestServices: 4,
+  manifestEnv: 32,
+  manifestPorts: 8,
+  probeTimeout: 3600,
+  probeTimeoutDefault: 60,
+  probeInterval: 60,
+  probeIntervalDefault: 2,
+  probeUrl: 2048,
+  preview: 512,
+  manifestJson: 64 << 10,
+} as const
 
 /** Why the server would refuse a task or check id, or '' when it is fine. */
 export function taskIdError(id: string, taken: readonly string[] = []): string {
@@ -153,6 +223,31 @@ export function taskIdError(id: string, taken: readonly string[] = []): string {
 }
 
 const bytes = (s: string) => new TextEncoder().encode(s).length
+
+/**
+ * How many bytes v takes as JSON as the server writes it (Go's encoding/json, compact, with <, > and & as they are: internal/crew
+ * encodeManifest). JSON.stringify's own text is off both ways: the server escapes U+2028 and U+2029, six bytes each where JSON.stringify keeps
+ * the three-byte character, and a lone surrogate, which JSON.stringify sends as a six-byte escape, reaches the server as U+FFFD, three bytes.
+ */
+function serverJsonBytes(v: unknown): number {
+  const text = JSON.stringify(v, (_key, x: unknown) => (typeof x === 'string' ? wellFormed(x) : x))
+  let n = bytes(text)
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c === 0x2028 || c === 0x2029) n += 3
+  }
+  return n
+}
+
+/** s with each lone surrogate as U+FFFD: the string the server decodes from JSON.stringify's escape of one. */
+function wellFormed(s: string): string {
+  let out = ''
+  for (const ch of s) {
+    const c = ch.charCodeAt(0)
+    out += ch.length === 1 && c >= 0xd800 && c <= 0xdfff ? String.fromCharCode(0xfffd) : ch
+  }
+  return out
+}
 
 /** Why the server would refuse a check or setup command (its id, argv and timeout), in order; empty when it is fine. */
 export function checkProblems(c: DraftCheck, what: string, taken: readonly string[] = []): string[] {
@@ -167,6 +262,138 @@ export function checkProblems(c: DraftCheck, what: string, taken: readonly strin
   if (c.argv.reduce((n, a) => n + bytes(a), 0) > TASK_LIMITS.argvBytes) out.push(`${what}: the arguments are more than 8 KiB in all`)
   if (c.timeoutSeconds !== undefined && (c.timeoutSeconds < 0 || c.timeoutSeconds > TASK_LIMITS.timeout || !Number.isInteger(c.timeoutSeconds)))
     out.push(`${what}: the timeout is 1 to ${TASK_LIMITS.timeout} seconds`)
+  return out
+}
+
+/** The variables never passed to a child (internal/pty blocked): a loader that would change what a program runs. */
+export const BLOCKED_ENV: readonly string[] = ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES']
+
+/** A variable name a project manifest's env may give (internal/crew envNamePattern). */
+export const MANIFEST_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+
+/** A project manifest's port name (internal/crew portNamePattern): CONDUCTOR_PORT_<NAME> is its upper case. */
+export const MANIFEST_PORT_NAME = /^[a-z][a-z0-9_]{0,15}$/
+
+/** A placeholder: ${CONDUCTOR_PORT_<NAME>}, whatever the name, or ${CONDUCTOR_STATE_DIR} (internal/crew placeholderPattern). */
+const PLACEHOLDER = /\$\{CONDUCTOR_(?:PORT_([A-Za-z0-9_]*)|STATE_DIR)\}/g
+
+/** A probe's URL or the preview: http or https on 127.0.0.1, localhost or [::1], the port digits or a port placeholder (internal/crew loopbackURLPattern). */
+const LOOPBACK_URL = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::([0-9]{1,5}|\$\{CONDUCTOR_PORT_[A-Za-z0-9_]*\}))?(?:[/?#][^\x00-\x20\x7f]*)?$/
+
+/** Why the server would refuse an argv as a probe's command: it names no program, holds NUL, or passes the member-args bounds. */
+function argvProblems(argv: readonly string[], what: string): string[] {
+  const out: string[] = []
+  if (!argv.length || !argv[0]) out.push(`${what}: name a program`)
+  if (argv.some((a) => a.includes('\0'))) out.push(`${what}: an argument contains NUL`)
+  if (argv.length > TASK_LIMITS.argv) out.push(`${what}: at most ${TASK_LIMITS.argv} arguments`)
+  if (argv.some((a) => bytes(a) > TASK_LIMITS.arg)) out.push(`${what}: an argument is longer than ${TASK_LIMITS.arg} bytes`)
+  if (argv.reduce((n, a) => n + bytes(a), 0) > TASK_LIMITS.argvBytes) out.push(`${what}: the arguments are more than 8 KiB in all`)
+  return out
+}
+
+/** The port placeholders in s that name no port of the manifest (ports: their upper-case names). */
+function strayPlaceholders(s: string, ports: ReadonlySet<string>): string[] {
+  return [...s.matchAll(PLACEHOLDER)].filter((m) => m[0] !== '${CONDUCTOR_STATE_DIR}' && !ports.has(m[1] ?? '')).map((m) => m[0])
+}
+
+/** Why the server would refuse a probe's URL or the preview, which takes at most `most` bytes. */
+function urlProblems(u: string, what: string, most: number, ports: ReadonlySet<string>): string[] {
+  if (bytes(u) > most) return [`${what} is longer than ${most} bytes`]
+  const m = LOOPBACK_URL.exec(u)
+  if (!m) return [`${what} must be http or https on 127.0.0.1, localhost or [::1]`]
+  const port = m[1]
+  if (port && !port.startsWith('$') && (Number(port) < 1 || Number(port) > 65535)) return [`${what}: the port must be 1 to 65535`]
+  return strayPlaceholders(u, ports).map((p) => `${what}: ${p} names no port of the manifest`)
+}
+
+/** A whole number from 0 to most: a timeout or an interval left out (0) or within its bound. */
+const withinBound = (n: number | undefined, most: number) => n === undefined || (Number.isInteger(n) && n >= 0 && n <= most)
+
+/** What a crew looks like to the project manifest's rules: its manifest, its legacy setup and its tasks (a saved crew's or the editor's). */
+export interface ManifestShape {
+  manifest?: CrewManifest
+  setup?: readonly CrewCheck[]
+  tasks?: ReadonlyArray<CrewTask | DraftTask>
+}
+
+/**
+ * Why the server would refuse a crew's project manifest (internal/crew Manifest.validate, and checkTasks around it), every problem in the server's
+ * order; empty when it would be accepted or there is none. A manifest needs tasks, never sits beside a setup, and is held to its bounds: the
+ * lists' counts, each step as a check, ids unique across the manifest and none a task's check id, the env and port names, the URLs, and the
+ * placeholders (one naming no port, and any in a prerequisite). The server reads conductor.manifest.json itself: with `file`, nothing else is set.
+ */
+export function manifestProblems(c: ManifestShape): string[] {
+  const r = c.manifest
+  if (!r || manifestEmpty(r)) return []
+  const tasks = plainTasks(c.tasks ?? [])
+  if (!tasks.length) return ['A project manifest needs tasks']
+  const out: string[] = []
+  if (c.setup?.length) out.push("Setup commands beside a project manifest: setup is the manifest's setup phase, put it there")
+  if (r.schema) out.push('A project manifest in the crew leaves schema out: it is only set in conductor.manifest.json')
+  if (r.file) {
+    if (!manifestEmpty({ ...r, file: false })) out.push("With conductor.manifest.json, the manifest is the file at each tree's commit: set nothing else")
+    return out
+  }
+  const env = r.env ?? []
+  if (env.length > TASK_LIMITS.manifestEnv) out.push(`At most ${TASK_LIMITS.manifestEnv} env names`)
+  for (const [i, name] of env.entries()) {
+    if (!MANIFEST_ENV_NAME.test(name)) out.push(`Env ${name || i + 1}: letters, digits and _, not starting with a digit, at most 128`)
+    else if (name.startsWith('CONDUCTOR_')) out.push(`Env ${name} is Conductor's own: a CONDUCTOR_ name never comes from the host`)
+    else if (BLOCKED_ENV.includes(name)) out.push(`Env ${name} is a loader's variable, never passed on`)
+    else if (env.slice(0, i).includes(name)) out.push(`Env ${name} is named twice`)
+  }
+  const portNames = r.ports ?? []
+  if (portNames.length > TASK_LIMITS.manifestPorts) out.push(`At most ${TASK_LIMITS.manifestPorts} ports`)
+  const ports = new Set<string>()
+  for (const [i, name] of portNames.entries()) {
+    if (!MANIFEST_PORT_NAME.test(name)) out.push(`Port ${name || i + 1}: lower-case letters, digits and _, starting with a letter, at most 16`)
+    else if (portNames.slice(0, i).includes(name)) out.push(`Port ${name} is named twice`)
+    ports.add(name.toUpperCase())
+  }
+  const checkOf = new Map<string, string>()
+  for (const t of tasks) for (const ch of t.checks ?? []) if (!checkOf.has(ch.id)) checkOf.set(ch.id, t.id)
+  const ids: string[] = []
+  const takeId = (what: string, id: string) => {
+    const task = checkOf.get(id)
+    if (task !== undefined) out.push(`${what}: ${id} is also a check of task ${task}: a step's id is its own`)
+    ids.push(id)
+  }
+  const steps = (list: readonly CrewCheck[] | undefined, label: string, words: string, most: number, rule: 'tree' | 'prerequisite' | 'service') => {
+    if ((list?.length ?? 0) > most) out.push(`At most ${most} ${words}`)
+    for (const [i, ch] of (list ?? []).entries()) {
+      const what = `${label} ${i + 1}`
+      if (rule === 'service' && ch.timeoutSeconds) out.push(`${what}: a service has no timeout: it runs as long as its tree`)
+      out.push(...checkProblems(ch, what, ids))
+      takeId(what, ch.id)
+      if (rule === 'prerequisite' && ch.argv.some((a) => a.match(PLACEHOLDER))) out.push(`${what}: a prerequisite runs before any tree: no placeholders`)
+      for (const a of ch.argv) for (const p of strayPlaceholders(a, ports)) out.push(`${what}: ${p} names no port of the manifest`)
+    }
+  }
+  steps(r.prerequisites, 'Prerequisite', 'prerequisites', TASK_LIMITS.manifestSteps, 'prerequisite')
+  steps(r.setup, 'Setup step', 'setup steps', TASK_LIMITS.manifestSteps, 'tree')
+  steps(r.services, 'Service', 'services', TASK_LIMITS.manifestServices, 'service')
+  const ready = r.ready ?? []
+  if (ready.length > TASK_LIMITS.manifestSteps) out.push(`At most ${TASK_LIMITS.manifestSteps} ready probes`)
+  for (const [i, p] of ready.entries()) {
+    const what = `Ready probe ${i + 1}`
+    const idErr = taskIdError(p.id, ids)
+    if (idErr) out.push(`${what}: ${idErr}`)
+    const argv = p.argv ?? []
+    if (argv.length && p.url) out.push(`${what}: a probe has a command or a URL, not both`)
+    else if (argv.length) {
+      out.push(...argvProblems(argv, what))
+      for (const a of argv) for (const ph of strayPlaceholders(a, ports)) out.push(`${what}: ${ph} names no port of the manifest`)
+    } else if (p.url) out.push(...urlProblems(p.url, `${what}: the URL`, TASK_LIMITS.probeUrl, ports))
+    else out.push(`${what}: give it a command or a URL`)
+    if (!withinBound(p.timeoutSeconds, TASK_LIMITS.probeTimeout)) out.push(`${what}: the timeout is 1 to ${TASK_LIMITS.probeTimeout} seconds`)
+    if (!withinBound(p.intervalSeconds, TASK_LIMITS.probeInterval)) out.push(`${what}: the interval is 1 to ${TASK_LIMITS.probeInterval} seconds`)
+    takeId(what, p.id)
+  }
+  if (r.preview) out.push(...urlProblems(r.preview, 'The preview', TASK_LIMITS.preview, ports))
+  steps(r.verify, 'Verify step', 'verify steps', TASK_LIMITS.manifestSteps, 'tree')
+  steps(r.cleanup, 'Cleanup step', 'cleanup steps', TASK_LIMITS.manifestSteps, 'tree')
+  const size = serverJsonBytes(toCrewManifest(r))
+  if (size > TASK_LIMITS.manifestJson) out.push(`The project manifest is ${size} bytes as JSON, more than ${TASK_LIMITS.manifestJson}`)
   return out
 }
 
