@@ -58,6 +58,9 @@ type fakeLauncher struct {
 	pause time.Duration
 	// inputWait is every session's Options.InputWait; the default when zero.
 	inputWait time.Duration
+	// ended ends the engine's runs, once, before the first of its
+	// processes is ended at the test's end (endRuns).
+	ended sync.Once
 
 	mu           sync.Mutex
 	calls        []launchCall
@@ -123,7 +126,10 @@ func (f *fakeLauncher) Launch(ctx context.Context, spec LaunchSpec) (*session.Lo
 	f.mu.Lock()
 	f.procs[name], f.locals[name], f.byID[info.ID] = p, l, l
 	f.mu.Unlock()
-	f.t.Cleanup(func() { p.End(0) })
+	f.t.Cleanup(func() {
+		f.endRuns()
+		p.End(0)
+	})
 	if f.onLaunch != nil {
 		go f.onLaunch(name, p, l)
 	}
