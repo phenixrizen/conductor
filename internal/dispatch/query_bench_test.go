@@ -45,9 +45,10 @@ func benchText(words []string, z *rand.Zipf, n int) string {
 // assignees, an owner, a milestone of five per project, a status, a
 // priority and a horizon spread over their vocabularies, a fifth with a
 // parent, one in twenty blocked and one in fifty deleted. The rows are
-// written in one transaction, as a restore would leave them, and each
-// ticket's search entry by indexTicket, as an operation writes it. It
-// answers the words, for the searches.
+// written in one transaction, as a restore would leave them, and the
+// search entries of each ticket and each comment by indexTicket and
+// indexComment, as an operation writes them. It answers the words, for
+// the searches.
 func seedBench(tb testing.TB, s *Store, n int) []string {
 	tb.Helper()
 	ctx := context.Background()
@@ -94,7 +95,7 @@ func seedBench(tb testing.TB, s *Store, n int) []string {
 			p.milestones = append(p.milestones, id)
 		}
 	}
-	var ids []string
+	var ids, comments []string
 	for i := range n {
 		p := projects[0]
 		switch k := i % 6; {
@@ -137,8 +138,10 @@ func seedBench(tb testing.TB, s *Store, n int) []string {
 			exec("INSERT INTO ticket_labels (ticket_id, label_id) VALUES (?, ?)", id, p.labels[l])
 		}
 		for c := range r.Intn(4) {
+			comment := newID()
 			exec("INSERT INTO comments (id, ticket_id, author, by, body, created_at, rev) VALUES (?, ?, 'admin', 'Alice', ?, ?, 1)",
-				newID(), id, benchText(words, z, 10+r.Intn(50)), stampAt(created+c+1))
+				comment, id, benchText(words, z, 10+r.Intn(50)), stampAt(created+c+1))
+			comments = append(comments, comment)
 		}
 		if len(p.tickets) > 0 && r.Intn(20) == 0 {
 			exec("INSERT INTO relations (id, from_id, to_id, kind, created_at) VALUES (?, ?, ?, ?, ?)", newID(), p.tickets[r.Intn(len(p.tickets))], id, RelationBlocks, stampAt(created))
@@ -148,6 +151,11 @@ func seedBench(tb testing.TB, s *Store, n int) []string {
 	}
 	for _, id := range ids {
 		if err := indexTicket(ctx, tx, id); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	for _, id := range comments {
+		if err := indexComment(ctx, tx, id); err != nil {
 			tb.Fatal(err)
 		}
 	}
@@ -192,7 +200,11 @@ func mostBegun(words []string, n int) string {
 // full-text target as the search of every project is. The others show
 // the list's other common pages, a search of one letter of every project
 // among them: no page sends one, since a search box searches its project
-// and the CLI and a saved view of every project send whole words.
+// and the CLI and a saved view of every project send whole words. The
+// last is the longest search a client may send, MaxQueryText characters
+// of the vocabulary's most common words, of every project: each term
+// reads every entry it matches (termMatch), so it shows what a search's
+// many common words cost.
 func BenchmarkList(b *testing.B) {
 	s, err := Open(b.TempDir())
 	if err != nil {
@@ -209,6 +221,18 @@ func BenchmarkList(b *testing.B) {
 	// halfway: what a person looking for a ticket types.
 	search := words[3] + " " + words[40][:len(words[40])-1]
 	letter, letters := mostBegun(words, 1), mostBegun(words, 2)
+	// The vocabulary's words in the order of the Zipf law, the most
+	// common first, as many as fit in the longest search.
+	var longest strings.Builder
+	for _, w := range words {
+		if longest.Len()+1+len(w) > MaxQueryText {
+			break
+		}
+		if longest.Len() > 0 {
+			longest.WriteByte(' ')
+		}
+		longest.WriteString(w)
+	}
 	filtered := Filter{Status: []string{TicketReady, TicketInProgress, TicketInReview}, Labels: []string{labels[0].ID, labels[1].ID},
 		Sort: SortPriority, Desc: true}
 	for _, c := range []struct {
@@ -227,6 +251,7 @@ func BenchmarkList(b *testing.B) {
 		{"search-every-project", Query{Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}}, benchSearchTarget},
 		{"search-one-letter-every-project-200", Query{Filter: Filter{Q: letter, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, 0},
 		{"assignee-by-milestone", Query{Project: "BENB", Filter: Filter{Assignees: []string{"agent:claude"}, Sort: SortMilestone}}, 0},
+		{"search-longest-every-project", Query{Filter: Filter{Q: longest.String(), Sort: SortUpdated, Desc: true}}, 0},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			page, err := s.List(ctx, c.q)
@@ -254,17 +279,21 @@ func BenchmarkList(b *testing.B) {
 	}
 }
 
-// BenchmarkCommentEdit edits a comment of a ticket of n comments, as
-// comment.edit does: the operation rewrites the ticket's search entry
-// whole (indexTicket), the body of every live comment in it, while it
-// holds the store's one connection, so its time grows with the ticket's
-// comment text. A comment's add and delete rewrite the entry the same
-// way, and so does an edit of the ticket's title, description or
-// acceptance criteria. "comments-3" is a ticket of the seed's largest
-// kind; the others hold comments as long as a comment may be, up to the
-// bound of MaxComments. Run with
-// go test -run '^$' -bench BenchmarkCommentEdit -benchtime 3x ./internal/dispatch/.
-func BenchmarkCommentEdit(b *testing.B) {
+// BenchmarkIndexedWrite times the operations whose rows make a search
+// entry stale, on a ticket of n comments: a comment's add, edit and
+// delete, and an edit of the ticket's title. Each holds the store's one
+// connection while it runs, and rewrites the one entry it changes, the
+// comment's (indexComment) or the ticket's own (indexTicket), so its time
+// is its own text's and stays the same as the ticket's comments grow
+// (docs/plans/dispatch.md, Owner decisions, 20; before it, every one of
+// them rewrote one entry holding all the ticket's comments). "comments-3"
+// is a ticket of the seed's largest kind; the others hold comments as
+// long as a comment may be, up to the bound of MaxComments. Every
+// iteration leaves the ticket as it found it, outside the timer: an added
+// comment's row and entry are taken out again, so the ticket stays under
+// its bound, and a deleted comment is restored with its entry. Run with
+// go test -run '^$' -bench BenchmarkIndexedWrite -benchtime 3x ./internal/dispatch/.
+func BenchmarkIndexedWrite(b *testing.B) {
 	r := rand.New(rand.NewSource(1))
 	words := benchWords(r, 4000)
 	z := rand.NewZipf(r, 1.07, 2, uint64(len(words)-1))
@@ -311,6 +340,9 @@ func BenchmarkCommentEdit(b *testing.B) {
 					last, id, body(c.size), stamp(at.Add(time.Duration(i)*time.Millisecond))); err != nil {
 					b.Fatal(err)
 				}
+				if err := indexComment(ctx, tx, last); err != nil {
+					b.Fatal(err)
+				}
 			}
 			if err := indexTicket(ctx, tx, id); err != nil {
 				b.Fatal(err)
@@ -319,14 +351,79 @@ func BenchmarkCommentEdit(b *testing.B) {
 				b.Fatal(err)
 			}
 			bodies := [2]string{body(c.size), body(c.size)}
-			i := 0
-			for b.Loop() {
-				rc, err := s.EditComment(ctx, testOp(fmt.Sprintf("e%d", i)), key, last, bodies[i%2])
+			done := func(what string, rc Receipt, err error) {
 				if err != nil || rc.Status != StatusDone {
-					b.Fatalf("the edit: %+v %v", rc, err)
+					b.Fatalf("%s: %+v %v", what, rc, err)
 				}
-				i++
 			}
+			b.Run("comment.add", func(b *testing.B) {
+				i := 0
+				for b.Loop() {
+					rc, err := s.AddComment(ctx, testOp(fmt.Sprintf("a%d", i)), key, bodies[i%2])
+					done("the add", rc, err)
+					b.StopTimer()
+					takeOutComment(b, s, rc.ID)
+					b.StartTimer()
+					i++
+				}
+			})
+			b.Run("comment.edit", func(b *testing.B) {
+				i := 0
+				for b.Loop() {
+					rc, err := s.EditComment(ctx, testOp(fmt.Sprintf("e%d", i)), key, last, bodies[i%2])
+					done("the edit", rc, err)
+					i++
+				}
+			})
+			b.Run("comment.delete", func(b *testing.B) {
+				i := 0
+				for b.Loop() {
+					rc, err := s.DeleteComment(ctx, testOp(fmt.Sprintf("d%d", i)), key, last)
+					done("the delete", rc, err)
+					b.StopTimer()
+					if _, err := s.db.ExecContext(ctx, "UPDATE comments SET deleted_at = '' WHERE id = ?", last); err != nil {
+						b.Fatal(err)
+					}
+					if err := indexComment(ctx, s.db, last); err != nil {
+						b.Fatal(err)
+					}
+					b.StartTimer()
+					i++
+				}
+			})
+			b.Run("ticket.edit", func(b *testing.B) {
+				titles := [2]string{"Many comments, edited", "Many comments"}
+				i := 0
+				for b.Loop() {
+					rc, err := s.EditTicket(ctx, testOp(fmt.Sprintf("t%d", i)), key, TicketEdit{Set: TicketSet{Title: &titles[i%2]}})
+					done("the title's edit", rc, err)
+					i++
+				}
+			})
 		})
+	}
+}
+
+// takeOutComment takes the comment with the id out of the store, its row
+// and its search entry, as though it had never been added: what
+// BenchmarkIndexedWrite does between two adds, outside its timer, so a
+// ticket stays under its bound however many adds it times.
+func takeOutComment(b *testing.B, s *Store, id string) {
+	b.Helper()
+	var ticket, comment int64
+	if err := s.db.QueryRow("SELECT t.rowid, c.rowid FROM comments c JOIN tickets t ON t.id = c.ticket_id WHERE c.id = ?", id).Scan(&ticket, &comment); err != nil {
+		b.Fatal(err)
+	}
+	entry, err := entryRowid(ticket, comment)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, q := range []struct {
+		stmt string
+		arg  any
+	}{{"DELETE FROM tickets_fts WHERE rowid = ?", entry}, {"DELETE FROM comments WHERE id = ?", id}} {
+		if _, err := s.db.Exec(q.stmt, q.arg); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

@@ -212,11 +212,11 @@ type tx struct {
 	touched []touched
 	keys    map[string]string // project id → key, resolved once per operation
 	id, key string
-	// searched is every ticket whose search entry the operation must
-	// rewrite, in the order the rows named them: one whose create, title,
-	// description or acceptance a row records, or whose comment a row
-	// records (searchedBy).
-	searched []string
+	// searched is every search entry the operation must rewrite, in the
+	// order the rows named them (searchedBy): a ticket's own, whose create,
+	// title, description or acceptance a row records, or a comment's, of
+	// which a row records anything.
+	searched []searchEntry
 	// runExists is the store's sight of the engine's runs (SetRunExists),
 	// nil when none was given.
 	runExists func(id string) bool
@@ -267,28 +267,32 @@ func (t *tx) record(c ChangeRow) error {
 		return err
 	}
 	t.seq, t.n = seq, t.n+1
-	if id := searchedBy(c); id != "" && !slices.Contains(t.searched, id) {
-		t.searched = append(t.searched, id)
+	if e, ok := searchedBy(c); ok && !slices.Contains(t.searched, e) {
+		t.searched = append(t.searched, e)
 	}
 	return t.touch(c.Entity, c.EntityID, c.TicketID, c.ProjectID)
 }
 
-// searchedFields is a ticket's fields its search entry holds beside its
-// key (which never changes) and its comments.
+// searchedFields is a ticket's fields its own search entry holds beside
+// its key, which never changes.
 var searchedFields = map[string]bool{"title": true, "description": true, "acceptance": true}
 
-// searchedBy is the ticket whose search entry a change row changes, ""
-// for none: a ticket's create and a set of a field the entry holds; a
-// comment's every row (its create, its body, its delete), since the entry
-// holds the ticket's live comments.
-func searchedBy(c ChangeRow) string {
+// searchedBy is the search entry a change row makes stale, and whether
+// there is one: a ticket's own on its create and on a set of a field the
+// entry holds; a comment's on every row of the comment (its create, its
+// body, its delete), since the entry holds the body while the comment is
+// live. No other entry: a comment's rows leave its ticket's own entry and
+// its other comments' as they are (docs/plans/dispatch.md, Owner
+// decisions, 20), and a ticket's delete or undelete changes no entry,
+// since a list leaves a deleted ticket out by its row.
+func searchedBy(c ChangeRow) (searchEntry, bool) {
 	switch {
 	case c.Entity == EntityTicket && (c.Op == OpCreate || (c.Op == OpSet && searchedFields[c.Field])):
-		return c.EntityID
+		return searchEntry{id: c.EntityID}, true
 	case c.Entity == EntityComment:
-		return c.TicketID
+		return searchEntry{comment: true, id: c.EntityID}, true
 	}
-	return ""
+	return searchEntry{}, false
 }
 
 // recordRemove records the remove of a member of one of a ticket's sets:
@@ -552,8 +556,8 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 	// The search entries the change made stale, rewritten in its
 	// transaction, so a read never finds a ticket the search does not,
 	// nor the reverse.
-	for _, id := range t.searched {
-		if err := indexTicket(ctx, dbtx, id); err != nil {
+	for _, e := range t.searched {
+		if err := e.index(ctx, dbtx); err != nil {
 			return Receipt{}, nil, cancelledAs(ctx, err)
 		}
 	}

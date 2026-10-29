@@ -58,7 +58,7 @@ func TestOpenMakesTheSchemaWhole(t *testing.T) {
 		t.Fatalf("synchronous %d %v", sync, err)
 	}
 	// The FTS index is there with its tokenizer: diacritics removed.
-	if _, err := s.db.Exec("INSERT INTO tickets_fts (rowid, key, title, description, acceptance, comments) VALUES (1, 'CND-1', 'Crème brûlée', '', '', '')"); err != nil {
+	if _, err := s.db.Exec("INSERT INTO tickets_fts (rowid, key, title, description, acceptance, body) VALUES (1, 'CND-1', 'Crème brûlée', '', '', '')"); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM tickets_fts WHERE tickets_fts MATCH '"creme"'`); n != 1 {

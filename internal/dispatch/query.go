@@ -22,9 +22,10 @@ import (
 // the code's own fragments, every value a client gave bound as a
 // parameter and none written into the statement; sorted on the server and
 // read a page at a time, the cursor the last row's sort key and id,
-// opaque to the client; and full-text search through tickets_fts, which
-// the store rewrites in the transaction of every row it indexes
-// (indexTicket), so a read never finds a ticket the search does not, nor
+// opaque to the client; and full-text search through tickets_fts, an
+// entry of each ticket's own and one of each live comment, which the store
+// rewrites in the transaction of every row they index (indexTicket,
+// indexComment), so a read never finds a ticket the search does not, nor
 // the reverse. A read of more than one statement (a page and its total, a
 // ticket with its sets) runs in one read transaction (Store.read): one
 // state, whatever commits meanwhile, from this process or another.
@@ -66,7 +67,7 @@ var Sorts = []string{SortUpdated, SortCreated, SortPriority, SortStatus, SortTit
 // milestone by its id; Parent the children of a ticket by its key,
 // whether it is live or not (a deleted parent's children keep their
 // parent); Blocked the tickets a live, open ticket blocks; Q the words of
-// a search (matchOf); Deleted the tombstones beside the live tickets,
+// a search (matchTerms); Deleted the tombstones beside the live tickets,
 // which a list leaves out unless asked. Every condition given must hold.
 // A value naming nothing the store holds matches nothing.
 type Filter struct {
@@ -199,35 +200,41 @@ func refusalWords(err error) string {
 	return err.Error()
 }
 
-// matchOf is the FTS5 query of a search's text (docs/plans/dispatch.md,
-// Owner decisions, 14: a typed query is words, never FTS syntax): the
-// text cut into terms at white space and control characters (a NUL inside
-// a term would end FTS5's reading of it); a term with no letter or digit
-// dropped, since the unicode61 tokenizer makes no token of punctuation
-// alone and a quote or a star by itself would match nothing; every term
-// kept a quoted string with its '"' doubled, so CND-12, OR, NOT, a:b and
-// (x) are words to match and never syntax; the terms joined by FTS5's
-// implicit AND, the last one a prefix ("term"*), so a word being typed
-// matches the words it begins. ok is false when the text holds terms and
-// none is kept: the search matches nothing, as FTS5 answers a phrase of
-// no tokens. Text of no term at all is no search (ok true, expr "").
-func matchOf(text string) (expr string, ok bool) {
-	terms := strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
-	if len(terms) == 0 {
-		return "", true
+// matchTerms is the terms of a search's text, each the FTS5 query of its
+// own condition (docs/plans/dispatch.md, Owner decisions, 14: a typed
+// query is words, never FTS syntax): the text cut into terms at white
+// space and control characters (a NUL inside a term would end FTS5's
+// reading of it); a term with no letter or digit dropped, since the
+// unicode61 tokenizer makes no token of punctuation alone and a quote or
+// a star by itself would match nothing; every term kept a quoted string
+// with its '"' doubled, so CND-12, OR, NOT, a:b and (x) are words to
+// match and never syntax; the last one a prefix ("term"*), so a word
+// being typed matches the words it begins; a term the text repeats kept
+// once, since each costs the reading of every entry it matches. A ticket
+// matches the search when every term matches one of its entries, its own
+// or a comment's, not necessarily the same one (termMatch). ok is false
+// when the text holds terms and none is kept: the search matches nothing,
+// as FTS5 answers a phrase of no tokens. Text of no term at all is no
+// search (ok true, no terms).
+func matchTerms(text string) (terms []string, ok bool) {
+	fields := strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+	if len(fields) == 0 {
+		return nil, true
 	}
-	var kept []string
-	for _, term := range terms {
-		if strings.IndexFunc(term, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) < 0 {
+	var last string
+	for _, field := range fields {
+		if strings.IndexFunc(field, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) < 0 {
 			continue
 		}
-		kept = append(kept, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
+		if last != "" && !slices.Contains(terms, last) {
+			terms = append(terms, last)
+		}
+		last = `"` + strings.ReplaceAll(field, `"`, `""`) + `"`
 	}
-	if len(kept) == 0 {
-		return "", false
+	if last == "" {
+		return nil, false
 	}
-	kept[len(kept)-1] += "*"
-	return strings.Join(kept, " "), true
+	return append(terms, last+"*"), true
 }
 
 // execer is what a write goes through: an operation's transaction.
@@ -236,25 +243,95 @@ type execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
-// indexTicket rewrites the search entry of the ticket with the id in the
-// caller's transaction (Apply calls it for every ticket an operation's
-// rows make stale, searchedBy): its key, title, description and
-// acceptance criteria, and the bodies of its live comments in their
-// order, one a line; a deleted ticket keeps its entry, and a list leaves
-// it out with the ticket unless asked. The entry's rowid is the ticket's.
+// The search index holds an entry of each ticket's own, its key, title,
+// description and acceptance criteria, and an entry of each of its live
+// comments, the comment's body (docs/plans/dispatch.md, Owner decisions,
+// 20): a comment's add, edit or delete rewrites that comment's entry
+// alone, and an edit of the ticket's text its own entry alone, so a
+// write's cost is its own text's, whatever else the ticket holds
+// (BenchmarkIndexedWrite). A deleted ticket keeps its entries and its
+// comments theirs, and a list leaves it out unless asked; a deleted
+// comment has none.
+
+// searchEntry is one entry of the search index: a ticket's own, or a
+// comment's, by the row's id.
+type searchEntry struct {
+	comment bool
+	id      string
+}
+
+// index rewrites the entry in the caller's transaction.
+func (e searchEntry) index(ctx context.Context, ex execer) error {
+	if e.comment {
+		return indexComment(ctx, ex, e.id)
+	}
+	return indexTicket(ctx, ex, e.id)
+}
+
+// entryShift places a ticket in the rowid of each of its search entries
+// (entryRowid), so a search reads an entry's ticket off the entry's rowid
+// and reads no row to find it (termMatch).
+const entryShift = 32
+
+// entryRowid is the rowid of a search entry: its ticket's rowid shifted
+// left by entryShift, plus its comment's rowid for a comment's entry (0
+// for the ticket's own). A ticket's entries so lie in one range of rowids
+// and no two entries share one. An error past what the rowids can hold:
+// a ticket's rowid of 2^31 or more, or a comment's of 2^32 or more (some
+// two billion tickets, four billion comments).
+func entryRowid(ticket, comment int64) (int64, error) {
+	if ticket < 1 || ticket >= 1<<(63-entryShift) || comment < 0 || comment >= 1<<entryShift {
+		return 0, fmt.Errorf("dispatch: the search index holds no entry of ticket rowid %d and comment rowid %d", ticket, comment)
+	}
+	return ticket<<entryShift | comment, nil
+}
+
+// indexTicket rewrites the own search entry of the ticket with the id in
+// the caller's transaction (Apply calls it on the ticket's create and on
+// a set of its title, description or acceptance criteria, searchedBy):
+// its key, title, description and acceptance criteria.
 func indexTicket(ctx context.Context, ex execer, ticketID string) error {
 	var rowid int64
 	if err := ex.QueryRowContext(ctx, "SELECT rowid FROM tickets WHERE id = ?", ticketID).Scan(&rowid); err != nil {
 		return fmt.Errorf("dispatch: the search entry of ticket %s: %w", ticketID, err)
 	}
-	if _, err := ex.ExecContext(ctx, "DELETE FROM tickets_fts WHERE rowid = ?", rowid); err != nil {
+	entry, err := entryRowid(rowid, 0)
+	if err != nil {
 		return err
 	}
-	_, err := ex.ExecContext(ctx, `INSERT INTO tickets_fts (rowid, key, title, description, acceptance, comments)
-		SELECT rowid, key, title, description, acceptance,
-			COALESCE((SELECT group_concat(c.body, char(10) ORDER BY c.created_at, c.author, c.id) FROM comments c
-				WHERE c.ticket_id = tickets.id AND c.deleted_at = ''), '')
-		FROM tickets WHERE rowid = ?`, rowid)
+	if _, err := ex.ExecContext(ctx, "DELETE FROM tickets_fts WHERE rowid = ?", entry); err != nil {
+		return err
+	}
+	_, err = ex.ExecContext(ctx, `INSERT INTO tickets_fts (rowid, key, title, description, acceptance)
+		SELECT ?, key, title, description, acceptance FROM tickets WHERE rowid = ?`, entry, rowid)
+	return err
+}
+
+// indexComment rewrites the search entry of the comment with the id in
+// the caller's transaction (Apply calls it on every row of the comment,
+// searchedBy): its body while it is live, and none once it is deleted.
+func indexComment(ctx context.Context, ex execer, commentID string) error {
+	var ticket, comment int64
+	var deleted string
+	if err := ex.QueryRowContext(ctx, "SELECT t.rowid, c.rowid, c.deleted_at FROM comments c JOIN tickets t ON t.id = c.ticket_id WHERE c.id = ?",
+		commentID).Scan(&ticket, &comment, &deleted); err != nil {
+		return fmt.Errorf("dispatch: the search entry of comment %s: %w", commentID, err)
+	}
+	if comment < 1 {
+		// Rowid 0 would be the entry of the ticket's own.
+		return fmt.Errorf("dispatch: the search index holds no entry of comment rowid %d", comment)
+	}
+	entry, err := entryRowid(ticket, comment)
+	if err != nil {
+		return err
+	}
+	if _, err := ex.ExecContext(ctx, "DELETE FROM tickets_fts WHERE rowid = ?", entry); err != nil {
+		return err
+	}
+	if deleted != "" {
+		return nil
+	}
+	_, err = ex.ExecContext(ctx, "INSERT INTO tickets_fts (rowid, body) SELECT ?, body FROM comments WHERE rowid = ?", entry, comment)
 	return err
 }
 
@@ -354,8 +431,8 @@ type listPlan struct {
 	after *cursor
 }
 
-// plan checks the query and compiles it; none is false when it searches
-// for terms that are all dropped (matchOf), a list of nothing.
+// plan checks the query and compiles it; none is true when it searches
+// for terms that are all dropped (matchTerms), a list of nothing.
 func (q Query) plan() (p listPlan, none bool, err error) {
 	if q.Project != "" && !ValidKey(q.Project) {
 		return listPlan{}, false, badQuery("the project %q is not a project's key", q.Project)
@@ -385,7 +462,7 @@ func (q Query) plan() (p listPlan, none bool, err error) {
 		}
 		p.after = &c
 	}
-	match, ok := matchOf(q.Q)
+	terms, ok := matchTerms(q.Q)
 	if !ok {
 		return listPlan{}, true, nil
 	}
@@ -445,11 +522,24 @@ func (q Query) plan() (p listPlan, none bool, err error) {
 	if q.Blocked {
 		cond(blockedSet)
 	}
-	if match != "" {
-		cond("t.rowid IN (SELECT rowid FROM tickets_fts WHERE tickets_fts MATCH ?)", match)
+	for _, term := range terms {
+		cond(termMatch, term)
 	}
 	return p, false, nil
 }
+
+// termMatch is the tickets one term of a search matches (matchTerms): the
+// ticket of every entry the term matches, its own or a comment's, read
+// off the entry's rowid (entryRowid). Each term is a condition of its
+// own, so a ticket matches when every term matches one of its entries,
+// not necessarily the same one: the terms' tickets intersected
+// (docs/plans/dispatch.md, Owner decisions, 20). The unary plus keeps the
+// planner from reading a list through a term's set, which for a common
+// word holds nearly every ticket, each then read from its wide row: the
+// list reads its tickets by its other terms (its project, an owner, a
+// parent) or from tickets_list's entries, and looks each up in the sets
+// (BenchmarkList).
+var termMatch = fmt.Sprintf("+t.rowid IN (SELECT rowid >> %d FROM tickets_fts WHERE tickets_fts MATCH ?)", entryShift)
 
 // anys is a list of values as statement arguments.
 func anys[T any](vs []T) []any {
@@ -522,7 +612,7 @@ func (p listPlan) countSQL() (string, []any) {
 // and how many it names in all: one statement, compiled from the filter
 // (plan), in a read transaction with the count a page past its cursor
 // that holds no ticket needs. A search whose terms are all dropped
-// (matchOf) is an empty page and no error. ErrBadQuery for a query the
+// (matchTerms) is an empty page and no error. ErrBadQuery for a query the
 // store will not run.
 func (s *Store) List(ctx context.Context, q Query) (Page, error) {
 	p, none, err := q.plan()

@@ -44,10 +44,12 @@ var migrationsGo = map[int]func(context.Context, *sql.Tx) error{}
 // ticket_labels, relations, links, attachments) are added and removed,
 // never edited, and carry none: their ticket's rev is bumped instead;
 // deleted_at is on every row with an id of its own, and a row is live
-// while it is empty; an empty reference is none. tickets_fts is written
-// by the store in the transaction that writes the rows it indexes
-// (indexTicket), its rowid the ticket's rowid (tickets' id is text, so
-// the table has an implicit one, which only VACUUM could renumber and the
+// while it is empty; an empty reference is none. tickets_fts holds an
+// entry of each ticket's own and one of each live comment, written by the
+// store in the transaction that writes the rows they index (indexTicket,
+// indexComment), an entry's rowid made of its ticket's rowid and its
+// comment's (entryRowid; tickets' and comments' ids are text, so the
+// tables have implicit rowids, which only VACUUM could renumber and the
 // store never runs). changes.seq is local to this database: the event's
 // and the history's paging cursor, never replicated; a change row's
 // identity across replicas is (actor, op_id, n), and the one order of the
@@ -224,17 +226,20 @@ var schema = []string{
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (actor, id)
 	)`,
-	// The search index (query.go), with two options of FTS5's beside the
-	// plan's tokenizer. prefix keeps an index of every term's first one and
-	// first two characters: a search's last term is a prefix, and FTS5
-	// otherwise merges the list of every term a short prefix begins, which
-	// for the first letter typed in a search box is hundreds of terms
-	// (BenchmarkList). content = '' with contentless_delete keeps no copy of
-	// the text the tables hold already, so the rewrite of an entry
-	// (indexTicket) neither reads its old text back to unindex it nor
-	// writes a copy of the new, which pays for the prefix indexes'
-	// postings (BenchmarkCommentEdit). The store reads only rowids from it.
-	`CREATE VIRTUAL TABLE tickets_fts USING fts5(key, title, description, acceptance, comments, tokenize = 'unicode61 remove_diacritics 2', prefix = '1 2', content = '', contentless_delete = 1)`,
+	// The search index (query.go): a ticket's own entry, its key, title,
+	// description and acceptance criteria, and an entry of each of its
+	// live comments, the comment's body, so that a comment's add, edit or
+	// delete rewrites that comment's entry alone (docs/plans/dispatch.md,
+	// Owner decisions, 20). Two options of FTS5's beside the plan's
+	// tokenizer. prefix keeps an index of every term's first one and first
+	// two characters: a search's last term is a prefix, and FTS5 otherwise
+	// merges the list of every term a short prefix begins, which for the
+	// first letter typed in a search box is hundreds of terms
+	// (BenchmarkList). content = '' with contentless_delete keeps no copy
+	// of the text the tables hold already, so the rewrite of an entry
+	// neither reads its old text back to unindex it nor writes a copy of
+	// the new (BenchmarkIndexedWrite). The store reads only rowids from it.
+	`CREATE VIRTUAL TABLE tickets_fts USING fts5(key, title, description, acceptance, body, tokenize = 'unicode61 remove_diacritics 2', prefix = '1 2', content = '', contentless_delete = 1)`,
 	`CREATE INDEX tickets_project_status_updated ON tickets (project_id, status, updated_at)`,
 	`CREATE INDEX tickets_project_priority ON tickets (project_id, priority)`,
 	`CREATE INDEX tickets_milestone ON tickets (milestone_id)`,

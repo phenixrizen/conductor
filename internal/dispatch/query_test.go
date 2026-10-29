@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mustDone fails the test unless the operation was done, and answers its
@@ -530,9 +531,12 @@ func TestASearchIsWordsNeverSyntax(t *testing.T) {
 		{"a\x00b", `"a" "b"*`, true},
 		{"  ", "", true},
 		{`" * "*"`, "", false},
+		// A term repeated is kept once; the last stays a prefix.
+		{"deploy the deploy THE the", `"deploy" "the" "THE" "the"*`, true},
+		{"deploy deploy deploy", `"deploy" "deploy"*`, true},
 	} {
-		if expr, ok := matchOf(c.text); expr != c.expr || ok != c.ok {
-			t.Errorf("matchOf(%q) = %q %v, want %q %v", c.text, expr, ok, c.expr, c.ok)
+		if terms, ok := matchTerms(c.text); strings.Join(terms, " ") != c.expr || ok != c.ok {
+			t.Errorf("matchTerms(%q) = %q %v, want %q %v", c.text, terms, ok, c.expr, c.ok)
 		}
 	}
 }
@@ -540,30 +544,287 @@ func TestASearchIsWordsNeverSyntax(t *testing.T) {
 func TestADeletedTicketIsSearchedOnlyWhenAsked(t *testing.T) {
 	s := seedSearch(t)
 	ctx := context.Background()
-	rc, err := s.DeleteTicket(ctx, testOp("d1"), "CND-13")
-	mustDone(t, "delete", rc, err)
-	if got := listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: "rollback"}}); len(got) != 0 {
-		t.Fatalf("a deleted ticket found: %v", got)
+	// A word of its own entry, one of a comment's, and the two together.
+	rc, err := s.AddComment(ctx, testOp("c1"), "CND-13", "a sandpiper waits")
+	mustDone(t, "comment", rc, err)
+	entries := entriesOf(t, s, "CND-13")
+	if len(entries) != 2 {
+		t.Fatalf("CND-13's entries: %v", entries)
 	}
-	if got := listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: "rollback", Deleted: true}}); strings.Join(got, " ") != "CND-13" {
-		t.Fatalf("the deleted ticket asked for: %v", got)
+	rc, err = s.DeleteTicket(ctx, testOp("d1"), "CND-13")
+	mustDone(t, "delete", rc, err)
+	for _, q := range []string{"rollback", "sandpiper", "rollback sandpiper"} {
+		if got := listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: q}}); len(got) != 0 {
+			t.Fatalf("a deleted ticket found by %q: %v", q, got)
+		}
+		if got := listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: q, Deleted: true}}); strings.Join(got, " ") != "CND-13" {
+			t.Fatalf("the deleted ticket asked for by %q: %v", q, got)
+		}
+	}
+	// Its entries are kept as they were: a delete writes none.
+	if got := entriesOf(t, s, "CND-13"); !slices.Equal(got, entries) {
+		t.Fatalf("the deleted ticket's entries: %v, were %v", got, entries)
 	}
 	rc, err = s.UndeleteTicket(ctx, testOp("u1"), "CND-13")
 	mustDone(t, "undelete", rc, err)
-	if got := listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: "rollback"}}); strings.Join(got, " ") != "CND-13" {
-		t.Fatalf("the undeleted ticket: %v", got)
+	for _, q := range []string{"rollback", "sandpiper", "rollback sandpiper"} {
+		if got := listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: q}}); strings.Join(got, " ") != "CND-13" {
+			t.Fatalf("the undeleted ticket by %q: %v", q, got)
+		}
+	}
+	if got := entriesOf(t, s, "CND-13"); !slices.Equal(got, entries) {
+		t.Fatalf("the undeleted ticket's entries: %v, were %v", got, entries)
+	}
+	searchEntries(t, s)
+}
+
+// rowidsOf reads the one integer column of the rows a query gives.
+func rowidsOf(t *testing.T, s *Store, query string, args ...any) []int64 {
+	t.Helper()
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	defer rows.Close()
+	out := []int64{}
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// entriesOf reads the rowids of the search entries of the ticket with
+// the key, in order: its own entry's first, then its comments'.
+func entriesOf(t *testing.T, s *Store, key string) []int64 {
+	t.Helper()
+	var rowid int64
+	if err := s.db.QueryRow("SELECT rowid FROM tickets WHERE key = ?", key).Scan(&rowid); err != nil {
+		t.Fatal(err)
+	}
+	return rowidsOf(t, s, "SELECT rowid FROM tickets_fts WHERE rowid >= ? AND rowid < ? ORDER BY rowid", rowid<<entryShift, (rowid+1)<<entryShift)
+}
+
+// searchEntries checks the search index holds an entry of each ticket's
+// own and one of each live comment, by their rowids (entryRowid), and
+// nothing else: none of a deleted comment, none left over.
+func searchEntries(t *testing.T, s *Store) {
+	t.Helper()
+	want := rowidsOf(t, s, fmt.Sprintf(`SELECT rowid << %[1]d FROM tickets
+		UNION ALL SELECT (t.rowid << %[1]d) + c.rowid FROM comments c JOIN tickets t ON t.id = c.ticket_id WHERE c.deleted_at = ''
+		ORDER BY 1`, entryShift))
+	if got := rowidsOf(t, s, "SELECT rowid FROM tickets_fts ORDER BY rowid"); !slices.Equal(got, want) {
+		t.Fatalf("the search index's entries:\n got %v\nwant %v", got, want)
 	}
 }
 
-// searchEntries checks the search index holds one entry per ticket, by
-// its rowid, and nothing else.
-func searchEntries(t *testing.T, s *Store) {
-	t.Helper()
-	if n := count(t, s, "SELECT COUNT(*) FROM tickets_fts"); n != count(t, s, "SELECT COUNT(*) FROM tickets") {
-		t.Fatalf("%d search entries for %d tickets", n, count(t, s, "SELECT COUNT(*) FROM tickets"))
+// A search's words are found across a ticket's entries, its own and its
+// comments', each word in any of them; a ticket lacking one word anywhere
+// is not found, nor are two tickets' words together.
+func TestASearchFindsItsWordsAcrossATicketAndItsComments(t *testing.T) {
+	s := seedSearch(t)
+	ctx := context.Background()
+	found := func(q string) string {
+		t.Helper()
+		return strings.Join(listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: q, Sort: SortKey}}), " ")
 	}
-	if n := count(t, s, "SELECT COUNT(*) FROM tickets WHERE rowid NOT IN (SELECT rowid FROM tickets_fts)"); n != 0 {
-		t.Fatalf("%d tickets with no search entry", n)
+	// CND-14 "Comment holder", with two comments of a word each, and a
+	// phrase cut between them.
+	rc, err := s.AddComment(ctx, testOp("c1"), "CND-14", "a lapwing calls from the marsh")
+	mustDone(t, "comment", rc, err)
+	rc, err = s.AddComment(ctx, testOp("c2"), "CND-14", "marsh plover nests")
+	c2 := mustDone(t, "comment", rc, err).ID
+	searchEntries(t, s)
+	for _, c := range []struct{ q, want string }{
+		// The title's word and one of each comment's, in any order.
+		{"holder lapwing plover", "CND-14"},
+		{"plover holder lapwing", "CND-14"},
+		{"lapwing plover", "CND-14"},
+		// The last term a prefix, of a word in any entry.
+		{"holder lapwing plov", "CND-14"},
+		{"plover lapwing hold", "CND-14"},
+		{"lapw", "CND-14"},
+		// A word that is in none of its entries: not found.
+		{"holder lapwing plover curlew", ""},
+		{"lapwing curlew", ""},
+		{"curlew holder", ""},
+		// A word of another ticket's with one of its own: not found.
+		{"cats lapwing", ""},
+		{"holder cats", ""},
+		// A term of several tokens is a phrase inside one entry: "marsh
+		// plover" is the second comment's, "lapwing calls" the first's, and
+		// none spans the end of one comment and the start of the next.
+		{"marsh-plover", "CND-14"},
+		{"lapwing-calls holder", "CND-14"},
+		{"marsh-marsh", ""},
+		{"holder-lapwing", ""},
+	} {
+		if got := found(c.q); got != c.want {
+			t.Errorf("q %q: %q, want %q", c.q, got, c.want)
+		}
+	}
+	// A deleted comment's words are in no entry: the search that needed
+	// them finds nothing, and the words left still find the ticket.
+	rc, err = s.DeleteComment(ctx, testOp("c3"), "CND-14", c2)
+	mustDone(t, "delete", rc, err)
+	for _, c := range []struct{ q, want string }{
+		{"holder lapwing plover", ""},
+		{"plover", ""},
+		{"holder lapwing", "CND-14"},
+	} {
+		if got := found(c.q); got != c.want {
+			t.Errorf("after the delete, q %q: %q, want %q", c.q, got, c.want)
+		}
+	}
+	searchEntries(t, s)
+}
+
+// A comment's add, edit and delete rewrite that comment's entry and no
+// other: the ticket's own entry and its other comments' are left as they
+// are, which the test sees by writing them by hand first with words of
+// their own; an edit of the ticket's text rewrites its own entry alone.
+func TestACommentsWriteRewritesItsOwnEntryAlone(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	newProject(t, s, "CND")
+	_, key := makeTicket(t, s, NewTicket{Project: "CND", Title: "Heron", Description: "kestrel"})
+	rc, err := s.AddComment(ctx, testOp("a"), key, "lapwing")
+	a := mustDone(t, "comment a", rc, err).ID
+	rc, err = s.AddComment(ctx, testOp("b"), key, "plover")
+	b := mustDone(t, "comment b", rc, err).ID
+	found := func(q string) bool {
+		t.Helper()
+		return len(listKeys(t, s, Query{Project: "CND", Filter: Filter{Q: q}})) == 1
+	}
+	// The ticket's own entry and b's, written by hand with a word the rows
+	// do not hold: a rewrite of either from its row would lose the word.
+	var ticketRowid, bRowid int64
+	if err := s.db.QueryRow("SELECT rowid FROM tickets WHERE key = ?", key).Scan(&ticketRowid); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow("SELECT rowid FROM comments WHERE id = ?", b).Scan(&bRowid); err != nil {
+		t.Fatal(err)
+	}
+	own, _ := entryRowid(ticketRowid, 0)
+	bEntry, _ := entryRowid(ticketRowid, bRowid)
+	for _, w := range []struct {
+		entry        int64
+		column, word string
+	}{{own, "title", "sentinelown"}, {bEntry, "body", "sentinelb"}} {
+		if _, err := s.db.Exec("DELETE FROM tickets_fts WHERE rowid = ?", w.entry); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec("INSERT INTO tickets_fts (rowid, "+w.column+") VALUES (?, ?)", w.entry, w.word); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// untouched says the two entries are still the ones written by hand.
+	untouched := func(after string) {
+		t.Helper()
+		for word, want := range map[string]bool{"sentinelown": true, "sentinelb": true, "heron": false, "kestrel": false, "plover": false} {
+			if got := found(word); got != want {
+				t.Errorf("after %s, %s found %v, want %v", after, word, got, want)
+			}
+		}
+	}
+	untouched("the entries written by hand")
+	// An add: the new comment's entry, and no other.
+	rc, err = s.AddComment(ctx, testOp("c"), key, "curlew")
+	c := mustDone(t, "comment c", rc, err).ID
+	if !found("curlew") || !found("lapwing") {
+		t.Errorf("after the add: curlew %v, lapwing %v", found("curlew"), found("lapwing"))
+	}
+	untouched("the add")
+	// An edit: the comment's new words in, its old ones out, no other entry
+	// written.
+	rc, err = s.EditComment(ctx, testOp("e"), key, a, "dunlin")
+	mustDone(t, "edit a", rc, err)
+	if found("lapwing") || !found("dunlin") || !found("curlew") {
+		t.Errorf("after the edit: lapwing %v, dunlin %v, curlew %v", found("lapwing"), found("dunlin"), found("curlew"))
+	}
+	untouched("the edit")
+	// A refused edit writes nothing.
+	rc, err = s.EditComment(ctx, Op{Actor: "test", ID: "e2", ExpectedRev: 1}, key, a, "redshank")
+	if err != nil || rc.Refusal != RefusalStaleRevision {
+		t.Fatalf("a stale edit: %+v %v", rc, err)
+	}
+	if found("redshank") || !found("dunlin") {
+		t.Errorf("after a refused edit: redshank %v, dunlin %v", found("redshank"), found("dunlin"))
+	}
+	untouched("a refused edit")
+	// A delete: the comment's entry gone, no other.
+	rc, err = s.DeleteComment(ctx, testOp("d"), key, c)
+	mustDone(t, "delete c", rc, err)
+	if found("curlew") || !found("dunlin") {
+		t.Errorf("after the delete: curlew %v, dunlin %v", found("curlew"), found("dunlin"))
+	}
+	untouched("the delete")
+	if got, want := len(entriesOf(t, s, key)), 3; got != want {
+		t.Errorf("%d entries after the delete, want the ticket's own, a's and b's", got)
+	}
+	// An edit of the ticket's description rewrites its own entry from its
+	// row, title and all, and leaves its comments' as they are.
+	rc, err = edit(s, "t", key, TicketEdit{Set: TicketSet{Description: ptr("merlin")}})
+	mustDone(t, "the ticket's edit", rc, err)
+	for word, want := range map[string]bool{"sentinelown": false, "heron": true, "merlin": true, "kestrel": false, "sentinelb": true, "plover": false, "dunlin": true} {
+		if got := found(word); got != want {
+			t.Errorf("after the ticket's edit, %s found %v, want %v", word, got, want)
+		}
+	}
+}
+
+// An entry's rowid is its ticket's rowid shifted, plus its comment's:
+// every rowid a store can give fits, and one past what the rowids can
+// hold is an error, never an entry over another's.
+func TestASearchEntrysRowidHoldsItsTicketAndComment(t *testing.T) {
+	for _, c := range []struct {
+		ticket, comment, want int64
+		ok                    bool
+	}{
+		{1, 0, 1 << 32, true},
+		{2, 5, 2<<32 + 5, true},
+		{1<<31 - 1, 1<<32 - 1, 1<<63 - 1, true},
+		{1 << 31, 0, 0, false},
+		{1, 1 << 32, 0, false},
+		{0, 1, 0, false},
+		{1, -1, 0, false},
+	} {
+		got, err := entryRowid(c.ticket, c.comment)
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("entryRowid(%d, %d) = %d %v, want %d (ok %v)", c.ticket, c.comment, got, err, c.want, c.ok)
+		}
+		if err == nil && (got>>entryShift != c.ticket || got&(1<<entryShift-1) != c.comment) {
+			t.Errorf("entryRowid(%d, %d) = %d does not give them back", c.ticket, c.comment, got)
+		}
+	}
+	// A comment whose rowid the index cannot hold fails its operation as a
+	// failure of the database does: nothing of it is kept, no receipt.
+	s := seedSearch(t)
+	ctx := context.Background()
+	tk := ticketOf(t, s, "CND-14")
+	for _, rowid := range []int64{0, 1 << 32} {
+		id := newID()
+		if _, err := s.db.Exec("INSERT INTO comments (rowid, id, ticket_id, author, by, body, created_at, rev) VALUES (?, ?, ?, 'test', 'Tester', 'teal', ?, 1)",
+			rowid, id, tk.ID, stamp(time.Now())); err != nil {
+			t.Fatal(err)
+		}
+		opID := fmt.Sprintf("big%d", rowid)
+		if rc, err := s.EditComment(ctx, testOp(opID), "CND-14", id, "wigeon"); err == nil {
+			t.Fatalf("an edit of the comment of rowid %d: %+v", rowid, rc)
+		}
+		var body string
+		if err := s.db.QueryRow("SELECT body FROM comments WHERE id = ?", id).Scan(&body); err != nil || body != "teal" {
+			t.Fatalf("the comment of rowid %d after the failed edit: %q %v", rowid, body, err)
+		}
+		if _, found, err := s.Receipt(ctx, "test", opID); found || err != nil {
+			t.Fatalf("a receipt of the failed edit: %v %v", found, err)
+		}
 	}
 }
 
