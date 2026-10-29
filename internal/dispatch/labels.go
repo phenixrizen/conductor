@@ -166,7 +166,7 @@ func (s *Store) DeleteLabel(ctx context.Context, op Op, project, id string) (Rec
 		}
 		for _, tid := range holders {
 			base := ChangeRow{Entity: EntityTicket, EntityID: tid, TicketID: tid, ProjectID: p.ID}
-			if err := t.members(base, labelSet, nil, []string{lb.ID}); err != nil {
+			if _, err := t.members(base, labelSet, nil, []string{lb.ID}); err != nil {
 				return err
 			}
 		}

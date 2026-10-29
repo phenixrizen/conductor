@@ -95,9 +95,10 @@ var (
 // is refused close_policy unless the project's close policy requires
 // nothing, since a new ticket has no acceptance and no link. One create
 // row records what never changes, then one set row per field the
-// schema's default does not already hold, then one add row per member.
-// An archived project refuses it (archived). The receipt carries its id
-// and key.
+// schema's default does not already hold, then one add row per member,
+// then a person's create row for each name it gives (its owner, a
+// person: assignee) that the directory lacks (knowPeople). An archived
+// project refuses it (archived). The receipt carries its id and key.
 func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, error) {
 	return s.Apply(ctx, op, "ticket.create", n, func(t *tx) error {
 		p, err := t.project(n.Project)
@@ -187,10 +188,14 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 		if err := t.setScalars("tickets", base, ticketDefaults, after); err != nil {
 			return err
 		}
-		if err := t.members(base, assigneeSet, n.Assignees, nil); err != nil {
+		assignees, err := t.members(base, assigneeSet, n.Assignees, nil)
+		if err != nil {
 			return err
 		}
-		return t.members(base, labelSet, n.Labels, nil)
+		if _, err := t.members(base, labelSet, n.Labels, nil); err != nil {
+			return err
+		}
+		return t.knowPeople(n.Owner, assignees)
 	})
 }
 
@@ -213,8 +218,10 @@ func (s *Store) CreateTicket(ctx context.Context, op Op, n NewTicket) (Receipt, 
 // and allows a remove, and an add list longer than the bound is refused
 // before any of its members is looked up or written. A member both added
 // and removed, or named twice, is invalid; an edit that changes nothing
-// is refused invalid. A deleted ticket is not_found; an archived project
-// refuses it (archived).
+// is refused invalid. A name the edit gives (a new owner, a person:
+// assignee added) that the directory lacks is added to it, after the
+// ticket's rows (knowPeople). A deleted ticket is not_found; an archived
+// project refuses it (archived).
 func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit) (Receipt, error) {
 	args := struct {
 		Key string `json:"key"`
@@ -323,10 +330,21 @@ func (s *Store) EditTicket(ctx context.Context, op Op, key string, e TicketEdit)
 		if err := t.setScalars("tickets", base, before, after); err != nil {
 			return err
 		}
-		if err := t.members(base, assigneeSet, e.Add.Assignees, e.Remove.Assignees); err != nil {
+		assignees, err := t.members(base, assigneeSet, e.Add.Assignees, e.Remove.Assignees)
+		if err != nil {
 			return err
 		}
-		return t.members(base, labelSet, e.Add.Labels, e.Remove.Labels)
+		if _, err := t.members(base, labelSet, e.Add.Labels, e.Remove.Labels); err != nil {
+			return err
+		}
+		// The names this edit gives: the owner when it changes it, the
+		// assignees it adds. An edit that changes nothing gives none, and
+		// is refused as such.
+		newOwner := ""
+		if o := valueOf(after, "owner"); o != tk.Owner {
+			newOwner = o
+		}
+		return t.knowPeople(newOwner, assignees)
 	})
 }
 
@@ -640,60 +658,60 @@ var (
 // members removes and then adds members of one set of the ticket base
 // names, one row each (a remove's prior the tags of the member's adds it
 // removes, its value the member; an add's value the member, its row's
-// identity its tag); a member there already is not added again, nor one
-// absent removed. An operation that adds leaves the set at its bound at
-// most (bound), however far past it the set stood before; one that only
-// removes is never refused.
-func (t *tx) members(base ChangeRow, set memberSet, add, remove []string) error {
+// identity its tag), and gives the members it added; a member there
+// already is not added again, nor one absent removed. An operation that
+// adds leaves the set at its bound at most (bound), however far past it
+// the set stood before; one that only removes is never refused.
+func (t *tx) members(base ChangeRow, set memberSet, add, remove []string) ([]string, error) {
 	ticketID := base.EntityID
 	for _, m := range remove {
 		there, err := t.isMember(set, ticketID, m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !there {
 			continue
 		}
 		tags, err := t.liveTags(ticketID, set.field, m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := t.tx.ExecContext(t.ctx, "DELETE FROM "+set.table+" WHERE ticket_id = ? AND "+set.column+" = ?", ticketID, m); err != nil {
-			return err
+			return nil, err
 		}
 		row := base
 		row.Field, row.Op, row.Value, row.Prior = set.field, OpRemove, m, EncodeTags(tags)
 		if err := t.record(row); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	added := 0
+	var added []string
 	for _, m := range add {
 		there, err := t.isMember(set, ticketID, m)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if there {
 			continue
 		}
 		if err := set.add(t, ticketID, m); err != nil {
-			return err
+			return nil, err
 		}
 		row := base
 		row.Field, row.Op, row.Value = set.field, OpAdd, m
 		if err := t.record(row); err != nil {
-			return err
+			return nil, err
 		}
-		added++
+		added = append(added, m)
 	}
-	if added == 0 {
-		return nil
+	if len(added) == 0 {
+		return nil, nil
 	}
 	var n int
 	if err := t.tx.QueryRowContext(t.ctx, set.count, ticketID).Scan(&n); err != nil {
-		return err
+		return nil, err
 	}
-	return checkCount(set.field, n, set.max)
+	return added, checkCount(set.field, n, set.max)
 }
 
 // isMember reports whether the ticket's set holds the member.

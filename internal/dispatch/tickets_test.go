@@ -70,17 +70,22 @@ func TestCreateATicketWithEveryField(t *testing.T) {
 	}
 	// One create row with what never changes, one set row per field the
 	// schema's default does not hold, one add row per member, in that
-	// order, each naming the ticket and its project.
+	// order, each naming the ticket and its project; then the one person
+	// it names that the directory lacked, Alice, owner and assignee both.
 	rows := changesOf(t, s, "test", "c1")
-	for i, row := range rows {
+	for i, row := range rows[:len(rows)-1] {
 		if row.N != i || row.Entity != EntityTicket || row.EntityID != tk.ID || row.TicketID != tk.ID || row.ProjectID != pid || row.By != "Alice B" || row.Actor != "test" {
 			t.Fatalf("row %d: %+v", i, row)
 		}
 	}
+	if last := rows[len(rows)-1]; last.N != len(rows)-1 || last.Entity != EntityPerson || last.EntityID != "Alice" || last.Op != OpCreate || last.TicketID != "" || last.ProjectID != "" {
+		t.Fatalf("the person's row: %+v", last)
+	}
 	got := rowsOf(t, s, "c1")
 	if want := []string{"create:=" + rows[0].Value + "<", "set:title=Every field<", "set:description=" + n.Description + "<", "set:acceptance=It works.<",
 		"set:status=ready<backlog", "set:priority=3<0", "set:horizon=next<", "set:owner=Alice<", "set:parent_id=" + parentID + "<", "set:milestone_id=" + m + "<",
-		"add:assignees=person:Alice<", "add:assignees=agent:claude<", "add:labels=" + l1 + "<", "add:labels=" + l2 + "<"}; !slices.Equal(got, want) {
+		"add:assignees=person:Alice<", "add:assignees=agent:claude<", "add:labels=" + l1 + "<", "add:labels=" + l2 + "<",
+		"create:=" + rows[len(rows)-1].Value + "<"}; !slices.Equal(got, want) {
 		t.Fatalf("the rows:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	var created ticketCreated
@@ -193,7 +198,10 @@ func TestEditSetsSeveralFieldsInOneOperation(t *testing.T) {
 	if want := []string{"set:title=Renamed<First", "set:description=More<", "set:acceptance=Done when done.<", "set:status=in_progress<backlog",
 		"set:priority=2<0", "set:horizon=now<", "set:owner=Bob<", "set:milestone_id=" + m + "<",
 		"remove:assignees=person:Alice<" + EncodeTags([]Tag{tags["person:Alice"]}), "add:assignees=agent:codex<",
-		"remove:labels=" + l1 + "<" + EncodeTags([]Tag{tags[l1]}), "add:labels=" + l2 + "<"}; !slices.Equal(got, want) {
+		"remove:labels=" + l1 + "<" + EncodeTags([]Tag{tags[l1]}), "add:labels=" + l2 + "<",
+		// Bob, the new owner, was not in the directory: added, after the
+		// ticket's rows.
+		"create:=" + changesOf(t, s, "test", "e1")[12].Value + "<"}; !slices.Equal(got, want) {
 		t.Fatalf("the rows:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	tk := ticketOf(t, s, key)
