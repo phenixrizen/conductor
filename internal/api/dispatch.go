@@ -43,14 +43,16 @@ const (
 	// bound once decoded is the store's bound refusal; a body past this is
 	// 413 bound.
 	maxTicketBody = 192 << 10
-	// maxTicketReply bounds a ticket's read, and so the reply of every
-	// ticket route: the largest ticket the server can make, every field and
-	// set at its bound and every text at its escaped worst (fifty comments
-	// at 32 KiB, the description at 128 KiB, fifty links, fifty
-	// attachments, a hundred relations and fifty children with their
-	// titles), is under it. dispatch_test.go builds that ticket and
-	// measures its reply; the CLI's and the tools' limits are checked
-	// against it.
+	// maxTicketReply bounds the replies that carry a ticket's comments: a
+	// ticket's read (and an operation's on it, the ticket beside a receipt
+	// of at most 4 KiB) and a page of its comments. The largest ticket the
+	// server can make, every field and set at its bound and every text at
+	// its escaped worst (fifty comments at 32 KiB, the description at 128
+	// KiB, fifty links, fifty attachments, a hundred relations and fifty
+	// children with their titles), is under it, and so is the largest page
+	// of comments, maxCommentPage of them at their escaped worst.
+	// dispatch_test.go builds both and measures their replies; the CLI's
+	// and the tools' limits are checked against it.
 	maxTicketReply = 3 << 20
 	// maxProjectReply bounds a project's read: its fields at their bounds,
 	// 100 labels, 100 milestones with 4 KiB descriptions and 200 views with
@@ -65,9 +67,13 @@ const (
 	// operation is one transaction, which waits at most the store's busy
 	// timeout for another writer's lock: this bounds only a hang.
 	dispatchWriteTimeout = 30 * time.Second
-	// defaultCommentPage is a page of a ticket's comments when a read names
-	// none: as many as the ticket's read carries.
-	defaultCommentPage = dispatch.MaxTicketComments
+	// maxCommentPage bounds a page of a ticket's comments, and is the page
+	// when a read names none: as many as the ticket's read carries
+	// (dispatch.MaxTicketComments), so the largest page, every comment at
+	// its escaped worst, is under maxTicketReply as the read is. The
+	// store's own bound, dispatch.MaxCommentPage (200), would let a page
+	// of comments of 32 KiB each pass twice maxTicketReply.
+	maxCommentPage = dispatch.MaxTicketComments
 )
 
 // dispatchRoute is one of Dispatch's routes: its pattern and its handler.
@@ -398,11 +404,11 @@ func ticketAfter(ctx context.Context, ds *dispatch.Store, key string) func(dispa
 type dispatchQuery url.Values
 
 // readQuery reads the query string of a route that takes the parameters
-// named.
+// named (parseQuery).
 func readQuery(r *http.Request, names ...string) (dispatchQuery, error) {
-	v, err := url.ParseQuery(r.URL.RawQuery)
+	v, err := parseQuery(r.URL.RawQuery)
 	if err != nil {
-		return nil, errors.New("the query string is not one")
+		return nil, err
 	}
 	for k := range v {
 		if !slices.Contains(names, k) {
@@ -410,6 +416,45 @@ func readQuery(r *http.Request, names ...string) (dispatchQuery, error) {
 		}
 	}
 	return dispatchQuery(v), nil
+}
+
+// parseQuery parses a query string as a form's is read
+// (application/x-www-form-urlencoded, as a browser's URLSearchParams
+// reads one): its parameters are separated by '&' alone, so a ';' is
+// part of a value, as a search or a name may hold one. url.ParseQuery
+// refuses a query that holds a ';' unescaped, which a client's encoder
+// leaves so (ufo's, the web app's, among them). A '+' is a space; a
+// %-escape that is not one is an error.
+func parseQuery(raw string) (url.Values, error) {
+	v := url.Values{}
+	for raw != "" {
+		var pair string
+		pair, raw, _ = strings.Cut(raw, "&")
+		if pair == "" {
+			continue
+		}
+		key, value, _ := strings.Cut(pair, "=")
+		key, err := url.QueryUnescape(key)
+		if err == nil {
+			value, err = url.QueryUnescape(value)
+		}
+		if err != nil {
+			return nil, errors.New("the query string holds a %-escape that is not one")
+		}
+		v[key] = append(v[key], value)
+	}
+	return v, nil
+}
+
+// noQuery refuses any parameter on a read that takes none, as readQuery
+// refuses one a route does not take: 400 invalid_request. When it reports
+// false it has answered.
+func noQuery(w http.ResponseWriter, r *http.Request) bool {
+	if _, err := readQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return false
+	}
+	return true
 }
 
 // one is the value of a parameter given at most once, "" when absent.
@@ -516,14 +561,14 @@ func (s *Server) handleDispatchProjects(w http.ResponseWriter, r *http.Request) 
 
 // handleDispatchProject answers a project with what its pages offer:
 // {project, labels, milestones, views}, archived or not, a view's query
-// the JSON it is; 404 not_found.
+// the JSON it is; 404 not_found; 400 invalid_request for any parameter.
 func (s *Server) handleDispatchProject(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
 	if !ok {
 		return
 	}
 	key, ok := projectKey(w, r)
-	if !ok {
+	if !ok || !noQuery(w, r) {
 		return
 	}
 	v, err := ds.Project(r.Context(), key)
@@ -614,10 +659,11 @@ func (s *Server) archiveProject(w http.ResponseWriter, r *http.Request, archive 
 // The people.
 
 // handleDispatchPeople answers the directory the owner and assignee
-// pickers offer, by name: {people}, each {name, createdAt}.
+// pickers offer, by name: {people}, each {name, createdAt}; 400
+// invalid_request for any parameter.
 func (s *Server) handleDispatchPeople(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
-	if !ok {
+	if !ok || !noQuery(w, r) {
 		return
 	}
 	people, err := ds.People(r.Context())
@@ -752,14 +798,15 @@ func (s *Server) handleDispatchTickets(w http.ResponseWriter, r *http.Request) {
 // read transaction: {ticket} with its assignees, labels, parent, children
 // (the first 50 live and how many), relations both ways, whether it is
 // blocked, links, attachments, the last 50 comments and its close
-// policy's state (close); 404 not_found.
+// policy's state (close); 404 not_found; 400 invalid_request for any
+// parameter.
 func (s *Server) handleDispatchTicket(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
 	if !ok {
 		return
 	}
 	key, ok := ticketKey(w, r)
-	if !ok {
+	if !ok || !noQuery(w, r) {
 		return
 	}
 	v, err := ds.Ticket(r.Context(), key)
@@ -927,8 +974,9 @@ func (s *Server) handleDispatchHistory(w http.ResponseWriter, r *http.Request) {
 
 // handleDispatchComments answers a ticket's comments beyond the page its
 // read carries: {comments}, those numbered after ?after= (0 when absent),
-// at most ?limit= (1 to 200, 50 when absent), each with its number n,
-// tombstones among them so the numbers have no gap.
+// at most ?limit= (1 to maxCommentPage, 50, and 50 when absent: the page
+// the read carries), each with its number n, tombstones among them so the
+// numbers have no gap; the largest page is under maxTicketReply.
 func (s *Server) handleDispatchComments(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
 	if !ok {
@@ -947,12 +995,12 @@ func (s *Server) handleDispatchComments(w http.ResponseWriter, r *http.Request) 
 		limit, err = q.count("limit")
 	}
 	if err == nil && limit == 0 {
-		limit = defaultCommentPage
+		limit = maxCommentPage
 	}
-	// The store's own refusal of a page out of range is no ErrBadQuery,
-	// so the range is checked here.
-	if err == nil && (after < 0 || limit < 1 || limit > dispatch.MaxCommentPage) {
-		err = fmt.Errorf("a page of comments is 1 to %d after a number of 0 or more", dispatch.MaxCommentPage)
+	// The range is checked here, at maxCommentPage, under the store's own
+	// (whose refusal of a page out of its range is no ErrBadQuery).
+	if err == nil && (after < 0 || limit < 1 || limit > maxCommentPage) {
+		err = fmt.Errorf("a page of comments is 1 to %d after a number of 0 or more", maxCommentPage)
 	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -1006,8 +1054,8 @@ func (s *Server) handleDispatchRunTicket(w http.ResponseWriter, r *http.Request)
 // {receipt}; 404 not_found when the store holds none (never given, or
 // pruned past the newest 20,000: a resend of a pruned one that ran is
 // still answered done, from the store's log); 400 invalid_request for an
-// id that is not one. A client that lost a reply reads here before it
-// sends again.
+// id that is not one, and for any parameter. A client that lost a reply
+// reads here before it sends again.
 func (s *Server) handleDispatchOp(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchStore(w)
 	if !ok {
@@ -1016,6 +1064,9 @@ func (s *Server) handleDispatchOp(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("opId")
 	if !dispatch.OpIDPattern.MatchString(id) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "an operation's id is 1 to 32 letters, digits, '.', '_', '~' or '-'")
+		return
+	}
+	if !noQuery(w, r) {
 		return
 	}
 	rc, found, err := ds.Receipt(r.Context(), adminActor, id)

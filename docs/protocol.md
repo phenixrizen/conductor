@@ -1801,7 +1801,7 @@ its run, and on no other.
 | `POST /api/dispatch/tickets/{key}/accept`, `…/unaccept` | admin | record the owner's acceptance of a live ticket (`ticket.accept`: `{opId, expectedRev?, byName?, note?}`, by the display name, for the owner the ticket has now and against its acceptance criteria as they stand, the note at most 1,000 characters), or clear it (`ticket.unaccept`: `{opId, expectedRev?, byName?}`); reply `{receipt, ticket}`; `409 invalid` for a ticket with no owner to accept it, or not accepted; neither touches the status |
 | `POST /api/dispatch/tickets/{key}/delete`, `…/undelete` | admin | delete a live ticket (`ticket.delete`): a tombstone, nothing else written, its children, relations and run links kept, inactive, and back with its undelete (`ticket.undelete`), which removes a run link of its naming a run another live ticket has linked meanwhile; `{opId, expectedRev?, byName?}`; reply `{receipt, ticket}`; a deleted ticket keeps its key, is listed only with `deleted=1`, its read answers, and every other write on it is `404 not_found`; `409 invalid` to undelete a live ticket |
 | `GET /api/dispatch/tickets/{key}/history` | admin | a page of a ticket's history, deleted or not, as the store recorded it, field by field: `{changes, next?}`, the changes of the ticket and of its comments after `after` (a change's `seq`, 0 when absent), at most `limit` (1 to 500, 100 when absent) and about 1 MiB of their values, each `{seq, entity, entityId, ticketId?, projectId?, field?, op, value, prior?, at, actor, by?, opId, n}`; `next` the `seq` to read after |
-| `GET /api/dispatch/tickets/{key}/comments` | admin | a ticket's comments beyond the page its read carries: `{comments}`, those numbered after `after` (0 when absent), at most `limit` (1 to 200, 50 when absent), each with its number `n`, tombstones among them so the numbers have no gap |
+| `GET /api/dispatch/tickets/{key}/comments` | admin | a ticket's comments beyond the page its read carries: `{comments}`, those numbered after `after` (0 when absent), at most `limit` (1 to 50, 50 when absent: as many as the read carries), each with its number `n`, tombstones among them so the numbers have no gap; at most 3 MiB with every comment at its bound (`maxTicketReply`) |
 | `GET /api/dispatch/links?run={id}` | admin | the ticket a run is linked to, for the run page's chip: `{ticket: {id, key, title, status, deletedAt?}}`, the live ticket whose live `run` link names the run (one at most); else, when only deleted tickets' links name it, the one whose link is latest, with `deletedAt`; `{ticket: null}` when no live link names the run; `400 invalid_request` for a run id that is not one |
 | `GET /api/dispatch/ops/{opId}` | admin | an operation's receipt of the admin's without acting, as `GET /api/runs/{run}/commands/{command}` reads a command's: `{receipt}`; `404` when the store holds none (never given, or pruned past the newest 20,000) |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installable, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installable` is true for an adapter with a file to install into (`POST …/install` can do something); `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
@@ -2551,12 +2551,17 @@ dispatch_unavailable`. A store opened read-only (a newer Conductor wrote
 it, it fails its check, or another writer held it past the busy timeout as
 the server started; the server's log says which) answers its reads as it
 can and every write `503 dispatch_unavailable` with why. A failure of the
-database is `500 store_failed`, logged. Replies are written with HTML
+database is `500 store_failed`, logged. A read takes the query
+parameters its row names and no other: any other is `400
+invalid_request`, as a body's unknown field is, and so is one that takes
+a single value given twice. The parameters are separated by `&` alone, as
+a browser reads a form's, so a `;` is part of a value (a search or a name
+may hold one), sent as it is or as `%3B`. Replies are written with HTML
 escaping off: `<`, `>` and `&` are one byte each, so a text field encodes
 to at most twice its bytes (U+2028 and U+2029 are written as six whatever
-the escaping), and the largest ticket's read and the largest project's,
-every field and set at its bound and every text at its escaped worst, are
-each under 3 MiB.
+the escaping), and the largest ticket's read, the largest page of its
+comments and the largest project's read, every field and set at its bound
+and every text at its escaped worst, are each under 3 MiB.
 
 **Dispatch operations.** Every Dispatch write is a typed operation, as a
 managed run's commands are (Commands with receipts, above): beside the

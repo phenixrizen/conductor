@@ -729,7 +729,7 @@ func TestDispatchTicketRoutes(t *testing.T) {
 	if cs := e.expect(t, "GET", "/api/dispatch/tickets/CND-1/comments", nil, http.StatusOK, "")["comments"].([]any); len(cs) != 3 {
 		t.Fatalf("comments: %v", cs)
 	}
-	for _, q := range []string{"?limit=201", "?limit=-1", "?after=-1", "?limit=x"} {
+	for _, q := range []string{fmt.Sprintf("?limit=%d", maxCommentPage+1), "?limit=-1", "?after=-1", "?limit=x"} {
 		e.expect(t, "GET", "/api/dispatch/tickets/CND-1/comments"+q, nil, http.StatusBadRequest, "invalid_request")
 	}
 	e.expect(t, "GET", "/api/dispatch/tickets/CND-9/comments", nil, http.StatusNotFound, "not_found")
@@ -810,6 +810,63 @@ func TestDispatchTicketListFiltersAndRefusesBadValues(t *testing.T) {
 	}
 	// A cursor of another sort is not this list's.
 	e.expect(t, "GET", "/api/dispatch/tickets?project=LST&sort=title&cursor="+out["next"].(string), nil, http.StatusBadRequest, "invalid_request")
+}
+
+// A query's parameters are separated by '&' alone, as a browser reads a
+// form's: a ';' is part of a value, sent as it is (the web app's encoder
+// leaves it so) or escaped, in a search and in a name alike, where
+// url.ParseQuery would refuse the query whole.
+func TestDispatchAQueryValueMayHoldASemicolon(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	e.newDispatchProject(t, "SEM", nil)
+	e.newDispatchTicket(t, "SEM", "a;b in the title", map[string]any{"owner": "Ann;Bo"})
+	e.newDispatchTicket(t, "SEM", "Another", map[string]any{"owner": "Ann"})
+	for _, q := range []string{"q=a;b", "q=a%3Bb", "owner=Ann;Bo", "owner=Ann%3BBo", "q=a;b&owner=Ann;Bo"} {
+		out := e.expect(t, "GET", "/api/dispatch/tickets?project=SEM&"+q, nil, http.StatusOK, "")
+		if tks := out["tickets"].([]any); len(tks) != 1 || tks[0].(map[string]any)["key"] != "SEM-1" {
+			t.Errorf("%s: %v", q, out)
+		}
+	}
+	// A ';' in a parameter's name makes no parameter the route takes.
+	e.expect(t, "GET", "/api/dispatch/tickets?project=SEM&a;b=1", nil, http.StatusBadRequest, "invalid_request")
+}
+
+// A read takes the parameters its route names and no other, as a write's
+// body takes no field it does not name: one it does not take, and a query
+// string holding a %-escape that is not one, are 400 invalid_request, on
+// the reads that take none (the people, a project, a ticket, a receipt)
+// as on those that take some, while the same read without them answers.
+func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	// What the requests of dispatchRequests read: the project its receipt
+	// a1 made, and its ticket.
+	e.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "a1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
+	e.newDispatchTicket(t, "CND", "Read me", nil)
+	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1"}
+	reads := 0
+	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
+		if method != http.MethodGet {
+			return
+		}
+		reads++
+		e.expect(t, method, path, nil, http.StatusOK, "")
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		refused := []string{"bogus=1", "q=%zz", "%zz=1"}
+		if slices.Contains(takeNone, path) {
+			refused = append(refused, "limit=1", "after=1", "q=x", "x")
+		}
+		for _, q := range refused {
+			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
+		}
+	})
+	if reads != 9 {
+		t.Fatalf("%d reads", reads)
+	}
 }
 
 // A receipt is read back by the admin's op id without acting: a done
@@ -1128,6 +1185,66 @@ func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The largest page of a ticket's comments, maxCommentPage of them, each at
+// its escaped worst (a body of 16 KiB of '"' and '\', the author and the
+// display name at their bounds, edited and then deleted, so it carries
+// both times), is read back whole and under maxTicketReply, as the
+// ticket's own read is; the page after it holds the rest, and a page of
+// one more is refused. The store's own bound, 200, would be more than
+// twice maxTicketReply.
+func TestDispatchTheLargestPageOfCommentsIsUnderItsBound(t *testing.T) {
+	t.Parallel()
+	done := doneOf(t)
+	e := dispatchEnv(t)
+	ctx := context.Background()
+	ds, f := e.srv.dispatch, worstFiller
+	actor, by := f.text(dispatch.MaxActor, 0), f.runes(dispatch.MaxByName, 0)
+	op := func() dispatch.Op { return dispatch.Op{Actor: actor, ID: opID(), By: by} }
+	done(ds.CreateProject(ctx, adminOp(""), dispatch.NewProject{Key: "CMT", Name: "Comments"}))
+	key := done(ds.CreateTicket(ctx, adminOp(""), dispatch.NewTicket{Project: "CMT", Title: "Many comments"})).Key
+	var bodies []string
+	for i := range maxCommentPage + 1 {
+		id := done(ds.AddComment(ctx, op(), key, f.text(dispatch.MaxCommentBody, i))).ID
+		body := f.text(dispatch.MaxCommentBody, maxCommentPage+1+i)
+		done(ds.EditComment(ctx, op(), key, id, body))
+		done(ds.DeleteComment(ctx, op(), key, id))
+		bodies = append(bodies, body)
+	}
+	page := func(query string) (raw []byte, comments []dispatch.Comment) {
+		t.Helper()
+		status, raw, _ := e.call(t, "GET", "/api/dispatch/tickets/"+key+"/comments"+query, nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s: %d %.300s", query, status, raw)
+		}
+		var out struct {
+			Comments []dispatch.Comment `json:"comments"`
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		return raw, out.Comments
+	}
+	for _, query := range []string{fmt.Sprintf("?limit=%d", maxCommentPage), ""} {
+		raw, comments := page(query)
+		t.Logf("the largest page of comments (%q): %d bytes of %d", query, len(raw), maxTicketReply)
+		if len(raw) >= maxTicketReply {
+			t.Fatalf("the largest page of comments is %d bytes, not under %d", len(raw), maxTicketReply)
+		}
+		if len(comments) != maxCommentPage {
+			t.Fatalf("%q: %d comments", query, len(comments))
+		}
+		for i, c := range comments {
+			if c.N != i+1 || c.Body != bodies[i] || c.Author != actor || c.By != by || c.EditedAt.IsZero() || c.DeletedAt.IsZero() {
+				t.Fatalf("comment %d did not read back whole", i+1)
+			}
+		}
+	}
+	if _, rest := page(fmt.Sprintf("?after=%d", maxCommentPage)); len(rest) != 1 || rest[0].N != maxCommentPage+1 || rest[0].Body != bodies[maxCommentPage] {
+		t.Fatalf("the page after it: %d comments", len(rest))
+	}
+	e.expect(t, "GET", fmt.Sprintf("/api/dispatch/tickets/%s/comments?limit=%d", key, maxCommentPage+1), nil, http.StatusBadRequest, "invalid_request")
 }
 
 // sameSet reports whether a and b hold the same strings, in any order.
