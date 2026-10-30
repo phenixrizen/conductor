@@ -2567,12 +2567,24 @@ func (e *testEnv) expectAs(t *testing.T, token, method, path string, body any, s
 
 // memberSession launches a crew of one member, a, running cat, and gives
 // its session a known agent token: the run, the member's session and its
-// token. The run is stopped when the test ends.
+// token. The member's session is the run's once the engine records it,
+// which the launch's reply waits for; it is looked for until it is, for
+// as long as the test may take. The run is stopped when the test ends.
 func (e *testEnv) memberSession(t *testing.T, name string) (run, sid, token string) {
 	t.Helper()
 	run = e.launchCrew(t, name, catMember("a", "immediately"))
 	t.Cleanup(func() { e.do("POST", "/api/runs/"+run+"/stop", adminToken, nil) })
-	sid = e.waitRunning(t, run, "a")
+	for sid == "" {
+		if r, ok := e.srv.runs.Get(run); ok && len(r.Members) == 1 {
+			sid = r.Members[0].SessionID
+		}
+		if sid == "" {
+			if t.Context().Err() != nil {
+				t.Fatal("the member's session never started")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	return run, sid, e.agentToken(sid)
 }
 
