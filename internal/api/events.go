@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/proto"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
@@ -203,6 +204,50 @@ func (h *eventHub) run(id string, removed bool) {
 		return
 	}
 	h.broadcast([]byte("event: run\ndata: " + string(b) + "\n\n"))
+}
+
+// dispatchEvent is the data of a `dispatch` event: something of Dispatch's
+// changed (dispatch.Change), for a page to read again. seq is the commit's
+// last change in the store's log; entity what changed (project, ticket,
+// comment, label, milestone, view or person) and id its id, "" for a
+// person, whose id is its name: the directory is small and its pickers
+// read it again whole, so the event says only that it changed; ticket the
+// id of the ticket the change belongs to and project its project's key,
+// "" where there is none.
+type dispatchEvent struct {
+	Seq     int64  `json:"seq"`
+	Entity  string `json:"entity"`
+	ID      string `json:"id"`
+	Ticket  string `json:"ticket"`
+	Project string `json:"project"`
+}
+
+// maxDispatchEvent bounds a dispatch event's data. The longest is 119
+// bytes: seq at most 19 digits, entity at most 9 (milestone), id and
+// ticket 16 hex characters each, project a key of at most 6, and the
+// envelope's 53; every value is digits, a word of the code's, hex or a
+// key, never escaped. A person's name, which could be 60 characters of
+// six encoded bytes each, never travels (id is "" for a person).
+const maxDispatchEvent = 160
+
+// dispatch announces a change of Dispatch's store, one event per entity a
+// commit changed (dispatch.Store.OnChange). It goes the run event's way:
+// state a page cannot do without, so a client that cannot keep up is
+// dropped and starts over from a snapshot, never skipped and kept as
+// activity is; and to the clients alone, never a sink's (no webhook, no
+// run engine). It runs on the committing goroutine, after the commit, and
+// never waits. An event past maxDispatchEvent is dropped, never cut: none
+// is, the bound being the longest one's.
+func (h *eventHub) dispatch(c dispatch.Change) {
+	ev := dispatchEvent{Seq: c.Seq, Entity: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project}
+	if c.Entity == dispatch.EntityPerson {
+		ev.ID = ""
+	}
+	b, err := json.Marshal(ev)
+	if err != nil || len(b) > maxDispatchEvent {
+		return
+	}
+	h.broadcast([]byte("event: dispatch\ndata: " + string(b) + "\n\n"))
 }
 
 // broadcast queues msg for every client; a client that cannot keep up is

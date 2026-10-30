@@ -70,9 +70,15 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 		mutate(cfg)
 	}
 	// The store opens at cfg.DataDir, as in `conductor serve`; unless a test
-	// places it, that is a directory outside the session root.
+	// places it, that is a directory outside the session root, and the
+	// server's Dispatch store there starts from a copy of a new one
+	// (seedDispatch): a test that places its own, as the Dispatch tests do,
+	// has the server make it.
 	if cfg.DataDir == "" {
 		cfg.DataDir = filepath.Join(t.TempDir(), "data")
+		if !cfg.Switchyard.Enabled {
+			seedDispatch(t, cfg.DataDir)
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

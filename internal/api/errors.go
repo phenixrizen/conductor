@@ -58,19 +58,27 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, v any, limit int
 	return err
 }
 
-// decodeJSONLimit is decodeJSON with the body bounded to limit bytes.
+// errBodyTooLarge is a body past its route's bound, as decodeJSONLimit
+// reports it: a route that answers 413 for it tells it from the rest.
+var errBodyTooLarge = errors.New("request body too large")
+
+// decodeJSONLimit is decodeJSON with the body bounded to limit bytes: past
+// it, errBodyTooLarge, whether the object or what follows it passes it.
 func decodeJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
+	var mbe *http.MaxBytesError
 	if err := dec.Decode(v); err != nil {
-		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
-			return errors.New("request body too large")
+			return errBodyTooLarge
 		}
 		return err
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if errors.As(err, &mbe) {
+			return errBodyTooLarge
+		}
 		return errors.New("request body must contain a single JSON object")
 	}
 	return nil
