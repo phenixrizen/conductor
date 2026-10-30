@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -352,7 +353,7 @@ func TestEventHubDispatchEvent(t *testing.T) {
 			c.ID = strings.Repeat(string(rune(0x2028)), dispatch.MaxPersonName)
 			want.ID = ""
 		}
-		h.dispatch(c)
+		h.dispatch([]dispatch.Change{c})
 		var msg []byte
 		select {
 		case msg = <-ch:
@@ -380,7 +381,7 @@ func TestEventHubDispatchEvent(t *testing.T) {
 	}
 	// Every field is there when it is empty: a person's event names no
 	// ticket and no project.
-	h.dispatch(dispatch.Change{Seq: 7, Entity: dispatch.EntityPerson, ID: "Alice"})
+	h.dispatch([]dispatch.Change{{Seq: 7, Entity: dispatch.EntityPerson, ID: "Alice"}})
 	if got := string(<-ch); got != "event: dispatch\ndata: {\"seq\":7,\"entity\":\"person\",\"id\":\"\",\"ticket\":\"\",\"project\":\"\"}\n\n" {
 		t.Fatalf("a person's event: %q", got)
 	}
@@ -389,19 +390,104 @@ func TestEventHubDispatchEvent(t *testing.T) {
 	}
 }
 
+// dispatchData is the data of the dispatch events a queue entry holds, in
+// order, failing t unless the entry is such events and nothing else, each
+// one event of one data line within maxDispatchEvent.
+func dispatchData(t *testing.T, msg []byte) []string {
+	t.Helper()
+	var out []string
+	for rest := string(msg); rest != ""; {
+		frame, after, ok := strings.Cut(rest, "\n\n")
+		if !ok {
+			t.Fatalf("an event with no blank line after it: %q", rest)
+		}
+		data, ok := strings.CutPrefix(frame, "event: dispatch\ndata: ")
+		if !ok || strings.Contains(data, "\n") {
+			t.Fatalf("not one dispatch event of one data line: %q", frame)
+		}
+		if len(data) > maxDispatchEvent {
+			t.Fatalf("an event of %d bytes, more than %d: %s", len(data), maxDispatchEvent, data)
+		}
+		out = append(out, data)
+		rest = after
+	}
+	return out
+}
+
+// hexID is the id of the nth entity of a test's commit: 16 hex
+// characters, as the store's.
+func hexID(n int) string { return fmt.Sprintf("%016x", n) }
+
+// A commit's events are one entry of a client's queue, however many
+// entities it changed, in the store's order: a client nobody drains gets
+// a commit of 1,000 changes (a label deleted on 999 tickets) as one entry
+// and keeps its stream, which an entry per change would have closed at
+// the 257th; the next commit reaches it.
+func TestEventHubDispatchCommitIsOneEntry(t *testing.T) {
+	h := newEventHub()
+	ch := h.subscribe()
+	changes := []dispatch.Change{{Seq: 42, Entity: dispatch.EntityLabel, ID: hexID(0), Project: "CND"}}
+	for i := 1; i < 1000; i++ {
+		changes = append(changes, dispatch.Change{Seq: 42, Entity: dispatch.EntityTicket, ID: hexID(i), Ticket: hexID(i), Project: "CND"})
+	}
+	h.dispatch(changes)
+	kept := func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		_, ok := h.clients[ch]
+		return ok
+	}
+	if !kept() || len(ch) != 1 {
+		t.Fatalf("a commit of %d changes: the client kept: %v, with %d entries queued, want 1", len(changes), kept(), len(ch))
+	}
+	data := dispatchData(t, <-ch)
+	if len(data) != len(changes) {
+		t.Fatalf("%d events for %d changes", len(data), len(changes))
+	}
+	for i, c := range changes {
+		var got dispatchEvent
+		if err := json.Unmarshal([]byte(data[i]), &got); err != nil || got != (dispatchEvent{Seq: c.Seq, Entity: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project}) {
+			t.Fatalf("event %d is %s (%v), for the change %+v", i, data[i], err, c)
+		}
+	}
+	h.dispatch([]dispatch.Change{{Seq: 43, Entity: dispatch.EntityTicket, ID: hexID(1), Ticket: hexID(1), Project: "CND"}})
+	select {
+	case msg, open := <-ch:
+		if !open {
+			t.Fatal("the client's stream was closed")
+		}
+		if data := dispatchData(t, msg); len(data) != 1 || !strings.HasPrefix(data[0], `{"seq":43,`) {
+			t.Fatalf("the next commit's entry: %q", msg)
+		}
+	default:
+		t.Fatal("the next commit queued nothing")
+	}
+	if !kept() {
+		t.Fatal("the client was dropped")
+	}
+}
+
 // A dispatch event is state a page cannot do without, as a run event is:
 // a client whose queue is full is dropped and its stream closed, to start
 // over from a snapshot, never skipped and kept as an activity entry skips
-// it; a client that reads gets the event. Neither reaches a sink.
+// it; a client that reads gets the event, a commit's every event in one
+// entry. Neither reaches a sink.
 func TestEventHubDispatchEventDropsAClientThatCannotKeepUp(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		send func(h *eventHub)
+		name, event string
+		send        func(h *eventHub)
 	}{
-		{"dispatch", func(h *eventHub) {
-			h.dispatch(dispatch.Change{Seq: 1, Entity: dispatch.EntityTicket, ID: "0123456789abcdef", Ticket: "0123456789abcdef", Project: "CND"})
+		{"dispatch", "dispatch", func(h *eventHub) {
+			h.dispatch([]dispatch.Change{{Seq: 1, Entity: dispatch.EntityTicket, ID: "0123456789abcdef", Ticket: "0123456789abcdef", Project: "CND"}})
 		}},
-		{"run", func(h *eventHub) { h.run("api-sweep-0123abcd", false) }},
+		{"dispatch commit", "dispatch", func(h *eventHub) {
+			changes := []dispatch.Change{{Seq: 2, Entity: dispatch.EntityLabel, ID: hexID(0), Project: "CND"}}
+			for i := 1; i <= eventQueue; i++ {
+				changes = append(changes, dispatch.Change{Seq: 2, Entity: dispatch.EntityTicket, ID: hexID(i), Ticket: hexID(i), Project: "CND"})
+			}
+			h.dispatch(changes)
+		}},
+		{"run", "run", func(h *eventHub) { h.run("api-sweep-0123abcd", false) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newEventHub()
@@ -414,11 +500,14 @@ func TestEventHubDispatchEventDropsAClientThatCannotKeepUp(t *testing.T) {
 			tc.send(h)
 			select {
 			case msg := <-reading:
-				if !strings.HasPrefix(string(msg), "event: "+tc.name+"\n") {
+				if !strings.HasPrefix(string(msg), "event: "+tc.event+"\n") {
 					t.Fatalf("the reading client got %q", msg)
 				}
 			default:
 				t.Fatal("the reading client got nothing")
+			}
+			if len(reading) != 0 {
+				t.Fatalf("the reading client has %d entries more", len(reading))
 			}
 			h.mu.Lock()
 			_, kept := h.clients[full]
@@ -434,7 +523,7 @@ func TestEventHubDispatchEventDropsAClientThatCannotKeepUp(t *testing.T) {
 				t.Fatal("the full client's stream was not closed")
 			}
 			if sunk.Load() != 0 {
-				t.Fatalf("a %s event reached a sink", tc.name)
+				t.Fatalf("a %s event reached a sink", tc.event)
 			}
 		})
 	}

@@ -571,46 +571,58 @@ func TestAResendAfterPruningIsAnsweredByTheLog(t *testing.T) {
 	}
 }
 
-func TestOnChangeIsCalledOncePerEntityAfterTheCommit(t *testing.T) {
+// OnChange's listeners are called once per commit, after it, with what
+// it changed: one change per entity, with the commit's last seq, in the
+// order the rows named them.
+func TestOnChangeIsCalledOncePerCommitAfterIt(t *testing.T) {
 	s := openStore(t, storeDir(t))
 	ctx := context.Background()
-	var got []Change
+	var calls [][]Change
 	var current string
-	s.OnChange(func(c Change) {
+	s.OnChange(func(cs []Change) {
 		if _, found, err := s.Receipt(ctx, "test", current); !found || err != nil {
 			t.Errorf("called before the commit of %s: %v %v", current, found, err)
 		}
-		got = append(got, c)
+		calls = append(calls, cs)
 	})
+	// call is the changes of the nth call, failing the test unless there
+	// have been n.
+	call := func(n int) []Change {
+		t.Helper()
+		if len(calls) != n {
+			t.Fatalf("%d calls, want %d: %+v", len(calls), n, calls)
+		}
+		return calls[n-1]
+	}
 	current = "a1"
 	rc, err := s.AddPerson(ctx, testOp("a1"), "Alice")
 	want(t, rc, err, StatusDone, "")
-	if len(got) != 1 || got[0] != (Change{Seq: 1, Entity: EntityPerson, ID: "Alice"}) {
+	if got := call(1); !slices.Equal(got, []Change{{Seq: 1, Entity: EntityPerson, ID: "Alice"}}) {
 		t.Fatalf("after a person: %+v", got)
 	}
 	// A project's create writes three rows (its create, its name, its
-	// close policy): one call, with the commit's last seq.
+	// close policy): one change, with the commit's last seq.
 	current = "project-CND"
 	pid := newProject(t, s, "CND")
-	if len(got) != 2 || got[1] != (Change{Seq: 4, Entity: EntityProject, ID: pid, Project: "CND"}) {
+	if got := call(2); !slices.Equal(got, []Change{{Seq: 4, Entity: EntityProject, ID: pid, Project: "CND"}}) {
 		t.Fatalf("after a project: %+v", got)
 	}
 	current = "t1"
 	rc, err = s.CreateTicket(ctx, testOp("t1"), NewTicket{Project: "CND", Title: "First"})
 	want(t, rc, err, StatusDone, "")
 	tid := rc.ID
-	if len(got) != 3 || got[2] != (Change{Seq: 6, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
+	if got := call(3); !slices.Equal(got, []Change{{Seq: 6, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}}) {
 		t.Fatalf("after a ticket: %+v", got)
 	}
-	// Two rows of one entity: one call, with the commit's last seq.
+	// Two rows of one entity: one change, with the commit's last seq.
 	current = "e1"
 	rc, err = setFields(s, testOp("e1"), EntityTicket, tid, field{"title", "Second"}, field{"description", "More"})
 	want(t, rc, err, StatusDone, "")
-	if len(got) != 4 || got[3] != (Change{Seq: 8, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
+	if got := call(4); !slices.Equal(got, []Change{{Seq: 8, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}}) {
 		t.Fatalf("after two fields: %+v", got)
 	}
-	// Two entities in one operation: two calls, both with the last seq,
-	// in the order the rows named them.
+	// Two entities in one operation: one call of two changes, both with
+	// the last seq, in the order the rows named them.
 	current = "e2"
 	rc, err = s.Apply(ctx, testOp("e2"), "test.two", nil, func(x *tx) error {
 		if err := x.record(ChangeRow{Entity: EntityProject, EntityID: pid, ProjectID: pid, Field: "name", Op: OpSet, Value: "N", Prior: "CND"}); err != nil {
@@ -622,7 +634,7 @@ func TestOnChangeIsCalledOncePerEntityAfterTheCommit(t *testing.T) {
 		return x.record(ChangeRow{Entity: EntityTicket, EntityID: tid, TicketID: tid, ProjectID: pid, Field: "title", Op: OpSet, Value: "Third", Prior: "Second"})
 	})
 	want(t, rc, err, StatusDone, "")
-	if len(got) != 6 || got[4] != (Change{Seq: 10, Entity: EntityProject, ID: pid, Project: "CND"}) || got[5] != (Change{Seq: 10, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}) {
+	if got := call(5); !slices.Equal(got, []Change{{Seq: 10, Entity: EntityProject, ID: pid, Project: "CND"}, {Seq: 10, Entity: EntityTicket, ID: tid, Ticket: tid, Project: "CND"}}) {
 		t.Fatalf("after two entities: %+v", got)
 	}
 	// A refusal, a repeat and a conflict change nothing: no call.
@@ -634,17 +646,22 @@ func TestOnChangeIsCalledOncePerEntityAfterTheCommit(t *testing.T) {
 	want(t, rc, err, StatusDone, "")
 	rc, err = s.AddPerson(ctx, testOp("a1"), "Bob")
 	want(t, rc, err, StatusFailed, RefusalOpConflict)
-	if len(got) != 6 {
-		t.Fatalf("a refusal, a repeat or a conflict was announced: %+v", got[6:])
+	if len(calls) != 5 {
+		t.Fatalf("a refusal, a repeat or a conflict was announced: %+v", calls[5:])
 	}
-	// A second listener gets the calls too.
-	var second []Change
-	s.OnChange(func(c Change) { second = append(second, c) })
+	// A second listener gets the call too, each a copy of its own: a
+	// third, called last, that overwrites its copy changes neither of the
+	// copies the first two kept.
+	var second [][]Change
+	s.OnChange(func(cs []Change) { second = append(second, cs) })
+	s.OnChange(func(cs []Change) { clear(cs) })
 	current = "a3"
 	rc, err = s.AddPerson(ctx, testOp("a3"), "Bob")
 	want(t, rc, err, StatusDone, "")
-	if len(got) != 7 || len(second) != 1 || second[0] != got[6] {
-		t.Fatalf("two listeners: %+v %+v", got, second)
+	got := call(6)
+	if len(got) != 1 || got[0] != (Change{Seq: got[0].Seq, Entity: EntityPerson, ID: "Bob"}) || got[0].Seq <= 10 ||
+		len(second) != 1 || !slices.Equal(second[0], got) {
+		t.Fatalf("three listeners: %+v %+v", got, second)
 	}
 }
 

@@ -1830,7 +1830,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, a commit's arriving together and in order, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -2603,18 +2603,22 @@ a receipt without acting, so a client that lost a reply reads it before it
 sends again.
 
 **The `dispatch` event.** After each commit the server sends one
-`dispatch` event per entity the commit changed on `GET /api/events`:
-`{seq, entity, id, ticket, project}`, `seq` the commit's last change in
-the store's log (local to the database), `entity` `project`, `ticket`,
-`comment`, `label`, `milestone`, `view` or `person`, `id` its id (`""` for
-a person, whose id is its name: the pickers read the directory again
-whole), `ticket` the id of the ticket it belongs to and `project` its
-project's key, `""` where there is none. A relation counts for both its
-tickets, and a label's or a milestone's delete for it and for every ticket
-it left. An event is at most 160 bytes (the longest is 119: every value is
-digits, a word, hex or a key, never escaped). A page reads again what an
-event names, or what derives from it. Like a `run` event it is state a
-page cannot do without: a client that cannot keep up is dropped and reads
-everything again on its next `snapshot`, never skipped and kept as an
-`activity` entry is. It reaches the pages alone, never a webhook or the
-run engine.
+`dispatch` event per entity the commit changed on `GET /api/events`, the
+commit's events together and in the store's order, no other event
+between them: `{seq, entity, id, ticket, project}`, `seq` the commit's
+last change in the store's log (local to the database), `entity`
+`project`, `ticket`, `comment`, `label`, `milestone`, `view` or
+`person`, `id` its id (`""` for a person, whose id is its name: the
+pickers read the directory again whole), `ticket` the id of the ticket
+it belongs to and `project` its project's key, `""` where there is
+none. A relation counts for both its tickets, and a label's or a
+milestone's delete for it and for every ticket it left. An event is at
+most 160 bytes (the longest is 119: every value is digits, a word, hex
+or a key, never escaped). A page reads again what an event names, or
+what derives from it. Like a `run` event it is state a page cannot do
+without: a client that cannot keep up is dropped and reads everything
+again on its next `snapshot`, never skipped and kept as an `activity`
+entry is. A commit's events take one place in the server's queue for a
+client, however many there are, so a commit that changed many entities
+(a label's delete on hundreds of tickets) never drops a client that
+keeps up. It reaches the pages alone, never a webhook or the run engine.

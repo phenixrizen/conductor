@@ -185,11 +185,12 @@ processes, every revision is read and bumped inside the transaction
 that uses it, and the schema is made inside the transaction that read
 its version. `Close` checkpoints the WAL (`wal_checkpoint(TRUNCATE)`)
 and closes; `Checkpoint(ctx)` does the first alone, for C6's export of a
-running server. `OnChange(func(Change))` is called after every commit,
-once per entity the commit changed (a relation counts for both its
-tickets, a label's delete for the label and every ticket it left), with
-the commit's last `seq`, the entity, its id, and the ticket and project
-it belongs to; the API turns it into the SSE event below, CS1's
+running server. `OnChange(func([]Change))` is called once after every
+commit with what it changed, one change per entity (a relation counts
+for both its tickets, a label's delete for the label and every ticket it
+left), each with the commit's last `seq`, the entity, its id, and the
+ticket and project it belongs to, every listener a copy of its own; the
+API turns a commit's changes into the SSE events below, together, CS1's
 continuity store will hook it too.
 
 **Ids and keys.** Every row but a person's has an opaque id of 16
@@ -498,7 +499,11 @@ commands are; `by` carries the display name the workbench sends
 (`?by=` is never used: the name travels in the body as `byName` does for a
 broadcast).
 
-`events.go`: `dispatch(c dispatch.Change)` broadcasts `event: dispatch`
+`events.go`: `dispatch(changes []dispatch.Change)` broadcasts a commit's
+`event: dispatch`, one per change, in the store's order and as one entry
+of every client's queue, so a commit that changed many entities (a
+label's delete on hundreds of tickets) takes one place in the queue and
+never drops a client that keeps up, each event
 with `{"seq", "entity", "id", "ticket", "project"}` (`ticket` the id of
 the ticket the change belongs to, `project` its project's key, `""`
 where there is none; `id` is `""` for a `person`, whose id is its name,
@@ -766,8 +771,9 @@ config key, no workflow change, no change under `desktop/`.
   successful operation never runs twice, however old its resend, and the
   only resend that acts again is a refused one, which is refused again
   or allowed now on its own merits.
-- `OnChange` runs after the commit, outside the transaction, on the
-  caller's goroutine; the event hub's `dispatch` never waits.
+- `OnChange`'s listeners are called once per commit, after it, with all
+  it changed, outside the transaction, on the caller's goroutine; the
+  event hub's `dispatch` never waits.
 - The store refuses a write while read-only; a read works whenever the
   database opens.
 
@@ -858,7 +864,8 @@ reference in place.
 **The SSE event.** `event: dispatch`, `data: {"seq":N,"entity":"ticket",
 "id":"…","ticket":"…","project":"CND"}`, at most 160 bytes (`id` empty for a
 person; the bound derived in `events.go` above), after the
-commit, once per entity the commit changed, by the `run` event's path: a
+commit, once per entity the commit changed, a commit's events together
+and in order, one entry of a client's queue, by the `run` event's path: a
 client that cannot keep up is dropped and reconnects to a new
 `snapshot`, never skipped and kept (the one rule, stated the same in
 `events.go` above). What a page re-reads: a ticket page its ticket at
@@ -1068,8 +1075,9 @@ timing-free ones `-count=1`, the sweep and the pruning `-count=30`):
   successful operation whose `ops` row the test deletes, resent with the
   same content and with other content, answers `repeat` and `done` with
   no `rev`, changes nothing and errs nowhere; a refused one whose row is
-  deleted, resent, runs anew; `OnChange` called once per entity per
-  commit, after it, with the sequence, the ticket and the project.
+  deleted, resent, runs anew; `OnChange` called once per commit, after
+  it, with one change per entity, each with the sequence, the ticket and
+  the project, and every listener a copy of its own.
 - every bound in `model.go`, at the bound and one past it (a table test);
   a description at its bound made of quotes, backslashes and newlines,
   set and then replaced, recorded whole in `value` and `prior`; a link
@@ -1231,7 +1239,12 @@ of a later version planted); the `dispatch` event on the stream after a
 create, at most 160 bytes, the longest payload of every entity (a
 person's with its empty `id`, a milestone's with every id at its length
 and `seq` at 19 digits) measured under it, a client whose queue is full dropped and closed by
-it as a `run` event drops one; a ticket body with a description at its
+it as a `run` event drops one; a commit's events one entry of a client's
+queue, in order: a commit of 1,000 changes reaches a client nobody
+drains as one entry and leaves it subscribed, and a label deleted on
+more tickets than the queue holds entries, through the store, reaches
+such a client as one entry and a live stream whole, the stream open for
+the next commit's event; a ticket body with a description at its
 bound of escaped characters accepted and read back whole, a body past
 192 KiB `413`; the largest ticket the server can make (every field and
 set at its bound, every text of `<`) read back whole and under

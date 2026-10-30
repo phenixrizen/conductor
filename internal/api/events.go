@@ -230,28 +230,41 @@ type dispatchEvent struct {
 // six encoded bytes each, never travels (id is "" for a person).
 const maxDispatchEvent = 160
 
-// dispatch announces a change of Dispatch's store, one event per entity a
-// commit changed (dispatch.Store.OnChange). It goes the run event's way:
-// state a page cannot do without, so a client that cannot keep up is
-// dropped and starts over from a snapshot, never skipped and kept as
-// activity is; and to the clients alone, never a sink's (no webhook, no
-// run engine). It runs on the committing goroutine, after the commit, and
-// never waits. An event past maxDispatchEvent is dropped, never cut: none
-// is, the bound being the longest one's.
-func (h *eventHub) dispatch(c dispatch.Change) {
-	ev := dispatchEvent{Seq: c.Seq, Entity: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project}
-	if c.Entity == dispatch.EntityPerson {
-		ev.ID = ""
+// dispatch announces a commit of Dispatch's store, what it changed
+// (dispatch.Store.OnChange): one event per entity, in the store's order,
+// queued for every client as one entry. So a client gets a commit's
+// events together and in order, and its queue counts commits, not
+// entities: it is dropped when it is eventQueue entries behind, never
+// because one commit changed more entities than that (a label's delete
+// leaves every ticket that had it). It goes the run event's way: state a
+// page cannot do without, so a client that cannot keep up is dropped and
+// starts over from a snapshot, never skipped and kept as activity is;
+// and to the clients alone, never a sink's (no webhook, no run engine).
+// It runs on the committing goroutine, after the commit, and never
+// waits. An event past maxDispatchEvent is dropped, never cut: none is,
+// the bound being the longest one's.
+func (h *eventHub) dispatch(changes []dispatch.Change) {
+	var msg []byte
+	for _, c := range changes {
+		ev := dispatchEvent{Seq: c.Seq, Entity: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project}
+		if c.Entity == dispatch.EntityPerson {
+			ev.ID = ""
+		}
+		b, err := json.Marshal(ev)
+		if err != nil || len(b) > maxDispatchEvent {
+			continue
+		}
+		msg = append(msg, "event: dispatch\ndata: "...)
+		msg = append(msg, b...)
+		msg = append(msg, "\n\n"...)
 	}
-	b, err := json.Marshal(ev)
-	if err != nil || len(b) > maxDispatchEvent {
-		return
+	if len(msg) > 0 {
+		h.broadcast(msg)
 	}
-	h.broadcast([]byte("event: dispatch\ndata: " + string(b) + "\n\n"))
 }
 
-// broadcast queues msg for every client; a client that cannot keep up is
-// dropped.
+// broadcast queues msg, one event or a commit's several, as one entry for
+// every client; a client that cannot keep up is dropped.
 func (h *eventHub) broadcast(msg []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

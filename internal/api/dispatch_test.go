@@ -1505,9 +1505,10 @@ func (e *testEnv) eventStream(t *testing.T) <-chan string {
 }
 
 // Every write reaches the pages as dispatch events, one per entity it
-// changed, queued for every client before the write's reply is sent and
-// written on the stream: a project's create, a ticket's (with its new
-// owner, a person whose event names no id) and an edit; nothing for a
+// changed, a commit's queued together as one entry for every client
+// before the write's reply is sent, and written on the stream: a
+// project's create, a ticket's (with its new owner, a person whose event
+// names no id, in the ticket's entry) and an edit; nothing for a
 // refusal.
 func TestDispatchEventsReachTheStream(t *testing.T) {
 	t.Parallel()
@@ -1516,44 +1517,46 @@ func TestDispatchEventsReachTheStream(t *testing.T) {
 	defer e.srv.events.unsubscribe(queued)
 	stream := e.eventStream(t)
 	var want []string
-	next := func(what string) dispatchEvent {
+	// commit is the events of the next entry queued, one commit's.
+	commit := func(what string) []dispatchEvent {
 		t.Helper()
 		select {
 		case msg := <-queued:
-			data, ok := strings.CutPrefix(string(msg), "event: dispatch\ndata: ")
-			if !ok {
-				t.Fatalf("%s: %q", what, msg)
+			var evs []dispatchEvent
+			for _, data := range dispatchData(t, msg) {
+				var ev dispatchEvent
+				if err := json.Unmarshal([]byte(data), &ev); err != nil {
+					t.Fatal(err)
+				}
+				want = append(want, "dispatch "+data)
+				evs = append(evs, ev)
 			}
-			data = strings.TrimSuffix(data, "\n\n")
-			if len(data) > maxDispatchEvent {
-				t.Fatalf("%s: an event of %d bytes", what, len(data))
-			}
-			var ev dispatchEvent
-			if err := json.Unmarshal([]byte(data), &ev); err != nil {
-				t.Fatal(err)
-			}
-			want = append(want, "dispatch "+data)
-			return ev
+			return evs
 		default:
 			t.Fatalf("%s: no event queued by the time the reply came", what)
 		}
-		return dispatchEvent{}
+		return nil
 	}
 	project := e.newDispatchProject(t, "EVT", nil)
-	if ev := next("the project's create"); ev.Entity != "project" || ev.ID != project["id"] || ev.Ticket != "" || ev.Project != "EVT" || ev.Seq < 1 {
-		t.Fatalf("the project's event: %+v", ev)
+	if evs := commit("the project's create"); len(evs) != 1 || evs[0].Entity != "project" || evs[0].ID != project["id"] || evs[0].Ticket != "" ||
+		evs[0].Project != "EVT" || evs[0].Seq < 1 {
+		t.Fatalf("the project's events: %+v", evs)
 	}
 	tk := e.newDispatchTicket(t, "EVT", "Evented", map[string]any{"owner": "Alice"})
-	ticketEv := next("the ticket's create")
+	evs := commit("the ticket's create")
+	if len(evs) != 2 {
+		t.Fatalf("the ticket's create: %+v, want its event and its owner's", evs)
+	}
+	ticketEv := evs[0]
 	if ticketEv.Entity != "ticket" || ticketEv.ID != tk["id"] || ticketEv.Ticket != tk["id"] || ticketEv.Project != "EVT" {
 		t.Fatalf("the ticket's event: %+v", ticketEv)
 	}
-	if ev := next("its owner's directory entry"); ev.Entity != "person" || ev.ID != "" || ev.Ticket != "" || ev.Project != "" || ev.Seq != ticketEv.Seq {
+	if ev := evs[1]; ev.Entity != "person" || ev.ID != "" || ev.Ticket != "" || ev.Project != "" || ev.Seq != ticketEv.Seq {
 		t.Fatalf("the person's event: %+v", ev)
 	}
 	e.expect(t, "POST", "/api/dispatch/tickets/EVT-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"title": "Edited"}}, http.StatusOK, "")
-	if ev := next("the edit"); ev.Entity != "ticket" || ev.ID != tk["id"] || ev.Seq <= ticketEv.Seq {
-		t.Fatalf("the edit's event: %+v", ev)
+	if evs := commit("the edit"); len(evs) != 1 || evs[0].Entity != "ticket" || evs[0].ID != tk["id"] || evs[0].Seq <= ticketEv.Seq {
+		t.Fatalf("the edit's events: %+v", evs)
 	}
 	e.expect(t, "POST", "/api/dispatch/tickets/EVT-1/edit", map[string]any{"opId": opID(), "expectedRev": 1, "set": map[string]any{"title": "Lost"}}, http.StatusConflict, "stale_revision")
 	if len(queued) != 0 {
@@ -1574,5 +1577,83 @@ func TestDispatchEventsReachTheStream(t *testing.T) {
 		if !found {
 			t.Fatalf("the stream ended before %s", w)
 		}
+	}
+}
+
+// A commit that changed more entities than a client's queue holds
+// entries, a label deleted on more tickets than eventQueue, reaches every
+// client as one entry and leaves its stream open: a client nobody drains
+// while the store commits holds the commit as one entry, the label's
+// event and every ticket's, and a live stream carries those and then the
+// next commit's. An entry per change dropped the client nobody drained at
+// the 257th, and the live stream too unless its handler wrote out enough
+// of them while the commit queued them.
+func TestDispatchALargeCommitKeepsTheStreamOpen(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	ds, done, ctx := e.srv.dispatch, doneOf(t), context.Background()
+	done(ds.CreateProject(ctx, adminOp("Tester"), dispatch.NewProject{Key: "BIG", Name: "Big"}))
+	label := done(ds.CreateLabel(ctx, adminOp("Tester"), "BIG", dispatch.NewLabel{Name: "everywhere", Color: "teal"})).ID
+	var tickets []string
+	for i := range eventQueue + 1 {
+		tickets = append(tickets, done(ds.CreateTicket(ctx, adminOp("Tester"), dispatch.NewTicket{Project: "BIG", Title: fmt.Sprintf("Ticket %d", i+1), Labels: []string{label}})).ID)
+	}
+	stream := e.eventStream(t)
+	queued := e.srv.events.subscribe()
+	defer e.srv.events.unsubscribe(queued)
+	done(ds.DeleteLabel(ctx, adminOp("Tester"), "BIG", label))
+	// The delete's events: the label's, then each ticket's it left, in
+	// the order of their numbers, all with the commit's seq.
+	if len(queued) != 1 {
+		t.Fatalf("the delete queued %d entries, want 1", len(queued))
+	}
+	var want []dispatchEvent
+	for i, data := range dispatchData(t, <-queued) {
+		var ev dispatchEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 && (ev.Entity != "label" || ev.ID != label || ev.Ticket != "" || ev.Project != "BIG") ||
+			i > 0 && (i > len(tickets) || ev != (dispatchEvent{Seq: want[0].Seq, Entity: "ticket", ID: tickets[i-1], Ticket: tickets[i-1], Project: "BIG"})) {
+			t.Fatalf("the delete's event %d: %+v", i, ev)
+		}
+		want = append(want, ev)
+	}
+	if len(want) != 1+len(tickets) {
+		t.Fatalf("the delete's entry holds %d events, want %d", len(want), 1+len(tickets))
+	}
+	select {
+	case _, open := <-queued:
+		if !open {
+			t.Fatal("the client nobody drained was dropped")
+		}
+		t.Fatal("an entry more than the delete's")
+	default:
+	}
+	// next is the next dispatch event on the live stream.
+	next := func(what string) dispatchEvent {
+		t.Helper()
+		for ev := range stream {
+			data, ok := strings.CutPrefix(ev, "dispatch ")
+			if !ok {
+				continue
+			}
+			var got dispatchEvent
+			if err := json.Unmarshal([]byte(data), &got); err != nil {
+				t.Fatalf("%s: %s: %v", what, data, err)
+			}
+			return got
+		}
+		t.Fatalf("the stream ended before %s", what)
+		return dispatchEvent{}
+	}
+	for i, w := range want {
+		if ev := next(fmt.Sprintf("the delete's event %d", i)); ev != w {
+			t.Fatalf("the stream's event %d of the delete: %+v, want %+v", i, ev, w)
+		}
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/BIG-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"title": "After"}}, http.StatusOK, "")
+	if ev := next("the edit after the delete"); ev.Entity != "ticket" || ev.ID != tickets[0] || ev.Seq <= want[0].Seq {
+		t.Fatalf("the edit's event: %+v", ev)
 	}
 }

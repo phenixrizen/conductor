@@ -354,8 +354,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
 		// Dispatch's store, beside the ledger; a switchyard keeps no
-		// tickets. Its changes reach the pages as dispatch events, and a
-		// run link names a run the engine holds or has a record of.
+		// tickets. Its changes reach the pages as dispatch events, a
+		// commit's together (OnChange hands the hub a commit at a time),
+		// and a run link names a run the engine holds or has a record of.
 		if !cfg.Switchyard.Enabled {
 			s.dispatch = openDispatch(st, log)
 		}
