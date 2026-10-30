@@ -168,6 +168,64 @@ func TestStopEndsAServiceAndItsGroup(t *testing.T) {
 	})
 }
 
+// A stop's grace is the group's, not its first process's alone: a first
+// process that ends on SIGTERM before what it started (a wrapper's shell)
+// leaves the rest of the group the grace. A member that takes a moment to
+// shut down finishes it, whether it holds the service's output or
+// redirected its own, and Stop returns once it has ended, the grace an
+// hour; one that ignores SIGTERM is killed when the grace ends, not when
+// its first process did.
+func TestStopGivesTheGraceToTheGroupNotItsFirstProcess(t *testing.T) {
+	// The member, a shell the first one starts in the group: asked to end,
+	// it takes a second, then says it is done.
+	const slow = `trap 'sleep 1; echo done > done; exit 0' TERM; echo $$ > child; while :; do sleep 0.05; done`
+	for _, tc := range []struct{ name, out string }{{"holding the service's output", ""}, {"its output redirected", " >/dev/null 2>&1"}} {
+		t.Run("a member "+tc.name+" finishes its shutdown", func(t *testing.T) {
+			shortGrace(t, time.Hour)
+			dir := t.TempDir()
+			svc := serve(t, dir, `sh -c "$1"`+tc.out+` & echo $$ > pid; wait`, func(s *Spec) { s.Argv = append(s.Argv, "sh", slow) })
+			pid, child := pidFile(t, filepath.Join(dir, "pid")), pidFile(t, filepath.Join(dir, "child"))
+			if err := svc.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if b, err := os.ReadFile(filepath.Join(dir, "done")); err != nil || string(b) != "done\n" {
+				t.Fatalf("the member was killed before it finished its shutdown: %q %v", b, err)
+			}
+			if res := svc.Result(); res.Signal != "terminated" || res.Exit != -1 || res.Killed {
+				t.Fatalf("%+v", res)
+			}
+			for _, p := range []int{pid, child} {
+				if !gone(t, p, 3*time.Second) {
+					t.Fatalf("%d outlived the stop", p)
+				}
+			}
+		})
+	}
+	t.Run("a member that ignores SIGTERM is killed at the grace", func(t *testing.T) {
+		const grace = time.Second
+		shortGrace(t, grace)
+		dir := t.TempDir()
+		svc := serve(t, dir, `sh -c "$1" & echo $$ > pid; wait`, func(s *Spec) {
+			s.Argv = append(s.Argv, "sh", `trap "" TERM; echo $$ > child; while :; do sleep 0.05; done`)
+		})
+		pidFile(t, filepath.Join(dir, "pid"))
+		child := pidFile(t, filepath.Join(dir, "child"))
+		begin := time.Now()
+		if err := svc.Stop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if took := time.Since(begin); took < grace {
+			t.Fatalf("Stop returned after %v, before the grace of %v", took, grace)
+		}
+		if res := svc.Result(); res.Signal != "terminated" {
+			t.Fatalf("%+v", res)
+		}
+		if !gone(t, child, 3*time.Second) {
+			t.Fatalf("%d outlived the stop", child)
+		}
+	})
+}
+
 // Stop may be called from more than one goroutine at once: each returns
 // once the service has ended, and it ends once.
 func TestStopFromManyGoroutines(t *testing.T) {

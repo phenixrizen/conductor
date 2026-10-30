@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -13,6 +14,10 @@ const ServeGrace = 5 * time.Second
 
 // serveGrace is ServeGrace, which a test shortens.
 var serveGrace = ServeGrace
+
+// groupPoll is how often a stopped service's group is looked at, once its
+// process has exited, for what of it is still running (settleStopped).
+const groupPoll = 50 * time.Millisecond
 
 // errNoServiceRunner is Serve's refusal on a platform without a process
 // group to stop a service through (noServiceRunner).
@@ -56,6 +61,7 @@ func Serve(ctx context.Context, s Spec) (*Service, error) {
 	if !ok {
 		return nil, errors.New(res.Err)
 	}
+	l.stop = &stopping{asked: make(chan struct{}), cut: make(chan struct{})}
 	svc := &Service{l: l, done: make(chan struct{})}
 	go func() {
 		svc.res = l.end(ctx)
@@ -86,17 +92,25 @@ func (s *Service) Result() Result {
 
 // Stop ends the service: SIGTERM to its group (and to the process, should
 // it have joined another), then SIGKILL once ServeGrace has passed or ctx
-// has ended, whichever comes first. It returns once the process is reaped
-// and its output pipe closed or given up on (Done), as Run returns at an
-// exit, so nothing of the group is running when it returns but what left
-// the group. A service that has ended already returns at once; Stop may
-// be called more than once, and from more than one goroutine.
+// has ended, whichever comes first. The grace is the group's, not its first
+// process's alone: one that ends on SIGTERM before what it started (a
+// wrapper, a make, a Procfile runner) leaves the rest of the group its
+// grace to end, their output closed and none of them left (settleStopped),
+// and what is still running at its end is killed. It returns once the
+// process is reaped and its output pipe closed or given up on (Done), as
+// Run returns at an exit, so nothing of the group is running when it
+// returns but what left the group. A service that has ended already
+// returns at once; Stop may be called more than once, and from more than
+// one goroutine.
 func (s *Service) Stop(ctx context.Context) error {
 	select {
 	case <-s.done:
 		return nil
 	default:
 	}
+	// Asked before the signal, so the end of a process that SIGTERM ended
+	// is read as the stop's.
+	s.l.stop.ask()
 	s.l.g.signal(s.l.cmd, sigTerm)
 	grace := time.NewTimer(serveGrace)
 	defer grace.Stop()
@@ -106,7 +120,84 @@ func (s *Service) Stop(ctx context.Context) error {
 	case <-grace.C:
 	case <-ctx.Done():
 	}
+	s.l.stop.cutNow()
 	s.l.g.signal(s.l.cmd, sigKill)
 	<-s.done
 	return nil
+}
+
+// stopping is a service's stop as its end sees it (launched.settle): asked
+// is closed once a Stop has asked the group to end (SIGTERM), cut once a
+// Stop's grace has passed or its context has ended, when what is left of
+// the group is killed.
+type stopping struct {
+	asked, cut       chan struct{}
+	askOnce, cutOnce sync.Once
+}
+
+func (s *stopping) ask()    { s.askOnce.Do(func() { close(s.asked) }) }
+func (s *stopping) cutNow() { s.cutOnce.Do(func() { close(s.cut) }) }
+
+// settleStopped gives a stopped service's group the stop's grace once its
+// process has exited: what is left of the group, asked to end by the
+// stop's SIGTERM, is waited for until none of it is left, or until the
+// stop's cut or the end of the service's context, whereupon end kills what
+// is left. The output is first given holdGrace to close, as at a Run's
+// exit; then the group is listed once (lifecycle.members) and the
+// processes found are followed (lifecycle.still) every groupPoll and when
+// the output closes, the group listed once more when the last of them is
+// gone, for a process one of them started as it ended. With none of the
+// group left, an output still open is held by a process that left the
+// group, which end leaves alone. Where the group cannot be listed, the
+// output closed is taken for the group gone. held says the output was
+// still open when the wait ended.
+func (l *launched) settleStopped(ctx context.Context) (held bool) {
+	eof := l.eof
+	// until waits for c, the output's end, the stop's cut or ctx's end, and
+	// says whether the wait is over (the cut, or ctx).
+	until := func(c <-chan time.Time) (over bool) {
+		select {
+		case <-eof:
+			eof = nil
+		case <-c:
+		case <-l.stop.cut:
+			return true
+		case <-ctx.Done():
+			return true
+		}
+		return false
+	}
+	hold := time.NewTimer(holdGrace)
+	defer hold.Stop()
+	if until(hold.C) {
+		return eof != nil
+	}
+	members, known := l.g.members(l.cmd)
+	if !known {
+		if eof != nil {
+			until(nil)
+		}
+		return eof != nil
+	}
+	if len(members) == 0 {
+		return eof != nil
+	}
+	tick := time.NewTicker(groupPoll)
+	defer tick.Stop()
+	for len(members) > 0 {
+		if until(tick.C) {
+			return eof != nil
+		}
+		if members = l.g.still(l.cmd, members); len(members) == 0 {
+			members, _ = l.g.members(l.cmd)
+		}
+	}
+	// The last of the group gone: its output closes now, unless a process
+	// that left the group holds it.
+	if eof != nil {
+		last := time.NewTimer(holdGrace)
+		defer last.Stop()
+		until(last.C)
+	}
+	return eof != nil
 }

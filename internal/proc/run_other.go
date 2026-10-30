@@ -21,6 +21,11 @@ func (*lifecycle) signal(cmd *exec.Cmd, _ sig) error {
 
 func (*lifecycle) reap(cmd *exec.Cmd) error { return cmd.Wait() }
 
+// members and still cannot say: no process group here.
+func (*lifecycle) members(*exec.Cmd) (pids []int, known bool) { return nil, false }
+
+func (*lifecycle) still(*exec.Cmd, []int) []int { return nil }
+
 func attr(cmd *exec.Cmd, g *lifecycle) { cmd.Cancel = func() error { return g.signal(cmd, sigKill) } }
 
 // noServiceRunner refuses Serve here: a service is stopped through its

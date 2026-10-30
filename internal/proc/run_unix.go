@@ -42,6 +42,34 @@ func (g *lifecycle) signal(cmd *exec.Cmd, s sig) error {
 	return nil
 }
 
+// members is the processes of cmd's process group that have not exited,
+// cmd's own left out, and known whether the group could be listed. It is
+// asked only before the reaping, while the exited process keeps the
+// group's id its own, so the answer is about this group and no later one;
+// the group is listed (groupMembers), never signalled, since a signal 0 to
+// it would reach the exited process itself, which stays in the group until
+// it is reaped.
+func (g *lifecycle) members(cmd *exec.Cmd) (pids []int, known bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reaped || cmd.Process == nil {
+		return nil, true
+	}
+	pids, err := groupMembers(cmd.Process.Pid, cmd.Process.Pid)
+	return pids, err == nil
+}
+
+// still is those of pids, members found before, that are still in cmd's
+// process group and have not exited, asked as members is.
+func (g *lifecycle) still(cmd *exec.Cmd, pids []int) []int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.reaped || cmd.Process == nil {
+		return nil
+	}
+	return stillMembers(cmd.Process.Pid, pids)
+}
+
 // reap waits for the process (exec reaps it), after which no signal is sent.
 func (g *lifecycle) reap(cmd *exec.Cmd) error {
 	g.mu.Lock()

@@ -232,6 +232,8 @@ type launched struct {
 	lg     *logSink
 	eof    chan struct{}
 	res    Result
+	// stop is a service's stop as end sees it (Serve); nil for Run.
+	stop *stopping
 }
 
 // launch starts s's command under ctx, whose end kills its group: in a
@@ -309,9 +311,10 @@ func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *lau
 
 // end waits for the launched command's exit, ends what it left in its
 // group, reaps it and reads what became of it: the pipe given holdGrace to
-// close at the exit (Killed: held by a child, which went with the group)
-// and WaitDelay after the reaping (a holder that left the group is left
-// alone, and Err says so).
+// close at the exit (Killed: held by a child, which went with the group),
+// or, for a service being stopped, the group given the stop's grace
+// (settle), and WaitDelay after the reaping (a holder that left the group
+// is left alone, and Err says so).
 func (l *launched) end(ctx context.Context) Result {
 	res := l.res
 	watchErr := <-l.exited
@@ -322,11 +325,7 @@ func (l *launched) end(ctx context.Context) Result {
 	// for certain, and the result says so.
 	held := false
 	if watchErr == nil {
-		select {
-		case <-l.eof:
-		case <-time.After(holdGrace):
-			held = true
-		}
+		held = l.settle(ctx)
 	}
 	l.g.signal(l.cmd, sigKill)
 	err := l.wait()
@@ -356,6 +355,33 @@ func (l *launched) end(ctx context.Context) Result {
 		res.LogErr = l.lg.finish(WaitDelay)
 	}
 	return res
+}
+
+// settle waits, once the process has exited, for what it left in its group
+// before end kills the group: the output pipe given holdGrace to close
+// (held: a child still holds it). For a service whose stop has asked its
+// group to end (Service.Stop), before the exit or while this waits, the
+// group has the stop's grace instead (settleStopped).
+func (l *launched) settle(ctx context.Context) (held bool) {
+	var asked <-chan struct{}
+	if l.stop != nil {
+		asked = l.stop.asked
+	}
+	select {
+	case <-asked:
+		return l.settleStopped(ctx)
+	default:
+	}
+	hold := time.NewTimer(holdGrace)
+	defer hold.Stop()
+	select {
+	case <-l.eof:
+		return false
+	case <-hold.C:
+		return true
+	case <-asked:
+		return l.settleStopped(ctx)
+	}
 }
 
 // classify reads the context's end into TimedOut (the run's own deadline)
