@@ -7,7 +7,9 @@ import { dispatchFailureWords } from '~/composables/useDispatchOps'
 /**
  * New ticket in a project (docs/plans/dispatch.md, "web/app"): its title, its description (Markdown, written here and previewed on its
  * page), its status and its priority; the store gives it its key, the project's next number (CND-12), never reassigned. Ctrl+Enter
- * (⌘+Enter) in the description makes it too. A refusal shows in the dialog.
+ * (⌘+Enter) in the description makes it too. A refusal shows in the dialog. While the ticket is made the dialog stays: Escape, a click
+ * outside, its close button and Cancel do nothing until the store has answered, so that answer closes the opening it was made from,
+ * never a later one holding a draft of its own.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ project: string; gate: DispatchOrder }>()
@@ -63,7 +65,7 @@ async function submit() {
 </script>
 
 <template>
-  <UModal v-model:open="open" :title="`New ticket in ${project}`" :ui="{ content: 'max-w-xl' }">
+  <UModal v-model:open="open" :title="`New ticket in ${project}`" :dismissible="!submitting" :close="{ disabled: submitting }" :ui="{ content: 'max-w-xl' }">
     <template #body>
       <form class="flex flex-col gap-4" data-new-ticket @submit.prevent="submit">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-new-ticket-error />
@@ -98,7 +100,7 @@ async function submit() {
     </template>
     <template #footer>
       <div class="flex w-full justify-end gap-2">
-        <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />
+        <UButton label="Cancel" color="neutral" variant="ghost" :disabled="submitting" @click="open = false" />
         <UButton label="Make the ticket" icon="i-lucide-plus" :loading="submitting" :disabled="invalid" data-new-ticket-submit @click="submit" />
       </div>
     </template>

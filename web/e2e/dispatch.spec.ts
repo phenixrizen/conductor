@@ -10,8 +10,10 @@ import { expect, test, type Api } from './fixtures'
 // that one committed; each page's first read, failed with the stream connected already, read again; what is typed while an editor's
 // save goes, kept. And review round 3's: an edit waiting behind one whose reply carries no ticket, made on the revision its receipt
 // names; an owner picked back while the edit of another is on its way, kept; an acceptance made again for the same owner, in the
-// history. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the earlier ones),
-// and counts only the rows of that project.
+// history. And review round 4's: a title typed back to the one shown while its save goes, kept and saved after it; a new ticket's and
+// a new project's dialog, which stay open while what they make is on its way and are closed by its answer alone. The spec names what
+// it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the earlier ones), and counts only the rows of
+// that project.
 test.describe.configure({ mode: 'serial' })
 
 let other: BrowserContext | null = null
@@ -611,4 +613,128 @@ test('an acceptance made again for the same owner is in the history, each accept
     'edited the acceptance criteria',
     'accepted it again',
   ])
+})
+
+test('a title typed back to the one shown while its save goes stays in the editor, and its own Enter saves it after that save', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'Original')
+  let release!: () => void
+  const sent = await recordEdits(page, { n: 1, until: new Promise<void>((resolve) => (release = resolve)) })
+  await page.goto(`/dispatch/${key}/1`)
+  const rev = page.locator('[data-ticket-rev]')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '1')
+
+  // A title saved, its edit held on its way; the title shown typed back, and Enter pressed again while the save goes.
+  await page.locator('[data-title-edit]').click()
+  const title = page.locator('[data-title-input]')
+  const save = page.locator('[data-title-save]')
+  await title.fill('First save')
+  await title.press('Enter')
+  await expect.poll(() => sent.length).toBe(1)
+  await expect(save).toBeDisabled()
+  await title.fill('Original')
+  await title.press('Enter')
+  // Nothing is made of it while the save goes: the editor stays, with the title typed back.
+  await expect(title).toHaveValue('Original')
+  release()
+
+  // The save is done: the store has the title saved, and the editor the one typed back, with no notice of another person's.
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  await expect(save).toBeEnabled()
+  await expect(title).toHaveValue('Original')
+  await expect(page.locator('[data-title-theirs]')).toHaveCount(0)
+  expect((await stored(api, `${key}-1`)).title).toBe('First save')
+  // Its own Enter saves it, made on the revision that save left, and closes the editor.
+  await title.press('Enter')
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Original')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '3')
+  expect((await stored(api, `${key}-1`)).title).toBe('Original')
+  expect(sent.map((b) => [b.set, b.expectedRev])).toEqual([
+    [{ title: 'First save' }, 1],
+    [{ title: 'Original' }, 2],
+  ])
+})
+
+/** Holds the first creation `url` is sent (a POST) until `until` is done, and counts the creations sent. */
+async function holdCreation(page: Page, url: string, until: Promise<void>): Promise<{ sent: number }> {
+  const r = { sent: 0 }
+  await page.route(url, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback()
+    if (++r.sent === 1) await until
+    await route.continue()
+  })
+  return r
+}
+
+test("a new ticket's dialog stays open while its ticket is made, and only that ticket's answer closes it", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key)
+  let release!: () => void
+  const creations = await holdCreation(page, '**/api/dispatch/tickets', new Promise<void>((resolve) => (release = resolve)))
+  await page.goto(`/dispatch/${key}`)
+  await expect(page.locator('[data-list-empty]')).toBeVisible()
+
+  // New ticket, made: its creation held on its way.
+  await page.locator('[data-new-ticket-open]').click()
+  const dialog = page.getByRole('dialog')
+  const title = page.locator('[data-new-ticket-title]')
+  await title.fill('Made while held')
+  await page.locator('[data-new-ticket-submit]').click()
+  await expect.poll(() => creations.sent).toBe(1)
+  // Nothing closes it while the ticket is made: Escape and a click outside do nothing, its close button and Cancel are off, and it
+  // keeps what was sent.
+  await page.keyboard.press('Escape')
+  await page.mouse.click(5, 5)
+  await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeDisabled()
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled()
+  await expect(title).toHaveValue('Made while held')
+  release()
+  // Answered: the dialog it was made from closes, and the list shows the ticket.
+  await expect(dialog).toHaveCount(0)
+  await expect(page.locator(`[data-ticket-row="${key}-1"] [data-row-title]`)).toHaveText('Made while held')
+
+  // Opened again, with nothing on its way: an empty draft, which Cancel closes; and the next opening's own ticket, made.
+  await page.locator('[data-new-ticket-open]').click()
+  await expect(title).toHaveValue('')
+  await title.fill('Not made')
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await page.locator('[data-new-ticket-open]').click()
+  await expect(title).toHaveValue('')
+  await title.fill('The next one')
+  await page.locator('[data-new-ticket-submit]').click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page.locator(`[data-ticket-row="${key}-2"] [data-row-title]`)).toHaveText('The next one')
+  await expect(page.locator('[data-list-total]')).toHaveAttribute('data-count', '2')
+  expect(creations.sent).toBe(2)
+})
+
+test("a new project's dialog stays open while its project is made, and that project's answer opens its page", async ({ page, api }) => {
+  const key = await freeKey(api)
+  const name = `E2E project ${key}`
+  let release!: () => void
+  const creations = await holdCreation(page, '**/api/dispatch/projects', new Promise<void>((resolve) => (release = resolve)))
+  await page.goto('/dispatch')
+
+  // New project, made: its creation held on its way.
+  await page.locator('[data-new-project-open]').click()
+  const dialog = page.getByRole('dialog')
+  await page.locator('[data-new-project-key]').fill(key)
+  await page.locator('[data-new-project-name]').fill(name)
+  await page.locator('[data-new-project-submit]').click()
+  await expect.poll(() => creations.sent).toBe(1)
+  // Nothing closes it while the project is made, and the page stays: Escape and a click outside do nothing, its close button and
+  // Cancel are off, and it keeps what was sent.
+  await page.keyboard.press('Escape')
+  await page.mouse.click(5, 5)
+  await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeDisabled()
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled()
+  await expect(page.locator('[data-new-project-name]')).toHaveValue(name)
+  await expect(page).toHaveURL(/\/dispatch$/)
+  release()
+  // Answered: the project's page opens, from the dialog it was made from.
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))
+  await expect(page.locator('[data-project-name]')).toHaveText(name)
+  await expect(dialog).toHaveCount(0)
+  expect(creations.sent).toBe(1)
 })

@@ -258,13 +258,17 @@ const edit = serially(async (key: string, make: () => Made): Promise<boolean> =>
 
 // The title: shown, or edited in place (Enter saves, Escape leaves it). A save is made against the title the editor opened on: when another
 // person's came meanwhile (the page reads the ticket live), it is not sent, the draft is kept and theirs is said; a second save replaces it.
-// A title typed on while its save goes stays in the editor once the save is done.
+// A title typed on while its save goes stays in the editor once the save is done, and Enter or Save makes nothing of it until then:
+// judged before that save is done, a title typed back to the one shown would be taken for no change and the editor closed, and the save
+// on its way would stand.
 const editingTitle = ref(false)
 const titleDraft = ref('')
 /** The title the editor opened on, or the other person's once said, or the one saved while it stayed open: what a save is made against. */
 const titleBase = ref('')
 /** Another person's title, saved while this one was edited: said once a save found it, until the editor closes. */
 const titleTheirs = ref<string | null>(null)
+/** A save of the title on its way, until it has answered: no other is made meanwhile, and the draft stays (saveTitle). */
+const titleSaving = ref(false)
 /** Each opening of the editor, counted: a save's answer acts on the editor only while it is the opening the save was made in. */
 let titleOpened = 0
 const titleInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('titleInput')
@@ -292,6 +296,8 @@ function titleChangedUnder(): boolean {
 async function saveTitle(e?: KeyboardEvent) {
   // Enter that ends an input method's composition is the composition's.
   if (e?.isComposing) return
+  // A save on its way: the draft stays, to be saved by its own Enter once that one has answered, against the title it left.
+  if (titleSaving.value) return
   const title = titleDraft.value.trim()
   if (!ticket.value || !title || title === ticket.value.title) {
     leaveTitle()
@@ -306,7 +312,8 @@ async function saveTitle(e?: KeyboardEvent) {
     if (shown !== base) return false
     return title !== shown ? { set: { title } } : null
   }
-  const done = await edit(props.ticketKey, made)
+  titleSaving.value = true
+  const done = await edit(props.ticketKey, made).finally(() => (titleSaving.value = false))
   // The editor left, or opened again, while the save went: what it holds now is not this save's to close.
   if (!editingTitle.value || opened !== titleOpened) return
   if (!done) titleChangedUnder()
@@ -435,7 +442,7 @@ const MAX_ACCEPTANCE = 16 << 10
               @keydown.enter.prevent="(e: KeyboardEvent) => saveTitle(e)"
               @keydown.escape.prevent.stop="leaveTitle"
             />
-            <UButton label="Save" icon="i-lucide-check" :loading="ops.busy.value === `ticket:${ticket.key}`" :disabled="!titleDraft.trim()" data-title-save @click="saveTitle()" />
+            <UButton label="Save" icon="i-lucide-check" :loading="titleSaving" :disabled="!titleDraft.trim()" data-title-save @click="saveTitle()" />
             <UButton label="Cancel" color="neutral" variant="ghost" @click="leaveTitle" />
           </div>
           <h1 v-else class="group flex items-start gap-2 text-xl font-semibold text-highlighted">

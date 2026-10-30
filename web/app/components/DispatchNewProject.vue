@@ -9,7 +9,9 @@ import { dispatchFailureWords } from '~/composables/useDispatchOps'
  * chosen now and never changed, its tickets' keys CND-1, CND-2…), its name, the folder of its repository (DirInput, completed from the
  * server's allowed roots; kept as text, used when something launches from it), and its tracker: Dispatch itself, or a pointer at
  * another one by its URL. The close policy is the store's default (the owner's acceptance for a project of Dispatch's, nothing for one
- * tracked elsewhere) until the project dialog can edit it. A refusal (a key taken) shows in the dialog.
+ * tracked elsewhere) until the project dialog can edit it. A refusal (a key taken) shows in the dialog. While the project is made the
+ * dialog stays: Escape, a click outside, its close button and Cancel do nothing until the store has answered, so that answer closes the
+ * opening it was made from and opens the project's page, never closing a later opening, or leaving its draft for that page.
  */
 const open = defineModel<boolean>('open', { default: false })
 const props = defineProps<{ gate: DispatchOrder }>()
@@ -73,7 +75,7 @@ async function submit() {
 </script>
 
 <template>
-  <UModal v-model:open="open" title="New project" description="A project holds tickets under its key: CND-1, CND-2 and on." :ui="{ content: 'max-w-lg' }">
+  <UModal v-model:open="open" title="New project" description="A project holds tickets under its key: CND-1, CND-2 and on." :dismissible="!submitting" :close="{ disabled: submitting }" :ui="{ content: 'max-w-lg' }">
     <template #body>
       <form class="flex flex-col gap-4" data-new-project @submit.prevent="submit">
         <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-triangle-alert" :title="error" data-new-project-error />
@@ -99,7 +101,7 @@ async function submit() {
     </template>
     <template #footer>
       <div class="flex w-full justify-end gap-2">
-        <UButton label="Cancel" color="neutral" variant="ghost" @click="open = false" />
+        <UButton label="Cancel" color="neutral" variant="ghost" :disabled="submitting" @click="open = false" />
         <UButton label="Make the project" icon="i-lucide-plus" :loading="submitting" :disabled="invalid" data-new-project-submit @click="submit" />
       </div>
     </template>
