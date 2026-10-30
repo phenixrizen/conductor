@@ -86,8 +86,10 @@ func noTrace(t *testing.T, s *Store, content []byte) {
 // committed, while a second store opens on the directory and sweeps with
 // an hour's grace, names a file still there once it commits: the lease
 // names it. The same with content uploaded before, its only attachment
-// removed and its file's modification time set back a day: the lease, not
-// the file's age, keeps it, and it opens whole after the commit.
+// removed, and its file's modification time set back a day once the held
+// upload has published it, so both of the second store's sweeps see a file
+// a day old that only the lease names: the lease, not the file's age,
+// keeps it, and it opens whole after the commit.
 func TestAnUploadHeldAcrossASecondStoresSweepNamesItsFile(t *testing.T) {
 	ctx := context.Background()
 	for _, reused := range []bool{false, true} {
@@ -101,12 +103,16 @@ func TestAnUploadHeldAcrossASecondStoresSweepNamesItsFile(t *testing.T) {
 				a := mustPut(t, s, "a0", key, "first.txt", content)
 				rc, err := s.RemoveAttachment(ctx, testOp("r0"), key, a.ID)
 				want(t, rc, err, StatusDone, "")
+			}
+			h := holdAt(t, s, &s.beforeCommit, "a1", key, content)
+			if reused {
+				// After the publication, which on unix renamed a new file
+				// into the old one's place.
 				day := time.Now().Add(-24 * time.Hour)
-				if err := os.Chtimes(contentAt(s, a.SHA256), day, day); err != nil {
+				if err := os.Chtimes(contentAt(s, sumOf(content)), day, day); err != nil {
 					t.Fatal(err)
 				}
 			}
-			h := holdAt(t, s, &s.beforeCommit, "a1", key, content)
 			second := openStore(t, dir)
 			if err := second.SweepError(); err != nil {
 				t.Fatalf("the second store's sweep at open: %v", err)
