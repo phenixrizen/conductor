@@ -27,12 +27,24 @@ import (
 
 const (
 	// maxAttachmentEnvelope bounds what an upload's body holds beside its
-	// file: the boundaries, the parts' headers and the operation's fields.
+	// file: whatever comes before its first boundary and after its last,
+	// the boundaries, the parts' headers and the operation's fields. A body
+	// whose envelope is past it is 413 bound, the bound held while the body
+	// is read (uploadBody).
 	maxAttachmentEnvelope = 64 << 10
 	// maxAttachmentBody bounds an upload's body: its file at the store's
 	// bound, dispatch.MaxAttachmentSize, and the envelope. A body past it
 	// is 413 bound, whatever it holds.
 	maxAttachmentBody = dispatch.MaxAttachmentSize + maxAttachmentEnvelope
+	// uploadReadAhead is how far an upload's multipart reader reads the
+	// body ahead of what it has parsed: mime/multipart's buffer, 4 KiB.
+	// uploadBody gives it that room past the envelope's bound, so a body
+	// whose envelope is within the bound is never refused for bytes the
+	// reader holds unparsed (the bodies at their bound of
+	// TestDispatchAttachmentUploadIsBounded and
+	// TestDispatchAttachmentEnvelopeIsBounded, their envelope before their
+	// file, hold the room to that).
+	uploadReadAhead = 4 << 10
 )
 
 // inlineTypes are the content types a download is served as, when the
@@ -51,25 +63,65 @@ var uploadFields = []string{"opId", "expectedRev", "byName"}
 // errFileNotLast is an upload whose file part is followed by another.
 var errFileNotLast = errors.New("the file is the upload's last part")
 
+// uploadBody is an upload's body as its multipart reader reads it: the
+// request's body under its bound, counted, and read no further than the
+// envelope's bound allows. Its bytes are the file's or the envelope's,
+// and the reader reads at most uploadReadAhead past what it has parsed, so
+// a read that would take the body past the file's bytes given to the store
+// (file), maxAttachmentEnvelope and that room is refused errEnvelope
+// (over): an envelope within its bound is never refused, and a header, a
+// field, a preamble or an epilogue past it is read no further than that,
+// whatever its length, nor held in memory past it. Within that room the
+// envelope is known exactly once the body's end is read (past), which
+// uploadFile checks before the store's read can end.
+type uploadBody struct {
+	r    io.Reader
+	read int64
+	file int64
+	over bool
+}
+
+func (b *uploadBody) Read(p []byte) (int, error) {
+	room := b.file + maxAttachmentEnvelope + uploadReadAhead - b.read
+	if room <= 0 {
+		b.over = true
+		return 0, errEnvelope
+	}
+	if int64(len(p)) > room {
+		p = p[:room]
+	}
+	n, err := b.r.Read(p)
+	b.read += int64(n)
+	return n, err
+}
+
+// past reports whether the envelope is past its bound: a read was refused
+// for it, or the bytes read less the file's are more than
+// maxAttachmentEnvelope, which is the envelope itself once the body's end
+// is read.
+func (b *uploadBody) past() bool {
+	return b.over || b.read-b.file > maxAttachmentEnvelope
+}
+
 // uploadFile is an upload's file part as the store reads it: the part's
 // bytes, and the rest of the body read before the store's read can end,
-// so that a body past its bound is known before the operation can keep a
-// receipt or an attachment. At the part's end the body's end is read, so
-// that the file is known to be the body's last part (errFileNotLast
-// otherwise), and then whatever follows its close; once the part has given
-// more than the store takes (dispatch.MaxAttachmentSize, past which it
-// refuses the file bound), whatever is left of the body is read before
-// those bytes are given. A body past its bound is then the read's error,
-// the http.MaxBytesError the handler answers 413 bound, the store keeping
-// nothing. body is the request's body under its bound, which the part is
-// read from. err keeps the first error the body gave, so the handler tells
-// the body's failure (past its bound, malformed, the client gone) from the
-// store's.
+// so that a body past its bound, or past its envelope's, is known before
+// the operation can keep a receipt or an attachment. At the part's end the
+// body's end is read, so that the file is known to be the body's last part
+// (errFileNotLast otherwise), and then whatever follows its close, and the
+// envelope, read whole, is held to its bound (errEnvelope); once the part
+// has given more than the store takes (dispatch.MaxAttachmentSize, past
+// which it refuses the file bound), whatever is left of the body is read
+// before those bytes are given. A body past its bound is then the read's
+// error, the http.MaxBytesError or errEnvelope the handler answers 413
+// bound, the store keeping nothing. body is the request's body as the part
+// is read from it, which counts the file's bytes. err keeps the first
+// error the body gave, so the handler tells the body's failure (past its
+// bound, malformed, the client gone) from the store's.
 type uploadFile struct {
 	part *multipart.Part
 	mr   *multipart.Reader
-	body io.Reader
-	n    int64
+	body *uploadBody
 	err  error
 	done bool
 }
@@ -82,14 +134,18 @@ func (f *uploadFile) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	n, err := f.part.Read(p)
-	f.n += int64(n)
+	f.body.file += int64(n)
 	switch {
 	case err == io.EOF:
 		switch _, next := f.mr.NextRawPart(); {
 		case next == io.EOF:
-			if _, rest := io.Copy(io.Discard, f.body); rest != nil {
+			_, rest := io.Copy(io.Discard, f.body)
+			switch {
+			case rest != nil:
 				err = rest
-			} else {
+			case f.body.past():
+				err = errEnvelope
+			default:
 				f.done = true
 			}
 		case next == nil:
@@ -97,12 +153,17 @@ func (f *uploadFile) Read(p []byte) (int, error) {
 		default:
 			err = next
 		}
-	case err == nil && f.n > dispatch.MaxAttachmentSize:
+	case err == nil && f.body.file > dispatch.MaxAttachmentSize:
 		if _, rest := io.Copy(io.Discard, f.body); rest != nil {
 			err = rest
 		}
 	}
 	if err != nil && err != io.EOF {
+		if f.body.over {
+			// The envelope's bound refused a read: that is why, whatever
+			// the multipart reader made of the bytes it was given.
+			err = errEnvelope
+		}
 		f.err = err
 	}
 	return n, err
@@ -114,19 +175,20 @@ func (f *uploadFile) Read(p []byte) (int, error) {
 // once, and last the file, a part named file whose filename is the
 // attachment's name and whose Content-Type is its type as given; at most
 // maxAttachmentBody, the store's 16 MiB of file and 64 KiB of envelope, a
-// body past it 413 bound whatever it holds. The body is read to its end
-// before any answer, at most to its bound, so a client that sent it whole
-// reads the answer, and before the store can keep anything of it
-// (uploadFile), so one past its bound keeps no receipt and no attachment,
-// wherever its excess lies. 201 {receipt, attachment}; 200 for the
-// receipt given before (repeat); 404 not_found for a ticket missing or
-// deleted; 409 expired when the upload's lease was swept before its row
-// was written (the upload is sent again), bound for a file past 16 MiB in
-// a body within its bound, 50 live attachments on the ticket or a type
-// past 100 bytes, invalid for a name that is no file's (empty, '/', '\', a
-// control character, "." or ".."), archived; 400 invalid_request for a
-// body that is no upload's; 500 store_failed when the file could not be
-// written or published.
+// body past it 413 bound whatever it holds, and one whose envelope is
+// past maxAttachmentEnvelope 413 bound too (uploadBody). The body is read
+// to its end before any answer, at most to its bound, so a client that
+// sent it whole reads the answer, and before the store can keep anything
+// of it (uploadFile), so one past its bound or its envelope's keeps no
+// receipt and no attachment, wherever its excess lies. 201 {receipt,
+// attachment}; 200 for the receipt given before (repeat); 404 not_found
+// for a ticket missing or deleted; 409 expired when the upload's lease
+// was swept before its row was written (the upload is sent again), bound
+// for a file past 16 MiB in a body within its bound, 50 live attachments
+// on the ticket or a type past 100 bytes, invalid for a name that is no
+// file's (empty, '/', '\', a control character, "." or ".."), archived;
+// 400 invalid_request for a body that is no upload's; 500 store_failed
+// when the file could not be written or published.
 func (s *Server) handleDispatchAddAttachment(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchWriter(w)
 	if !ok {
@@ -172,14 +234,24 @@ var boundWords = fmt.Sprintf("an upload is at most %d MiB of file and %d KiB of 
 // readUpload reads an upload's body up to its file: the operation's
 // fields, checked as a JSON write's are, and the file's part, its name
 // (the filename as sent: a name the store refuses is its refusal, never
-// one cut down to its base) and its type. Any error is the body's: the
-// handler answers it after reading the rest (refuseUpload).
+// one cut down to its base) and its type, the envelope read no further
+// than its bound allows (uploadBody). Any error is the body's, errEnvelope
+// when that bound refused a read: the handler answers it after reading the
+// rest (refuseUpload).
 func readUpload(r *http.Request) (op dispatchOp, file *uploadFile, name, contentType string, err error) {
 	mt, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mt != "multipart/form-data" || params["boundary"] == "" {
 		return op, nil, "", "", errors.New("an upload is multipart/form-data")
 	}
-	mr := multipart.NewReader(r.Body, params["boundary"])
+	body := &uploadBody{r: r.Body}
+	defer func() {
+		// The envelope's bound refused a read: that is why, whatever the
+		// multipart reader made of the bytes it was given.
+		if err != nil && body.over {
+			err = errEnvelope
+		}
+	}()
+	mr := multipart.NewReader(body, params["boundary"])
 	seen := map[string]bool{}
 	for {
 		part, err := mr.NextRawPart()
@@ -202,7 +274,7 @@ func readUpload(r *http.Request) (op dispatchOp, file *uploadFile, name, content
 			if !dispatch.OpIDPattern.MatchString(op.OpID) {
 				return op, nil, "", "", errors.New("opId is 1 to 32 letters, digits, '.', '_', '~' or '-', and comes before the file")
 			}
-			return op, &uploadFile{part: part, mr: mr, body: r.Body}, disposition["filename"], part.Header.Get("Content-Type"), nil
+			return op, &uploadFile{part: part, mr: mr, body: body}, disposition["filename"], part.Header.Get("Content-Type"), nil
 		}
 		if !slices.Contains(uploadFields, field) {
 			return op, nil, "", "", fmt.Errorf("an upload's parts are %s and last file, not %q", strings.Join(uploadFields, ", "), field)
@@ -229,14 +301,16 @@ func readUpload(r *http.Request) (op dispatchOp, file *uploadFile, name, content
 	}
 }
 
-// errEnvelope is an upload's field past the envelope's bound.
-var errEnvelope = errors.New("an upload's field is more than its envelope holds")
+// errEnvelope is an upload whose envelope, its body beside its file, is
+// past maxAttachmentEnvelope: a field, a header, a preamble or an epilogue
+// too long, or all of them together.
+var errEnvelope = errors.New("an upload's envelope is more than its bound beside its file")
 
 // refuseUpload answers an upload whose body the store could not take,
 // err saying why, once the rest of the body is read: 413 bound for a body
-// past its bound (or a field past the envelope), whatever else is wrong
-// with it, as a JSON body past its route's is; 400 invalid_request
-// otherwise.
+// past its bound, whatever else is wrong with it, as a JSON body past its
+// route's is, and for one whose envelope is past its own (errEnvelope);
+// 400 invalid_request otherwise.
 func refuseUpload(w http.ResponseWriter, r *http.Request, err error) {
 	if pastBound(r, err) || errors.Is(err, errEnvelope) {
 		writeError(w, http.StatusRequestEntityTooLarge, "bound", boundWords)

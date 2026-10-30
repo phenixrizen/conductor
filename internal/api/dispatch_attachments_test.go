@@ -312,6 +312,173 @@ func TestDispatchAttachmentUploadIsBounded(t *testing.T) {
 	}
 }
 
+// An upload's envelope, everything of its body beside its file, is at
+// most 64 KiB wherever its bytes lie, the body within maxAttachmentBody: a
+// megabyte of header on the file's part, a revision of 64 KiB of zeros (0)
+// beside the other fields, and a pad before the first boundary or after
+// the last that takes the envelope one byte past its bound are each 413
+// bound, keeping no receipt, no attachment and no file; a pad that brings
+// it to its bound exactly, before or after, is taken.
+func TestDispatchAttachmentEnvelopeIsBounded(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	e.newDispatchProject(t, "ENV", nil)
+	e.newDispatchTicket(t, "ENV", "Enveloped", nil)
+	refused := func(id string, content, body []byte, ct string) {
+		t.Helper()
+		if len(body) > maxAttachmentBody || len(body)-len(content) <= maxAttachmentEnvelope {
+			t.Fatalf("%s: a body of %d bytes, its envelope %d", id, len(body), len(body)-len(content))
+		}
+		e.expectUpload(t, "ENV-1", body, ct, http.StatusRequestEntityTooLarge, "bound")
+		e.expect(t, "GET", "/api/dispatch/ops/"+id, nil, http.StatusNotFound, "not_found")
+		if _, err := os.Stat(filepath.Join(e.srv.dispatch.Dir(), "attachments", sha(content)[:2], sha(content))); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s: an envelope past its bound left its file: %v", id, err)
+		}
+	}
+	one := []byte("1")
+	body, ct := headerUpload(t, "header", strings.Repeat("x", 1<<20), one)
+	refused("header", one, body, ct)
+	zeros := []byte("zeros")
+	body, ct = uploadOf(t, 0, [][2]string{{"opId", "fields"}, {"expectedRev", strings.Repeat("0", maxAttachmentEnvelope)}}, "zeros.txt", "text/plain", zeros)
+	refused("fields", zeros, body, ct)
+	for _, before := range []bool{true, false} {
+		where := "after"
+		if before {
+			where = "before"
+		}
+		// at is an upload of content under the op id whose envelope is n
+		// bytes, its pad on its side of the parts.
+		at := func(id string, content []byte, n int) ([]byte, string) {
+			t.Helper()
+			fields := [][2]string{{"opId", id}, {"byName", "Tester"}}
+			body, ct := uploadOf(t, 0, fields, id+".txt", "text/plain", content)
+			pad := n - (len(body) - len(content))
+			if before {
+				body, ct = uploadOf(t, pad, fields, id+".txt", "text/plain", content)
+			} else {
+				body = append(body, bytes.Repeat([]byte{'e'}, pad)...)
+			}
+			if len(body)-len(content) != n {
+				t.Fatalf("%s: an envelope of %d bytes, not %d", id, len(body)-len(content), n)
+			}
+			return body, ct
+		}
+		content := []byte("at the bound " + where)
+		body, ct := at("at-"+where, content, maxAttachmentEnvelope)
+		if a := entityOf(t, e.expectUpload(t, "ENV-1", body, ct, http.StatusCreated, ""), "attachment"); a["sha256"] != sha(content) {
+			t.Fatalf("the envelope at its bound %s the parts: %v", where, a)
+		}
+		past := []byte("past the bound " + where)
+		body, ct = at("past-"+where, past, maxAttachmentEnvelope+1)
+		refused("past-"+where, past, body, ct)
+	}
+	if list := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/ENV-1", nil, http.StatusOK, ""), "ticket")["attachments"].([]any); len(list) != 2 {
+		t.Fatalf("%d attachments, want the two at their bound", len(list))
+	}
+	tmp := filepath.Join(e.srv.dispatch.Dir(), "attachments", "tmp")
+	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {
+		t.Fatalf("the uploads' directory: %v %v", entries, err)
+	}
+}
+
+// The envelope's bound holds while the body is read, not only once it has
+// been: a megabyte of header on the file's part, of preamble before the
+// first boundary or of epilogue after the last is read no further than the
+// file's bytes, the envelope's bound and the multipart reader's read-ahead
+// (uploadReadAhead), and refused errEnvelope, so what such a body costs
+// the server, its header held in memory among it, is bounded by the
+// envelope whatever its length. A header line of a megabyte with no colon,
+// on the file's part or on a part after it, is refused the same, though
+// the multipart reader, given the part of it the bound let through, takes
+// that for a malformed header.
+func TestAnUploadsEnvelopeIsReadNoFurtherThanItsBound(t *testing.T) {
+	t.Parallel()
+	const mib = 1 << 20
+	content := []byte("bounded")
+	fields := [][2]string{{"opId", "o1"}, {"byName", "Tester"}}
+	// raw is a body written out by hand, b its parts' delimiter.
+	b := "--" + uploadBoundary
+	raw := func(body string) func() ([]byte, string) {
+		return func() ([]byte, string) { return []byte(body), "multipart/form-data; boundary=" + uploadBoundary }
+	}
+	opIDPart := b + "\r\nContent-Disposition: form-data; name=\"opId\"\r\n\r\no1\r\n"
+	filePart := b + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.txt\"\r\n\r\n" + string(content) + "\r\n"
+	colonless := strings.Repeat("k", mib) + "\r\n\r\n"
+	for _, c := range []struct {
+		name string
+		body func() ([]byte, string)
+	}{
+		{"header", func() ([]byte, string) { return headerUpload(t, "o1", strings.Repeat("x", mib), content) }},
+		{"header line with no colon", raw(opIDPart + b + "\r\n" + colonless + string(content) + "\r\n" + b + "--\r\n")},
+		{"header line with no colon after the file", raw(opIDPart + filePart + b + "\r\n" + colonless + "late\r\n" + b + "--\r\n")},
+		{"preamble", func() ([]byte, string) { return uploadOf(t, mib, fields, "x.txt", "text/plain", content) }},
+		{"epilogue", func() ([]byte, string) {
+			body, ct := uploadOf(t, 0, fields, "x.txt", "text/plain", content)
+			return append(body, bytes.Repeat([]byte{'e'}, mib)...), ct
+		}},
+	} {
+		body, ct := c.body()
+		read := &countedReader{r: bytes.NewReader(body)}
+		req, err := http.NewRequest(http.MethodPost, "/api/dispatch/tickets/CND-1/attachments", read)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", ct)
+		_, file, _, _, err := readUpload(req)
+		if err == nil {
+			_, err = io.Copy(io.Discard, file)
+		}
+		if !errors.Is(err, errEnvelope) {
+			t.Fatalf("%s: %v, want the envelope's refusal", c.name, err)
+		}
+		if limit := int64(len(content) + maxAttachmentEnvelope + uploadReadAhead); read.n > limit {
+			t.Fatalf("%s: %d bytes of a body of %d read, more than %d", c.name, read.n, len(body), limit)
+		}
+	}
+}
+
+// headerUpload is an upload of content under the op id whose file's part
+// carries an X-Pad header of the value given beside its own.
+func headerUpload(t *testing.T, id, pad string, content []byte) ([]byte, string) {
+	t.Helper()
+	var b bytes.Buffer
+	mw := multipart.NewWriter(&b)
+	if err := mw.SetBoundary(uploadBoundary); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range [][2]string{{"opId", id}, {"byName", "Tester"}} {
+		if err := mw.WriteField(f[0], f[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", `form-data; name="file"; filename="padded.txt"`)
+	h.Set("X-Pad", pad)
+	w, err := mw.CreatePart(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes(), mw.FormDataContentType()
+}
+
+// countedReader counts what is read from r.
+type countedReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countedReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
 // An upload whose lease is gone when its row would be written, here
 // dropped through the store's seam as a second server's sweep would drop
 // it, is 409 expired with its failed receipt, which the receipts route
