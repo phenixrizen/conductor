@@ -196,7 +196,7 @@ func TestARenamedMemberResumesUnderItsName(t *testing.T) {
 	e := newTestEnv(t, nil)
 	e.saveResumable("talker")
 	runID := e.launchCrew(t, "Talk", map[string]any{"name": "a", "agentId": "talker", "prompt": "", "start": map[string]any{"when": "immediately"}})
-	sid := e.waitRunning(t, runID, "a")
+	sid := e.waitMember(t, runID, "a", "running")["sessionId"].(string)
 	as := e.local(sid).Info().AgentSession
 	e.do("POST", "/api/sessions/"+sid+"/attention", e.agentToken(sid), map[string]any{"state": "done", "agentSession": as.ID, "turn": true})
 	if resp, out := e.do("PATCH", "/api/sessions/"+sid, adminToken, map[string]any{"name": "API lead"}); resp.StatusCode != http.StatusOK || out["name"] != "API lead" {
@@ -214,21 +214,23 @@ func TestARenamedMemberResumesUnderItsName(t *testing.T) {
 	if next["name"] != "API lead" || crew["member"] != "a" || crew["runId"] != runID {
 		t.Fatalf("resumed member: %v", next)
 	}
-	if got := e.waitRunning(t, runID, "a"); got != next["id"] {
-		t.Fatalf("member's session %s, want %s", got, next["id"])
+	if got := e.waitMember(t, runID, "a", "running")["sessionId"]; got != next["id"] {
+		t.Fatalf("member's session %v, want %s", got, next["id"])
 	}
 }
 
 // waitMember waits until a member of a run has the status, as GET
-// /api/runs/{run} reports it.
-func (e *testEnv) waitMember(t *testing.T, runID, name, status string) {
+// /api/runs/{run} reports it, and returns the member. A member runs once its
+// session is ready for its prompt, which the engine waits for 60 s at most
+// (crew's readyCap) before it types the prompt anyway: the bound is above it.
+func (e *testEnv) waitMember(t *testing.T, runID, name, status string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	for {
 		_, out := e.do("GET", "/api/runs/"+runID, adminToken, nil)
 		m := runMember(t, out["run"].(map[string]any), name)
 		if m["status"] == status {
-			return
+			return m
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("%s is %v, want %s", name, m, status)

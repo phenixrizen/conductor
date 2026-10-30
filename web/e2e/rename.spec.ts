@@ -53,9 +53,10 @@ test("the palette's row offers the same Rename…", async ({ page, api }) => {
   const palette = page.locator('[data-palette]')
   await expect(palette).toBeVisible()
   await palette.locator('input[data-palette-input]').fill('e2e rename palette')
+  // The row by its id, focused itself: another session the query matches may rank above it.
   const row = palette.locator(`[data-palette-row="session:${s.id}"]`)
   await expect(row).toBeVisible()
-  await page.keyboard.press('ArrowDown')
+  await row.focus()
   await expect(row).toHaveAttribute('data-palette-focused', '')
   await page.keyboard.press('ArrowRight')
   await row.locator('[data-palette-action="rename"]').click()
