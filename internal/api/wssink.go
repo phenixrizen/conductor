@@ -209,11 +209,11 @@ func errorCodeFor(reason error) string {
 // queue, so a test knows a frame waits without guessing it from the clock
 // (#281); left, when set, is called as the read loop returns, its waits
 // over and a frame it held dropped, before the connection is closed;
-// taking, when set, is called by the host connection's writer before it
-// takes each message from the host's queue (signal.HostConn.Next), holding
-// no lock: a test that holds it there keeps what is queued for the host in
-// the queue, where a revoke finds it, while the connection's pings and pongs
-// still pass (#281).
+// taking, when set, is called by the host connection's writer before each
+// ask for its next message to write (signal.HostConn.Next, which drops a
+// revoked viewer's messages as it takes them), holding no lock: a test that
+// holds it there keeps what is queued for the host in the queue, where a
+// revoke finds it, while the connection's pings and pongs still pass (#281).
 type viewerSeam struct {
 	read   func(written <-chan struct{})
 	write  func() error

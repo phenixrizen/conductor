@@ -268,10 +268,11 @@ func throttle(t *testing.T, target string, rate int) string {
 	return "http://" + ln.Addr().String()
 }
 
-// writerGate holds a host connection's writer before it takes its next
-// message while it is shut (viewerSeam.taking): what is queued for the host
-// waits in the server's queue, where a revoke finds it, and the writer
-// holds no lock there, so the connection's pings and pongs still pass.
+// writerGate holds a host connection's writer, while it is shut, before it
+// asks for its next message to write (viewerSeam.taking): what is queued for
+// the host waits in the server's queue, where a revoke finds it, and the
+// writer holds no lock there, so the connection's pings and pongs still
+// pass.
 type writerGate struct {
 	mu   sync.Mutex
 	open chan struct{} // closed while the gate is open
@@ -284,7 +285,7 @@ func newWriterGate() *writerGate {
 	return g
 }
 
-// shut holds the writer from the next message it takes on.
+// shut holds the writer from its next ask on.
 func (g *writerGate) shut() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
