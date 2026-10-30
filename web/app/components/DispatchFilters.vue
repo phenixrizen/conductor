@@ -2,7 +2,7 @@
 import type { DispatchLabel, DispatchMilestone, DispatchSort, Horizon, TicketStatus } from '~/composables/useDispatch'
 import type { AgentInfo } from '~/composables/useSessions'
 import { HORIZONS, LIST_SORTS, PRIORITIES, TICKET_STATUSES, labelDot, sortDesc, statusWord } from '~/utils/dispatch'
-import { emptyFilter, filterNarrows, MAX_SEARCH, type DispatchFilter } from '~/utils/dispatchQuery'
+import { emptyFilter, filterNarrows, MAX_SEARCH, milestoneChoices, type DispatchFilter } from '~/utils/dispatchQuery'
 import { DispatchOrder, through } from '~/utils/dispatchOrder'
 
 /**
@@ -59,7 +59,8 @@ const priorityItems = [...PRIORITIES].reverse().map((p) => ({ label: p.label, va
 // A menu's value is never empty: not planned goes as its name.
 const horizonItems = HORIZONS.map((h) => ({ label: h.label, value: h.name, icon: h.icon }))
 const labelItems = computed(() => [...new Set(props.labels.map((l) => l.name))].sort((a, b) => a.localeCompare(b)).map((name) => ({ label: name, value: name, color: props.labels.find((l) => l.name === name)?.color ?? 'gray' })))
-const milestoneItems = computed(() => [...new Set(props.milestones.map((m) => m.name))].map((name) => ({ label: name, value: name })))
+// Each milestone once, one whose name another has too by its id (milestoneChoices), so that every one can be chosen.
+const milestoneItems = computed(() => milestoneChoices(props.milestones))
 const ownerItems = computed(() => [...new Set([...people.value, ...(props.modelValue.owner ? [props.modelValue.owner] : [])])].sort((a, b) => a.localeCompare(b)))
 const assigneeItems = computed(() => [
   ...[...new Set([...people.value.map((n) => `person:${n}`), ...props.modelValue.assignees.filter((a) => a.startsWith('person:'))])].map((value) => ({ label: value.slice(7), value, icon: 'i-lucide-user' })),

@@ -3,9 +3,10 @@ import { HORIZONS, PRIORITIES, TICKET_STATUSES, isSort, parseTicketKey, sortDesc
 
 // A list's filter, one codec both ways (docs/plans/dispatch.md, "web/app"): to and from a page's link (?status=in_progress&label=api&q=…),
 // to and from a saved view's query, and to the list's request (GET /api/dispatch/tickets). A link says labels and the milestone by
-// name and the priorities and horizons by their names, so it reads as words; a saved view keeps labels and the milestone by id, as the
-// store checks them, so a rename leaves it whole; the request takes ids and numbers. A value outside its vocabulary, and a parameter
-// the codec does not know (the page's ?view=, a stale link's), is ignored. Pure.
+// name and the priorities and horizons by their names, so it reads as words, but a milestone whose name another of the project has too
+// by its id, since the store lets milestones' names repeat; a saved view keeps labels and the milestone by id, as the store checks them,
+// so a rename leaves it whole; the request takes ids and numbers. A value outside its vocabulary, and a parameter the codec does not know
+// (the page's ?view=, a stale link's), is ignored. Pure.
 
 /** A list's filter, sort and grouping as a page holds them: labels and the milestone by name, people by name. */
 export interface DispatchFilter {
@@ -17,7 +18,10 @@ export interface DispatchFilter {
   owner: string
   /** person:<name> or agent:<catalog id>. */
   assignees: string[]
-  /** A milestone's name. */
+  /**
+   * A milestone: by its name, or by its id when another live milestone of the project has the same name (the store lets names repeat),
+   * so that each can be chosen; an id whose row has gone stays the id.
+   */
   milestone: string
   /** '' for not planned. */
   horizon: Horizon[]
@@ -161,6 +165,38 @@ function nameOf(rows: ReadonlyArray<{ id: string; name: string }>, id: string): 
 }
 
 /**
+ * The filter's value for a milestone by its id: its name, so that the link reads as words, unless another live milestone of the project
+ * has the same name: then the id, which keeps it apart from the other. An id whose row has gone stays the id.
+ */
+function milestoneValue(rows: ReadonlyArray<{ id: string; name: string }>, id: string): string {
+  const row = rows.find((r) => r.id === id)
+  if (!row) return id
+  return rows.some((r) => r.id !== id && r.name === row.name) ? id : row.name
+}
+
+/**
+ * The milestone a filter's value stands for, by its id: a row's id as it is; else the row of that name, the first in the project's order
+ * when the name repeats (a link written before it did); else the value when it has an id's shape (a view's id whose row has gone, which
+ * the store then matches nothing by); else none.
+ */
+function milestoneIdOf(rows: ReadonlyArray<{ id: string; name: string }>, value: string): string {
+  if (rows.some((r) => r.id === value)) return value
+  return rows.find((r) => r.name === value)?.id ?? (ID.test(value) ? value : '')
+}
+
+/**
+ * The milestones as the filter bar offers them, each live one once with the value the filter keeps for it (by its name, or by its id when
+ * the name repeats); one whose name repeats told apart by its place among those of that name, in the project's order, and its target.
+ */
+export function milestoneChoices(rows: ReadonlyArray<{ id: string; name: string; target?: string }>): Array<{ label: string; value: string }> {
+  return rows.map((r) => {
+    const same = rows.filter((x) => x.name === r.name)
+    if (same.length < 2) return { label: r.name, value: r.name }
+    return { label: `${r.name} (${same.indexOf(r) + 1} of ${same.length}${r.target ? `, due ${r.target}` : ''})`, value: r.id }
+  })
+}
+
+/**
  * The filter's labels and milestone as the store takes them, by id; null when the filter cannot match a ticket of the project: every
  * label it names, or its milestone, is one the project lacks.
  */
@@ -169,7 +205,7 @@ function resolve(f: DispatchFilter, names: FilterNames): { labels: string[]; mil
   if (f.labels.length && !labels.length) return null
   let milestone = ''
   if (f.milestone) {
-    milestone = idsOf(names.milestones, f.milestone)[0] ?? ''
+    milestone = milestoneIdOf(names.milestones, f.milestone)
     if (!milestone) return null
   }
   return { labels, milestone }
@@ -201,7 +237,10 @@ export function filterToView(f: DispatchFilter, names: FilterNames): ViewQuery |
   return q
 }
 
-/** The filter a saved view keeps: its label and milestone ids by their names (an id whose row has gone as the id itself). */
+/**
+ * The filter a saved view keeps: its label ids by their names and its milestone's by its name, or as the id when another milestone has
+ * that name (an id whose row has gone as the id itself).
+ */
 export function filterFromView(q: ViewQuery, names: FilterNames): DispatchFilter {
   const f = emptyFilter()
   f.status = unique((q.status ?? []).filter((s): s is TicketStatus => (TICKET_STATUSES as readonly string[]).includes(s)))
@@ -209,7 +248,7 @@ export function filterFromView(q: ViewQuery, names: FilterNames): DispatchFilter
   f.labels = unique((q.labels ?? []).map((id) => nameOf(names.labels, id)))
   f.owner = q.owner ?? ''
   f.assignees = unique((q.assignees ?? []).filter((a) => ASSIGNEE.test(a)))
-  f.milestone = q.milestone ? nameOf(names.milestones, q.milestone) : ''
+  f.milestone = q.milestone ? milestoneValue(names.milestones, q.milestone) : ''
   f.horizon = unique((q.horizon ?? []).filter((h): h is Horizon => HORIZONS.some((x) => x.value === h)))
   f.parent = q.parent && parseTicketKey(q.parent) ? q.parent : ''
   f.blocked = !!q.blocked

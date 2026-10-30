@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { apiQuery, emptyFilter, filterFromURL, filterFromView, filterNarrows, filterToURL, filterToView, MAX_SEARCH, type DispatchFilter } from './dispatchQuery'
+import { apiQuery, emptyFilter, filterFromURL, filterFromView, filterNarrows, filterToURL, filterToView, MAX_SEARCH, milestoneChoices, type DispatchFilter } from './dispatchQuery'
 
 const names = {
   labels: [
@@ -109,6 +109,44 @@ describe("a saved view's query", () => {
   })
   it('ignores what is not a view query of the store', () => {
     expect(filterFromView({ status: ['bogus'], priority: [7], horizon: ['someday'], sort: 'rank', group: 'colour', assignees: ['x'] }, names)).toEqual(filterOf({ desc: false }))
+  })
+})
+
+describe('milestones of one name', () => {
+  // The store lets a project's milestones share a name (internal/dispatch/milestones.go): each keeps its identity, by its id.
+  const repeated = {
+    labels: names.labels,
+    milestones: [
+      { id: 'bbbbbbbbbbbbbbb1', name: 'v1.0', target: '' },
+      { id: 'bbbbbbbbbbbbbbb2', name: '1.0', target: '2026-12-01' },
+      { id: 'bbbbbbbbbbbbbbb3', name: '1.0', target: '' },
+    ],
+  }
+  const asked = (f: DispatchFilter) => new URLSearchParams(apiQuery('CND', f, repeated)!).get('milestone')
+
+  it('are offered each apart, by id, told apart by their place and target; a name no other has is offered by its name', () => {
+    expect(milestoneChoices(repeated.milestones)).toEqual([
+      { label: 'v1.0', value: 'v1.0' },
+      { label: '1.0 (1 of 2, due 2026-12-01)', value: 'bbbbbbbbbbbbbbb2' },
+      { label: '1.0 (2 of 2)', value: 'bbbbbbbbbbbbbbb3' },
+    ])
+  })
+
+  it('keep their identity through a saved view, the link and the request', () => {
+    // A view of the second of the name: by its id in the filter and the link, and asked for by it, never by the first's.
+    const f = filterFromView({ milestone: 'bbbbbbbbbbbbbbb3', sort: 'updated' }, repeated)
+    expect(f.milestone).toBe('bbbbbbbbbbbbbbb3')
+    expect(filterToURL(f).milestone).toBe('bbbbbbbbbbbbbbb3')
+    expect(asked(filterFromURL(filterToURL(f)))).toBe('bbbbbbbbbbbbbbb3')
+    expect(filterToView(filterFromURL(filterToURL(f)), repeated)).toEqual({ milestone: 'bbbbbbbbbbbbbbb3', sort: 'updated' })
+    // Each one chosen from the menu is asked for by its own id.
+    expect(milestoneChoices(repeated.milestones).map((c) => asked(filterOf({ milestone: c.value })))).toEqual(['bbbbbbbbbbbbbbb1', 'bbbbbbbbbbbbbbb2', 'bbbbbbbbbbbbbbb3'])
+    // One whose name no other has reads by its name, both ways.
+    expect(filterFromView({ milestone: 'bbbbbbbbbbbbbbb1', sort: 'updated' }, repeated).milestone).toBe('v1.0')
+  })
+
+  it("take a link that names a repeated name, written before it repeated, as the first of the project's order", () => {
+    expect(asked(filterOf({ milestone: '1.0' }))).toBe('bbbbbbbbbbbbbbb2')
   })
 })
 
