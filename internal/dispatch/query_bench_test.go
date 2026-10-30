@@ -294,62 +294,11 @@ func BenchmarkList(b *testing.B) {
 // its bound, and a deleted comment is restored with its entry. Run with
 // go test -run '^$' -bench BenchmarkIndexedWrite -benchtime 3x ./internal/dispatch/.
 func BenchmarkIndexedWrite(b *testing.B) {
-	r := rand.New(rand.NewSource(1))
-	words := benchWords(r, 4000)
-	z := rand.NewZipf(r, 1.07, 2, uint64(len(words)-1))
-	// body is the vocabulary's words, as many as fit in size bytes.
-	body := func(size int) string {
-		var sb strings.Builder
-		for {
-			w := words[z.Uint64()]
-			if sb.Len()+len(w)+1 > size {
-				return sb.String()
-			}
-			sb.WriteString(w)
-			sb.WriteByte(' ')
-		}
-	}
-	for _, c := range []struct{ n, size int }{{3, 400}, {200, MaxCommentBody}, {1000, MaxCommentBody}, {MaxComments - 1, MaxCommentBody}} {
+	body := benchBodies()
+	for _, c := range benchCommented {
 		b.Run(fmt.Sprintf("comments-%d", c.n), func(b *testing.B) {
-			s, err := Open(b.TempDir())
-			if err != nil {
-				b.Fatal(err)
-			}
-			b.Cleanup(func() { s.Close() })
+			s, key, last := commentedTicket(b, body, c.n, c.size)
 			ctx := context.Background()
-			if rc, err := s.CreateProject(ctx, testOp("p"), NewProject{Key: "BEN", Name: "BEN"}); err != nil || rc.Status != StatusDone {
-				b.Fatalf("the project: %+v %v", rc, err)
-			}
-			rc, err := s.CreateTicket(ctx, testOp("t"), NewTicket{Project: "BEN", Title: "Many comments", Description: body(1500)})
-			if err != nil || rc.Status != StatusDone {
-				b.Fatalf("the ticket: %+v %v", rc, err)
-			}
-			id, key := rc.ID, rc.Key
-			// The comments in one transaction, as a restore would leave them,
-			// and the entry as an operation writes it.
-			tx, err := s.db.BeginTx(ctx, nil)
-			if err != nil {
-				b.Fatal(err)
-			}
-			defer tx.Rollback()
-			var last string
-			at := time.Now()
-			for i := range c.n {
-				last = newID()
-				if _, err := tx.ExecContext(ctx, "INSERT INTO comments (id, ticket_id, author, by, body, created_at, rev) VALUES (?, ?, 'admin', 'Bench', ?, ?, 1)",
-					last, id, body(c.size), stamp(at.Add(time.Duration(i)*time.Millisecond))); err != nil {
-					b.Fatal(err)
-				}
-				if err := indexComment(ctx, tx, last); err != nil {
-					b.Fatal(err)
-				}
-			}
-			if err := indexTicket(ctx, tx, id); err != nil {
-				b.Fatal(err)
-			}
-			if err := tx.Commit(); err != nil {
-				b.Fatal(err)
-			}
 			bodies := [2]string{body(c.size), body(c.size)}
 			done := func(what string, rc Receipt, err error) {
 				if err != nil || rc.Status != StatusDone {
@@ -398,6 +347,117 @@ func BenchmarkIndexedWrite(b *testing.B) {
 					rc, err := s.EditTicket(ctx, testOp(fmt.Sprintf("t%d", i)), key, TicketEdit{Set: TicketSet{Title: &titles[i%2]}})
 					done("the title's edit", rc, err)
 					i++
+				}
+			})
+		})
+	}
+}
+
+// benchCommented is the tickets BenchmarkIndexedWrite and
+// BenchmarkTicketRead time, by their comments, n of size bytes each: a
+// ticket of the seed's largest kind, then tickets of comments as long as
+// a comment may be, up to the bound of MaxComments.
+var benchCommented = []struct{ n, size int }{{3, 400}, {200, MaxCommentBody}, {1000, MaxCommentBody}, {MaxComments - 1, MaxCommentBody}}
+
+// benchBodies answers texts of the vocabulary's words drawn by its Zipf
+// law, each as many words as fit in size bytes, the same texts every run.
+func benchBodies() func(size int) string {
+	r := rand.New(rand.NewSource(1))
+	words := benchWords(r, 4000)
+	z := rand.NewZipf(r, 1.07, 2, uint64(len(words)-1))
+	return func(size int) string {
+		var sb strings.Builder
+		for {
+			w := words[z.Uint64()]
+			if sb.Len()+len(w)+1 > size {
+				return sb.String()
+			}
+			sb.WriteString(w)
+			sb.WriteByte(' ')
+		}
+	}
+}
+
+// commentedTicket makes a store holding one ticket with a description of
+// body(1500) and n comments of body(size), and answers the store, the
+// ticket's key and its last comment's id. The comments are written in one
+// transaction, as a restore would leave them, and each search entry as an
+// operation writes it.
+func commentedTicket(b *testing.B, body func(int) string, n, size int) (s *Store, key, last string) {
+	b.Helper()
+	s, err := Open(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+	if rc, err := s.CreateProject(ctx, testOp("p"), NewProject{Key: "BEN", Name: "BEN"}); err != nil || rc.Status != StatusDone {
+		b.Fatalf("the project: %+v %v", rc, err)
+	}
+	rc, err := s.CreateTicket(ctx, testOp("t"), NewTicket{Project: "BEN", Title: "Many comments", Description: body(1500)})
+	if err != nil || rc.Status != StatusDone {
+		b.Fatalf("the ticket: %+v %v", rc, err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer tx.Rollback()
+	at := time.Now()
+	for i := range n {
+		last = newID()
+		if _, err := tx.ExecContext(ctx, "INSERT INTO comments (id, ticket_id, author, by, body, created_at, rev) VALUES (?, ?, 'admin', 'Bench', ?, ?, 1)",
+			last, rc.ID, body(size), stamp(at.Add(time.Duration(i)*time.Millisecond))); err != nil {
+			b.Fatal(err)
+		}
+		if err := indexComment(ctx, tx, last); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := indexTicket(ctx, tx, rc.ID); err != nil {
+		b.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+	return s, rc.Key, last
+}
+
+// BenchmarkTicketRead times the reads of a ticket of n comments: the
+// ticket's own read (Ticket), which carries its last MaxTicketComments
+// comments, a page of MaxCommentPage of them from the middle (Comments)
+// and one of them (Comment). Each numbers the ticket's comments, which
+// takes them all in their order, without their bodies, and reads whole
+// only the comments it answers (commentsNumbered); numbered with their
+// bodies, the window sorted the text of every comment to keep a few. Run
+// with go test -run '^$' -bench BenchmarkTicketRead ./internal/dispatch/.
+func BenchmarkTicketRead(b *testing.B) {
+	body := benchBodies()
+	for _, c := range benchCommented {
+		b.Run(fmt.Sprintf("comments-%d", c.n), func(b *testing.B) {
+			s, key, last := commentedTicket(b, body, c.n, c.size)
+			ctx := context.Background()
+			b.Run("Ticket", func(b *testing.B) {
+				for b.Loop() {
+					v, err := s.Ticket(ctx, key)
+					if err != nil || len(v.Comments) != min(c.n, MaxTicketComments) {
+						b.Fatalf("the read: %d comments, %v", len(v.Comments), err)
+					}
+				}
+			})
+			b.Run("Comments", func(b *testing.B) {
+				for b.Loop() {
+					cs, err := s.Comments(ctx, key, c.n/2, MaxCommentPage)
+					if err != nil || len(cs) != min(c.n-c.n/2, MaxCommentPage) {
+						b.Fatalf("the page: %d comments, %v", len(cs), err)
+					}
+				}
+			})
+			b.Run("Comment", func(b *testing.B) {
+				for b.Loop() {
+					if cm, err := s.Comment(ctx, key, last); err != nil || cm.N != c.n {
+						b.Fatalf("the comment: %+v %v", cm, err)
+					}
 				}
 			})
 		})

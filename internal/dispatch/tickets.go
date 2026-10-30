@@ -1090,9 +1090,11 @@ func firstRelations(all []TicketRelation, n int) []TicketRelation {
 }
 
 // lastComments reads the last n comments of the ticket with the id, in
-// their order, each with its number, tombstones among them.
+// their order, each with its number, tombstones among them: the ticket's
+// comments numbered without their bodies, and only the last n read whole
+// (commentsNumbered; BenchmarkTicketRead).
 func lastComments(ctx context.Context, q queryer, ticketID string, n int) ([]Comment, error) {
-	rows, err := q.QueryContext(ctx, "SELECT * FROM (SELECT * FROM ("+numberedComments+") ORDER BY n DESC LIMIT ?) ORDER BY n", ticketID, n)
+	rows, err := q.QueryContext(ctx, commentsNumbered("SELECT id, n FROM numbered ORDER BY n DESC LIMIT ?"), ticketID, n)
 	if err != nil {
 		return nil, err
 	}

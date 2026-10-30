@@ -972,9 +972,18 @@ func TestTheTicketReadIsWhole(t *testing.T) {
 	if len(v.Links) != 1 || v.Links[0].Kind != LinkDelivery || len(v.Attachments) != 1 || v.Attachments[0].Name != "file0.txt" {
 		t.Fatalf("the links %+v and attachments %+v", v.Links, v.Attachments)
 	}
-	if len(v.Comments) != MaxTicketComments || v.Comments[0].N != 11 || v.Comments[0].Body != "Comment 11" || v.Comments[49].N != 60 ||
-		v.Comments[48].ID != c59 || v.Comments[48].DeletedAt.IsZero() {
-		t.Fatalf("the comments: %d, first %+v", len(v.Comments), v.Comments[0])
+	if len(v.Comments) != MaxTicketComments {
+		t.Fatalf("the comments: %d", len(v.Comments))
+	}
+	if v.Comments[48].ID != c59 || v.Comments[48].DeletedAt.IsZero() {
+		t.Fatalf("the 59th comment: %+v", v.Comments[48])
+	}
+	// Each with its own number and its own body: the read numbers the
+	// comments without their bodies and reads the carried ones whole.
+	for i, c := range v.Comments {
+		if c.N != i+11 || c.Body != fmt.Sprintf("Comment %d", i+11) || c.TicketID != v.ID {
+			t.Fatalf("the comment numbered %d: %+v", i+11, c)
+		}
 	}
 	if strings.Join(v.Close.Requires, " ") != RequireAcceptance || strings.Join(v.Close.Missing, " ") != RequireAcceptance || !v.Close.Met.Delivery {
 		t.Fatalf("the close state: %+v", v.Close)
