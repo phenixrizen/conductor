@@ -10,7 +10,7 @@ import { answersInTerminal, isActive, isEnded, needingInput, waitsForTerminal } 
 import type { FeedEntry } from '~/utils/events'
 import { joinedDot, joinedPath } from '~/utils/joined'
 import { resolveTyped } from '~/utils/fileTree'
-import { parsePrefix, parseVerb, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
+import { capGroup, parsePrefix, parseVerb, rank, readRecent, type Named, type PaletteGroup, type ParsedVerb, type Recent } from '~/utils/palette'
 import { agentInitials, sessionMeta, shortCwd } from '~/utils/sessions'
 import { blockSubtitle, rowState, sessionRow, sidebarModel, type RunBlock, type SessionRow } from '~/utils/sidebar'
 import { rowPrompt, sessionLive } from '~/utils/sidebarActions'
@@ -57,6 +57,10 @@ const PAGES: Array<{ id: string; label: string; to: string; kbds: string[]; icon
   { id: 'events-integrations', label: 'Events · Integrations', to: '/events?tab=integrations', kbds: [], icon: 'i-lucide-plug' },
   { id: 'paste', label: 'Paste invite', to: '/paste', kbds: [], icon: 'i-lucide-clipboard-paste' },
 ]
+
+/** The Tickets group's rows shown with nothing typed, and with something typed (capGroup). */
+const TICKETS_IDLE = 10
+const TICKETS_MATCHED = 50
 
 /** The row's second line, in the sidebar's grammar: `agent · where · how long`. */
 function sessionDetail(s: SessionInfo, now: number): string {
@@ -832,7 +836,9 @@ export function usePaletteRows(ctx: PaletteContext) {
         const row = verbRow(verb, now)
         if (row) return { mode, verb, groups: [{ id: 'verb', label: 'Do', pinned: true, rows: [row] }, ...rank(searchGroups(rest, now).filter((g) => g.id === 'needs'), '', r, now)] }
       }
-      return { mode, verb: null, groups: rank(searchGroups(rest, now), rest, r, now) }
+      // The Tickets group shows its first rows as ranked: a few with nothing typed (those used lately, then the latest updated), more
+      // once something is; the rest are found by typing.
+      return { mode, verb: null, groups: capGroup(rank(searchGroups(rest, now), rest, r, now), 'tickets', rest ? TICKETS_MATCHED : TICKETS_IDLE) }
     }
     if (mode === 'actions') {
       const page = palette.page.value

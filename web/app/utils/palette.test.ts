@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropPrefix, frecency, matchRange, noteUse, PAGES, parsePrefix, parseVerb, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
+import { capGroup, dropPrefix, frecency, matchRange, noteUse, PAGES, parsePrefix, parseVerb, rank, readRecent, RECENT_KEY, RECENT_MAX, rowExact, rowMatches, VERBS, writeRecent, type Named, type PaletteGroup } from './palette'
 
 const names: Named[] = [
   { kind: 'session', id: 's1', name: 'api sweep', words: ['/home/dev/conductor', 'claude'] },
@@ -155,5 +155,24 @@ describe("Dispatch's tickets in the palette (docs/plans/dispatch.md, Owner decis
     expect(parseVerb('go Dispatch', names)).toEqual({ verb: 'go', page: 'dispatch' })
     expect(VERBS).toHaveLength(12)
     expect(parsePrefix('E2E-1')).toEqual({ mode: 'search', rest: 'E2E-1' })
+  })
+})
+
+describe('a long group cut to its first rows', () => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({ key: `ticket:A-${i + 1}`, label: `A-${i + 1} Ticket` }))
+  const groups: PaletteGroup[] = [
+    { id: 'running', label: 'Running', rows: rows.slice(0, 3) },
+    { id: 'tickets', label: 'Tickets', rows },
+  ]
+  it('keeps its first n rows as ranked, says how many it holds, and leaves the other groups whole', () => {
+    const [running, tickets] = capGroup(groups, 'tickets', 10)
+    expect(tickets!.rows.map((r) => r.key)).toEqual(rows.slice(0, 10).map((r) => r.key))
+    expect(tickets!.label).toBe('Tickets · 10 of 12, type to find the rest')
+    expect(running!.rows).toHaveLength(3)
+    expect(running!.label).toBe('Running')
+  })
+  it('leaves a group of n rows or fewer as it is', () => {
+    expect(capGroup(groups, 'tickets', 12)[1]).toEqual(groups[1])
+    expect(capGroup(groups, 'none', 1)).toEqual(groups)
   })
 })

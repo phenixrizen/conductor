@@ -270,3 +270,11 @@ export function rank<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], q
     })
     .filter((g) => g.rows.length > 0)
 }
+
+/**
+ * A long group cut to its first `n` rows, as ranked, its label saying how many it holds: the rest are found by typing. The Tickets group
+ * may hold a thousand open tickets, which drawn whole would slow every open of the palette and every key typed in it.
+ */
+export function capGroup<R extends PaletteRow>(groups: readonly PaletteGroup<R>[], id: string, n: number): PaletteGroup<R>[] {
+  return groups.map((g) => (g.id === id && g.rows.length > n ? { ...g, label: `${g.label} · ${n} of ${g.rows.length}, type to find the rest`, rows: g.rows.slice(0, n) } : g))
+}
