@@ -1,4 +1,4 @@
-import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, Horizon, LabelColor, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
+import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, Horizon, LabelColor, TicketEdit, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
 import type { Tone } from './tasks'
 
 // Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
@@ -158,6 +158,20 @@ export function ticketWords(t: Pick<TicketSummary, 'status' | 'blocked'> & { del
   if (t.status === 'cancelled') return { text: status, tone: 'muted' }
   if (t.blocked) return { text: `${status} · blocked`, tone: 'warning' }
   return { text: status, tone: 'default' }
+}
+
+/**
+ * The edit that takes a ticket's assignees from `before` to `next`: the members to add and to remove, in one operation; null when they
+ * are the same, since the store refuses an edit that changes nothing.
+ */
+export function assigneesEdit(before: readonly string[], next: readonly string[]): TicketEdit | null {
+  const add = next.filter((a) => !before.includes(a))
+  const remove = before.filter((a) => !next.includes(a))
+  if (!add.length && !remove.length) return null
+  const change: TicketEdit = {}
+  if (add.length) change.add = { assignees: add }
+  if (remove.length) change.remove = { assignees: remove }
+  return change
 }
 
 /** An assignee's actor read: a person by name (person:Alice), or one of the catalog's agents by id (agent:claude). */

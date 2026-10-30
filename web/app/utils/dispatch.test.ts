@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { DispatchChange } from '~/composables/useDispatch'
 import {
   HORIZONS,
+  assigneesEdit,
   LABEL_COLORS,
   LIST_SORTS,
   PRIORITIES,
@@ -106,6 +107,17 @@ describe("a ticket's words", () => {
     expect(ticketWords({ status: 'done', blocked: true })).toEqual({ text: 'Done', tone: 'success' })
     expect(ticketWords({ status: 'cancelled', blocked: false })).toEqual({ text: 'Cancelled', tone: 'muted' })
     expect(ticketWords({ status: 'ready', blocked: true, deletedAt: '2026-10-30T10:00:00Z' })).toEqual({ text: 'Deleted', tone: 'muted' })
+  })
+})
+
+describe("a ticket's assignees", () => {
+  it('change by what is added and removed, in one edit, and by nothing when they are the same', () => {
+    expect(assigneesEdit([], ['agent:claude'])).toEqual({ add: { assignees: ['agent:claude'] } })
+    expect(assigneesEdit(['person:Bob', 'agent:claude'], ['agent:claude', 'person:Ann'])).toEqual({ add: { assignees: ['person:Ann'] }, remove: { assignees: ['person:Bob'] } })
+    expect(assigneesEdit(['person:Bob'], [])).toEqual({ remove: { assignees: ['person:Bob'] } })
+    // Ticked and unticked before the first edit was sent: nothing is left to send.
+    expect(assigneesEdit(['person:Bob', 'agent:claude'], ['agent:claude', 'person:Bob'])).toBeNull()
+    expect(assigneesEdit([], [])).toBeNull()
   })
 })
 

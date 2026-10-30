@@ -3,7 +3,7 @@ import type { DispatchChange, DispatchTicket, Horizon, ProjectRead, TicketEdit, 
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { ticketWatch } from '~/composables/useDispatchLive'
-import { HORIZONS, PRIORITIES, TICKET_STATUSES, historyEntries, horizonWord, labelDot, parseTicketKey, priorityWord, projectPath, statusWord, ticketPath, ticketWords, validProjectKey } from '~/utils/dispatch'
+import { HORIZONS, PRIORITIES, TICKET_STATUSES, assigneesEdit, historyEntries, horizonWord, labelDot, parseTicketKey, priorityWord, projectPath, statusWord, ticketPath, ticketWords, validProjectKey } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
 import { serially } from '~/utils/dispatchOrder'
 
@@ -194,11 +194,16 @@ const entries = computed(() =>
 /**
  * One edit of the ticket, as one operation on the revision shown when it is sent; true once the store has it. The page's edits go one
  * after another (serially): each is sent once the one before has answered, so it expects the revision that one left, where two
- * assignees ticked in a row would both expect the revision shown at the first click and the second be refused stale_revision.
+ * assignees ticked in a row would both expect the revision shown at the first click and the second be refused stale_revision. The
+ * change is made then too (`make`), against the ticket as the one before left it: null when nothing is left to change, which is no
+ * operation (the store refuses an edit that changes nothing), so a field set twice in a row, or a member ticked and unticked, sends
+ * what it comes to.
  */
-const edit = serially(async (change: TicketEdit): Promise<boolean> => {
+const edit = serially(async (make: () => TicketEdit | null): Promise<boolean> => {
   const t = ticket.value
   if (!t || locked.value) return false
+  const change = make()
+  if (!change) return true
   const key = t.key
   let refused = false
   const reply = await ops.run<TicketReply>((body) => api.editTicket(key, { ...body, ...change }), {
@@ -236,7 +241,12 @@ async function saveTitle(e?: KeyboardEvent) {
     editingTitle.value = false
     return
   }
-  if (await edit({ set: { title } })) editingTitle.value = false
+  if (await edit(() => (title !== ticket.value?.title ? { set: { title } } : null))) editingTitle.value = false
+}
+
+/** A text field saved: its edit, or none when the ticket holds the text already. */
+function saveText(field: 'description' | 'acceptance', text: string): Promise<boolean> {
+  return edit(() => (text !== ticket.value?.[field] ? { set: { [field]: text } } : null))
 }
 
 const statusItems = TICKET_STATUSES.map((s) => ({ label: statusWord(s).label, value: s, icon: statusWord(s).icon }))
@@ -245,27 +255,24 @@ const priorityItems = PRIORITIES.map((p) => ({ label: p.label, value: p.value, i
 const horizonItems = HORIZONS.map((h) => ({ label: h.label, value: h.name, icon: h.icon }))
 
 function setStatus(v: unknown) {
-  if (typeof v === 'string' && v !== ticket.value?.status) void edit({ set: { status: v as TicketStatus } })
+  if (typeof v !== 'string') return
+  void edit(() => (v !== ticket.value?.status ? { set: { status: v as TicketStatus } } : null))
 }
 function setPriority(v: unknown) {
-  if (typeof v === 'number' && v !== ticket.value?.priority) void edit({ set: { priority: v } })
+  if (typeof v !== 'number') return
+  void edit(() => (v !== ticket.value?.priority ? { set: { priority: v } } : null))
 }
 function setHorizon(v: unknown) {
   const h = HORIZONS.find((x) => x.name === v)?.value
-  if (h !== undefined && h !== ticket.value?.horizon) void edit({ set: { horizon: h as Horizon } })
+  if (h === undefined) return
+  void edit(() => (h !== ticket.value?.horizon ? { set: { horizon: h as Horizon } } : null))
 }
 function setOwner(name: string) {
-  if (name !== ticket.value?.owner) void edit({ set: { owner: name } })
+  void edit(() => (name !== ticket.value?.owner ? { set: { owner: name } } : null))
 }
+/** The assignees the picker left: what they add and remove, against the ticket as it is when the edit is sent. */
 function setAssignees(next: string[]) {
-  const before = ticket.value?.assignees ?? []
-  const add = next.filter((a) => !before.includes(a))
-  const remove = before.filter((a) => !next.includes(a))
-  if (!add.length && !remove.length) return
-  const change: TicketEdit = {}
-  if (add.length) change.add = { assignees: add }
-  if (remove.length) change.remove = { assignees: remove }
-  void edit(change)
+  void edit(() => assigneesEdit(ticket.value?.assignees ?? [], next))
 }
 
 function moreHistory() {
@@ -345,8 +352,8 @@ const MAX_ACCEPTANCE = 16 << 10
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
         <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
-            <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text) => edit({ set: { description: text } })" :disabled="locked" name="description" />
-            <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text) => edit({ set: { acceptance: text } })" :disabled="locked" name="acceptance" />
+            <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text) => saveText('description', text)" :disabled="locked" name="description" />
+            <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text) => saveText('acceptance', text)" :disabled="locked" name="acceptance" />
 
             <p class="flex items-start gap-2 rounded-md border border-dashed border-default px-4 py-3 text-sm text-muted" data-ticket-later>
               <UIcon name="i-lucide-construction" class="mt-0.5 size-4 flex-none" />
