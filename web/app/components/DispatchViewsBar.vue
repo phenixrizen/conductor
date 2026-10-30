@@ -72,6 +72,8 @@ watch(
 function applied(v: DispatchView): boolean {
   return v.kind === props.kind && sameFilter(filterFromView(v.query, props.names), props.filter)
 }
+/** The ids of the views the page shows applied, worked out once per change of the views, the filter or the kind. */
+const appliedIds = computed(() => new Set(views.value.filter(applied).map((v) => v.id)))
 function apply(v: DispatchView) {
   emit('apply', filterFromView(v.query, props.names), v.kind)
 }
@@ -172,13 +174,13 @@ defineExpose({ views, openSave, apply, applied })
     <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 [scrollbar-width:thin]" data-views-chips>
       <UIcon name="i-lucide-bookmark" class="size-4 flex-none text-muted" aria-hidden="true" />
       <span v-if="loaded && !views.length" class="flex-none text-xs text-dimmed">No saved views yet.</span>
-      <div v-for="v in views" :key="v.id" class="flex flex-none items-center" :data-view-chip="v.id" :data-view-name="v.name" :data-view-kind="v.kind" :data-view-every="v.projectId ? undefined : ''" :data-active="applied(v) ? '' : undefined">
+      <div v-for="v in views" :key="v.id" class="flex flex-none items-center" :data-view-chip="v.id" :data-view-name="v.name" :data-view-kind="v.kind" :data-view-every="v.projectId ? undefined : ''" :data-active="appliedIds.has(v.id) ? '' : undefined">
         <UButton
           size="xs"
-          :color="applied(v) ? 'primary' : 'neutral'"
-          :variant="applied(v) ? 'soft' : 'outline'"
+          :color="appliedIds.has(v.id) ? 'primary' : 'neutral'"
+          :variant="appliedIds.has(v.id) ? 'soft' : 'outline'"
           :icon="v.projectId ? KIND_ICONS[v.kind] : 'i-lucide-globe'"
-          :aria-pressed="applied(v)"
+          :aria-pressed="appliedIds.has(v.id)"
           :title="v.projectId ? `A ${v.kind} of ${project}` : `A ${v.kind} of every project`"
           class="max-w-48 rounded-r-none"
           data-view-apply
@@ -187,7 +189,7 @@ defineExpose({ views, openSave, apply, applied })
           <span class="truncate">{{ v.name }}</span>
         </UButton>
         <UDropdownMenu :items="menu(v)" :content="{ align: 'start' }">
-          <UButton size="xs" :color="applied(v) ? 'primary' : 'neutral'" :variant="applied(v) ? 'soft' : 'outline'" icon="i-lucide-chevron-down" class="-ml-px rounded-l-none" :aria-label="`${v.name}: its actions`" :data-view-menu="v.id" />
+          <UButton size="xs" :color="appliedIds.has(v.id) ? 'primary' : 'neutral'" :variant="appliedIds.has(v.id) ? 'soft' : 'outline'" icon="i-lucide-chevron-down" class="-ml-px rounded-l-none" :aria-label="`${v.name}: its actions`" :data-view-menu="v.id" />
         </UDropdownMenu>
       </div>
     </div>

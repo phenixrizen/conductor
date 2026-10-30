@@ -21,8 +21,8 @@ function goBack() {
 }
 defineShortcuts({
   escape: () => {
-    // A menu's or a dialog's Escape is its own.
-    if (document.querySelector('[role="dialog"], [data-reka-popper-content-wrapper]')) return
+    // A dialog's, a menu's or a list of choices' Escape is its own (a picker's: the status, the owner…); a tooltip shown is none of them.
+    if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return
     goBack()
   },
 })

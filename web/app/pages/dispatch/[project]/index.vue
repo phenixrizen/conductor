@@ -354,9 +354,9 @@ function picked(value: string | number, adds: boolean) {
 useShortcutsModal().registerPage(DISPATCH_SHORTCUTS)
 const list = useTemplateRef<{ step: (delta: 1 | -1) => void; leave: () => void; focusKey: (key: string) => void; focus: string | null }>('list')
 const lastChord = useState<number>('lastChordAt', () => 0)
-/** A dialog, or a menu (a filter's, a chip's), is open: its keys are its own. */
+/** A dialog, a menu (a chip's) or a list of choices (a filter's) is open: its keys are its own. A tooltip shown is none of them. */
 function overlaid(): boolean {
-  return !!document.querySelector('[role="dialog"], [data-reka-popper-content-wrapper]')
+  return !!document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')
 }
 function paused(): boolean {
   return Date.now() - lastChord.value <= 150 || pickerOpen.value || newOpen.value || overlaid()

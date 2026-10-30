@@ -453,12 +453,12 @@ export function usePaletteRows(ctx: PaletteContext) {
     }
   }
 
+  /** The rows of the tickets read, made once per read (not per keystroke): a query filters them. */
+  const ticketRows = computed(() => (admin.hasToken.value ? palette.tickets.value.map(ticketItem) : []))
   /**
    * The Tickets group: the open tickets read (usePalette.tickets), the latest updated first; a key typed whole that none of them has is a
    * row of its own that opens its page (a closed ticket's, one past the most read), which says what it is.
    */
-  /** The rows of the tickets read, made once per read (not per keystroke): a query filters them. */
-  const ticketRows = computed(() => (admin.hasToken.value ? palette.tickets.value.map(ticketItem) : []))
   function ticketItems(query: string): PaletteItem[] {
     if (!admin.hasToken.value) return []
     const rows = [...ticketRows.value]
