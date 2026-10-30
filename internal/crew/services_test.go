@@ -296,7 +296,7 @@ func TestTheNativeProbeFollowsNoRedirect(t *testing.T) {
 // port on the loopback (here an httptest server's, the port scripted): it
 // passes when the URL answers, and one that answers a redirect never
 // passes, the server the redirect names asked nothing: the probe fails at
-// its timeout with the last try's answer, in a worktree uncounted.
+// its timeout, each try's answer in its log, in a worktree uncounted.
 func TestAnEngineProbeAsksTheLoopbackAndFollowsNoRedirect(t *testing.T) {
 	t.Run("an answer", func(t *testing.T) {
 		var asked atomic.Int32
@@ -410,10 +410,11 @@ func TestAServicesRowComesFirstAndARefusedRunningRowStopsIt(t *testing.T) {
 // ready fails the tree at it (the phase waiting on a probe that would
 // never pass is told at once), its end recorded with the words, the tree
 // ended after; in a worktree uncounted, the run paused. A service that
-// dies says how; a daemonizer, whose command puts its child outside its
-// group and exits 0, is told a service must stay in the foreground, and
-// its child, not the tree's, is neither stopped nor reported: the test
-// ends it.
+// dies says how, and one that has exited before the executor hands it
+// over has its end recorded after its running row, never written over by
+// it; a daemonizer, whose command puts its child outside its group and
+// exits 0, is told a service must stay in the foreground, and its child,
+// not the tree's, is neither stopped nor reported: the test ends it.
 func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
