@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -130,11 +131,15 @@ type TaskUnusable struct {
 
 // TaskManifest is the project manifest that made a tree usable: the crew's
 // at its revision, or conductor.manifest.json at the tree's commit, its
-// blob.
+// blob; and the tree's ports by name, each CONDUCTOR_PORT_<NAME> in the
+// environment. The tree's state directory is not in it: it is
+// .conductor/state under the working directory the file names, and
+// CONDUCTOR_STATE_DIR in the environment.
 type TaskManifest struct {
-	Source   string `json:"source"`
-	Revision int64  `json:"revision,omitempty"`
-	Digest   string `json:"digest,omitempty"`
+	Source   string         `json:"source"`
+	Revision int64          `json:"revision,omitempty"`
+	Digest   string         `json:"digest,omitempty"`
+	Ports    map[string]int `json:"ports,omitempty"`
 }
 
 // taskFile renders a's task files: task.md for the agent, task.json for
@@ -147,7 +152,7 @@ func (e *Engine) taskFile(r *run, a *attempt, tr *tree) (md, js, more []byte, er
 	f := TaskFile{Run: r.id, Crew: r.crewID, CrewName: r.name, Goal: r.goal, Task: t.def.ID, Attempt: a.n, MaxAttempts: maxAttemptsPerTask + t.extra, Member: a.m.def.Name, Role: a.m.def.Prompt, Kind: t.def.Kind,
 		Instructions: t.def.Instructions, Worktree: a.worktree, Branch: a.branch, Prefix: r.prefix, Start: a.start, Checks: append([]Check(nil), t.def.Checks...), WrittenAt: time.Now().UTC()}
 	if tr != nil {
-		f.Manifest = tr.man.task()
+		f.Manifest = tr.task()
 	}
 	for _, in := range a.inputs {
 		f.Inputs = append(f.Inputs, TaskInput{Task: in.task, Attempt: in.attempt, Commit: in.commit, Branch: in.branch, Summary: in.summary, Verdict: in.verdict})
@@ -384,6 +389,14 @@ func taskMarkdown(f TaskFile) string {
 		} else {
 			fmt.Fprintf(&b, " The crew's project manifest (revision %d) made the tree usable before your session started.", m.Revision)
 		}
+		if len(m.Ports) > 0 {
+			var ports []string
+			for _, name := range slices.Sorted(maps.Keys(m.Ports)) {
+				ports = append(ports, fmt.Sprintf("%s %d (`%s`)", name, m.Ports[name], portVar(name)))
+			}
+			fmt.Fprintf(&b, " Its ports are this tree's alone while the attempt runs: %s; `CONDUCTOR_PORT_<NAME>` names each in the environment.", strings.Join(ports, ", "))
+		}
+		fmt.Fprintf(&b, " The tree's state directory is `%s/%s` in your working directory (`CONDUCTOR_STATE_DIR`): what the project's tools keep goes there, this tree's alone and out of your result as the rest of `%s/` is.", taskDir, stateDirName, taskDir)
 	}
 	b.WriteString("\n\n")
 	if len(f.Inputs) > 0 {

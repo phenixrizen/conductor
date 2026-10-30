@@ -129,6 +129,12 @@ the end of your turn finishes nothing; only a submitted result does.
 
       "${CONDUCTOR_BIN:-conductor}" task context
 
+- When the crew has a project manifest, it made your tree usable before
+  your session started: CONDUCTOR_PORT_<NAME> holds each of its ports,
+  this tree's alone, CONDUCTOR_PREVIEW_URL its preview when it has one,
+  and CONDUCTOR_STATE_DIR (.conductor/state) the directory its tools and
+  services keep their state in, as task.md says.
+
 - A work task: commit your work on the branch you are on (the worktree
   must be clean apart from .conductor/), then submit the commit with a
   summary and the issues you know of, with the task_result tool or:

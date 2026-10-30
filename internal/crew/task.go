@@ -767,6 +767,9 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		cancel()
 	}
 	r.pendingCancels = nil
+	// The trees whose end this commit wrote let go of their ports now, and
+	// no sooner (steps.go: releaseEnded).
+	e.releaseEnded(r)
 	// The trees of the attempts this commit closed end now (steps.go), and
 	// the prerequisites it armed start.
 	e.startTrees(r)
@@ -1577,9 +1580,15 @@ func (e *Engine) dispatch(ctx context.Context, r *run, a *attempt) {
 			return
 		}
 	}
-	// The session, with the attempt in its crew reference.
-	local, err := e.launcher.Launch(ctx, LaunchSpec{AgentID: m.def.AgentID, Name: fmt.Sprintf("%s · %s #%d", m.def.Name, t.def.ID, a.n), Cwd: cwd, Args: slices.Clone(m.def.Args),
-		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: t.def.ID, Attempt: a.n}, Yolo: r.yolo, Reservation: res})
+	// The session, with the attempt in its crew reference, and, with a
+	// manifest, the tree's own names and the env names the server
+	// approved for it.
+	spec := LaunchSpec{AgentID: m.def.AgentID, Name: fmt.Sprintf("%s · %s #%d", m.def.Name, t.def.ID, a.n), Cwd: cwd, Args: slices.Clone(m.def.Args),
+		Env: map[string]string{"GOAL": r.goal}, Ref: session.CrewRef{RunID: r.id, CrewID: r.crewID, Member: m.def.Name, Task: t.def.ID, Attempt: a.n}, Yolo: r.yolo, Reservation: res}
+	if tr != nil {
+		spec.Inject, spec.Allow = tr.names(), slices.Clone(tr.allow)
+	}
+	local, err := e.launcher.Launch(ctx, spec)
 	if err != nil {
 		release()
 		fail("launch", err, false, false)

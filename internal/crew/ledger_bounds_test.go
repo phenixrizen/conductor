@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -245,9 +246,13 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 		checks = append(checks, Check{ID: fmt.Sprintf("c%d", i), Argv: argv, TimeoutSeconds: 600})
 	}
 	// The manifest's section at its largest (a file's blob of a SHA-256
-	// repository), and the uncounted attempt before at its largest: never
-	// cut, and the manifest's at most 2 KiB as the sum of its parts.
-	manifest := &TaskManifest{Source: sourceFile, Digest: strings.Repeat("f", 64), Revision: 1<<63 - 1}
+	// repository, eight ports of the longest names at five digits each),
+	// and the uncounted attempt before at its largest: never cut, and the
+	// manifest's at most 2 KiB as the sum of its parts.
+	manifest := &TaskManifest{Source: sourceFile, Digest: strings.Repeat("f", 64), Revision: 1<<63 - 1, Ports: map[string]int{}}
+	for i := range maxManifestPorts {
+		manifest.Ports[fmt.Sprintf("p%d%s", i, strings.Repeat("o", 14))] = maxPort - i
+	}
 	if b, _ := json.Marshal(manifest); len(b) > 2<<10 {
 		t.Fatalf("the manifest's section is %d bytes", len(b))
 	}
@@ -279,9 +284,15 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	if kept.Goal != f.Goal || kept.Role != f.Role || kept.Instructions != f.Instructions || !strings.Contains(string(md), f.Instructions) {
 		t.Fatal("the crew's own text was cut")
 	}
-	if kept.Manifest == nil || *kept.Manifest != *manifest || kept.Unusable == nil || *kept.Unusable != *unusable || kept.Previous == nil || kept.Previous.Checkpoint != f.Previous.Checkpoint ||
-		!strings.Contains(string(md), "The project manifest `conductor.manifest.json` as this commit holds it") || !strings.Contains(string(md), unusable.Error) {
+	if kept.Manifest == nil || !reflect.DeepEqual(*kept.Manifest, *manifest) || kept.Unusable == nil || *kept.Unusable != *unusable || kept.Previous == nil || kept.Previous.Checkpoint != f.Previous.Checkpoint ||
+		!strings.Contains(string(md), "The project manifest `conductor.manifest.json` as this commit holds it") || !strings.Contains(string(md), unusable.Error) ||
+		!strings.Contains(string(md), "The tree's state directory is `.conductor/state`") {
 		t.Fatalf("the manifest's section or the attempt before was cut: %+v %+v %+v", kept.Manifest, kept.Unusable, kept.Previous)
+	}
+	for name, n := range manifest.Ports {
+		if want := fmt.Sprintf("%s %d (`CONDUCTOR_PORT_%s`)", name, n, strings.ToUpper(name)); !strings.Contains(string(md), want) {
+			t.Fatalf("task.md does not name the port %s: %q", name, want)
+		}
 	}
 	keptFindings := 0
 	if kept.Repair != nil {

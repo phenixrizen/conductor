@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -58,12 +59,19 @@ type Spec struct {
 	// Dir is the working directory, absolute.
 	Dir string
 	// Allow names variables of Conductor's own environment passed on beside
-	// the fixed allowlist (pty.BuildEnv): a server's env passthrough.
+	// the fixed allowlist (pty.BuildEnv): a server's env passthrough, or
+	// the names of a project manifest's env the server approved.
 	Allow []string
 	// Env is set for the command, after the environment BuildEnv gives.
 	// A CONDUCTOR_* name, a blocked loader or a malformed name is refused:
 	// the run does not start.
 	Env map[string]string
+	// Inject is Conductor's own per-tree names, set last and unfiltered as
+	// a session's (pty.Inject): the run, the task, the attempt, the tree's
+	// state directory, its preview and its ports. Any other name is
+	// refused (injectable), so no token comes in by this door: the run
+	// does not start.
+	Inject map[string]string
 	// Timeout is required: the process group is killed past it, and at
 	// most MaxTimeout.
 	Timeout time.Duration
@@ -161,6 +169,12 @@ func Run(ctx context.Context, s Spec) Result {
 			return res
 		}
 	}
+	for k := range s.Inject {
+		if !injectable(k) {
+			res.Err = fmt.Sprintf("proc: %q is not one of Conductor's own names a command is given", k)
+			return res
+		}
+	}
 	head, tail := s.Head, s.Tail
 	if head <= 0 {
 		head = DefaultHead
@@ -191,7 +205,7 @@ func Run(ctx context.Context, s Spec) Result {
 	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
 	cmd.Dir = s.Dir
 	cmd.Stdin = nil
-	cmd.Env = environment(s.Allow, s.Env)
+	cmd.Env = environment(s.Allow, s.Env, s.Inject)
 	cmd.Stdout, cmd.Stderr = w, w
 	cmd.WaitDelay = WaitDelay
 	g := &lifecycle{}
@@ -317,12 +331,30 @@ func checkName(k string) error {
 	return nil
 }
 
+// injectablePort is the NAME of CONDUCTOR_PORT_<NAME>: a project
+// manifest's port name (internal/crew portNamePattern) in upper case.
+var injectablePort = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,15}$`)
+
+// injectable reports whether name is one of Conductor's own per-tree names
+// a command may be given (Spec.Inject): CONDUCTOR_RUN, CONDUCTOR_TASK,
+// CONDUCTOR_ATTEMPT, CONDUCTOR_STATE_DIR, CONDUCTOR_PREVIEW_URL and
+// CONDUCTOR_PORT_<NAME>. A token is none of them.
+func injectable(name string) bool {
+	switch name {
+	case "CONDUCTOR_RUN", "CONDUCTOR_TASK", "CONDUCTOR_ATTEMPT", "CONDUCTOR_STATE_DIR", "CONDUCTOR_PREVIEW_URL":
+		return true
+	}
+	port, ok := strings.CutPrefix(name, "CONDUCTOR_PORT_")
+	return ok && injectablePort.MatchString(port)
+}
+
 // environment is the command's environment: a session's, as BuildEnv builds
 // it from Conductor's own (the allowlist and allow, CONDUCTOR_* and the
-// blocked loaders out), plus set, then TERM=dumb and NO_COLOR=1 and no
+// blocked loaders out), plus set, then inject (Conductor's own names, which
+// Run has held to injectable), then TERM=dumb and NO_COLOR=1 and no
 // COLORTERM, since nothing reads the output but a log.
-func environment(allow []string, set map[string]string) []string {
-	env := pty.BuildEnv(pty.ParentEnv(), allow, set, nil)
+func environment(allow []string, set, inject map[string]string) []string {
+	env := pty.BuildEnv(pty.ParentEnv(), allow, set, inject)
 	out := env[:0]
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")

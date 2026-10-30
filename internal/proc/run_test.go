@@ -250,6 +250,49 @@ func TestRunStripsTheEnvironment(t *testing.T) {
 	}
 }
 
+// Inject gives a command Conductor's own per-tree names, over whatever the
+// server's environment holds of them, and nothing else: a token's name, a
+// port name not as a manifest's would be upper-cased, or any other name
+// refuses the run before it starts. Env still refuses every CONDUCTOR_
+// name, an injectable one included.
+func TestRunInjectsConductorsOwnNamesAlone(t *testing.T) {
+	t.Setenv("CONDUCTOR_RUN", "the-server's-own")
+	t.Setenv("CONDUCTOR_NOTIFY_TOKEN", "secret")
+	inject := map[string]string{"CONDUCTOR_RUN": "build-00000001", "CONDUCTOR_TASK": "build", "CONDUCTOR_ATTEMPT": "2", "CONDUCTOR_STATE_DIR": "/w/.conductor/state",
+		"CONDUCTOR_PREVIEW_URL": "http://127.0.0.1:41234/", "CONDUCTOR_PORT_WEB": "41234", "CONDUCTOR_PORT_DB_2": "5433", "CONDUCTOR_PORT_" + strings.Repeat("A", 16): "1"}
+	res := sh(t, time.Minute, "env", func(s *Spec) { s.Inject = inject })
+	if res.Exit != 0 || res.Err != "" {
+		t.Fatalf("%+v", res)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(string(res.Head), "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok && strings.HasPrefix(k, "CONDUCTOR_") {
+			got[k] = v
+		}
+	}
+	if len(got) != len(inject) {
+		t.Fatalf("the CONDUCTOR_ names: %v", got)
+	}
+	for k, v := range inject {
+		if got[k] != v {
+			t.Errorf("%s=%q, want %q", k, got[k], v)
+		}
+	}
+	for _, name := range []string{"CONDUCTOR_NOTIFY_TOKEN", "CONDUCTOR_SESSION_ID", "CONDUCTOR_BIN", "CONDUCTOR_PORT_web", "CONDUCTOR_PORT_", "CONDUCTOR_PORT_1X",
+		"CONDUCTOR_PORT_" + strings.Repeat("A", 17), "CONDUCTOR_PORT_WEB=1", "CONDUCTOR_STATE_DIRX", "PATH", ""} {
+		res := Run(context.Background(), Spec{Argv: []string{"true"}, Dir: t.TempDir(), Timeout: time.Minute, Inject: map[string]string{name: "x"}})
+		if res.Err == "" || res.Exit != -1 || !res.Started.IsZero() || !strings.Contains(res.Err, "is not one of Conductor's own names") {
+			t.Errorf("Inject %q: %+v", name, res)
+		}
+	}
+	for _, name := range []string{"CONDUCTOR_PORT_WEB", "CONDUCTOR_STATE_DIR"} {
+		res := Run(context.Background(), Spec{Argv: []string{"true"}, Dir: t.TempDir(), Timeout: time.Minute, Env: map[string]string{name: "x"}})
+		if res.Err == "" || res.Exit != -1 || !res.Started.IsZero() || !strings.Contains(res.Err, "a CONDUCTOR_ variable is never set for a command") {
+			t.Errorf("Env %q: %+v", name, res)
+		}
+	}
+}
+
 func TestRunStartedReportsTheProcess(t *testing.T) {
 	var got Process
 	res := sh(t, time.Minute, "echo $$", func(s *Spec) { s.Started = func(p Process) { got = p } })

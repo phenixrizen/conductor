@@ -44,6 +44,13 @@ type createSessionRequest struct {
 	// reservation is the place reserved for the session among the server's
 	// (Registry.Reserve), for a managed run's attempt; nil otherwise.
 	reservation *session.Reservation
+	// inject and allow, set by Launch for an attempt whose run has a
+	// project manifest, are its tree's own names (crew.LaunchSpec.Inject:
+	// its ports, its state directory, its preview), set after the crew's
+	// as Conductor's own are, and the manifest's env names the server
+	// approved (LaunchSpec.Allow), passed on beside the passthrough.
+	inject map[string]string
+	allow  []string
 	// Env is set in the process over the agent's own variables: the GOAL of
 	// a crew member. JSON cannot set it; a client sending "env" is refused
 	// like one sending any other unknown field.
@@ -278,11 +285,15 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 		inject["CONDUCTOR_SKILL"] = skill
 	}
 	s.installSkillAtLaunch(agent.Adapter, hooksDir)
-	// BuildEnv keeps CONDUCTOR_* out of env: a crew's travel with Inject's.
+	// BuildEnv keeps CONDUCTOR_* out of env: a crew's travel with Inject's,
+	// and an attempt's tree's after them (the engine's own names).
 	maps.Copy(inject, crewInject(crewRef))
-	// The agent's envPassthrough adds to the server-wide list; the clone keeps
-	// one launch from growing the list another launch reads.
+	maps.Copy(inject, req.inject)
+	// The agent's envPassthrough adds to the server-wide list, and an
+	// attempt's approved env names to both; the clone keeps one launch from
+	// growing the list another launch reads.
 	passthrough := append(slices.Clone(s.cfg.EnvPassthrough), agent.EnvPassthrough...)
+	passthrough = append(passthrough, req.allow...)
 	launchHook("checked")
 	// The process starts in the folder opened and checked, not at its path.
 	dirFile, err := folder.Dir()
