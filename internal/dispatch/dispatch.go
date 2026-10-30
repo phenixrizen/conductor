@@ -11,8 +11,11 @@
 // rules of rules.go. The package imports the standard library and the
 // database driver (modernc.org/sqlite, SQLite translated to Go, so the
 // binaries stay CGO_ENABLED=0; the managed runs' ledger is its other
-// importer) and nothing else: no HTTP, no session, no process. The API,
-// the CLI and the tests are its callers.
+// importer), and on Windows golang.org/x/sys/windows for an attachment's
+// move written through (a module internal/proc imports already), and
+// nothing else: no HTTP, no session, no process. A ticket's attachments
+// are files beside the database (attachments.go), which only the sweep
+// deletes (sweep.go). The API, the CLI and the tests are its callers.
 package dispatch
 
 import (
@@ -104,6 +107,23 @@ type Store struct {
 	// committed: a test makes the commit fail with an error, or acts
 	// while the lock is held.
 	beforeReceipt func() error
+
+	// The attachments' files (attachments.go, sweep.go). syncDir makes a
+	// directory's entries durable (syncDirectory; on Windows the move is
+	// written through instead), unlink deletes a file the sweep collects
+	// (os.Remove), and sweepGrace is how old a lease or an upload's temp
+	// file is when the sweep takes it for a crashed upload's (an hour):
+	// fields a test replaces, read under mu. beforePublish, when set, runs
+	// in an upload between its lease's commit and the file's publication,
+	// and beforeCommit between the publication and the operation that
+	// writes the attachment's row: a test pauses an upload there. sweepErr
+	// is what the sweep at open ended with (SweepError).
+	syncDir       func(path string) error
+	unlink        func(path string) error
+	sweepGrace    time.Duration
+	beforePublish func()
+	beforeCommit  func()
+	sweepErr      error
 }
 
 // Errors of a store that cannot serve.
@@ -151,8 +171,12 @@ type Change struct {
 // never written, and ReadOnly says why. It fails only when the directory
 // cannot be made or the database file is a symbolic link. A relative dir
 // is taken under the working directory, and the store keeps it absolute.
-// The receipts are pruned at open (prune) and then every day by a
-// goroutine of the store's, which Close stops.
+// A writable store then makes its attachments' directories when they are
+// missing and sweeps their files (sweep), before any caller can upload:
+// what the sweep could not delete is left for the next, and SweepError
+// says why, the store serving regardless. The receipts are pruned at open
+// (prune) and then every day by a goroutine of the store's, which Close
+// stops.
 func Open(dir string) (*Store, error) { return openWith(dir, nil) }
 
 // openWith is Open, configure (when given) setting the store's fields
@@ -169,7 +193,7 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("dispatch: %s is a symbolic link", path)
 	}
-	s := &Store{dir: dir, path: path, pruneEvery: defaultPruneEvery}
+	s := &Store{dir: dir, path: path, pruneEvery: defaultPruneEvery, syncDir: syncDirectory, unlink: os.Remove, sweepGrace: defaultSweepGrace}
 	if configure != nil {
 		configure(s)
 	}
@@ -199,13 +223,23 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 		return s, nil
 	}
 	s.db = db
+	now := time.Now()
+	// The sweep, before any caller can upload: what it leaves is the next
+	// one's, and nothing is lost but space, so Open does not fail for it.
+	s.sweepErr = s.openAttachments(ctx, now)
 	// A pruning that fails drops nothing, and the next one (the
 	// goroutine's, or the next open's) takes what it left: nothing is lost
 	// but space, so Open does not fail for it.
-	s.prune(ctx, time.Now())
+	s.prune(ctx, now)
 	s.startPruning()
 	return s, nil
 }
+
+// SweepError is what the sweep at open ended with (sweep): the first file
+// it could not delete, left for the next sweep, or the database's error;
+// nil when it found nothing it could not clear, and for a store opened
+// read-only, which sweeps nothing. The server logs it.
+func (s *Store) SweepError() error { return s.sweepErr }
 
 // startPruning starts the goroutine that prunes the receipts every
 // pruneEvery, until Close stops it.
