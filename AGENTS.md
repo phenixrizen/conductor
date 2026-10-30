@@ -115,9 +115,12 @@ add its rule here.
   what is tested, or make the product's bound generous where it only bounds
   a hang.
 - Order what must be ordered. Keys that must stay unconfirmed go in after
-  the process is stopped (SIGSTOP), not raced against a kill; a status that
-  may arrive before or after an answer must give the same picture either
-  way, in the product, not in the stub's ordering.
+  the process is stopped (SIGSTOP), not raced against a kill. A check made
+  at once after an action ("nothing served yet") holds the step the action
+  woke at a gate in the fake until it has looked (the fake issuer's `hold`
+  in `internal/certs`): a loaded machine lets that step finish first. A
+  status that may arrive before or after an answer must give the same
+  picture either way, in the product, not in the stub's ordering.
 - A pid of 0 is no process; a file not yet written is not evidence. Wait for
   the pid file, the swap file, the record before judging it.
 - Count only what the test made. A spec that counts sessions, tiles or list
@@ -143,14 +146,6 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
-- Hold the step a check must come before. A check made at once after an
-  action ("not served yet", "nothing sent yet") races the goroutine the
-  action woke, and a loaded machine lets that goroutine finish first: the
-  certificate manager ordered and served the new address's certificate
-  before the test looked, and the test reported the old one as still
-  served. Hold the step at a gate in the fake (the fake issuer's `hold` in
-  `internal/certs`) while the test checks, then open the gate and wait for
-  what the step does.
 - A run's log is not its ledger. The engine notes a change in the run's
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
