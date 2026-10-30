@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,8 +26,9 @@ import (
 
 // wsClient is a minimal viewer used by the end-to-end tests.
 type wsClient struct {
-	t *testing.T
-	c *websocket.Conn
+	t    *testing.T
+	c    *websocket.Conn
+	sent atomic.Int64 // the frames send has written, for a test that waits until the server has read them
 }
 
 func dialViewer(t *testing.T, e *testEnv, sessionID, token string) *wsClient {
@@ -50,6 +52,7 @@ func (w *wsClient) send(frame []byte) {
 	if err := w.c.Write(ctx, websocket.MessageBinary, frame); err != nil {
 		w.t.Fatalf("write: %v", err)
 	}
+	w.sent.Add(1)
 }
 
 func (w *wsClient) hello(cols, rows uint16) {

@@ -428,15 +428,13 @@ func TestLinkLineRefusedAfterRevokeBehindQueue(t *testing.T) {
 	// sockets on the way take (a few of the owner's frames on Linux, a few
 	// hundred KiB on macOS).
 	gate.shut()
-	ownerRead := reads.of(0)
 	sendInput(t, owner, 3<<20)
-	// A frame the viewer has written may still wait in the sockets: the
-	// owner's are queued for the host once its read loop has come back
-	// for the next.
-	reads.await(t, 0, ownerRead+(3<<20)/proto.MaxInput)
-	guestRead := reads.of(1)
+	// A frame a viewer has written may still wait in the sockets: it is
+	// queued for the host once its connection's read loop has begun the
+	// read after it, the read after every frame the viewer has sent.
+	reads.await(t, 0, int(owner.sent.Load())+1)
 	guest.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "guest line"}))
-	reads.await(t, 1, guestRead+1) // queued behind the owner's 3 MiB
+	reads.await(t, 1, int(guest.sent.Load())+1) // queued behind the owner's 3 MiB
 	sendInput(t, owner, 2<<20)
 	revokeLink(t, e, id, linkID)
 	gate.lift()
