@@ -195,16 +195,17 @@ func mostBegun(words []string, n int) string {
 // BenchmarkList reads pages of 10,000 tickets in three projects: run with
 // go test -run '^$' -bench BenchmarkList -benchmem ./internal/dispatch/.
 // "filtered" and "search" are the plan's two targets, at a list's default
-// page and at the list view's page of MaxListLimit; the searches of one
-// letter and of two are a search box's first keystrokes, held to the
-// full-text target as the search of every project is. The others show
-// the list's other common pages, a search of one letter of every project
-// among them: no page sends one, since a search box searches its project
-// and the CLI and a saved view of every project send whole words. The
-// last is the longest search a client may send, MaxQueryText characters
-// of the vocabulary's most common words, of every project: each term
-// reads every entry it matches (termMatch), so it shows what a search's
-// many common words cost.
+// page and at the list view's page of MaxListLimit. The searches of one
+// letter and of two are a search box's first keystrokes, and those of the
+// vocabulary's 3, 5 and 10 most common words a few words typed, each held
+// to the full-text target as the search of every project is: each term
+// reads every entry it matches (termMatch), so common words cost a search
+// the most. The others show the list's other common pages, a search of
+// one letter of every project among them: no page sends one, since a
+// search box searches its project and the CLI and a saved view of every
+// project send whole words. The last is the longest search a client may
+// send, MaxQueryText characters of the vocabulary's most common words, of
+// every project.
 func BenchmarkList(b *testing.B) {
 	s, err := Open(b.TempDir())
 	if err != nil {
@@ -221,8 +222,10 @@ func BenchmarkList(b *testing.B) {
 	// halfway: what a person looking for a ticket types.
 	search := words[3] + " " + words[40][:len(words[40])-1]
 	letter, letters := mostBegun(words, 1), mostBegun(words, 2)
-	// The vocabulary's words in the order of the Zipf law, the most
-	// common first, as many as fit in the longest search.
+	// The vocabulary's words are in the order of the Zipf law, the most
+	// common first: common(k) is a search of the k most common, and the
+	// longest search as many of them as fit.
+	common := func(k int) string { return strings.Join(words[:k], " ") }
 	var longest strings.Builder
 	for _, w := range words {
 		if longest.Len()+1+len(w) > MaxQueryText {
@@ -246,6 +249,9 @@ func BenchmarkList(b *testing.B) {
 		{"search-200", Query{Project: "BENA", Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
 		{"search-one-letter-200", Query{Project: "BENA", Filter: Filter{Q: letter, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
 		{"search-two-letters-200", Query{Project: "BENA", Filter: Filter{Q: letters, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
+		{"search-3-common-words", Query{Project: "BENA", Filter: Filter{Q: common(3), Sort: SortUpdated, Desc: true}}, benchSearchTarget},
+		{"search-5-common-words", Query{Project: "BENA", Filter: Filter{Q: common(5), Sort: SortUpdated, Desc: true}}, benchSearchTarget},
+		{"search-10-common-words", Query{Project: "BENA", Filter: Filter{Q: common(10), Sort: SortUpdated, Desc: true}}, benchSearchTarget},
 		{"project", Query{Project: "BENA", Filter: Filter{Sort: SortUpdated, Desc: true}}, 0},
 		{"every-project-by-title", Query{Filter: Filter{Sort: SortTitle}, Limit: MaxListLimit}, 0},
 		{"search-every-project", Query{Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}}, benchSearchTarget},
