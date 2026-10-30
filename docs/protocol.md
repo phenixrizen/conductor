@@ -2280,8 +2280,8 @@ manifest at a result commit adds no name the server does not allow or the
 host does not have: the tree fails at `manifest` with those words, by the
 attribution below. Its ports are drawn on the server's loopback (a bind of
 `127.0.0.1:0`, the number taken and the port let go), each leased to the
-tree from its `manifest.resolved` to its `tree.ended`: no two live trees of
-the server share a number (one another tree holds is drawn again, at most 16
+tree from its `manifest.resolved` until its `tree.ended` is committed: no two
+live trees of the server share a number (one another tree holds is drawn again, at most 16
 times a port), and so an attempt's worktree and its checkout never do. Its
 state directory is `.conductor/state` under its working directory (in a
 checkout with `.conductor`'s `.gitignore` of `*` beside it, so the
@@ -2346,7 +2346,8 @@ with `task`, `attempt` and `tree` but for a prerequisite's;
 `prerequisites.passed {manifest}` before the first `attempt.reserved`;
 `run.paused {paused, why}`; and `tree.ended {tree, task, attempt, why}` once
 an attempt's close is committed and the tree is quiet, each tree once, its
-ports let go in that transaction (nothing is removed: the state directory
+ports let go once that transaction is committed (one the ledger refused, once
+the run's next commit carries it; nothing is removed: the state directory
 stays). The run's JSON gains `pausedWhy`, `manifest`
 (`{source, revision?, digest?, prerequisites: [{id, k?, state, exit?, error?,
 duration?}]}`, `state` `pending`, `running`, `passed`, `failed` or
