@@ -62,7 +62,8 @@ func (ca *fakeCA) issue(t *testing.T, ids []string, notBefore time.Time, lifetim
 }
 
 // fakeIssuer issues from fakeCA, presents a challenge on the way when told
-// to, fails when told to, and counts.
+// to, fails when told to, holds an order at a gate when given one, and
+// counts.
 type fakeIssuer struct {
 	t        *testing.T
 	ca       *fakeCA
@@ -76,14 +77,22 @@ type fakeIssuer struct {
 	alpnFor  string // present an ALPN challenge for this identifier during the order
 	window   *[2]time.Time
 	lastIDs  []string
-	observed func() // runs mid-order, after the challenge is presented
+	observed func()        // runs mid-order, after the challenge is presented
+	hold     chan struct{} // an order waits here until it is closed (or its context ends)
 }
 
-func (f *fakeIssuer) Issue(_ context.Context, ids []string, _ string) (*Issued, error) {
+func (f *fakeIssuer) Issue(ctx context.Context, ids []string, _ string) (*Issued, error) {
 	f.mu.Lock()
-	fail, alpnFor, observed := f.fail, f.alpnFor, f.observed
+	fail, alpnFor, observed, hold := f.fail, f.alpnFor, f.observed, f.hold
 	f.lastIDs = append([]string(nil), ids...)
 	f.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if fail != nil {
 		return nil, fail
 	}

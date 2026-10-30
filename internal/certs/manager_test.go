@@ -74,10 +74,16 @@ func TestManagerReissuesWhenTheIdentifierChanges(t *testing.T) {
 	}
 	m.SetIdentifiers([]string{"203.0.113.9"})
 	waitFor(t, "the first issuance", m.Ready)
+	// The new address's order is held while the test looks: ungated, it
+	// can finish first on a loaded machine, and the new certificate it
+	// serves fails the look as if the old one were kept (#281).
+	hold := make(chan struct{})
+	fi.set(func() { fi.hold = hold })
 	m.SetIdentifiers([]string{"198.51.100.4"})
 	if m.Ready() {
 		t.Fatal("the old address's certificate is still served for the new one")
 	}
+	close(hold)
 	waitFor(t, "the second issuance", func() bool { return fi.count() == 2 && m.Ready() })
 	if ids := m.Status().Identifiers; len(ids) != 1 || ids[0] != "198.51.100.4" {
 		t.Fatalf("identifiers %v", ids)
