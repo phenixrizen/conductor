@@ -144,8 +144,8 @@ func (s *Server) createLocalSession(req createSessionRequest, crewRef *session.C
 	}()
 	cwd := folder.Path()
 	name := strings.TrimSpace(req.Name)
-	if len(name) > 120 {
-		name = name[:120]
+	if len(name) > proto.MaxSessionName {
+		name = name[:proto.MaxSessionName]
 	}
 	if name == "" {
 		name = fmt.Sprintf("%s #%d", agent.Name, s.nextCounter())
@@ -552,6 +552,45 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d.Info())
+}
+
+// renameRequest is the body of PATCH /api/sessions/{id}.
+type renameRequest struct {
+	Name string `json:"name"`
+}
+
+// maxRenameBody bounds a rename's body: a name cut to proto.MaxSessionName
+// bytes, with room for one sent longer, which is cut.
+const maxRenameBody = 4 << 10
+
+// handleRenameSession renames a server session, running or ended: 200 with
+// its Info. The change reaches the events stream as a session event (the
+// session's OnChange), and a resume of the session starts under the new name
+// (Local.Launched; a member's through Launch). A hosted session is named by
+// its host.
+func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	var req renameRequest
+	if err := decodeJSONLimit(w, r, &req, maxRenameBody); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	d, ok := s.registry.Get(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "no such session")
+		return
+	}
+	local, ok := d.(*session.Local)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "hosted_session", "a hosted session is named by its host")
+		return
+	}
+	name := session.CleanSessionName(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "invalid_name", "the name is empty without its control characters and surrounding space")
+		return
+	}
+	local.Rename(name)
+	writeJSON(w, http.StatusOK, local.Info())
 }
 
 // installSkillAtLaunch puts the Conductor skill where the adapter's agent
