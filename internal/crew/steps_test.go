@@ -604,6 +604,25 @@ func (l *fakeLedger) attemptWhen(t *testing.T, runID, taskID string, n int, ok f
 // failedRow is an attempt's row closed failed.
 func failedRow(r ledger.AttemptRow) bool { return r.State == ledger.AttemptFailed }
 
+// waitTreeRowsEnded waits up to 10 s for the rows of the attempt's trees of
+// the kinds given to be ended in the fake ledger. A task read as succeeded
+// is one commit ahead of the ledger, and the trees its close handed over
+// are counted (r.trees) only once that commit is made: the count read in
+// that window is none before their end has begun. So a test waits for the
+// rows, then for the count (waitTreesEnded), which drops once each end's
+// commit and what follows it are done (Codex's review of #426, round 1).
+func (l *fakeLedger) waitTreeRowsEnded(t *testing.T, runID, taskID string, n int, kinds ...string) {
+	t.Helper()
+	waitFake(t, fmt.Sprintf("the rows of %s's attempt %d's trees %v ended", taskID, n, kinds), func() bool {
+		for _, kind := range kinds {
+			if tr, _ := l.treeRow(runID, taskID, n, kind); tr.State != ledger.TreeEnded {
+				return false
+			}
+		}
+		return true
+	})
+}
+
 // envFile is the environment a step wrote to the file at path (env >
 // path), by name.
 func envFile(t *testing.T, path string) map[string]string {
@@ -725,6 +744,7 @@ func TestATreeHasTheHostsNamesItsPortsAndItsStateDirectory(t *testing.T) {
 	if len(rows) != 5 || rows[2].Dir != ck || !maps.Equal(rows[2].Ports, ckPorts) || rows[4].Phase != ledger.PhaseCheck || !maps.Equal(rows[4].Ports, ckPorts) {
 		t.Fatalf("the attempt's receipts:\n%s", rowWords(rows))
 	}
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree, ledger.TreeCheckout)
 	waitTreesEnded(t, e, run.ID)
 	if held := leases(e); len(held) != 0 {
 		t.Fatalf("ports leased after every tree ended: %v", held)
@@ -789,6 +809,8 @@ func TestAPortIsOneLiveTreesAtATime(t *testing.T) {
 	}
 	commitResult(t, e, d, "docs.txt", "yes\n", "documented")
 	waitTask(t, e, run.ID, "docs", ledger.TaskSucceeded, 1)
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree, ledger.TreeCheckout)
+	l.waitTreeRowsEnded(t, run.ID, "docs", 1, ledger.TreeWorktree, ledger.TreeCheckout)
 	waitTreesEnded(t, e, run.ID)
 	if got := leases(e); len(got) != 0 {
 		t.Fatalf("ports leased after every tree ended: %v", got)
