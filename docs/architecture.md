@@ -255,6 +255,48 @@ carries the members' durable messages, typed after the recipient's task line,
 and `checkpoints.go` an attempt's blocker and checkpoints, where the next
 attempt starts after a session is lost.
 
+## Dispatch
+
+Dispatch is a component, Conductor's own work tracking: projects, tickets
+with stable keys (`CND-12`), their discussion and their history
+(`docs/plans/dispatch.md`). It is not the engine's verb: the engine
+dispatches a managed run's tasks as attempts (`task.go`, above), which
+the pages and the run log call scheduling, and that stays Yardmaster's.
+Dispatch records what was asked for and what became of it; it starts no
+process, opens no session and runs no check, and links to a run the
+engine made rather than copying it, so the ledger stays the truth of
+execution.
+
+`internal/dispatch` is the store, with no HTTP: one SQLite database of its
+own (`modernc.org/sqlite`, as the ledger's), opened by the server beside
+the ledger with the ledger's pragmas and one connection, and no owner
+lock: SQLite's own locking orders writers across processes, and the
+schema is made inside the transaction that read its version. Every write
+is a typed operation (`Apply`), one `BEGIN IMMEDIATE` transaction that
+looks up the receipt kept under the actor and the op id the client
+minted, compares the revision the client expects, makes the change with
+one `changes` row per field it set, added or removed, bumps the entity's
+`rev` once, keeps the receipt and commits, so a reply lost to the network
+is asked for again with the same id and never makes a second change; a
+refusal of the store's rules is a failed receipt kept alone. The
+`changes` log is a ticket's history, and what replication (CS1) will ship
+between replicas, merged by the field rules of `rules.go`. A read of more
+than one statement (a ticket with its sets, comments, links and close
+state; a list and its total) is one read transaction, so a reply
+describes one state whatever commits meanwhile. The store's one sight of
+the engine is `RunExists`, which the server gives it: a run link names a
+run the engine holds or has a record of.
+
+`internal/api`'s `dispatch.go` puts the store on the HTTP API: the admin's
+routes alone, a switchyard's 403 (it opens no store), each write's body
+an operation with its receipt in the reply, and replies written with HTML
+escaping off, so the largest is bounded by its shape. After every commit,
+outside the transaction and on the writer's goroutine, the store's
+`OnChange` hands the server each entity the commit changed, and the event
+hub sends it to the browsers as a `dispatch` event by the `run` event's
+path: a client that cannot keep up is dropped and starts over from a
+snapshot, and no webhook or sink sees it.
+
 ## Switchyard
 
 A switchyard is the server in a mode (`config.Switchyard`): the signaling
@@ -323,6 +365,7 @@ registers the `conductor:` scheme: an invite opens its own join page with
 | `internal/agents` | hook adapters per agent: assets under `dataDir/hooks`, launch injection, on-demand install, payload mappers |
 | `internal/crew` | saved crews, one file each in `dataDir/crews/`: members, role prompts, start conditions, validation; runs: member sessions through the server's launch path, git worktrees, readiness and the trust hold, prompts, start conditions, handoffs between members (an activity sink and a change hook of `internal/api`), run state, change reports, member resume |
 | `internal/crew/ledger` | the managed runs' ledger (#334): `runs/managed.sqlite` in the data directory, opened beside the records with the owner lock `runs/owner.lock`; one connection, every transition one transaction committed before the side effect it precedes; the rows of runs, tasks, attempts, checks (with their logs), commands (receipts) and events; recovery of what the last owner left open; read-only, with managed launches refused, when another server holds the lock, the filesystem has no locks, or the database is damaged or newer |
+| `internal/dispatch` | Dispatch's store: projects, tickets, their discussion and history in `dataDir/dispatch/dispatch.sqlite`; every write a typed operation with a kept receipt and its rows in the `changes` log; no HTTP, no session, no process |
 | `internal/proto` | frame codec and message structs (mirrored in `web/app/utils/protocol.ts`) |
 | `internal/pty` | process start, resize, stop; environment allowlist |
 | `internal/proc` | a bounded run of one command outside a PTY: argv, directory, timeout, the output's first and last bytes, the process group killed when the run ends; the managed-run checks' runner (#334) |
@@ -429,3 +472,13 @@ A managed run (a crew with tasks, #334) has its truth in the ledger,
 `runs/managed.sqlite`, beside the records: its record is a cache of it with a
 revision, never counted among the 500, never pruned by the records nor marked
 interrupted when they open, and never written back to an older revision.
+
+Dispatch's store, `dispatch/dispatch.sqlite` beside the ledger, keeps the
+projects, the tickets and their history across restarts: one SQLite file
+and its write-ahead log, checkpointed into it as the server shuts down. A
+ticket's delete is a tombstone that keeps its key, a project is archived
+and never deleted, and the log keeps every change; only the receipts past
+the newest 20,000 are dropped, the log still answering a resend of an
+operation that ran. A database a newer Conductor wrote, or one that fails
+its check, opens read-only: its reads are answered, its writes refused with
+why, and it is never written.
