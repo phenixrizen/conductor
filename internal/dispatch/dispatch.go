@@ -116,17 +116,21 @@ type Store struct {
 	// fields a test replaces, read under mu. beforePublish, when set, runs
 	// in an upload between its lease's commit and the file's publication,
 	// and beforeCommit between the publication and the operation that
-	// writes the attachment's row: a test pauses an upload there. sweepErr
-	// is what the sweep at open ended with (SweepError). dirSynced says a
-	// sync of the store's directory has succeeded since the attachments'
-	// directory was there (attachmentDirs): Open's, else an upload's, so
-	// one that failed at open is tried again before an upload is taken;
-	// read and written under mu.
+	// writes the attachment's row: a test pauses an upload there.
+	// beforeOpen, when set, runs in OpenAttachment between the row's read
+	// and the file's open: a test removes the attachment and sweeps its
+	// file there. sweepErr is what the sweep at open ended with
+	// (SweepError). dirSynced says a sync of the store's directory has
+	// succeeded since the attachments' directory was there
+	// (attachmentDirs): Open's, else an upload's, so one that failed at
+	// open is tried again before an upload is taken; read and written
+	// under mu.
 	syncDir       func(path string) error
 	unlink        func(path string) error
 	sweepGrace    time.Duration
 	beforePublish func()
 	beforeCommit  func()
+	beforeOpen    func()
 	sweepErr      error
 	dirSynced     bool
 }

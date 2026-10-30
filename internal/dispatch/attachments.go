@@ -417,8 +417,13 @@ func (s *Store) Attachment(ctx context.Context, id string) (Attachment, error) {
 // a ticket deleted or not, whose page still lists it: the attachment's row
 // and its file, opened by the hash the row names and never by a path a
 // client gave, its size the row's. ErrNotFound when there is no such
-// attachment or it is removed; an error when its content is missing or not
-// what the row says. The caller closes the file.
+// attachment or it is removed, a remove committed between the row's read
+// and the file's open among them: the row's read transaction has ended by
+// then, and the file the remove left to the sweep may be gone (a second
+// store's sweep at its open), so a file missing is the row read again,
+// and not found when that row is removed. An error when the content of a
+// live row is missing or not what the row says. The caller closes the
+// file.
 func (s *Store) OpenAttachment(ctx context.Context, id string) (Attachment, *os.File, error) {
 	a, err := s.Attachment(ctx, id)
 	if err != nil {
@@ -430,7 +435,16 @@ func (s *Store) OpenAttachment(ctx context.Context, id string) (Attachment, *os.
 	if !hashPattern.MatchString(a.SHA256) {
 		return Attachment{}, nil, fmt.Errorf("dispatch: attachment %s names no content: %q", id, a.SHA256)
 	}
+	s.mu.Lock()
+	beforeOpen := s.beforeOpen
+	s.mu.Unlock()
+	if beforeOpen != nil {
+		beforeOpen()
+	}
 	f, err := os.Open(contentPath(filepath.Join(s.dir, attachmentsDir), a.SHA256))
+	if errors.Is(err, fs.ErrNotExist) && s.removedSince(ctx, id) {
+		return Attachment{}, nil, ErrNotFound
+	}
 	if err != nil {
 		return Attachment{}, nil, fmt.Errorf("dispatch: the content of attachment %s: %w", id, err)
 	}
@@ -443,6 +457,16 @@ func (s *Store) OpenAttachment(ctx context.Context, id string) (Attachment, *os.
 		return Attachment{}, nil, fmt.Errorf("dispatch: the content of attachment %s: %w", id, err)
 	}
 	return a, f, nil
+}
+
+// removedSince reports whether the attachment with the id, live when
+// OpenAttachment read it, is removed now, its row read again: a remove
+// committed since, whose file the sweep may then have deleted. A row the
+// database cannot read is not taken for removed, so a live row's missing
+// file stays the store's error.
+func (s *Store) removedSince(ctx context.Context, id string) bool {
+	a, err := s.Attachment(ctx, id)
+	return errors.Is(err, ErrNotFound) || (err == nil && !a.DeletedAt.IsZero())
 }
 
 // SetBeforeCommitForTest sets the seam an upload runs between its file's

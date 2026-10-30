@@ -485,3 +485,50 @@ func TestOpenSweepsBeforeAnyUpload(t *testing.T) {
 		t.Fatalf("a read-only store swept: read-only %v, %v", readOnly, ro.SweepError())
 	}
 }
+
+// An attachment removed between OpenAttachment's read of its row and its
+// open of the file, the file then deleted by a second store's sweep at its
+// open (the remove left it to the sweep, and no live row or lease names
+// it), is not found, as it is when the remove comes first: the row, read
+// again once the file is found missing, is removed. A live attachment
+// whose file is deleted there by hand is still the store's error, never
+// taken for a removal.
+func TestAnAttachmentRemovedAndSweptWhileItOpensIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	newProject(t, s, "CND")
+	_, key := newTicket(t, s, "CND", "Attached")
+	removed := mustPut(t, s, "a1", key, "removed.txt", []byte("removed while it opens"))
+	s.beforeOpen = func() {
+		s.beforeOpen = nil
+		rc, err := s.RemoveAttachment(ctx, testOp("r1"), key, removed.ID)
+		want(t, rc, err, StatusDone, "")
+		second := openStore(t, dir)
+		if err := second.SweepError(); err != nil {
+			t.Fatalf("the second store's sweep at open: %v", err)
+		}
+		if exists(t, contentAt(s, removed.SHA256)) {
+			t.Fatal("the second store's sweep left the removed attachment's file")
+		}
+	}
+	if _, f, err := s.OpenAttachment(ctx, removed.ID); !errors.Is(err, ErrNotFound) {
+		if f != nil {
+			f.Close()
+		}
+		t.Fatalf("an attachment removed and swept while it opened: %v, want not found", err)
+	}
+	live := mustPut(t, s, "a2", key, "live.txt", []byte("lost while it opens"))
+	s.beforeOpen = func() {
+		s.beforeOpen = nil
+		if err := os.Remove(contentAt(s, live.SHA256)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, f, err := s.OpenAttachment(ctx, live.ID); err == nil || errors.Is(err, ErrNotFound) {
+		if f != nil {
+			f.Close()
+		}
+		t.Fatalf("a live attachment whose file went while it opened: %v, want the store's error", err)
+	}
+}
