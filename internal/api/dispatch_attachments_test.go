@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -235,7 +237,11 @@ func TestDispatchAttachmentRoutes(t *testing.T) {
 // a file of exactly 16 MiB in a body of exactly maxAttachmentBody is
 // taken and downloaded whole, a body one byte longer is 413 bound and
 // keeps nothing, and a file one byte past 16 MiB, its body within the
-// bound, is the store's 409 bound, its receipt kept, no file left.
+// bound, is the store's 409 bound, its receipt kept, no file left. A body
+// past its bound by bytes the store would not read is 413 all the same,
+// keeping no receipt and no attachment: a file of 17 MiB, whose rest the
+// store never reads, and a small file followed past the bound by bytes
+// after its body's close.
 func TestDispatchAttachmentUploadIsBounded(t *testing.T) {
 	t.Parallel()
 	// The bound itself, as the plan sets it: the walks below hold the
@@ -281,6 +287,24 @@ func TestDispatchAttachmentUploadIsBounded(t *testing.T) {
 	out := e.expectUpload(t, "BIG-1", body, ct, http.StatusConflict, "bound")
 	if receiptOf(t, out)["refusal"] != "bound" {
 		t.Fatalf("a file past its bound: %v", out)
+	}
+	huge := bytes.Repeat([]byte{'h'}, 17<<20)
+	body, ct = uploadOf(t, 0, [][2]string{{"opId", "huge"}}, "huge.bin", "", huge)
+	e.expectUpload(t, "BIG-1", body, ct, http.StatusRequestEntityTooLarge, "bound")
+	small := []byte("small")
+	body, ct = uploadOf(t, 0, [][2]string{{"opId", "tail"}}, "small.txt", "text/plain", small)
+	body = append(body, bytes.Repeat([]byte{'e'}, maxAttachmentBody-len(body)+1)...)
+	e.expectUpload(t, "BIG-1", body, ct, http.StatusRequestEntityTooLarge, "bound")
+	for _, id := range []string{"huge", "tail"} {
+		e.expect(t, "GET", "/api/dispatch/ops/"+id, nil, http.StatusNotFound, "not_found")
+	}
+	if list := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/BIG-1", nil, http.StatusOK, ""), "ticket")["attachments"].([]any); len(list) != 1 {
+		t.Fatalf("%d attachments, want the one at its bound alone", len(list))
+	}
+	for _, content := range [][]byte{huge, small} {
+		if _, err := os.Stat(filepath.Join(e.srv.dispatch.Dir(), "attachments", sha(content)[:2], sha(content))); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("a body past its bound left its file: %v", err)
+		}
 	}
 	tmp := filepath.Join(e.srv.dispatch.Dir(), "attachments", "tmp")
 	if entries, err := os.ReadDir(tmp); err != nil || len(entries) != 0 {

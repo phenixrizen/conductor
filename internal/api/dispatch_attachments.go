@@ -52,13 +52,24 @@ var uploadFields = []string{"opId", "expectedRev", "byName"}
 var errFileNotLast = errors.New("the file is the upload's last part")
 
 // uploadFile is an upload's file part as the store reads it: the part's
-// bytes, then, at its end, the body's end, read so that the file is known
-// to be the body's last part (errFileNotLast otherwise). err keeps the
-// first error the body gave, so the handler tells the body's failure (past
-// its bound, malformed, the client gone) from the store's.
+// bytes, and the rest of the body read before the store's read can end,
+// so that a body past its bound is known before the operation can keep a
+// receipt or an attachment. At the part's end the body's end is read, so
+// that the file is known to be the body's last part (errFileNotLast
+// otherwise), and then whatever follows its close; once the part has given
+// more than the store takes (dispatch.MaxAttachmentSize, past which it
+// refuses the file bound), whatever is left of the body is read before
+// those bytes are given. A body past its bound is then the read's error,
+// the http.MaxBytesError the handler answers 413 bound, the store keeping
+// nothing. body is the request's body under its bound, which the part is
+// read from. err keeps the first error the body gave, so the handler tells
+// the body's failure (past its bound, malformed, the client gone) from the
+// store's.
 type uploadFile struct {
 	part *multipart.Part
 	mr   *multipart.Reader
+	body io.Reader
+	n    int64
 	err  error
 	done bool
 }
@@ -71,14 +82,24 @@ func (f *uploadFile) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	n, err := f.part.Read(p)
-	if err == io.EOF {
+	f.n += int64(n)
+	switch {
+	case err == io.EOF:
 		switch _, next := f.mr.NextRawPart(); {
 		case next == io.EOF:
-			f.done = true
+			if _, rest := io.Copy(io.Discard, f.body); rest != nil {
+				err = rest
+			} else {
+				f.done = true
+			}
 		case next == nil:
 			err = errFileNotLast
 		default:
 			err = next
+		}
+	case err == nil && f.n > dispatch.MaxAttachmentSize:
+		if _, rest := io.Copy(io.Discard, f.body); rest != nil {
+			err = rest
 		}
 	}
 	if err != nil && err != io.EOF {
@@ -95,14 +116,17 @@ func (f *uploadFile) Read(p []byte) (int, error) {
 // maxAttachmentBody, the store's 16 MiB of file and 64 KiB of envelope, a
 // body past it 413 bound whatever it holds. The body is read to its end
 // before any answer, at most to its bound, so a client that sent it whole
-// reads the answer. 201 {receipt, attachment}; 200 for the receipt given
-// before (repeat); 404 not_found for a ticket missing or deleted; 409
-// expired when the upload's lease was swept before its row was written
-// (the upload is sent again), bound for a file past 16 MiB, 50 live
-// attachments on the ticket or a type past 100 bytes, invalid for a name
-// that is no file's (empty, '/', '\', a control character, "." or ".."),
-// archived; 400 invalid_request for a body that is no upload's; 500
-// store_failed when the file could not be written or published.
+// reads the answer, and before the store can keep anything of it
+// (uploadFile), so one past its bound keeps no receipt and no attachment,
+// wherever its excess lies. 201 {receipt, attachment}; 200 for the
+// receipt given before (repeat); 404 not_found for a ticket missing or
+// deleted; 409 expired when the upload's lease was swept before its row
+// was written (the upload is sent again), bound for a file past 16 MiB in
+// a body within its bound, 50 live attachments on the ticket or a type
+// past 100 bytes, invalid for a name that is no file's (empty, '/', '\', a
+// control character, "." or ".."), archived; 400 invalid_request for a
+// body that is no upload's; 500 store_failed when the file could not be
+// written or published.
 func (s *Server) handleDispatchAddAttachment(w http.ResponseWriter, r *http.Request) {
 	ds, ok := s.dispatchWriter(w)
 	if !ok {
@@ -136,9 +160,9 @@ func (s *Server) handleDispatchAddAttachment(w http.ResponseWriter, r *http.Requ
 		s.dispatchError(w, "ticket", err)
 		return
 	}
-	// What the store left unread (past its bound, or after the body's
-	// close) is read, the receipt answering whatever it holds.
-	pastBound(r, nil)
+	// The store's read ended at the body's end, or past its own bound with
+	// the rest of the body read (uploadFile), either within the body's
+	// bound: nothing is left to read, and the receipt answers.
 	s.writeOp(w, "ticket", rc, nil, true, "attachment", attachmentAfter(ctx, ds, ""))
 }
 
@@ -178,7 +202,7 @@ func readUpload(r *http.Request) (op dispatchOp, file *uploadFile, name, content
 			if !dispatch.OpIDPattern.MatchString(op.OpID) {
 				return op, nil, "", "", errors.New("opId is 1 to 32 letters, digits, '.', '_', '~' or '-', and comes before the file")
 			}
-			return op, &uploadFile{part: part, mr: mr}, disposition["filename"], part.Header.Get("Content-Type"), nil
+			return op, &uploadFile{part: part, mr: mr, body: r.Body}, disposition["filename"], part.Header.Get("Content-Type"), nil
 		}
 		if !slices.Contains(uploadFields, field) {
 			return op, nil, "", "", fmt.Errorf("an upload's parts are %s and last file, not %q", strings.Join(uploadFields, ", "), field)
