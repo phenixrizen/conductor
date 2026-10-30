@@ -226,8 +226,9 @@ const bytes = (s: string) => new TextEncoder().encode(s).length
 
 /**
  * How many bytes v takes as JSON as the server writes it (Go's encoding/json, compact, with <, > and & as they are: internal/crew
- * encodeManifest). JSON.stringify's own text is off both ways: the server escapes U+2028 and U+2029, six bytes each where JSON.stringify keeps
- * the three-byte character, and a lone surrogate, which JSON.stringify sends as a six-byte escape, reaches the server as U+FFFD, three bytes.
+ * encodeManifest, and encodeTaskJSON, whose indent leaves a string as it is). JSON.stringify's own text is off both ways: the server escapes
+ * U+2028 and U+2029, six bytes each where JSON.stringify keeps the three-byte character, and a lone surrogate, which JSON.stringify sends as a
+ * six-byte escape, reaches the server as U+FFFD, three bytes.
  */
 function serverJsonBytes(v: unknown): number {
   const text = JSON.stringify(v, (_key, x: unknown) => (typeof x === 'string' ? wellFormed(x) : x))
@@ -497,8 +498,8 @@ export function taskProblems(c: TaskShape): string[] {
 /**
  * Why the server would refuse to save a crew's tasks beyond taskProblems (internal/crew ValidateSave): rules a crew is held to as it is
  * saved, not as one saved before is launched, so an unchanged crew from before them still launches. A task needs another once, and its
- * goal, role and instructions as its task.json keeps them (JSON, quotes and escapes) leave room for the rest of a task file, which never
- * cuts them.
+ * goal, role and instructions as its task.json keeps them (each string as the server writes it as JSON, quotes and escapes: internal/crew
+ * taskTextBytes) leave room for the rest of a task file, which never cuts them.
  */
 export function taskSaveProblems(c: TaskShape): string[] {
   const out: string[] = []
@@ -509,7 +510,7 @@ export function taskSaveProblems(c: TaskShape): string[] {
     for (const n of t.needs ?? []) (seen.has(n) ? twice : seen).add(n)
     for (const n of twice) out.push(`${what}: needs ${n} twice`)
     const prompt = c.members.find((m) => m.name === t.member)?.prompt ?? ''
-    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + bytes(JSON.stringify(s)), 0)
+    const text = [c.goal ?? '', prompt, t.instructions].reduce((n, s) => n + serverJsonBytes(s), 0)
     if (text > TASK_LIMITS.taskText) out.push(`${what}: its goal, role and instructions are ${text} bytes as its task file keeps them, more than ${TASK_LIMITS.taskText}`)
   }
   return out
