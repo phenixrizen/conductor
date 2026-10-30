@@ -190,8 +190,8 @@ commit with what it changed, one change per entity (a relation counts
 for both its tickets, a label's delete for the label and every ticket it
 left), each with the commit's last `seq`, the entity, its id, and the
 ticket and project it belongs to, every listener a copy of its own; the
-API turns a commit's changes into the SSE events below, together, CS1's
-continuity store will hook it too.
+API turns a commit's changes into the SSE events below, together (Owner
+decisions, 22), CS1's continuity store will hook it too.
 
 **Ids and keys.** Every row but a person's has an opaque id of 16
 lower-case hex characters from 8 random bytes (`crypto/rand`, the shape
@@ -503,7 +503,15 @@ broadcast).
 `event: dispatch`, one per change, in the store's order and as one entry
 of every client's queue, so a commit that changed many entities (a
 label's delete on hundreds of tickets) takes one place in the queue and
-never drops a client that keeps up, each event
+never drops a client that keeps up; past `maxDispatchEach = 64` changes
+of one kind in one project, the commit tells them in one event where the
+first of them was, that `entity` with `id` and `ticket` `""`, the
+project's key and the commit's `seq`, so an entry holds at most 64
+events of each kind in each project its commit changed, each at most
+`maxDispatchEvent` bytes and 24 of framing: an operation of the store
+changes one project's entities and the people its tickets name, seven
+kinds at most, so its entry is at most 82,432 bytes, and a label deleted
+on 10,000 tickets is two events (Owner decisions, 22); each event
 with `{"seq", "entity", "id", "ticket", "project"}` (`ticket` the id of
 the ticket the change belongs to, `project` its project's key, `""`
 where there is none; `id` is `""` for a `person`, whose id is its name,
@@ -616,9 +624,10 @@ agent creates or edits a ticket in this item (Owner decisions, 13).
   having reconnected after a drop, when what was missed is unknown;
   nothing polls. The event with `id` and `ticket` `""` that a commit
   sends for more than 64 changes of one kind in one project
-  (`events.go`) needs no rule of its own: the project rules above re-read
-  on it, a ticket page gathered rather than at once. Every re-read passes
-  the ordering gate of `useDispatch.ts` above.
+  (`events.go`; Owner decisions, 22) needs no rule of its own: the
+  project rules above re-read on it, a ticket page gathered rather than
+  at once. Every re-read passes the ordering gate of `useDispatch.ts`
+  above.
 - `utils/dispatch.ts` (vitest): the key parser (`CND-12`), the
   vocabularies with their words, colours and icons, `ticketWords`, the
   close policy's words from `close`, the list's sort and the board's
@@ -867,11 +876,13 @@ reference in place.
 **The SSE event.** `event: dispatch`, `data: {"seq":N,"entity":"ticket",
 "id":"…","ticket":"…","project":"CND"}`, at most 160 bytes (`id` empty for a
 person; the bound derived in `events.go` above), after the
-commit, once per entity the commit changed, a commit's events together
-and in order, one entry of a client's queue, by the `run` event's path: a
-client that cannot keep up is dropped and reconnects to a new
-`snapshot`, never skipped and kept (the one rule, stated the same in
-`events.go` above). What a page re-reads: a ticket page its ticket at
+commit, once per entity the commit changed but once for all of a kind in
+a project past 64 of them (that `entity`, `id` and `ticket` `""`), a
+commit's events together and in order, one entry of a client's queue
+(Owner decisions, 22), by the `run` event's path: a client that cannot
+keep up is dropped and reconnects to a new `snapshot`, never skipped and
+kept (the one rule, stated the same in `events.go` above), and never for
+one commit's size. What a page re-reads: a ticket page its ticket at
 once when `ticket` is it (its own fields and sets, its comments, links,
 attachments and relations all name it) and, gathered for 250 ms, on any
 other event of its project, since its `blocked`, its children, its
@@ -886,6 +897,10 @@ event, gathered the same way, since the event names no run and an
 unlinked run has no project; every subscribed page on a `snapshot`,
 which is how a dropped
 client repairs what it missed, beside the sessions' and runs' re-read.
+The one event a commit sends for more than 64 of a kind in a project
+names no one entity, and these rules take it as any other event of its
+project: a ticket page among those changed re-reads gathered rather
+than at once, and the run page's chip on it as on any `ticket` event.
 No `internal/proto` and no `protocol.ts` change: an event on `GET
 /api/events` is an HTTP API change, as the `run` event was (its commit,
 4413a183, touched `events.go`, its test and `docs/protocol.md` and
@@ -1243,11 +1258,19 @@ create, at most 160 bytes, the longest payload of every entity (a
 person's with its empty `id`, a milestone's with every id at its length
 and `seq` at 19 digits) measured under it, a client whose queue is full dropped and closed by
 it as a `run` event drops one; a commit's events one entry of a client's
-queue, in order: a commit of 1,000 changes reaches a client nobody
-drains as one entry and leaves it subscribed, and a label deleted on
-more tickets than the queue holds entries, through the store, reaches
-such a client as one entry and a live stream whole, the stream open for
-the next commit's event; a ticket body with a description at its
+queue, in order: a commit of 1,000 changes, none past 64 of a kind in a
+project, reaches a client nobody drains as one entry of 1,000 events and
+leaves it subscribed; at 64 changes of a kind in a project each is an
+event of its own and past it one event tells them where the first was,
+kinds and projects counted apart and a person's event as ever; an entry
+measured at its worst (every kind in two projects at 64 each, every value
+at its longest), one past it and at 10,000 of every kind, never past 64
+events of a kind and project at their longest; and a label and then a
+milestone deleted through their routes from more tickets than the queue
+holds entries, while a live stream is open, each reach a client that
+reads nothing as one entry, their own event and one for their tickets,
+and the stream whole, the stream open for the next commit's event; a
+ticket body with a description at its
 bound of escaped characters accepted and read back whole, a body past
 192 KiB `413`; the largest ticket the server can make (every field and
 set at its bound, every text of `<`) read back whole and under
@@ -1416,7 +1439,7 @@ and 1,300 of tests for 8 tables): the store's four PRs come to about
 | PR-3 | dispatch: comments, labels, milestones, people, relations, links, acceptance and the close policy | `internal/dispatch` | PR-2 | PR-0 | ~1,500 |
 | PR-4 | dispatch: the list query, full-text search, saved views, the pruning goroutine and the benchmark | `internal/dispatch` | PR-3 | PR-0 | ~1,200 |
 | PR-5 | api: projects and tickets over HTTP, the `dispatch` event and the receipts route | `internal/api`, `docs/protocol.md`, `docs/architecture.md` | PR-4, PR-0 | none | ~1,400 |
-| PR-6 | api: comments, labels, milestones, people, relations, links, acceptance and views over HTTP | `internal/api`, `docs/protocol.md` | PR-5 | PR-8 | ~1,400 |
+| PR-6 | api: comments, labels, milestones, people, relations, links, acceptance and views over HTTP | `internal/api`, `internal/dispatch`, `docs/protocol.md`, `docs/architecture.md` | PR-5 | PR-8 | ~1,400 |
 | PR-7 | dispatch, api: attachments as content-addressed files, uploaded, swept and served | `internal/dispatch`, `internal/api`, `docs/protocol.md` | PR-6 | PR-8, PR-9 | ~1,000 |
 | PR-8 | web: the Dispatch client, the live events, the projects page, the list view and the ticket page | `web/app`, `web/e2e` | PR-5 | PR-6, PR-7 | ~1,500 |
 | PR-9 | web: the board and roadmap views, filters, saved views, the keyboard and the palette rows | `web/app`, `web/e2e` | PR-8, PR-6 | PR-7, PR-12 | ~1,400 |
@@ -1488,9 +1511,17 @@ two 503s, the event and the drop, the receipt route, the body bound, the
 replies with HTML escaping off and the largest ticket under
 `maxTicketReply`. Go only.
 
-**PR-6** (`internal/api`, docs): comments (add, edit, delete), labels,
-milestones, people, relations, links (`run_linked` among them), views
-routes; their `docs/protocol.md` rows. Tests: each. Go only.
+**PR-6** (`internal/api`, `internal/dispatch`, docs): comments (add,
+edit, delete), labels, milestones, people, relations, links
+(`run_linked` among them), views routes; their `docs/protocol.md` rows;
+and, its label and milestone deletes being the first routes whose
+commit can change more entities than a client's event queue holds,
+`OnChange` once per commit, a commit's events one entry of the queue
+and more than 64 of a kind in a project told in one event (Owner
+decisions, 22), the event's paragraphs here, in `docs/protocol.md` and
+in `docs/architecture.md` saying so. Tests: each, and a label and a
+milestone deleted through their routes from more tickets than the queue
+holds while a live stream stays open. Go only.
 
 **PR-7** (`internal/dispatch`, `internal/api`, docs): `attachments.go`
 (the file first, the hash, the `uploads` row as the lease, `publish` per
@@ -1569,10 +1600,10 @@ else the entry says it is pending. Docs only; no check applies.
 
 ## Owner decisions
 
-Dated 2026-10-28, the twentieth and twenty-first 2026-10-29. Each is a
-default the owner can overturn with a dated row in the Program's status
-log, its convention for a decision changed; the reasoning is why it was
-taken.
+Dated 2026-10-28, the twentieth and twenty-first 2026-10-29, the
+twenty-second 2026-10-30. Each is a default the owner can overturn with
+a dated row in the Program's status log, its convention for a decision
+changed; the reasoning is why it was taken.
 
 1. **O10, the conflict rules.** Dispatch keeps an operation log
    (`changes`) beside its tables and classifies every field as immutable,
@@ -1727,6 +1758,31 @@ taken.
     bounds only the longest search, and over keeping a ticket's comments
     in its own entry up to a bound, a second way of indexing with its
     switch-over.
+22. **A large commit's events drop no stream, 2026-10-30, the
+    owner's.** One Dispatch commit that changes more entities than a
+    client's event queue holds, 256 entries, must not close the live
+    `GET /api/events` streams. `Store.OnChange` hands a commit's changes
+    to its listeners together, once per commit; the event hub queues a
+    commit's events as one entry, so a client is dropped only when it is
+    256 entries behind; and a commit that changed more than 64 entities
+    of one kind in one project is sent as one `dispatch` event for them,
+    that `entity` with `id` and `ticket` empty, the project's key and
+    the commit's `seq`, which the pages' re-read rules already take,
+    since they key on the project. The plan's first design sent an event
+    per entity, each an entry of its own, so a label's or a milestone's
+    delete on more tickets than the queue holds dropped every open
+    browser at once, one that kept up among them: PR-5's review found it
+    ([PR #427, review finding 3](https://github.com/rocksolidlabs/conductor/pull/427#discussion_r4420424910)),
+    and a label on 1,000 tickets, deleted through the store, closed a
+    live stream after 261 events. Chosen over batching alone, which puts
+    every event of a commit in its one entry, so a label on 10,000
+    tickets would put about 1.2 MB in each client's queue at once, and
+    over keeping the behaviour and saying so, since one large delete
+    would drop every open browser. An entry now holds at most 64 events
+    of each kind in each project its commit changed, at most 82,432
+    bytes for an operation of the store. It lands in PR-6, whose label
+    and milestone deletes are the first routes that can make such a
+    commit.
 
 One question is left open, the shape of the week of use (Acceptance),
 which is the owner's; each answer above lets the plan stand, and the

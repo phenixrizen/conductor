@@ -294,10 +294,11 @@ escaping off, so the largest is bounded by its shape. After every commit,
 outside the transaction and on the writer's goroutine, the store's
 `OnChange` hands the server what the commit changed in one call, a
 change per entity, and the event hub sends the browsers a `dispatch`
-event for each, the commit's together as one entry of a client's queue,
-by the `run` event's path: a client that cannot keep up is dropped and
-starts over from a snapshot, never for one commit's size, and no webhook
-or sink sees it.
+event for each, but one for more than 64 of a kind in a project, naming
+none of them (a page re-reads what it shows of the project), the
+commit's together as one entry of a client's queue, by the `run` event's
+path: a client that cannot keep up is dropped and starts over from a
+snapshot, never for one commit's size, and no webhook or sink sees it.
 
 ## Switchyard
 
