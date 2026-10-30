@@ -238,6 +238,11 @@ func TestDispatchAttachmentRoutes(t *testing.T) {
 // bound, is the store's 409 bound, its receipt kept, no file left.
 func TestDispatchAttachmentUploadIsBounded(t *testing.T) {
 	t.Parallel()
+	// The bound itself, as the plan sets it: the walks below hold the
+	// route to whatever the constants say.
+	if maxAttachmentEnvelope != 64<<10 || maxAttachmentBody != 16<<20+64<<10 {
+		t.Fatalf("an upload's bound is %d bytes, its envelope %d", maxAttachmentBody, maxAttachmentEnvelope)
+	}
 	e := dispatchEnv(t)
 	e.newDispatchProject(t, "BIG", nil)
 	e.newDispatchTicket(t, "BIG", "Large files", nil)
@@ -254,6 +259,11 @@ func TestDispatchAttachmentUploadIsBounded(t *testing.T) {
 	body, ct := at("past", 1)
 	e.expectUpload(t, "BIG-1", body, ct, http.StatusRequestEntityTooLarge, "bound")
 	e.expect(t, "GET", "/api/dispatch/ops/past", nil, http.StatusNotFound, "not_found")
+	// Past its bound whatever else is wrong with it: an op id the route
+	// refuses before the file is read is 413 all the same, the rest of
+	// the body read first.
+	bad := bytes.Replace(body, []byte("past"), []byte("p st"), 1)
+	e.expectUpload(t, "BIG-1", bad, ct, http.StatusRequestEntityTooLarge, "bound")
 	body, ct = at("full", 0)
 	a := entityOf(t, e.expectUpload(t, "BIG-1", body, ct, http.StatusCreated, ""), "attachment")
 	if a["size"] != float64(dispatch.MaxAttachmentSize) || a["sha256"] != sha(content) {

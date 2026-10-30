@@ -181,6 +181,33 @@ func TestAnUploadWhoseLeaseASweepExpiredIsRefusedExpired(t *testing.T) {
 	}
 }
 
+// An upload held at beforePublish whose temp file a second store's
+// collection takes, older than the grace by the time its name carries,
+// while its lease, younger, stays (the upload's read took most of the
+// grace before the lease was taken), is refused expired when it resumes:
+// publish finds no file to publish, and no row ever names content that
+// was never published. Its lease goes with the refusal.
+func TestAnUploadWhoseTempFileASweepTookIsRefusedExpired(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	newProject(t, s, "CND")
+	_, key := newTicket(t, s, "CND", "Attached")
+	content := []byte("read for most of an hour")
+	h := holdAt(t, s, &s.beforePublish, "a1", key, content)
+	second := openStore(t, dir)
+	if err := second.collectOrphans(ctx, time.Now().Add(2*defaultSweepGrace)); err != nil {
+		t.Fatal(err)
+	}
+	if len(tempFiles(t, s)) != 0 || count(t, s, "SELECT COUNT(*) FROM uploads") != 1 {
+		t.Fatalf("after the collection: temp files %v, %d leases", tempFiles(t, s), count(t, s, "SELECT COUNT(*) FROM uploads"))
+	}
+	u := h.resume()
+	want(t, u.rc, u.err, StatusFailed, RefusalExpired)
+	noTrace(t, s, content)
+	mustPut(t, s, "a2", key, "again.txt", content)
+}
+
 // An upload held at beforeCommit while a second store expires the leases
 // alone, its grace at zero, is refused expired when it resumes, its file
 // left in the directory and named by no row; the next collection deletes
