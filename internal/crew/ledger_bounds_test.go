@@ -605,7 +605,9 @@ func TestALaunchAndASetupThatHappenedKeepTheirEvents(t *testing.T) {
 				// that step: not counted, the dispatch paused; unpaused, the
 				// next attempt runs.
 				attemptFailed(t, e, run.ID, "build", 1)
-				if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "setup deps" || !strings.Contains(row.Error, "the ledger could not record the step deps") {
+				// The run as read is one change ahead of the ledger while
+				// that change commits: the row is waited for in the ledger.
+				if row := l.attemptWhen(t, run.ID, "build", 1, failedRow); row.Stage != "setup deps" || !strings.Contains(row.Error, "the ledger could not record the step deps") {
 					t.Fatalf("attempt 1: %+v", row)
 				}
 				waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
