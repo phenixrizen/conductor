@@ -346,6 +346,45 @@ func TestACloseLeavesNoTryForTheOwnerLockUnderWay(t *testing.T) {
 	}
 }
 
+// A wait that comes to its try with the ledger closed makes none (#281).
+// A Close can land after the wait has taken its tick and before it takes
+// the ledger's lock, and the wait's select can pick a tick that is due
+// over a closed done: either way the wait reaches its try with the ledger
+// closed, and a try made then would open owner.lock, making it, and take
+// the lock when it is free, after Close had returned. The test above
+// holds a try that is under way when Close comes; this one runs the wait
+// on a ledger in the state a later Close leaves it in, closed with done
+// still open, so that its first tick brings it to the check.
+func TestAWaitThatFindsTheLedgerClosedMakesNoTry(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "runs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var tries atomic.Int32
+	old := takeLock
+	takeLock = func(path string) (*ownerLock, string, bool, error) {
+		tries.Add(1)
+		return old(path)
+	}
+	t.Cleanup(func() { takeLock = old })
+	l := &Ledger{dir: dir, done: make(chan struct{}), closed: true}
+	l.awaitLock(filepath.Join(dir, Lock), filepath.Join(dir, File)) // returns at its first tick
+	if n := tries.Load(); n != 0 {
+		t.Errorf("a closed ledger tried for the owner lock %d time(s)", n)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 0 {
+		var made []string
+		for _, e := range entries {
+			made = append(made, e.Name())
+		}
+		t.Errorf("a closed ledger made %s in its directory", strings.Join(made, ", "))
+	}
+}
+
 func TestATransitionIsAllOrNothing(t *testing.T) {
 	l := openLedger(t, filepath.Join(t.TempDir(), "runs"))
 	ctx := context.Background()
