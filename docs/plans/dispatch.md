@@ -614,8 +614,11 @@ agent creates or edits a ticket in this item (Owner decisions, 13).
   no project to narrow by (the read is one indexed row, `links(kind,
   ref)`); every subscribed page on a `snapshot`, the stream
   having reconnected after a drop, when what was missed is unknown;
-  nothing polls. Every re-read passes the ordering gate of
-  `useDispatch.ts` above.
+  nothing polls. The event with `id` and `ticket` `""` that a commit
+  sends for more than 64 changes of one kind in one project
+  (`events.go`) needs no rule of its own: the project rules above re-read
+  on it, a ticket page gathered rather than at once. Every re-read passes
+  the ordering gate of `useDispatch.ts` above.
 - `utils/dispatch.ts` (vitest): the key parser (`CND-12`), the
   vocabularies with their words, colours and icons, `ticketWords`, the
   close policy's words from `close`, the list's sort and the board's

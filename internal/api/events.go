@@ -213,7 +213,8 @@ func (h *eventHub) run(id string, removed bool) {
 // person, whose id is its name: the directory is small and its pickers
 // read it again whole, so the event says only that it changed; ticket the
 // id of the ticket the change belongs to and project its project's key,
-// "" where there is none.
+// "" where there is none. The one event for a commit's changes of a kind
+// in a project past maxDispatchEach has id and ticket "" too.
 type dispatchEvent struct {
 	Seq     int64  `json:"seq"`
 	Entity  string `json:"entity"`
@@ -230,11 +231,31 @@ type dispatchEvent struct {
 // six encoded bytes each, never travels (id is "" for a person).
 const maxDispatchEvent = 160
 
+// maxDispatchEach is the most changes of one kind in one project that a
+// commit's events tell one by one. Past it they are told in one event,
+// where the first of them was: that entity, id and ticket "", the
+// project's key and the commit's seq, which a page takes as it takes any
+// event of its project that names something else, reading again what it
+// shows of the project (docs/protocol.md).
+//
+// It bounds a commit's queue entry, which otherwise grows with the
+// commit: a label deleted on 10,000 tickets was 10,001 events, over a
+// megabyte, in every client's queue. An entry holds at most
+// maxDispatchEach events of each kind in each project the commit
+// changed, each at most maxDispatchEvent bytes of data and 24 of
+// framing: at most 11,776 bytes a kind and project, whatever the
+// commit's size. An operation of the store changes entities of one
+// project at most, beside the people its tickets name, so seven kinds at
+// most, and its entry is at most 82,432 bytes; the label deleted on
+// 10,000 tickets is two events.
+const maxDispatchEach = 64
+
 // dispatch announces a commit of Dispatch's store, what it changed
 // (dispatch.Store.OnChange): one event per entity, in the store's order,
-// queued for every client as one entry. So a client gets a commit's
-// events together and in order, and its queue counts commits, not
-// entities: it is dropped when it is eventQueue entries behind, never
+// but one event for a kind's changes in a project past maxDispatchEach;
+// all of it queued for every client as one entry. So a client gets a
+// commit's events together and in order, and its queue counts commits,
+// not entities: it is dropped when it is eventQueue entries behind, never
 // because one commit changed more entities than that (a label's delete
 // leaves every ticket that had it). It goes the run event's way: state a
 // page cannot do without, so a client that cannot keep up is dropped and
@@ -244,10 +265,24 @@ const maxDispatchEvent = 160
 // waits. An event past maxDispatchEvent is dropped, never cut: none is,
 // the bound being the longest one's.
 func (h *eventHub) dispatch(changes []dispatch.Change) {
+	type kind struct{ entity, project string }
+	counts := map[kind]int{}
+	for _, c := range changes {
+		counts[kind{c.Entity, c.Project}]++
+	}
+	told := map[kind]bool{}
 	var msg []byte
 	for _, c := range changes {
+		k := kind{c.Entity, c.Project}
 		ev := dispatchEvent{Seq: c.Seq, Entity: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project}
-		if c.Entity == dispatch.EntityPerson {
+		switch {
+		case counts[k] > maxDispatchEach:
+			if told[k] {
+				continue
+			}
+			told[k] = true
+			ev.ID, ev.Ticket = "", ""
+		case c.Entity == dispatch.EntityPerson:
 			ev.ID = ""
 		}
 		b, err := json.Marshal(ev)

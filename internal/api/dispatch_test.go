@@ -1584,10 +1584,11 @@ func TestDispatchEventsReachTheStream(t *testing.T) {
 // entries, a label deleted on more tickets than eventQueue, reaches every
 // client as one entry and leaves its stream open: a client nobody drains
 // while the store commits holds the commit as one entry, the label's
-// event and every ticket's, and a live stream carries those and then the
-// next commit's. An entry per change dropped the client nobody drained at
-// the 257th, and the live stream too unless its handler wrote out enough
-// of them while the commit queued them.
+// event and one for the tickets it left, more than maxDispatchEach of
+// them, and a live stream carries those and then the next commit's. An
+// entry per change dropped the client nobody drained at the 257th, and
+// the live stream too unless its handler wrote out enough of them while
+// the commit queued them.
 func TestDispatchALargeCommitKeepsTheStreamOpen(t *testing.T) {
 	t.Parallel()
 	e := dispatchEnv(t)
@@ -1602,25 +1603,22 @@ func TestDispatchALargeCommitKeepsTheStreamOpen(t *testing.T) {
 	queued := e.srv.events.subscribe()
 	defer e.srv.events.unsubscribe(queued)
 	done(ds.DeleteLabel(ctx, adminOp("Tester"), "BIG", label))
-	// The delete's events: the label's, then each ticket's it left, in
-	// the order of their numbers, all with the commit's seq.
+	// The delete's events: the label's, then one for the tickets it left,
+	// naming no ticket, with the commit's seq.
 	if len(queued) != 1 {
 		t.Fatalf("the delete queued %d entries, want 1", len(queued))
 	}
 	var want []dispatchEvent
-	for i, data := range dispatchData(t, <-queued) {
+	for _, data := range dispatchData(t, <-queued) {
 		var ev dispatchEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			t.Fatal(err)
 		}
-		if i == 0 && (ev.Entity != "label" || ev.ID != label || ev.Ticket != "" || ev.Project != "BIG") ||
-			i > 0 && (i > len(tickets) || ev != (dispatchEvent{Seq: want[0].Seq, Entity: "ticket", ID: tickets[i-1], Ticket: tickets[i-1], Project: "BIG"})) {
-			t.Fatalf("the delete's event %d: %+v", i, ev)
-		}
 		want = append(want, ev)
 	}
-	if len(want) != 1+len(tickets) {
-		t.Fatalf("the delete's entry holds %d events, want %d", len(want), 1+len(tickets))
+	if len(want) != 2 || want[0].Entity != "label" || want[0].ID != label || want[0].Ticket != "" || want[0].Project != "BIG" ||
+		want[1] != (dispatchEvent{Seq: want[0].Seq, Entity: "ticket", Project: "BIG"}) {
+		t.Fatalf("the delete's events: %+v, want the label's and one for its tickets", want)
 	}
 	select {
 	case _, open := <-queued:

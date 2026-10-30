@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -419,16 +420,17 @@ func dispatchData(t *testing.T, msg []byte) []string {
 func hexID(n int) string { return fmt.Sprintf("%016x", n) }
 
 // A commit's events are one entry of a client's queue, however many
-// entities it changed, in the store's order: a client nobody drains gets
-// a commit of 1,000 changes (a label deleted on 999 tickets) as one entry
-// and keeps its stream, which an entry per change would have closed at
-// the 257th; the next commit reaches it.
+// there are, in the store's order: a client nobody drains gets a commit
+// of 1,000 changes, fifty tickets in each of twenty projects (none past
+// maxDispatchEach, so each is an event of its own), as one entry of
+// 1,000 events and keeps its stream, which an entry per event would have
+// closed at the 257th; the next commit reaches it.
 func TestEventHubDispatchCommitIsOneEntry(t *testing.T) {
 	h := newEventHub()
 	ch := h.subscribe()
-	changes := []dispatch.Change{{Seq: 42, Entity: dispatch.EntityLabel, ID: hexID(0), Project: "CND"}}
-	for i := 1; i < 1000; i++ {
-		changes = append(changes, dispatch.Change{Seq: 42, Entity: dispatch.EntityTicket, ID: hexID(i), Ticket: hexID(i), Project: "CND"})
+	var changes []dispatch.Change
+	for i := range 1000 {
+		changes = append(changes, dispatch.Change{Seq: 42, Entity: dispatch.EntityTicket, ID: hexID(i), Ticket: hexID(i), Project: fmt.Sprintf("P%02d", i/50)})
 	}
 	h.dispatch(changes)
 	kept := func() bool {
@@ -463,6 +465,147 @@ func TestEventHubDispatchCommitIsOneEntry(t *testing.T) {
 		t.Fatal("the next commit queued nothing")
 	}
 	if !kept() {
+		t.Fatal("the client was dropped")
+	}
+}
+
+// Past maxDispatchEach changes of one kind in one project, a commit tells
+// them in one event where the first of them was: that entity, id and
+// ticket "", the project's key and the commit's seq. At maxDispatchEach
+// each is an event of its own, and kinds and projects are counted apart:
+// a project's tickets past the bound leave another project's tickets and
+// the project's comments as they are, and a person's event is as ever.
+func TestEventHubDispatchTellsALargeKindOfAProjectInOneEvent(t *testing.T) {
+	ticket := func(project string, n int) dispatch.Change {
+		return dispatch.Change{Seq: 9, Entity: dispatch.EntityTicket, ID: hexID(n), Ticket: hexID(n), Project: project}
+	}
+	event := func(c dispatch.Change) dispatchEvent {
+		return dispatchEvent{Seq: c.Seq, Entity: c.Entity, ID: c.ID, Ticket: c.Ticket, Project: c.Project}
+	}
+	label := dispatch.Change{Seq: 9, Entity: dispatch.EntityLabel, ID: hexID(0), Project: "CND"}
+	one := func(entity, project string) dispatchEvent {
+		return dispatchEvent{Seq: 9, Entity: entity, Project: project}
+	}
+	// A label deleted on as many tickets as the bound, and on one more.
+	atBound, atBoundWant := []dispatch.Change{label}, []dispatchEvent{event(label)}
+	for i := 1; i <= maxDispatchEach; i++ {
+		atBound = append(atBound, ticket("CND", i))
+		atBoundWant = append(atBoundWant, event(ticket("CND", i)))
+	}
+	pastBound := append(slices.Clone(atBound), ticket("CND", maxDispatchEach+1))
+	// CND's tickets past the bound between OPS's at it, CND's comments
+	// past it, and three people.
+	var apart []dispatch.Change
+	apartWant := []dispatchEvent{one(dispatch.EntityTicket, "CND")}
+	for i := 1; i <= maxDispatchEach+1; i++ {
+		apart = append(apart, ticket("CND", i))
+		if i <= maxDispatchEach {
+			apart = append(apart, ticket("OPS", 1000+i))
+			apartWant = append(apartWant, event(ticket("OPS", 1000+i)))
+		}
+	}
+	apartWant = append(apartWant, one(dispatch.EntityComment, "CND"))
+	for i := 1; i <= maxDispatchEach+1; i++ {
+		apart = append(apart, dispatch.Change{Seq: 9, Entity: dispatch.EntityComment, ID: hexID(2000 + i), Ticket: hexID(1), Project: "CND"})
+	}
+	for _, name := range []string{"Alice", "Bob", "Carol"} {
+		apart = append(apart, dispatch.Change{Seq: 9, Entity: dispatch.EntityPerson, ID: name})
+		apartWant = append(apartWant, one(dispatch.EntityPerson, ""))
+	}
+	for _, tc := range []struct {
+		name    string
+		changes []dispatch.Change
+		want    []dispatchEvent
+	}{
+		{"at the bound", atBound, atBoundWant},
+		{"past the bound", pastBound, []dispatchEvent{event(label), one(dispatch.EntityTicket, "CND")}},
+		{"kinds and projects apart", apart, apartWant},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEventHub()
+			ch := h.subscribe()
+			h.dispatch(tc.changes)
+			if len(ch) != 1 {
+				t.Fatalf("%d entries queued, want 1", len(ch))
+			}
+			var got []dispatchEvent
+			for _, data := range dispatchData(t, <-ch) {
+				var ev dispatchEvent
+				if err := json.Unmarshal([]byte(data), &ev); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, ev)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("%d changes told as %d events %+v, want %d %+v", len(tc.changes), len(got), got, len(tc.want), tc.want)
+			}
+		})
+	}
+}
+
+// A commit's entry is bounded whatever the commit's size: at most
+// maxDispatchEach events of each kind in each project it changed, each at
+// most maxDispatchEvent bytes and its framing. Measured at its worst,
+// every kind in two projects with each value at its longest, at the
+// bound, one past it and at 10,000 of each; and a label deleted on 10,000
+// tickets is two events. The client keeps its stream throughout.
+func TestEventHubDispatchEntryIsBounded(t *testing.T) {
+	h := newEventHub()
+	ch := h.subscribe()
+	kinds := []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
+		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson}
+	projects := []string{"ABCDEF", "GHIJKL"}
+	framing := len("event: dispatch\ndata: \n\n")
+	bound := len(projects) * len(kinds) * maxDispatchEach * (maxDispatchEvent + framing)
+	entry := func(what string, changes []dispatch.Change) []byte {
+		t.Helper()
+		h.dispatch(changes)
+		if len(ch) != 1 {
+			t.Fatalf("%s: %d entries queued, want 1", what, len(ch))
+		}
+		msg := <-ch
+		if len(msg) > bound {
+			t.Fatalf("%s: an entry of %d bytes, %d events, past the bound of %d", what, len(msg), len(dispatchData(t, msg)), bound)
+		}
+		return msg
+	}
+	entries := map[int][]byte{}
+	for _, n := range []int{1, maxDispatchEach, maxDispatchEach + 1, 10000} {
+		var changes []dispatch.Change
+		for _, p := range projects {
+			for _, k := range kinds {
+				for i := range n {
+					changes = append(changes, dispatch.Change{Seq: math.MaxInt64, Entity: k, ID: hexID(i), Ticket: strings.Repeat("e", dispatch.IDLen), Project: p})
+				}
+			}
+		}
+		entries[n] = entry(fmt.Sprintf("%d of every kind in two projects", n), changes)
+	}
+	// The worst is at the bound, every change an event of its own: past
+	// it, a kind of a project is one event.
+	worst := entries[maxDispatchEach]
+	if events := len(dispatchData(t, worst)); events != len(projects)*len(kinds)*maxDispatchEach {
+		t.Fatalf("at the bound: %d events, want one per change", events)
+	}
+	for n, msg := range entries {
+		if len(msg) > len(worst) {
+			t.Fatalf("%d of every kind in two projects: %d bytes, more than the %d at the bound", n, len(msg), len(worst))
+		}
+	}
+	t.Logf("the worst entry: %d events, %d bytes, of a bound of %d", len(dispatchData(t, worst)), len(worst), bound)
+	label := []dispatch.Change{{Seq: 77, Entity: dispatch.EntityLabel, ID: hexID(0), Project: "CND"}}
+	for i := 1; i <= 10000; i++ {
+		label = append(label, dispatch.Change{Seq: 77, Entity: dispatch.EntityTicket, ID: hexID(i), Ticket: hexID(i), Project: "CND"})
+	}
+	msg := entry("a label deleted on 10,000 tickets", label)
+	if data := dispatchData(t, msg); len(data) != 2 {
+		t.Fatalf("a label deleted on 10,000 tickets: %d events, want 2", len(data))
+	}
+	t.Logf("a label deleted on 10,000 tickets: %d bytes", len(msg))
+	h.mu.Lock()
+	_, kept := h.clients[ch]
+	h.mu.Unlock()
+	if !kept {
 		t.Fatal("the client was dropped")
 	}
 }
