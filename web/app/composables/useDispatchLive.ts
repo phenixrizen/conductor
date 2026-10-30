@@ -203,13 +203,17 @@ export function dispatchLive(): DispatchLive {
 /**
  * Subscribes a page's watch to the live events while it is mounted, and starts the stream (useAttention) when nothing has. `ask` reads
  * part of the page now through the live store (DispatchLive.ask), so that a read the page asks of itself is asked again after a failure.
+ * `first`, the page's first read, is called once the watch is subscribed, as the page is mounted: a read it makes through `ask` is asked
+ * again when it fails, as a re-read is. The stream may be connected already (a page opened from another), and then no snapshot comes to
+ * read the page for it.
  */
-export function useDispatchLive(watch: DispatchWatch): { ask: (read: () => Promise<unknown>) => void } {
+export function useDispatchLive(watch: DispatchWatch, first?: () => void): { ask: (read: () => Promise<unknown>) => void } {
   const attention = useAttention()
   let stop: (() => void) | undefined
   onMounted(() => {
     attention.start()
     stop = dispatchLive().subscribe(watch)
+    first?.()
   })
   onBeforeUnmount(() => stop?.())
   return { ask: (read) => dispatchLive().ask(watch, read) }

@@ -6,8 +6,10 @@ import { expect, test, type Api } from './fixtures'
 // listing the fields set, the counts; and a second browser that sees the title edited and the projects page's open count move with no
 // reload, by the dispatch events. Then what review round 1 found: two assignees ticked while the first one's edit is held both kept; an
 // editor's save that never replaces another person's text unseen; a filter whose first read fails read again; a ticket's page opened
-// before its ticket is made. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the
-// earlier ones), and counts only the rows of that project.
+// before its ticket is made. And review round 2's: an edit waiting behind one whose reply a later read overtook, made on the revision
+// that one committed; each page's first read, failed with the stream connected already, read again; what is typed while an editor's
+// save goes, kept. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the earlier
+// ones), and counts only the rows of that project.
 test.describe.configure({ mode: 'serial' })
 
 let other: BrowserContext | null = null
@@ -46,12 +48,20 @@ async function made(api: Api, key: string, title?: string): Promise<void> {
 
 /** The ticket as the store holds it. */
 async function stored(api: Api, key: string) {
-  return (await api.ok<{ ticket: { title: string; description: string; acceptance: string; assignees: string[] } }>('GET', `/api/dispatch/tickets/${key}`)).ticket
+  return (await api.ok<{ ticket: { title: string; description: string; acceptance: string; priority: number; owner: string; assignees: string[] } }>('GET', `/api/dispatch/tickets/${key}`)).ticket
+}
+
+/** An edit of a ticket as the page sent it. */
+interface SentEdit {
+  expectedRev?: number
+  set?: Record<string, unknown>
+  add?: { assignees?: string[] }
+  remove?: { assignees?: string[] }
 }
 
 /** What the page's edits of a ticket sent, in order, by the request's body, the edit route held where `hold` says (from 1). */
-async function recordEdits(page: Page, hold?: { n: number; until: Promise<void> }): Promise<Array<{ set?: Record<string, unknown>; add?: { assignees?: string[] }; remove?: { assignees?: string[] } }>> {
-  const sent: Array<{ set?: Record<string, unknown>; add?: { assignees?: string[] }; remove?: { assignees?: string[] } }> = []
+async function recordEdits(page: Page, hold?: { n: number; until: Promise<void> }): Promise<SentEdit[]> {
+  const sent: SentEdit[] = []
   await page.route('**/api/dispatch/tickets/*/edit', async (route) => {
     sent.push(route.request().postDataJSON())
     if (hold && sent.length === hold.n) await hold.until
@@ -339,4 +349,143 @@ test("a ticket's page opened before its ticket is made says so, and shows it onc
   await expect(page.locator('[data-ticket-title]')).toHaveText('Made since')
   await expect(page.locator('[data-ticket-missing]')).toHaveCount(0)
   expect(await marked(page)).toBe('kept')
+})
+
+test('an edit waiting behind one whose reply a later read overtook is made on the revision that one committed', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'In turn')
+  let release!: () => void
+  const sent = await recordEdits(page, { n: 1, until: new Promise<void>((resolve) => (release = resolve)) })
+  await page.goto(`/dispatch/${key}/1`)
+  const rev = page.locator('[data-ticket-rev]')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '1')
+
+  // The priority set: its edit held on its way, before the store has it.
+  await page.locator('[data-ticket-priority]').click()
+  await page.getByRole('option', { name: 'Urgent' }).click()
+  await expect.poll(() => sent.length).toBe(1)
+  // A read of the ticket sent after that edit and answered before its commit: another ticket of the project made, whose event reads the
+  // page again after the window. Its reply, rev 1, is applied, so the held edit's reply, numbered before it, is dropped when it comes.
+  const reread = page.waitForResponse((r) => r.request().method() === 'GET' && new URL(r.url()).pathname === `/api/dispatch/tickets/${key}-1`)
+  await api.ok('POST', '/api/dispatch/tickets', { opId: opOf(key, 't2'), project: key, title: 'Another' })
+  expect(((await (await reread).json()) as { ticket: { rev: number } }).ticket.rev).toBe(1)
+  // The owner set meanwhile: its edit waits its turn behind the priority's.
+  const owner = `Owner ${key}`
+  await page.locator('[data-ticket-owner]').click()
+  await page.getByPlaceholder('A name…', { exact: true }).fill(owner)
+  await page.getByRole('option', { name: `Make ${owner} the owner` }).click()
+  release()
+
+  // The priority's edit commits rev 2, and the page reads the ticket at it before the owner's edit is made: that one expects rev 2 and
+  // is done. Made on the rev 1 shown, it would be refused stale_revision.
+  await expect(rev).toHaveAttribute('data-ticket-rev', '3')
+  await expect(page.locator('[data-ticket-priority]')).toContainText('Urgent')
+  await expect(page.locator('[data-ticket-owner]')).toContainText(owner)
+  expect(sent.map((b) => [b.set, b.expectedRev])).toEqual([
+    [{ priority: 4 }, 1],
+    [{ owner }, 2],
+  ])
+  expect(await stored(api, `${key}-1`)).toMatchObject({ priority: 4, owner })
+})
+
+test("each page's first read, failed with the stream connected already, is read again with no event, no snapshot and no reload", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key)
+  // The projects page, its stream connected: the project's open count follows a ticket made through the API, by the ticket's event.
+  await page.goto('/dispatch')
+  const project = page.locator(`[data-project-row="${key}"]`)
+  await expect(project.locator('[data-project-open]')).toHaveAttribute('data-count', '0')
+  await api.ok('POST', '/api/dispatch/tickets', { opId: opOf(key, 't1'), project: key, title: 'Read again' })
+  await expect(project.locator('[data-project-open]')).toHaveAttribute('data-count', '1')
+  await mark(page)
+
+  /**
+   * Fails the first two reads `url` matches as a server busy for a moment answers (a read and the one retry of it that $fetch makes of a
+   * GET by itself), lets the next go through, and counts them.
+   */
+  async function failTwice(url: RegExp): Promise<{ asked: number }> {
+    const r = { asked: 0 }
+    await page.route(url, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      if (++r.asked <= 2) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'The store is busy.' } }) })
+      return route.continue()
+    })
+    return r
+  }
+
+  // The project's page, opened from its row: its list's first read fails, and is asked again after the window by the page alone.
+  const list = await failTwice(new RegExp(`/api/dispatch/tickets\\?project=${key}&`))
+  await project.click()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))
+  await expect.poll(() => list.asked).toBeGreaterThanOrEqual(3)
+  const row = page.locator(`[data-ticket-row="${key}-1"]`)
+  await expect(row.locator('[data-row-title]')).toHaveText('Read again')
+
+  // The ticket's page, opened from its row: the same.
+  const ticket = await failTwice(new RegExp(`/api/dispatch/tickets/${key}-1$`))
+  await row.click()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect.poll(() => ticket.asked).toBeGreaterThanOrEqual(3)
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Read again')
+
+  // The projects page again, from the ticket page's Dispatch link: the same.
+  const projects = await failTwice(/\/api\/dispatch\/projects(\?[^/]*)?$/)
+  await page.locator('[data-ticket-header]').getByRole('link', { name: 'Dispatch', exact: true }).click()
+  await expect(page).toHaveURL(/\/dispatch$/)
+  await expect.poll(() => projects.asked).toBeGreaterThanOrEqual(3)
+  await expect(project.locator('[data-project-open]')).toHaveAttribute('data-count', '1')
+  // All in the one load of the page the test began with.
+  expect(await marked(page)).toBe('kept')
+})
+
+test("what is typed while an editor's save goes is kept: the save is done, the newer text stays in the editor, and its own save follows", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'Typed on')
+  let release!: () => void
+  const sent = await recordEdits(page, { n: 1, until: new Promise<void>((resolve) => (release = resolve)) })
+  await page.goto(`/dispatch/${key}/1`)
+  const rev = page.locator('[data-ticket-rev]')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '1')
+
+  // The description saved, its edit held on its way; more is written meanwhile.
+  const description = page.locator('[data-ticket-markdown="description"]')
+  await description.locator('[data-markdown-empty]').click()
+  const input = description.locator('[data-markdown-input]')
+  const save = description.locator('[data-markdown-save]')
+  await input.fill('First version')
+  await save.click()
+  await expect.poll(() => sent.length).toBe(1)
+  await input.fill('First version, and more')
+  release()
+  // The save is done (Save is offered again): the store has what was saved, and the editor what was written after it.
+  await expect(save).toBeEnabled()
+  await expect(input).toHaveValue('First version, and more')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  expect((await stored(api, `${key}-1`)).description).toBe('First version')
+  // Its own save is made against the text saved, with no notice of another person's, and closes the editor.
+  await save.click()
+  await expect(description.locator('[data-markdown-view]')).toHaveText('First version, and more')
+  expect((await stored(api, `${key}-1`)).description).toBe('First version, and more')
+  expect(sent.map((b) => b.set)).toEqual([{ description: 'First version' }, { description: 'First version, and more' }])
+
+  // The title, the same way: Enter saves it, held, and more is typed.
+  await page.unroute('**/api/dispatch/tickets/*/edit')
+  let releaseTitle!: () => void
+  const titled = await recordEdits(page, { n: 1, until: new Promise<void>((resolve) => (releaseTitle = resolve)) })
+  await page.locator('[data-title-edit]').click()
+  const title = page.locator('[data-title-input]')
+  await title.fill('Typed on, first')
+  await title.press('Enter')
+  await expect.poll(() => titled.length).toBe(1)
+  await title.fill('Typed on, first and more')
+  releaseTitle()
+  await expect(page.locator('[data-title-save]')).toBeEnabled()
+  await expect(title).toHaveValue('Typed on, first and more')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '4')
+  expect((await stored(api, `${key}-1`)).title).toBe('Typed on, first')
+  await expect(page.locator('[data-title-theirs]')).toHaveCount(0)
+  await title.press('Enter')
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Typed on, first and more')
+  expect((await stored(api, `${key}-1`)).title).toBe('Typed on, first and more')
+  expect(titled.map((b) => b.set)).toEqual([{ title: 'Typed on, first' }, { title: 'Typed on, first and more' }])
 })

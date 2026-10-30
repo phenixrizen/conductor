@@ -6,8 +6,8 @@ import { relativeTime } from '~/utils/sessions'
 
 // Dispatch's projects (docs/plans/dispatch.md, PR-8): each with its key, its name, how many of its tickets are open and done, and its
 // tracker; New project makes one. The list is read through the page's ordering gate as the page opens, and again after the window on
-// any dispatch event at all (a ticket's status moves its project's counts), and on a snapshot, which forgets what the gate knew. Nothing
-// polls.
+// any dispatch event at all (a ticket's status moves its project's counts), and on a snapshot, which forgets what the gate knew. A read
+// that fails, the first among them, is asked again. Nothing polls.
 
 useHead({ title: 'Dispatch' })
 
@@ -60,22 +60,27 @@ async function reload(): Promise<void> {
   }
 }
 
-async function load() {
+/**
+ * The projects read through the live store (DispatchLive.ask), so that a read that fails is asked again after the window, doubled, as a
+ * re-read is, until one answers, with no event: as the page opens too, when the stream is connected already and no snapshot comes. None
+ * without the workbench token, which is asked for; the projects are read once it is given.
+ */
+function load(): void {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
-  await reload().catch(() => {})
+  live.ask(reload)
 }
 
 let tick: number | undefined
 onMounted(() => {
-  void load()
   tick = window.setInterval(() => (now.value = Date.now()), 30_000)
 })
 onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, load)
-useDispatchLive({ ...projectsWatch(reload), reset: () => gate.reset() })
+// The live events read the projects again; their first read is made once the page is subscribed to them (useDispatchLive's `first`).
+const live = useDispatchLive({ ...projectsWatch(reload), reset: () => gate.reset() }, load)
 
 /** A project made: its page. */
 function created(p: DispatchProject) {

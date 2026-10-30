@@ -227,6 +227,20 @@ describe("a page's own read of part of it, asked through the store", () => {
     expect(r.at).toEqual([250])
   })
 
+  it("is the page's first read too: made through the store once the page is subscribed, it is asked again with no event and no snapshot", async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads(2)
+    const watch = ticketWatch(() => '', () => 'CND', read)
+    // useDispatchLive as the page is mounted: subscribed, then its `first`, the page's load, which reads the page through `ask`. The
+    // stream was connected already (the page opened from another), so no snapshot comes to read it.
+    live.subscribe(watch)
+    live.ask(watch, read)
+    expect(r.count).toBe(1)
+    await vi.advanceTimersByTimeAsync(20_000)
+    // Failed at 0, asked again at 250 (failed) and at 750 (answered), and nothing after.
+    expect(r.at).toEqual([0, 250, 750])
+  })
+
   it('reads nothing for a page not subscribed, or gone, and asks nothing again for one gone while its read was on its way', async () => {
     const live = new DispatchLive()
     const { r, read } = reads()

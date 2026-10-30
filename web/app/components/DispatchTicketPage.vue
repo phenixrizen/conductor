@@ -12,9 +12,10 @@ import { serially } from '~/utils/dispatchOrder'
  * preview, its status, priority, horizon, owner and assignees, and its history as the store recorded it. Every edit is one operation on
  * the revision shown (useDispatchOps), and every read and every operation's reply goes through the page's ordering gate, the ticket's by
  * its key, a 404 among them. The live events read it again: at once when one names the ticket, after the window on any other of its
- * project, and on a snapshot, which forgets what the gate knew (a store restored from a backup). An editor's save is made against the
- * text it opened on, so another person's edit made meanwhile is never replaced unseen. Its comments, attachments, parent and relations,
- * labels and milestones, and the close policy come with the next changes, and the page says so. One column on a phone.
+ * project, and on a snapshot, which forgets what the gate knew (a store restored from a backup); a read that fails, its first among
+ * them, is asked again. An edit waits for the one before it to be shown. An editor's save is made against the text it opened on, so
+ * another person's edit made meanwhile is never replaced unseen, and what is typed while it goes stays. Its comments, attachments, parent
+ * and relations, labels and milestones, and the close policy come with the next changes, and the page says so. One column on a phone.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -134,17 +135,21 @@ async function reload(): Promise<void> {
   error.value = ''
 }
 
-async function load() {
+/**
+ * The page read through the live store (DispatchLive.ask), so that a read that fails is asked again after the window, doubled, as a
+ * re-read is, until one answers, with no event: as the page opens too, when the stream is connected already and no snapshot comes. None
+ * without the workbench token, which is asked for; the page is read once it is given.
+ */
+function load(): void {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
-  await reload().catch(() => {})
+  live.ask(reload)
 }
 
 let tick: number | undefined
 onMounted(() => {
-  void load()
   sessions
     .catalog()
     .then((a) => (agents.value = a))
@@ -173,11 +178,12 @@ watch(
     // The title being edited and the assignees being picked were the other ticket's.
     leaveTitle()
     picks.clear()
-    if (key) void load()
+    if (key) load()
   },
 )
 
-useDispatchLive({ ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload), reset: () => gate.reset() })
+// The live events read the page again; its first read is made once it is subscribed to them (useDispatchLive's `first`).
+const live = useDispatchLive({ ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload), reset: () => gate.reset() }, load)
 
 const projectRow = computed(() => projectRead.value?.project ?? null)
 const archived = computed(() => !!projectRow.value?.archivedAt)
@@ -201,12 +207,25 @@ const entries = computed(() =>
 type Made = TicketEdit | null | false
 
 /**
+ * Reads the ticket again when the page shows it below `rev`, the revision an edit of it has just committed, before the next edit is
+ * made: that edit's reply is dropped by the gate when a read numbered after it (a re-read for another ticket's event) was served before
+ * its commit and answered first, and the next edit, made on the older ticket shown, would expect its revision and be refused
+ * stale_revision. This read is sent after the commit, so it finds it. One that fails leaves the next edit to the store's check, whose
+ * refusal reads the page again.
+ */
+async function caughtUp(key: string, rev: number | undefined): Promise<void> {
+  if (rev === undefined || key !== props.ticketKey || (ticket.value?.rev ?? 0) >= rev) return
+  await readTicket().catch(() => {})
+}
+
+/**
  * One edit of the ticket the person acted on (`key`), as one operation on the revision shown when it is sent; true once the store has
- * it. The page's edits go one after another (serially): each is sent once the one before has answered, so it expects the revision that
- * one left, where two sent at once would both expect the revision shown at the first and the second be refused stale_revision. The
- * change is made then too (`make`), against the ticket as the one before left it: null when nothing is left to change, which is no
- * operation (the store refuses an edit that changes nothing), so a field set twice in a row sends what it comes to; false when it must
- * not be sent (an editor's text changed by another person since it opened). None is sent once the page shows another ticket.
+ * it. The page's edits go one after another (serially): each is sent once the one before has answered and the page shows the revision
+ * it committed (caughtUp), so it expects the revision that one left, where two sent at once would both expect the revision shown at the
+ * first and the second be refused stale_revision. The change is made then too (`make`), against the ticket as the one before left it:
+ * null when nothing is left to change, which is no operation (the store refuses an edit that changes nothing), so a field set twice in
+ * a row sends what it comes to; false when it must not be sent (an editor's text changed by another person since it opened). None is
+ * sent once the page shows another ticket.
  */
 const edit = serially(async (key: string, make: () => Made): Promise<boolean> => {
   const t = ticket.value
@@ -228,24 +247,31 @@ const edit = serially(async (key: string, make: () => Made): Promise<boolean> =>
   // A refusal (a stale revision: another person's edit came first) shows the ticket as the store holds it now, read before the next
   // edit is sent, so that one expects the revision the store has.
   if (refused) await reload().catch(() => {})
-  else if (reply) void readHistory().catch(() => {})
+  else if (reply) {
+    await caughtUp(key, reply.ticket?.rev)
+    void readHistory().catch(() => {})
+  }
   return !!reply
 })
 
 // The title: shown, or edited in place (Enter saves, Escape leaves it). A save is made against the title the editor opened on: when another
 // person's came meanwhile (the page reads the ticket live), it is not sent, the draft is kept and theirs is said; a second save replaces it.
+// A title typed on while its save goes stays in the editor once the save is done.
 const editingTitle = ref(false)
 const titleDraft = ref('')
-/** The title the editor opened on, or the other person's once said: what a save is made against. */
+/** The title the editor opened on, or the other person's once said, or the one saved while it stayed open: what a save is made against. */
 const titleBase = ref('')
 /** Another person's title, saved while this one was edited: said once a save found it, until the editor closes. */
 const titleTheirs = ref<string | null>(null)
+/** Each opening of the editor, counted: a save's answer acts on the editor only while it is the opening the save was made in. */
+let titleOpened = 0
 const titleInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('titleInput')
 function editTitle() {
   if (!ticket.value || locked.value) return
   titleDraft.value = ticket.value.title
   titleBase.value = ticket.value.title
   titleTheirs.value = null
+  titleOpened++
   editingTitle.value = true
   void nextTick(() => titleInput.value?.inputRef?.select())
 }
@@ -271,13 +297,23 @@ async function saveTitle(e?: KeyboardEvent) {
   }
   if (titleChangedUnder()) return
   const base = titleBase.value
+  const draft = titleDraft.value
+  const opened = titleOpened
   const made = () => {
     const shown = ticket.value?.title
     if (shown !== base) return false
     return title !== shown ? { set: { title } } : null
   }
-  if (await edit(props.ticketKey, made)) leaveTitle()
-  else titleChangedUnder()
+  const done = await edit(props.ticketKey, made)
+  // The editor left, or opened again, while the save went: what it holds now is not this save's to close.
+  if (!editingTitle.value || opened !== titleOpened) return
+  if (!done) titleChangedUnder()
+  else if (titleDraft.value === draft) leaveTitle()
+  else {
+    // Typed on while the save went: the newer title stays, and its save is made against the one saved.
+    titleBase.value = title
+    titleTheirs.value = null
+  }
 }
 
 /**

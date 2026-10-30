@@ -11,7 +11,8 @@ import { apiQuery, filterFromURL, filterNarrows, filterToURL, type DispatchFilte
 // (utils/dispatchQuery.ts), pages of 200; New ticket; the board and the roadmap as tabs, which come with the next change. The project and
 // the list are read through the page's ordering gate, the list by its filter (a filter changed is a new list, the old one's late pages
 // dropped), as the page opens and again after the window on any dispatch event of the project, and on a snapshot, which forgets what the
-// gate knew (a store restored from a backup). A filter's read that fails is asked again as a re-read is. Nothing polls.
+// gate knew (a store restored from a backup). A read that fails is asked again as a re-read is, the first and a filter's among them.
+// Nothing polls.
 
 const route = useRoute()
 const router = useRouter()
@@ -176,17 +177,21 @@ async function reload(): Promise<void> {
   }
 }
 
-async function load() {
+/**
+ * The project and its list read through the live store (DispatchLive.ask), so that a read that fails is asked again after the window,
+ * doubled, as a re-read is, until one answers, with no event: as the page opens too, when the stream is connected already and no
+ * snapshot comes. None without the workbench token, which is asked for; the page is read once it is given.
+ */
+function load(): void {
   if (!admin.hasToken.value) {
     admin.needsToken.value = true
     return
   }
-  await reload().catch(() => {})
+  live.ask(reload)
 }
 
 let tick: number | undefined
 onMounted(() => {
-  void load()
   sessions
     .catalog()
     .then((a) => (agents.value = a))
@@ -196,7 +201,8 @@ onMounted(() => {
 onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, load)
 
-const live = useDispatchLive({ ...listWatch(() => project.value, reload), reset: () => gate.reset() })
+// The live events read the page again; its first read is made once it is subscribed to them (useDispatchLive's `first`).
+const live = useDispatchLive({ ...listWatch(() => project.value, reload), reset: () => gate.reset() }, load)
 
 // Another filter is another list: the old one's late pages are dropped, and the new one is read from its first page, through the live
 // store (DispatchLive.ask), so that a read that fails is asked again after the window, doubled, as a re-read is, with no further event.
@@ -219,7 +225,7 @@ watch(project, (_, before) => {
   projectMissing.value = false
   tickets.value = []
   shownThing.value = ''
-  void load()
+  load()
 })
 
 function more() {

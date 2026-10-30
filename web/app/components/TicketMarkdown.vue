@@ -6,7 +6,8 @@
  * done; the editor stays open with the text when it was not). Its bound is the store's, in bytes: past it Save is off and the field
  * says so. Ctrl+Enter (⌘+Enter) saves, Escape leaves the text as it was. A save is made against the text the editor opened on: when
  * another person saved theirs meanwhile (the page reads the ticket live, behind the editor), Save sends nothing, keeps the draft and
- * shows their text; a second Save replaces it, knowingly.
+ * shows their text; a second Save replaces it, knowingly. The text stays editable while a save goes: what is written meanwhile stays
+ * in the editor once the save is done, and its next Save is made against the text saved.
  */
 const props = defineProps<{
   /** The text as the store holds it. */
@@ -28,12 +29,14 @@ const props = defineProps<{
 
 const editing = ref(false)
 const draft = ref('')
-/** The text the editor opened on, or the other person's once shown: what a save is made against. */
+/** The text the editor opened on, or the other person's once shown, or the one saved while it stayed open: what a save is made against. */
 const base = ref('')
 /** Another person's text, saved while this one was written: shown once a Save found it, until the editor closes. */
 const theirs = ref<string | null>(null)
 const tab = ref<'write' | 'preview'>('write')
 const saving = ref(false)
+/** Each opening of the editor, counted: a save's answer acts on the editor only while it is the opening the save was made in. */
+let opened = 0
 const area = useTemplateRef<{ textareaRef?: HTMLTextAreaElement }>('area')
 
 const bytes = computed(() => new TextEncoder().encode(draft.value).length)
@@ -50,6 +53,7 @@ function edit() {
   base.value = props.text
   theirs.value = null
   tab.value = 'write'
+  opened++
   editing.value = true
   void nextTick(() => area.value?.textareaRef?.focus())
 }
@@ -74,10 +78,20 @@ async function submit() {
     return
   }
   if (changedUnder()) return
+  const text = draft.value
+  const session = opened
   saving.value = true
   try {
-    if (await props.save(draft.value, base.value)) cancel()
-    else changedUnder()
+    const done = await props.save(text, base.value)
+    // The editor left, or opened again, while the save went: what it holds now is not this save's to close.
+    if (!editing.value || session !== opened) return
+    if (!done) changedUnder()
+    else if (draft.value === text) cancel()
+    else {
+      // Written on while the save went: the newer text stays, and its Save is made against the text saved.
+      base.value = text
+      theirs.value = null
+    }
   } finally {
     saving.value = false
   }
