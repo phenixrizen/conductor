@@ -818,11 +818,44 @@ func (l *Ledger) Events(ctx context.Context, runID string, after int64, limit in
 type Recovered struct {
 	RunID         string
 	Attempts      map[string]int // attempts concluded, by their new state
-	Checks        int            // checks interrupted, a tree's steps among them
+	Checks        int            // checks interrupted, a tree's steps and services among them
 	Prerequisites int            // prerequisites interrupted
 	Trees         int            // trees ended: interrupted before their end was recorded
 	Commands      int            // commands left uncertain
 	Interrupted   bool           // the run itself was running
+	// Services describes each service row of the run the recovery
+	// concluded (counted in Checks too): a process the owner started that
+	// may outlive it, reported and never signalled. The recovered event
+	// counts them alone (Services, Unconfirmed), and each has a
+	// service.ended event of its own, so no payload grows with the rows.
+	Services []RecoveredService `json:"-"`
+}
+
+// RecoveredService is a service a tree was running, or starting, when the
+// owner stopped, as its row says: its task, attempt and tree (worktree or
+// checkout; "" when its tree's row is not found), its id, and, once its
+// start was confirmed (its row running), its process: pid, group and start
+// time, which tell a later process with the same pid apart. One whose start
+// was not confirmed (its row still started) may be running and cannot be
+// named. Nothing of the row's argv, log or words: the row has them.
+type RecoveredService struct {
+	Task      string
+	N         int
+	Tree      string
+	ID        string
+	Pid       int
+	Group     int
+	StartedAt time.Time
+	Confirmed bool
+}
+
+// recoveredEvent is the recovered event's payload: what Recover concluded,
+// its services by count alone, those whose start was not confirmed among
+// them (Unconfirmed).
+type recoveredEvent struct {
+	Recovered
+	ServiceCount int `json:"Services"`
+	Unconfirmed  int
 }
 
 // treeLeftOpen is why a tree the recovery ends was not ended by the owner.
@@ -842,9 +875,13 @@ const treeLeftOpen = "the owner stopped before the tree was ended"
 // between its attempt's close and its end) is ended and interrupted, its
 // open step rows with it, each with a `tree.ended` event of its own;
 // nothing is run for it (its ports are nobody's now, its cleanup is not
-// run). Every payload Recover writes is bounded by its shape, never by
-// the rows. One `recovered` event per run touched says so. A second call
-// finds nothing open and writes nothing.
+// run). A service row started or running is interrupted as a check is and
+// described (Recovered.Services), with a `service.ended` event of its
+// own: a process this server started that outlived it is reported, never
+// signalled, a pid after a restart being nobody's to signal. Every payload
+// Recover writes is bounded by its shape, never by the rows. One
+// `recovered` event per run touched says so. A second call finds nothing
+// open and writes nothing.
 func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 	if ro, why := l.ReadOnly(); ro {
 		return nil, fmt.Errorf("%w: %s", ErrReadOnly, why)
@@ -879,12 +916,26 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 				n, _ := res.RowsAffected()
 				rec.Attempts[c.to] += int(n)
 			}
+			services, err := t.openServices()
+			if err != nil {
+				return err
+			}
+			rec.Services = services
 			res, err := t.tx.ExecContext(ctx, "UPDATE checks SET state = ?, finished_at = ? WHERE run_id = ? AND state IN (?, ?)", CheckInterrupted, now, run.ID, CheckStarted, CheckRunning)
 			if err != nil {
 				return err
 			}
 			n, _ := res.RowsAffected()
 			rec.Checks = int(n)
+			unconfirmed := 0
+			for _, sv := range rec.Services {
+				if !sv.Confirmed {
+					unconfirmed++
+				}
+				if err := t.Event("service.ended", serviceEnded(sv)); err != nil {
+					return err
+				}
+			}
 			res, err = t.tx.ExecContext(ctx, "UPDATE prerequisites SET state = ?, finished_at = ? WHERE run_id = ? AND state IN (?, ?)", CheckInterrupted, now, run.ID, CheckStarted, CheckRunning)
 			if err != nil {
 				return err
@@ -905,7 +956,7 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 					return err
 				}
 			}
-			return t.Event("recovered", rec)
+			return t.Event("recovered", recoveredEvent{Recovered: rec, ServiceCount: len(rec.Services), Unconfirmed: unconfirmed})
 		})
 		if err != nil {
 			return out, err
@@ -913,6 +964,65 @@ func (l *Ledger) Recover(ctx context.Context) ([]Recovered, error) {
 		out = append(out, rec)
 	}
 	return out, nil
+}
+
+// openServices is the service rows of the transaction's run still open
+// (started or running), each described with its tree: the tree of its
+// attempt whose directory holds the row's (a step runs in its tree's
+// working directory, the crew's directory in it).
+func (t *Tx) openServices() ([]RecoveredService, error) {
+	type treeDir struct {
+		task, kind, dir string
+		n               int
+	}
+	rows, err := t.tx.QueryContext(t.ctx, "SELECT task_id, n, kind, dir FROM trees WHERE run_id = ?", t.runID)
+	if err != nil {
+		return nil, err
+	}
+	var trees []treeDir
+	for rows.Next() {
+		var td treeDir
+		if err := rows.Scan(&td.task, &td.n, &td.kind, &td.dir); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		trees = append(trees, td)
+	}
+	if err := cmp.Or(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	rows, err = t.tx.QueryContext(t.ctx, "SELECT task_id, n, id, dir, state, pid, pgroup, process_started_at FROM checks WHERE run_id = ? AND phase = ? AND state IN (?, ?) ORDER BY task_id, n, id, k",
+		t.runID, PhaseService, CheckStarted, CheckRunning)
+	if err != nil {
+		return nil, err
+	}
+	var out []RecoveredService
+	for rows.Next() {
+		var sv RecoveredService
+		var dir, state, started string
+		if err := rows.Scan(&sv.Task, &sv.N, &sv.ID, &dir, &state, &sv.Pid, &sv.Group, &started); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		sv.StartedAt, sv.Confirmed = unstamp(started), state == CheckRunning
+		if !sv.Confirmed {
+			sv.Pid, sv.Group, sv.StartedAt = 0, 0, time.Time{}
+		}
+		for _, td := range trees {
+			if td.task == sv.Task && td.n == sv.N && (dir == td.dir || strings.HasPrefix(dir, td.dir+"/")) {
+				sv.Tree = td.kind
+			}
+		}
+		out = append(out, sv)
+	}
+	return out, cmp.Or(rows.Err(), rows.Close())
+}
+
+// serviceEnded is the service.ended event the recovery writes for a
+// service it concluded: a payload of a fixed shape, whatever the row.
+func serviceEnded(sv RecoveredService) map[string]any {
+	return map[string]any{"task": sv.Task, "attempt": sv.N, "tree": sv.Tree, "id": sv.ID, "pid": sv.Pid, "group": sv.Group, "startedAt": stamp(sv.StartedAt),
+		"confirmed": sv.Confirmed, "interrupted": true, "recovered": true}
 }
 
 // endTrees ends the trees of the transaction's run not ended yet, as the
