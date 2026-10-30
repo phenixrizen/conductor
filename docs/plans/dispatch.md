@@ -331,7 +331,9 @@ benchmark,
 `BenchmarkList`, over 10,000 tickets in three projects: the targets to
 measure in PR-4 and name in its body are a filtered, sorted page under
 20 ms and a full-text page under 50 ms on the Linux box; a target missed
-is tuned in that PR (an index, the statement), not waived.
+is tuned in that PR (an index, the statement), not waived, save a search
+of several very common words, whose cost the owner accepted (Owner
+decisions, 21).
 
 **Attachments** (`attachments.go`): `Add(ctx, op, ticket, name,
 contentType, r io.Reader) (Receipt, Attachment, error)` reads at most
@@ -1551,9 +1553,10 @@ else the entry says it is pending. Docs only; no check applies.
 
 ## Owner decisions
 
-Dated 2026-10-28, the twentieth 2026-10-29. Each is a default the owner
-can overturn with a dated row in the Program's status log, its
-convention for a decision changed; the reasoning is why it was taken.
+Dated 2026-10-28, the twentieth and twenty-first 2026-10-29. Each is a
+default the owner can overturn with a dated row in the Program's status
+log, its convention for a decision changed; the reasoning is why it was
+taken.
 
 1. **O10, the conflict rules.** Dispatch keeps an operation log
    (`changes`) beside its tables and classifies every field as immutable,
@@ -1691,6 +1694,23 @@ convention for a decision changed; the reasoning is why it was taken.
     measures the full-text pages against their target. It lands in
     PR-4, before that PR merges; version 1 of the schema is in no
     release yet, so it changes version 1.
+21. **A search of several very common words may pass the full-text
+    target, 2026-10-29, the owner's.** Under 20 a search builds each
+    term's set of tickets from every entry the term is in, and FTS5
+    alone reads a very common word's entries in 4.5 to 6.2 ms, so each
+    such word adds about 9 ms to a page. PR-4's second review measured
+    a page of 100 in BENA for the vocabulary's 3, 5 and 10 most common
+    words at 69, 96 and 151 ms, against 27 to 31 ms under the first
+    design, and no statement or index it measured brought them under
+    50 ms
+    ([PR #425, review finding 1](https://github.com/rocksolidlabs/conductor/pull/425#discussion_r4418998440)).
+    The owner accepted that cost: the 50 ms target holds for a search of
+    one common word, of rarer words and of a prefix of one or two
+    letters, and `BenchmarkList` reports the searches of several common
+    words without a target. Chosen over capping a search's terms, which
+    bounds only the longest search, and over keeping a ticket's comments
+    in its own entry up to a bound, a second way of indexing with its
+    switch-over.
 
 One question is left open, the shape of the week of use (Acceptance),
 which is the owner's; each answer above lets the plan stand, and the

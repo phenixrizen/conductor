@@ -168,8 +168,9 @@ func seedBench(tb testing.TB, s *Store, n int) []string {
 // The targets BenchmarkList measures against (docs/plans/dispatch.md,
 // "Queries"), on the Linux box: a filtered, sorted page and a full-text
 // page of 10,000 tickets in three projects. A target missed is tuned (an
-// index, the statement), not waived; the benchmark reports, and fails
-// nothing on a loaded machine's clock.
+// index, the statement), not waived, save a search of several very common
+// words, whose cost the owner accepted (Owner decisions, 21). The benchmark
+// reports, and fails nothing on a loaded machine's clock.
 const (
 	benchFilteredTarget = 20 * time.Millisecond
 	benchSearchTarget   = 50 * time.Millisecond
@@ -197,15 +198,15 @@ func mostBegun(words []string, n int) string {
 // "filtered" and "search" are the plan's two targets, at a list's default
 // page and at the list view's page of MaxListLimit. The searches of one
 // letter and of two are a search box's first keystrokes, and those of the
-// vocabulary's 3, 5 and 10 most common words a few words typed, each held
-// to the full-text target as the search of every project is: each term
-// reads every entry it matches (termMatch), so common words cost a search
-// the most. The others show the list's other common pages, a search of
-// one letter of every project among them: no page sends one, since a
-// search box searches its project and the CLI and a saved view of every
-// project send whole words. The last is the longest search a client may
-// send, MaxQueryText characters of the vocabulary's most common words, of
-// every project.
+// vocabulary's 3, 5 and 10 most common words a few words typed, reported
+// without the full-text target: each term reads every entry it matches
+// (termMatch), so every common word adds to a search's cost, which the
+// owner accepted (Owner decisions, 21). The others show the list's other
+// common pages, a search of one letter of every project among them: no page
+// sends one, since a search box searches its project and the CLI and a
+// saved view of every project send whole words. The last is the longest
+// search a client may send, MaxQueryText characters of the vocabulary's
+// most common words, of every project.
 func BenchmarkList(b *testing.B) {
 	s, err := Open(b.TempDir())
 	if err != nil {
@@ -249,9 +250,9 @@ func BenchmarkList(b *testing.B) {
 		{"search-200", Query{Project: "BENA", Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
 		{"search-one-letter-200", Query{Project: "BENA", Filter: Filter{Q: letter, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
 		{"search-two-letters-200", Query{Project: "BENA", Filter: Filter{Q: letters, Sort: SortUpdated, Desc: true}, Limit: MaxListLimit}, benchSearchTarget},
-		{"search-3-common-words", Query{Project: "BENA", Filter: Filter{Q: common(3), Sort: SortUpdated, Desc: true}}, benchSearchTarget},
-		{"search-5-common-words", Query{Project: "BENA", Filter: Filter{Q: common(5), Sort: SortUpdated, Desc: true}}, benchSearchTarget},
-		{"search-10-common-words", Query{Project: "BENA", Filter: Filter{Q: common(10), Sort: SortUpdated, Desc: true}}, benchSearchTarget},
+		{"search-3-common-words", Query{Project: "BENA", Filter: Filter{Q: common(3), Sort: SortUpdated, Desc: true}}, 0},
+		{"search-5-common-words", Query{Project: "BENA", Filter: Filter{Q: common(5), Sort: SortUpdated, Desc: true}}, 0},
+		{"search-10-common-words", Query{Project: "BENA", Filter: Filter{Q: common(10), Sort: SortUpdated, Desc: true}}, 0},
 		{"project", Query{Project: "BENA", Filter: Filter{Sort: SortUpdated, Desc: true}}, 0},
 		{"every-project-by-title", Query{Filter: Filter{Sort: SortTitle}, Limit: MaxListLimit}, 0},
 		{"search-every-project", Query{Filter: Filter{Q: search, Sort: SortUpdated, Desc: true}}, benchSearchTarget},
