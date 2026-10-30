@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,70 @@ func TestManagerReissuesWhenTheIdentifierChanges(t *testing.T) {
 	m.SetIdentifiers(nil)
 	if m.Ready() {
 		t.Fatal("still ready with no identifiers")
+	}
+}
+
+// An order for the old address that completes after the address changed is
+// never served for the new one (#443). It is kept for the old address, and
+// the new address's order follows at once, not at the old certificate's
+// renewal time. The old address's order is held at a gate while the address
+// changes, and the new address's while the test looks.
+func TestManagerDoesNotServeAnOrderForTheOldAddress(t *testing.T) {
+	m, fi, _ := newManagerForTest(t, Options{Identifiers: []string{"203.0.113.9"}}, 6*24*time.Hour)
+	holdOld, holdNew := make(chan struct{}), make(chan struct{})
+	fi.set(func() { fi.hold = holdOld })
+	runManager(t, m)
+	waitFor(t, "the old address's order", func() bool { return slices.Equal(fi.ordering(), []string{"203.0.113.9"}) })
+	fi.set(func() { fi.hold = holdNew })
+	m.SetIdentifiers([]string{"198.51.100.4"})
+	close(holdOld)
+	waitFor(t, "the new address's order", func() bool {
+		if c, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "198.51.100.4"}); err == nil {
+			t.Fatalf("a certificate for %v is served for the new address", c.Leaf.IPAddresses)
+		}
+		return slices.Equal(fi.ordering(), []string{"198.51.100.4"})
+	})
+	if st := m.Status(); st.Ready || !slices.Equal(st.Identifiers, []string{"198.51.100.4"}) || st.LastError != "" || !st.NextTry.IsZero() || fi.count() != 1 {
+		t.Fatalf("while the new address's order runs: status %+v issued=%d", st, fi.count())
+	}
+	close(holdNew)
+	waitFor(t, "the new address's certificate", m.Ready)
+	cur, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "198.51.100.4"})
+	if err != nil || len(cur.Leaf.IPAddresses) != 1 || cur.Leaf.IPAddresses[0].String() != "198.51.100.4" {
+		t.Fatalf("served for the new address: %v %v", err, cur)
+	}
+	// Back to the old address: the certificate its order brought was kept,
+	// and is served at once.
+	m.SetIdentifiers([]string{"203.0.113.9"})
+	cur, err = m.GetCertificate(&tls.ClientHelloInfo{ServerName: "203.0.113.9"})
+	if err != nil || len(cur.Leaf.IPAddresses) != 1 || cur.Leaf.IPAddresses[0].String() != "203.0.113.9" || fi.count() != 2 {
+		t.Fatalf("the old address's certificate was not kept: %v issued=%d", err, fi.count())
+	}
+}
+
+// A failed order for the old address that ends after the address changed
+// leaves the new address's failures, backoff and error alone (#443). The new
+// address's order follows at once, and its own first failure backs off by
+// the first step, an hour, not the second.
+func TestManagerDoesNotCountAFailedOrderForTheOldAddress(t *testing.T) {
+	m, fi, cl := newManagerForTest(t, Options{Identifiers: []string{"203.0.113.9"}, Backoff: time.Hour, BackoffMax: 4 * time.Hour}, 6*24*time.Hour)
+	holdOld, holdNew := make(chan struct{}), make(chan struct{})
+	fi.set(func() { fi.hold, fi.fail = holdOld, errFakeOrder })
+	runManager(t, m)
+	waitFor(t, "the old address's order", func() bool { return slices.Equal(fi.ordering(), []string{"203.0.113.9"}) })
+	fi.set(func() { fi.hold = holdNew })
+	m.SetIdentifiers([]string{"198.51.100.4"})
+	close(holdOld)
+	waitFor(t, "the new address's order", func() bool {
+		if st := m.Status(); st.LastError != "" || !st.NextTry.IsZero() {
+			t.Fatalf("the old address's failed order was counted against the new one: %+v", st)
+		}
+		return slices.Equal(fi.ordering(), []string{"198.51.100.4"})
+	})
+	close(holdNew)
+	waitFor(t, "the new address's own failure", func() bool { return m.Status().LastError != "" })
+	if st := m.Status(); st.Ready || !strings.Contains(st.LastError, "the CA said no") || !st.NextTry.Equal(cl.now().Add(time.Hour)) {
+		t.Fatalf("the new address's first failure: %+v", st)
 	}
 }
 

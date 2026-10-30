@@ -126,6 +126,14 @@ func (f *fakeIssuer) count() int {
 	return f.issued
 }
 
+// ordering is the identifiers of the order begun last; an order held at
+// the gate has begun.
+func (f *fakeIssuer) ordering() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastIDs
+}
+
 func (f *fakeIssuer) set(fn func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
