@@ -1,0 +1,458 @@
+import type { CloseRequirement, CloseState, DispatchChange, DispatchSort, Horizon, LabelColor, TicketStatus, TicketSummary, Tracker } from '~/composables/useDispatch'
+import type { Tone } from './tasks'
+
+// Dispatch's words (docs/plans/dispatch.md, "web/app"): the key parser; the vocabularies of a ticket's fields with their words, colours
+// and icons; a ticket's state in words; the close policy's words; the list's sorts; the board's and the roadmap's columns; the list's
+// keyboard model, a roving focus by key; a ticket's history in words. Pure: the pages read them, vitest proves them.
+
+// ---------------------------------------------------------------------------
+// Keys
+
+/** A project's key: one upper-case letter, then one to five upper-case letters or digits (CND), chosen at creation and never changed. */
+export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,5}$/
+
+/** Whether `key` is a project's key. */
+export function validProjectKey(key: string): boolean {
+  return PROJECT_KEY_PATTERN.test(key)
+}
+
+export interface TicketKeyParts {
+  /** The project's key: CND. */
+  project: string
+  /** The ticket's number in its project: 12. */
+  number: number
+  /** The key as the store writes it: CND-12. */
+  key: string
+}
+
+/**
+ * A ticket's key read as the store reads one (dispatch.ParseKey): its project's key, a dash and its number, digits without a leading zero,
+ * 1 or more, at most 18 of them; null for anything else, a key in lower case among it.
+ */
+export function parseTicketKey(s: string): TicketKeyParts | null {
+  const m = /^([A-Z][A-Z0-9]{1,5})-([1-9][0-9]{0,17})$/.exec(s)
+  if (!m) return null
+  return { project: m[1]!, number: Number(m[2]), key: s }
+}
+
+/** A project's page: /dispatch/CND. */
+export function projectPath(project: string): string {
+  return `/dispatch/${encodeURIComponent(project)}`
+}
+
+/** A ticket's page by its key: /dispatch/CND/12; '' for what is no ticket's key. */
+export function ticketPath(key: string): string {
+  const k = parseTicketKey(key)
+  return k ? `/dispatch/${k.project}/${k.key.slice(k.project.length + 1)}` : ''
+}
+
+// ---------------------------------------------------------------------------
+// The vocabularies
+
+/** A colour of Nuxt UI's palette (app.config.ts): status colours, never the brand's terracotta. */
+export type WordColor = 'primary' | 'success' | 'info' | 'warning' | 'error' | 'neutral'
+
+/** A value in words, with its icon and its colour. */
+export interface Word {
+  label: string
+  icon: string
+  color: WordColor
+}
+
+/** A ticket's statuses in a board's order (Owner decisions, 4). */
+export const TICKET_STATUSES: readonly TicketStatus[] = ['backlog', 'ready', 'in_progress', 'in_review', 'done', 'cancelled']
+
+/** As a run's task: in progress green as running, in review blue as checking, done the brand's colour, the waiting hollow, cancelled grey. */
+const STATUS_WORDS: Record<TicketStatus, Word> = {
+  backlog: { label: 'Backlog', icon: 'i-lucide-circle-dashed', color: 'neutral' },
+  ready: { label: 'Ready', icon: 'i-lucide-circle', color: 'neutral' },
+  in_progress: { label: 'In progress', icon: 'i-lucide-circle-play', color: 'success' },
+  in_review: { label: 'In review', icon: 'i-lucide-circle-dot', color: 'info' },
+  done: { label: 'Done', icon: 'i-lucide-circle-check', color: 'primary' },
+  cancelled: { label: 'Cancelled', icon: 'i-lucide-circle-x', color: 'neutral' },
+}
+
+/** A status in words; one the vocabulary lacks (a newer server's) as it is. */
+export function statusWord(status: string): Word {
+  return STATUS_WORDS[status as TicketStatus] ?? { label: status, icon: 'i-lucide-circle', color: 'neutral' }
+}
+
+export interface PriorityWord extends Word {
+  /** The priority's number, 0 (none) to 4 (urgent). */
+  value: number
+  /** Its name in a link's query: ?priority=high. */
+  name: 'none' | 'low' | 'medium' | 'high' | 'urgent'
+}
+
+/** A ticket's priorities by their number: none 0 to urgent 4. Urgent alone is coloured: a priority is no operational status. */
+export const PRIORITIES: readonly PriorityWord[] = [
+  { value: 0, name: 'none', label: 'No priority', icon: 'i-lucide-minus', color: 'neutral' },
+  { value: 1, name: 'low', label: 'Low', icon: 'i-lucide-signal-low', color: 'neutral' },
+  { value: 2, name: 'medium', label: 'Medium', icon: 'i-lucide-signal-medium', color: 'neutral' },
+  { value: 3, name: 'high', label: 'High', icon: 'i-lucide-signal-high', color: 'neutral' },
+  { value: 4, name: 'urgent', label: 'Urgent', icon: 'i-lucide-triangle-alert', color: 'error' },
+]
+
+/** A priority in words; one outside 0 to 4 as its number. */
+export function priorityWord(p: number): PriorityWord {
+  return PRIORITIES[p] ?? { value: p, name: 'none', label: `Priority ${p}`, icon: 'i-lucide-minus', color: 'neutral' }
+}
+
+export interface HorizonWord extends Word {
+  value: Horizon
+  /** Its name in a link's query: ?horizon=now, `none` for not planned. */
+  name: 'now' | 'next' | 'later' | 'none'
+}
+
+/** A ticket's horizons in the roadmap's order: Now, Next, Later, then Not planned. */
+export const HORIZONS: readonly HorizonWord[] = [
+  { value: 'now', name: 'now', label: 'Now', icon: 'i-lucide-zap', color: 'neutral' },
+  { value: 'next', name: 'next', label: 'Next', icon: 'i-lucide-arrow-right', color: 'neutral' },
+  { value: 'later', name: 'later', label: 'Later', icon: 'i-lucide-clock', color: 'neutral' },
+  { value: '', name: 'none', label: 'Not planned', icon: 'i-lucide-minus', color: 'neutral' },
+]
+
+/** A horizon in words; one the vocabulary lacks as it is. */
+export function horizonWord(h: string): HorizonWord {
+  return HORIZONS.find((x) => x.value === h) ?? { value: h as Horizon, name: 'none', label: h, icon: 'i-lucide-minus', color: 'neutral' }
+}
+
+/**
+ * A label's colour as a dot: each of the store's twelve names on one of the brand's scales at a shade (docs/design/brand.md; the store
+ * keeps a name, never a value a client chose), terracotta never among them, since it is the brand's artwork.
+ */
+export const LABEL_COLORS: Record<LabelColor, string> = {
+  gray: 'bg-zinc-400',
+  brown: 'bg-signal-800',
+  red: 'bg-brick-500',
+  orange: 'bg-signal-500',
+  amber: 'bg-signal-400',
+  yellow: 'bg-signal-200',
+  lime: 'bg-active-300',
+  green: 'bg-active-500',
+  teal: 'bg-forest-400',
+  cyan: 'bg-harbor-300',
+  blue: 'bg-harbor-500',
+  indigo: 'bg-harbor-700',
+}
+
+/** A label's dot; grey for a colour the vocabulary lacks. */
+export function labelDot(color: string): string {
+  return LABEL_COLORS[color as LabelColor] ?? LABEL_COLORS.gray
+}
+
+/** A project's tracker in words: Dispatch itself, or a pointer at another one. */
+export const TRACKERS: Record<Tracker, { label: string; icon: string }> = {
+  native: { label: 'Dispatch', icon: 'i-lucide-ticket' },
+  external: { label: 'External', icon: 'i-lucide-external-link' },
+}
+
+// ---------------------------------------------------------------------------
+// A ticket in words
+
+/** A ticket's state in words, as a run's task has its own: deleted, closed, blocked by an open ticket, or its status. */
+export function ticketWords(t: Pick<TicketSummary, 'status' | 'blocked'> & { deletedAt?: string }): { text: string; tone: Tone } {
+  if (t.deletedAt) return { text: 'Deleted', tone: 'muted' }
+  const status = statusWord(t.status).label
+  if (t.status === 'done') return { text: status, tone: 'success' }
+  if (t.status === 'cancelled') return { text: status, tone: 'muted' }
+  if (t.blocked) return { text: `${status} · blocked`, tone: 'warning' }
+  return { text: status, tone: 'default' }
+}
+
+/** An assignee's actor read: a person by name (person:Alice), or one of the catalog's agents by id (agent:claude). */
+export function assigneeOf(actor: string): { kind: 'person' | 'agent'; name: string } {
+  if (actor.startsWith('agent:')) return { kind: 'agent', name: actor.slice(6) }
+  return { kind: 'person', name: actor.startsWith('person:') ? actor.slice(7) : actor }
+}
+
+// ---------------------------------------------------------------------------
+// The close policy
+
+const REQUIREMENT_WORDS: Record<CloseRequirement, string> = {
+  acceptance: "the owner's acceptance",
+  delivery: 'a delivery link',
+}
+
+/** What a close policy requires, in words: "the owner's acceptance". */
+export function requirementWords(r: string): string {
+  return REQUIREMENT_WORDS[r as CloseRequirement] ?? r
+}
+
+/** "a", "a and b", "a, b and c". */
+function andList(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? ''
+  return `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
+}
+
+export interface ClosePolicyWords {
+  /** "To close: the owner's acceptance · a delivery link", or that nothing is required. */
+  summary: string
+  /** Each requirement with whether the ticket meets it. */
+  items: Array<{ requirement: CloseRequirement; words: string; met: boolean }>
+  /** Why an acceptance on record is unmet ("accepted for Alice; the owner is now Bob"), '' when none is. */
+  why: string
+}
+
+/** A ticket's close policy in words, from its read's `close`. */
+export function closePolicyWords(close: CloseState): ClosePolicyWords {
+  const items = close.requires.map((r) => ({ requirement: r, words: requirementWords(r), met: !!close.met[r] }))
+  return {
+    summary: items.length ? `To close: ${items.map((i) => i.words).join(' · ')}` : 'Closes with nothing required',
+    items,
+    why: close.why ?? '',
+  }
+}
+
+/** A move to Done the policy refused (409 close_policy), from the receipt's `missing`: "It needs the owner's acceptance to be done." */
+export function closeRefusalWords(missing: readonly string[]): string {
+  if (!missing.length) return 'The close policy refused it.'
+  return `It needs ${andList(missing.map(requirementWords))} to be done.`
+}
+
+// ---------------------------------------------------------------------------
+// The list's sorts
+
+export interface SortWord {
+  value: DispatchSort
+  label: string
+  /** The sort's own direction: the newest, the most urgent first; the rest in their order. */
+  desc: boolean
+}
+
+/** A list's sorts, as the store sorts (dispatch.Sorts), each with the direction it is read in unless turned. */
+export const LIST_SORTS: readonly SortWord[] = [
+  { value: 'updated', label: 'Updated', desc: true },
+  { value: 'created', label: 'Created', desc: true },
+  { value: 'priority', label: 'Priority', desc: true },
+  { value: 'status', label: 'Status', desc: false },
+  { value: 'title', label: 'Title', desc: false },
+  { value: 'key', label: 'Key', desc: false },
+  { value: 'milestone', label: 'Milestone', desc: false },
+]
+
+/** Whether `sort` is a list's sort. */
+export function isSort(sort: string): sort is DispatchSort {
+  return LIST_SORTS.some((s) => s.value === sort)
+}
+
+/** The direction a sort is read in unless turned: true for the newest or most urgent first. */
+export function sortDesc(sort: string): boolean {
+  return LIST_SORTS.find((s) => s.value === sort)?.desc ?? false
+}
+
+// ---------------------------------------------------------------------------
+// The board's and the roadmap's columns
+
+export interface BoardColumn<T> {
+  status: TicketStatus
+  word: Word
+  tickets: T[]
+}
+
+/** A board's columns: one per status in its order, each with its tickets in the list's order; a status the vocabulary lacks has none. */
+export function boardColumns<T extends { status: string }>(tickets: readonly T[]): BoardColumn<T>[] {
+  return TICKET_STATUSES.map((status) => ({ status, word: statusWord(status), tickets: tickets.filter((t) => t.status === status) }))
+}
+
+export interface RoadmapColumn<T> {
+  horizon: Horizon
+  word: HorizonWord
+  tickets: T[]
+  /** Not planned: drawn folded, its count alone, until opened. */
+  folded: boolean
+}
+
+/** A roadmap's columns: Now, Next and Later, then a folded Not planned, each with its tickets in the list's order. */
+export function roadmapColumns<T extends { horizon: string }>(tickets: readonly T[]): RoadmapColumn<T>[] {
+  return HORIZONS.map((word) => ({ horizon: word.value, word, tickets: tickets.filter((t) => (t.horizon ?? '') === word.value), folded: word.value === '' }))
+}
+
+// ---------------------------------------------------------------------------
+// The list's keyboard model (Owner decisions, 10): a roving focus by key over the rows in their order, as the palette's rows, and the
+// selection `x` toggles. Pure: the list holds the focus and the selection, and these say where they go.
+
+/** The key of the row `delta` steps from `focus`, wrapping at the ends; from no row (or one gone), the first down or the last up; null when there are none. */
+export function listFocusStep(keys: readonly string[], focus: string | null, delta: 1 | -1): string | null {
+  if (!keys.length) return null
+  const i = focus === null ? -1 : keys.indexOf(focus)
+  if (i < 0) return delta === 1 ? keys[0]! : keys[keys.length - 1]!
+  return keys[(i + delta + keys.length) % keys.length]!
+}
+
+/** The selection with `key` toggled: added when it was not there, taken out when it was; unchanged for no row. */
+export function listToggle(selected: ReadonlySet<string>, key: string | null): Set<string> {
+  const out = new Set(selected)
+  if (key === null) return out
+  if (out.has(key)) out.delete(key)
+  else out.add(key)
+  return out
+}
+
+/**
+ * Where the focus goes when the rows change (a re-read, a filter): it stays on its row while the row is there; a row gone hands it on to
+ * the first row after it that is still there, else the last one before it, else nowhere.
+ */
+export function listRefocus(before: readonly string[], after: readonly string[], focus: string | null): string | null {
+  if (focus === null) return null
+  if (after.includes(focus)) return focus
+  const there = new Set(after)
+  const i = before.indexOf(focus)
+  if (i < 0) return null
+  for (let j = i + 1; j < before.length; j++) if (there.has(before[j]!)) return before[j]!
+  for (let j = i - 1; j >= 0; j--) if (there.has(before[j]!)) return before[j]!
+  return null
+}
+
+/** The selection kept to the rows still there. */
+export function listKeepSelected(selected: ReadonlySet<string>, after: readonly string[]): Set<string> {
+  const there = new Set(after)
+  return new Set([...selected].filter((k) => there.has(k)))
+}
+
+// ---------------------------------------------------------------------------
+// A ticket's history in words, as the store recorded it, field by field (GET …/history).
+
+/** What a change names by id, in words: its project's labels and milestones, the catalog's agents, tickets by their keys. */
+export interface ChangeNames {
+  labels?: ReadonlyMap<string, string>
+  milestones?: ReadonlyMap<string, string>
+  agents?: ReadonlyMap<string, string>
+  tickets?: ReadonlyMap<string, string>
+}
+
+/** An assignee's actor in words: the person's name, or the agent's name from the catalog (its id when the catalog lacks it). */
+function actorWords(actor: string, names: ChangeNames): string {
+  const a = assigneeOf(actor)
+  return a.kind === 'agent' ? (names.agents?.get(a.name) ?? a.name) : a.name
+}
+
+/** What a set's member names in a change row's value: an id inside its JSON (a relation, a link, an attachment). */
+function memberJSON(value: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(value) as unknown
+    return v !== null && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** A text field's change: written, edited or cleared. */
+function textChange(what: string, c: DispatchChange): string {
+  if (!c.value) return `cleared ${what}`
+  return c.prior ? `edited ${what}` : `wrote ${what}`
+}
+
+/** One change of a ticket's own fields or sets, in words: "set the priority to High", "assigned Alice". */
+function ticketChange(c: DispatchChange, names: ChangeNames): string {
+  if (c.op === 'create') return 'made the ticket'
+  if (c.op === 'add' || c.op === 'remove') {
+    const adds = c.op === 'add'
+    switch (c.field) {
+      case 'assignees':
+        return `${adds ? 'assigned' : 'unassigned'} ${actorWords(c.value, names)}`
+      case 'labels':
+        return `${adds ? 'added' : 'removed'} the label ${names.labels?.get(c.value) ?? 'a label since deleted'}`
+      case 'relations': {
+        const kind = memberJSON(c.value).kind
+        return `${adds ? 'added' : 'removed'} ${kind === 'blocks' ? 'a blocking relation' : 'a relation'}`
+      }
+      case 'links': {
+        const kind = memberJSON(c.value).kind
+        return `${adds ? 'added' : 'removed'} ${typeof kind === 'string' ? `a ${kind} link` : 'a link'}`
+      }
+      case 'attachments': {
+        const name = memberJSON(c.value).name
+        return adds ? `attached ${typeof name === 'string' ? name : 'a file'}` : 'removed an attachment'
+      }
+    }
+    return `${adds ? 'added to' : 'removed from'} ${c.field ?? 'a set'}`
+  }
+  const v = c.value
+  switch (c.field) {
+    case 'title':
+      return `set the title to "${v}"`
+    case 'description':
+      return textChange('the description', c)
+    case 'acceptance':
+      return textChange('the acceptance criteria', c)
+    case 'status':
+      return c.prior ? `moved it from ${statusWord(c.prior).label} to ${statusWord(v).label}` : `set the status to ${statusWord(v).label}`
+    case 'priority':
+      return `set the priority to ${priorityWord(Number(v)).label}`
+    case 'horizon':
+      return `set the horizon to ${horizonWord(v).label}`
+    case 'owner':
+      return v ? `made ${v} the owner` : 'cleared the owner'
+    case 'parent_id':
+      return v ? `set the parent to ${names.tickets?.get(v) ?? 'a ticket'}` : 'cleared the parent'
+    case 'milestone_id':
+      return v ? `set the milestone to ${names.milestones?.get(v) ?? 'a milestone since deleted'}` : 'cleared the milestone'
+    case 'closed_at':
+      // It follows the status, whose row says so.
+      return ''
+    case 'deleted_at':
+      return v ? 'deleted it' : 'restored it'
+    case 'accepted_for':
+      return v ? `accepted it for ${v}` : ''
+    case 'accepted_at':
+      return v ? '' : 'took the acceptance back'
+    case 'accepted_by':
+    case 'accepted_criteria':
+      // The acceptance's own record: accepted_for's row and accepted_at's say it.
+      return ''
+    case 'accepted_note':
+      return v ? `noted "${v}"` : ''
+  }
+  return v ? `set ${c.field ?? 'a field'} to "${v}"` : `cleared ${c.field ?? 'a field'}`
+}
+
+/**
+ * One change of a ticket's history in words, its own or one of its comments'; a repair a merge made says so. '' for a row that says
+ * nothing its operation's other rows do not (a comment's body as it is added, the time an edit or a close was made).
+ */
+export function changeWords(c: DispatchChange, names: ChangeNames = {}): string {
+  const words = c.entity === 'comment' ? commentChange(c) : ticketChange(c, names)
+  if (!words) return ''
+  return c.op === 'reconcile' ? `${words} (a merge's repair)` : c.op === 'migrate' ? `${words} (an upgrade's)` : words
+}
+
+/** One change of a comment in words: its add (the create row; the body's row beside it says nothing more), its edit, its delete. */
+function commentChange(c: DispatchChange): string {
+  if (c.op === 'create') return 'commented'
+  if (c.field === 'deleted_at') return c.value ? 'deleted a comment' : 'restored a comment'
+  if (c.field === 'body') return c.prior ? 'edited a comment' : ''
+  return ''
+}
+
+/** One operation of a ticket's history: who made it, when, and its changes in words, in the order it made them. */
+export interface HistoryEntry {
+  /** Its operation's identity: (actor, opId). */
+  key: string
+  /** The display name it recorded, else its actor. */
+  who: string
+  at: string
+  lines: string[]
+  /** Its last change's seq. */
+  seq: number
+}
+
+/**
+ * A ticket's history as entries, one per operation: an operation's changes are consecutive in the log, so a run of rows of one (actor,
+ * opId) is one entry, oldest first.
+ */
+export function historyEntries(changes: readonly DispatchChange[], names: ChangeNames = {}): HistoryEntry[] {
+  const out: HistoryEntry[] = []
+  for (const c of changes) {
+    const key = `${c.actor}\n${c.opId}`
+    const words = changeWords(c, names)
+    let last = out.at(-1)
+    if (!last || last.key !== key) {
+      last = { key, who: c.by || c.actor, at: c.at, lines: [], seq: c.seq }
+      out.push(last)
+    }
+    if (words) last.lines.push(words)
+    last.seq = c.seq
+  }
+  return out.filter((e) => e.lines.length)
+}
