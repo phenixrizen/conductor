@@ -1734,7 +1734,9 @@ Every `/api/...` route, with the credential it needs. Admin means
 table says so. JSON request bodies are limited to 64 KiB (2 MiB on the crew
 routes, 128 KiB when adding a member to a run, 192 KiB on a Dispatch
 ticket's create and edit, where a body past its bound is `413 bound`) and
-unknown fields are rejected. Errors are
+unknown fields are rejected; a Dispatch attachment's upload is
+`multipart/form-data` of at most 16 MiB of file and 64 KiB beside it.
+Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
 WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
 above. A run link's token is a share token on the session of every member of
@@ -1807,6 +1809,9 @@ its run, and on no other.
 | `POST /api/dispatch/tickets/{key}/comments`, `…/comments/{id}/edit`, `…/comments/{id}/delete` | admin | a live ticket's discussion: comment on it (`comment.add`: `{opId, expectedRev?, byName?, body}`, Markdown of 1 to 16 KiB, its author the admin, kept as the actor `admin` with `by` the display name; `expectedRev` the ticket's; at most 2,000 on a ticket, tombstones among them), replace a live comment's body (`comment.edit`: `{opId, expectedRev?, byName?, body}`, the body it replaces kept in the history; `expectedRev` the comment's), or delete one (`comment.delete`: `{opId, expectedRev?, byName?}`): a tombstone that keeps its place, so no number moves; reply `{receipt, comment}`, the comment with its number `n`, `201` for an add; `404 not_found` for a ticket missing or deleted, or a comment missing, deleted or another ticket's; `409 invalid` for an edit to the body the comment holds |
 | `POST /api/dispatch/tickets/{key}/relations`, `…/relations/{id}/delete` | admin | relate a live ticket to another of its project (`relation.add`: `{opId, expectedRev?, byName?, kind, to}`, `kind` `blocks` (the ticket blocks `to`; "depends on" is a `blocks` read from the other end) or `relates`, `to` the other's key; at most 100 on either), or remove a live relation at either of its ends (`relation.remove`: `{opId, expectedRev?, byName?}`); both tickets' `rev` bumped, `expectedRev` that of the ticket the route names; reply `{receipt, ticket}`, that ticket in full, `201` for an add, the receipt's `id` the relation's; `409 cycle` for a `blocks` that would close a cycle, a ticket blocking itself among them; `409 invalid` for a `to` of another project, a relation held already (a `relates` either way) or a kind that is neither; `404 not_found` for either ticket missing or deleted, or a relation missing, removed or not the ticket's |
 | `POST /api/dispatch/tickets/{key}/links`, `…/links/{id}/delete` | admin | link a live ticket outward (`link.add`: `{opId, expectedRev?, byName?, kind, ref?, url?, note?}`), or remove a live link (`link.remove`: `{opId, expectedRev?, byName?}`): a `delivery` link (a merged pull request's or a release's URL; a merge is such a link, its merged state never read) and an `external` one name their `url` (`http` or `https`, at most 2 KiB) and take it as their `ref` when they name none; a `run` link names its run as `ref`, one the engine holds or has a record of (`404 not_found` otherwise) and that no other live ticket's live `run` link names (`409 run_linked`, the receipt's `key` naming that ticket), so a run belongs to one ticket; `note` at most 1,000 characters; a second live link of the same `kind` and `ref` is `409 invalid`, and one added again after its removal is a new link; at most 50 live; the ticket's `rev` bumped; reply `{receipt, ticket}`, `201` for an add, the receipt's `id` the link's; `404 not_found` for a ticket missing or deleted, or a link missing, removed or another ticket's |
+| `POST /api/dispatch/tickets/{key}/attachments` | admin | attach a file to a live ticket (`attachment.add`): a `multipart/form-data` body whose parts are `opId`, then `expectedRev` and `byName` when given, each once, and last `file`, its filename the attachment's name (1 to 255 bytes, no `/`, `\` or control character, neither `.` nor `..`) and its `Content-Type` the attachment's type as given (at most 100 bytes); at most 16 MiB of file and 64 KiB beside it, a body past that `413 bound` whatever it holds, and every body read to its end before the answer; at most 50 live attachments on a ticket; `expectedRev` the ticket's; reply `201 {receipt, attachment}`, the attachment `{id, ticketId, name, size, sha256, contentType, createdAt, createdBy}` and the receipt's `id` its; `409 expired` when the upload's lease was swept before its row was written (see Attachments below), the file sent again under a new `opId`; `409 bound` for a file past 16 MiB, a 51st attachment or a type past its bound; `409 invalid` for a name that is no file's; `404 not_found` for a ticket missing or deleted; `400 invalid_request` for a body that is not those parts in that order; `500 store_failed` when the file could not be written or made durable |
+| `POST /api/dispatch/tickets/{key}/attachments/{id}/delete` | admin | remove a live attachment (`attachment.remove`): `{opId, expectedRev?, byName?}`, `expectedRev` the ticket's; a tombstone, its file kept until no live attachment names its content and the store's sweep at a start deletes it; reply `{receipt, attachment}`, the attachment with `deletedAt`; `404 not_found` for a ticket missing or deleted, or an attachment missing, removed or another ticket's |
+| `GET /api/dispatch/attachments/{id}` | admin | a live attachment's content, of a ticket deleted or not, byte for byte: `Content-Disposition: attachment; filename*=UTF-8''…` (its name, percent-encoded), `X-Content-Type-Options: nosniff`, `Content-Length`, and `Content-Type` its type when it is `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `text/plain`, `application/pdf` or `application/json`, else `application/octet-stream` (an SVG is served as a download, never inline, since it can script); a `Range` is served as one; `404 not_found` for an attachment missing or removed; `400 invalid_request` for an id that is not one and for any parameter |
 | `GET /api/dispatch/links?run={id}` | admin | the ticket a run is linked to, for the run page's chip: `{ticket: {id, key, title, status, deletedAt?}}`, the live ticket whose live `run` link names the run (one at most); else, when only deleted tickets' links name it, the one whose link is latest, with `deletedAt`; `{ticket: null}` when no live link names the run; `400 invalid_request` for a run id that is not one |
 | `GET /api/dispatch/views` | admin | the live saved views, by name: `{views}`, each `{id, projectId, name, kind, query, createdAt, updatedAt, rev}`, `projectId` `""` for a view of every project and `query` the JSON it is; with `project` (a project's key), the views its pages offer, its own and every project's, else every live view; at most 200, under 3 MiB as a project's read is; `404 not_found` for a project missing |
 | `POST /api/dispatch/views`, `…/views/{id}/edit`, `…/views/{id}/delete` | admin | save a view (`view.create`: `{opId, byName?, project?, name, kind, query}`, of the project with the key or, without one, of every project; `name` 1 to 60 characters, `kind` `list`, `board` or `roadmap`, `query` a JSON object, never a string of one, of a list's filter and sort as the tickets' list takes them (`status`, `priority`, `labels`, `owner`, `assignees`, `milestone`, `horizon`, `parent`, `blocked`, `q`, `deleted`, `sort`, `desc`) and its grouping (`group`: `status`, `priority`, `horizon`, `milestone` or `owner`), each value in its vocabulary, at most 8 KiB as kept, compacted; at most 200 live), set the fields given of a live one (`view.edit`: `{opId, expectedRev?, byName?, name?, kind?, query?}`, its project never changing), or delete one (`view.delete`: `{opId, expectedRev?, byName?}`, a tombstone); reply `{receipt, view}`, `201` for a create; `404 not_found` for a project missing, or a view missing or deleted; `409 invalid` for a query that is not a list's; `409 archived` for a view of an archived project |
@@ -2548,7 +2553,8 @@ retry and the task routes come with the next rows.
 Dispatch is Conductor's own work tracking (`docs/plans/dispatch.md`):
 projects, tickets with stable keys (`CND-12`), their discussion and their
 history, in one SQLite database the server keeps, `dispatch/dispatch.sqlite`
-in the data directory, which the file routes never reach. It is not the
+in the data directory, and its attachments' files beside it in
+`dispatch/attachments/`, which the file routes never reach. It is not the
 engine's scheduling of a managed run's attempts (Managed runs): it starts
 nothing, and a ticket links to a run the engine made. Every Dispatch route
 is the admin's, a share link's viewers seeing no ticket, and a switchyard's
@@ -2602,13 +2608,29 @@ that is not one, an `expectedRev` below 0, a display name that is not one,
 a path's key that is not a project's or a ticket's, a path's id that is
 not a row's, 16 lower-case hex characters) is `400 invalid_request` and
 keeps no receipt; a body past its route's bound, 64
-KiB but 192 KiB on a ticket's create and edit, is `413 bound`; a field past
-its own bound once decoded is the store's `409 bound`. The newest 20,000
+KiB but 192 KiB on a ticket's create and edit and 16 MiB and 64 KiB on an
+attachment's upload, is `413 bound`; a field past its own bound once
+decoded, a file past 16 MiB among them, is the store's `409 bound`. The newest 20,000
 receipts are kept: an operation that ran whose receipt was pruned is still
 answered `{repeat: true, status: done}`, from the log, whatever its
 content, and a refused one runs again. `GET /api/dispatch/ops/{opId}` reads
 a receipt without acting, so a client that lost a reply reads it before it
 sends again.
+
+**Attachments.** A ticket's files are kept beside the database, each
+once per content, named by its SHA-256 (`dispatch/attachments/<the
+hash's first two characters>/<the hash>`): two attachments of one content
+share a file. An upload writes its file and holds its hash with a lease
+before the file is published under it, and the attachment's row is
+written, the lease dropped with it, only once the file's name is on the
+disk. A removal is a tombstone and deletes no file; the store's sweep,
+when the server starts, deletes the files no live attachment and no lease
+names, and drops a lease an hour old, a crashed upload's. An upload
+suspended for that long between its file and its row (the server stopped,
+the machine asleep) finds its lease dropped and is refused `409 expired`,
+a failed receipt kept, rather than name a file the sweep may have
+deleted: the client sends the file again under a new `opId`. A download is
+served from the file the row names, never from a path a client gave.
 
 **The `dispatch` event.** After each commit the server sends one
 `dispatch` event per entity the commit changed on `GET /api/events`, the
