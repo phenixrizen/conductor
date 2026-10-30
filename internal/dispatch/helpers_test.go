@@ -64,6 +64,29 @@ func newTicket(t *testing.T, s *Store, project, title string) (id, key string) {
 	return makeTicket(t, s, NewTicket{Project: project, Title: title})
 }
 
+// commitLog records what OnChange hands a listener: one entry per call,
+// the changes of one commit.
+type commitLog [][]Change
+
+// listen registers a commitLog with s and returns it.
+func listen(s *Store) *commitLog {
+	l := &commitLog{}
+	s.OnChange(func(cs []Change) { *l = append(*l, cs) })
+	return l
+}
+
+// one is the changes of the log's one call, failing t unless OnChange was
+// called once since the log was last emptied, and empties it.
+func (l *commitLog) one(t *testing.T) []Change {
+	t.Helper()
+	calls := *l
+	*l = nil
+	if len(calls) != 1 {
+		t.Fatalf("OnChange called %d times, not once: %+v", len(calls), calls)
+	}
+	return calls[0]
+}
+
 // makeTicket makes a ticket through ticket.create, and returns its id and
 // key.
 func makeTicket(t *testing.T, s *Store, n NewTicket) (id, key string) {

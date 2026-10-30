@@ -72,8 +72,7 @@ func TestANameATicketGivesIsAddedToTheDirectory(t *testing.T) {
 	newProject(t, s, "CND")
 	rc, err := s.AddPerson(ctx, testOp("p1"), "Bob")
 	want(t, rc, err, StatusDone, "")
-	var got []Change
-	s.OnChange(func(c Change) { got = append(got, c) })
+	calls := listen(s)
 	rc, err = s.CreateTicket(ctx, testOp("c1"), NewTicket{Project: "CND", Title: "Named", Owner: "Alice", Assignees: []string{"person:Bob", "person:Carol", "agent:claude"}})
 	want(t, rc, err, StatusDone, "")
 	key, tid := rc.Key, rc.ID
@@ -113,8 +112,9 @@ func TestANameATicketGivesIsAddedToTheDirectory(t *testing.T) {
 	if strings.Join(people, ",") != "Alice,Carol" {
 		t.Fatalf("the people added: %v", people)
 	}
-	// OnChange: the ticket, then each person added, its id the name.
-	if len(got) != 3 || got[0].Entity != EntityTicket || got[0].ID != tid || got[1] != (Change{Seq: got[0].Seq, Entity: EntityPerson, ID: "Alice"}) ||
+	// OnChange, called once: the ticket, then each person added, its id
+	// the name.
+	if got := calls.one(t); len(got) != 3 || got[0].Entity != EntityTicket || got[0].ID != tid || got[1] != (Change{Seq: got[0].Seq, Entity: EntityPerson, ID: "Alice"}) ||
 		got[2] != (Change{Seq: got[0].Seq, Entity: EntityPerson, ID: "Carol"}) {
 		t.Fatalf("OnChange: %+v", got)
 	}

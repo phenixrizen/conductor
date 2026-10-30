@@ -354,8 +354,9 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
 		// Dispatch's store, beside the ledger; a switchyard keeps no
-		// tickets. Its changes reach the pages as dispatch events, and a
-		// run link names a run the engine holds or has a record of.
+		// tickets. Its changes reach the pages as dispatch events, a
+		// commit's together (OnChange hands the hub a commit at a time),
+		// and a run link names a run the engine holds or has a record of.
 		if !cfg.Switchyard.Enabled {
 			s.dispatch = openDispatch(st, log)
 		}
@@ -573,8 +574,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
 	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.launching(s.handleRevokeRunLink))
-	// Dispatch, the work tracking: the projects, the people, the tickets,
-	// a run's ticket and the receipts (dispatch.go), the admin's alone.
+	// Dispatch, the work tracking: the projects with their labels and
+	// milestones, the people, the tickets with their comments, relations
+	// and links, the saved views, a run's ticket and the receipts
+	// (dispatch.go), the admin's alone.
 	s.routeDispatch(mux)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))

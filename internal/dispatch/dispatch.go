@@ -79,7 +79,7 @@ type Store struct {
 
 	// lmu guards listeners, what OnChange registered.
 	lmu       sync.Mutex
-	listeners []func(Change)
+	listeners []func([]Change)
 
 	// pruned counts the receipts prune dropped, at open and by the
 	// pruning goroutine: what a test of the goroutine watches.
@@ -123,13 +123,14 @@ var (
 	ErrNotFound = errors.New("dispatch: not found")
 )
 
-// Change says what a commit changed: one per entity the commit changed,
-// with the commit's last seq (the changes log's), the entity, its id (a
-// person's is its name), and the ticket (its id) and the project (its
-// key) the entity belongs to, "" where there is none. A relation counts
-// for both its tickets, a label's delete for the label and every ticket
-// it left. The API turns it into the dispatch event; CS1's continuity
-// store hooks it too.
+// Change is one entity a commit changed: the commit's last seq (the
+// changes log's), the entity, its id (a person's is its name), and the
+// ticket (its id) and the project (its key) the entity belongs to, ""
+// where there is none. A commit has one per entity it changed, and
+// OnChange hands them over together: a relation counts for both its
+// tickets, a label's delete for the label and every ticket it left. The
+// API turns them into the dispatch events; CS1's continuity store hooks
+// them too.
 type Change struct {
 	Seq     int64
 	Entity  string
@@ -524,23 +525,26 @@ func (s *Store) Close() error {
 	return errors.Join(errs...)
 }
 
-// OnChange registers fn, called after every commit, once per entity the
-// commit changed, on the committing goroutine and outside the store's
-// lock: it must not block on the store's writers.
-func (s *Store) OnChange(fn func(Change)) {
+// OnChange registers fn, called once after every commit with what the
+// commit changed: one Change per entity, in the order the operation
+// named them, its subject first, however many there are (a label's
+// delete names every ticket it left). It is called on the committing
+// goroutine and outside the store's lock: it must not block on the
+// store's writers. Each listener is handed a copy of its own, which it
+// may keep or change.
+func (s *Store) OnChange(fn func([]Change)) {
 	s.lmu.Lock()
 	defer s.lmu.Unlock()
 	s.listeners = append(s.listeners, fn)
 }
 
-// notify tells the listeners what a commit changed.
+// notify tells the listeners what a commit changed: each, in the order
+// they registered, all of it in one call and in a copy of its own.
 func (s *Store) notify(changes []Change) {
 	s.lmu.Lock()
 	fns := slices.Clone(s.listeners)
 	s.lmu.Unlock()
-	for _, c := range changes {
-		for _, fn := range fns {
-			fn(c)
-		}
+	for _, fn := range fns {
+		fn(slices.Clone(changes))
 	}
 }
