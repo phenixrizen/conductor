@@ -264,8 +264,9 @@ func (l *Ledger) attach(ctx context.Context, path string) error {
 			return nil
 		}
 		// The owner, but the database will not open for writing (a
-		// damaged header, or a file the server may not write): kept as it
-		// is, read when it can be, never written.
+		// damaged header, or a file in a rollback journal's mode that the
+		// server may not write): kept as it is, read when it can be, never
+		// written.
 		l.readOnly, l.why = true, err.Error()
 		if db, err = l.open(ctx, path, true); err != nil {
 			l.why += "; nor read: " + err.Error()
@@ -514,9 +515,9 @@ func isNoTable(err error) bool {
 
 // ReadOnly reports whether the ledger takes no writes, and why: another
 // server holds the owner lock (waited for, for a while after Open), locks
-// are not supported where the data directory is, the database file is one
-// the server may not write, the database failed its check, or a newer
-// Conductor wrote it.
+// are not supported where the data directory is, the database file is in
+// a rollback journal's mode and the server may not write it, the database
+// failed its check, or a newer Conductor wrote it.
 func (l *Ledger) ReadOnly() (bool, string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
