@@ -736,24 +736,52 @@ func (e *Engine) prepareTree(ctx context.Context, r *run, a *attempt, t *tree) (
 }
 
 // deadService is the first of t's services that exited on its own before
-// the tree was ready, nil for none.
+// the tree was ready, nil for none (exited).
 func (e *Engine) deadService(t *tree) *treeService {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return t.dead
+	return t.exited()
 }
 
+// exited is the first of t's services that ended on its own before the
+// tree was ready: the one its watcher recorded (t.dead), else one whose
+// process has ended (Done) while nothing is ending it and its end is not
+// recorded, its watcher not there yet, so the tree is never recorded
+// ready over a service gone, whichever comes first, its watcher or the
+// phase. The caller holds e.mu.
+func (t *tree) exited() *treeService {
+	if t.dead != nil {
+		return t.dead
+	}
+	for _, ts := range t.services {
+		if ts.stopping != "" || ts.ended {
+			continue
+		}
+		select {
+		case <-ts.svc.Done():
+			return ts
+		default:
+		}
+	}
+	return nil
+}
+
+// foregroundRule is what a service that exits 0 is told, whenever it
+// does: a service is a foreground process, and one that exits 0 is most
+// often a daemonizer, whose daemon, outside its group, the tree neither
+// stops nor reports.
+const foregroundRule = "a service must stay in the foreground"
+
 // beforeReadyWords says why a service that exited before its tree was
-// ready fails the tree: a service is a foreground process, and one that
-// exits 0 at once is most often a daemon that put itself outside its group,
-// which the tree neither stops nor reports.
+// ready fails the tree; one that exited 0 is told the rule
+// (foregroundRule).
 func beforeReadyWords(ts *treeService) string {
 	res := ts.svc.Result()
 	switch {
 	case res.Signal != "":
 		return fmt.Sprintf("%s was ended by a signal (%s) before the tree was ready", ts.ch.ID, res.Signal)
 	case res.Exit == 0:
-		return fmt.Sprintf("%s exited 0 before the tree was ready: a service must stay in the foreground", ts.ch.ID)
+		return fmt.Sprintf("%s exited 0 before the tree was ready: %s", ts.ch.ID, foregroundRule)
 	case res.Exit > 0:
 		return fmt.Sprintf("%s exited %d before the tree was ready%s", ts.ch.ID, res.Exit, tailWords(lastOutput(res, checkTail)))
 	}
@@ -878,10 +906,16 @@ func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, 
 // t.died). After it, the tree no longer answers whole: in a worktree the
 // attempt's preview is withdrawn in the same transaction, and the run log
 // says so; the attempt's state is untouched (its session goes on, and the
-// tree's end stops the rest when the attempt closes).
+// tree's end stops the rest when the attempt closes). One that exited 0 is
+// told the foreground rule either way, in its row, its service.ended and
+// the run log's line: with no ready probe to wait on, a daemonizer's exit
+// comes once the tree is in use.
 func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 	defer close(ts.watched)
 	<-ts.svc.Done()
+	if e.beforeServiceEnd != nil {
+		e.beforeServiceEnd(ts.ch.ID)
+	}
 	res := ts.svc.Result()
 	err := e.transact(context.Background(), r, func() tx {
 		if ts.stopping != "" || ts.ended {
@@ -909,6 +943,11 @@ func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 			}
 		default:
 			words, why = fmt.Sprintf("%s %s while the tree was in use%s", ts.ch.ID, serviceExit(res), tailWords(lastOutput(res, checkTail))), "it exited while the tree was in use"
+			rule := ""
+			if res.Exit == 0 {
+				rule = ": " + foregroundRule
+				words, why = ts.ch.ID+" exited 0 while the tree was in use"+rule, "it exited 0 while the tree was in use"+rule
+			}
 			whose := ""
 			if t.kind == ledger.TreeCheckout {
 				whose = "the checkout's "
@@ -917,7 +956,7 @@ func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
 			if t.kind == ledger.TreeWorktree && a.preview != "" {
 				a.preview, withdrawn = "", "; the preview is withdrawn"
 			}
-			r.note(session.ActivityError, "task %s: attempt %d: %sservice %s %s while the tree was in use%s", a.t.def.ID, a.n, whose, ts.ch.ID, serviceExit(res), withdrawn)
+			r.note(session.ActivityError, "task %s: attempt %d: %sservice %s %s while the tree was in use%s%s", a.t.def.ID, a.n, whose, ts.ch.ID, serviceExit(res), rule, withdrawn)
 		}
 		fin := ts.finished(res, words)
 		out := ev("service.ended", serviceEndedPayload(a, t, ts, res, why))
@@ -967,9 +1006,55 @@ func probeInterval(p Probe) time.Duration {
 	return defaultProbeInterval * time.Second
 }
 
-// maxProbeLog bounds what a probe over HTTP logs of its tries: a line each
-// while they fit, then the last.
+// maxProbeLog bounds what a probe over HTTP logs of its tries (probeLog).
 const maxProbeLog = 32 << 10
+
+// probeLogEnd is the room a probe's log keeps for its end: the line that
+// counts the tries left out and the last try's line, at most a try's words
+// (session.CleanMessage's bound) and its number.
+const probeLogEnd = 1 << 10
+
+// probeLog is the log of a probe's tries over HTTP, a line each, held to
+// limit bytes: the first tries' lines while they fit in limit less
+// probeLogEnd, then the last try's line alone, after a line counting the
+// tries left out between; so the try that passed, or the last one before
+// the probe's end, is always in its log.
+type probeLog struct {
+	limit   int
+	head    bytes.Buffer
+	last    string
+	skipped int
+}
+
+// add logs a try's line.
+func (l *probeLog) add(line string) {
+	if l.last == "" && l.head.Len()+len(line) <= l.limit-probeLogEnd {
+		l.head.WriteString(line)
+		return
+	}
+	if l.last != "" {
+		l.skipped++
+	}
+	l.last = line
+}
+
+// bytes is the log as kept: the first lines, the count of those left out,
+// the last line, at most limit bytes.
+func (l *probeLog) bytes() []byte {
+	out := bytes.Clone(l.head.Bytes())
+	if l.skipped > 0 {
+		out = fmt.Appendf(out, "… %s not logged …\n", tryCount(l.skipped))
+	}
+	last := l.last
+	if room := l.limit - len(out); len(last) > room {
+		last = last[:max(room, 0)]
+	}
+	return append(out, last...)
+}
+
+// errServiceExited is why a probe's try was cut: a service of its tree
+// exited (t.died).
+var errServiceExited = errors.New("a service of the tree exited")
 
 // runProbe runs one of t's ready probes until it passes, its receipt one row
 // of phase ready with its tries counted, put started before the first try
@@ -978,8 +1063,10 @@ const maxProbeLog = 32 << 10
 // URL fetched (treeExec.probe: one GET, no redirect followed) until it
 // answers under 300. It fails at its timeout with the last try's output
 // as its words. A service of the tree that exits meanwhile fails the tree
-// at it at once ("service <id>"), and the probe's row says so. It returns
-// the stage and words of a failure.
+// at it at once ("service <id>"), a try under way cut, and the probe's row
+// says so; one that had exited before its first try leaves the row with
+// no try and no exit (tries 0, exit -1). It returns the stage and words of
+// a failure.
 func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Probe) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "ready " + p.ID, fmt.Errorf("%s was not run: %w", p.ID, err)
@@ -1001,13 +1088,25 @@ func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Pr
 	}
 	timeout, interval := probeTimeout(p), probeInterval(p)
 	deadline := time.Now().Add(timeout)
-	pctx, cancel := context.WithDeadline(ctx, deadline)
+	// A try is cut once a service of the tree has exited (t.died): the tree
+	// has failed at that service, and the try's answer would say nothing.
+	tctx, cut := context.WithCancelCause(ctx)
+	defer cut(nil)
+	go func() {
+		select {
+		case <-t.died:
+			cut(errServiceExited)
+		case <-tctx.Done():
+		}
+	}()
+	pctx, cancel := context.WithDeadline(tctx, deadline)
 	defer cancel()
 	env := t.env(r.id)
-	var log bytes.Buffer
+	var output bytes.Buffer
+	lines := probeLog{limit: maxProbeLog}
 	var last proc.Result
 	var lastWords string
-	tries, passed, logged := 0, false, 0
+	tries, passed := 0, false
 	var dead *treeService
 	for {
 		if dead = e.deadService(t); dead != nil {
@@ -1015,8 +1114,8 @@ func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Pr
 		}
 		tries++
 		if len(p.Argv) > 0 {
-			log.Reset()
-			last = e.runCommand(ctx, t.cwd, p.Argv, max(time.Until(deadline), time.Millisecond), env, &log, nil)
+			output.Reset()
+			last = e.runCommand(tctx, t.cwd, p.Argv, max(time.Until(deadline), time.Millisecond), env, &output, nil)
 			passed = last.Exit == 0 && last.Err == "" && !last.TimedOut && !last.Canceled
 			if !passed {
 				lastWords = probeTryWords(last)
@@ -1026,6 +1125,8 @@ func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Pr
 			passed = err == nil && status < 300
 			line := fmt.Sprintf("try %d: answered %d %s\n", tries, status, http.StatusText(status))
 			switch {
+			case err != nil && errors.Is(context.Cause(tctx), errServiceExited):
+				line = fmt.Sprintf("try %d: cut: %s\n", tries, errServiceExited)
 			case err != nil && pctx.Err() != nil && lastWords != "":
 				// Cut by the probe's own end: the try before it says why.
 				line = fmt.Sprintf("try %d: cut at the timeout\n", tries)
@@ -1035,10 +1136,7 @@ func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Pr
 			case !passed:
 				lastWords = fmt.Sprintf("answered %d %s", status, http.StatusText(status))
 			}
-			if logged+len(line) <= maxProbeLog {
-				log.WriteString(line)
-				logged += len(line)
-			}
+			lines.add(line)
 		}
 		if passed || ctx.Err() != nil || pctx.Err() != nil || !time.Now().Before(deadline) {
 			break
@@ -1058,15 +1156,24 @@ func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Pr
 			break
 		}
 	}
+	if dead == nil && !passed {
+		// A service that exited under the last try, which it cut or which
+		// ran on to the probe's end, is why the probe did not pass.
+		dead = e.deadService(t)
+	}
 	fin := row
-	fin.State, fin.FinishedAt, fin.Tries = ledger.CheckFinished, time.Now().UTC(), max(tries, 1)
-	if len(p.Argv) > 0 {
+	fin.State, fin.FinishedAt, fin.Tries = ledger.CheckFinished, time.Now().UTC(), tries
+	switch {
+	case len(p.Argv) > 0 && tries > 0:
 		fin.PID, fin.Group, fin.ProcessStartedAt, fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = last.Process.PID, last.Process.Group, last.Process.StartedAt, last.Exit, last.Signal, last.TimedOut, last.Killed
 		fin.Truncated, fin.Total, fin.Tail = last.Truncated, last.Total, string(lastOutput(last, checkTail))
-	} else if passed {
-		fin.Exit = 0
+		fin.Log = bytes.Clone(output.Bytes())
+	case len(p.Argv) == 0:
+		if passed {
+			fin.Exit = 0
+		}
+		fin.Log = lines.bytes()
 	}
-	fin.Log = bytes.Clone(log.Bytes())
 	sum := sha256.Sum256(fin.Log)
 	fin.LogSHA256 = hex.EncodeToString(sum[:])
 	var stage, words string
@@ -1168,18 +1275,17 @@ func checkIDs(checks []Check) []string {
 // attempt's preview is the tree's URL from this transaction on, until the
 // attempt's close or a service of the worktree exiting on its own clears
 // it. A service that exited on its own before this fails the tree at it
-// instead; an attempt closed meanwhile records nothing. It returns the
-// stage and words of a failure.
+// instead, its watcher there yet or not (exited); an attempt closed
+// meanwhile records nothing. It returns the stage and words of a failure.
 func (e *Engine) treeReady(ctx context.Context, r *run, a *attempt, t *tree) (string, error) {
 	var dead *treeService
 	closed := false
 	err := e.transact(ctx, r, func() tx {
-		switch {
-		case !a.closedAt.IsZero():
+		if !a.closedAt.IsZero() {
 			closed = true
 			return tx{}
-		case t.dead != nil:
-			dead = t.dead
+		}
+		if dead = t.exited(); dead != nil {
 			return tx{}
 		}
 		t.ready = true
@@ -1797,9 +1903,24 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 	}, nil)
 }
 
+// stopFor marks ts as being ended for why (stopping), unless something
+// ends it already, its end is recorded, or its process has ended on its
+// own: that end is its watcher's to record, as its own (watchService),
+// though the watcher has not got to it yet. The caller holds e.mu.
+func (ts *treeService) stopFor(why string) {
+	if ts.ended || ts.stopping != "" {
+		return
+	}
+	select {
+	case <-ts.svc.Done():
+	default:
+		ts.stopping = why
+	}
+}
+
 // endServices stops t's services, each one nothing is ending yet marked
-// stopping for why, all at once under ctx (Stop: SIGTERM to the group,
-// SIGKILL after proc.ServeGrace or once ctx ends), waits for their
+// stopping for why (stopFor), all at once under ctx (Stop: SIGTERM to the
+// group, SIGKILL after proc.ServeGrace or once ctx ends), waits for their
 // watchers, and records the end of each whose end is not recorded yet:
 // service.ended with the exit or signal its stop gave it (the run's stop's,
 // for one it stopped first) and why, its row finished, in one transaction.
@@ -1807,9 +1928,7 @@ func (e *Engine) endServices(ctx context.Context, r *run, t *tree, why string) {
 	e.mu.Lock()
 	svcs := slices.Clone(t.services)
 	for _, ts := range svcs {
-		if !ts.ended && ts.stopping == "" {
-			ts.stopping = why
-		}
+		ts.stopFor(why)
 	}
 	e.mu.Unlock()
 	if len(svcs) == 0 {
@@ -1857,11 +1976,11 @@ func (e *Engine) endServices(ctx context.Context, r *run, t *tree, why string) {
 // it records the run stopped: each tree not ended is marked ending first,
 // so no service is registered on it after (one starting stops itself at
 // once), and each service nothing ends yet is marked stopping for the
-// run's stop; their stops follow under the stop's context, beside the
-// sessions'. Their ends are recorded by their trees' ends (endServices),
-// once recordStop hands the trees over; a stop the ledger refuses hands
-// none, and leaves no service running all the same. It returns the
-// services to stop. The caller holds e.mu.
+// run's stop (stopFor); their stops follow under the stop's context,
+// beside the sessions'. Their ends are recorded by their trees' ends
+// (endServices), once recordStop hands the trees over; a stop the ledger
+// refuses hands none, and leaves no service running all the same. It
+// returns the services to stop. The caller holds e.mu.
 func (r *run) stopServices() []*treeService {
 	var svcs []*treeService
 	for _, tk := range r.tasks {
@@ -1872,9 +1991,7 @@ func (r *run) stopServices() []*treeService {
 				}
 				t.ending = true
 				for _, ts := range t.services {
-					if !ts.ended && ts.stopping == "" {
-						ts.stopping = "the run was stopped"
-					}
+					ts.stopFor("the run was stopped")
 					svcs = append(svcs, ts)
 				}
 			}
@@ -2051,8 +2168,11 @@ func PrerequisiteStates(rows []ledger.PrerequisiteRow) []StepState {
 
 func stepState(phase, id string, k int, state string, argv []string, url, dir, subject, manifest string, exit int, timedOut bool, errText string, ports map[string]int, tries int,
 	started, finished time.Time, logBytes int64, dropped bool, sha string) StepState {
+	if phase != ledger.PhaseReady {
+		tries = max(tries, 1) // a probe's are its own, none when it ran none
+	}
 	st := StepState{Phase: phase, ID: id, K: k, State: state, Argv: argv, URL: url, Dir: dir, Subject: subject, Manifest: manifest, TimedOut: timedOut, Error: errText,
-		Ports: ports, Tries: max(tries, 1), StartedAt: started, LogBytes: logBytes, LogDropped: dropped, LogSHA256: sha}
+		Ports: ports, Tries: tries, StartedAt: started, LogBytes: logBytes, LogDropped: dropped, LogSHA256: sha}
 	if !finished.IsZero() {
 		at := finished
 		st.FinishedAt = &at

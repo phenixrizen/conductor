@@ -192,7 +192,8 @@ func TestATreesServicesRunBesideItAndItsProbesWaitForThem(t *testing.T) {
 	if up.Phase != ledger.PhaseReady || up.State != ledger.CheckFinished || up.Error != "" || up.Tries < 1 || up.Argv[2] != stateFile(wt, "web.pid") {
 		t.Fatalf("the probe by file: %+v", up)
 	}
-	if page.Phase != ledger.PhaseReady || page.State != ledger.CheckFinished || page.Error != "" || page.Exit != 0 || page.URL != url || len(page.Argv) != 0 || page.Tries != fl.probes.tries(url) {
+	if page.Phase != ledger.PhaseReady || page.State != ledger.CheckFinished || page.Error != "" || page.Exit != 0 || page.URL != url || len(page.Argv) != 0 || page.Tries != fl.probes.tries(url) ||
+		!strings.HasSuffix(string(page.Log), fmt.Sprintf("try %d: answered 200 OK\n", page.Tries)) {
 		t.Fatalf("the probe over HTTP: %+v (asked %d times)", page, fl.probes.tries(url))
 	}
 	kinds := l.kinds(run.ID)
@@ -412,9 +413,14 @@ func TestAServicesRowComesFirstAndARefusedRunningRowStopsIt(t *testing.T) {
 // ended after; in a worktree uncounted, the run paused. A service that
 // dies says how, and one that has exited before the executor hands it
 // over has its end recorded after its running row, never written over by
-// it; a daemonizer, whose command puts its child outside its group and
-// exits 0, is told a service must stay in the foreground, and its child,
-// not the tree's, is neither stopped nor reported: the test ends it.
+// it, the probe after it run no try (tries 0, no exit: the independent
+// review of #441, finding 3); a daemonizer, whose command puts its child
+// outside its group and exits 0, is told a service must stay in the
+// foreground, and its child, not the tree's, is neither stopped nor
+// reported: the test ends it. With no probe to wait on, a service whose
+// end its watcher has not recorded yet, held at its seam, still keeps the
+// tree from being recorded ready: the phase reads its process's end
+// itself (Codex's review of #441, round 1).
 func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -424,10 +430,14 @@ func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 		// atOnce hands the service over only once it has exited: its
 		// watcher sees its end before its running row is put.
 		atOnce bool
+		// noProbe leaves the never probe out; hold holds the service's
+		// watcher at its seam until the attempt has failed.
+		noProbe, hold bool
 	}{
-		{"one that dies", shStep("web", `echo the port is taken; exit 1`), "web exited 1 before the tree was ready: the port is taken", false, false},
-		{"one that exits at once", shStep("web", `echo gone; exit 1`), "web exited 1 before the tree was ready: gone", false, true},
-		{"a daemonizer", daemonizing("web", true), "web exited 0 before the tree was ready: a service must stay in the foreground", true, false},
+		{"one that dies", shStep("web", `echo the port is taken; exit 1`), "web exited 1 before the tree was ready: the port is taken", false, false, false, false},
+		{"one that exits at once", shStep("web", `echo gone; exit 1`), "web exited 1 before the tree was ready: gone", false, true, false, false},
+		{"a daemonizer", daemonizing("web", true), "web exited 0 before the tree was ready: a service must stay in the foreground", true, false, false, false},
+		{"one that exits at once, no probe, its watcher held", shStep("web", `echo gone; exit 1`), "web exited 1 before the tree was ready: gone", false, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := newRepo(t)
@@ -442,11 +452,33 @@ func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 					return svc, err
 				}
 			}
-			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{tc.service}, Ready: []Probe{never}}, work("build", "lead")))
+			release := func() {}
+			if tc.hold {
+				held, released := make(chan struct{}), false
+				release = func() {
+					if !released {
+						released = true
+						close(held)
+					}
+				}
+				t.Cleanup(release)
+				e.beforeServiceEnd = func(string) { <-held }
+			}
+			ready := []Probe{never}
+			if tc.noProbe {
+				ready = nil
+			}
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{tc.service}, Ready: ready}, work("build", "lead")))
 			attemptFailed(t, e, run.ID, "build", 1)
 			row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
 			if row.Stage != "service web" || row.Error != tc.words {
 				t.Fatalf("attempt 1: %+v", row)
+			}
+			if tc.hold {
+				if kinds := l.kinds(run.ID); slices.Contains(kinds, "tree.ready") || slices.Contains(kinds, "service.ended") {
+					t.Fatalf("the tree recorded ready, or the end recorded, while the watcher was held: %v", kinds)
+				}
+				release()
 			}
 			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
 			waitTreesEnded(t, e, run.ID)
@@ -455,8 +487,24 @@ func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 			if !ok || web.State != ledger.CheckFinished || web.Error != tc.words {
 				t.Fatalf("the service's row:\n%s", rowWords(rows))
 			}
-			if p, ok := rowOf(rows, "never", 1); !ok || p.State != ledger.CheckFinished || p.Error != tc.words {
+			if p, ok := rowOf(rows, "never", 1); !tc.noProbe && (!ok || p.State != ledger.CheckFinished || p.Error != tc.words) {
 				t.Fatalf("the probe's row:\n%s", rowWords(rows))
+			}
+			if tc.atOnce && !tc.noProbe {
+				// The service was gone before the probe's first try: the
+				// probe ran none, and its receipt says no command exited.
+				if p, _ := rowOf(rows, "never", 1); p.Tries != 0 || p.Exit != -1 || p.PID != 0 {
+					t.Fatalf("the probe that ran no try:\n%s", rowWords(rows))
+				}
+				var fin map[string]any
+				for _, p := range l.payloads(run.ID, "step.finished") {
+					if p["id"] == "never" {
+						fin = p
+					}
+				}
+				if fin == nil || fin["exit"] != -1 || fin["tries"] != 0 {
+					t.Fatalf("the probe's step.finished: %v", fin)
+				}
 			}
 			if p := l.payloads(run.ID, "service.ended"); len(p) != 1 || p[0]["why"] != "it exited before the tree was ready" {
 				t.Fatalf("service.ended: %v", p)
@@ -474,6 +522,148 @@ func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 			}
 			stopRun(t, e, run.ID)
 		})
+	}
+}
+
+// A service that exits while a probe's try is under way fails the tree at
+// the service at once (Codex's review of #441, round 1): the try is cut, a
+// command's group killed or a fetch's context ended, never left to run on
+// to the probe's timeout, an hour here; the stage is the service's, and
+// the probe's row says so with its one try.
+func TestAServiceThatExitsCutsAProbesTryUnderWay(t *testing.T) {
+	url := fmt.Sprintf("http://127.0.0.1:%d/", fakePortsFirst)
+	for _, byURL := range []bool{false, true} {
+		t.Run(map[bool]string{false: "a command", true: "a URL"}[byURL], func(t *testing.T) {
+			dir, gates := newRepo(t), t.TempDir()
+			e, fl, l := managedEngine(t)
+			fl.probes.answerWith(url, func(ctx context.Context) (int, error) {
+				<-ctx.Done()
+				return 0, ctx.Err()
+			})
+			probe := Probe{ID: "held", Argv: []string{"sh", "-c", `echo $$ > "` + gates + `/probe.pid"; while :; do sleep 0.05; done`}, TimeoutSeconds: 3600}
+			if byURL {
+				probe = Probe{ID: "held", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", TimeoutSeconds: 3600}
+			}
+			web := shStep("web", `while [ ! -e "`+gates+`/die" ]; do sleep 0.05; done; echo leaving; exit 1`)
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Ports: []string{"web"}, Services: []Check{web}, Ready: []Probe{probe}}, work("build", "lead")))
+			probePid := 0
+			if byURL {
+				waitFake(t, "the probe asked", func() bool { return fl.probes.tries(url) > 0 })
+			} else {
+				probePid = pidIn(t, filepath.Join(gates, "probe.pid"))
+				t.Cleanup(func() {
+					if alive(probePid) {
+						syscall.Kill(probePid, syscall.SIGKILL)
+					}
+				})
+			}
+			if err := os.WriteFile(filepath.Join(gates, "die"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			attemptFailed(t, e, run.ID, "build", 1)
+			words := "web exited 1 before the tree was ready: leaving"
+			if row := l.attemptWhen(t, run.ID, "build", 1, failedRow); row.Stage != "service web" || row.Error != words {
+				t.Fatalf("attempt 1: %+v", row)
+			}
+			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+			waitTreesEnded(t, e, run.ID)
+			rows := l.stepRows(run.ID, "build", 1)
+			held, ok := rowOf(rows, "held", 1)
+			if !ok || held.State != ledger.CheckFinished || held.Tries != 1 || held.Error != words {
+				t.Fatalf("the probe's row:\n%s", rowWords(rows))
+			}
+			if byURL && string(held.Log) != "try 1: cut: a service of the tree exited\n" {
+				t.Fatalf("the probe's log: %q", held.Log)
+			}
+			if probePid != 0 && alive(probePid) {
+				t.Fatalf("the probe's try %d outlived its cut", probePid)
+			}
+			if p := l.payloads(run.ID, "service.ended"); len(p) != 1 || p[0]["why"] != "it exited before the tree was ready" {
+				t.Fatalf("service.ended: %v", p)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// A service that exits 0 once its tree is in use is told the foreground
+// rule all the same (the independent review of #441, finding 2): with no
+// ready probe the tree is ready once its services run, and a daemonizer's
+// exit comes after it (held here until the attempt runs). Its row, its
+// service.ended and the run log's line say a service must stay in the
+// foreground, the preview is withdrawn and the attempt goes on. The daemon
+// it started, outside its group, is not the tree's: the test ends it.
+func TestAServiceThatExits0OnceTheTreeIsInUseIsToldTheRule(t *testing.T) {
+	dir, gates := newRepo(t), t.TempDir()
+	e, _, l := managedEngine(t)
+	line := `"$0" -test.run='^TestHelperDaemonizes$' -- conductor-test-daemon "$CONDUCTOR_STATE_DIR" >/dev/null 2>&1 & ` +
+		`while [ ! -e "$CONDUCTOR_STATE_DIR/daemon.ready" ] || [ ! -e "` + gates + `/exit" ]; do sleep 0.05; done; exit 0`
+	m := Manifest{Ports: []string{"web"}, Services: []Check{{ID: "web", Argv: []string{"sh", "-c", line, os.Args[0]}}}, Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if url := fmt.Sprintf("http://127.0.0.1:%d/", fakePortsFirst); a.Attempt.Preview != url {
+		t.Fatalf("the preview after tree.ready: %q", a.Attempt.Preview)
+	}
+	daemon := pidIn(t, stateFile(a.Attempt.Worktree, "daemon.pid"))
+	t.Cleanup(func() { syscall.Kill(daemon, syscall.SIGKILL) })
+	if err := os.WriteFile(filepath.Join(gates, "exit"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFake(t, "web's end recorded", func() bool { return len(l.payloads(run.ID, "service.ended")) == 1 })
+	const rule = "a service must stay in the foreground"
+	if p := l.payloads(run.ID, "service.ended")[0]; p["id"] != "web" || p["exit"] != 0 || p["why"] != "it exited 0 while the tree was in use: "+rule {
+		t.Fatalf("service.ended: %v", p)
+	}
+	if row, _ := rowOf(l.stepRows(run.ID, "build", 1), "web", 1); row.State != ledger.CheckFinished || row.Exit != 0 || row.Error != "web exited 0 while the tree was in use: "+rule {
+		t.Fatalf("web's row: %+v", row)
+	}
+	r, _ := e.Get(run.ID)
+	want := "task build: attempt 1: service web exited 0 while the tree was in use: " + rule + "; the preview is withdrawn"
+	if !slices.ContainsFunc(r.Log, func(en session.ActivityEntry) bool { return en.Message == want }) {
+		t.Fatalf("the run log has no %q", want)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.Attempt.Preview != "" || ts.Attempt.State != ledger.AttemptRunning {
+		t.Fatalf("the attempt after its service's exit: %+v", ts.Attempt)
+	}
+	if !alive(daemon) {
+		t.Fatalf("the daemon %d, not the tree's, was ended with it", daemon)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A probe's log over HTTP keeps a line per try while they fit beside the
+// room it keeps for its end, then the last try's line, after a line that
+// counts those left out, and stays within its bound (the independent
+// review of #441, finding 4): the try that passed is in the log however
+// many failed before it.
+func TestAProbesLogKeepsItsLastTry(t *testing.T) {
+	l := probeLog{limit: probeLogEnd + 200}
+	for i := 1; i < 50; i++ {
+		l.add(fmt.Sprintf("try %d: answered 503 Service Unavailable\n", i))
+	}
+	l.add("try 50: answered 200 OK\n")
+	got := string(l.bytes())
+	head := "try 1: answered 503 Service Unavailable\ntry 2: answered 503 Service Unavailable\ntry 3: answered 503 Service Unavailable\n" +
+		"try 4: answered 503 Service Unavailable\ntry 5: answered 503 Service Unavailable\n"
+	if want := head + "… 44 tries not logged …\ntry 50: answered 200 OK\n"; got != want || len(got) > l.limit {
+		t.Fatalf("%d bytes:\n%s", len(got), got)
+	}
+	// Tries that fit are all kept, and nothing is counted.
+	few := probeLog{limit: maxProbeLog}
+	for i := 1; i <= 3; i++ {
+		few.add(fmt.Sprintf("try %d: answered 503 Service Unavailable\n", i))
+	}
+	if got := string(few.bytes()); got != "try 1: answered 503 Service Unavailable\ntry 2: answered 503 Service Unavailable\ntry 3: answered 503 Service Unavailable\n" {
+		t.Fatalf("%q", got)
+	}
+	// A bound too small for the end's room still holds: the last line is
+	// cut to what is left of it.
+	tiny := probeLog{limit: 40}
+	for i := 1; i <= 3; i++ {
+		tiny.add(fmt.Sprintf("try %d: answered 503 Service Unavailable\n", i))
+	}
+	if got := tiny.bytes(); len(got) != 40 || !strings.HasPrefix(string(got), "… 2 tries not logged …\ntry 3: ") {
+		t.Fatalf("%d bytes: %q", len(got), got)
 	}
 }
 

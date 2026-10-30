@@ -127,6 +127,7 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 		for _, r := range []CheckRow{
 			{ID: "deps", K: 1, Phase: PhaseSetup, Manifest: "crew:3", Ports: map[string]int{"web": 41234}, Error: "deps exited 1: no registry", Argv: []string{"npm", "ci"}, State: CheckFinished, Exit: 1, Log: []byte("npm ERR!")},
 			{ID: "web", K: 2, Phase: PhaseReady, Manifest: "file:abc", Tries: 3, URL: "http://127.0.0.1:41234/", State: CheckFinished, Exit: 0},
+			{ID: "never", K: 4, Phase: PhaseReady, Manifest: "file:abc", Argv: []string{"test", "-e", "never"}, State: CheckFinished, Exit: -1, Error: "web exited 1 before the tree was ready"},
 			{ID: "unit", K: 3, Argv: []string{"go", "test"}, State: CheckFinished},
 		} {
 			r.RunID, r.TaskID, r.N, r.StartedAt = "team-00000001", "build", 1, tx.Now()
@@ -139,7 +140,7 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	checks, err := l.Checks(ctx, "team-00000001", "build", 1, false)
-	if err != nil || len(checks) != 3 {
+	if err != nil || len(checks) != 4 {
 		t.Fatalf("%+v %v", checks, err)
 	}
 	by := map[string]CheckRow{}
@@ -151,6 +152,11 @@ func TestAStepsRowCarriesItsPhaseAndWords(t *testing.T) {
 	}
 	if c := by["web"]; c.Phase != PhaseReady || c.Tries != 3 || c.URL != "http://127.0.0.1:41234/" || c.Argv != nil {
 		t.Fatalf("the probe: %+v", c)
+	}
+	// A probe that ran no try (a service of its tree had exited) keeps its
+	// count, none, where every other row reads one.
+	if c := by["never"]; c.Phase != PhaseReady || c.Tries != 0 || c.Exit != -1 {
+		t.Fatalf("the probe that ran no try: %+v", c)
 	}
 	if c := by["unit"]; c.Phase != PhaseCheck || c.Manifest != "" || c.Tries != 1 {
 		t.Fatalf("the check: %+v", c)

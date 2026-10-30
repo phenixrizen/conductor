@@ -305,7 +305,8 @@ func (l *Ledger) Messages(ctx context.Context, runID string) ([]MessageRow, erro
 }
 
 // PutCheck puts a check's row, new or changed: a task's check or a step
-// of a project manifest (Phase, PhaseCheck when empty; Tries at least 1);
+// of a project manifest (Phase, PhaseCheck when empty; Tries at least 1,
+// but for a readiness probe's, its own count, 0 when it ran no try);
 // its log at most MaxLog, and the run's logs, the prerequisites' with the
 // checks', at most MaxRunLogs in all: a log that would pass that is not
 // kept (LogDropped), its hash and tail are. The row's own log, when it is
@@ -328,6 +329,10 @@ func (t *Tx) PutCheck(r CheckRow) error {
 	phase := r.Phase
 	if phase == "" {
 		phase = PhaseCheck
+	}
+	tries := max(r.Tries, 1)
+	if phase == PhaseReady {
+		tries = max(r.Tries, 0)
 	}
 	if r.LogDropped {
 		r.Log = nil // dropped is dropped: no bytes behind the mark
@@ -354,7 +359,7 @@ func (t *Tx) PutCheck(r CheckRow) error {
 			tries = excluded.tries, error = excluded.error, url = excluded.url`,
 		t.runID, r.TaskID, r.N, r.ID, r.K, argv, r.Dir, r.Subject, r.State, r.PID, r.Group, stamp(r.ProcessStartedAt), stamp(r.StartedAt), stamp(r.FinishedAt),
 		r.Exit, r.Signal, b2i(r.TimedOut), b2i(r.Killed), b2i(r.Stable), b2i(r.Truncated), r.Total, r.Log, b2i(r.LogDropped), r.LogSHA256, r.Tail,
-		phase, r.Manifest, ports, max(r.Tries, 1), r.Error, r.URL)
+		phase, r.Manifest, ports, tries, r.Error, r.URL)
 	return err
 }
 

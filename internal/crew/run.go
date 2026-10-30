@@ -364,6 +364,10 @@ type Engine struct {
 	// beforeTreeEnd, when set, runs in endTree once the tree is quiet and
 	// before its end is recorded: a test ends the engine there.
 	beforeTreeEnd func(kind string)
+	// beforeServiceEnd, when set, runs in a service's watcher once its
+	// process has ended and before its end is recorded: a test holds the
+	// watcher there.
+	beforeServiceEnd func(id string)
 	// beforePrereqEnd, when set, runs as a generation of the prerequisites
 	// ends, after its last commit and before it is counted out: a test
 	// lands an unpause there.

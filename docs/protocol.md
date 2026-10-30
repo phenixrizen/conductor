@@ -2356,12 +2356,15 @@ with its pid, group and start time before the next service starts, and a
 `running` row the ledger refuses stops it and fails the tree at it. A
 service is a foreground process: one that exits before the tree is ready
 fails the tree at it (stage `service <id>`, "web exited 1 before the tree
-was ready: …"); one that exits 0 then is told "a service must stay in the
-foreground", for what a service puts outside its group (a daemon, a
-`setsid` child) is not the tree's, neither stopped nor reported. Then the
-`ready` probes, in order, each one receipt (phase `ready`) with its `tries`:
-a command run again every interval until it exits 0, or a URL fetched every
-interval until it answers under 300, one `GET` with the interval as its
+was ready: …"), a probe's try under way cut and a probe it kept from its
+first try left with `tries` 0 and no exit; one that exits 0, then or once
+the tree is in use (with no `ready` probe a daemonizer's exit comes after
+`tree.ready`), is told "a service must stay in the foreground", for what a
+service puts outside its group (a daemon, a `setsid` child) is not the
+tree's, neither stopped nor reported. Then the `ready` probes, in order,
+each one receipt (phase `ready`) with its `tries`: a command run again
+every interval until it exits 0, or a URL fetched every interval until it
+answers under 300, one `GET` with the interval as its
 timeout, no redirect followed (a `3xx` is the try's answer, so a redirect
 off the loopback makes the server fetch nothing there) and the body read
 nothing of; a probe that has not passed at its timeout fails the tree at
@@ -2378,11 +2381,12 @@ or its first check runs. The attempt's `preview` (in the run's and the
 task's reads) is its worktree's preview URL from that `tree.ready` until
 the first of the attempt's close and a service of the worktree exiting on
 its own (`service.ended`, and a line in the run log: "task build: attempt 2:
-service web exited 1 while the tree was in use; the preview is withdrawn";
-the attempt goes on), and none while the run stops: it is never offered
-before the probes passed, behind a service stopped or gone, or once its
-port may be another tree's. It is on the server's loopback and is not
-proxied.
+service web exited 1 while the tree was in use; the preview is withdrawn",
+or for an exit 0 "… exited 0 while the tree was in use: a service must stay
+in the foreground; …"; the attempt goes on), and none while the run stops:
+it is never offered before the probes passed, behind a service stopped or
+gone, or once its port may be another tree's. It is on the server's
+loopback and is not proxied.
 
 A step, a service or a probe that fails in an attempt's worktree, or a
 manifest that cannot be resolved there (stage `setup <id>`, `service <id>`,
