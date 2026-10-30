@@ -427,10 +427,16 @@ type run struct {
 	// teardown is the context the trees end under (endTree), made with the
 	// run beside ctx and outliving it; trees counts the trees ending, and
 	// pendingTrees are the ends a close handed over, started by its commit.
-	teardown       context.Context
-	teardownCancel context.CancelFunc
-	trees          flight
-	pendingTrees   []treeEnd
+	// pendingReleases are the trees whose tree.ended a change recorded and
+	// no commit has written yet: their ports stay leased until the commit
+	// that does, the change's own or, after a refusal, the run's next,
+	// which carries it (transact: releaseEnded). endTree, the one change
+	// that adds to it, passes no undo, so a refusal keeps it with its events.
+	teardown        context.Context
+	teardownCancel  context.CancelFunc
+	trees           flight
+	pendingTrees    []treeEnd
+	pendingReleases []*tree
 	// messages are the members' messages to one another (messages.go), in
 	// sequence, a continuation's carried from the run it continues.
 	messages []*message

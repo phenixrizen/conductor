@@ -767,6 +767,9 @@ func (e *Engine) transact(ctx context.Context, r *run, mutate func() tx, undo fu
 		cancel()
 	}
 	r.pendingCancels = nil
+	// The trees whose end this commit wrote let go of their ports now, and
+	// no sooner (steps.go: releaseEnded).
+	e.releaseEnded(r)
 	// The trees of the attempts this commit closed end now (steps.go), and
 	// the prerequisites it armed start.
 	e.startTrees(r)

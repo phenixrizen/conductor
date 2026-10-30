@@ -833,6 +833,93 @@ func TestAPortIsOneLiveTreesAtATime(t *testing.T) {
 	stopRun(t, e, run.ID)
 }
 
+// A port is let go only once its tree's end is in the ledger (Codex's
+// review of #426, round 1). transact lets e.mu go before its commit, so a
+// lease let go in tree.ended's change would be another run's to draw while
+// the ledger still has the tree resolved, and stay so should the ledger
+// refuse the end. With the end's commit held, and with it refused, the
+// tree keeps its lease: another run's tree drawing the number draws again.
+// The number is let go by the commit that writes the end: its own, let
+// through, or the run's next (here a pause), which carries the refused one.
+func TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted(t *testing.T) {
+	const shared = 41500
+	m := Manifest{Ports: []string{"web"}, Setup: []Check{shStep("deps", "true")}}
+	for _, tc := range []struct {
+		name    string
+		refused bool
+	}{{"the end's commit held", false}, {"the end's commit refused", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, fl, l := managedEngine(t)
+			fl.ports.script(shared)
+			run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+			waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			if w, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); w.Ports["web"] != shared {
+				t.Fatalf("build's worktree: %+v", w)
+			}
+			// The end's commit held is let through once, by the test or, should
+			// it fail first, by its cleanup.
+			var release func()
+			l.mu.Lock()
+			if tc.refused {
+				l.failOn, l.failOnce = "tree.ended", true
+			} else {
+				held := make(chan struct{})
+				l.blockOn, l.blocked, l.release = "tree.ended", make(chan struct{}, 1), held
+				release = sync.OnceFunc(func() { close(held) })
+				t.Cleanup(release)
+			}
+			l.mu.Unlock()
+			if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+				t.Fatal(err)
+			}
+			if tc.refused {
+				// The cancel's commit counted the tree before CancelTask
+				// returned: the count drops once its refused end returns.
+				waitTreesEnded(t, e, run.ID)
+			} else {
+				select {
+				case <-l.blocked:
+				case <-time.After(10 * time.Second):
+					t.Fatal("the tree's end did not reach its commit")
+				}
+			}
+			if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State != ledger.TreeResolved || l.count(run.ID, "tree.ended") != 0 {
+				t.Fatalf("the worktree's row: %+v; events %v", tr, l.kinds(run.ID))
+			}
+			if got := leases(e); !maps.Equal(got, map[int]string{shared: "build.1 " + ledger.TreeWorktree}) {
+				t.Fatalf("the leases while the end is not in the ledger: %v", got)
+			}
+			// Another run's tree draws the number: it is drawn again.
+			fl.ports.script(shared)
+			before := len(fl.ports.draws())
+			other := launchManaged(t, e, repoManifestCrew(dir, m, work("docs", "writer")))
+			waitAttempt(t, e, other.ID, "docs", ledger.AttemptRunning)
+			ow, _ := l.treeRow(other.ID, "docs", 1, ledger.TreeWorktree)
+			if draws := fl.ports.draws()[before:]; len(draws) != 2 || draws[0] != shared || draws[1] == shared || ow.Ports["web"] != draws[1] {
+				t.Fatalf("the other run's worktree: %v, draws %v", ow.Ports, draws)
+			}
+			// The end written: its own commit let through, or the run's
+			// next, a pause, carrying the refused one.
+			if tc.refused {
+				pauseRun(t, e, run.ID, true)
+				if kinds := l.kinds(run.ID); !slices.Equal(kinds[len(kinds)-2:], []string{"tree.ended", "run.paused"}) {
+					t.Fatalf("the pause's commit did not carry the refused end: %v", kinds)
+				}
+			} else {
+				release()
+			}
+			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+			waitTreesEnded(t, e, run.ID)
+			if got := leases(e); !maps.Equal(got, map[int]string{ow.Ports["web"]: "docs.1 " + ledger.TreeWorktree}) {
+				t.Fatalf("the leases once the end is in the ledger: %v", got)
+			}
+			stopRun(t, e, other.ID)
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
 // The native executor draws a port of the loopback and lets it go: the
 // number it gives is free to bind. Another process may take a free number
 // between the two, so a number that cannot be bound is drawn again, three

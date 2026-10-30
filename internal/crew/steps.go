@@ -140,17 +140,18 @@ func (rm resolvedManifest) row() string {
 // manifest: an attempt's worktree, or the checkout of its result. Its
 // manifest is the one resolved for it, expanded with its ports and its
 // state directory (expandManifest); its ports are leased to it on the
-// engine (e.ports) from its manifest.resolved to its tree.ended; its state
-// directory is .conductor/state under its working directory; its preview
-// is the manifest's, expanded, "" for none; allow is the manifest's env
-// names the server approved (allowedEnv). All of that is set before the
-// tree is the attempt's and never changed. busy is held while one of its
-// phases or checks runs, and in a worktree through its session's launch
-// (hold). Under e.mu: handed is set once it is handed to endTree, ending
-// once its end begins (nothing holds it after), ended once its end is
-// recorded, and session names the session its end waits for, one being
-// stopped (set by handTrees, or by the launch's record when the close came
-// during the launch).
+// engine (e.ports) from its manifest.resolved until its tree.ended is
+// committed (releaseEnded); its state directory is .conductor/state under
+// its working directory; its preview is the manifest's, expanded, "" for
+// none; allow is the manifest's env names the server approved
+// (allowedEnv). All of that is set before the tree is the attempt's and
+// never changed. busy is held while one of its phases or checks runs,
+// and in a worktree through its session's launch (hold). Under e.mu:
+// handed is set once it is handed to endTree, ending once its end begins
+// (nothing holds it after), ended once its end is recorded, and session
+// names the session its end waits for, one being stopped (set by
+// handTrees, or by the launch's record when the close came during the
+// launch).
 type tree struct {
 	kind     string // ledger.TreeWorktree | ledger.TreeCheckout
 	dir      string // the worktree or the checkout
@@ -391,14 +392,14 @@ func (e *Engine) resolveAt(ctx context.Context, r *run, commit string) (resolved
 // tree's row, resolved: a number another live tree of this server holds,
 // or another of the tree's ports drew, is drawn again (at most
 // maxPortDraws times a port) instead, and from the commit on the tree is
-// the attempt's (a.trees), its ports leased until its tree.ended. The
-// transaction is ordered with the attempt's close: an attempt closed
-// before it gets no tree (errAttemptClosed). Last, its state directory is
-// made (makeStateDir). Any other error is the manifest's, its stage
-// "manifest", the failure attributed by the tree's rule: nothing is
-// written or run in the tree before the transaction, and a tree whose
-// state directory could not be made is returned with the error, the
-// attempt's to end with it.
+// the attempt's (a.trees), its ports leased until its tree.ended is
+// committed. The transaction is ordered with the attempt's close: an
+// attempt closed before it gets no tree (errAttemptClosed). Last, its
+// state directory is made (makeStateDir). Any other error is the
+// manifest's, its stage "manifest", the failure attributed by the tree's
+// rule: nothing is written or run in the tree before the transaction, and
+// a tree whose state directory could not be made is returned with the
+// error, the attempt's to end with it.
 func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir, cwd, commit string) (*tree, error) {
 	man, err := e.resolveAt(ctx, r, commit)
 	if err != nil {
@@ -496,9 +497,9 @@ func (e *Engine) heldPorts(t *tree) []string {
 	return held
 }
 
-// lease leases t's ports to it, until its tree.ended (release). The
-// caller holds e.mu, in the transaction's change that makes the tree the
-// attempt's.
+// lease leases t's ports to it, until its tree.ended is committed
+// (releaseEnded). The caller holds e.mu, in the transaction's change that
+// makes the tree the attempt's.
 func (e *Engine) lease(t *tree) {
 	if e.ports == nil {
 		e.ports = map[int]*tree{}
@@ -508,15 +509,31 @@ func (e *Engine) lease(t *tree) {
 	}
 }
 
-// release lets go of the ports t holds. The caller holds e.mu, in the
-// transaction's change that records tree.ended, or in the undo of the one
-// that leased them.
+// release lets go of the ports t holds. The caller holds e.mu: once the
+// commit that wrote t's tree.ended is made (releaseEnded), or in the undo
+// of the change that leased them.
 func (e *Engine) release(t *tree) {
 	for _, n := range t.ports {
 		if e.ports[n] == t {
 			delete(e.ports, n)
 		}
 	}
+}
+
+// releaseEnded lets go of the ports of the trees whose tree.ended the
+// commit just made wrote: its own change's, or one the ledger refused
+// before, which a refused change's events wait for the run's next commit
+// to carry (transact). A number is so another tree's only once the ledger
+// has its tree ended: never between the change and its commit, when
+// transact has let e.mu go and another run's tree could draw it while the
+// ledger still has this one resolved. One refused for good (the run never
+// commits again) keeps its ports until the server exits, as the trees of
+// a refused stop do. The caller holds e.mu, after the commit.
+func (e *Engine) releaseEnded(r *run) {
+	for _, t := range r.pendingReleases {
+		e.release(t)
+	}
+	r.pendingReleases = nil
 }
 
 // makeStateDir makes a tree's state directory, .conductor/state under its
@@ -1122,11 +1139,12 @@ func (e *Engine) startTrees(r *run) {
 // held it returned; then the session being stopped ended, bounded by
 // stopTimeout, read once the hold is let go: a launch the close came
 // during names its session on the tree only then) and records tree.ended
-// with the tree's row ended, its ports released in that change, so a
-// number is the next tree's only once its tree.ended is. Nothing runs in
-// it after: it has no services and no cleanup steps yet. A refused commit
-// is kept for the run's next (transact), and a row left not ended is
-// concluded by the recovery at the next start.
+// with the tree's row ended, its ports let go once that is committed
+// (releaseEnded), so a number is the next tree's only once the ledger has
+// its tree.ended. Nothing runs in it after: it has no services and no
+// cleanup steps yet. A refused commit is kept for the run's next
+// (transact), the ports with it, and a row left not ended is concluded by
+// the recovery at the next start.
 func (e *Engine) endTree(r *run, h treeEnd) {
 	t := h.t
 	defer func() {
@@ -1160,7 +1178,7 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 			return tx{}
 		}
 		t.ended = true
-		e.release(t)
+		r.pendingReleases = append(r.pendingReleases, t)
 		out := ev("tree.ended", map[string]any{"tree": t.kind, "task": a.t.def.ID, "attempt": a.n, "why": h.why})
 		row := ledger.TreeRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Kind: t.kind, Dir: t.dir, Commit: t.commit, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Preview: t.preview,
 			State: ledger.TreeEnded, Why: session.CleanMessage(h.why), EndedAt: time.Now().UTC()}
