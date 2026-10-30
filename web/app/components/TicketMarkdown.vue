@@ -4,7 +4,9 @@
  * editor's preview (MarkdownPreview, with no folder and its relative links as words, since a ticket's text names no file of a
  * repository), and Edit: a textarea with a Preview beside it, saved as one operation by the page (`save`, which answers whether it was
  * done; the editor stays open with the text when it was not). Its bound is the store's, in bytes: past it Save is off and the field
- * says so. Ctrl+Enter (⌘+Enter) saves, Escape leaves the text as it was.
+ * says so. Ctrl+Enter (⌘+Enter) saves, Escape leaves the text as it was. A save is made against the text the editor opened on: when
+ * another person saved theirs meanwhile (the page reads the ticket live, behind the editor), Save sends nothing, keeps the draft and
+ * shows their text; a second Save replaces it, knowingly.
  */
 const props = defineProps<{
   /** The text as the store holds it. */
@@ -14,8 +16,11 @@ const props = defineProps<{
   empty: string
   /** The store's bound, in bytes of UTF-8. */
   maxBytes: number
-  /** Saves the text; true once the store has it. */
-  save: (text: string) => Promise<boolean>
+  /**
+   * Saves the text, made against `base`, the text the editor opened on: true once the store has it; false when it was not done, or not
+   * sent because the field no longer holds `base` when the save goes.
+   */
+  save: (text: string, base: string) => Promise<boolean>
   disabled?: boolean
   /** The field's name, for the page's tests. */
   name: string
@@ -23,6 +28,10 @@ const props = defineProps<{
 
 const editing = ref(false)
 const draft = ref('')
+/** The text the editor opened on, or the other person's once shown: what a save is made against. */
+const base = ref('')
+/** Another person's text, saved while this one was written: shown once a Save found it, until the editor closes. */
+const theirs = ref<string | null>(null)
 const tab = ref<'write' | 'preview'>('write')
 const saving = ref(false)
 const area = useTemplateRef<{ textareaRef?: HTMLTextAreaElement }>('area')
@@ -38,6 +47,8 @@ const tabs = [
 function edit() {
   if (props.disabled) return
   draft.value = props.text
+  base.value = props.text
+  theirs.value = null
   tab.value = 'write'
   editing.value = true
   void nextTick(() => area.value?.textareaRef?.focus())
@@ -45,17 +56,28 @@ function edit() {
 
 function cancel() {
   editing.value = false
+  theirs.value = null
+}
+
+/** The field holds another text than the one the editor opened on: it is shown, and is what the next Save is made against. */
+function changedUnder(): boolean {
+  if (props.text === base.value) return false
+  theirs.value = props.text
+  base.value = props.text
+  return true
 }
 
 async function submit() {
   if (over.value || saving.value) return
   if (draft.value === props.text) {
-    editing.value = false
+    cancel()
     return
   }
+  if (changedUnder()) return
   saving.value = true
   try {
-    if (await props.save(draft.value)) editing.value = false
+    if (await props.save(draft.value, base.value)) cancel()
+    else changedUnder()
   } finally {
     saving.value = false
   }
@@ -87,6 +109,16 @@ watch(
     </template>
 
     <div v-else class="flex flex-col gap-2" data-markdown-editor>
+      <div v-if="theirs !== null" class="flex flex-col gap-2 rounded-md p-3 ring ring-warning/40" data-markdown-theirs>
+        <p class="flex items-start gap-2 text-sm text-warning">
+          <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 flex-none" />
+          <span>The {{ label.toLowerCase() }} was changed while you wrote. It now reads as below: Save again to replace it with yours, or Cancel to keep it.</span>
+        </p>
+        <div class="min-w-0 rounded-md ring ring-default" data-markdown-theirs-text>
+          <MarkdownPreview v-if="theirs" :text="theirs" dir="" :relative-links="false" />
+          <p v-else class="px-5 py-4 text-sm text-dimmed">Nothing: it was emptied.</p>
+        </div>
+      </div>
       <UTabs v-model="tab" :items="tabs" :content="false" size="xs" color="neutral" variant="link" class="w-fit" data-markdown-tabs />
       <UTextarea
         v-if="tab === 'write'"

@@ -3,7 +3,7 @@ import type { DispatchChange, DispatchTicket, Horizon, ProjectRead, TicketEdit, 
 import type { AgentInfo } from '~/composables/useSessions'
 import { ApiError } from '~/composables/useApi'
 import { ticketWatch } from '~/composables/useDispatchLive'
-import { HORIZONS, PRIORITIES, TICKET_STATUSES, assigneesEdit, historyEntries, horizonWord, labelDot, parseTicketKey, priorityWord, projectPath, statusWord, ticketPath, ticketWords, validProjectKey } from '~/utils/dispatch'
+import { AssigneePicks, HORIZONS, PRIORITIES, TICKET_STATUSES, historyEntries, horizonWord, labelDot, parseTicketKey, priorityWord, projectPath, statusWord, ticketPath, ticketWords, validProjectKey } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
 import { serially } from '~/utils/dispatchOrder'
 
@@ -12,8 +12,9 @@ import { serially } from '~/utils/dispatchOrder'
  * preview, its status, priority, horizon, owner and assignees, and its history as the store recorded it. Every edit is one operation on
  * the revision shown (useDispatchOps), and every read and every operation's reply goes through the page's ordering gate, the ticket's by
  * its key, a 404 among them. The live events read it again: at once when one names the ticket, after the window on any other of its
- * project, and on a snapshot, which forgets what the gate knew (a store restored from a backup). Its comments, attachments, parent and
- * relations, labels and milestones, and the close policy come with the next changes, and the page says so. One column on a phone.
+ * project, and on a snapshot, which forgets what the gate knew (a store restored from a backup). An editor's save is made against the
+ * text it opened on, so another person's edit made meanwhile is never replaced unseen. Its comments, attachments, parent and relations,
+ * labels and milestones, and the close policy come with the next changes, and the page says so. One column on a phone.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
@@ -35,6 +36,8 @@ const error = ref('')
 /** No ticket has the key. */
 const missing = ref(false)
 const now = ref(Date.now())
+/** The person's picks of the assignees, until the edits carrying them have answered (utils/dispatch.ts, AssigneePicks). */
+const picks = reactive(new AssigneePicks())
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
 
@@ -167,6 +170,9 @@ watch(
     historyPages.value = 1
     historyNext.value = 0
     missing.value = false
+    // The title being edited and the assignees being picked were the other ticket's.
+    leaveTitle()
+    picks.clear()
     if (key) void load()
   },
 )
@@ -191,20 +197,23 @@ const entries = computed(() =>
   }),
 )
 
+/** What an edit's `make` answers when the edit is sent: the change; null when nothing is left to change; false when it must not be sent. */
+type Made = TicketEdit | null | false
+
 /**
- * One edit of the ticket, as one operation on the revision shown when it is sent; true once the store has it. The page's edits go one
- * after another (serially): each is sent once the one before has answered, so it expects the revision that one left, where two
- * assignees ticked in a row would both expect the revision shown at the first click and the second be refused stale_revision. The
+ * One edit of the ticket the person acted on (`key`), as one operation on the revision shown when it is sent; true once the store has
+ * it. The page's edits go one after another (serially): each is sent once the one before has answered, so it expects the revision that
+ * one left, where two sent at once would both expect the revision shown at the first and the second be refused stale_revision. The
  * change is made then too (`make`), against the ticket as the one before left it: null when nothing is left to change, which is no
- * operation (the store refuses an edit that changes nothing), so a field set twice in a row, or a member ticked and unticked, sends
- * what it comes to.
+ * operation (the store refuses an edit that changes nothing), so a field set twice in a row sends what it comes to; false when it must
+ * not be sent (an editor's text changed by another person since it opened). None is sent once the page shows another ticket.
  */
-const edit = serially(async (make: () => TicketEdit | null): Promise<boolean> => {
+const edit = serially(async (key: string, make: () => Made): Promise<boolean> => {
   const t = ticket.value
-  if (!t || locked.value) return false
+  if (!t || key !== props.ticketKey || locked.value) return false
   const change = make()
+  if (change === false) return false
   if (!change) return true
-  const key = t.key
   let refused = false
   const reply = await ops.run<TicketReply>((body) => api.editTicket(key, { ...body, ...change }), {
     thing: `ticket:${key}`,
@@ -223,30 +232,64 @@ const edit = serially(async (make: () => TicketEdit | null): Promise<boolean> =>
   return !!reply
 })
 
-// The title: shown, or edited in place (Enter saves, Escape leaves it).
+// The title: shown, or edited in place (Enter saves, Escape leaves it). A save is made against the title the editor opened on: when another
+// person's came meanwhile (the page reads the ticket live), it is not sent, the draft is kept and theirs is said; a second save replaces it.
 const editingTitle = ref(false)
 const titleDraft = ref('')
+/** The title the editor opened on, or the other person's once said: what a save is made against. */
+const titleBase = ref('')
+/** Another person's title, saved while this one was edited: said once a save found it, until the editor closes. */
+const titleTheirs = ref<string | null>(null)
 const titleInput = useTemplateRef<{ inputRef?: HTMLInputElement }>('titleInput')
 function editTitle() {
   if (!ticket.value || locked.value) return
   titleDraft.value = ticket.value.title
+  titleBase.value = ticket.value.title
+  titleTheirs.value = null
   editingTitle.value = true
   void nextTick(() => titleInput.value?.inputRef?.select())
+}
+function leaveTitle() {
+  editingTitle.value = false
+  titleTheirs.value = null
+}
+/** The ticket holds another title than the one the editor opened on: it is said, and is what the next save is made against. */
+function titleChangedUnder(): boolean {
+  const shown = ticket.value?.title
+  if (shown === undefined || shown === titleBase.value) return false
+  titleTheirs.value = shown
+  titleBase.value = shown
+  return true
 }
 async function saveTitle(e?: KeyboardEvent) {
   // Enter that ends an input method's composition is the composition's.
   if (e?.isComposing) return
   const title = titleDraft.value.trim()
   if (!ticket.value || !title || title === ticket.value.title) {
-    editingTitle.value = false
+    leaveTitle()
     return
   }
-  if (await edit(() => (title !== ticket.value?.title ? { set: { title } } : null))) editingTitle.value = false
+  if (titleChangedUnder()) return
+  const base = titleBase.value
+  const made = () => {
+    const shown = ticket.value?.title
+    if (shown !== base) return false
+    return title !== shown ? { set: { title } } : null
+  }
+  if (await edit(props.ticketKey, made)) leaveTitle()
+  else titleChangedUnder()
 }
 
-/** A text field saved: its edit, or none when the ticket holds the text already. */
-function saveText(field: 'description' | 'acceptance', text: string): Promise<boolean> {
-  return edit(() => (text !== ticket.value?.[field] ? { set: { [field]: text } } : null))
+/**
+ * A text field saved, made against `base`, the text its editor opened on: none when the ticket holds the text already, and not sent when
+ * the field no longer holds `base` (another person's text came while this waited its turn), which the editor then shows.
+ */
+function saveText(field: 'description' | 'acceptance', text: string, base: string): Promise<boolean> {
+  return edit(props.ticketKey, () => {
+    const shown = ticket.value?.[field] ?? ''
+    if (shown !== base) return false
+    return text !== shown ? { set: { [field]: text } } : null
+  })
 }
 
 const statusItems = TICKET_STATUSES.map((s) => ({ label: statusWord(s).label, value: s, icon: statusWord(s).icon }))
@@ -256,23 +299,40 @@ const horizonItems = HORIZONS.map((h) => ({ label: h.label, value: h.name, icon:
 
 function setStatus(v: unknown) {
   if (typeof v !== 'string') return
-  void edit(() => (v !== ticket.value?.status ? { set: { status: v as TicketStatus } } : null))
+  void edit(props.ticketKey, () => (v !== ticket.value?.status ? { set: { status: v as TicketStatus } } : null))
 }
 function setPriority(v: unknown) {
   if (typeof v !== 'number') return
-  void edit(() => (v !== ticket.value?.priority ? { set: { priority: v } } : null))
+  void edit(props.ticketKey, () => (v !== ticket.value?.priority ? { set: { priority: v } } : null))
 }
 function setHorizon(v: unknown) {
   const h = HORIZONS.find((x) => x.name === v)?.value
   if (h === undefined) return
-  void edit(() => (h !== ticket.value?.horizon ? { set: { horizon: h as Horizon } } : null))
+  void edit(props.ticketKey, () => (h !== ticket.value?.horizon ? { set: { horizon: h as Horizon } } : null))
 }
 function setOwner(name: string) {
-  void edit(() => (name !== ticket.value?.owner ? { set: { owner: name } } : null))
+  void edit(props.ticketKey, () => (name !== ticket.value?.owner ? { set: { owner: name } } : null))
 }
-/** The assignees the picker left: what they add and remove, against the ticket as it is when the edit is sent. */
+
+/** What the assignee picker shows: the ticket's assignees with the person's pending picks applied. */
+const shownAssignees = computed(() => picks.shown(ticket.value?.assignees ?? []))
+/**
+ * The picker's new list, against the list it showed: each member ticked or unticked is a pick, made on the ticket when its edit is sent
+ * from the picks pending then, so a second tick while the first one's edit is on its way keeps both, and a member ticked and unticked
+ * before its edit went sends nothing. The picks stay shown until the edit that carried them has answered.
+ */
 function setAssignees(next: string[]) {
-  void edit(() => assigneesEdit(ticket.value?.assignees ?? [], next))
+  const made = picks.pick(shownAssignees.value, next)
+  if (!made.size) return
+  let carried: ReadonlyMap<string, number> = new Map()
+  void edit(props.ticketKey, () => {
+    const t = picks.take(ticket.value?.assignees ?? [])
+    carried = t.carried
+    return t.edit
+  }).finally(() => {
+    picks.settle(carried)
+    picks.settle(made)
+  })
 }
 
 function moreHistory() {
@@ -331,15 +391,19 @@ const MAX_ACCEPTANCE = 16 << 10
               class="min-w-0 flex-1"
               data-title-input
               @keydown.enter.prevent="(e: KeyboardEvent) => saveTitle(e)"
-              @keydown.escape.prevent.stop="editingTitle = false"
+              @keydown.escape.prevent.stop="leaveTitle"
             />
             <UButton label="Save" icon="i-lucide-check" :loading="ops.busy.value === `ticket:${ticket.key}`" :disabled="!titleDraft.trim()" data-title-save @click="saveTitle()" />
-            <UButton label="Cancel" color="neutral" variant="ghost" @click="editingTitle = false" />
+            <UButton label="Cancel" color="neutral" variant="ghost" @click="leaveTitle" />
           </div>
           <h1 v-else class="group flex items-start gap-2 text-xl font-semibold text-highlighted">
             <span class="min-w-0 break-words" data-ticket-title>{{ ticket.title }}</span>
             <UButton v-if="!locked" icon="i-lucide-pencil" size="xs" color="neutral" variant="ghost" aria-label="Edit the title" class="mt-0.5 flex-none opacity-60 group-hover:opacity-100" data-title-edit @click="editTitle" />
           </h1>
+          <p v-if="editingTitle && titleTheirs !== null" class="flex items-start gap-1.5 text-xs text-warning" data-title-theirs>
+            <UIcon name="i-lucide-triangle-alert" class="mt-px size-3.5 flex-none" />
+            <span class="min-w-0 break-words">The title was changed to “{{ titleTheirs }}” while you edited it. Save again to replace it with yours, or Cancel to keep it.</span>
+          </p>
           <p class="text-xs text-muted">
             <span :class="{ 'text-warning': words?.tone === 'warning', 'text-success': words?.tone === 'success' }" data-ticket-words>{{ words?.text }}</span>
             <span class="mx-1">·</span>
@@ -352,8 +416,8 @@ const MAX_ACCEPTANCE = 16 << 10
         <!-- Its text and history, its properties beside them on a wide screen; on a phone one column, the properties first. -->
         <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <div class="flex min-w-0 flex-1 flex-col gap-6">
-            <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text) => saveText('description', text)" :disabled="locked" name="description" />
-            <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text) => saveText('acceptance', text)" :disabled="locked" name="acceptance" />
+            <TicketMarkdown :text="ticket.description" label="Description" empty="Add a description…" :max-bytes="MAX_DESCRIPTION" :save="(text, base) => saveText('description', text, base)" :disabled="locked" name="description" />
+            <TicketMarkdown :text="ticket.acceptance" label="Acceptance criteria" empty="Add what must hold for it to be done…" :max-bytes="MAX_ACCEPTANCE" :save="(text, base) => saveText('acceptance', text, base)" :disabled="locked" name="acceptance" />
 
             <p class="flex items-start gap-2 rounded-md border border-dashed border-default px-4 py-3 text-sm text-muted" data-ticket-later>
               <UIcon name="i-lucide-construction" class="mt-0.5 size-4 flex-none" />
@@ -377,7 +441,7 @@ const MAX_ACCEPTANCE = 16 << 10
               <PersonPicker :model-value="ticket.owner" :disabled="locked" data-ticket-owner @update:model-value="setOwner" />
             </UFormField>
             <UFormField label="Assignees" size="sm" class="col-span-2">
-              <AssigneePicker :model-value="ticket.assignees" :agents="agents" :disabled="locked" data-ticket-assignees @update:model-value="setAssignees" />
+              <AssigneePicker :model-value="shownAssignees" :agents="agents" :disabled="locked" data-ticket-assignees @update:model-value="setAssignees" />
             </UFormField>
             <USeparator class="col-span-2" />
             <div class="flex flex-col gap-1.5 text-sm" data-ticket-labels>

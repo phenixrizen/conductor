@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DispatchChange } from '~/composables/useDispatch'
 import {
+  AssigneePicks,
   HORIZONS,
   assigneesEdit,
   LABEL_COLORS,
@@ -118,6 +119,69 @@ describe("a ticket's assignees", () => {
     // Ticked and unticked before the first edit was sent: nothing is left to send.
     expect(assigneesEdit(['person:Bob', 'agent:claude'], ['agent:claude', 'person:Bob'])).toBeNull()
     expect(assigneesEdit([], [])).toBeNull()
+  })
+})
+
+describe("a person's picks of a ticket's assignees", () => {
+  it('keep two ticks made before the first one\'s edit answers: each edit is made from the picks pending when it is sent', () => {
+    const p = new AssigneePicks()
+    // Claude ticked: the picker built its list from what it showed. Its edit is sent at once.
+    const first = p.pick(p.shown([]), ['agent:claude'])
+    const sent = p.take([])
+    expect(sent.edit).toEqual({ add: { assignees: ['agent:claude'] } })
+    // Codex ticked while that edit is on its way: the picker shows Claude ticked, so the list it builds holds both.
+    expect(p.shown([])).toEqual(['agent:claude'])
+    const second = p.pick(p.shown([]), ['agent:claude', 'agent:codex'])
+    // The first edit answers: the store holds Claude, and Codex is still pending, shown.
+    p.settle(sent.carried)
+    p.settle(first)
+    expect(p.shown(['agent:claude'])).toEqual(['agent:claude', 'agent:codex'])
+    // The second edit is made then, from the ticket the first left: it adds Codex and removes nothing.
+    const next = p.take(['agent:claude'])
+    expect(next.edit).toEqual({ add: { assignees: ['agent:codex'] } })
+    p.settle(next.carried)
+    p.settle(second)
+    expect(p.take(['agent:claude', 'agent:codex']).edit).toBeNull()
+    expect(p.shown(['agent:claude', 'agent:codex'])).toEqual(['agent:claude', 'agent:codex'])
+  })
+
+  it('send nothing for a member ticked and unticked before its edit went', () => {
+    const p = new AssigneePicks()
+    p.pick(p.shown(['person:Bob']), ['person:Bob', 'agent:goose'])
+    expect(p.shown(['person:Bob'])).toEqual(['person:Bob', 'agent:goose'])
+    p.pick(p.shown(['person:Bob']), ['person:Bob'])
+    expect(p.shown(['person:Bob'])).toEqual(['person:Bob'])
+    expect(p.take(['person:Bob']).edit).toBeNull()
+  })
+
+  it('touch only the members the person picked, whatever another person changed meanwhile', () => {
+    const p = new AssigneePicks()
+    p.pick(['person:Bob'], ['person:Bob', 'agent:claude'])
+    p.pick(['person:Bob', 'agent:claude'], ['agent:claude'])
+    // Another person assigned Ann, and unassigned Bob already: Ann stays, and Bob is no change.
+    expect(p.take(['person:Ann']).edit).toEqual({ add: { assignees: ['agent:claude'] } })
+    expect(p.shown(['person:Ann'])).toEqual(['person:Ann', 'agent:claude'])
+  })
+
+  it('keep a member picked again while the edit carrying its first pick is on its way, and let go of one whose edit failed', () => {
+    const p = new AssigneePicks()
+    p.pick([], ['agent:claude'])
+    const sent = p.take([])
+    // Unticked while the tick's edit is on its way; the tick's edit answers, and the store holds Claude.
+    p.pick(['agent:claude'], [])
+    p.settle(sent.carried)
+    expect(p.shown(['agent:claude'])).toEqual([])
+    expect(p.take(['agent:claude']).edit).toEqual({ remove: { assignees: ['agent:claude'] } })
+    // An edit refused: its picks are no longer pending, and the picker shows the store's.
+    const q = new AssigneePicks()
+    const made = q.pick([], ['agent:codex'])
+    q.settle(q.take([]).carried)
+    q.settle(made)
+    expect(q.shown([])).toEqual([])
+    // Another ticket: every pick forgotten.
+    q.pick([], ['agent:goose'])
+    q.clear()
+    expect(q.shown(['person:Bob'])).toEqual(['person:Bob'])
   })
 })
 

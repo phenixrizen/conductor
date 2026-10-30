@@ -174,6 +174,54 @@ export function assigneesEdit(before: readonly string[], next: readonly string[]
   return change
 }
 
+/**
+ * A person's picks of a ticket's assignees, from the click until the edit that carries them has answered (DispatchTicketPage): each member
+ * ticked or unticked, as the person did it, against the list the picker showed. The picker shows the ticket's assignees with the picks
+ * applied (`shown`), so a second tick made while the first one's edit is on its way builds on it. An edit is made when it is sent, from
+ * the picks pending then and the ticket as the edit before it left it (`take`): it adds and removes only the members the person touched,
+ * and a member ticked and unticked before it went is no change at all. A pick stays pending until the edit that carried it has answered,
+ * done or not (`settle`), unless the person picked that member again since.
+ */
+export class AssigneePicks {
+  /** By actor: whether the person wants it assigned, and the number of the pick; a later pick of the same actor replaces it. */
+  private readonly picks = new Map<string, { on: boolean; n: number }>()
+  private n = 0
+
+  /** What the picker shows: the ticket's assignees without those unticked, then those ticked, in the order picked. */
+  shown(assignees: readonly string[]): string[] {
+    const out = assignees.filter((a) => this.picks.get(a)?.on !== false)
+    for (const [a, p] of this.picks) if (p.on && !out.includes(a)) out.push(a)
+    return out
+  }
+
+  /** The picker's new list, against the list it showed: each member ticked or unticked is a pick. Answers the picks made, to settle. */
+  pick(shown: readonly string[], next: readonly string[]): Map<string, number> {
+    const made = new Map<string, number>()
+    for (const a of next) if (!shown.includes(a)) made.set(a, ++this.n)
+    for (const a of shown) if (!next.includes(a)) made.set(a, ++this.n)
+    for (const [a, n] of made) this.picks.set(a, { on: next.includes(a), n })
+    return made
+  }
+
+  /**
+   * The edit that makes every pending pick hold on the ticket's assignees as they are now (null when they all hold already), and the
+   * picks it carries, to settle once it has answered.
+   */
+  take(assignees: readonly string[]): { edit: TicketEdit | null; carried: Map<string, number> } {
+    return { edit: assigneesEdit(assignees, this.shown(assignees)), carried: new Map([...this.picks].map(([a, p]) => [a, p.n])) }
+  }
+
+  /** The picks given are no longer pending (their edit answered, done or not), each unless its member was picked again since. */
+  settle(picks: ReadonlyMap<string, number>): void {
+    for (const [a, n] of picks) if (this.picks.get(a)?.n === n) this.picks.delete(a)
+  }
+
+  /** Every pick forgotten: the page shows another ticket. */
+  clear(): void {
+    this.picks.clear()
+  }
+}
+
 /** An assignee's actor read: a person by name (person:Alice), or one of the catalog's agents by id (agent:claude). */
 export function assigneeOf(actor: string): { kind: 'person' | 'agent'; name: string } {
   if (actor.startsWith('agent:')) return { kind: 'agent', name: actor.slice(6) }
