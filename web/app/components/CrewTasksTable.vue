@@ -1,19 +1,18 @@
 <script setup lang="ts">
-import type { CrewCheck } from '~/composables/useSessions'
 import { TASK_LIMITS, draftTask, taskRowProblems, type DraftCheck, type DraftMember, type DraftTask, type TaskShape } from '~/utils/crews'
 
 /**
  * The tasks of a managed crew (#334): who does what, after which results,
  * checked how. A row is a task: its id, its member, its kind, the tasks it
- * needs, its instructions, its checks (a popover); the foot holds the setup
- * commands run in every new attempt worktree. The server's rules are shown
- * as they would be refused (taskRowProblems); the server still decides.
+ * needs, its instructions, its checks (a popover). What makes each attempt's
+ * worktree usable is the project manifest's, under the table
+ * (CrewManifestEditor). The server's rules are shown as they would be
+ * refused (taskRowProblems); the server still decides.
  */
 const tasks = defineModel<DraftTask[]>({ default: () => [] })
-const setup = defineModel<CrewCheck[] | undefined>('setup', { default: undefined })
 const props = defineProps<{ members: DraftMember[]; isolation: 'none' | 'worktree' }>()
 
-const shape = computed<TaskShape>(() => ({ tasks: tasks.value, setup: setup.value, isolation: props.isolation, members: props.members }))
+const shape = computed<TaskShape>(() => ({ tasks: tasks.value, isolation: props.isolation, members: props.members }))
 
 // Every cell keeps its place in the one-column-per-field layout of a wide
 // table and moves to a card layout when the table is narrow. Full class
@@ -115,14 +114,6 @@ function menu(t: DraftTask, i: number) {
 }
 
 const focused = ref<number | null>(null)
-const setupShown = ref(false)
-watch(
-  () => setup.value?.length,
-  (n) => {
-    if (n) setupShown.value = true
-  },
-  { immediate: true },
-)
 </script>
 
 <template>
@@ -188,14 +179,6 @@ watch(
     </div>
     <div class="flex flex-wrap gap-x-4 gap-y-1">
       <UButton label="Add task" icon="i-lucide-plus" color="secondary" variant="link" size="sm" class="px-0" :disabled="!members.length || tasks.length >= TASK_LIMITS.tasks" data-add-task @click="add" />
-      <UButton v-if="!setupShown" label="Setup commands" icon="i-lucide-wrench" color="secondary" variant="link" size="sm" class="px-0" data-show-setup @click="setupShown = true" />
-    </div>
-    <div v-if="setupShown" class="flex flex-col gap-2 rounded-lg ring ring-default p-3" data-crew-setup>
-      <div class="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-        <span class="text-sm font-semibold text-highlighted">Setup</span>
-        <span class="text-[12.5px] text-muted">run in every new attempt worktree before its member starts (a dependency install): a fresh worktree holds tracked files alone. They run on this machine with your permissions, as the checks do.</span>
-      </div>
-      <CrewCheckList :model-value="setup ?? []" what="setup command" @update:model-value="setup = $event.length ? $event : undefined" />
     </div>
   </div>
 </template>
