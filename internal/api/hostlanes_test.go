@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -224,14 +226,16 @@ func TestRevokeOvertakingAQueuedJoinReachesNoHost(t *testing.T) {
 
 // throttle carries TCP connections to target, what target sends at rate
 // bytes a second, its socket to target with a small receive buffer: a slow
-// path from a server to its host.
-func throttle(t *testing.T, target string, rate int) string {
+// path from a server to its host. What target sends waits while gate is
+// shut.
+func throttle(t *testing.T, target string, rate int, gate *pathGate) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	done := t.Context().Done()
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -248,6 +252,9 @@ func throttle(t *testing.T, target string, rate int) string {
 			go func() {
 				buf := make([]byte, 8<<10)
 				for {
+					if !gate.pass(done) {
+						return
+					}
 					n, err := s.Read(buf)
 					if n > 0 {
 						if _, werr := c.Write(buf[:n]); werr != nil {
@@ -266,6 +273,122 @@ func throttle(t *testing.T, target string, rate int) string {
 	return "http://" + ln.Addr().String()
 }
 
+// pathGate holds what a throttle carries from a server to its host while it
+// is shut: the server's writer waits on its socket with what the sockets on
+// the way hold, and the rest of what is queued for the host waits in its
+// queue, where the server finds it. A test shuts it for moments only: the
+// host's pings are answered behind it, a pong's write given 5 s by the
+// WebSocket library, and the server's writes to the host given
+// writeTimeout.
+type pathGate struct {
+	mu   sync.Mutex
+	open chan struct{} // closed while the gate is open
+}
+
+// newPathGate makes a gate, open.
+func newPathGate() *pathGate {
+	g := &pathGate{open: make(chan struct{})}
+	close(g.open)
+	return g
+}
+
+// shut holds the path from the throttle's next read on.
+func (g *pathGate) shut() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	select {
+	case <-g.open:
+		g.open = make(chan struct{})
+	default:
+	}
+}
+
+// lift lets the path carry again.
+func (g *pathGate) lift() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	select {
+	case <-g.open:
+	default:
+		close(g.open)
+	}
+}
+
+// pass waits while the gate is shut: false when done closes first.
+func (g *pathGate) pass(done <-chan struct{}) bool {
+	g.mu.Lock()
+	open := g.open
+	g.mu.Unlock()
+	select {
+	case <-open:
+		return true
+	case <-done:
+		return false
+	}
+}
+
+// viewerReads counts the reads of each hosted viewer's connection to e
+// (viewerSeam.read, called before each): once a connection's read loop has
+// begun its read n+1, its frame n is queued for the host, or dropped. The
+// connections are numbered as they first read, from 0.
+type viewerReads struct {
+	mu    sync.Mutex
+	conns []<-chan struct{}
+	reads []int
+	more  chan struct{} // closed at the next read
+}
+
+// countViewerReads counts the reads of e's hosted viewers' connections
+// from now on. Call it before any connects.
+func countViewerReads(e *testEnv) *viewerReads {
+	r := &viewerReads{more: make(chan struct{})}
+	e.srv.viewerSeam = &viewerSeam{read: r.read}
+	return r
+}
+
+func (r *viewerReads) read(written <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	i := slices.Index(r.conns, written)
+	if i < 0 {
+		r.conns = append(r.conns, written)
+		r.reads = append(r.reads, 0)
+		i = len(r.conns) - 1
+	}
+	r.reads[i]++
+	close(r.more)
+	r.more = make(chan struct{})
+}
+
+// of is how many reads connection i has begun.
+func (r *viewerReads) of(i int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i >= len(r.reads) {
+		return 0
+	}
+	return r.reads[i]
+}
+
+// await waits until connection i has begun n reads.
+func (r *viewerReads) await(t *testing.T, i, n int) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		r.mu.Lock()
+		more := r.more
+		r.mu.Unlock()
+		if r.of(i) >= n {
+			return
+		}
+		select {
+		case <-more:
+		case <-deadline:
+			t.Fatalf("viewer connection %d began %d reads, not %d", i, r.of(i), n)
+		}
+	}
+}
+
 // A line a link's viewer sent, still queued behind relayed frames for a
 // host on a slow path when the link is revoked, is never typed: the going
 // reaches the host ahead of the queue, and the line is dropped with the
@@ -273,6 +396,8 @@ func throttle(t *testing.T, target string, rate int) string {
 // session.
 func TestLinkLineRefusedAfterRevokeBehindQueue(t *testing.T) {
 	e := newTestEnv(t, noViewerBudget)
+	reads := countViewerReads(e)
+	gate := newPathGate()
 	out := filepath.Join(t.TempDir(), "lines")
 	ctx, cancel := context.WithCancel(t.Context())
 	registered := make(chan string, 1)
@@ -280,7 +405,7 @@ func TestLinkLineRefusedAfterRevokeBehindQueue(t *testing.T) {
 	go func() {
 		defer close(ran)
 		_, _ = hostagent.Run(ctx, hostagent.Options{
-			ServerURL: throttle(t, strings.TrimPrefix(slowDoor(t, e), "http://"), 1<<20), Token: "test-host-token", Name: "slow path", HostName: "laptop", RelayOnly: true,
+			ServerURL: throttle(t, strings.TrimPrefix(slowDoor(t, e), "http://"), 1<<20, gate), Token: "test-host-token", Name: "slow path", HostName: "laptop", RelayOnly: true,
 			Argv: []string{"/bin/sh", "-c", `stty -echo; exec grep --line-buffered -e guest -e marker > "$1"`, "sh", out}, Dir: e.root, Log: slog.New(slog.DiscardHandler),
 			Registered: func(id, _ string) { registered <- id },
 		})
@@ -292,18 +417,29 @@ func TestLinkLineRefusedAfterRevokeBehindQueue(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the host never registered")
 	}
-	owner := dialViewer(t, e, id, adminToken)
+	owner := dialViewer(t, e, id, adminToken) // the viewers' first connection
 	joinRelay(t, owner)
 	linkID, token := controlLink(t, e, id)
-	guest := dialViewer(t, e, id, token)
+	guest := dialViewer(t, e, id, token) // and their second
 	joinRelay(t, guest)
 
+	// Until the revoke the path carries nothing more: what the server
+	// queues for the host from here waits in its queue, but for what the
+	// sockets on the way take (a few of the owner's frames on Linux, a few
+	// hundred KiB on macOS).
+	gate.shut()
+	ownerRead := reads.of(0)
 	sendInput(t, owner, 3<<20)
+	// A frame the viewer has written may still wait in the sockets: the
+	// owner's are queued for the host once its read loop has come back
+	// for the next.
+	reads.await(t, 0, ownerRead+(3<<20)/proto.MaxInput)
+	guestRead := reads.of(1)
 	guest.send(proto.MustControl(proto.Submit{T: proto.CtlSubmit, Text: "guest line"}))
-	time.Sleep(300 * time.Millisecond)
+	reads.await(t, 1, guestRead+1) // queued behind the owner's 3 MiB
 	sendInput(t, owner, 2<<20)
-	time.Sleep(300 * time.Millisecond)
 	revokeLink(t, e, id, linkID)
+	gate.lift()
 
 	// The owner's marker comes after all of it: once the session has it,
 	// everything queued before it has been typed, or dropped.
