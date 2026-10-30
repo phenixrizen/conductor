@@ -3,6 +3,7 @@ import type { DispatchLabel, DispatchMilestone, DispatchSort, Horizon, TicketSta
 import type { AgentInfo } from '~/composables/useSessions'
 import { HORIZONS, LIST_SORTS, PRIORITIES, TICKET_STATUSES, labelDot, sortDesc, statusWord } from '~/utils/dispatch'
 import { emptyFilter, filterNarrows, MAX_SEARCH, type DispatchFilter } from '~/utils/dispatchQuery'
+import { DispatchOrder, through } from '~/utils/dispatchOrder'
 
 /**
  * A list's filter bar (docs/plans/dispatch.md, "web/app"): a search, then status, priority, labels, owner, assignees, milestone,
@@ -42,10 +43,12 @@ onBeforeUnmount(() => window.clearTimeout(searchTimer))
 
 const api = useDispatchApi()
 const people = ref<string[]>([])
+// The directory read whole, through a gate of its own (utils/dispatchOrder.ts): a slow reply never replaces a newer one.
+const gate = new DispatchOrder()
 async function loadPeople(open: boolean) {
   if (!open) return
   try {
-    people.value = (await api.people()).map((p) => p.name)
+    await through(gate, 'people', () => api.people(), (list) => (people.value = list.map((p) => p.name)))
   } catch {
     // The names read before stay offered.
   }

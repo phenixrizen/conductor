@@ -62,3 +62,17 @@ export async function through<T>(gate: DispatchOrder, thing: string, send: () =>
   apply(reply)
   return true
 }
+
+/**
+ * `f` made serial: each call starts once every call before it has settled, answered or failed, and resolves or rejects as its own call
+ * does. A page's operations on one entity go so (DispatchTicketPage), each expecting the revision the one before it left, where two sent
+ * at once would expect the same revision and the second be refused stale_revision by the first.
+ */
+export function serially<A extends unknown[], R>(f: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  let last: Promise<unknown> = Promise.resolve()
+  return (...args: A) => {
+    const next = last.then(() => f(...args))
+    last = next.catch(() => {})
+    return next
+  }
+}

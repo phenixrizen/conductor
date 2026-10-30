@@ -130,11 +130,24 @@ test('a project, a ticket made from its page and edited on its own page, its his
 
   // The owner: a name typed, which the directory gains as it is set.
   await page.locator('[data-ticket-owner]').click()
-  await page.keyboard.type(owner)
+  await page.getByPlaceholder('A name…', { exact: true }).fill(owner)
   await page.getByRole('option', { name: `Make ${owner} the owner` }).click()
   await expect(page.locator('[data-ticket-owner]')).toContainText(owner)
   const people = await api.ok<{ people: Array<{ name: string }> }>('GET', '/api/dispatch/people')
   expect(people.people.map((p) => p.name)).toContain(owner)
+
+  // The assignees: one of the catalog's agents and a person typed, ticked in a row, each one operation on the revision the one before
+  // left, both kept.
+  const helper = `Helper ${key}`
+  await page.locator('[data-ticket-assignees]').click()
+  await page.getByRole('option', { name: 'Claude Code (e2e stub)', exact: true }).click()
+  await page.getByPlaceholder('A name or an agent…').fill(helper)
+  await page.getByRole('option', { name: `Assign ${helper}`, exact: true }).click()
+  await page.keyboard.press('Escape')
+  const chips = page.locator('[data-ticket-assignees] [data-assignee]')
+  await expect(chips).toHaveCount(2)
+  await expect(page.locator(`[data-ticket-assignees] [data-assignee="person:${helper}"]`)).toContainText(helper)
+  await expect(page.locator('[data-ticket-assignees] [data-assignee="agent:claude"]')).toContainText('Claude Code (e2e stub)')
 
   // The history lists every field set, under who set it.
   const history = page.locator('[data-ticket-history]')
@@ -143,6 +156,8 @@ test('a project, a ticket made from its page and edited on its own page, its his
   await expect(history).toContainText('wrote the description')
   await expect(history).toContainText('set the priority to Urgent')
   await expect(history).toContainText(`made ${owner} the owner`)
+  await expect(history).toContainText('assigned Claude Code (e2e stub)')
+  await expect(history).toContainText(`assigned ${helper}`)
   await expect(history.locator('[data-history-who]').first()).toHaveText('Nate')
 
   // The second browser followed every edit, still with no reload.

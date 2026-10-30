@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { DispatchOrder, through } from '~/utils/dispatchOrder'
 import { avatarTone } from '~/utils/avatar'
 import { initials } from '~/utils/sessions'
 
@@ -17,9 +18,11 @@ watch(open, (o) => {
   if (o) void load()
 })
 
+// The directory read whole, through a gate of its own (utils/dispatchOrder.ts): a slow reply never replaces a newer one.
+const gate = new DispatchOrder()
 async function load() {
   try {
-    people.value = (await api.people()).map((p) => p.name)
+    await through(gate, 'people', () => api.people(), (list) => (people.value = list.map((p) => p.name)))
   } catch {
     // The names read before stay offered; a typed name still sets.
   }

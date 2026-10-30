@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DispatchOrder, through } from './dispatchOrder'
+import { DispatchOrder, serially, through } from './dispatchOrder'
 
 /** A request whose reply the test hands back, or fails, when it wants. */
 function deferred<T>() {
@@ -127,5 +127,35 @@ describe('the ordering gate', () => {
     const n = g.ask()
     expect(g.take('projects', n)).toBe(true)
     expect(g.take('projects', n)).toBe(false)
+  })
+})
+
+describe("a page's operations, one after another", () => {
+  /** Every promise callback queued so far run: what a call can start on has started. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+  it('start each call once the one before has settled, a failed one among them, each answering as its own', async () => {
+    const started: string[] = []
+    const gates = new Map<string, ReturnType<typeof deferred<string>>>()
+    const op = serially(async (name: string) => {
+      started.push(name)
+      const d = deferred<string>()
+      gates.set(name, d)
+      return d.promise
+    })
+    const a = op('a')
+    const b = op('b')
+    const c = op('c')
+    await settle()
+    expect(started).toEqual(['a'])
+    gates.get('a')!.resolve('a done')
+    expect(await a).toBe('a done')
+    await settle()
+    expect(started).toEqual(['a', 'b'])
+    gates.get('b')!.reject(new Error('b refused'))
+    await expect(b).rejects.toThrow('b refused')
+    await settle()
+    expect(started).toEqual(['a', 'b', 'c'])
+    gates.get('c')!.resolve('c done')
+    expect(await c).toBe('c done')
   })
 })

@@ -5,6 +5,7 @@ import { ApiError } from '~/composables/useApi'
 import { ticketWatch } from '~/composables/useDispatchLive'
 import { HORIZONS, PRIORITIES, TICKET_STATUSES, historyEntries, horizonWord, labelDot, parseTicketKey, priorityWord, projectPath, statusWord, ticketPath, ticketWords, validProjectKey } from '~/utils/dispatch'
 import { relativeTime } from '~/utils/sessions'
+import { serially } from '~/utils/dispatchOrder'
 
 /**
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
@@ -190,11 +191,16 @@ const entries = computed(() =>
   }),
 )
 
-/** One edit of the ticket, as one operation on the revision shown; true once the store has it. */
-async function edit(change: TicketEdit): Promise<boolean> {
+/**
+ * One edit of the ticket, as one operation on the revision shown when it is sent; true once the store has it. The page's edits go one
+ * after another (serially): each is sent once the one before has answered, so it expects the revision that one left, where two
+ * assignees ticked in a row would both expect the revision shown at the first click and the second be refused stale_revision.
+ */
+const edit = serially(async (change: TicketEdit): Promise<boolean> => {
   const t = ticket.value
   if (!t || locked.value) return false
   const key = t.key
+  let refused = false
   const reply = await ops.run<TicketReply>((body) => api.editTicket(key, { ...body, ...change }), {
     thing: `ticket:${key}`,
     what: key,
@@ -203,12 +209,14 @@ async function edit(change: TicketEdit): Promise<boolean> {
       if (r.ticket && key === props.ticketKey) ticket.value = r.ticket
     },
     rev: (r) => r.ticket?.rev,
-    // A refusal (a stale revision: another edit came first) shows the ticket as the store holds it now.
-    refused: () => void reload().catch(() => {}),
+    refused: () => (refused = true),
   })
-  if (reply) void readHistory().catch(() => {})
+  // A refusal (a stale revision: another person's edit came first) shows the ticket as the store holds it now, read before the next
+  // edit is sent, so that one expects the revision the store has.
+  if (refused) await reload().catch(() => {})
+  else if (reply) void readHistory().catch(() => {})
   return !!reply
-}
+})
 
 // The title: shown, or edited in place (Enter saves, Escape leaves it).
 const editingTitle = ref(false)
@@ -220,7 +228,9 @@ function editTitle() {
   editingTitle.value = true
   void nextTick(() => titleInput.value?.inputRef?.select())
 }
-async function saveTitle() {
+async function saveTitle(e?: KeyboardEvent) {
+  // Enter that ends an input method's composition is the composition's.
+  if (e?.isComposing) return
   const title = titleDraft.value.trim()
   if (!ticket.value || !title || title === ticket.value.title) {
     editingTitle.value = false
@@ -313,10 +323,10 @@ const MAX_ACCEPTANCE = 16 << 10
               size="lg"
               class="min-w-0 flex-1"
               data-title-input
-              @keydown.enter.prevent="saveTitle"
+              @keydown.enter.prevent="(e: KeyboardEvent) => saveTitle(e)"
               @keydown.escape.prevent.stop="editingTitle = false"
             />
-            <UButton label="Save" icon="i-lucide-check" :loading="ops.busy.value === `ticket:${ticket.key}`" :disabled="!titleDraft.trim()" data-title-save @click="saveTitle" />
+            <UButton label="Save" icon="i-lucide-check" :loading="ops.busy.value === `ticket:${ticket.key}`" :disabled="!titleDraft.trim()" data-title-save @click="saveTitle()" />
             <UButton label="Cancel" color="neutral" variant="ghost" @click="editingTitle = false" />
           </div>
           <h1 v-else class="group flex items-start gap-2 text-xl font-semibold text-highlighted">
