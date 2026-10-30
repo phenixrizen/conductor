@@ -1527,6 +1527,56 @@ func TestDispatchTicketBodiesAreBounded(t *testing.T) {
 	e.expect(t, "POST", "/api/dispatch/tickets/BND-1/edit", edit, http.StatusOK, "")
 }
 
+// Every write's body is bounded before the store sees it, on every POST
+// route of the table, the sixteen that opAt starts among them: a body one
+// byte past its route's bound (maxTicketBody on a ticket's create and
+// edit, maxBody on every other write) is 413 bound, and one at its bound
+// is read whole, the store then refusing its display name (400
+// invalid_request), so no route's bound moves, up or down, without this
+// failing. A write added later is held here to maxBody unless bounds
+// names its own.
+func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	bounds := map[string]int{
+		"POST /api/dispatch/tickets":            maxTicketBody,
+		"POST /api/dispatch/tickets/{key}/edit": maxTicketBody,
+	}
+	// A ticket's create checks its project's key before the store sees
+	// the body.
+	fields := map[string]string{"POST /api/dispatch/tickets": `"project":"CND",`}
+	refusal := strings.TrimPrefix(dispatch.ErrBadBy.Error(), "dispatch: ")
+	writes := 0
+	for _, r := range e.srv.dispatchRoutes() {
+		if !strings.HasPrefix(r.pattern, "POST ") {
+			continue
+		}
+		req, ok := dispatchRequests[r.pattern]
+		if !ok {
+			t.Fatalf("no request of %s", r.pattern)
+		}
+		bound, ok := bounds[r.pattern]
+		if !ok {
+			bound = maxBody
+		}
+		writes++
+		// body is n bytes of one JSON object of the route's fields, its
+		// display name the rest.
+		body := func(n int) []byte {
+			prefix, suffix := `{"opId":"`+opID()+`",`+fields[r.pattern]+`"byName":"`, `"}`
+			return []byte(prefix + strings.Repeat("n", n-len(prefix)-len(suffix)) + suffix)
+		}
+		e.expect(t, "POST", req.path, body(bound+1), http.StatusRequestEntityTooLarge, "bound")
+		out := e.expect(t, "POST", req.path, body(bound), http.StatusBadRequest, "invalid_request")
+		if msg := out["error"].(map[string]any)["message"]; msg != refusal {
+			t.Fatalf("%s, a body at its bound: %v, want the display name's refusal", r.pattern, msg)
+		}
+	}
+	if writes != 27 {
+		t.Fatalf("%d writes", writes)
+	}
+}
+
 // filler makes the texts of a test's largest entities from two
 // characters, the bits of i choosing between them, so the i-th text of a
 // length differs from the others where a rule keeps names unique.
