@@ -90,5 +90,7 @@ describe("a tile's terminal narrowed with its cursor above the last row (#221)",
     // The bug this works around: should an xterm.js upgrade fix it, this half fails, and the tiles' scrollback is a choice again.
     expect(without, 'with no scrollback every history breaks (xterm.js 6.0)').toHaveLength(BREAKING.length)
     expect(withScrollback, 'with TILE_SCROLLBACK none does').toEqual([])
-  })
+    // Its own bound: three hundred terminals driven through their histories are CPU work, which took 4.5 s and more on a loaded
+    // machine, past vitest's 5 s default, a bound no code applies. This one only stops a hang.
+  }, 120_000)
 })
