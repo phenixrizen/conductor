@@ -338,12 +338,16 @@ func TestAnEngineProbeAsksTheLoopbackAndFollowsNoRedirect(t *testing.T) {
 		e.exec.probe = probeURL
 		fl.ports.script(port)
 		m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
-			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1, TimeoutSeconds: 1}}}
+			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1, TimeoutSeconds: 3}}}
 		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
 		attemptFailed(t, e, run.ID, "build", 1)
 		row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
-		if row.Stage != "ready page" || !strings.Contains(row.Error, "page did not pass within 1s") || !strings.HasSuffix(row.Error, "answered 302 Found") {
+		if row.Stage != "ready page" || !strings.Contains(row.Error, "page did not pass within 3s") {
 			t.Fatalf("attempt 1: %+v", row)
+		}
+		// Every try is in the probe's log: the redirect was each one's answer.
+		if page, ok := rowOf(l.stepRows(run.ID, "build", 1), "page", 1); !ok || page.Tries < 1 || !strings.Contains(string(page.Log), "answered 302 Found") || page.URL != fmt.Sprintf("http://127.0.0.1:%d/", port) {
+			t.Fatalf("the probe: %+v", page)
 		}
 		if n := elsewhere.Load(); n != 0 {
 			t.Fatalf("the redirect was followed: %d requests elsewhere", n)
@@ -416,13 +420,27 @@ func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 		service Check
 		words   string
 		daemon  bool
+		// atOnce hands the service over only once it has exited: its
+		// watcher sees its end before its running row is put.
+		atOnce bool
 	}{
-		{"one that dies", shStep("web", `echo the port is taken; exit 1`), "web exited 1 before the tree was ready: the port is taken", false},
-		{"a daemonizer", daemonizing("web", true), "web exited 0 before the tree was ready: a service must stay in the foreground", true},
+		{"one that dies", shStep("web", `echo the port is taken; exit 1`), "web exited 1 before the tree was ready: the port is taken", false, false},
+		{"one that exits at once", shStep("web", `echo gone; exit 1`), "web exited 1 before the tree was ready: gone", false, true},
+		{"a daemonizer", daemonizing("web", true), "web exited 0 before the tree was ready: a service must stay in the foreground", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := newRepo(t)
 			e, _, l := managedEngine(t)
+			if tc.atOnce {
+				native := e.exec.serve
+				e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
+					svc, err := native(ctx, s)
+					if err == nil {
+						<-svc.Done()
+					}
+					return svc, err
+				}
+			}
 			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{tc.service}, Ready: []Probe{never}}, work("build", "lead")))
 			attemptFailed(t, e, run.ID, "build", 1)
 			row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
@@ -442,8 +460,8 @@ func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
 			if p := l.payloads(run.ID, "service.ended"); len(p) != 1 || p[0]["why"] != "it exited before the tree was ready" {
 				t.Fatalf("service.ended: %v", p)
 			}
-			if kinds := l.kinds(run.ID); slices.Contains(kinds, "tree.ready") || slices.Contains(kinds, "attempt.launched") {
-				t.Fatalf("the tree was ready: %v", kinds)
+			if kinds := l.kinds(run.ID); slices.Contains(kinds, "tree.ready") || slices.Contains(kinds, "attempt.launched") || !before(kinds, "step.running", "service.ended") {
+				t.Fatalf("the tree was ready, or the service's end came before its running row: %v", kinds)
 			}
 			waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
 			if tc.daemon {

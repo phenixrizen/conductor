@@ -205,7 +205,9 @@ type service interface {
 // at its end. Under e.mu: stopping is why something is ending it (the
 // tree's end, the run's stop, a start refused), "" while nothing is; ended
 // is set once its end is recorded, or in the change that records it.
-// watched is closed once its watcher has returned (watchService).
+// watched is closed once its watcher has returned (watchService), which
+// starts once its running row's transaction has returned, so its end is
+// never recorded before its start.
 type treeService struct {
 	ch       Check
 	row      ledger.CheckRow
@@ -787,9 +789,10 @@ func stepPayload(a *attempt, t *tree, phase, id string, k int, more map[string]a
 // would kill the service's group at the attempt's close before the tree's
 // end could ask it to stop (a service ends by Stop, from endTree or the
 // run's stop, and by its context only at the shutdown's cut-off); its
-// handle on the tree under e.mu the moment it exists, watched from then on
-// (watchService); then its row running with its pid, group and start time
-// (step.running), committed before the next service starts. A tree whose
+// handle on the tree under e.mu the moment it exists; then its row running
+// with its pid, group and start time (step.running), committed before the
+// next service starts, and the service watched from then on
+// (watchService), so its end is recorded after its start. A tree whose
 // end has begun has the new service stopped at once, and a running row the
 // ledger refuses stops it and reaps it: either fails the tree at the
 // service, whose end the tree's end records. A command that cannot start
@@ -840,17 +843,21 @@ func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, 
 		ts.stopping = "its tree's end had begun as it started"
 	}
 	e.mu.Unlock()
-	go e.watchService(r, a, t, ts)
 	if ending {
+		go e.watchService(r, a, t, ts)
 		svc.Stop(r.teardown)
 		<-ts.watched
 		return fmt.Errorf("%s was stopped as it started: its tree's end had begun", ch.ID)
 	}
-	if err := e.transact(context.Background(), r, func() tx {
+	err = e.transact(context.Background(), r, func() tx {
 		out := ev("step.running", stepPayload(a, t, ledger.PhaseService, ch.ID, k, map[string]any{"pid": p.PID, "group": p.Group}))
 		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(running) }
 		return out
-	}, nil); err != nil {
+	}, nil)
+	// Watched from here on: an end that came already is recorded after its
+	// running row, never written over by it.
+	go e.watchService(r, a, t, ts)
+	if err != nil {
 		e.mu.Lock()
 		if ts.stopping == "" && !ts.ended {
 			ts.stopping = "the ledger could not record its start"
