@@ -23,8 +23,9 @@ import (
 
 // Dispatch over HTTP (docs/plans/dispatch.md): the projects with their
 // labels and milestones, the people, the tickets with their comments,
-// relations and links, the saved views, the ticket a run is linked to, and
-// the receipts. Every route is the admin's (Owner decisions, 17:
+// relations, links and attachments (dispatch_attachments.go), the saved
+// views, the ticket a run is linked to, and the receipts. Every route is
+// the admin's (Owner decisions, 17:
 // share-link viewers see no ticket) and a switchyard's 403 (launching),
 // since a switchyard keeps no tickets. Every write is one of the store's
 // typed operations under the actor admin (dispatch.Store.Apply): its body
@@ -127,6 +128,9 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/tickets/{key}/relations/{id}/delete", s.handleDispatchRemoveRelation},
 		{"POST /api/dispatch/tickets/{key}/links", s.handleDispatchAddLink},
 		{"POST /api/dispatch/tickets/{key}/links/{id}/delete", s.handleDispatchRemoveLink},
+		{"POST /api/dispatch/tickets/{key}/attachments", s.handleDispatchAddAttachment},
+		{"POST /api/dispatch/tickets/{key}/attachments/{id}/delete", s.handleDispatchRemoveAttachment},
+		{"GET /api/dispatch/attachments/{id}", s.handleDispatchAttachment},
 		{"GET /api/dispatch/links", s.handleDispatchRunTicket},
 		{"GET /api/dispatch/views", s.handleDispatchViews},
 		{"POST /api/dispatch/views", s.handleDispatchCreateView},
@@ -144,7 +148,9 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 // dispatch_unavailable. A store that opens read-only (a newer Conductor
 // wrote it, it fails its check, another writer held it past the busy
 // timeout) is logged with why: its reads answer as they can and its
-// writes are 503 dispatch_unavailable with why.
+// writes are 503 dispatch_unavailable with why. What the store's sweep of
+// its attachments' files at open could not delete is logged too: it is
+// left for the next sweep, and the store serves regardless.
 func openDispatch(st *store.Store, log logger) *dispatch.Store {
 	ds, err := dispatch.Open(filepath.Join(st.Dir(), "dispatch"))
 	if err != nil {
@@ -153,6 +159,9 @@ func openDispatch(st *store.Store, log logger) *dispatch.Store {
 	}
 	if ro, why := ds.ReadOnly(); ro {
 		log.Warn("Dispatch is read-only: its writes are refused", "why", why)
+	}
+	if err := ds.SweepError(); err != nil {
+		log.Warn("Dispatch's sweep of its attachments' files left some for the next", "err", err)
 	}
 	return ds
 }
