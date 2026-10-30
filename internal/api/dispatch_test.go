@@ -236,6 +236,12 @@ var dispatchRequests = map[string]struct {
 	"POST /api/dispatch/tickets/{key}/relations/{id}/delete":   {"/api/dispatch/tickets/CND-1/relations/0123456789abcdef/delete", map[string]any{"opId": "b11"}},
 	"POST /api/dispatch/tickets/{key}/links":                   {"/api/dispatch/tickets/CND-1/links", map[string]any{"opId": "b12", "kind": "delivery", "url": "https://example.com/pull/1"}},
 	"POST /api/dispatch/tickets/{key}/links/{id}/delete":       {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/delete", map[string]any{"opId": "b13"}},
+	// The upload's body is multipart (uploadOf, dispatch_attachments_test.go):
+	// every walk here is answered before a body is read, but the bounds'
+	// walk, which sends one of its shape.
+	"POST /api/dispatch/tickets/{key}/attachments":             {"/api/dispatch/tickets/CND-1/attachments", nil},
+	"POST /api/dispatch/tickets/{key}/attachments/{id}/delete": {"/api/dispatch/tickets/CND-1/attachments/0123456789abcdef/delete", map[string]any{"opId": "b17"}},
+	"GET /api/dispatch/attachments/{id}":                       {"/api/dispatch/attachments/0123456789abcdef", nil},
 	"GET /api/dispatch/links":                                  {"/api/dispatch/links?run=team-0000aaaa", nil},
 	"GET /api/dispatch/views":                                  {"/api/dispatch/views?project=CND", nil},
 	"POST /api/dispatch/views":                                 {"/api/dispatch/views", map[string]any{"opId": "b14", "name": "Mine", "kind": "list", "query": map[string]any{}}},
@@ -1420,14 +1426,25 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 	// a1 made, and its ticket.
 	e.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "a1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
 	e.newDispatchTicket(t, "CND", "Read me", nil)
-	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1"}
+	// The download reads an attachment of the ticket's, whose id its
+	// request names in place of the one dispatchRequests holds.
+	attachment := "/api/dispatch/attachments/" + entityOf(t, e.upload(t, "CND-1", "read.txt", "text/plain", []byte("read me"), http.StatusCreated, ""), "attachment")["id"].(string)
+	takeNone := []string{"/api/dispatch/people", "/api/dispatch/projects/CND", "/api/dispatch/tickets/CND-1", "/api/dispatch/ops/a1", attachment}
 	reads := 0
 	eachDispatchRoute(t, e.srv, func(method, path string, _ any) {
 		if method != http.MethodGet {
 			return
 		}
 		reads++
-		e.expect(t, method, path, nil, http.StatusOK, "")
+		if strings.HasPrefix(path, "/api/dispatch/attachments/") {
+			// The file itself, not JSON.
+			path = attachment
+			if status, _, data, _ := e.send(t, method, path, nil, ""); status != http.StatusOK || string(data) != "read me" {
+				t.Fatalf("%s: %d %q", path, status, data)
+			}
+		} else {
+			e.expect(t, method, path, nil, http.StatusOK, "")
+		}
 		sep := "?"
 		if strings.Contains(path, "?") {
 			sep = "&"
@@ -1440,7 +1457,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 10 {
+	if reads != 11 {
 		t.Fatalf("%d reads", reads)
 	}
 }
@@ -1530,22 +1547,36 @@ func TestDispatchTicketBodiesAreBounded(t *testing.T) {
 // Every write's body is bounded before the store sees it, on every POST
 // route of the table, the sixteen that opAt starts among them: a body one
 // byte past its route's bound (maxTicketBody on a ticket's create and
-// edit, maxBody on every other write) is 413 bound, and one at its bound
-// is read whole, the store then refusing its display name (400
-// invalid_request), so no route's bound moves, up or down, without this
-// failing. A write added later is held here to maxBody unless bounds
-// names its own.
+// edit, maxAttachmentBody on an attachment's upload, maxBody on every
+// other write) is 413 bound, and one at its bound is read whole, the store
+// then refusing its display name (400 invalid_request), so no route's
+// bound moves, up or down, without this failing. A write added later is
+// held here to maxBody unless bounds names its own. The upload's body is
+// multipart, its display name a field before the file and its file the
+// rest (shapes); the route reads the whole of it before it answers.
 func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 	t.Parallel()
 	e := dispatchEnv(t)
+	const upload = "POST /api/dispatch/tickets/{key}/attachments"
 	bounds := map[string]int{
 		"POST /api/dispatch/tickets":            maxTicketBody,
 		"POST /api/dispatch/tickets/{key}/edit": maxTicketBody,
+		upload:                                  maxAttachmentBody,
 	}
 	// A ticket's create checks its project's key before the store sees
 	// the body.
 	fields := map[string]string{"POST /api/dispatch/tickets": `"project":"CND",`}
 	refusal := strings.TrimPrefix(dispatch.ErrBadBy.Error(), "dispatch: ")
+	// shapes are the bodies of n bytes that are not JSON, with their
+	// Content-Type: the upload's, its display name one character past its
+	// bound and its file the rest.
+	shapes := map[string]func(n int) ([]byte, string){
+		upload: func(n int) ([]byte, string) {
+			fields := [][2]string{{"opId", opID()}, {"byName", strings.Repeat("n", dispatch.MaxByName+1)}}
+			empty, _ := uploadOf(t, 0, fields, "pad.bin", "application/octet-stream", nil)
+			return uploadOf(t, 0, fields, "pad.bin", "application/octet-stream", bytes.Repeat([]byte{'n'}, n-len(empty)))
+		},
+	}
 	writes := 0
 	for _, r := range e.srv.dispatchRoutes() {
 		if !strings.HasPrefix(r.pattern, "POST ") {
@@ -1561,18 +1592,29 @@ func TestDispatchEveryWriteBodyIsBounded(t *testing.T) {
 		}
 		writes++
 		// body is n bytes of one JSON object of the route's fields, its
-		// display name the rest.
-		body := func(n int) []byte {
+		// display name the rest, or of the route's shape.
+		body := func(n int) ([]byte, string) {
+			if shape, ok := shapes[r.pattern]; ok {
+				return shape(n)
+			}
 			prefix, suffix := `{"opId":"`+opID()+`",`+fields[r.pattern]+`"byName":"`, `"}`
-			return []byte(prefix + strings.Repeat("n", n-len(prefix)-len(suffix)) + suffix)
+			return []byte(prefix + strings.Repeat("n", n-len(prefix)-len(suffix)) + suffix), "application/json"
 		}
-		e.expect(t, "POST", req.path, body(bound+1), http.StatusRequestEntityTooLarge, "bound")
-		out := e.expect(t, "POST", req.path, body(bound), http.StatusBadRequest, "invalid_request")
-		if msg := out["error"].(map[string]any)["message"]; msg != refusal {
-			t.Fatalf("%s, a body at its bound: %v, want the display name's refusal", r.pattern, msg)
+		for _, n := range []int{bound + 1, bound} {
+			b, ct := body(n)
+			if len(b) != n {
+				t.Fatalf("%s: a body of %d bytes, not %d", r.pattern, len(b), n)
+			}
+			status, _, data, out := e.send(t, "POST", req.path, b, ct)
+			switch {
+			case n > bound && (status != http.StatusRequestEntityTooLarge || errorCode(out) != "bound"):
+				t.Fatalf("%s, a body past its bound: %d %.300s", r.pattern, status, data)
+			case n == bound && (status != http.StatusBadRequest || errorCode(out) != "invalid_request" || out["error"].(map[string]any)["message"] != refusal):
+				t.Fatalf("%s, a body at its bound: %d %.300s, want the display name's refusal", r.pattern, status, data)
+			}
 		}
 	}
-	if writes != 27 {
+	if writes != 29 {
 		t.Fatalf("%d writes", writes)
 	}
 }
@@ -1648,8 +1690,10 @@ type largestTicket struct {
 // assignees, twenty labels, a milestone, a parent and the acceptance with
 // its note; fifty comments, fifty links, a hundred relations and fifty
 // children, each other ticket's title at its bound; and fifty attachments,
-// planted in the database as their upload will write them (that route is
-// a later change's), every operation by a display name at its bound.
+// planted in the database as their upload writes them, each of 16 MiB with
+// a name and a type at their bounds (fifty uploads at that size would
+// write 800 MiB, and a reply carries a row, never its file), every
+// operation by a display name at its bound.
 func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestTicket {
 	t.Helper()
 	done := doneOf(t)

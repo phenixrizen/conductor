@@ -22,10 +22,10 @@ import (
 // made, one changes row per field it set, added or removed, rev is
 // bumped, the receipt is written, the commit, then OnChange. A refusal
 // (the store's rules) is a failed receipt, the change undone under a
-// savepoint and the receipt the transaction's only write, so the same id
-// answers it again and the write lock is held from the change to the
-// receipt; a failure of the database itself, or a read-only store, writes
-// nothing.
+// savepoint and the receipt the transaction's only write (but an upload's
+// lease, which its refusal drops: tx.onRefusal), so the same id answers it
+// again and the write lock is held from the change to the receipt; a
+// failure of the database itself, or a read-only store, writes nothing.
 
 // OpIDPattern bounds an operation id a client mints: the shape of the
 // ledger's command ids.
@@ -60,6 +60,23 @@ func (op Op) author() string {
 		return op.By
 	}
 	return op.Actor
+}
+
+// check is what every operation must be before the store looks at it: an
+// op id of OpIDPattern (ErrBadOpID), an actor within its rule
+// (ErrBadActor), and an author, the display name or else the actor, within
+// the display name's (ErrBadBy), so a row's created_by meets its bound: an
+// actor within MaxActor always does.
+func (op Op) check() error {
+	switch {
+	case !OpIDPattern.MatchString(op.ID):
+		return ErrBadOpID
+	case checkField("op.actor", "the actor", op.Actor) != nil:
+		return ErrBadActor
+	case checkField("op.by", "by", op.author()) != nil:
+		return ErrBadBy
+	}
+	return nil
 }
 
 // The statuses of a receipt.
@@ -220,6 +237,10 @@ type tx struct {
 	// runExists is the store's sight of the engine's runs (SetRunExists),
 	// nil when none was given.
 	runExists func(id string) bool
+	// onRefusal, when a change sets it, runs once a refusal has undone the
+	// change, in its transaction before its receipt: what a refusal keeps
+	// beside the receipt (an upload's lease, dropped with it).
+	onRefusal func() error
 }
 
 // touched is an entity a change row named, with the ticket and the
@@ -458,17 +479,8 @@ func fingerprint(intent string, args any) (string, error) {
 // called after the commit, on this goroutine, each once with all the
 // operation changed.
 func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, change func(*tx) error) (Receipt, error) {
-	if !OpIDPattern.MatchString(op.ID) {
-		return Receipt{}, ErrBadOpID
-	}
-	if checkField("op.actor", "the actor", op.Actor) != nil {
-		return Receipt{}, ErrBadActor
-	}
-	// The author is held to the display name's rule whichever of the two
-	// it is, so a row's created_by meets its bound: an actor within
-	// MaxActor always does.
-	if checkField("op.by", "by", op.author()) != nil {
-		return Receipt{}, ErrBadBy
+	if err := op.check(); err != nil {
+		return Receipt{}, err
 	}
 	fp, err := fingerprint(intent, args)
 	if err != nil {
@@ -492,7 +504,7 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 		return Receipt{}, nil, ErrClosed
 	}
 	if s.readOnly || s.db == nil {
-		return fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: RefusalReadOnly, Error: words(s.why)}), nil, nil
+		return readOnlyReceipt(op, intent, s.why), nil, nil
 	}
 	dbtx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -544,9 +556,15 @@ func (s *Store) apply(ctx context.Context, op Op, intent, fp string, change func
 			return Receipt{}, nil, cancelledAs(ctx, err)
 		}
 		// Refused: nothing of the change is kept, and the failed receipt is
-		// the transaction's only write.
+		// the transaction's only write but what the change asked a refusal
+		// to keep (onRefusal: an upload's lease dropped).
 		if _, err := dbtx.ExecContext(ctx, "ROLLBACK TO change"); err != nil {
 			return Receipt{}, nil, cancelledAs(ctx, err)
+		}
+		if t.onRefusal != nil {
+			if err := t.onRefusal(); err != nil {
+				return Receipt{}, nil, cancelledAs(ctx, err)
+			}
 		}
 		rc := fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: ref.Code, Error: words(ref.Words), Missing: ref.Missing, Key: ref.Key})
 		if err := s.commitReceipt(ctx, dbtx, op, intent, fp, t.now, rc); err != nil {
@@ -589,6 +607,12 @@ func (s *Store) commitReceipt(ctx context.Context, dbtx *sql.Tx, op Op, intent, 
 		return cancelledAs(ctx, err)
 	}
 	return nil
+}
+
+// readOnlyReceipt is the answer of a store that takes no writes: a
+// read_only refusal with why, written nowhere.
+func readOnlyReceipt(op Op, intent, why string) Receipt {
+	return fitWords(Receipt{OpID: op.ID, Intent: intent, Status: StatusFailed, Refusal: RefusalReadOnly, Error: words(why)})
 }
 
 // insertReceipt writes the ops row of an operation.
@@ -684,7 +708,7 @@ func (s *Store) Receipt(ctx context.Context, actor, id string) (rc Receipt, foun
 // prune drops every receipt but the newest maxReceipts, by their time,
 // and reports how many went, counted on the pruned counter; it runs at
 // open and every pruneEvery on the store's goroutine (pruning). now is
-// the maintenance clock those callers share with the sweep (PR-7); the
+// the maintenance clock those callers share with the sweep (sweep.go); the
 // pruning is by count and reads nothing of it.
 func (s *Store) prune(ctx context.Context, now time.Time) (int, error) {
 	_ = now
