@@ -143,6 +143,14 @@ add its rule here.
   state that only flashes by in a test is often a product bug: here an
   attempt that failed at once because it was handed a commit known to be
   broken.
+- Hold the step a check must come before. A check made at once after an
+  action ("not served yet", "nothing sent yet") races the goroutine the
+  action woke, and a loaded machine lets that goroutine finish first: the
+  certificate manager ordered and served the new address's certificate
+  before the test looked, and the test reported the old one as still
+  served. Hold the step at a gate in the fake (the fake issuer's `hold` in
+  `internal/certs`) while the test checks, then open the gate and wait for
+  what the step does.
 - A run's log is not its ledger. The engine notes a change in the run's
   log inside the change and commits its rows and events after it, outside
   the lock: a test that saw the note and reads the ledger at once can read
