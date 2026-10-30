@@ -613,9 +613,13 @@ agent creates or edits a ticket in this item (Owner decisions, 13).
   (`RUN_EVENT_WINDOW_MS`'s rule), on any other event whose `project` is
   its project (a blocker closed, a sibling reparented, a label renamed,
   the policy edited); a list, board or roadmap re-reads itself, gathered
-  the same way, when `project` is its project; the projects page on any
-  event at all, gathered the same way, since a ticket's status moves its
-  project's counts; the run page's chip (`links?run=`) on any event
+  the same way, when `project` is its project, and its saved views,
+  gathered the same way, on a `view` event whose `project` is `""`, since
+  a view of every project is offered on every project's pages beside the
+  project's own and its save, edit and delete name no project; the
+  projects page on any event at all, gathered the same way, since a
+  ticket's status moves its project's counts; the run page's chip
+  (`links?run=`) on any event
   whose `entity` is `ticket`, gathered the same way, since a link's add
   or remove and a ticket's delete or undelete are events of that ticket,
   the event names no run and no field, and a run linked to nothing has
@@ -890,7 +894,10 @@ relations' rows and its project's labels, milestones and policy derive
 from other rows of the project (a blocker closed is an event naming the
 blocker, not the blocked ticket); a list, board or roadmap itself
 (gathered 250 ms) when `project` is its project, a project's policy edit
-included, since it changes `close` on every ticket; the projects page on
+included, since it changes `close` on every ticket, and its saved views
+(gathered the same way) on a `view` event whose `project` is `""`,
+since a view of every project is offered on every project's pages
+beside the project's own; the projects page on
 any event, gathered the same way, since its counts derive from every
 ticket; the run page's chip its `links?run=` lookup on any `ticket`
 event, gathered the same way, since the event names no run and an
@@ -1310,7 +1317,9 @@ three such events once; one of another project does not; a comment's
 event names its ticket; a `project` event re-reads a list of that
 project and a ticket page; a ticket event re-reads the projects page and
 a run page's lookup once after the window, a label event the projects
-page and not the lookup; a `snapshot` re-reads every subscriber, the
+page and not the lookup; a `view` event whose `project` is `""` the
+saved views of a list of any project once after the window (PR-9); a
+`snapshot` re-reads every subscriber, the
 lookup included; a re-read that fails is asked
 again after the window, doubled, and stops once one answers or a
 `snapshot` re-reads), `dispatchOrder.test.ts` (two
@@ -1342,7 +1351,10 @@ commands).
   when the first reparents it (PR-10).
 - `dispatch-views.spec.ts`: the filter in the URL (`?status=`, `?q=`),
   the list filtered; a saved view made, its chip applying the filter,
-  renamed and deleted; the board's columns with the ticket in its status;
+  renamed and deleted; a view of every project saved by a second browser
+  context, its chip shown on the first's open list of a project with no
+  reload and gone when the second deletes it; the board's columns with
+  the ticket in its status;
   a drag to In review; the roadmap's columns; Next and Now by `→` on a
   focused card; the phone width (390 px) for the list and the page
   (`phone.spec.ts`'s viewport).
@@ -1557,12 +1569,14 @@ projects page's count; the comment and the policy parts come with PR-10
 and PR-11). UI only.
 
 **PR-9** (`web/app`, `web/e2e`): the board and the roadmap with drag and
-keyboard moves; the saved views bar; the list's keys (`c` among them)
-and selection with the page's palette group; the palette's Tickets
-group, the `>` rows, `go dispatch`; phone widths. Tests: vitest
-additions to `dispatch.test.ts` and `palette.test.ts`; Playwright
-`dispatch-views.spec.ts`, `dispatch-keys.spec.ts`, the `palette.spec.ts`
-and `palette-rows.spec.ts` additions. UI only.
+keyboard moves; the saved views bar, read again on a `view` event of
+every project (`project` `""`) as on its project's events; the list's
+keys (`c` among them) and selection with the page's palette group; the
+palette's Tickets group, the `>` rows, `go dispatch`; phone widths.
+Tests: vitest additions to `dispatch.test.ts`, `palette.test.ts` and
+`useDispatchLive.test.ts`; Playwright `dispatch-views.spec.ts`,
+`dispatch-keys.spec.ts`, the `palette.spec.ts` and `palette-rows.spec.ts`
+additions. UI only.
 
 **PR-10** (`web/app`, `web/e2e`): comments (post, edit, delete, the
 author's name, the derived number), attachments (upload with progress,

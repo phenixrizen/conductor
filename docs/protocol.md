@@ -2630,7 +2630,11 @@ value is digits, a word, hex or a key, never escaped). A page reads
 again what an event names, or what derives from it; an event with `id`
 and `ticket` `""` (but a person's, whose `id` is always `""`) names no
 one entity, and a page whose scope is its project reads again what it
-shows of the project, a ticket page its ticket among it. Like a `run`
+shows of the project, a ticket page its ticket among it. A `view` event
+whose `project` is `""` is of a view of every project, which every
+project's pages offer beside the project's own (`GET
+/api/dispatch/views?project=` answers both): a page that shows a
+project's views reads them again on it, whatever its project. Like a `run`
 event it is state a page cannot do without: a client that cannot keep
 up is dropped and reads everything again on its next `snapshot`, never
 skipped and kept as an `activity` entry is. A commit's events take one
