@@ -102,7 +102,8 @@ func (s *Server) attachCheck(p principal, sessionID string) func() (session.Gran
 
 // presentedToken extracts the credential from the Authorization header or,
 // for WebSocket and join routes that browsers cannot add headers to, from the
-// token query parameter.
+// token query parameter, read as every route reads its query (parseQuery): a
+// ';' is part of it, and a query that cannot be read presents no token.
 func presentedToken(r *http.Request, allowQuery bool) string {
 	if h := r.Header.Get("Authorization"); h != "" {
 		if tok, ok := strings.CutPrefix(h, "Bearer "); ok {
@@ -111,7 +112,9 @@ func presentedToken(r *http.Request, allowQuery bool) string {
 		return ""
 	}
 	if allowQuery {
-		return r.URL.Query().Get("token")
+		if q, err := parseQuery(r.URL.RawQuery); err == nil {
+			return q.Get("token")
+		}
 	}
 	return ""
 }
