@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -178,6 +179,99 @@ func TestAnUploadWhoseLeaseASweepExpiredIsRefusedExpired(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A collection's transaction is the lock that orders it against an
+// upload's lease, and its context ending does not end it: a collection
+// held inside its first unlink, its context cancelled there, still holds
+// the lock, so a second store's upload of the content it is deleting
+// cannot take its lease and is refused busy, keeping nothing. Released,
+// the collection deletes the file and stops at the cancellation before the
+// next orphan, which the next sweep takes, and the same upload is then
+// taken, its file whole. (database/sql rolls a transaction back when its
+// context ends, which would release the lock with the unlink still to
+// come: the upload would lease, publish over the file and commit, and the
+// unlink delete the file its row names.)
+func TestACancelledCollectionHoldsItsLockUntilItsUnlinkReturns(t *testing.T) {
+	dir := storeDir(t)
+	s := openStore(t, dir)
+	newProject(t, s, "CND")
+	_, key := newTicket(t, s, "CND", "Attached")
+	// The second store waits a quarter of a second for the write lock
+	// before it is refused busy: time enough for the rollback that a
+	// cancellation sets off on database/sql's goroutine to release it, in
+	// a collection that let it.
+	old := busyTimeout
+	busyTimeout = 250 * time.Millisecond
+	t.Cleanup(func() { busyTimeout = old })
+	second := openStore(t, dir)
+	// Two orphans, first listed first (by its hash), then after.
+	first, after := []byte("collected first"), []byte("collected after")
+	if sumOf(first) > sumOf(after) {
+		first, after = after, first
+	}
+	for i, content := range [][]byte{first, after} {
+		a := mustPut(t, s, opID("a", i), key, "orphan.txt", content)
+		rc, err := s.RemoveAttachment(context.Background(), testOp(opID("r", i)), key, a.ID)
+		want(t, rc, err, StatusDone, "")
+	}
+	reached, release := make(chan struct{}), make(chan struct{})
+	s.unlink = func(path string) error {
+		if path == contentAt(s, sumOf(first)) {
+			close(reached)
+			<-release
+		}
+		return os.Remove(path)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var collected error
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		collected = s.collectOrphans(ctx, time.Now())
+	}()
+	// Released before the stores close, whatever the test met.
+	var once sync.Once
+	resume := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		resume()
+		<-ended
+	})
+	select {
+	case <-reached:
+	case <-ended:
+		t.Fatalf("the collection ended before its unlink: %v", collected)
+	}
+	cancel()
+	// The sweeping store's one connection is the collection's: the test
+	// reads through the second store until the collection has ended.
+	if _, _, err := put(second, "b1", key, "again.txt", first); !isBusy(err) {
+		t.Fatalf("the second store's upload, the cancelled collection held at its unlink: %v", err)
+	}
+	if temps := tempFiles(t, second); len(temps) != 0 || count(t, second, "SELECT COUNT(*) FROM uploads") != 0 {
+		t.Fatalf("the refused upload kept temp files %v or a lease", temps)
+	}
+	resume()
+	<-ended
+	if !errors.Is(collected, context.Canceled) {
+		t.Fatalf("the cancelled collection: %v", collected)
+	}
+	if exists(t, contentAt(s, sumOf(first))) || !exists(t, contentAt(s, sumOf(after))) {
+		t.Fatalf("after the cancelled collection: the first orphan %v, the one after it %v",
+			exists(t, contentAt(s, sumOf(first))), exists(t, contentAt(s, sumOf(after))))
+	}
+	a := mustPut(t, second, "b2", key, "again.txt", first)
+	if !bytes.Equal(readContent(t, second, a.ID), first) || !bytes.Equal(readContent(t, s, a.ID), first) {
+		t.Fatal("the upload after the collection did not open whole")
+	}
+	s.unlink = os.Remove
+	if err := s.sweep(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if exists(t, contentAt(s, sumOf(after))) || !bytes.Equal(readContent(t, s, a.ID), first) {
+		t.Fatal("the next sweep left the orphan after, or took the file a row names")
 	}
 }
 
