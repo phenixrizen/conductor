@@ -65,13 +65,9 @@ func TestShutdownEndsAServiceThatIgnoresSIGTERM(t *testing.T) {
 		t.Fatal(err)
 	}
 	runningAttempt(t, e, run.ID, "build", 1)
-	b, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || syscall.Kill(pid, 0) != nil {
-		t.Fatalf("the service is not running: %q %v", b, err)
+	pid := servicePid(t, pidFile)
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("the service %d is not running: %v", pid, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

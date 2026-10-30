@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -46,6 +47,27 @@ func servedCrew(root string) crew.Crew {
 
 // previewPattern is a preview URL on the loopback, the port drawn.
 var previewPattern = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]+/$`)
+
+// servicePid waits up to 10 s for the pid a service writes to path, a
+// positive one, and returns it: a tree with no ready probe is ready once
+// its service's process exists, before its shell has necessarily written
+// the file (Codex's review of #441, round 1).
+func servicePid(t *testing.T, path string) int {
+	t.Helper()
+	pid := 0
+	if !waitFor(10*time.Second, func() bool {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		pid = n
+		return err == nil && n > 0
+	}) {
+		t.Fatalf("no pid in %s after 10 s", path)
+	}
+	return pid
+}
 
 // A tree's service, its probe and the preview, through the server (EN1
 // PR-4): the service, a real HTTP server on the tree's port, answers the
@@ -126,11 +148,8 @@ func TestTheNextStartNamesAServiceTheLastServerLeftRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	runningAttempt(t, e, run.ID, "build", 1)
-	b, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid := strings.TrimSpace(string(b))
+	n := servicePid(t, pidFile)
+	pid := strconv.Itoa(n)
 	// The owner ends here: its ledger closed with the service running.
 	if err := e.srv.ledger.Close(); err != nil {
 		t.Fatal(err)
@@ -147,10 +166,6 @@ func TestTheNextStartNamesAServiceTheLastServerLeftRunning(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Fatalf("the start's log line has no %s: %s", want, line)
 		}
-	}
-	n := 0
-	for _, r := range pid {
-		n = n*10 + int(r-'0')
 	}
 	if syscall.Kill(n, 0) != nil {
 		t.Fatalf("the service %s was signalled at the next start", pid)
