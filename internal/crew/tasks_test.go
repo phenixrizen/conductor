@@ -173,6 +173,11 @@ func TestATasksTextIsCountedAsItsTaskFileKeepsIt(t *testing.T) {
 		}
 		held(fmt.Sprintf("a lone surrogate after %d bytes", tc.ys), c, tc.size)
 	}
+	// A backslash before u, d, 8, 0, 0 is text, not a lone surrogate's
+	// escape: seven bytes as JSON.
+	text := `\` + "ud800"
+	held("a backslash and ud800 at the bound", sized(strings.Repeat("y", 947)+text), maxTaskText)
+	held("a backslash and ud800 past it", sized(strings.Repeat("y", 948)+text), maxTaskText+1)
 }
 
 // A crew with tasks goes through the store whole; a crew without encodes

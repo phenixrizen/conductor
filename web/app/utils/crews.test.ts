@@ -550,6 +550,10 @@ describe('taskProblems', () => {
     expect(problems(sized('y'.repeat(949) + ps))).toEqual(past)
     expect(problems(sized('y'.repeat(951) + lone))).toEqual([])
     expect(problems(sized('y'.repeat(952) + lone))).toEqual(past)
+    // A backslash before u, d, 8, 0, 0 is text, not a lone surrogate's escape: seven bytes as JSON.
+    const text = '\\' + 'ud800'
+    expect(problems(sized('y'.repeat(947) + text))).toEqual([])
+    expect(problems(sized('y'.repeat(948) + text))).toEqual(past)
   })
   it("keeps a row's problems apart", () => {
     const c = managed()
