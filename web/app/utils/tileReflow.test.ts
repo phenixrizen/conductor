@@ -74,7 +74,9 @@ describe("a tile's terminal narrowed with its cursor above the last row (#221)",
     }
   })
 
-  it(`CI's ${BREAKING.length} breaking histories: broken with no scrollback, the cursor drawn on its row with TILE_SCROLLBACK`, async () => {
+  // 300 terminals driven through their writes: work alone, about 3 s here, which a loaded box running the whole suite stretched past
+  // vitest's 5 s default (twice on 2026-10-30, #281). Nothing in it waits on a clock, so the bound only catches a hang.
+  it(`CI's ${BREAKING.length} breaking histories: broken with no scrollback, the cursor drawn on its row with TILE_SCROLLBACK`, { timeout: 120_000 }, async () => {
     expect(TILE_SCROLLBACK).toBeGreaterThan(0)
     const without: string[] = []
     const withScrollback: string[] = []
