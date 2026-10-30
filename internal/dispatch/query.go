@@ -209,32 +209,74 @@ func refusalWords(err error) string {
 // a star by itself would match nothing; every term kept a quoted string
 // with its '"' doubled, so CND-12, OR, NOT, a:b and (x) are words to
 // match and never syntax; the last one a prefix ("term"*), so a word
-// being typed matches the words it begins; a term the text repeats kept
-// once, since each costs the reading of every entry it matches. A ticket
-// matches the search when every term matches one of its entries, its own
-// or a comment's, not necessarily the same one (termMatch). ok is false
-// when the text holds terms and none is kept: the search matches nothing,
-// as FTS5 answers a phrase of no tokens. Text of no term at all is no
-// search (ok true, no terms).
+// being typed matches the words it begins. A term is kept once however
+// often the text holds it, as the tokenizer reads it (termKey: the and THE
+// alike), since each costs the reading of every entry it matches; the
+// last one too when an earlier term is the same word, which, whole,
+// matches only where the prefix would. A ticket matches the search when
+// every term matches one of its entries, its own or a comment's, not
+// necessarily the same one (termMatch). ok is false when the text holds
+// terms and none is kept: the search matches nothing, as FTS5 answers a
+// phrase of no tokens. Text of no term at all is no search (ok true, no
+// terms).
 func matchTerms(text string) (terms []string, ok bool) {
 	fields := strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 	if len(fields) == 0 {
 		return nil, true
 	}
-	var last string
+	var kept []string
 	for _, field := range fields {
-		if strings.IndexFunc(field, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) < 0 {
-			continue
+		if strings.IndexFunc(field, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0 {
+			kept = append(kept, field)
 		}
-		if last != "" && !slices.Contains(terms, last) {
-			terms = append(terms, last)
-		}
-		last = `"` + strings.ReplaceAll(field, `"`, `""`) + `"`
 	}
-	if last == "" {
+	if len(kept) == 0 {
 		return nil, false
 	}
-	return append(terms, last+"*"), true
+	quote := func(term string) string { return `"` + strings.ReplaceAll(term, `"`, `""`) + `"` }
+	seen := map[string]bool{}
+	for _, term := range kept[:len(kept)-1] {
+		if k := termKey(term); !seen[k] {
+			seen[k] = true
+			terms = append(terms, quote(term))
+		}
+	}
+	if last := kept[len(kept)-1]; !seen[termKey(last)] {
+		terms = append(terms, quote(last)+"*")
+	}
+	return terms, true
+}
+
+// termKey is a search term as the tokenizer reads it, as far as Go can
+// tell without the tokenizer, so that two terms of one key are the same
+// words to FTS5: unicode61 folds ASCII letters to lower case and makes a
+// separator of every ASCII character that is neither a letter nor a
+// digit, a run of them as one (Deploy, DEPLOY and (deploy) alike; CND-12
+// and cnd_12 alike, and unlike cnd12). A character past ASCII is kept as
+// typed: the tokenizer folds its case and diacritics by tables of its
+// own, of Unicode 6.1, which Go has no copy of, and a fold that differed
+// from them would make one term of two that FTS5 tells apart, a search
+// then finding more than it should (Go folds Cherokee's letters, which
+// the tokenizer does not). So crème and CRÈME stay two terms: a cost,
+// never a wrong answer.
+func termKey(term string) string {
+	var b strings.Builder
+	sep := false
+	for _, r := range term {
+		switch {
+		case 'A' <= r && r <= 'Z':
+			r += 'a' - 'A'
+		case r < utf8.RuneSelf && !('a' <= r && r <= 'z' || '0' <= r && r <= '9'):
+			sep = b.Len() > 0
+			continue
+		}
+		if sep {
+			b.WriteByte(' ')
+			sep = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // execer is what a write goes through: an operation's transaction.

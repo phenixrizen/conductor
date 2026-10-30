@@ -507,6 +507,12 @@ func TestASearchIsWordsNeverSyntax(t *testing.T) {
 		{"plain elev", "CND-10 CND-11"},
 		{"eleven plain", "CND-10 CND-11"},
 		{"elev plain", ""},
+		// A word in its cases, or its punctuation, is one term; the last
+		// term, when an earlier one is the same word, finds what that word
+		// finds whole.
+		{"DEPLOY deploy Deploy", "CND-6 CND-7 CND-13"},
+		{"deploy, timeout (DEPLOY)", "CND-7"},
+		{"crème CRÈME", "CND-8"},
 	} {
 		page, err := s.List(ctx, Query{Project: "CND", Filter: Filter{Q: c.q, Sort: SortKey}})
 		if err != nil {
@@ -531,9 +537,22 @@ func TestASearchIsWordsNeverSyntax(t *testing.T) {
 		{"a\x00b", `"a" "b"*`, true},
 		{"  ", "", true},
 		{`" * "*"`, "", false},
-		// A term repeated is kept once; the last stays a prefix.
-		{"deploy the deploy THE the", `"deploy" "the" "THE" "the"*`, true},
-		{"deploy deploy deploy", `"deploy" "deploy"*`, true},
+		// A term is kept once, as the tokenizer reads it: ASCII letters in
+		// any case, and runs of the ASCII characters that are neither
+		// letters nor digits, which the tokenizer makes separators, alike.
+		// The last stays a prefix unless an earlier term is the same word,
+		// which, whole, matches only where the prefix would.
+		{"deploy the deploy THE the", `"deploy" "the"`, true},
+		{"deploy deploy deploy", `"deploy"`, true},
+		{"the The THE", `"the"`, true},
+		{"THE deploy", `"THE" "deploy"*`, true},
+		{"deploy, (deploy) DEPLOY! migr", `"deploy," "migr"*`, true},
+		{"CND-12 cnd_12 x", `"CND-12" "x"*`, true},
+		{"cnd12 CND-12", `"cnd12" "CND-12"*`, true},
+		// A character past ASCII is kept as typed: Go has no copy of the
+		// tokenizer's fold, and folds Cherokee's letters, two words to FTS5.
+		{"crème CRÈME", `"crème" "CRÈME"*`, true},
+		{"Ꭰ ꭰ", `"Ꭰ" "ꭰ"*`, true},
 	} {
 		if terms, ok := matchTerms(c.text); strings.Join(terms, " ") != c.expr || ok != c.ok {
 			t.Errorf("matchTerms(%q) = %q %v, want %q %v", c.text, terms, ok, c.expr, c.ok)
