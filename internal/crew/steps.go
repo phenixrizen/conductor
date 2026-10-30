@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -32,13 +33,13 @@ import (
 // it: an attempt's worktree before its session starts, and the checkout of
 // its result before its checks. The manifest is resolved for the tree
 // (resolveTree: the crew's, or conductor.manifest.json at the tree's
-// commit), then its setup phase runs (prepareTree), each step a receipt
-// (runStep: a checks row of its phase, started, running and finished, with
-// its log and the words of its failure). The run's prerequisites run once,
-// before the first attempt, in the crew's directory (prerequisites), and
-// again at each unpause. When an attempt closes, however it closes, its
-// trees end (endTree), each once, after the close is committed and the
-// tree is quiet.
+// commit), then its phases run (prepareTree: setup, services, ready), each
+// step a receipt (runStep: a checks row of its phase, started, running and
+// finished, with its log and the words of its failure). The run's
+// prerequisites run once, before the first attempt, in the crew's
+// directory (prerequisites), and again at each unpause. When an attempt
+// closes, however it closes, its trees end (endTree), each once, after the
+// close is committed and the tree is quiet.
 //
 // A step that fails in a worktree is the host's or the manifest's: the
 // attempt is not counted, and the dispatch pauses for a person
@@ -47,6 +48,16 @@ import (
 // agent saved is the agent's: a failure there refuses the checkpoint,
 // uncounted and unpaused, and the next attempt starts where the
 // checkpointed one did.
+//
+// A tree's services (startService) run beside it from its services phase
+// until it ends: each a foreground process of its own group, started
+// through the tree's executor under the run's teardown context, stopped by
+// the tree's end or the run's stop (SIGTERM to its group, SIGKILL after
+// proc.ServeGrace), its end recorded once (service.ended). The ready probes
+// (runProbe) then wait for them to answer, and tree.ready (treeReady)
+// records the tree usable: the attempt's preview is its worktree's URL from
+// then until the attempt's close, or until a service of the worktree exits
+// on its own (watchService).
 //
 // A run without a manifest (no setup, no manifest) makes no tree and
 // keeps no step receipt: it runs as it did before manifests.
@@ -148,10 +159,15 @@ func (rm resolvedManifest) row() string {
 // never changed. busy is held while one of its phases or checks runs,
 // and in a worktree through its session's launch (hold). Under e.mu:
 // handed is set once it is handed to endTree, ending once its end begins
-// (nothing holds it after), ended once its end is recorded, and session
-// names the session its end waits for, one being stopped (set by
+// or the run's stop ends its services (nothing holds it after, and no
+// service is registered on it), ended once its end is recorded, and
+// session names the session its end waits for, one being stopped (set by
 // handTrees, or by the launch's record when the close came during the
-// launch).
+// launch). services are its services in the order they started, each
+// appended the moment its process exists; ready is set once its
+// tree.ready is recorded; dead is the first of its services that exited
+// on its own before that, and died is closed with it, for the phase that
+// waits on a probe.
 type tree struct {
 	kind     string // ledger.TreeWorktree | ledger.TreeCheckout
 	dir      string // the worktree or the checkout
@@ -164,25 +180,100 @@ type tree struct {
 	allow    []string
 	a        *attempt
 	busy     sync.WaitGroup
-	// handed, ending, ended and session: see above.
+	// handed, ending, ended, session, services, ready, dead: see above.
 	handed, ending, ended bool
 	session               string
+	services              []*treeService
+	ready                 bool
+	dead                  *treeService
+	died                  chan struct{}
+}
+
+// service is a service process of a tree as the engine holds it: the
+// tree's executor started it (treeExec.serve), and the engine sees its
+// end (Done, Result) and stops it (Stop: SIGTERM to its group, SIGKILL
+// after the grace or once ctx ends), and nothing of its pid but what its
+// receipt records. *proc.Service is the native one.
+type service interface {
+	Done() <-chan struct{}
+	Result() proc.Result
+	Stop(ctx context.Context) error
+}
+
+// treeService is a service of a tree: its step, its receipt as put (running
+// once its process exists), its handle and its output, as its row keeps it
+// at its end. Under e.mu: stopping is why something is ending it (the
+// tree's end, the run's stop, a start refused), "" while nothing is; ended
+// is set once its end is recorded, or in the change that records it.
+// watched is closed once its watcher has returned (watchService).
+type treeService struct {
+	ch       Check
+	row      ledger.CheckRow
+	svc      service
+	log      *bytes.Buffer
+	stopping string
+	ended    bool
+	watched  chan struct{}
 }
 
 // treeExec is everything a tree does on the machine that runs it: a
-// command, run as a check is (run), and a port drawn for it (port), today;
-// the services and the probes follow it. The native one runs proc.Run and
-// binds 127.0.0.1:0; a test replaces it whole, and the Runtime seam (C10)
-// wraps it, so nothing of a tree reaches the machine but through it, and a
-// port of a tree that is not on the server's machine is never the server's
-// own.
+// command, run as a check is (run), a service started (serve), one try of
+// a probe over HTTP (probe) and a port drawn for it (port). The native one
+// runs proc.Run and proc.Serve, fetches a URL with a client of the probe's
+// own (probeURL) and binds 127.0.0.1:0; a test replaces it whole, and the
+// Runtime seam (C10) wraps it, so nothing of a tree reaches the machine
+// but through it, and a probe or a port of a tree that is not on the
+// server's machine is never the server's own loopback.
 type treeExec struct {
-	run  func(ctx context.Context, s proc.Spec) proc.Result
-	port func(ctx context.Context) (int, error)
+	run   func(ctx context.Context, s proc.Spec) proc.Result
+	serve func(ctx context.Context, s proc.Spec) (service, error)
+	probe func(ctx context.Context, url string, interval time.Duration) (status int, err error)
+	port  func(ctx context.Context) (int, error)
 }
 
-// nativeExec runs a tree's commands, and draws its ports, on this machine.
-func nativeExec() treeExec { return treeExec{run: proc.Run, port: freePort} }
+// nativeExec runs a tree's commands and services, probes its URLs and
+// draws its ports, on this machine.
+func nativeExec() treeExec {
+	return treeExec{run: proc.Run, serve: nativeServe, probe: probeURL, port: freePort}
+}
+
+// nativeServe starts a service on this machine (proc.Serve).
+func nativeServe(ctx context.Context, s proc.Spec) (service, error) {
+	svc, err := proc.Serve(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return svc, nil
+}
+
+// probeClient is the client of one try of a probe over HTTP: the probe's
+// interval its timeout, no proxy and no connection kept, and no redirect
+// followed (http.ErrUseLastResponse: a 3xx is the try's answer), so a
+// service, or a manifest at a result commit, answering a redirect off the
+// loopback makes the server fetch nothing there.
+func probeClient(interval time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       interval,
+		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// probeURL is one try of a probe over HTTP on this machine: one GET of url
+// through a client of its own (probeClient), its status, the body closed
+// unread, so nothing of it is kept.
+func probeURL(ctx context.Context, url string, interval time.Duration) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := probeClient(interval).Do(req)
+	if err != nil {
+		return 0, err
+	}
+	resp.Body.Close()
+	return resp.StatusCode, nil
+}
 
 // freePort draws a port of this machine's loopback: a bind of 127.0.0.1:0,
 // its number taken and the listener closed, so that the tree's own can
@@ -283,11 +374,15 @@ func (t *tree) env(runID string) cmdEnv {
 	return cmdEnv{allow: t.allow, inject: inject}
 }
 
-// task is the tree's manifest as its task file names it: the identity, and
-// the ports by name.
+// task is the tree's manifest as its task file names it: the identity, the
+// ports by name, the preview and the services' ids.
 func (t *tree) task() *TaskManifest {
 	tm := t.man.task()
 	tm.Ports = maps.Clone(t.ports)
+	tm.Preview = t.preview
+	for _, ch := range t.man.m.Services {
+		tm.Services = append(tm.Services, ch.ID)
+	}
 	return tm
 }
 
@@ -436,7 +531,7 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 			return nil, err
 		}
 		t := &tree{kind: kind, dir: dir, cwd: cwd, commit: commit, man: resolvedManifest{m: expanded, source: man.source, revision: man.revision, digest: man.digest},
-			ports: maps.Clone(ports), stateDir: stateDir, preview: expanded.Preview, allow: allow, a: a}
+			ports: maps.Clone(ports), stateDir: stateDir, preview: expanded.Preview, allow: allow, a: a, died: make(chan struct{})}
 		closed := false
 		draw = nil
 		err = e.transact(ctx, r, func() tx {
@@ -459,7 +554,7 @@ func (e *Engine) resolveTree(ctx context.Context, r *run, a *attempt, kind, dir,
 			if len(t.ports) > 0 || t.preview != "" {
 				out.events = append(out.events, event{"manifest.ports", map[string]any{"tree": kind, "task": a.t.def.ID, "attempt": a.n, "ports": maps.Clone(t.ports), "preview": t.preview}})
 			}
-			row := ledger.TreeRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Kind: kind, Dir: dir, Commit: commit, Manifest: man.identity(), Ports: maps.Clone(t.ports), Preview: t.preview, State: ledger.TreeResolved}
+			row := t.row(r.id, ledger.TreeResolved)
 			out.more = func(ltx LedgerTx) error { return ltx.PutTree(row) }
 			return out
 		}, func() {
@@ -594,19 +689,523 @@ func (e *Engine) hold(t *tree) bool {
 	return true
 }
 
-// prepareTree runs t's setup phase, each step a receipt (runStep), in the
-// tree's working directory, stopping at the first that fails; in a
-// checkout the tree is compared with the result after each step, which ran
-// alone in it, so a change is that step's, in its receipt (runStep). It
-// returns the stage of a failure ("setup <id>") with its words, "" and nil
-// when every step passed. The caller holds t (hold).
+// prepareTree makes t usable, in order, stopping at the first failure:
+// its setup phase, each step a receipt (runStep), in the tree's working
+// directory; its services, each started and running before the next
+// (startService); its ready probes, each run until it passes (runProbe);
+// in a checkout, the tree compared with the result after each setup step,
+// which ran alone in it, so a change is that step's, in its receipt
+// (runStep), and once after the ready phase, the services having run
+// beside the probes, so a change is the phase's (stage "ready"); then
+// tree.ready recorded (treeReady), before the launch or the first check
+// rests on the tree. A service that exits before then fails the tree at it
+// ("service <id>"). It returns the stage of a failure ("setup <id>",
+// "service <id>", "ready <id>", "ready") with its words, "" and nil once
+// the tree is ready. The caller holds t (hold).
 func (e *Engine) prepareTree(ctx context.Context, r *run, a *attempt, t *tree) (string, error) {
 	for _, ch := range t.man.m.Setup {
 		if _, err := e.runStep(ctx, r, a, t, ledger.PhaseSetup, ch, 0); err != nil {
 			return "setup " + ch.ID, err
 		}
 	}
+	for _, ch := range t.man.m.Services {
+		if dead := e.deadService(t); dead != nil {
+			return "service " + dead.ch.ID, errors.New(beforeReadyWords(dead))
+		}
+		if err := e.startService(ctx, r, a, t, ch); err != nil {
+			return "service " + ch.ID, err
+		}
+	}
+	for _, p := range t.man.m.Ready {
+		if stage, err := e.runProbe(ctx, r, a, t, p); err != nil {
+			return stage, err
+		}
+	}
+	if t.kind == ledger.TreeCheckout && (len(t.man.m.Services) > 0 || len(t.man.m.Ready) > 0) {
+		moved, changed, _, err := checkoutIntact(ctx, t.dir, t.commit)
+		if ctx.Err() != nil {
+			return "ready", fmt.Errorf("the ready phase was interrupted: %w", ctx.Err())
+		}
+		if words := readyWords(t.man.m, moved, changed, err); words != "" {
+			return "ready", errors.New(words)
+		}
+	}
+	return e.treeReady(ctx, r, a, t)
+}
+
+// deadService is the first of t's services that exited on its own before
+// the tree was ready, nil for none.
+func (e *Engine) deadService(t *tree) *treeService {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return t.dead
+}
+
+// beforeReadyWords says why a service that exited before its tree was
+// ready fails the tree: a service is a foreground process, and one that
+// exits 0 at once is most often a daemon that put itself outside its group,
+// which the tree neither stops nor reports.
+func beforeReadyWords(ts *treeService) string {
+	res := ts.svc.Result()
+	switch {
+	case res.Signal != "":
+		return fmt.Sprintf("%s was ended by a signal (%s) before the tree was ready", ts.ch.ID, res.Signal)
+	case res.Exit == 0:
+		return fmt.Sprintf("%s exited 0 before the tree was ready: a service must stay in the foreground", ts.ch.ID)
+	case res.Exit > 0:
+		return fmt.Sprintf("%s exited %d before the tree was ready%s", ts.ch.ID, res.Exit, tailWords(lastOutput(res, checkTail)))
+	}
+	return fmt.Sprintf("%s ended before the tree was ready: %s", ts.ch.ID, session.CleanMessage(res.Err))
+}
+
+// serviceExit says how a service's process ended, in words: "exited 1",
+// "was ended by a signal (killed)".
+func serviceExit(res proc.Result) string {
+	switch {
+	case res.Signal != "":
+		return fmt.Sprintf("was ended by a signal (%s)", res.Signal)
+	case res.Exit >= 0:
+		return fmt.Sprintf("exited %d", res.Exit)
+	}
+	return "ended"
+}
+
+// stepPayload is a step event's payload: its phase, id and k, its task,
+// attempt and tree, and more.
+func stepPayload(a *attempt, t *tree, phase, id string, k int, more map[string]any) map[string]any {
+	p := map[string]any{"phase": phase, "id": id, "k": k, "task": a.t.def.ID, "attempt": a.n, "tree": t.kind}
+	for key, v := range more {
+		p[key] = v
+	}
+	return p
+}
+
+// startService starts one of t's services, its receipt a row of phase
+// service: put started before anything runs (step.started); the process
+// started through the tree's executor (treeExec.serve) with the tree's
+// environment, under r.teardown and never the attempt's context, whose end
+// would kill the service's group at the attempt's close before the tree's
+// end could ask it to stop (a service ends by Stop, from endTree or the
+// run's stop, and by its context only at the shutdown's cut-off); its
+// handle on the tree under e.mu the moment it exists, watched from then on
+// (watchService); then its row running with its pid, group and start time
+// (step.running), committed before the next service starts. A tree whose
+// end has begun has the new service stopped at once, and a running row the
+// ledger refuses stops it and reaps it: either fails the tree at the
+// service, whose end the tree's end records. A command that cannot start
+// is the service's failure, its row finished with why. The error is the
+// failure's words.
+func (e *Engine) startService(ctx context.Context, r *run, a *attempt, t *tree, ch Check) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s was not started: %w", ch.ID, err)
+	}
+	e.mu.Lock()
+	k := a.nextK(ch.ID)
+	e.mu.Unlock()
+	row := ledger.CheckRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, ID: ch.ID, K: k, Phase: ledger.PhaseService, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Tries: 1,
+		Argv: slices.Clone(ch.Argv), Dir: t.cwd, Subject: t.commit, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+	if err := e.transact(ctx, r, func() tx {
+		out := ev("step.started", stepPayload(a, t, ledger.PhaseService, ch.ID, k, map[string]any{"manifest": row.Manifest}))
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
+		return out
+	}, giveUp); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%s was not started: %w", ch.ID, ctx.Err())
+		}
+		return fmt.Errorf("the ledger could not record the service %s: %w", ch.ID, err)
+	}
+	var p proc.Process
+	log := &bytes.Buffer{}
+	env := t.env(r.id)
+	svc, err := e.exec.serve(r.teardown, proc.Spec{Argv: slices.Clone(ch.Argv), Dir: t.cwd, Allow: slices.Clone(env.allow), Inject: maps.Clone(env.inject),
+		Head: checkHead, Tail: checkTail, Log: log, LogLimit: ledger.MaxLog, Started: func(started proc.Process) { p = started }})
+	if err != nil {
+		words := fmt.Sprintf("%s could not run: %s", ch.ID, session.CleanMessage(err.Error()))
+		fin := row
+		fin.State, fin.FinishedAt, fin.Error = ledger.CheckFinished, time.Now().UTC(), words
+		_ = e.transact(context.Background(), r, func() tx {
+			out := ev("step.finished", stepPayload(a, t, ledger.PhaseService, ch.ID, k, map[string]any{"exit": -1, "error": words}))
+			out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+			return out
+		}, nil)
+		return errors.New(words)
+	}
+	running := row
+	running.State, running.PID, running.Group, running.ProcessStartedAt = ledger.CheckRunning, p.PID, p.Group, p.StartedAt
+	ts := &treeService{ch: ch, row: running, svc: svc, log: log, watched: make(chan struct{})}
+	e.mu.Lock()
+	t.services = append(t.services, ts)
+	ending := t.ending
+	if ending {
+		ts.stopping = "its tree's end had begun as it started"
+	}
+	e.mu.Unlock()
+	go e.watchService(r, a, t, ts)
+	if ending {
+		svc.Stop(r.teardown)
+		<-ts.watched
+		return fmt.Errorf("%s was stopped as it started: its tree's end had begun", ch.ID)
+	}
+	if err := e.transact(context.Background(), r, func() tx {
+		out := ev("step.running", stepPayload(a, t, ledger.PhaseService, ch.ID, k, map[string]any{"pid": p.PID, "group": p.Group}))
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(running) }
+		return out
+	}, nil); err != nil {
+		e.mu.Lock()
+		if ts.stopping == "" && !ts.ended {
+			ts.stopping = "the ledger could not record its start"
+		}
+		e.mu.Unlock()
+		svc.Stop(r.teardown)
+		<-ts.watched
+		return fmt.Errorf("the ledger could not record the service %s: %w", ch.ID, err)
+	}
+	return nil
+}
+
+// watchService waits for a service of t to end. One that nothing is ending
+// (the tree's end, the run's stop and a start refused record theirs) ended
+// on its own, and its end is recorded here: service.ended with its exit,
+// its row finished with its words. Before the tree is ready that is the
+// tree's failure, and the phase waiting on a probe is told at once (t.dead,
+// t.died). After it, the tree no longer answers whole: in a worktree the
+// attempt's preview is withdrawn in the same transaction, and the run log
+// says so; the attempt's state is untouched (its session goes on, and the
+// tree's end stops the rest when the attempt closes).
+func (e *Engine) watchService(r *run, a *attempt, t *tree, ts *treeService) {
+	defer close(ts.watched)
+	<-ts.svc.Done()
+	res := ts.svc.Result()
+	err := e.transact(context.Background(), r, func() tx {
+		if ts.stopping != "" || ts.ended {
+			return tx{}
+		}
+		ts.ended = true
+		var words, why string
+		switch {
+		case r.teardown.Err() != nil:
+			// Killed with its context: the shutdown's cut-off (Draining),
+			// not an exit of its own; the tree answers no more all the same.
+			why = "the server's shutdown cut it"
+			if t.kind == ledger.TreeWorktree {
+				a.preview = ""
+			}
+			if !t.ready && t.dead == nil {
+				t.dead = ts
+				close(t.died)
+			}
+		case !t.ready:
+			words, why = beforeReadyWords(ts), "it exited before the tree was ready"
+			if t.dead == nil {
+				t.dead = ts
+				close(t.died)
+			}
+		default:
+			words, why = fmt.Sprintf("%s %s while the tree was in use%s", ts.ch.ID, serviceExit(res), tailWords(lastOutput(res, checkTail))), "it exited while the tree was in use"
+			whose := ""
+			if t.kind == ledger.TreeCheckout {
+				whose = "the checkout's "
+			}
+			withdrawn := ""
+			if t.kind == ledger.TreeWorktree && a.preview != "" {
+				a.preview, withdrawn = "", "; the preview is withdrawn"
+			}
+			r.note(session.ActivityError, "task %s: attempt %d: %sservice %s %s while the tree was in use%s", a.t.def.ID, a.n, whose, ts.ch.ID, serviceExit(res), withdrawn)
+		}
+		fin := ts.finished(res, words)
+		out := ev("service.ended", serviceEndedPayload(a, t, ts, res, why))
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+		return out
+	}, nil)
+	if err != nil {
+		e.afterTransact(r, err)
+	}
+}
+
+// finished is ts's row once its process has ended as res says, with the
+// words of a failure ("" for a service stopped): its exit or signal, its
+// timing, its output's tail and its log (at most ledger.MaxLog, its SHA-256
+// over the bytes kept).
+func (ts *treeService) finished(res proc.Result, words string) ledger.CheckRow {
+	fin := ts.row
+	fin.State, fin.FinishedAt = ledger.CheckFinished, time.Now().UTC()
+	fin.Exit, fin.Signal, fin.Killed, fin.Truncated, fin.Total = res.Exit, res.Signal, res.Killed, res.Truncated, res.Total
+	fin.Log = bytes.Clone(ts.log.Bytes())
+	sum := sha256.Sum256(fin.Log)
+	fin.LogSHA256 = hex.EncodeToString(sum[:])
+	fin.Tail = string(lastOutput(res, checkTail))
+	fin.Error = session.CleanMessage(words)
+	return fin
+}
+
+// serviceEndedPayload is a service.ended event's payload: the service, its
+// tree, its exit or signal and why it ended.
+func serviceEndedPayload(a *attempt, t *tree, ts *treeService, res proc.Result, why string) map[string]any {
+	return map[string]any{"task": a.t.def.ID, "attempt": a.n, "tree": t.kind, "id": ts.ch.ID, "k": ts.row.K, "exit": res.Exit, "signal": res.Signal, "why": session.CleanMessage(why)}
+}
+
+// probeTimeout and probeInterval are a probe's timeout and interval: its
+// own, or their defaults.
+func probeTimeout(p Probe) time.Duration {
+	if p.TimeoutSeconds > 0 {
+		return time.Duration(p.TimeoutSeconds) * time.Second
+	}
+	return defaultProbeTimeout * time.Second
+}
+
+func probeInterval(p Probe) time.Duration {
+	if p.IntervalSeconds > 0 {
+		return time.Duration(p.IntervalSeconds) * time.Second
+	}
+	return defaultProbeInterval * time.Second
+}
+
+// maxProbeLog bounds what a probe over HTTP logs of its tries: a line each
+// while they fit, then the last.
+const maxProbeLog = 32 << 10
+
+// runProbe runs one of t's ready probes until it passes, its receipt one row
+// of phase ready with its tries counted, put started before the first try
+// (step.started) and finished after the last (step.finished): a command
+// (argv) run again (treeExec.run) every interval until it exits 0, or the
+// URL fetched (treeExec.probe: one GET, no redirect followed) until it
+// answers under 300. It fails at its timeout with the last try's output
+// as its words. A service of the tree that exits meanwhile fails the tree
+// at it at once ("service <id>"), and the probe's row says so. It returns
+// the stage and words of a failure.
+func (e *Engine) runProbe(ctx context.Context, r *run, a *attempt, t *tree, p Probe) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "ready " + p.ID, fmt.Errorf("%s was not run: %w", p.ID, err)
+	}
+	e.mu.Lock()
+	k := a.nextK(p.ID)
+	e.mu.Unlock()
+	row := ledger.CheckRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, ID: p.ID, K: k, Phase: ledger.PhaseReady, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Tries: 0,
+		Argv: slices.Clone(p.Argv), URL: p.URL, Dir: t.cwd, Subject: t.commit, State: ledger.CheckStarted, Exit: -1, StartedAt: time.Now().UTC()}
+	if err := e.transact(ctx, r, func() tx {
+		out := ev("step.started", stepPayload(a, t, ledger.PhaseReady, p.ID, k, map[string]any{"manifest": row.Manifest}))
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(row) }
+		return out
+	}, giveUp); err != nil {
+		if ctx.Err() != nil {
+			return "ready " + p.ID, fmt.Errorf("%s was not run: %w", p.ID, ctx.Err())
+		}
+		return "ready " + p.ID, fmt.Errorf("the ledger could not record the probe %s: %w", p.ID, err)
+	}
+	timeout, interval := probeTimeout(p), probeInterval(p)
+	deadline := time.Now().Add(timeout)
+	pctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	env := t.env(r.id)
+	var log bytes.Buffer
+	var last proc.Result
+	var lastWords string
+	tries, passed, logged := 0, false, 0
+	var dead *treeService
+	for {
+		if dead = e.deadService(t); dead != nil {
+			break
+		}
+		tries++
+		if len(p.Argv) > 0 {
+			log.Reset()
+			last = e.runCommand(ctx, t.cwd, p.Argv, max(time.Until(deadline), time.Millisecond), env, &log, nil)
+			passed = last.Exit == 0 && last.Err == "" && !last.TimedOut && !last.Canceled
+			if !passed {
+				lastWords = probeTryWords(last)
+			}
+		} else {
+			status, err := e.exec.probe(pctx, p.URL, interval)
+			passed = err == nil && status < 300
+			line := fmt.Sprintf("try %d: answered %d %s\n", tries, status, http.StatusText(status))
+			switch {
+			case err != nil && pctx.Err() != nil && lastWords != "":
+				// Cut by the probe's own end: the try before it says why.
+				line = fmt.Sprintf("try %d: cut at the timeout\n", tries)
+			case err != nil:
+				lastWords = session.CleanMessage(err.Error())
+				line = fmt.Sprintf("try %d: %s\n", tries, lastWords)
+			case !passed:
+				lastWords = fmt.Sprintf("answered %d %s", status, http.StatusText(status))
+			}
+			if logged+len(line) <= maxProbeLog {
+				log.WriteString(line)
+				logged += len(line)
+			}
+		}
+		if passed || ctx.Err() != nil || pctx.Err() != nil || !time.Now().Before(deadline) {
+			break
+		}
+		wait := time.NewTimer(min(interval, time.Until(deadline)))
+		select {
+		case <-wait.C:
+		case <-pctx.Done():
+		case <-t.died:
+		}
+		wait.Stop()
+		if dead = e.deadService(t); dead != nil {
+			break
+		}
+		if ctx.Err() != nil || pctx.Err() != nil || !time.Now().Before(deadline) {
+			// No try starts at the timeout: the last one's words stand.
+			break
+		}
+	}
+	fin := row
+	fin.State, fin.FinishedAt, fin.Tries = ledger.CheckFinished, time.Now().UTC(), max(tries, 1)
+	if len(p.Argv) > 0 {
+		fin.PID, fin.Group, fin.ProcessStartedAt, fin.Exit, fin.Signal, fin.TimedOut, fin.Killed = last.Process.PID, last.Process.Group, last.Process.StartedAt, last.Exit, last.Signal, last.TimedOut, last.Killed
+		fin.Truncated, fin.Total, fin.Tail = last.Truncated, last.Total, string(lastOutput(last, checkTail))
+	} else if passed {
+		fin.Exit = 0
+	}
+	fin.Log = bytes.Clone(log.Bytes())
+	sum := sha256.Sum256(fin.Log)
+	fin.LogSHA256 = hex.EncodeToString(sum[:])
+	var stage, words string
+	interrupted := false
+	switch {
+	case dead != nil:
+		stage, words = "service "+dead.ch.ID, beforeReadyWords(dead)
+	case ctx.Err() != nil && !passed:
+		interrupted = true
+		stage, words = "ready "+p.ID, e.interruptedWhy(r, a, Check{ID: p.ID})
+		fin.State = ledger.CheckInterrupted
+	case !passed:
+		stage, words = "ready "+p.ID, fmt.Sprintf("%s did not pass within %s (%s): %s", p.ID, timeout, tryCount(tries), lastWords)
+	}
+	fin.Error = session.CleanMessage(words)
+	if err := e.transact(context.Background(), r, func() tx {
+		out := ev("step.finished", stepPayload(a, t, ledger.PhaseReady, p.ID, k, map[string]any{"exit": fin.Exit, "tries": fin.Tries, "duration": fin.FinishedAt.Sub(fin.StartedAt).String(),
+			"error": fin.Error, "interrupted": interrupted}))
+		out.more = func(ltx LedgerTx) error { return ltx.PutCheck(fin) }
+		return out
+	}, nil); err != nil && words == "" {
+		return "ready " + p.ID, fmt.Errorf("the ledger could not record the probe %s: %w", p.ID, err)
+	}
+	if words != "" {
+		return stage, errors.New(fin.Error)
+	}
 	return "", nil
+}
+
+// probeTryWords says why a try of a probe's command did not pass.
+func probeTryWords(res proc.Result) string {
+	switch {
+	case res.Err != "" && !res.TimedOut && !res.Canceled:
+		return "could not run: " + session.CleanMessage(res.Err)
+	case res.TimedOut:
+		return "its last try was still running at the timeout" + tailWords(lastOutput(res, checkTail))
+	case res.Canceled:
+		return "cancelled"
+	case res.Signal != "":
+		return fmt.Sprintf("ended by a signal (%s)%s", res.Signal, tailWords(lastOutput(res, checkTail)))
+	}
+	return fmt.Sprintf("exited %d%s", res.Exit, tailWords(lastOutput(res, checkTail)))
+}
+
+// tryCount is n tries in words.
+func tryCount(n int) string {
+	if n == 1 {
+		return "1 try"
+	}
+	return fmt.Sprintf("%d tries", n)
+}
+
+// readyWords says what the services and the probes of m did to the
+// checkout as its ready phase ran, "" for nothing: the engine cannot tell
+// a service's write from a probe's, so the words name them all.
+func readyWords(m Manifest, moved bool, changed []string, err error) string {
+	var who []string
+	switch ids := checkIDs(m.Services); len(ids) {
+	case 0:
+	case 1:
+		who = append(who, "the service "+ids[0]+" ran")
+	default:
+		who = append(who, "the services "+strings.Join(ids, ", ")+" ran")
+	}
+	var probes []string
+	for _, p := range m.Ready {
+		probes = append(probes, p.ID)
+	}
+	switch len(probes) {
+	case 0:
+	case 1:
+		who = append(who, "the probe "+probes[0]+" was tried")
+	default:
+		who = append(who, "the probes "+strings.Join(probes, ", ")+" were tried")
+	}
+	while := strings.Join(who, " and ")
+	switch {
+	case err != nil:
+		return fmt.Sprintf("the checkout could not be compared once %s: %s", while, session.CleanMessage(err.Error()))
+	case moved:
+		return "the checkout moved to another commit while " + while
+	case len(changed) > 0:
+		return fmt.Sprintf("tracked files changed while %s: %s", while, changedList(changed))
+	}
+	return ""
+}
+
+// checkIDs is the ids of checks, in order.
+func checkIDs(checks []Check) []string {
+	var ids []string
+	for _, ch := range checks {
+		ids = append(ids, ch.ID)
+	}
+	return ids
+}
+
+// treeReady records t usable (tree.ready, its row ready), before the launch
+// or the first check rests on it. In a worktree with a preview, the
+// attempt's preview is the tree's URL from this transaction on, until the
+// attempt's close or a service of the worktree exiting on its own clears
+// it. A service that exited on its own before this fails the tree at it
+// instead; an attempt closed meanwhile records nothing. It returns the
+// stage and words of a failure.
+func (e *Engine) treeReady(ctx context.Context, r *run, a *attempt, t *tree) (string, error) {
+	var dead *treeService
+	closed := false
+	err := e.transact(ctx, r, func() tx {
+		switch {
+		case !a.closedAt.IsZero():
+			closed = true
+			return tx{}
+		case t.dead != nil:
+			dead = t.dead
+			return tx{}
+		}
+		t.ready = true
+		if t.kind == ledger.TreeWorktree {
+			a.preview = t.preview
+		}
+		out := ev("tree.ready", map[string]any{"tree": t.kind, "task": a.t.def.ID, "attempt": a.n, "preview": t.preview})
+		row := t.row(r.id, ledger.TreeReady)
+		out.more = func(ltx LedgerTx) error { return ltx.PutTree(row) }
+		return out
+	}, func() {
+		t.ready = false
+		if t.kind == ledger.TreeWorktree {
+			a.preview = ""
+		}
+	})
+	switch {
+	case dead != nil:
+		return "service " + dead.ch.ID, errors.New(beforeReadyWords(dead))
+	case closed:
+		return "ready", errAttemptClosed
+	case err != nil && ctx.Err() != nil:
+		return "ready", fmt.Errorf("the tree's readiness was not recorded: %w", ctx.Err())
+	case err != nil:
+		return "ready", fmt.Errorf("the ledger could not record the tree ready: %w", err)
+	}
+	return "", nil
+}
+
+// row is t's row, of the run runID, in the state given, as the ledger
+// keeps it.
+func (t *tree) row(runID, state string) ledger.TreeRow {
+	return ledger.TreeRow{RunID: runID, TaskID: t.a.t.def.ID, N: t.a.n, Kind: t.kind, Dir: t.dir, Commit: t.commit, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Preview: t.preview, State: state}
 }
 
 // runStep runs one step of r's project manifest and keeps its receipt:
@@ -1138,11 +1737,14 @@ func (e *Engine) startTrees(r *run) {
 // tree ending, waits for it to be quiet (the phase, check or launch that
 // held it returned; then the session being stopped ended, bounded by
 // stopTimeout, read once the hold is let go: a launch the close came
-// during names its session on the tree only then) and records tree.ended
+// during names its session on the tree only then), stops its services
+// (endServices: SIGTERM to each one's group, SIGKILL after the grace or at
+// the shutdown's cut-off, each one's end recorded) and records tree.ended
 // with the tree's row ended, its ports let go once that is committed
 // (releaseEnded), so a number is the next tree's only once the ledger has
-// its tree.ended. Nothing runs in it after: it has no services and no
-// cleanup steps yet. A refused commit is kept for the run's next
+// its tree.ended. The rows are committed under a context of their own, so
+// the cut-off, which ends r.teardown, leaves them their reserve (Draining).
+// It runs no cleanup steps yet. A refused commit is kept for the run's next
 // (transact), the ports with it, and a row left not ended is concluded by
 // the recovery at the next start.
 func (e *Engine) endTree(r *run, h treeEnd) {
@@ -1169,22 +1771,171 @@ func (e *Engine) endTree(r *run, h treeEnd) {
 			}
 		}
 	}
+	e.endServices(r.teardown, r, t, h.why)
 	if e.beforeTreeEnd != nil {
 		e.beforeTreeEnd(t.kind)
 	}
 	a := t.a
-	_ = e.transact(r.teardown, r, func() tx {
+	_ = e.transact(context.Background(), r, func() tx {
 		if t.ended {
 			return tx{}
 		}
 		t.ended = true
 		r.pendingReleases = append(r.pendingReleases, t)
 		out := ev("tree.ended", map[string]any{"tree": t.kind, "task": a.t.def.ID, "attempt": a.n, "why": h.why})
-		row := ledger.TreeRow{RunID: r.id, TaskID: a.t.def.ID, N: a.n, Kind: t.kind, Dir: t.dir, Commit: t.commit, Manifest: t.man.identity(), Ports: maps.Clone(t.ports), Preview: t.preview,
-			State: ledger.TreeEnded, Why: session.CleanMessage(h.why), EndedAt: time.Now().UTC()}
+		row := t.row(r.id, ledger.TreeEnded)
+		row.Why, row.EndedAt = session.CleanMessage(h.why), time.Now().UTC()
 		out.more = func(ltx LedgerTx) error { return ltx.PutTree(row) }
 		return out
 	}, nil)
+}
+
+// endServices stops t's services, each one nothing is ending yet marked
+// stopping for why, all at once under ctx (Stop: SIGTERM to the group,
+// SIGKILL after proc.ServeGrace or once ctx ends), waits for their
+// watchers, and records the end of each whose end is not recorded yet:
+// service.ended with the exit or signal its stop gave it (the run's stop's,
+// for one it stopped first) and why, its row finished, in one transaction.
+func (e *Engine) endServices(ctx context.Context, r *run, t *tree, why string) {
+	e.mu.Lock()
+	svcs := slices.Clone(t.services)
+	for _, ts := range svcs {
+		if !ts.ended && ts.stopping == "" {
+			ts.stopping = why
+		}
+	}
+	e.mu.Unlock()
+	if len(svcs) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, ts := range svcs {
+		wg.Go(func() { ts.svc.Stop(ctx) })
+	}
+	wg.Wait()
+	for _, ts := range svcs {
+		<-ts.watched
+	}
+	a := t.a
+	err := e.transact(context.Background(), r, func() tx {
+		var out tx
+		var rows []ledger.CheckRow
+		for _, ts := range svcs {
+			if ts.ended {
+				continue
+			}
+			ts.ended = true
+			res := ts.svc.Result()
+			rows = append(rows, ts.finished(res, ""))
+			out.events = append(out.events, event{"service.ended", serviceEndedPayload(a, t, ts, res, ts.stopping)})
+		}
+		if len(rows) > 0 {
+			out.more = func(ltx LedgerTx) error {
+				for _, row := range rows {
+					if err := ltx.PutCheck(row); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+		}
+		return out
+	}, nil)
+	if err != nil {
+		e.afterTransact(r, err)
+	}
+}
+
+// stopServices ends the services of r's live trees, as a stop does before
+// it records the run stopped: each tree not ended is marked ending first,
+// so no service is registered on it after (one starting stops itself at
+// once), and each service nothing ends yet is marked stopping for the
+// run's stop; their stops follow under the stop's context, beside the
+// sessions'. Their ends are recorded by their trees' ends (endServices),
+// once recordStop hands the trees over; a stop the ledger refuses hands
+// none, and leaves no service running all the same. It returns the
+// services to stop. The caller holds e.mu.
+func (r *run) stopServices() []*treeService {
+	var svcs []*treeService
+	for _, tk := range r.tasks {
+		for _, a := range tk.attempts {
+			for _, t := range a.trees {
+				if t.ended {
+					continue
+				}
+				t.ending = true
+				for _, ts := range t.services {
+					if !ts.ended && ts.stopping == "" {
+						ts.stopping = "the run was stopped"
+					}
+					svcs = append(svcs, ts)
+				}
+			}
+		}
+	}
+	return svcs
+}
+
+// teardownReserve is what the server's shutdown keeps after the
+// teardown's cut-off (Draining): proc.WaitDelay for the reaping of what
+// the cut killed, and a second for the rows that record it.
+const teardownReserve = proc.WaitDelay + time.Second
+
+// Draining arms the teardown's cut-off for the server's shutdown, before
+// the shutdown stops anything: ctx's deadline less teardownReserve, or
+// ctx's end when it has no deadline. At the cut-off the teardown context
+// of every managed run, held or made since, ends (each run's r.teardown is
+// made beneath the engine's root): a service still running is killed with
+// its group, and what a tree's end waits on under it gives way. So every
+// tree's end is recorded, and every stop returns, before the shutdown's
+// deadline, with the reserve left for the rows: a cut reached only after
+// the stops would hold each stop to the whole deadline behind one slow
+// service, and leave the rows no time.
+func (e *Engine) Draining(ctx context.Context) {
+	if ctx.Done() == nil {
+		return // a context that never ends: no cut-off
+	}
+	var cut context.Context
+	var cancel context.CancelFunc
+	if d, ok := ctx.Deadline(); ok {
+		cut, cancel = context.WithDeadline(ctx, d.Add(-teardownReserve))
+	} else {
+		cut, cancel = context.WithCancel(ctx)
+	}
+	go func() {
+		defer cancel()
+		<-cut.Done()
+		if e.teardownCut != nil {
+			e.teardownCut()
+		}
+	}()
+}
+
+// Drain waits, as long as ctx allows, for the trees being ended of every
+// run the engine holds, a run stopped before the shutdown among them (one
+// whose stop returned early, cleaning above zero): the server's shutdown
+// calls it after it has stopped its runs, and before the ledger closes, so
+// a tree's end is recorded in the ledger it ends in.
+func (e *Engine) Drain(ctx context.Context) {
+	for {
+		e.mu.Lock()
+		var idle <-chan struct{}
+		for _, r := range e.runs {
+			if r.trees.n > 0 {
+				idle = r.trees.idle()
+				break
+			}
+		}
+		e.mu.Unlock()
+		if idle == nil {
+			return
+		}
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // RunManifest is the run's project manifest as the run reports it: where

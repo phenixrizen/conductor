@@ -1,0 +1,1028 @@
+package crew
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/proc"
+	"github.com/rocksolidlabs/conductor/internal/session"
+)
+
+// serviceLoop is a service that writes its pid to pidName in its tree's
+// state directory, then runs until it is stopped; with ignoreTerm it
+// ignores SIGTERM (and so do the sleeps it starts), so only the grace's
+// SIGKILL ends it.
+func serviceLoop(id, pidName string, ignoreTerm bool) Check {
+	trap := ""
+	if ignoreTerm {
+		trap = `trap "" TERM; `
+	}
+	return shStep(id, trap+`echo $$ > "$CONDUCTOR_STATE_DIR/`+pidName+`"; while :; do sleep 0.05; done`)
+}
+
+// byFile is a ready probe that passes once the file name is in the tree's
+// state directory, tried every second.
+func byFile(id, name string) Probe {
+	return Probe{ID: id, Argv: []string{"test", "-s", "${CONDUCTOR_STATE_DIR}/" + name}, IntervalSeconds: 1}
+}
+
+// never is a ready probe that never passes: a test waits on what else
+// ends the ready phase (a service exiting before it).
+var never = Probe{ID: "never", Argv: []string{"test", "-e", "${CONDUCTOR_STATE_DIR}/never"}, IntervalSeconds: 1}
+
+// stateFile is the path of name in a tree's state directory.
+func stateFile(tree, name string) string {
+	return filepath.Join(tree, taskDir, stateDirName, name)
+}
+
+// rowOf is the receipt of id at k among rows, and whether it is there.
+func rowOf(rows []ledger.CheckRow, id string, k int) (ledger.CheckRow, bool) {
+	for _, r := range rows {
+		if r.ID == id && r.K == k {
+			return r, true
+		}
+	}
+	return ledger.CheckRow{}, false
+}
+
+// before reports whether the first event of kind a comes before the first
+// of kind b in kinds, both there.
+func before(kinds []string, a, b string) bool {
+	i, j := slices.Index(kinds, a), slices.Index(kinds, b)
+	return i >= 0 && j >= 0 && i < j
+}
+
+// previewOf is the preview of the task's latest attempt as the run reads.
+func previewOf(t *testing.T, e *Engine, runID, taskID string) string {
+	t.Helper()
+	ts := taskOf(t, e, runID, taskID)
+	if ts.Attempt == nil {
+		return ""
+	}
+	return ts.Attempt.Preview
+}
+
+// gatedStop is a service whose Stop tells called, then waits for gate
+// before it stops the service: a test reads the run while a tree's
+// services are being stopped.
+type gatedStop struct {
+	service
+	gate   <-chan struct{}
+	called chan<- struct{}
+}
+
+func (g *gatedStop) Stop(ctx context.Context) error {
+	select {
+	case g.called <- struct{}{}:
+	default:
+	}
+	<-g.gate
+	return g.service.Stop(ctx)
+}
+
+// gateStops makes every service e starts from now on a gatedStop, and
+// returns the channel each Stop tells and the gate's opener.
+func gateStops(t *testing.T, e *Engine) (called <-chan struct{}, open func()) {
+	gate, told := make(chan struct{}), make(chan struct{}, 16)
+	native := e.exec.serve
+	e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
+		svc, err := native(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		return &gatedStop{service: svc, gate: gate, called: told}, nil
+	}
+	opened := false
+	open = func() {
+		if !opened {
+			opened = true
+			close(gate)
+		}
+	}
+	t.Cleanup(open)
+	return told, open
+}
+
+// The helper leaves its process group (setsid), writes its pid and then a
+// mark to the directory its arguments name, and sleeps: a daemon a service
+// or a step could start, which the group's signals cannot reach. It runs
+// only when its arguments say so (after --), never in a test run.
+func TestHelperDaemonizes(t *testing.T) {
+	args := flag.Args()
+	if len(args) != 2 || args[0] != "conductor-test-daemon" {
+		t.Skip("a helper")
+	}
+	if _, err := syscall.Setsid(); err != nil {
+		os.Exit(2)
+	}
+	os.WriteFile(filepath.Join(args[1], "daemon.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	os.WriteFile(filepath.Join(args[1], "daemon.ready"), nil, 0o600)
+	time.Sleep(60 * time.Second)
+	os.Exit(0)
+}
+
+// daemonizing is a command of sh that starts the helper (which leaves its
+// group) in the background, waits until it has, and exits 0; redirect
+// says whether the helper's output goes elsewhere than the command's.
+func daemonizing(id string, redirect bool) Check {
+	out := ""
+	if redirect {
+		out = " >/dev/null 2>&1"
+	}
+	line := `"$0" -test.run='^TestHelperDaemonizes$' -- conductor-test-daemon "$CONDUCTOR_STATE_DIR"` + out + ` & while [ ! -e "$CONDUCTOR_STATE_DIR/daemon.ready" ]; do sleep 0.05; done; exit 0`
+	return Check{ID: id, Argv: []string{"sh", "-c", line, os.Args[0]}}
+}
+
+// A tree's services run beside it from its services phase, and its ready
+// probes wait for them (EN1 PR-4): a service is a row of phase service put
+// started before its process and running with its pid, beside the tree as
+// long as it lives; a probe by file passes once the service wrote its pid
+// in the state directory, a probe over HTTP (the harness answers it from a
+// map) once its URL answers under 300, each one row with its tries; then
+// tree.ready, with the preview, before the launch. The attempt's preview
+// is its worktree's URL; the task files name the preview and the
+// services; the session is given CONDUCTOR_PREVIEW_URL. The checkout of
+// the result is a tree of its own, its service on its own port, which the
+// task's check reaches. Once the task succeeded both trees end, their
+// services stopped (service.ended, the rows finished), their pids gone, and
+// the preview with the attempt's close.
+func TestATreesServicesRunBesideItAndItsProbesWaitForThem(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	build := work("build", "lead")
+	build.Checks = []Check{shStep("unit", `test -s "$CONDUCTOR_STATE_DIR/web.pid"`)}
+	m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
+		Ready:   []Probe{byFile("up", "web.pid"), {ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1}},
+		Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
+	url, ckURL := fmt.Sprintf("http://127.0.0.1:%d/", fakePortsFirst), fmt.Sprintf("http://127.0.0.1:%d/", fakePortsFirst+1)
+	fl.probes.answer(url, http.StatusOK)
+	fl.probes.answer(ckURL, http.StatusNoContent)
+	run := launchManaged(t, e, repoManifestCrew(dir, m, build))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	wt := a.Attempt.Worktree
+	pid := pidIn(t, stateFile(wt, "web.pid"))
+	if !alive(pid) {
+		t.Fatalf("the service %d is not running beside the tree", pid)
+	}
+	rows := l.stepRows(run.ID, "build", 1)
+	web, ok1 := rowOf(rows, "web", 1)
+	up, ok2 := rowOf(rows, "up", 1)
+	page, ok3 := rowOf(rows, "page", 1)
+	if !ok1 || !ok2 || !ok3 || len(rows) != 3 {
+		t.Fatalf("the worktree's receipts:\n%s", rowWords(rows))
+	}
+	if web.Phase != ledger.PhaseService || web.State != ledger.CheckRunning || web.PID != pid || web.Group != pid || web.ProcessStartedAt.IsZero() || web.Dir != wt || web.Manifest != "crew:0" {
+		t.Fatalf("the service's row: %+v", web)
+	}
+	if up.Phase != ledger.PhaseReady || up.State != ledger.CheckFinished || up.Error != "" || up.Tries < 1 || up.Argv[2] != stateFile(wt, "web.pid") {
+		t.Fatalf("the probe by file: %+v", up)
+	}
+	if page.Phase != ledger.PhaseReady || page.State != ledger.CheckFinished || page.Error != "" || page.Exit != 0 || page.URL != url || len(page.Argv) != 0 || page.Tries != fl.probes.tries(url) {
+		t.Fatalf("the probe over HTTP: %+v (asked %d times)", page, fl.probes.tries(url))
+	}
+	kinds := l.kinds(run.ID)
+	for _, o := range [][2]string{{"attempt.workspace", "step.started"}, {"step.running", "step.finished"}, {"step.finished", "tree.ready"}, {"tree.ready", "attempt.launched"}} {
+		if !before(kinds, o[0], o[1]) {
+			t.Fatalf("%s before %s: %v", o[0], o[1], kinds)
+		}
+	}
+	if p := l.payloads(run.ID, "tree.ready")[0]; p["tree"] != ledger.TreeWorktree || p["preview"] != url {
+		t.Fatalf("tree.ready: %v", p)
+	}
+	if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State != ledger.TreeReady || tr.Preview != url {
+		t.Fatalf("the worktree's row: %+v", tr)
+	}
+	if a.Attempt.Preview != url {
+		t.Fatalf("the attempt's preview: %q", a.Attempt.Preview)
+	}
+	md, f := taskFileOf(t, a)
+	if f.Manifest == nil || f.Manifest.Preview != url || !slices.Equal(f.Manifest.Services, []string{"web"}) ||
+		!strings.Contains(md, "Its service web runs beside your session") || !strings.Contains(md, "The preview, what a person opens to look at the work, is "+url+" (`CONDUCTOR_PREVIEW_URL`).") {
+		t.Fatalf("the task file's manifest: %+v\n%s", f.Manifest, md)
+	}
+	fl.mu.Lock()
+	inject := fl.calls[len(fl.calls)-1].inject
+	fl.mu.Unlock()
+	if inject["CONDUCTOR_PREVIEW_URL"] != url {
+		t.Fatalf("the session's names: %v", inject)
+	}
+	// The checkout: its own service on its own port, which the check finds.
+	commitResult(t, e, a, "built.txt", "yes\n", "built")
+	waitTask(t, e, run.ID, "build", ledger.TaskSucceeded, 1)
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree, ledger.TreeCheckout)
+	waitTreesEnded(t, e, run.ID)
+	ckPid := pidIn(t, stateFile(wt+".check", "web.pid"))
+	for _, p := range []int{pid, ckPid} {
+		if alive(p) {
+			t.Fatalf("the service %d outlived its tree", p)
+		}
+	}
+	rows = l.stepRows(run.ID, "build", 1)
+	for _, k := range []int{1, 2} {
+		r, ok := rowOf(rows, "web", k)
+		if !ok || r.State != ledger.CheckFinished || r.Signal != "terminated" || r.Error != "" || r.FinishedAt.IsZero() || r.LogSHA256 != sha(r.Log) {
+			t.Fatalf("the service's row k%d at its end: %+v", k, r)
+		}
+	}
+	if unit, ok := rowOf(rows, "unit", 1); !ok || unit.Exit != 0 || unit.Error != "" {
+		t.Fatalf("the check beside the checkout's service: %+v", unit)
+	}
+	ended := l.payloads(run.ID, "service.ended")
+	if len(ended) != 2 || ended[0]["why"] != "attempt 1 succeeded" || ended[0]["signal"] != "terminated" || ended[1]["why"] != "attempt 1 succeeded" {
+		t.Fatalf("service.ended: %v", ended)
+	}
+	if kinds := l.kinds(run.ID); !before(kinds, "service.ended", "tree.ended") || !before(kinds, "task.succeeded", "service.ended") {
+		t.Fatalf("the trees' ends: %v", kinds)
+	}
+	if p := previewOf(t, e, run.ID, "build"); p != "" {
+		t.Fatalf("the preview after the attempt closed: %q", p)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// The native executor's probe asks the loopback through a client of its
+// own: a URL that answers is its status, the body read nothing of; a
+// redirect is the try's answer and is never followed (the server it points
+// at sees no request); a port nothing listens on is an error.
+func TestTheNativeProbeFollowsNoRedirect(t *testing.T) {
+	var elsewhere atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { elsewhere.Add(1) }))
+	defer other.Close()
+	moved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/elsewhere", http.StatusFound)
+	}))
+	defer moved.Close()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, strings.Repeat("x", 1<<20))
+	}))
+	defer up.Close()
+	ex := nativeExec()
+	if status, err := ex.probe(t.Context(), up.URL+"/", 10*time.Second); err != nil || status != http.StatusOK {
+		t.Fatalf("a URL that answers: %d %v", status, err)
+	}
+	if status, err := ex.probe(t.Context(), moved.URL+"/", 10*time.Second); err != nil || status != http.StatusFound {
+		t.Fatalf("a redirect: %d %v", status, err)
+	}
+	if n := elsewhere.Load(); n != 0 {
+		t.Fatalf("the redirect was followed: %d requests elsewhere", n)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := "http://" + l.Addr().String() + "/"
+	l.Close()
+	if status, err := ex.probe(t.Context(), closed, 10*time.Second); err == nil {
+		t.Fatalf("a port nothing listens on answered %d", status)
+	}
+}
+
+// In an engine on the native probe, a probe over HTTP asks the tree's own
+// port on the loopback (here an httptest server's, the port scripted): it
+// passes when the URL answers, and one that answers a redirect never
+// passes, the server the redirect names asked nothing: the probe fails at
+// its timeout with the last try's answer, in a worktree uncounted.
+func TestAnEngineProbeAsksTheLoopbackAndFollowsNoRedirect(t *testing.T) {
+	t.Run("an answer", func(t *testing.T) {
+		var asked atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/health" {
+				asked.Add(1)
+			}
+		}))
+		defer srv.Close()
+		port := srv.Listener.Addr().(*net.TCPAddr).Port
+		dir := newRepo(t)
+		e, fl, l := managedEngine(t)
+		e.exec.probe = probeURL
+		fl.ports.script(port)
+		m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
+			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/health", IntervalSeconds: 1}}, Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		want := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+		if page, ok := rowOf(l.stepRows(run.ID, "build", 1), "page", 1); !ok || page.URL != want || page.Error != "" || asked.Load() < 1 {
+			t.Fatalf("the probe: %+v, asked %d", page, asked.Load())
+		}
+		if a.Attempt.Preview != fmt.Sprintf("http://127.0.0.1:%d/", port) {
+			t.Fatalf("the preview: %q", a.Attempt.Preview)
+		}
+		stopRun(t, e, run.ID)
+	})
+	t.Run("a redirect", func(t *testing.T) {
+		var elsewhere atomic.Int32
+		other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { elsewhere.Add(1) }))
+		defer other.Close()
+		moved := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+"/", http.StatusFound)
+		}))
+		defer moved.Close()
+		port := moved.Listener.Addr().(*net.TCPAddr).Port
+		dir := newRepo(t)
+		e, fl, l := managedEngine(t)
+		e.exec.probe = probeURL
+		fl.ports.script(port)
+		m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)},
+			Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1, TimeoutSeconds: 1}}}
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		attemptFailed(t, e, run.ID, "build", 1)
+		row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+		if row.Stage != "ready page" || !strings.Contains(row.Error, "page did not pass within 1s") || !strings.HasSuffix(row.Error, "answered 302 Found") {
+			t.Fatalf("attempt 1: %+v", row)
+		}
+		if n := elsewhere.Load(); n != 0 {
+			t.Fatalf("the redirect was followed: %d requests elsewhere", n)
+		}
+		waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
+		stopRun(t, e, run.ID)
+	})
+}
+
+// A service's row is put started, and committed, before its process
+// exists (the executor finds it in the ledger when it is asked to start
+// the service); a running row the ledger refuses stops the service and
+// reaps it, and fails the tree at the service with the ledger's words, in a
+// worktree uncounted, the run paused. The service's end is recorded with
+// the tree's.
+func TestAServicesRowComesFirstAndARefusedRunningRowStopsIt(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	native := e.exec.serve
+	var startedFirst atomic.Bool
+	e.exec.serve = func(ctx context.Context, s proc.Spec) (service, error) {
+		l.mu.Lock()
+		for _, c := range l.checks {
+			if c.Phase == ledger.PhaseService && c.ID == "web" && c.State == ledger.CheckStarted {
+				startedFirst.Store(true)
+			}
+		}
+		l.mu.Unlock()
+		return native(ctx, s)
+	}
+	l.mu.Lock()
+	l.failOn, l.failOnce = "step.running[phase=service]", true
+	l.mu.Unlock()
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{serviceLoop("web", "web.pid", false)}}, work("build", "lead")))
+	attemptFailed(t, e, run.ID, "build", 1)
+	if !startedFirst.Load() {
+		t.Fatal("the service was started before its row was committed")
+	}
+	words := "the ledger could not record the service web: ledger: disk full (injected)"
+	if row := l.attemptWhen(t, run.ID, "build", 1, failedRow); row.Stage != "service web" || row.Error != words {
+		t.Fatalf("attempt 1: %+v", row)
+	}
+	l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+	waitTreesEnded(t, e, run.ID)
+	web, ok := rowOf(l.stepRows(run.ID, "build", 1), "web", 1)
+	if !ok || web.State != ledger.CheckFinished || web.PID == 0 {
+		t.Fatalf("the service's row: %+v", web)
+	}
+	if alive(web.PID) {
+		t.Fatalf("the service %d outlived its refused running row", web.PID)
+	}
+	if p := l.payloads(run.ID, "service.ended"); len(p) != 1 || p[0]["why"] != "the ledger could not record its start" {
+		t.Fatalf("service.ended: %v", p)
+	}
+	waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && strings.Contains(r.PausedWhy, words) })
+	stopRun(t, e, run.ID)
+}
+
+// A service is a foreground process: one that exits before its tree is
+// ready fails the tree at it (the phase waiting on a probe that would
+// never pass is told at once), its end recorded with the words, the tree
+// ended after; in a worktree uncounted, the run paused. A service that
+// dies says how; a daemonizer, whose command puts its child outside its
+// group and exits 0, is told a service must stay in the foreground, and
+// its child, not the tree's, is neither stopped nor reported: the test
+// ends it.
+func TestAServiceThatExitsBeforeTheTreeIsReadyFailsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		service Check
+		words   string
+		daemon  bool
+	}{
+		{"one that dies", shStep("web", `echo the port is taken; exit 1`), "web exited 1 before the tree was ready: the port is taken", false},
+		{"a daemonizer", daemonizing("web", true), "web exited 0 before the tree was ready: a service must stay in the foreground", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{tc.service}, Ready: []Probe{never}}, work("build", "lead")))
+			attemptFailed(t, e, run.ID, "build", 1)
+			row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+			if row.Stage != "service web" || row.Error != tc.words {
+				t.Fatalf("attempt 1: %+v", row)
+			}
+			l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+			waitTreesEnded(t, e, run.ID)
+			rows := l.stepRows(run.ID, "build", 1)
+			web, ok := rowOf(rows, "web", 1)
+			if !ok || web.State != ledger.CheckFinished || web.Error != tc.words {
+				t.Fatalf("the service's row:\n%s", rowWords(rows))
+			}
+			if p, ok := rowOf(rows, "never", 1); !ok || p.State != ledger.CheckFinished || p.Error != tc.words {
+				t.Fatalf("the probe's row:\n%s", rowWords(rows))
+			}
+			if p := l.payloads(run.ID, "service.ended"); len(p) != 1 || p[0]["why"] != "it exited before the tree was ready" {
+				t.Fatalf("service.ended: %v", p)
+			}
+			if kinds := l.kinds(run.ID); slices.Contains(kinds, "tree.ready") || slices.Contains(kinds, "attempt.launched") {
+				t.Fatalf("the tree was ready: %v", kinds)
+			}
+			waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
+			if tc.daemon {
+				child := pidIn(t, stateFile(row.Worktree, "daemon.pid"))
+				if !alive(child) {
+					t.Fatalf("the daemon %d, not the tree's, was ended with it", child)
+				}
+				syscall.Kill(child, syscall.SIGKILL)
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// What a setup step puts outside its group is not the tree's: a child that
+// left the group and holds the step's output fails the step with proc's
+// words in its receipt, in a worktree uncounted; one that redirected its
+// output leaves the step to finish as its exit says. Either child is left
+// alone: the test ends it.
+func TestASetupStepsChildThatLeftTheGroupIsNotTheTrees(t *testing.T) {
+	for _, redirect := range []bool{false, true} {
+		t.Run(map[bool]string{false: "holding the step's output", true: "its output redirected"}[redirect], func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Setup: []Check{daemonizing("deps", redirect)}}, work("build", "lead")))
+			var wt string
+			if redirect {
+				a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+				wt = a.Attempt.Worktree
+				if deps, _ := rowOf(l.stepRows(run.ID, "build", 1), "deps", 1); deps.Exit != 0 || deps.Error != "" {
+					t.Fatalf("the step: %+v", deps)
+				}
+			} else {
+				attemptFailed(t, e, run.ID, "build", 1)
+				row := l.attemptWhen(t, run.ID, "build", 1, failedRow)
+				wt = row.Worktree
+				want := "deps could not run: proc: a process that left the group still holds the output; it is left alone"
+				if row.Stage != "setup deps" || row.Error != want {
+					t.Fatalf("attempt 1: %+v", row)
+				}
+				if deps, _ := rowOf(l.stepRows(run.ID, "build", 1), "deps", 1); deps.Error != want {
+					t.Fatalf("the step: %+v", deps)
+				}
+				waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused })
+			}
+			child := pidIn(t, stateFile(wt, "daemon.pid"))
+			if !alive(child) {
+				t.Fatalf("the child %d that left the group was ended", child)
+			}
+			syscall.Kill(child, syscall.SIGKILL)
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// The checkout is compared with the result once after its ready phase,
+// the services having run beside the probes: a change there is the phase's,
+// whoever made it, a service or a probe command, and the words name every
+// one of them. The result is refused before its checks (counted), and the
+// next attempt starts where the refused one did.
+func TestTheReadyPhaseMayChangeNothingTrackedInTheCheckout(t *testing.T) {
+	inCheckout := func(line string) string { return `case "$(pwd)" in *.check) ` + line + `;; esac; ` }
+	for _, tc := range []struct {
+		name  string
+		m     Manifest
+		words string
+	}{
+		{"a service that writes", Manifest{Services: []Check{serviceLoop("db", "db.pid", false), shStep("web", inCheckout("echo service >> README")+`echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; while :; do sleep 0.05; done`)},
+			Ready: []Probe{byFile("up", "web.pid")}}, "tracked files changed while the services db, web ran and the probe up was tried: README"},
+		{"a probe that writes", Manifest{Services: []Check{serviceLoop("web", "web.pid", false)},
+			Ready: []Probe{byFile("up", "web.pid"), {ID: "touch", Argv: []string{"sh", "-c", inCheckout("echo probe >> README") + "exit 0"}, IntervalSeconds: 1}}},
+			"tracked files changed while the service web ran and the probes up, touch were tried: README"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newRepo(t)
+			e, _, l := managedEngine(t)
+			build := work("build", "lead")
+			build.Checks = []Check{shStep("unit", "true")}
+			run := launchManaged(t, e, repoManifestCrew(dir, tc.m, build))
+			a1 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+			commitResult(t, e, a1, "built.txt", "yes\n", "built")
+			a2 := attemptN(t, e, run.ID, "build", 2)
+			row := l.attemptRow(t, run.ID, "build", 1)
+			if row.Stage != "ready" || row.Error != tc.words || a2.Attempt.Start != a1.Attempt.Start {
+				t.Fatalf("attempt 1: %+v; attempt 2 starts at %s", row, short(a2.Attempt.Start))
+			}
+			if n := l.count(run.ID, "check.started"); n != 0 {
+				t.Fatalf("%d checks ran after the ready phase changed tracked files", n)
+			}
+			if r, _ := e.Get(run.ID); r.Paused {
+				t.Fatal("a refused result paused the run")
+			}
+			stopRun(t, e, run.ID)
+		})
+	}
+}
+
+// A check beside a running service: a change found after the check names
+// the service as its other possible author (the comparison cannot tell
+// whose write it was), counted as a failing check is, the next attempt at
+// the result.
+func TestACheckBesideAServiceThatWritesNamesItAsTheOtherAuthor(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	// In the checkout, the service waits for the check to begin, then
+	// writes a tracked file and says so; the check waits for that.
+	svc := shStep("web", `echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; case "$(pwd)" in *.check) `+gated("$CONDUCTOR_STATE_DIR/checking")+`; echo service >> README; touch "$CONDUCTOR_STATE_DIR/written";; esac; while :; do sleep 0.05; done`)
+	build := work("build", "lead")
+	build.Checks = []Check{shStep("unit", `touch "$CONDUCTOR_STATE_DIR/checking"; `+gated("$CONDUCTOR_STATE_DIR/written"))}
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{svc}, Ready: []Probe{byFile("up", "web.pid")}}, build))
+	a1 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	commitResult(t, e, a1, "built.txt", "yes\n", "built")
+	a2 := attemptN(t, e, run.ID, "build", 2)
+	words := "check unit, or a service of the tree (web), changed tracked files: README"
+	row := l.attemptRow(t, run.ID, "build", 1)
+	if row.Stage != "check unit" || row.Error != words || a2.Attempt.Start != row.ResultCommit {
+		t.Fatalf("attempt 1: %+v; attempt 2 starts at %s", row, short(a2.Attempt.Start))
+	}
+	if unit, ok := rowOf(l.stepRows(run.ID, "build", 1), "unit", 1); !ok || unit.Error != words || unit.Stable {
+		t.Fatalf("the check's row: %+v", unit)
+	}
+	if ts := taskOf(t, e, run.ID, "build"); ts.Attempts != 2 {
+		t.Fatalf("the failing check was not counted: %+v", ts)
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A service that cannot run in the checkout of a result refuses the
+// result before its checks, counted: the next attempt starts where the
+// refused one did.
+func TestACheckoutRefusedAtAService(t *testing.T) {
+	dir := newRepo(t)
+	e, _, l := managedEngine(t)
+	svc := shStep("web", `case "$(pwd)" in *.check) echo no room >&2; exit 3;; esac; echo $$ > "$CONDUCTOR_STATE_DIR/web.pid"; while :; do sleep 0.05; done`)
+	build := work("build", "lead")
+	build.Checks = []Check{shStep("unit", "true")}
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{svc}, Ready: []Probe{byFile("up", "web.pid")}}, build))
+	a1 := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	commitResult(t, e, a1, "built.txt", "yes\n", "built")
+	a2 := attemptN(t, e, run.ID, "build", 2)
+	if row := l.attemptRow(t, run.ID, "build", 1); row.Stage != "service web" || row.Error != "web exited 3 before the tree was ready: no room" || a2.Attempt.Start != a1.Attempt.Start {
+		t.Fatalf("attempt 1: %+v; attempt 2 starts at %s", row, short(a2.Attempt.Start))
+	}
+	if n := l.count(run.ID, "check.started"); n != 0 {
+		t.Fatalf("%d checks ran after the checkout's service failed", n)
+	}
+	if r, _ := e.Get(run.ID); r.Paused {
+		t.Fatal("a refused result paused the run")
+	}
+	stopRun(t, e, run.ID)
+}
+
+// The attempt's preview is offered while its worktree answers behind it,
+// and never else (EN1 PR-4): none before tree.ready (a probe held at a
+// gate), the URL after it; none once the attempt's close is committed,
+// read while the tree's services are still being stopped (their stops held
+// at a gate), and none after; still none when the next tree draws the
+// number its tree let go. A service of the worktree that exits on its own
+// after tree.ready withdraws it too: service.ended with its exit, the
+// preview gone in that transaction, a line in the run log, the attempt
+// still running and its other service stopped only when it closes.
+func TestTheAttemptsPreviewIsOfferedWhileItsTreeAnswers(t *testing.T) {
+	m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false), serviceLoop("db", "db.pid", false)},
+		Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1}}, Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
+	url := fmt.Sprintf("http://127.0.0.1:%d/", fakePortsFirst)
+	t.Run("the attempt's close", func(t *testing.T) {
+		dir := newRepo(t)
+		e, fl, l := managedEngine(t)
+		gate := make(chan struct{})
+		fl.probes.answerWith(url, func(ctx context.Context) (int, error) {
+			select {
+			case <-gate:
+				return http.StatusOK, nil
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		})
+		stopping, openStops := gateStops(t, e)
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		waitFake(t, "the probe asked", func() bool { return fl.probes.tries(url) > 0 })
+		if p := previewOf(t, e, run.ID, "build"); p != "" {
+			t.Fatalf("a preview before tree.ready: %q", p)
+		}
+		close(gate)
+		a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		if a.Attempt.Preview != url {
+			t.Fatalf("the preview after tree.ready: %q", a.Attempt.Preview)
+		}
+		wt := a.Attempt.Worktree
+		pids := []int{pidIn(t, stateFile(wt, "web.pid")), pidIn(t, stateFile(wt, "db.pid"))}
+		if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-stopping:
+		case <-time.After(20 * time.Second):
+			t.Fatal("no service of the tree was being stopped after 20 s")
+		}
+		if p := previewOf(t, e, run.ID, "build"); p != "" {
+			t.Fatalf("a preview while the tree's services are being stopped: %q", p)
+		}
+		if r, _ := e.Get(run.ID); r.Cleaning != 1 {
+			t.Fatalf("cleaning %d while the tree's services are being stopped", r.Cleaning)
+		}
+		openStops()
+		l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+		waitTreesEnded(t, e, run.ID)
+		for _, p := range pids {
+			if alive(p) {
+				t.Fatalf("the service %d outlived its tree", p)
+			}
+		}
+		if p := previewOf(t, e, run.ID, "build"); p != "" {
+			t.Fatalf("a preview after the tree ended: %q", p)
+		}
+		// The next tree draws the number the ended one let go.
+		fl.ports.script(fakePortsFirst)
+		next := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		na := waitAttempt(t, e, next.ID, "build", ledger.AttemptRunning)
+		if w, _ := l.treeRow(next.ID, "build", 1, ledger.TreeWorktree); w.Ports["web"] != fakePortsFirst || na.Attempt.Preview != url {
+			t.Fatalf("the next tree: %+v, its preview %q", w, na.Attempt.Preview)
+		}
+		if p := previewOf(t, e, run.ID, "build"); p != "" {
+			t.Fatalf("the ended attempt's preview once its number is another tree's: %q", p)
+		}
+		stopRun(t, e, next.ID)
+		stopRun(t, e, run.ID)
+	})
+	t.Run("a service's own exit", func(t *testing.T) {
+		dir := newRepo(t)
+		e, fl, l := managedEngine(t)
+		fl.probes.answer(url, http.StatusOK)
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		if a.Attempt.Preview != url {
+			t.Fatalf("the preview after tree.ready: %q", a.Attempt.Preview)
+		}
+		wt := a.Attempt.Worktree
+		web, db := pidIn(t, stateFile(wt, "web.pid")), pidIn(t, stateFile(wt, "db.pid"))
+		syscall.Kill(web, syscall.SIGKILL)
+		waitFake(t, "web's end recorded", func() bool { return len(l.payloads(run.ID, "service.ended")) == 1 })
+		if p := l.payloads(run.ID, "service.ended")[0]; p["id"] != "web" || p["signal"] != "killed" || p["why"] != "it exited while the tree was in use" {
+			t.Fatalf("service.ended: %v", p)
+		}
+		ts := taskOf(t, e, run.ID, "build")
+		if ts.Attempt.Preview != "" || ts.Attempt.State != ledger.AttemptRunning {
+			t.Fatalf("the attempt after its service's own exit: %+v", ts.Attempt)
+		}
+		r, _ := e.Get(run.ID)
+		line := "task build: attempt 1: service web was ended by a signal (killed) while the tree was in use; the preview is withdrawn"
+		if !slices.ContainsFunc(r.Log, func(en session.ActivityEntry) bool { return en.Message == line }) {
+			t.Fatalf("the run log has no %q", line)
+		}
+		if row, _ := rowOf(l.stepRows(run.ID, "build", 1), "web", 1); row.State != ledger.CheckFinished || row.Signal != "killed" || !strings.HasPrefix(row.Error, "web was ended by a signal (killed) while the tree was in use") {
+			t.Fatalf("web's row: %+v", row)
+		}
+		if !alive(db) {
+			t.Fatal("db was stopped with web, before the attempt closed")
+		}
+		if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+			t.Fatal(err)
+		}
+		l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+		waitTreesEnded(t, e, run.ID)
+		if alive(db) {
+			t.Fatalf("db %d outlived its tree", db)
+		}
+		if p := l.payloads(run.ID, "service.ended"); len(p) != 2 || p[1]["id"] != "db" || !strings.HasPrefix(p[1]["why"].(string), "attempt 1 cancelled") {
+			t.Fatalf("service.ended: %v", p)
+		}
+		stopRun(t, e, run.ID)
+	})
+}
+
+// A stop ends the services of the run's live trees itself, beside the
+// sessions and before it records the run stopped: with time to finish it
+// returns once the service's pid is gone and the tree's end is committed
+// (service.ended, why the run was stopped; tree.ended). Under a context
+// already short it kills them at once and returns all the same, with the
+// tree's end still under way (cleaning above zero: the end is held at its
+// seam here), which ends after; Drain waits for it.
+func TestAStopEndsTheServicesBeforeItReturns(t *testing.T) {
+	m := Manifest{Services: []Check{serviceLoop("web", "web.pid", false)}, Ready: []Probe{byFile("up", "web.pid")}}
+	t.Run("with time to finish", func(t *testing.T) {
+		dir := newRepo(t)
+		e, _, l := managedEngine(t)
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		pid := pidIn(t, stateFile(a.Attempt.Worktree, "web.pid"))
+		stopRun(t, e, run.ID)
+		if alive(pid) {
+			t.Fatalf("the service %d outlived the stop", pid)
+		}
+		if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State != ledger.TreeEnded {
+			t.Fatalf("the worktree after the stop returned: %+v", tr)
+		}
+		if p := l.payloads(run.ID, "service.ended"); len(p) != 1 || p[0]["why"] != "the run was stopped" || p[0]["signal"] != "terminated" {
+			t.Fatalf("service.ended: %v", p)
+		}
+		if r, _ := e.Get(run.ID); r.Cleaning != 0 {
+			t.Fatalf("cleaning %d after the stop", r.Cleaning)
+		}
+	})
+	t.Run("under a context already short", func(t *testing.T) {
+		dir := newRepo(t)
+		e, _, l := managedEngine(t)
+		held, release := make(chan string, 2), make(chan struct{})
+		e.beforeTreeEnd = func(kind string) {
+			held <- kind
+			<-release
+		}
+		t.Cleanup(func() {
+			select {
+			case <-release:
+			default:
+				close(release)
+			}
+		})
+		run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+		a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+		pid := pidIn(t, stateFile(a.Attempt.Worktree, "web.pid"))
+		short, cancel := context.WithCancel(context.Background())
+		cancel()
+		_ = e.Stop(short, run.ID)
+		if alive(pid) {
+			t.Fatalf("the service %d outlived a stop under an ended context", pid)
+		}
+		if r, _ := e.Get(run.ID); r.StoppedAt == nil || r.Cleaning != 1 {
+			t.Fatalf("the run after the stop: stopped %v, cleaning %d", r.StoppedAt, r.Cleaning)
+		}
+		if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State == ledger.TreeEnded {
+			t.Fatalf("the worktree ended before its end was let through: %+v", tr)
+		}
+		<-held
+		close(release)
+		drain, done := context.WithTimeout(context.Background(), 20*time.Second)
+		defer done()
+		e.Drain(drain)
+		if r, _ := e.Get(run.ID); r.Cleaning != 0 {
+			t.Fatalf("cleaning %d after Drain", r.Cleaning)
+		}
+		l.waitTreeRowsEnded(t, run.ID, "build", 1, ledger.TreeWorktree)
+	})
+}
+
+// A stop the ledger refuses (its recordStop) has ended the services all
+// the same, before it returns its refusal: the run is stopped, the
+// service's pid is gone, no tree.ended is recorded (the tree is handed
+// over by no commit: the recovery concludes it at the next start), and the
+// run reads with no preview from the stop's first step on (read while the
+// stop is ending the service, its stop held at a gate).
+func TestAStopTheLedgerRefusesLeavesNoServiceRunning(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", fakePortsFirst)
+	fl.probes.answer(url, http.StatusOK)
+	stopping, openStops := gateStops(t, e)
+	m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", false)}, Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1}},
+		Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if a.Attempt.Preview != url {
+		t.Fatalf("the preview: %q", a.Attempt.Preview)
+	}
+	pid := pidIn(t, stateFile(a.Attempt.Worktree, "web.pid"))
+	l.mu.Lock()
+	l.failOn = "run.stopped"
+	l.mu.Unlock()
+	errc := make(chan error, 1)
+	go func() { errc <- e.Stop(context.Background(), run.ID) }()
+	select {
+	case <-stopping:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the stop did not reach the service after 20 s")
+	}
+	if p := previewOf(t, e, run.ID, "build"); p != "" {
+		t.Fatalf("a preview while the run stops: %q", p)
+	}
+	openStops()
+	err := <-errc
+	if err == nil || !strings.Contains(err.Error(), "the ledger could not record the stop") {
+		t.Fatalf("the stop's error: %v", err)
+	}
+	if alive(pid) {
+		t.Fatalf("the service %d outlived a stop the ledger refused", pid)
+	}
+	r, _ := e.Get(run.ID)
+	if r.StoppedAt == nil || r.Tasks[0].Attempt.Preview != "" {
+		t.Fatalf("the run after the refused stop: stopped %v, preview %q", r.StoppedAt, r.Tasks[0].Attempt.Preview)
+	}
+	if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); tr.State != ledger.TreeReady || l.count(run.ID, "tree.ended") != 0 {
+		t.Fatalf("the worktree after the refused stop: %+v", tr)
+	}
+}
+
+// A run whose tree is being ended (cleaning above zero) is not evicted,
+// whatever the pressure: here its sole task cancelled, the run finished,
+// and its tree's service being stopped (its stop held at a gate). Once the
+// tree has ended, the run goes as any finished run does.
+func TestARunWhoseTreeIsEndingIsNotEvicted(t *testing.T) {
+	dir := newRepo(t)
+	e, _, _ := managedEngine(t)
+	old := maxRuns
+	t.Cleanup(func() { maxRuns = old })
+	stopping, openStops := gateStops(t, e)
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{serviceLoop("web", "web.pid", false)}}, work("build", "lead")))
+	waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	if err := e.CancelTask(t.Context(), run.ID, "build"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopping:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the tree's service was not being stopped after 20 s")
+	}
+	if r, _ := e.Get(run.ID); r.Outcome != ledger.OutcomeCancelled || r.Cleaning != 1 {
+		t.Fatalf("the run while its tree ends: outcome %q, cleaning %d", r.Outcome, r.Cleaning)
+	}
+	maxRuns = 1
+	other := testCrew(manual("lead", ""))
+	if _, err := e.Launch(t.Context(), other); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.Get(run.ID); !ok {
+		t.Fatal("the run was forgotten while its tree was being ended")
+	}
+	openStops()
+	waitTreesEnded(t, e, run.ID)
+	waitTrue(t, "the attempt's session ended", func() bool {
+		r, _ := e.Get(run.ID)
+		return r.Members[0].Status == MemberEnded
+	})
+	if _, err := e.Launch(t.Context(), other); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.Get(run.ID); ok {
+		t.Fatal("the finished run was kept past the bound once its tree had ended")
+	}
+}
+
+// At the shutdown's cut-off (Draining: the deadline less teardownReserve)
+// every run's teardown context ends: a service that ignores SIGTERM is
+// killed then, with its group, its end recorded (the shutdown cut it) and
+// the preview withdrawn, without a stop.
+func TestTheShutdownsCutOffKillsTheServices(t *testing.T) {
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	url := fmt.Sprintf("http://127.0.0.1:%d/", fakePortsFirst)
+	fl.probes.answer(url, http.StatusOK)
+	m := Manifest{Ports: []string{"web"}, Services: []Check{serviceLoop("web", "web.pid", true)}, Ready: []Probe{{ID: "page", URL: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/", IntervalSeconds: 1}},
+		Preview: "http://127.0.0.1:${CONDUCTOR_PORT_WEB}/"}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	pid := pidIn(t, stateFile(a.Attempt.Worktree, "web.pid"))
+	// A deadline the reserve takes all of: the cut-off is now.
+	ctx, cancel := context.WithTimeout(context.Background(), teardownReserve)
+	defer cancel()
+	e.Draining(ctx)
+	waitFake(t, "the service's end recorded", func() bool { return len(l.payloads(run.ID, "service.ended")) == 1 })
+	if alive(pid) {
+		t.Fatalf("the service %d outlived the cut-off", pid)
+	}
+	if p := l.payloads(run.ID, "service.ended")[0]; p["why"] != "the server's shutdown cut it" || p["signal"] != "killed" {
+		t.Fatalf("service.ended: %v", p)
+	}
+	if p := previewOf(t, e, run.ID, "build"); p != "" {
+		t.Fatalf("a preview once the service was cut: %q", p)
+	}
+}
+
+// A service left running across the owner's end (a real ledger, closed
+// with the service running) is reported by the recovery at the next start,
+// never signalled: its row interrupted, Recovered.Services naming its pid,
+// group and start, confirmed, in its tree; the process still alive.
+func TestAServiceLeftRunningAcrossARestartIsReportedNotSignalled(t *testing.T) {
+	dir := newRepo(t)
+	e, _ := readyEngine(t)
+	ldir := t.TempDir()
+	ld, err := ledger.Open(ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.UseLedger(SQLLedger(ld))
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{serviceLoop("web", "web.pid", false)}}, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	pid := pidIn(t, stateFile(a.Attempt.Worktree, "web.pid"))
+	// The owner ends here: its ledger closed with the service running.
+	if err := ld.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ledger.Open(ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	ctx := context.Background()
+	rec, err := again.Recover(ctx)
+	if err != nil || len(rec) != 1 || len(rec[0].Services) != 1 {
+		t.Fatalf("the recovery: %+v %v", rec, err)
+	}
+	if sv := rec[0].Services[0]; sv.Task != "build" || sv.N != 1 || sv.Tree != ledger.TreeWorktree || sv.ID != "web" || sv.Pid != pid || sv.Group != pid || sv.StartedAt.IsZero() || !sv.Confirmed {
+		t.Fatalf("the service reported: %+v (its pid %d)", sv, pid)
+	}
+	rows, _ := again.Checks(ctx, run.ID, "build", 1, false)
+	if web, ok := rowOf(rows, "web", 1); !ok || web.State != ledger.CheckInterrupted {
+		t.Fatalf("the service's row after the recovery: %+v", web)
+	}
+	if !alive(pid) {
+		t.Fatalf("the service %d was signalled by the recovery", pid)
+	}
+}
+
+// A crash between a tree's services' end and its own end (the engine ended
+// at the seam after service.ended, the attempt closed, the run finished,
+// the trees' rows ready): the recovery ends each tree, interrupted, with its
+// tree.ended; the services' rows finished before are not reported again;
+// the run read after has nothing cleaning.
+func TestATreeLeftEndingAfterItsServicesIsEndedByTheRecovery(t *testing.T) {
+	dir := newRepo(t)
+	e, _ := readyEngine(t)
+	ldir := t.TempDir()
+	ld, err := ledger.Open(ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.UseLedger(SQLLedger(ld))
+	held, release := make(chan string, 2), make(chan struct{})
+	e.beforeTreeEnd = func(kind string) {
+		held <- kind
+		<-release
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	run := launchManaged(t, e, repoManifestCrew(dir, Manifest{Services: []Check{serviceLoop("web", "web.pid", false)}, Ready: []Probe{byFile("up", "web.pid")}}, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	commitResult(t, e, a, "built.txt", "yes\n", "built")
+	waitOutcome(t, e, run.ID, ledger.OutcomeSucceeded)
+	kinds := []string{<-held, <-held}
+	slices.Sort(kinds)
+	if !slices.Equal(kinds, []string{ledger.TreeCheckout, ledger.TreeWorktree}) {
+		t.Fatalf("the trees at the seam: %v", kinds)
+	}
+	snap, _ := e.Get(run.ID)
+	if err := ld.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := ledger.Open(ldir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	ctx := context.Background()
+	rec, err := again.Recover(ctx)
+	if err != nil || len(rec) != 1 || rec[0].Trees != 2 || len(rec[0].Services) != 0 || rec[0].Interrupted {
+		t.Fatalf("the recovery: %+v %v", rec, err)
+	}
+	evs, _ := again.Events(ctx, run.ID, 0, 1000)
+	ended := 0
+	for _, ev := range evs {
+		if ev.Kind == "service.ended" {
+			ended++
+		}
+	}
+	if ended != 2 {
+		t.Fatalf("%d service.ended events: the services' ends before the crash, and none after", ended)
+	}
+	from, ok, err := SQLLedger(again).Load(ctx, run.ID)
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	if read := Recovered(snap, from); read.Cleaning != 0 || read.State != RunFinished {
+		t.Fatalf("the run read after: cleaning %d, %s", read.Cleaning, read.State)
+	}
+	// The trees held at the seam end now, on the closed ledger, as the
+	// harness's end of the engine waits for them.
+	close(release)
+}

@@ -246,12 +246,20 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 		checks = append(checks, Check{ID: fmt.Sprintf("c%d", i), Argv: argv, TimeoutSeconds: 600})
 	}
 	// The manifest's section at its largest (a file's blob of a SHA-256
-	// repository, eight ports of the longest names at five digits each),
-	// and the uncounted attempt before at its largest: never cut, and the
+	// repository, eight ports of the longest names at five digits each, a
+	// preview of maxPreview bytes, four services of the longest ids), and
+	// the uncounted attempt before at its largest: never cut, and the
 	// manifest's at most 2 KiB as the sum of its parts.
 	manifest := &TaskManifest{Source: sourceFile, Digest: strings.Repeat("f", 64), Revision: 1<<63 - 1, Ports: map[string]int{}}
 	for i := range maxManifestPorts {
 		manifest.Ports[fmt.Sprintf("p%d%s", i, strings.Repeat("o", 14))] = maxPort - i
+	}
+	manifest.Preview = "http://127.0.0.1:65535/" + strings.Repeat("p", maxPreview-len("http://127.0.0.1:65535/"))
+	for i := range maxManifestServices {
+		manifest.Services = append(manifest.Services, fmt.Sprintf("s%d%s", i, strings.Repeat("v", 38)))
+	}
+	if len(manifest.Preview) != maxPreview || len(manifest.Services[0]) != 40 {
+		t.Fatalf("a preview of %d bytes, an id of %d", len(manifest.Preview), len(manifest.Services[0]))
 	}
 	if b, _ := json.Marshal(manifest); len(b) > 2<<10 {
 		t.Fatalf("the manifest's section is %d bytes", len(b))
@@ -286,7 +294,9 @@ func TestTheTaskFileIsCutToFit(t *testing.T) {
 	}
 	if kept.Manifest == nil || !reflect.DeepEqual(*kept.Manifest, *manifest) || kept.Unusable == nil || *kept.Unusable != *unusable || kept.Previous == nil || kept.Previous.Checkpoint != f.Previous.Checkpoint ||
 		!strings.Contains(string(md), "The project manifest `conductor.manifest.json` as this commit holds it") || !strings.Contains(string(md), unusable.Error) ||
-		!strings.Contains(string(md), "The tree's state directory is `.conductor/state`") {
+		!strings.Contains(string(md), "The tree's state directory is `.conductor/state`") ||
+		!strings.Contains(string(md), "Its services "+strings.Join(manifest.Services, ", ")+" run beside your session") ||
+		!strings.Contains(string(md), "is "+manifest.Preview+" (`CONDUCTOR_PREVIEW_URL`)") {
 		t.Fatalf("the manifest's section or the attempt before was cut: %+v %+v %+v", kept.Manifest, kept.Unusable, kept.Previous)
 	}
 	for name, n := range manifest.Ports {

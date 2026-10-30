@@ -61,10 +61,13 @@ func checkTimeout(ch Check) time.Duration {
 // changes the manifest is checked by the one it changed), then its setup
 // phase, each step a receipt and the checkout compared with the result
 // after each (what the worker had, the checks have; a step that changes
-// tracked content fails the attempt at it), its ports, its state directory
-// and the manifest's approved env names given to its steps and checks as
-// to the worker's session. Then the checks, one at a time
-// across the server (checkSlots), each recorded before it starts, with its
+// tracked content fails the attempt at it), its services and its ready
+// probes, the checkout compared once after them (a change is the phase's:
+// stage "ready"), its ports, its state directory and the manifest's
+// approved env names given to its steps and checks as to the worker's
+// session; its services run beside the checks, and a change found after a
+// check names them as its other possible author. Then the checks, one at a
+// time across the server (checkSlots), each recorded before it starts, with its
 // process once started, and with its outcome when it ends. After each one
 // the checkout is compared with the commit as git would store it
 // (checkoutIntact): a check that cannot run, exits non-zero, times out,
@@ -207,6 +210,11 @@ func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, di
 		fin.LogSHA256 = hex.EncodeToString(sum[:])
 		fin.Tail = string(lastOutput(res, checkTail))
 		words := checkWords(ch, res, moved, changed, cerr)
+		if ids := e.serviceIDs(tr); len(ids) > 0 && words != "" && words == intactWords(moved, changed, cerr) {
+			// The tree's services ran beside the check: the comparison
+			// cannot tell their writes from its own.
+			words = fmt.Sprintf("check %s, or a service of the tree (%s), %s", ch.ID, strings.Join(ids, ", "), words)
+		}
 		fin.Error = session.CleanMessage(words)
 		// The check's outcome is evidence: not recorded, the result is not
 		// taken on it.
@@ -223,6 +231,21 @@ func (e *Engine) checkTree(ctx context.Context, r *run, a *attempt, tr *tree, di
 		}
 	}
 	return "", "", true
+}
+
+// serviceIDs is the ids of t's services, in the order they started; none
+// for no tree.
+func (e *Engine) serviceIDs(t *tree) []string {
+	if t == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var ids []string
+	for _, ts := range t.services {
+		ids = append(ids, ts.ch.ID)
+	}
+	return ids
 }
 
 // checkWords says why a check failed, "" for a pass.
@@ -248,13 +271,19 @@ func intactWords(moved bool, changed []string, err error) string {
 	case moved:
 		return "moved the checkout to another commit"
 	case len(changed) > 0:
-		list := changed
-		if len(list) > 10 {
-			list = append(slices.Clone(list[:10]), "…")
-		}
-		return "changed tracked files: " + strings.Join(list, ", ")
+		return "changed tracked files: " + changedList(changed)
 	}
 	return ""
+}
+
+// changedList is the paths a comparison found changed, as words name them:
+// the first ten, and a mark when there are more.
+func changedList(changed []string) string {
+	list := changed
+	if len(list) > 10 {
+		list = append(slices.Clone(list[:10]), "…")
+	}
+	return strings.Join(list, ", ")
 }
 
 // checkoutIntact compares the checkout at dir with the commit as git

@@ -291,6 +291,11 @@ type Engine struct {
 	// by number (steps.go: a number is one tree's at a time). Both under mu.
 	envPassthrough []string
 	ports          map[int]*tree
+	// teardownRoot is the context every managed run's teardown context is
+	// made beneath (add), ended by teardownCut at the shutdown's cut-off
+	// (steps.go: Draining).
+	teardownRoot context.Context
+	teardownCut  context.CancelFunc
 
 	// bySession maps the ID of each member's session to its sessionMember.
 	// It is read without mu, so that the activity and the changes of the
@@ -554,8 +559,9 @@ type member struct {
 // NewEngine returns an engine that starts member sessions with l and finds
 // them again with lookup (the server's registry).
 func NewEngine(l Launcher, lookup func(sessionID string) (*session.Local, bool)) *Engine {
+	root, cut := context.WithCancel(context.Background())
 	return &Engine{launcher: l, lookup: lookup, await: awaitReady, now: time.Now,
-		runs: map[string]*run{}, exec: nativeExec()}
+		runs: map[string]*run{}, exec: nativeExec(), teardownRoot: root, teardownCut: cut}
 }
 
 // Launch is LaunchHeld for a caller that needs nothing more of the run once
@@ -995,7 +1001,11 @@ func (e *Engine) add(c Crew, p prepared, label string) *run {
 			r.baseManRow = p.man.row()
 		}
 		r.prereq, r.prereqK, r.prereqRows = prereqPassed, map[string]int{}, map[string]prereqReceipt{}
-		r.teardown, r.teardownCancel = context.WithCancel(context.Background())
+		root := e.teardownRoot
+		if root == nil {
+			root = context.Background()
+		}
+		r.teardown, r.teardownCancel = context.WithCancel(root)
 	}
 	r.chat = session.NewChatRoom(func(m session.ChatMessage) {
 		if e.OnRunChat != nil {
@@ -1615,9 +1625,11 @@ func (r *run) admit(m Member) error {
 }
 
 // Stop stops a run: no member starts any more, the starts in flight end,
-// every member's session is stopped, the handoffs waiting are dropped and the
-// run is marked stopped. The worktrees stay. Stopping a stopped run again
-// changes nothing.
+// every member's session is stopped and, beside them in the same wait,
+// every service of a managed run's live trees (SIGTERM to its group,
+// SIGKILL after the grace or once ctx ends), the handoffs waiting are
+// dropped and the run is marked stopped. The worktrees stay. Stopping a
+// stopped run again changes nothing.
 func (e *Engine) Stop(ctx context.Context, runID string) error {
 	e.mu.Lock()
 	r, ok := e.runs[runID]
@@ -1641,6 +1653,10 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 			ids = append(ids, m.state.SessionID)
 		}
 	}
+	// The services of the live trees end with the sessions, before the
+	// stop is recorded: the trees' ends follow its commit, and a stop the
+	// ledger refuses hands no tree over (steps.go: stopServices).
+	svcs := r.stopServices()
 	e.mu.Unlock()
 	errs := make([]error, len(ids))
 	var wg sync.WaitGroup
@@ -1654,6 +1670,9 @@ func (e *Engine) stop(ctx context.Context, r *run) error {
 			defer wg.Done()
 			errs[i] = l.Stop(ctx)
 		}()
+	}
+	for _, ts := range svcs {
+		wg.Go(func() { ts.svc.Stop(ctx) })
 	}
 	wg.Wait()
 	// The handoffs left are dropped; one being typed ends with its session.
