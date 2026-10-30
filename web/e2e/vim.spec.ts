@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
 
 // The Neovim keymap (design round 12, F8): off by default; the Keys button
@@ -425,11 +426,85 @@ test('a connection that ends keeps its Neovim tabs with their text, lost; after 
   }
 })
 
+// The page's terminal connections, watched (the lost-Neovim tests below): the keys it sends Neovim (their editor and number), the
+// editors it is told ended, and the answers to the pings sent here.
+interface SocketSeam {
+  sockets?: WebSocket[]
+  nvimSent?: Array<{ id: string; keys: string; seq?: number }>
+  nvimClosed?: string[]
+  pongs?: number[]
+}
+async function watchSockets(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as SocketSeam
+    const control = (data: unknown): Record<string, unknown> | null => {
+      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data instanceof Uint8Array ? data : null
+      if (!bytes || bytes[0] !== 0x03) return null
+      try {
+        return JSON.parse(new TextDecoder().decode(bytes.subarray(1))) as Record<string, unknown>
+      } catch {
+        return null
+      }
+    }
+    const Native = window.WebSocket
+    window.WebSocket = class extends Native {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols)
+        ;(w.sockets ??= []).push(this)
+        // Before the page's own handler (set later), in the same dispatch: what is noted here the page has had.
+        this.addEventListener('message', (e) => {
+          const msg = control(e.data)
+          if (msg?.t === 'nvim_event' && msg.kind === 'closed' && typeof msg.id === 'string') (w.nvimClosed ??= []).push(msg.id)
+          else if (msg?.t === 'pong' && typeof msg.ts === 'number') (w.pongs ??= []).push(msg.ts)
+        })
+      }
+      send(data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+        const msg = control(data)
+        if (msg?.t === 'nvim_input') (w.nvimSent ??= []).push({ id: String(msg.id), keys: String(msg.keys), seq: typeof msg.seq === 'number' ? msg.seq : undefined })
+        super.send(data)
+      }
+    } as typeof WebSocket
+  })
+}
+/** The control frame of a message, as the page and the server frame it. */
+function controlFrame(msg: Record<string, unknown>): Uint8Array {
+  const body = new TextEncoder().encode(JSON.stringify(msg))
+  const out = new Uint8Array(body.length + 1)
+  out[0] = 0x03
+  out.set(body, 1)
+  return out
+}
+/**
+ * Returns once the server has answered every frame the page sent to session id so far, and the page has had what it said of them: a
+ * ping's answer comes after them (a connection's frames are taken in order). Its number is small, so the page takes the answer for
+ * none of its own (rttFromPong).
+ */
+let pings = 0
+async function serverCaughtUp(page: Page, id: string): Promise<void> {
+  const ts = ++pings
+  await page.evaluate(
+    ({ id, frame }) => {
+      const w = window as unknown as SocketSeam
+      const ws = w.sockets?.filter((s) => s.url.includes(`/ws/sessions/${id}?`) && s.readyState === WebSocket.OPEN).pop()
+      if (!ws) throw new Error(`no open connection to session ${id}`)
+      ws.send(new Uint8Array(frame))
+    },
+    { id, frame: [...controlFrame({ t: 'ping', ts })] },
+  )
+  // Behind keys Neovim never took and the open of another tab's Neovim (15 s at most, the server's bound).
+  await page.waitForFunction((ts) => !!(window as unknown as SocketSeam).pongs?.includes(ts), ts, { timeout: 30_000 })
+}
+
 // Characters typed in insert mode show at once (the local echo); Neovim, stopped here (SIGSTOP, so it reads none of them), dies
 // before it has them. The tab keeps them: the text Neovim last held with what was typed laid over it, and its changes that come
 // after its end reconciled with it rather than written over it. (#281: a Neovim merely slowed by its config had taken the first
-// character before the kill on a loaded box, and the banner said `yz`; stopped, it takes none, whatever the box does.)
+// character before the kill on a loaded box, and the banner said `yz`; stopped, it takes none, whatever the box does. #429: the
+// server refused the key on its way as Neovim died, a word from another goroutine than its end, and a page that had the refusal
+// first took the `x` off as if Neovim lived; the keys that meet its end are no longer refused.) Neovim has done every key before
+// it is stopped, so the ones typed after are all it never had; once it has ended, the server has answered every key typed before the
+// tab is looked at.
 test('a Neovim lost while typed characters wait for it keeps them in its tab', async ({ page, api, state }) => {
+  await watchSockets(page)
   const cwd = join(state.root, 'files-vim-lost-typed')
   mkdirSync(cwd, { recursive: true })
   writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
@@ -455,13 +530,15 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
     const pid = Number(await message.textContent())
     await page.keyboard.type('A')
     await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    // Every key so far done, as Neovim said (the keymap waits for keys on their way): the mode can show before that word comes.
+    await expect(area.locator('[data-editor-keymap]')).toBeEnabled({ timeout: 15_000 })
     // Stopped, Neovim reads nothing more: the characters typed now wait for it, shown by the local echo alone, until it is killed.
     process.kill(pid, 'SIGSTOP')
     await page.keyboard.type('xyz')
     await expect(lines).toContainText('alphaxyz', { timeout: 5_000 })
     process.kill(pid, 'SIGKILL')
     await expect(area.locator('[data-nvim-lost]')).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
-    await page.waitForTimeout(1000)
+    await serverCaughtUp(page, s.id)
     await expect(lines).toContainText('alphaxyz')
     // And the banner says which characters Neovim never had.
     await expect(area.locator('[data-nvim-unconfirmed]')).toHaveText('xyz')
