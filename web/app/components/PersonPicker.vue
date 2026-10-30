@@ -1,0 +1,60 @@
+<script setup lang="ts">
+import { avatarTone } from '~/utils/avatar'
+import { initials } from '~/utils/sessions'
+
+/**
+ * A ticket's owner, the accountable person (decision D4: people are names until identity exists): one of the directory's names, a new
+ * name typed (the store adds it to the directory as the owner is set), or none (the clear button). The directory is read again whole
+ * each time the picker opens, so a name another browser added is offered.
+ */
+const props = defineProps<{ modelValue: string; disabled?: boolean; placeholder?: string }>()
+const emit = defineEmits<{ 'update:modelValue': [name: string] }>()
+
+const api = useDispatchApi()
+const people = ref<string[]>([])
+const open = ref(false)
+watch(open, (o) => {
+  if (o) void load()
+})
+
+async function load() {
+  try {
+    people.value = (await api.people()).map((p) => p.name)
+  } catch {
+    // The names read before stay offered; a typed name still sets.
+  }
+}
+onMounted(load)
+
+const items = computed(() => [...new Set([...people.value, ...(props.modelValue ? [props.modelValue] : [])])].sort((a, b) => a.localeCompare(b)))
+
+function pick(v: unknown) {
+  const name = typeof v === 'string' ? v.trim() : ''
+  open.value = false
+  if (name !== props.modelValue) emit('update:modelValue', name)
+}
+</script>
+
+<template>
+  <USelectMenu
+    v-model:open="open"
+    :model-value="modelValue || undefined"
+    :items="items"
+    create-item="always"
+    clear
+    :placeholder="placeholder ?? 'No owner'"
+    :disabled="disabled"
+    :search-input="{ placeholder: 'A name…' }"
+    size="sm"
+    class="w-full"
+    data-person-picker
+    @update:model-value="pick"
+    @create="pick"
+  >
+    <template #leading>
+      <span v-if="modelValue" class="grid size-5 place-items-center rounded-full text-[9px] font-semibold" :class="avatarTone(modelValue)">{{ initials(modelValue) }}</span>
+      <UIcon v-else name="i-lucide-user" class="size-4 text-dimmed" />
+    </template>
+    <template #create-item-label="{ item }">Make {{ item }} the owner</template>
+  </USelectMenu>
+</template>
