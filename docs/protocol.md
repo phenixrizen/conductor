@@ -1139,9 +1139,10 @@ Changes are pushed to attached clients as the `attention` control message and
 to admins as `session` events on `GET /api/events` (Server-Sent Events over a
 header-authenticated `fetch`: `snapshot` with the full list first, then
 `session` per change, `removed{id}` when a session leaves the registry,
-`activity` for every activity entry, see Events, and `run{id}` when a crew run
+`activity` for every activity entry, see Events, `run{id}` when a crew run
 changes in a way no session change carries, or `run{id, removed: true}` when
-the server forgets it, see Crew runs).
+the server forgets it, see Crew runs, and `dispatch{seq, entity, id, ticket,
+project}` when something of Dispatch's changes, see Dispatch).
 
 A trust question (`source` `trust`) carries the agent's answers as its
 `options`, from the catalog's `trustAnswers`: the label a page shows and the
@@ -1720,7 +1721,8 @@ after 20 s.
 On a switchyard (`switchyard.enabled`, `conductor switchyard`) every route
 that launches, edits or lists what the server launches, the sessions'
 creation and resume, the catalog, the crews, the runs, the paths, the git
-check, the integrations and an agent's self-service crew routes, answers
+check, the integrations, an agent's self-service crew routes and Dispatch's
+routes (a switchyard keeps no tickets, and opens no Dispatch store), answers
 `403 {error: {code: "switchyard"}}`; the rest, hosted sessions, links,
 `/api/join`, the events stream, health, reach and whoami, is as below. A
 switchyard serves no workbench either: `GET /` is its landing page, every
@@ -1730,7 +1732,9 @@ served only under `/join/` and `/paste` and for its assets.
 Every `/api/...` route, with the credential it needs. Admin means
 `Authorization: Bearer <workbench token>`; a share token is also accepted where the
 table says so. JSON request bodies are limited to 64 KiB (2 MiB on the crew
-routes, 128 KiB when adding a member to a run) and unknown fields are rejected. Errors are
+routes, 128 KiB when adding a member to a run, 192 KiB on a Dispatch
+ticket's create and edit, where a body past its bound is `413 bound`) and
+unknown fields are rejected. Errors are
 `{"error":{"code","message"}}`, with more fields where the table says so. The
 WebSocket routes, `GET /ws/sessions/{id}` and `GET /ws/host`, are described
 above. A run link's token is a share token on the session of every member of
@@ -1783,6 +1787,23 @@ its run, and on no other.
 | `POST /api/runs/{run}/tasks/{task}/accept` | admin | take a failed task's last submitted commit as its result all the same ("Accept anyway", a person's decision over a failed check): the task `succeeded` with it, what needs it goes on; `200 {receipt}`; `409 task_state` with the receipt for a task not failed, or one no attempt of which submitted a commit |
 | `POST /api/runs/{run}/links` | admin | create a run link: `{role, label?, ttlSeconds?}`, reply `201 {link, token, url}` as for a session link (its `url` on the same base); it grants its role on the session of every member of the run, a member added later included (see Crew runs); `409 too_many_links` past 100 links for the run; `404` when unknown |
 | `DELETE /api/runs/{run}/links/{linkId}` | admin | revoke a run link, which closes every viewer attached through it (`4403`); `204`, `404` when the link is not the run's |
+| `GET /api/dispatch/projects` | admin | Dispatch's projects (see Dispatch below): `{projects, next?}`, a page of at most `limit` (1 to 200, 200 when absent) summaries by key after `cursor` (a page's opaque `next`), each `{id, key, name, tracker, archivedAt?, open, done, rev, updatedAt}`, `open` counting its live tickets neither done nor cancelled and `done` those done, without its description, folder, tracker URL and close policy, which its read carries, so a page is under 128 KiB (a name of 60 characters encodes to at most 360 bytes); the archived ones only with `archived=1`; `400 invalid_request` for a bad value |
+| `POST /api/dispatch/projects` | admin | make a project (`project.create`, Dispatch operations below): `{opId, byName?, key, name, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, `key` one upper-case letter then one to five upper-case letters or digits, chosen now and never changed, `name` 1 to 60 characters, `description` Markdown of at most 16 KiB, `cwd` a folder kept as text (at most 4096 bytes), `tracker` `native` (the default) or `external` with an `http` or `https` `trackerUrl` (at most 2 KiB), `closeRequires` any of `acceptance` and `delivery` (`["acceptance"]` for a native project and `[]` for an external one when absent; `verified` refused); reply `201 {receipt, project}`; `409 key_taken` for a key another project holds, archived or not |
+| `GET /api/dispatch/projects/{key}` | admin | a project, archived or not, with what its pages offer: `{project, labels, milestones, views}`, its live labels by name, its live milestones by target, and the live saved views of the project and of every project, a view's `query` the JSON it is; at most 3 MiB with every field and set at its bound (`maxProjectReply`); `404 not_found` |
+| `POST /api/dispatch/projects/{key}/edit` | admin | set the fields given of a project (`project.edit`): `{opId, expectedRev?, byName?, name?, description?, cwd?, tracker?, trackerUrl?, closeRequires?}`, each held to its create's rule, the key never changing; reply `{receipt, project}`; `409 archived` for an archived project |
+| `POST /api/dispatch/projects/{key}/archive`, `…/unarchive` | admin | archive a project, which refuses every write under it (`409 archived`) until it is unarchived, or unarchive it: `{opId, expectedRev?, byName?}`; reply `{receipt, project}`; `409 invalid` for one archived already, or not archived; a project is never deleted |
+| `GET /api/dispatch/people` | admin | the directory of names the owner and assignee pickers offer, by name: `{people}`, each `{name, createdAt}`; a name a ticket's owner or a `person:` assignee gives is added to it |
+| `POST /api/dispatch/people` | admin | add a name (`person.add`): `{opId, byName?, name}`, 1 to 60 characters with no control character; reply `201 {receipt, person}`; `409 invalid` for a name held already |
+| `GET /api/dispatch/tickets` | admin | a page of a list of tickets, filtered and sorted on the server: `{tickets, next?, total}`, each a summary without its description, acceptance criteria and acceptance (`{id, projectId, number, key, title, status, priority, horizon, owner, assignees, labels, milestoneId, parentId, blocked, createdAt, updatedAt, closedAt?, deletedAt?, rev}`), `total` how many the whole list holds; `project` a project's key (every project's when absent); `status`, `priority` (its number, 0 none to 4 urgent), `label` (an id), `assignee` (`person:<name>` or `agent:<catalog id>`) and `horizon` (`now`, `next`, `later`, or empty for not planned) as often as wanted, a ticket holding any of them; `owner`, `milestone` (an id), `parent` (a ticket's key, its live children whether it is live or not) and `blocked=1` (a live ticket neither done nor cancelled blocks it); `q`, at most 200 characters of words, every one in the ticket's key, title, description or acceptance criteria or in one of its comments, the last a prefix, never search syntax; `sort` (`updated`, the default, `created`, `priority`, `status`, `title`, `key`, `milestone`) and `desc=1`; `deleted=1` for the tombstones beside the live tickets, which a list leaves out otherwise; `limit` 1 to 200 (100 when absent) and `cursor` (a page's opaque `next`, of the same sort); `400 invalid_request` for a bad value or a parameter the route does not take |
+| `POST /api/dispatch/tickets` | admin | make a ticket (`ticket.create`): `{opId, byName?, project, title, description?, acceptance?, status?, priority?, horizon?, owner?, assignees?, labels?, milestone?, parent?}`, at most 192 KiB (every field at its bound with each character doubled by escaping): `title` 1 to 200 characters, `description` Markdown of at most 64 KiB and `acceptance` of at most 16 KiB, `status` `backlog` (the default), `ready`, `in_progress`, `in_review`, `done` or `cancelled`, `priority` 0 to 4, `owner` a person's name, at most 8 `assignees` and 20 `labels` (ids), `milestone` an id and `parent` a key of the same project; its key `<project>-<n>` from the project's next number, never reassigned; reply `201 {receipt, ticket}`, the ticket in full; `404 not_found` for a project, parent, label or milestone missing or deleted; `409` for what the store refuses (`archived`, `invalid`, `bound`, `cycle`, `close_policy`) |
+| `GET /api/dispatch/tickets/{key}` | admin | a ticket, deleted or not, in full from one read transaction: `{ticket}`, its fields with `assignees`, `labels` (ids), `parent` (`{id, key, title, status, deletedAt?}`, inactive while it is a tombstone), `children` (`{tickets, total}`: the first 50 live by number, the rest through the list's `parent`), `relations` both ways (the first 100, the active first, each with its other end and that end's `deletedAt`) and `relationsTotal`, `blocked`, `links`, `attachments`, the last 50 `comments` (each with its number `n`), and `close: {requires, met: {acceptance, delivery}, missing, why?}`, its close policy's state computed now, `why` the words for an acceptance recorded and unmet ("accepted for Alice; the owner is now Bob", "accepted before the criteria changed"); at most 3 MiB with every field and set at its bound (`maxTicketReply`); `404 not_found` |
+| `POST /api/dispatch/tickets/{key}/edit` | admin | edit a live ticket (`ticket.edit`), every change one operation: `{opId, expectedRev?, byName?, set?: {title?, description?, acceptance?, status?, priority?, horizon?, owner?, parent?, milestone?}, add?: {assignees?, labels?}, remove?: {assignees?, labels?}}`, at most 192 KiB, `parent` a key and `milestone` an id (`""` for none); reply `{receipt, ticket}`; `409 close_policy` for a move to `done` the project's close policy refuses, the receipt's `missing` naming what is lacking; `409 cycle` for a parent that would make a cycle or a chain of more than 8 |
+| `POST /api/dispatch/tickets/{key}/accept`, `…/unaccept` | admin | record the owner's acceptance of a live ticket (`ticket.accept`: `{opId, expectedRev?, byName?, note?}`, by the display name, for the owner the ticket has now and against its acceptance criteria as they stand, the note at most 1,000 characters), or clear it (`ticket.unaccept`: `{opId, expectedRev?, byName?}`); reply `{receipt, ticket}`; `409 invalid` for a ticket with no owner to accept it, or not accepted; neither touches the status |
+| `POST /api/dispatch/tickets/{key}/delete`, `…/undelete` | admin | delete a live ticket (`ticket.delete`): a tombstone, nothing else written, its children, relations and run links kept, inactive, and back with its undelete (`ticket.undelete`), which removes a run link of its naming a run another live ticket has linked meanwhile; `{opId, expectedRev?, byName?}`; reply `{receipt, ticket}`; a deleted ticket keeps its key, is listed only with `deleted=1`, its read answers, and every other write on it is `404 not_found`; `409 invalid` to undelete a live ticket |
+| `GET /api/dispatch/tickets/{key}/history` | admin | a page of a ticket's history, deleted or not, as the store recorded it, field by field: `{changes, next?}`, the changes of the ticket and of its comments after `after` (a change's `seq`, 0 when absent), at most `limit` (1 to 500, 100 when absent) and about 1 MiB of their values, each `{seq, entity, entityId, ticketId?, projectId?, field?, op, value, prior?, at, actor, by?, opId, n}`; `next` the `seq` to read after |
+| `GET /api/dispatch/tickets/{key}/comments` | admin | a ticket's comments beyond the page its read carries: `{comments}`, those numbered after `after` (0 when absent), at most `limit` (1 to 50, 50 when absent: as many as the read carries), each with its number `n`, tombstones among them so the numbers have no gap; at most 3 MiB with every comment at its bound (`maxTicketReply`) |
+| `GET /api/dispatch/links?run={id}` | admin | the ticket a run is linked to, for the run page's chip: `{ticket: {id, key, title, status, deletedAt?}}`, the live ticket whose live `run` link names the run (one at most); else, when only deleted tickets' links name it, the one whose link is latest, with `deletedAt`; `{ticket: null}` when no live link names the run; `400 invalid_request` for a run id that is not one |
+| `GET /api/dispatch/ops/{opId}` | admin | an operation's receipt of the admin's without acting, as `GET /api/runs/{run}/commands/{command}` reads a command's: `{receipt}`; `404` when the store holds none (never given, or pruned past the newest 20,000) |
 | `GET /api/integrations` | admin | `{integrations, host, webhooks}`: every hook adapter in a stable order, each `{id, name, events, launchInjection, installable, installsSkill, installed, where, snippet, experimental}`, the server's host name (`""` when it cannot tell), and the configured webhooks, each `{url, events}` with the URL as `scheme://host[:port]/path` (no user info, query or fragment) and never its secret; `installable` is true for an adapter with a file to install into (`POST …/install` can do something); `installsSkill` is true for an agent whose install also brings the Conductor skill; `installed` and `where` check the home of the user running the server, writing nothing, and are `false` and `""` for an adapter with no file to install |
 | `POST /api/integrations/{id}/install` | admin | install the adapter's hooks (and, for Claude Code, Codex, pi and Goose, the Conductor skill) into the agent's own config in the server user's home, and nowhere else; reply `{changed}`, the files written, `[]` when all was in place; `400 no_file_route` when there is no file to install into or a step is left to do by hand, the error carrying `changed` (files already written) and `snippet`, which is present only when what is left by hand is the agent's hooks, not a skill file (the message says what to do about a `SKILL.md` of the user's own); `500 install_failed` with `changed`; `404` for an unknown `id` |
 | `GET /api/sessions` | admin | list sessions |
@@ -1809,7 +1830,7 @@ its run, and on no other.
 | `GET /api/sessions/{id}/files` | admin or share token | read a file of a server session (`path`, `stat`, `raw` query), see File reads |
 | `POST /api/sessions/{id}/attention` | agent token or admin (not a switchyard's) | report an attention state, and with it the agent's own session id (`agentSession`, at most 128 bytes) and whether the report is of a turn (`turn`), see Attention |
 | `POST /api/sessions/{id}/events` | agent token or admin (not a switchyard's) | report an event or an attention word, reply `202 {accepted}`, see Events |
-| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), see Attention and Events |
+| `GET /api/events` | admin | Server-Sent Events of session changes (`snapshot`, `session`, `removed`), of activity entries (`activity`, with `state`, the state an attention entry records, absent for other entries and for an attention entry from a host that does not send one), of chat messages (`chat`: the message as `chat` carries it, with `sessionId` for a session's chat or `runId` for a run's; as droppable as `activity`; for the browsers' unread counts; a `conductor host` session's chat arrives the same way, the host sending each message on its control connection), and of run changes no session event carries (`run`: `{id}`, read the run again with `GET /api/runs/{run}`, or `{id, removed: true}` when the server forgot it; at most 128 bytes; sent for a member reserved, started, prompted, failed or ended early, every entry of the run's log, and a stop; a client that cannot keep up is dropped as for a session change, and reads every run again on its next `snapshot`), and of Dispatch's changes (`dispatch`: `{seq, entity, id, ticket, project}`, one per entity a commit changed, at most 160 bytes; dropped with the client as a `run` event is, see Dispatch), see Attention and Events |
 | `GET /api/join/{token}` | share token in the path | resolve a share link for the join page (rate limited): `{session, role, label}` for a session link; `{run: {id, name, members}, role, label}` for a run link, each with `switchyard` (whether this server is one, which the join page names), each member `{name, sessionId?, agentId, status}` in the run's order, with `sessionId` only while its session runs (`agentId` and `status` then the session's) and otherwise its state in the run, `pending`, `starting` or `ended`; `404` with `invalid_link`, `revoked`, `expired`, `session_gone` or `run_gone`; on a switchyard, `503 host_offline` for a link it keeps whose host is not connected now (it works again once the host registers) |
 
 The catalog routes persist their changes as `catalog.json` in the data
@@ -2514,3 +2535,86 @@ ending. Each member carries the `task` and `attempt` its latest session is.
 A stop ends the attempts in flight (`stopped`; their tasks `ready` again for
 a continuation) and waits for the checks, which end with it. Pause, cancel,
 retry and the task routes come with the next rows.
+
+### Dispatch
+
+Dispatch is Conductor's own work tracking (`docs/plans/dispatch.md`):
+projects, tickets with stable keys (`CND-12`), their discussion and their
+history, in one SQLite database the server keeps, `dispatch/dispatch.sqlite`
+in the data directory, which the file routes never reach. It is not the
+engine's scheduling of a managed run's attempts (Managed runs): it starts
+nothing, and a ticket links to a run the engine made. Every Dispatch route
+is the admin's, a share link's viewers seeing no ticket, and a switchyard's
+`403 switchyard`. Without a data directory every route answers `503
+store_unavailable`; with a store that could not be opened, `503
+dispatch_unavailable`. A store opened read-only (a newer Conductor wrote
+it, it fails its check, or another writer held it past the busy timeout as
+the server started; the server's log says which) answers its reads as it
+can and every write `503 dispatch_unavailable` with why. A failure of the
+database is `500 store_failed`, logged. A read takes the query
+parameters its row names and no other: any other is `400
+invalid_request`, as a body's unknown field is, and so is one that takes
+a single value given twice. The parameters are separated by `&` alone, as
+a browser reads a form's, so a `;` is part of a value (a search or a name
+may hold one), sent as it is or as `%3B`. Replies are written with HTML
+escaping off: `<`, `>` and `&` are one byte each, so a text field encodes
+to at most twice its bytes (U+2028 and U+2029 are written as six whatever
+the escaping), and the largest ticket's read, the largest page of its
+comments and the largest project's read, every field and set at its bound
+and every text at its escaped worst, are each under 3 MiB.
+
+**Dispatch operations.** Every Dispatch write is a typed operation, as a
+managed run's commands are (Commands with receipts, above): beside the
+operation's fields the body carries `opId`, which the client mints (1 to 32
+of letters, digits, `.`, `_`, `~` and `-`), `expectedRev`, the revision of
+the entity it acts on that the client expects (absent or 0 for none), and
+`byName`, the display name the store records as `by` (at most 60
+characters, no control character; never in the query string). The admin's
+operations are kept under the actor `admin`. Each is one transaction: the
+receipt is looked up (the same `opId` with the same content answers with
+the receipt given before, `repeat: true`, and changes nothing; with other
+content it is `409 op_conflict`), the revision compared (`409
+stale_revision`, nothing changed), the change made with one row of the
+store's log per field it set, added or removed, the entity's `rev` bumped
+once, the receipt kept, the commit, and then the `dispatch` events. The
+receipt is `{opId, intent, status, rev?, id?, key?, repeat?, error?,
+refusal?, missing?}`, at most 4 KiB: `status` `done` or `failed`, `rev` the
+entity's revision after the operation, `id` and `key` what a create made,
+and for a refusal the rule that refused it (`not_found`, `invalid`,
+`stale_revision`, `op_conflict`, `close_policy`, `cycle`, `bound`,
+`archived`, `run_linked`, `expired` or `key_taken`), its words as `error`
+and, for `close_policy`, `missing`, what the close policy lacks. Done, an
+operation answers `200 {receipt, <entity>}`, the entity as read after it
+(`null` when there is nothing to read: a create's whose receipt was
+pruned), `201` for a create made now. Refused by a rule, it keeps its
+failed receipt, which the same `opId` answers again (an `op_conflict` keeps
+none: the first receipt stands), and answers `409 {error, receipt}`, the
+refusal its `error.code`, but `404` for `not_found`. A body the store
+would not look at (not one JSON object of the route's fields, an `opId`
+that is not one, an `expectedRev` below 0, a display name that is not one,
+a path's key that is not a project's or a ticket's) is `400
+invalid_request` and keeps no receipt; a body past its route's bound, 64
+KiB but 192 KiB on a ticket's create and edit, is `413 bound`; a field past
+its own bound once decoded is the store's `409 bound`. The newest 20,000
+receipts are kept: an operation that ran whose receipt was pruned is still
+answered `{repeat: true, status: done}`, from the log, whatever its
+content, and a refused one runs again. `GET /api/dispatch/ops/{opId}` reads
+a receipt without acting, so a client that lost a reply reads it before it
+sends again.
+
+**The `dispatch` event.** After each commit the server sends one
+`dispatch` event per entity the commit changed on `GET /api/events`:
+`{seq, entity, id, ticket, project}`, `seq` the commit's last change in
+the store's log (local to the database), `entity` `project`, `ticket`,
+`comment`, `label`, `milestone`, `view` or `person`, `id` its id (`""` for
+a person, whose id is its name: the pickers read the directory again
+whole), `ticket` the id of the ticket it belongs to and `project` its
+project's key, `""` where there is none. A relation counts for both its
+tickets, and a label's or a milestone's delete for it and for every ticket
+it left. An event is at most 160 bytes (the longest is 119: every value is
+digits, a word, hex or a key, never escaped). A page reads again what an
+event names, or what derives from it. Like a `run` event it is state a
+page cannot do without: a client that cannot keep up is dropped and reads
+everything again on its next `snapshot`, never skipped and kept as an
+`activity` entry is. It reaches the pages alone, never a webhook or the
+run engine.

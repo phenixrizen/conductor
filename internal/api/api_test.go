@@ -70,9 +70,15 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 		mutate(cfg)
 	}
 	// The store opens at cfg.DataDir, as in `conductor serve`; unless a test
-	// places it, that is a directory outside the session root.
+	// places it, that is a directory outside the session root, and the
+	// server's Dispatch store there starts from a copy of a new one
+	// (seedDispatch): a test that places its own, as the Dispatch tests do,
+	// has the server make it.
 	if cfg.DataDir == "" {
 		cfg.DataDir = filepath.Join(t.TempDir(), "data")
+		if !cfg.Switchyard.Enabled {
+			seedDispatch(t, cfg.DataDir)
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -102,16 +108,28 @@ func newTestEnvAgents(t *testing.T, mutate func(*config.Config), log *slog.Logge
 	t.Cleanup(func() {
 		hs.Close()
 	})
-	// Webhooks are delivered by goroutines of their own: they stop before the
-	// endpoints a test started for them close; and what the server started on
-	// its own (a run's record) lands before the test's directories go.
+	endAtCleanup(t, srv)
+	return &testEnv{t: t, srv: srv, http: hs, root: root, client: hs.Client()}
+}
+
+// endAtCleanup ends what srv started on its own when the test is over.
+// Webhooks are delivered by goroutines of their own: they stop before the
+// endpoints a test started for them close; and what the server started on
+// its own (a run's record) lands before the test's directories go, its
+// records, its ledger and its Dispatch store closed after it
+// (WaitBackground). Every server a test makes over a store is ended so, a
+// second one over the first's store (serve, restart, a New of the test's
+// own) as much as the first: each opens a Dispatch store, whose pruning
+// goroutine runs until the store is closed (TestMain fails a run that
+// leaves one open).
+func endAtCleanup(t *testing.T, srv *Server) {
+	t.Helper()
 	t.Cleanup(func() {
 		srv.webhooks.close(context.Background())
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		srv.WaitBackground(ctx)
 	})
-	return &testEnv{t: t, srv: srv, http: hs, root: root, client: hs.Client()}
 }
 
 func (e *testEnv) do(method, path, token string, body any) (*http.Response, map[string]any) {
@@ -1345,11 +1363,13 @@ func TestCatalogReportsAvailability(t *testing.T) {
 	}
 }
 
-// serve exposes srv over HTTP next to e's server, sharing its temp root.
+// serve exposes srv over HTTP next to e's server, sharing its temp root,
+// and ends srv with the test as e's own server is (endAtCleanup).
 func (e *testEnv) serve(srv *Server) *testEnv {
 	e.t.Helper()
 	hs := httptest.NewServer(srv.Handler())
 	e.t.Cleanup(hs.Close)
+	endAtCleanup(e.t, srv)
 	return &testEnv{t: e.t, srv: srv, http: hs, root: e.root, client: hs.Client()}
 }
 
@@ -2309,6 +2329,7 @@ func TestNewMasksConfiguredValuesInSavedOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	endAtCleanup(t, srv)
 	var ov catalog.Overlay
 	if ok, err := e.srv.store.Load("catalog.json", &ov); !ok || err != nil || len(ov.Agents) != 2 ||
 		!reflect.DeepEqual(ov.Agents[0].Env, map[string]string{"API_KEY": "***", "REGION": "other", "TOKEN": "***"}) ||
@@ -2329,6 +2350,7 @@ func TestNewMasksConfiguredValuesInSavedOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	endAtCleanup(t, again)
 	keyedRunsWith(t, again, map[string]string{"API_KEY": "v2", "REGION": "other", "TOKEN": "t1"})
 	if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
 		t.Fatalf("a start with nothing to mask rewrote catalog.json:\n%s", after)
@@ -2362,6 +2384,7 @@ func TestNewLeavesAnOverrideOfItsOwnAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	endAtCleanup(t, srv)
 	keyedRunsWith(t, srv, map[string]string{"API_KEY": "other", "REGION": "eu"})
 	fi, err := os.Stat(path)
 	if b, _ := os.ReadFile(path); err != nil || string(b) != own || !fi.ModTime().Equal(old) {

@@ -1,12 +1,15 @@
 package api
 
 import (
+	"encoding/json"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
@@ -324,5 +327,115 @@ func TestEventHubPublishIfOrdersAgainstRemoved(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "event: session,event: removed" {
 		t.Fatalf("events %v, want the session's change, then its removal, then nothing", got)
+	}
+}
+
+// A dispatch event says what of Dispatch's changed and nothing more: its
+// seq, the entity, its id ("" for a person, whose id is its name), and
+// the ticket and the project it belongs to. The longest of every entity,
+// seq at 19 digits, every id at its length, the project's key at 6 and a
+// person's name at 60 characters of six encoded bytes each, fits
+// maxDispatchEvent: the guard before broadcast drops what is over, and a
+// dropped event would be silence.
+func TestEventHubDispatchEvent(t *testing.T) {
+	h := newEventHub()
+	ch := h.subscribe()
+	id, ticket := strings.Repeat("f", dispatch.IDLen), strings.Repeat("e", dispatch.IDLen)
+	longest := 0
+	for _, entity := range []string{dispatch.EntityProject, dispatch.EntityTicket, dispatch.EntityComment, dispatch.EntityLabel,
+		dispatch.EntityMilestone, dispatch.EntityView, dispatch.EntityPerson} {
+		c := dispatch.Change{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
+		want := dispatchEvent{Seq: math.MaxInt64, Entity: entity, ID: id, Ticket: ticket, Project: "ABCDEF"}
+		if entity == dispatch.EntityPerson {
+			// A person's change names the person, a name of 60 characters
+			// JSON writes as six bytes each; the event carries none of it.
+			c.ID = strings.Repeat(string(rune(0x2028)), dispatch.MaxPersonName)
+			want.ID = ""
+		}
+		h.dispatch(c)
+		var msg []byte
+		select {
+		case msg = <-ch:
+		default:
+			t.Fatalf("no event for a %s", entity)
+		}
+		data, ok := strings.CutPrefix(string(msg), "event: dispatch\ndata: ")
+		if !ok || !strings.HasSuffix(data, "\n\n") || strings.Count(data, "\n") != 2 {
+			t.Fatalf("a %s's event is not one event of one data line: %q", entity, msg)
+		}
+		data = strings.TrimSuffix(data, "\n\n")
+		if len(data) > maxDispatchEvent {
+			t.Fatalf("a %s's event is %d bytes, more than %d: %s", entity, len(data), maxDispatchEvent, data)
+		}
+		longest = max(longest, len(data))
+		var got dispatchEvent
+		if err := json.Unmarshal([]byte(data), &got); err != nil || got != want {
+			t.Fatalf("a %s's event %s reads as %+v (%v), want %+v", entity, data, got, err, want)
+		}
+	}
+	// The bound is the longest payload's, with room: a milestone's is 119
+	// bytes, as events.go derives it.
+	if longest != 119 {
+		t.Fatalf("the longest event is %d bytes, not the 119 events.go derives", longest)
+	}
+	// Every field is there when it is empty: a person's event names no
+	// ticket and no project.
+	h.dispatch(dispatch.Change{Seq: 7, Entity: dispatch.EntityPerson, ID: "Alice"})
+	if got := string(<-ch); got != "event: dispatch\ndata: {\"seq\":7,\"entity\":\"person\",\"id\":\"\",\"ticket\":\"\",\"project\":\"\"}\n\n" {
+		t.Fatalf("a person's event: %q", got)
+	}
+	if len(ch) != 0 {
+		t.Fatalf("%d events more than the changes", len(ch))
+	}
+}
+
+// A dispatch event is state a page cannot do without, as a run event is:
+// a client whose queue is full is dropped and its stream closed, to start
+// over from a snapshot, never skipped and kept as an activity entry skips
+// it; a client that reads gets the event. Neither reaches a sink.
+func TestEventHubDispatchEventDropsAClientThatCannotKeepUp(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send func(h *eventHub)
+	}{
+		{"dispatch", func(h *eventHub) {
+			h.dispatch(dispatch.Change{Seq: 1, Entity: dispatch.EntityTicket, ID: "0123456789abcdef", Ticket: "0123456789abcdef", Project: "CND"})
+		}},
+		{"run", func(h *eventHub) { h.run("api-sweep-0123abcd", false) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newEventHub()
+			var sunk atomic.Int32
+			h.addSink(func(string, session.ActivityEntry, session.AttentionState) { sunk.Add(1) })
+			full, reading := h.subscribe(), h.subscribe()
+			for len(full) < eventQueue {
+				full <- []byte("event: session\ndata: {}\n\n")
+			}
+			tc.send(h)
+			select {
+			case msg := <-reading:
+				if !strings.HasPrefix(string(msg), "event: "+tc.name+"\n") {
+					t.Fatalf("the reading client got %q", msg)
+				}
+			default:
+				t.Fatal("the reading client got nothing")
+			}
+			h.mu.Lock()
+			_, kept := h.clients[full]
+			_, readerKept := h.clients[reading]
+			h.mu.Unlock()
+			if kept || !readerKept {
+				t.Fatalf("the full client kept: %v; the reading one kept: %v", kept, readerKept)
+			}
+			for range eventQueue {
+				<-full
+			}
+			if _, open := <-full; open {
+				t.Fatal("the full client's stream was not closed")
+			}
+			if sunk.Load() != 0 {
+				t.Fatalf("a %s event reached a sink", tc.name)
+			}
+		})
 	}
 }

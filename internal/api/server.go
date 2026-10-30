@@ -23,6 +23,7 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/config"
 	"github.com/rocksolidlabs/conductor/internal/crew"
 	"github.com/rocksolidlabs/conductor/internal/crew/ledger"
+	"github.com/rocksolidlabs/conductor/internal/dispatch"
 	"github.com/rocksolidlabs/conductor/internal/session"
 	"github.com/rocksolidlabs/conductor/internal/share"
 	"github.com/rocksolidlabs/conductor/internal/signal"
@@ -100,6 +101,11 @@ type Server struct {
 	// ledger is the managed runs' ledger (internal/crew/ledger), opened
 	// beside the records; nil without a store.
 	ledger *ledger.Ledger
+	// dispatch is Dispatch's store (internal/dispatch), opened beside the
+	// ledger under the data directory's dispatch/ (openDispatch); nil
+	// without a data directory, on a switchyard, which keeps no tickets,
+	// and when it could not be opened.
+	dispatch *dispatch.Store
 	// pastes are the paste-invite peers of each server session (paste.go).
 	pastes pasteStore
 	// runs launches crews and keeps their runs, in memory.
@@ -347,6 +353,16 @@ func New(cfg *config.Config, cat catalog.Catalog, log *slog.Logger, web http.Han
 		// steps and sessions: the server's envPassthrough, as the server
 		// started with it.
 		s.runs.SetEnvPassthrough(cfg.EnvPassthrough)
+		// Dispatch's store, beside the ledger; a switchyard keeps no
+		// tickets. Its changes reach the pages as dispatch events, and a
+		// run link names a run the engine holds or has a record of.
+		if !cfg.Switchyard.Enabled {
+			s.dispatch = openDispatch(st, log)
+		}
+		if s.dispatch != nil {
+			s.dispatch.SetRunExists(s.runKnown)
+			s.dispatch.OnChange(s.events.dispatch)
+		}
 	}
 	s.webhooks = startWebhooks(cfg.Webhooks, s.events, s.registry, log)
 	// The runs take every entry too: a member's done starts the members after
@@ -492,6 +508,9 @@ func (s *Server) WaitBackground(ctx context.Context) {
 	if s.ledger != nil {
 		s.ledger.Close()
 	}
+	if s.dispatch != nil {
+		s.dispatch.Close()
+	}
 }
 
 // Handler returns the routed handler with middleware applied.
@@ -554,6 +573,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/{run}/links", s.launching(s.handleListRunLinks))
 	mux.HandleFunc("POST /api/runs/{run}/links", s.launching(s.handleCreateRunLink))
 	mux.HandleFunc("DELETE /api/runs/{run}/links/{linkId}", s.launching(s.handleRevokeRunLink))
+	// Dispatch, the work tracking: the projects, the people, the tickets,
+	// a run's ticket and the receipts (dispatch.go), the admin's alone.
+	s.routeDispatch(mux)
 	mux.HandleFunc("GET /api/integrations", s.launching(s.handleIntegrations))
 	mux.HandleFunc("POST /api/integrations/{id}/install", s.launching(s.handleInstallIntegration))
 	mux.HandleFunc("GET /api/sessions", s.requireAdmin(s.handleListSessions))
@@ -933,6 +955,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 	if s.ledger != nil {
 		if err := s.ledger.Close(); err != nil {
 			s.log.Warn("the ledger did not close cleanly", "err", err)
+		}
+	}
+	if s.dispatch != nil {
+		if err := s.dispatch.Close(); err != nil {
+			s.log.Warn("Dispatch's store did not close cleanly", "err", err)
 		}
 	}
 }
