@@ -127,6 +127,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// (signal.HostConn.Next).
 	go func() {
 		for {
+			if s.viewerSeam != nil && s.viewerSeam.taking != nil {
+				s.viewerSeam.taking(ctx)
+			}
 			o, ok := conn.Next(ctx)
 			if !ok {
 				select {
