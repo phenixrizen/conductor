@@ -58,7 +58,7 @@ func TestOpenMakesTheSchemaWhole(t *testing.T) {
 		t.Fatalf("synchronous %d %v", sync, err)
 	}
 	// The FTS index is there with its tokenizer: diacritics removed.
-	if _, err := s.db.Exec("INSERT INTO tickets_fts (rowid, key, title, description, acceptance, comments) VALUES (1, 'CND-1', 'Crème brûlée', '', '', '')"); err != nil {
+	if _, err := s.db.Exec("INSERT INTO tickets_fts (rowid, key, title, description, acceptance, body) VALUES (1, 'CND-1', 'Crème brûlée', '', '', '')"); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(t, s, `SELECT COUNT(*) FROM tickets_fts WHERE tickets_fts MATCH '"creme"'`); n != 1 {
@@ -627,5 +627,73 @@ func TestAClosedStoreRefusesEverything(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("a second Close: %v", err)
+	}
+}
+
+// The receipts are pruned by a goroutine Open starts, every pruneEvery
+// (a day; a millisecond here), seen on the pruned counter, which the test
+// polls; Close stops it before the database closes. Run with
+// -count=30: nothing here waits on the clock but the goroutine's ticks.
+func TestThePruningGoroutinePrunesUntilClose(t *testing.T) {
+	dir := storeDir(t)
+	s, err := openWith(dir, func(s *Store) { s.pruneEvery = time.Millisecond })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if s.pruneEvery != time.Millisecond || s.stopPruning == nil {
+		t.Fatalf("the goroutine: every %v, started %v", s.pruneEvery, s.stopPruning != nil)
+	}
+	// 20,001 receipts in one statement: the oldest is the one past the
+	// bound.
+	if _, err := s.db.Exec(`WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)
+		INSERT INTO ops (actor, id, intent, fingerprint, status, receipt, created_at)
+		SELECT 'test', printf('r%05d', i), 'x', 'f', 'done', '{}', printf('2026-10-28T12:00:00.%09dZ', i) FROM seq`, maxReceipts); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Minute)
+	for s.pruned.Load() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("the goroutine never pruned")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Close ends the goroutine, a pruning in flight among it, before the
+	// database closes.
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.pruneDone:
+	default:
+		t.Fatal("the goroutine outlived Close")
+	}
+	// What it left, read on a connection of the test's: the newest
+	// receipts, the oldest gone.
+	raw := rawConnAt(t, filepath.Join(dir, File))
+	var kept, oldest int
+	if err := raw.QueryRow("SELECT COUNT(*), COUNT(*) FILTER (WHERE id = 'r00000') FROM ops").Scan(&kept, &oldest); err != nil {
+		t.Fatal(err)
+	}
+	if kept != maxReceipts || oldest != 0 {
+		t.Fatalf("%d receipts kept, the oldest %d times", kept, oldest)
+	}
+	// A store opened plainly prunes every day; one opened read-only takes
+	// no writes and starts no goroutine.
+	other := storeDir(t)
+	plain, err := Open(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.pruneEvery != defaultPruneEvery || defaultPruneEvery != 24*time.Hour || plain.stopPruning == nil {
+		t.Fatalf("a plain store prunes every %v, started %v", plain.pruneEvery, plain.stopPruning != nil)
+	}
+	if _, err := plain.db.Exec("UPDATE schema_version SET version = ?", Version+1); err != nil {
+		t.Fatal(err)
+	}
+	plain.Close()
+	ro := openStore(t, other)
+	if readOnly, _ := ro.ReadOnly(); !readOnly || ro.stopPruning != nil {
+		t.Fatalf("a read-only store: read-only %v, pruning %v", readOnly, ro.stopPruning != nil)
 	}
 }

@@ -3,6 +3,8 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -286,4 +288,101 @@ func TestAnArchivedProjectRefusesWritesUnderIt(t *testing.T) {
 	}
 	rc, err = s.ArchiveProject(ctx, testOp("a3"), "NOPE")
 	want(t, rc, err, StatusFailed, RefusalNotFound)
+}
+
+func TestTheProjectReadAndThePagesOfProjects(t *testing.T) {
+	s := openStore(t, storeDir(t))
+	ctx := context.Background()
+	for _, key := range []string{"AAA", "BBB", "CCC", "DDD", "EEE"} {
+		newOpenProject(t, s, key)
+	}
+	rc, err := s.CreateLabel(ctx, testOp("l1"), "BBB", NewLabel{Name: "ui", Color: "red"})
+	mustDone(t, "label", rc, err)
+	rc, err = s.CreateLabel(ctx, testOp("l2"), "BBB", NewLabel{Name: "api", Color: "blue"})
+	gone := mustDone(t, "label", rc, err).ID
+	rc, err = s.CreateLabel(ctx, testOp("l3"), "BBB", NewLabel{Name: "db", Color: "green"})
+	mustDone(t, "label", rc, err)
+	rc, err = s.DeleteLabel(ctx, testOp("l4"), "BBB", gone)
+	mustDone(t, "delete a label", rc, err)
+	rc, err = s.CreateMilestone(ctx, testOp("m1"), "BBB", NewMilestone{Name: "Later"})
+	mustDone(t, "milestone", rc, err)
+	rc, err = s.CreateMilestone(ctx, testOp("m2"), "BBB", NewMilestone{Name: "Soon", Target: "2026-11-30"})
+	mustDone(t, "milestone", rc, err)
+	newView(t, s, "v1", NewView{Project: "BBB", Name: "Board", Kind: ViewBoard, Query: `{}`})
+	newView(t, s, "v2", NewView{Name: "All open", Kind: ViewList, Query: `{}`})
+	newView(t, s, "v3", NewView{Project: "CCC", Name: "Not BBB's", Kind: ViewList, Query: `{}`})
+	v, err := s.Project(ctx, "BBB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var labels, milestones []string
+	for _, l := range v.Labels {
+		labels = append(labels, l.Name)
+	}
+	for _, m := range v.Milestones {
+		milestones = append(milestones, m.Name)
+	}
+	if v.Project.Key != "BBB" || strings.Join(labels, " ") != "db ui" || strings.Join(milestones, " ") != "Soon Later" || viewNames(v.Views) != "All open, Board" {
+		t.Fatalf("the project read: %s %v %v %s", v.Project.Key, labels, milestones, viewNames(v.Views))
+	}
+	if _, err := s.Project(ctx, "NONE"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("no project: %v", err)
+	}
+	// The counts: open (neither done nor cancelled) and done, live tickets
+	// alone; a cancelled ticket counts in neither.
+	for _, n := range []NewTicket{
+		{Project: "BBB", Title: "Open 1"}, {Project: "BBB", Title: "Open 2", Status: TicketInProgress}, {Project: "BBB", Title: "Done", Status: TicketDone},
+		{Project: "BBB", Title: "Cancelled", Status: TicketCancelled}, {Project: "BBB", Title: "Deleted"}, {Project: "CCC", Title: "Elsewhere"},
+	} {
+		makeTicket(t, s, n)
+	}
+	rc, err = s.DeleteTicket(ctx, testOp("d"), "BBB-5")
+	mustDone(t, "delete", rc, err)
+	rc, err = s.ArchiveProject(ctx, testOp("a"), "DDD")
+	mustDone(t, "archive", rc, err)
+	page, err := s.Projects(ctx, false, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range page.Projects {
+		got = append(got, fmt.Sprintf("%s:%d/%d", p.Key, p.Open, p.Done))
+	}
+	if strings.Join(got, " ") != "AAA:0/0 BBB:2/1 CCC:1/0 EEE:0/0" || page.Next != "" {
+		t.Fatalf("the projects: %v next %q", got, page.Next)
+	}
+	// Archived ones when asked, a page at a time by key.
+	var keys []string
+	next := ""
+	for {
+		page, err := s.Projects(ctx, true, 2, next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range page.Projects {
+			if p.Key == "DDD" && p.ArchivedAt.IsZero() {
+				t.Fatal("DDD reads unarchived")
+			}
+			keys = append(keys, p.Key)
+		}
+		if next = page.Next; next == "" {
+			break
+		}
+	}
+	if strings.Join(keys, " ") != "AAA BBB CCC DDD EEE" {
+		t.Fatalf("the pages: %v", keys)
+	}
+	first, err := s.Projects(ctx, false, 2, "")
+	if err != nil || first.Next == "" {
+		t.Fatalf("a first page: %v", err)
+	}
+	for _, c := range []struct {
+		limit int
+		next  string
+	}{{MaxProjectPage + 1, ""}, {-1, ""}, {2, "junk"}, {2, encodeCursor(cursor{Sort: SortTitle, Keys: []any{"AAA"}, ID: newID()})},
+		{2, encodeCursor(cursor{Sort: projectsSort, Keys: []any{"aaa"}})}} {
+		if _, err := s.Projects(ctx, false, c.limit, c.next); !errors.Is(err, ErrBadQuery) {
+			t.Errorf("limit %d next %.20q: %v", c.limit, c.next, err)
+		}
+	}
 }

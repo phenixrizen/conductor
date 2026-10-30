@@ -241,22 +241,29 @@ func (s *Store) Milestones(ctx context.Context, project string) ([]Milestone, er
 		if err != nil {
 			return err
 		}
-		rows, err := q.QueryContext(ctx, "SELECT "+milestoneColumns+" FROM milestones WHERE project_id = ? AND deleted_at = '' ORDER BY target = '', target, name, created_at, id", p.ID)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		out = []Milestone{}
-		for rows.Next() {
-			m, err := scanMilestone(rows)
-			if err != nil {
-				return err
-			}
-			out = append(out, m)
-		}
-		return rows.Err()
+		out, err = milestonesOf(ctx, q, p.ID)
+		return err
 	})
 	return out, err
+}
+
+// milestonesOf reads the live milestones of the project with the id, by
+// target, those with none last, then by name (Milestones).
+func milestonesOf(ctx context.Context, q queryer, projectID string) ([]Milestone, error) {
+	rows, err := q.QueryContext(ctx, "SELECT "+milestoneColumns+" FROM milestones WHERE project_id = ? AND deleted_at = '' ORDER BY target = '', target, name, created_at, id", projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Milestone{}
+	for rows.Next() {
+		m, err := scanMilestone(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // Milestone reads the milestone with the id of the project with the key,

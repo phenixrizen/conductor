@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -201,7 +202,7 @@ func (s *Store) Comment(ctx context.Context, key, id string) (Comment, error) {
 		if err != nil {
 			return err
 		}
-		out, err = scanComment(q.QueryRowContext(ctx, "SELECT * FROM ("+numberedComments+") WHERE id = ?", tk.ID, id))
+		out, err = scanComment(q.QueryRowContext(ctx, commentsNumbered("SELECT id, n FROM numbered WHERE id = ?"), tk.ID, id))
 		if isNoRows(err) {
 			return ErrNotFound
 		}
@@ -210,14 +211,30 @@ func (s *Store) Comment(ctx context.Context, key, id string) (Comment, error) {
 	return out, err
 }
 
-// numberedComments is a ticket's comments with their numbers, the
-// ticket's id its one argument.
-const numberedComments = "SELECT " + commentColumns + ", ROW_NUMBER() OVER (ORDER BY created_at, author, id) AS n FROM comments WHERE ticket_id = ?"
+// numberedComments is the numbers of a ticket's comments, each comment's
+// id and its number n, the ticket's id its one argument. It selects no
+// body: a ticket may hold MaxComments comments of MaxCommentBody bytes,
+// and a window that carried them would sort them all to number them.
+const numberedComments = "SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, author, id) AS n FROM comments WHERE ticket_id = ?"
+
+// commentsNumbered is the statement of a read of the comments pick
+// chooses, each whole with its number, in their order: pick selects id
+// and n from numbered, a ticket's comments numbered (numberedComments),
+// its arguments after the ticket's id. Only the comments it chooses are
+// read with their bodies (BenchmarkTicketRead).
+func commentsNumbered(pick string) string {
+	return "WITH numbered AS (" + numberedComments + "), picked AS (" + pick + ") SELECT " + pickedColumns +
+		", picked.n FROM picked JOIN comments c ON c.id = picked.id ORDER BY picked.n"
+}
+
+// pickedColumns is commentColumns of the comments c, as commentsNumbered
+// reads them.
+var pickedColumns = "c." + strings.ReplaceAll(commentColumns, ", ", ", c.")
 
 // commentsOf reads the comments of the ticket with the id numbered after
 // after, in their order, at most limit, inside q's transaction.
 func commentsOf(ctx context.Context, q queryer, ticketID string, after, limit int) ([]Comment, error) {
-	rows, err := q.QueryContext(ctx, "SELECT * FROM ("+numberedComments+") WHERE n > ? ORDER BY n LIMIT ?", ticketID, after, limit)
+	rows, err := q.QueryContext(ctx, commentsNumbered("SELECT id, n FROM numbered WHERE n > ? ORDER BY n LIMIT ?"), ticketID, after, limit)
 	if err != nil {
 		return nil, err
 	}

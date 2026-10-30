@@ -946,3 +946,229 @@ func readTexts(ctx context.Context, q queryer, query string, args ...any) ([]str
 	}
 	return out, rows.Err()
 }
+
+// TicketView is a ticket as its page reads it, from one read transaction
+// (Ticket): its row and its two sets; its parent's key, title and status,
+// and DeletedAt when the parent is a tombstone (the reference then
+// inactive); its first live children by number and how many it has; its
+// first relations both ways, the active ones first, each with its other
+// end, and how many it has (RelationsTotal); whether a live, open ticket
+// blocks it; its live links and attachments; its last comments, each
+// with its number; and its close policy's state, computed now.
+type TicketView struct {
+	Ticket
+	Parent         *RelatedTicket   `json:"parent,omitempty"`
+	Children       TicketChildren   `json:"children"`
+	Relations      []TicketRelation `json:"relations"`
+	RelationsTotal int              `json:"relationsTotal"`
+	Blocked        bool             `json:"blocked"`
+	Links          []Link           `json:"links"`
+	Attachments    []Attachment     `json:"attachments"`
+	Comments       []Comment        `json:"comments"`
+	Close          CloseState       `json:"close"`
+}
+
+// TicketChildren is the first MaxTicketChildren live children of a
+// ticket by number, and how many live children it has (Total): the rest
+// are listed by Children.
+type TicketChildren struct {
+	Tickets []RelatedTicket `json:"tickets"`
+	Total   int             `json:"total"`
+}
+
+// Ticket reads the ticket with the key, deleted or not, as its page shows
+// it (TicketView), every part in one read transaction, so the reply
+// describes one state, its rev and its rows agreeing, whatever commits
+// between its statements from this process or from a second server on
+// the file. A deleted ticket's own children are not read from it: a
+// reference to a tombstone is inactive, and its children keep their
+// parent (Children finds them). The last MaxTicketComments comments come
+// with it, tombstones among them so the numbers have no gap; the earlier
+// ones are paged by Comments. The first MaxTicketRelations relations come
+// with it, the active ones first, and how many it has: relations to
+// deleted tickets count for nothing toward MaxRelations, so a ticket may
+// hold any number, and Relations reads them all. ErrNotFound when there
+// is no such ticket.
+func (s *Store) Ticket(ctx context.Context, key string) (TicketView, error) {
+	var v TicketView
+	err := s.read(ctx, func(q queryer) error {
+		tk, err := readTicket(ctx, q, key)
+		if err != nil {
+			return err
+		}
+		if s.betweenReads != nil {
+			s.betweenReads()
+		}
+		v = TicketView{Ticket: tk}
+		if tk.ParentID != "" {
+			par, err := ticketByID(ctx, q, tk.ParentID)
+			switch {
+			case err == nil:
+				v.Parent = &RelatedTicket{ID: par.ID, Key: par.Key, Title: par.Title, Status: par.Status, DeletedAt: par.DeletedAt}
+			case !isNoRows(err):
+				return err
+			}
+		}
+		if v.Children, err = childrenOf(ctx, q, tk); err != nil {
+			return err
+		}
+		rels, err := relationsOf(ctx, q, tk.ID)
+		if err != nil {
+			return err
+		}
+		v.Relations, v.RelationsTotal = firstRelations(rels, MaxTicketRelations), len(rels)
+		if v.Blocked, err = blockedOf(ctx, q, tk.ID); err != nil {
+			return err
+		}
+		if v.Links, err = linksOf(ctx, q, tk.ID); err != nil {
+			return err
+		}
+		if v.Attachments, err = attachmentsOf(ctx, q, tk.ID); err != nil {
+			return err
+		}
+		if v.Comments, err = lastComments(ctx, q, tk.ID, MaxTicketComments); err != nil {
+			return err
+		}
+		p, err := projectByID(ctx, q, tk.ProjectID)
+		if err != nil {
+			return err
+		}
+		v.Close, err = closeOf(ctx, q, p, tk)
+		return err
+	})
+	if err != nil {
+		return TicketView{}, err
+	}
+	return v, nil
+}
+
+// childrenOf reads the first MaxTicketChildren live children of the
+// ticket by number and how many it has; none for a tombstone, whose
+// children's references are inactive while it is deleted.
+func childrenOf(ctx context.Context, q queryer, tk Ticket) (TicketChildren, error) {
+	out := TicketChildren{Tickets: []RelatedTicket{}}
+	if !tk.DeletedAt.IsZero() {
+		return out, nil
+	}
+	rows, err := q.QueryContext(ctx, "SELECT id, key, title, status FROM tickets WHERE parent_id = ? AND deleted_at = '' ORDER BY number LIMIT ?",
+		tk.ID, MaxTicketChildren)
+	if err != nil {
+		return TicketChildren{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c RelatedTicket
+		if err := rows.Scan(&c.ID, &c.Key, &c.Title, &c.Status); err != nil {
+			return TicketChildren{}, err
+		}
+		out.Tickets = append(out.Tickets, c)
+	}
+	if err := rows.Err(); err != nil {
+		return TicketChildren{}, err
+	}
+	rows.Close()
+	err = q.QueryRowContext(ctx, "SELECT COUNT(*) FROM tickets WHERE parent_id = ? AND deleted_at = ''", tk.ID).Scan(&out.Total)
+	return out, err
+}
+
+// firstRelations is the first n of a ticket's relations as its read
+// carries them: the active ones, whose other end is live, before those
+// whose other end is deleted, each in the order they come (Relations).
+func firstRelations(all []TicketRelation, n int) []TicketRelation {
+	out := make([]TicketRelation, 0, min(len(all), n))
+	for _, active := range []bool{true, false} {
+		for _, tr := range all {
+			if len(out) == n {
+				return out
+			}
+			if tr.Other.DeletedAt.IsZero() == active {
+				out = append(out, tr)
+			}
+		}
+	}
+	return out
+}
+
+// lastComments reads the last n comments of the ticket with the id, in
+// their order, each with its number, tombstones among them: the ticket's
+// comments numbered without their bodies, and only the last n read whole
+// (commentsNumbered; BenchmarkTicketRead).
+func lastComments(ctx context.Context, q queryer, ticketID string, n int) ([]Comment, error) {
+	rows, err := q.QueryContext(ctx, commentsNumbered("SELECT id, n FROM numbered ORDER BY n DESC LIMIT ?"), ticketID, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Comment{}
+	for rows.Next() {
+		c, err := scanComment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// HistoryPage is a page of a ticket's history: its changes in the order
+// they were made (by seq), and Next, the seq to read after for the next
+// page, 0 on the last.
+type HistoryPage struct {
+	Changes []ChangeRow `json:"changes"`
+	Next    int64       `json:"next,omitempty"`
+}
+
+// History reads a page of the history of the ticket with the key, deleted
+// or not, as the store recorded it: the change rows of the ticket and of
+// its comments after the seq after (0 for the first page), at most limit
+// (DefaultHistoryPage when 0, at most MaxHistoryPage) and no more text
+// than maxHistoryText, so a page of descriptions at their bound stays a
+// page. ErrBadQuery for a limit or an after out of range; ErrNotFound
+// when there is no such ticket.
+func (s *Store) History(ctx context.Context, key string, after int64, limit int) (HistoryPage, error) {
+	if limit == 0 {
+		limit = DefaultHistoryPage
+	}
+	if limit < 1 || limit > MaxHistoryPage || after < 0 {
+		return HistoryPage{}, badQuery("a page of history is 1 to %d changes after a seq of 0 or more, not %d after %d", MaxHistoryPage, limit, after)
+	}
+	var out HistoryPage
+	err := s.read(ctx, func(q queryer) error {
+		tk, err := ticketByKey(ctx, q, key)
+		if isNoRows(err) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		rows, err := q.QueryContext(ctx, `SELECT seq, entity, entity_id, ticket_id, project_id, field, op, value, prior, at, actor, by, op_id, n
+			FROM changes WHERE ticket_id = ? AND seq > ? ORDER BY seq LIMIT ?`, tk.ID, after, limit+1)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out = HistoryPage{Changes: []ChangeRow{}}
+		text := 0
+		for rows.Next() {
+			var c ChangeRow
+			var at string
+			if err := rows.Scan(&c.Seq, &c.Entity, &c.EntityID, &c.TicketID, &c.ProjectID, &c.Field, &c.Op, &c.Value, &c.Prior,
+				&at, &c.Actor, &c.By, &c.OpID, &c.N); err != nil {
+				return err
+			}
+			c.At = unstamp(at)
+			size := len(c.Value) + len(c.Prior)
+			if len(out.Changes) == limit || (len(out.Changes) > 0 && text+size > maxHistoryText) {
+				out.Next = out.Changes[len(out.Changes)-1].Seq
+				break
+			}
+			out.Changes = append(out.Changes, c)
+			text += size
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	return out, nil
+}

@@ -153,6 +153,50 @@ const (
 	MaxActor = 60
 )
 
+// The bounds of the reads (query.go, and the composite reads of a
+// ticket and of the projects).
+const (
+	// DefaultListLimit is a list's page when a query names none.
+	DefaultListLimit = 100
+	// MaxListLimit bounds a list's page, in tickets.
+	MaxListLimit = 200
+	// MaxQueryText bounds a list's search, in characters.
+	MaxQueryText = 200
+	// MaxFilterValues bounds the values one of a filter's lists names
+	// (statuses, priorities, labels, assignees, horizons): a project's
+	// labels are at most MaxLabels.
+	MaxFilterValues = 100
+	// MaxTicketChildren is how many of a ticket's live children its read
+	// carries, the first by number; the rest are listed (Children).
+	MaxTicketChildren = 50
+	// MaxTicketComments is how many of a ticket's comments its read
+	// carries, the last; the rest are paged (Comments).
+	MaxTicketComments = 50
+	// MaxTicketRelations is how many of a ticket's relations its read
+	// carries: the active ones first, then those whose other end is
+	// deleted, each in the order Relations reads them, which reads the
+	// rest. A local write keeps a ticket's active relations within
+	// MaxRelations, but a relation to a deleted ticket counts for nothing
+	// toward it and an undelete or a merge may take a ticket past it, so a
+	// ticket may hold any number: its read carries this many and says how
+	// many there are.
+	MaxTicketRelations = MaxRelations
+	// DefaultHistoryPage is a page of a ticket's history when a read names
+	// none, in changes.
+	DefaultHistoryPage = 100
+	// MaxHistoryPage bounds a page of a ticket's history, in changes.
+	MaxHistoryPage = 500
+	// maxHistoryText bounds the text of a page of a ticket's history: the
+	// values and priors of its changes, each up to MaxChangeValue, so 500
+	// of them could hold 64 MiB. A page ends before the change that would
+	// take it past this, its first change whatever its size, and the next
+	// page goes on from there.
+	maxHistoryText = 1 << 20
+	// MaxProjectPage bounds a page of the projects, which is also its size
+	// when a read names none.
+	MaxProjectPage = 200
+)
+
 // A ticket's statuses (Owner decisions, 4: six, fixed in this item).
 // Any status may follow any other, but done is entered only when the
 // project's close policy is met (EditTicket's gate, acceptance.go); a
@@ -240,6 +284,14 @@ const (
 	ViewBoard   = "board"
 	ViewRoadmap = "roadmap"
 )
+
+// ViewKinds is the kinds of a saved view.
+var ViewKinds = []string{ViewList, ViewBoard, ViewRoadmap}
+
+// Groupings is what a saved view's list may be grouped by, "" for none: a
+// board's columns are its statuses and a roadmap's its horizons whatever
+// its grouping.
+var Groupings = []string{"", "status", "priority", "horizon", "milestone", "owner"}
 
 // The states of a milestone.
 const (

@@ -199,6 +199,15 @@ func TestEveryCountBoundIsThePlansAndRefusedOnePast(t *testing.T) {
 		{"a receipt", MaxReceipt, 4 << 10},
 		{"a parent chain", MaxParentDepth, 8},
 		{"the highest priority", MaxPriority, 4},
+		{"a list's page", MaxListLimit, 200},
+		{"a list's page when none is named", DefaultListLimit, 100},
+		{"a search", MaxQueryText, 200},
+		{"a page of the projects", MaxProjectPage, 200},
+		{"the children a ticket's read carries", MaxTicketChildren, 50},
+		{"the comments a ticket's read carries", MaxTicketComments, 50},
+		{"the relations a ticket's read carries", MaxTicketRelations, 100},
+		{"a page of a ticket's history", MaxHistoryPage, 500},
+		{"a saved view's query", MaxViewQuery, 8 << 10},
 	} {
 		if c.got != c.plan {
 			t.Errorf("%s: %d, the plan's %d", c.what, c.got, c.plan)

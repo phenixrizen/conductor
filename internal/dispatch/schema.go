@@ -23,7 +23,8 @@ var migrations = map[int][]string{}
 var migrationsGo = map[int]func(context.Context, *sql.Tx) error{}
 
 // schema is version 1, whole: every table of docs/plans/dispatch.md's
-// schema table, the FTS index included, its indexes, and the unique
+// schema table, the FTS index included, its indexes and two of the
+// list's own (tickets_list, ticket_labels_label), and the unique
 // indexes of the keys never minted twice and nothing else (projects.key,
 // tickets.key and (project_id, number), people.name, changes (actor,
 // op_id, n), ops (actor, id), beside every row's own id); every other
@@ -43,14 +44,16 @@ var migrationsGo = map[int]func(context.Context, *sql.Tx) error{}
 // ticket_labels, relations, links, attachments) are added and removed,
 // never edited, and carry none: their ticket's rev is bumped instead;
 // deleted_at is on every row with an id of its own, and a row is live
-// while it is empty; an empty reference is none. tickets_fts is written
-// by the store in the transaction that writes the rows it indexes (PR-4),
-// its rowid the ticket's rowid (tickets' id is text, so the table has an
-// implicit one, which only VACUUM could renumber and the store never
-// runs). changes.seq is local to this database: the event's and the
-// history's paging cursor, never replicated; a change row's identity
-// across replicas is (actor, op_id, n), and the one order of the log is
-// (at, actor, op_id, n).
+// while it is empty; an empty reference is none. tickets_fts holds an
+// entry of each ticket's own and one of each live comment, written by the
+// store in the transaction that writes the rows they index (indexTicket,
+// indexComment), an entry's rowid made of its ticket's rowid and its
+// comment's (entryRowid; tickets' and comments' ids are text, so the
+// tables have implicit rowids, which only VACUUM could renumber and the
+// store never runs). changes.seq is local to this database: the event's
+// and the history's paging cursor, never replicated; a change row's
+// identity across replicas is (actor, op_id, n), and the one order of the
+// log is (at, actor, op_id, n).
 var schema = []string{
 	`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
 	`CREATE TABLE projects (
@@ -223,14 +226,35 @@ var schema = []string{
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (actor, id)
 	)`,
-	`CREATE VIRTUAL TABLE tickets_fts USING fts5(key, title, description, acceptance, comments, tokenize = 'unicode61 remove_diacritics 2')`,
+	// The search index (query.go): a ticket's own entry, its key, title,
+	// description and acceptance criteria, and an entry of each of its
+	// live comments, the comment's body, so that a comment's add, edit or
+	// delete rewrites that comment's entry alone (docs/plans/dispatch.md,
+	// Owner decisions, 20). Two options of FTS5's beside the plan's
+	// tokenizer. prefix keeps an index of every term's first one and first
+	// two characters: a search's last term is a prefix, and FTS5 otherwise
+	// merges the list of every term a short prefix begins, which for the
+	// first letter typed in a search box is hundreds of terms
+	// (BenchmarkList). content = '' with contentless_delete keeps no copy
+	// of the text the tables hold already, so the rewrite of an entry
+	// neither reads its old text back to unindex it nor writes a copy of
+	// the new (BenchmarkIndexedWrite). The store reads only rowids from it.
+	`CREATE VIRTUAL TABLE tickets_fts USING fts5(key, title, description, acceptance, body, tokenize = 'unicode61 remove_diacritics 2', prefix = '1 2', content = '', contentless_delete = 1)`,
 	`CREATE INDEX tickets_project_status_updated ON tickets (project_id, status, updated_at)`,
 	`CREATE INDEX tickets_project_priority ON tickets (project_id, priority)`,
 	`CREATE INDEX tickets_milestone ON tickets (milestone_id)`,
 	`CREATE INDEX tickets_parent ON tickets (parent_id)`,
 	`CREATE INDEX tickets_owner ON tickets (owner)`,
 	`CREATE INDEX tickets_deleted ON tickets (deleted_at)`,
+	// The list's own (query.go), beside the plan's: a project's live
+	// tickets with every column a list filters or sorts by but the title,
+	// and the id, so a page's keys and its total are read from the index
+	// alone and never from the rows, whose descriptions make them wide
+	// (BenchmarkList).
+	`CREATE INDEX tickets_list ON tickets (project_id, deleted_at, status, priority, horizon, owner, milestone_id, parent_id, updated_at, created_at, number, id)`,
 	`CREATE INDEX ticket_assignees_actor ON ticket_assignees (actor)`,
+	// A label's tickets: a list's label filter, and a label's delete.
+	`CREATE INDEX ticket_labels_label ON ticket_labels (label_id)`,
 	`CREATE INDEX relations_to ON relations (to_id)`,
 	`CREATE INDEX comments_ticket_created ON comments (ticket_id, created_at)`,
 	`CREATE INDEX changes_entity ON changes (entity, entity_id, seq)`,
