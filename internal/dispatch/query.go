@@ -154,7 +154,7 @@ func (f Filter) check() error {
 		}
 	}
 	for _, id := range f.Labels {
-		if !validID(id) {
+		if !ValidID(id) {
 			return badQuery("the label %q is not a label's id", id)
 		}
 	}
@@ -166,7 +166,7 @@ func (f Filter) check() error {
 			return badQuery("%s", refusalWords(err))
 		}
 	}
-	if f.Milestone != "" && !validID(f.Milestone) {
+	if f.Milestone != "" && !ValidID(f.Milestone) {
 		return badQuery("the milestone %q is not a milestone's id", f.Milestone)
 	}
 	for _, h := range f.Horizon {
@@ -785,7 +785,7 @@ func (c *cursor) fits(sort string, desc bool, keys []sortKey) error {
 	if c.Sort != sort || c.Desc != desc {
 		return badQuery("the cursor is a page of another sort")
 	}
-	if len(c.Keys) != len(keys) || !validID(c.ID) {
+	if len(c.Keys) != len(keys) || !ValidID(c.ID) {
 		return badQuery("the cursor is not one of the store's")
 	}
 	for i, k := range keys {

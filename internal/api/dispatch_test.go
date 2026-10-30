@@ -25,11 +25,11 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/session"
 )
 
-// The Dispatch routes (docs/plans/dispatch.md, PR-5), through the real
-// store in a temp data directory. Each test has a server and a store of
-// its own, and runs beside the others after the package's sequential
-// tests: a store's every commit is synced to the disk, and the largest
-// fixtures take hundreds of them.
+// The Dispatch routes (docs/plans/dispatch.md, PR-5 and PR-6), through
+// the real store in a temp data directory. Each test has a server and a
+// store of its own, and runs beside the others after the package's
+// sequential tests: a store's every commit is synced to the disk, and the
+// largest fixtures take hundreds of them.
 
 // dispatchOps mints the tests' operation ids.
 var dispatchOps atomic.Int64
@@ -205,26 +205,43 @@ var dispatchRequests = map[string]struct {
 	path string
 	body any
 }{
-	"GET /api/dispatch/projects":                  {"/api/dispatch/projects", nil},
-	"POST /api/dispatch/projects":                 {"/api/dispatch/projects", map[string]any{"opId": "a1", "key": "CND", "name": "Conductor"}},
-	"GET /api/dispatch/projects/{key}":            {"/api/dispatch/projects/CND", nil},
-	"POST /api/dispatch/projects/{key}/edit":      {"/api/dispatch/projects/CND/edit", map[string]any{"opId": "a2", "name": "x"}},
-	"POST /api/dispatch/projects/{key}/archive":   {"/api/dispatch/projects/CND/archive", map[string]any{"opId": "a3"}},
-	"POST /api/dispatch/projects/{key}/unarchive": {"/api/dispatch/projects/CND/unarchive", map[string]any{"opId": "a4"}},
-	"GET /api/dispatch/people":                    {"/api/dispatch/people", nil},
-	"POST /api/dispatch/people":                   {"/api/dispatch/people", map[string]any{"opId": "a5", "name": "Alice"}},
-	"GET /api/dispatch/tickets":                   {"/api/dispatch/tickets", nil},
-	"POST /api/dispatch/tickets":                  {"/api/dispatch/tickets", map[string]any{"opId": "a6", "project": "CND", "title": "t"}},
-	"GET /api/dispatch/tickets/{key}":             {"/api/dispatch/tickets/CND-1", nil},
-	"POST /api/dispatch/tickets/{key}/edit":       {"/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "a7", "set": map[string]any{"title": "x"}}},
-	"POST /api/dispatch/tickets/{key}/accept":     {"/api/dispatch/tickets/CND-1/accept", map[string]any{"opId": "a8"}},
-	"POST /api/dispatch/tickets/{key}/unaccept":   {"/api/dispatch/tickets/CND-1/unaccept", map[string]any{"opId": "a9"}},
-	"POST /api/dispatch/tickets/{key}/delete":     {"/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": "a10"}},
-	"POST /api/dispatch/tickets/{key}/undelete":   {"/api/dispatch/tickets/CND-1/undelete", map[string]any{"opId": "a11"}},
-	"GET /api/dispatch/tickets/{key}/history":     {"/api/dispatch/tickets/CND-1/history", nil},
-	"GET /api/dispatch/tickets/{key}/comments":    {"/api/dispatch/tickets/CND-1/comments", nil},
-	"GET /api/dispatch/links":                     {"/api/dispatch/links?run=team-0000aaaa", nil},
-	"GET /api/dispatch/ops/{opId}":                {"/api/dispatch/ops/a1", nil},
+	"GET /api/dispatch/projects":                               {"/api/dispatch/projects", nil},
+	"POST /api/dispatch/projects":                              {"/api/dispatch/projects", map[string]any{"opId": "a1", "key": "CND", "name": "Conductor"}},
+	"GET /api/dispatch/projects/{key}":                         {"/api/dispatch/projects/CND", nil},
+	"POST /api/dispatch/projects/{key}/edit":                   {"/api/dispatch/projects/CND/edit", map[string]any{"opId": "a2", "name": "x"}},
+	"POST /api/dispatch/projects/{key}/archive":                {"/api/dispatch/projects/CND/archive", map[string]any{"opId": "a3"}},
+	"POST /api/dispatch/projects/{key}/unarchive":              {"/api/dispatch/projects/CND/unarchive", map[string]any{"opId": "a4"}},
+	"POST /api/dispatch/projects/{key}/labels":                 {"/api/dispatch/projects/CND/labels", map[string]any{"opId": "b1", "name": "api", "color": "blue"}},
+	"POST /api/dispatch/projects/{key}/labels/{id}/edit":       {"/api/dispatch/projects/CND/labels/0123456789abcdef/edit", map[string]any{"opId": "b2", "name": "x"}},
+	"POST /api/dispatch/projects/{key}/labels/{id}/delete":     {"/api/dispatch/projects/CND/labels/0123456789abcdef/delete", map[string]any{"opId": "b3"}},
+	"POST /api/dispatch/projects/{key}/milestones":             {"/api/dispatch/projects/CND/milestones", map[string]any{"opId": "b4", "name": "1.0"}},
+	"POST /api/dispatch/projects/{key}/milestones/{id}/edit":   {"/api/dispatch/projects/CND/milestones/0123456789abcdef/edit", map[string]any{"opId": "b5", "state": "closed"}},
+	"POST /api/dispatch/projects/{key}/milestones/{id}/delete": {"/api/dispatch/projects/CND/milestones/0123456789abcdef/delete", map[string]any{"opId": "b6"}},
+	"GET /api/dispatch/people":                                 {"/api/dispatch/people", nil},
+	"POST /api/dispatch/people":                                {"/api/dispatch/people", map[string]any{"opId": "a5", "name": "Alice"}},
+	"GET /api/dispatch/tickets":                                {"/api/dispatch/tickets", nil},
+	"POST /api/dispatch/tickets":                               {"/api/dispatch/tickets", map[string]any{"opId": "a6", "project": "CND", "title": "t"}},
+	"GET /api/dispatch/tickets/{key}":                          {"/api/dispatch/tickets/CND-1", nil},
+	"POST /api/dispatch/tickets/{key}/edit":                    {"/api/dispatch/tickets/CND-1/edit", map[string]any{"opId": "a7", "set": map[string]any{"title": "x"}}},
+	"POST /api/dispatch/tickets/{key}/accept":                  {"/api/dispatch/tickets/CND-1/accept", map[string]any{"opId": "a8"}},
+	"POST /api/dispatch/tickets/{key}/unaccept":                {"/api/dispatch/tickets/CND-1/unaccept", map[string]any{"opId": "a9"}},
+	"POST /api/dispatch/tickets/{key}/delete":                  {"/api/dispatch/tickets/CND-1/delete", map[string]any{"opId": "a10"}},
+	"POST /api/dispatch/tickets/{key}/undelete":                {"/api/dispatch/tickets/CND-1/undelete", map[string]any{"opId": "a11"}},
+	"GET /api/dispatch/tickets/{key}/history":                  {"/api/dispatch/tickets/CND-1/history", nil},
+	"GET /api/dispatch/tickets/{key}/comments":                 {"/api/dispatch/tickets/CND-1/comments", nil},
+	"POST /api/dispatch/tickets/{key}/comments":                {"/api/dispatch/tickets/CND-1/comments", map[string]any{"opId": "b7", "body": "x"}},
+	"POST /api/dispatch/tickets/{key}/comments/{id}/edit":      {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/edit", map[string]any{"opId": "b8", "body": "y"}},
+	"POST /api/dispatch/tickets/{key}/comments/{id}/delete":    {"/api/dispatch/tickets/CND-1/comments/0123456789abcdef/delete", map[string]any{"opId": "b9"}},
+	"POST /api/dispatch/tickets/{key}/relations":               {"/api/dispatch/tickets/CND-1/relations", map[string]any{"opId": "b10", "kind": "relates", "to": "CND-2"}},
+	"POST /api/dispatch/tickets/{key}/relations/{id}/delete":   {"/api/dispatch/tickets/CND-1/relations/0123456789abcdef/delete", map[string]any{"opId": "b11"}},
+	"POST /api/dispatch/tickets/{key}/links":                   {"/api/dispatch/tickets/CND-1/links", map[string]any{"opId": "b12", "kind": "delivery", "url": "https://example.com/pull/1"}},
+	"POST /api/dispatch/tickets/{key}/links/{id}/delete":       {"/api/dispatch/tickets/CND-1/links/0123456789abcdef/delete", map[string]any{"opId": "b13"}},
+	"GET /api/dispatch/links":                                  {"/api/dispatch/links?run=team-0000aaaa", nil},
+	"GET /api/dispatch/views":                                  {"/api/dispatch/views?project=CND", nil},
+	"POST /api/dispatch/views":                                 {"/api/dispatch/views", map[string]any{"opId": "b14", "name": "Mine", "kind": "list", "query": map[string]any{}}},
+	"POST /api/dispatch/views/{id}/edit":                       {"/api/dispatch/views/0123456789abcdef/edit", map[string]any{"opId": "b15", "name": "x"}},
+	"POST /api/dispatch/views/{id}/delete":                     {"/api/dispatch/views/0123456789abcdef/delete", map[string]any{"opId": "b16"}},
+	"GET /api/dispatch/ops/{opId}":                             {"/api/dispatch/ops/a1", nil},
 }
 
 // eachDispatchRoute calls f with every Dispatch route the server has, by
@@ -735,6 +752,565 @@ func TestDispatchTicketRoutes(t *testing.T) {
 	e.expect(t, "GET", "/api/dispatch/tickets/CND-9/comments", nil, http.StatusNotFound, "not_found")
 }
 
+// listOf is the entities a reply's list holds, each decoded.
+func listOf(t *testing.T, out map[string]any, name string) []map[string]any {
+	t.Helper()
+	items, ok := out[name].([]any)
+	if !ok {
+		t.Fatalf("no list %s in %v", name, out)
+	}
+	var list []map[string]any
+	for _, item := range items {
+		list = append(list, item.(map[string]any))
+	}
+	return list
+}
+
+// The comment routes: a comment posted with its number, its author the
+// admin by the display name, its repeat and a conflicting one; a second
+// numbered after it; an edit at the comment's revision and one behind
+// it; a delete leaving a tombstone in its place; the ticket's read and
+// history showing each; and what each refuses.
+func TestDispatchCommentRoutes(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	e.newDispatchProject(t, "CMR", nil)
+	tk := e.newDispatchTicket(t, "CMR", "Talked about", nil)
+	e.newDispatchTicket(t, "CMR", "Elsewhere", nil)
+	// The expected revision of an add is the ticket's.
+	add := map[string]any{"opId": "c1", "expectedRev": tk["rev"], "byName": "Nate", "body": "First, <b> & more"}
+	status, raw, out := e.call(t, "POST", "/api/dispatch/tickets/CMR-1/comments", add)
+	if status != http.StatusCreated {
+		t.Fatalf("add: %d %s", status, raw)
+	}
+	rc, c := receiptOf(t, out), entityOf(t, out, "comment")
+	if rc["intent"] != "comment.add" || rc["id"] != c["id"] || rc["rev"] != 1.0 || c["n"] != 1.0 || c["author"] != adminActor || c["by"] != "Nate" ||
+		c["body"] != "First, <b> & more" || c["ticketId"] != tk["id"] || c["rev"] != 1.0 || c["editedAt"] != nil || c["deletedAt"] != nil {
+		t.Fatalf("add: %v", out)
+	}
+	if !bytes.Contains(raw, []byte(`"First, <b> & more"`)) {
+		t.Fatalf("the reply escapes HTML: %s", raw)
+	}
+	first := c["id"].(string)
+	// The same again answers its receipt and adds nothing; other content
+	// under its id is a conflict.
+	if out := e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", add, http.StatusOK, ""); receiptOf(t, out)["repeat"] != true || entityOf(t, out, "comment")["id"] != first {
+		t.Fatalf("repeat: %v", out)
+	}
+	conflict := maps.Clone(add)
+	conflict["body"] = "Other"
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", conflict, http.StatusConflict, "op_conflict")
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", map[string]any{"opId": opID(), "expectedRev": 9, "body": "Late"}, http.StatusConflict, "stale_revision")
+	second := entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", map[string]any{"opId": opID(), "body": "Second"}, http.StatusCreated, ""), "comment")
+	if second["n"] != 2.0 || second["by"] != "" {
+		t.Fatalf("the second comment: %v", second)
+	}
+
+	// An edit at the comment's revision; one behind it is refused, and so
+	// is the body it holds already.
+	edit := func(key, id string, body map[string]any, status int, code string) map[string]any {
+		t.Helper()
+		body["opId"] = opID()
+		return e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/comments/"+id+"/edit", body, status, code)
+	}
+	c = entityOf(t, edit("CMR-1", first, map[string]any{"expectedRev": 1, "byName": "Nate", "body": "First, edited"}, http.StatusOK, ""), "comment")
+	if c["body"] != "First, edited" || c["editedAt"] == nil || c["rev"] != 2.0 || c["n"] != 1.0 {
+		t.Fatalf("edit: %v", c)
+	}
+	edit("CMR-1", first, map[string]any{"expectedRev": 1, "body": "Lost"}, http.StatusConflict, "stale_revision")
+	edit("CMR-1", first, map[string]any{"body": "First, edited"}, http.StatusConflict, "invalid")
+	edit("CMR-1", first, map[string]any{"body": ""}, http.StatusConflict, "invalid")
+	edit("CMR-1", first, map[string]any{"body": strings.Repeat("b", dispatch.MaxCommentBody+1)}, http.StatusConflict, "bound")
+	// Under another ticket's key the comment is not found.
+	edit("CMR-2", first, map[string]any{"body": "Moved"}, http.StatusNotFound, "not_found")
+
+	// A delete leaves a tombstone in its place, which no write reaches.
+	c = entityOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments/"+first+"/delete", map[string]any{"opId": opID(), "expectedRev": 2}, http.StatusOK, ""), "comment")
+	if c["deletedAt"] == nil || c["n"] != 1.0 || c["rev"] != 3.0 || c["body"] != "First, edited" {
+		t.Fatalf("delete: %v", c)
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments/"+first+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	edit("CMR-1", first, map[string]any{"body": "Revived"}, http.StatusNotFound, "not_found")
+	// The ticket's read: both comments in their places, the first a
+	// tombstone, numbered as before.
+	cs := listOf(t, entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/CMR-1", nil, http.StatusOK, ""), "ticket"), "comments")
+	if len(cs) != 2 || cs[0]["id"] != first || cs[0]["n"] != 1.0 || cs[0]["deletedAt"] == nil ||
+		cs[1]["id"] != second["id"] || cs[1]["n"] != 2.0 || cs[1]["deletedAt"] != nil {
+		t.Fatalf("the ticket's comments: %v", cs)
+	}
+	// The ticket's history holds the comment's body as it was set, then
+	// as it was edited, and its delete.
+	var bodies []string
+	deleted := false
+	for _, ch := range listOf(t, e.expect(t, "GET", "/api/dispatch/tickets/CMR-1/history", nil, http.StatusOK, ""), "changes") {
+		if ch["entity"] != "comment" || ch["entityId"] != first {
+			continue
+		}
+		switch ch["field"] {
+		case "body":
+			bodies = append(bodies, ch["value"].(string))
+		case "deleted_at":
+			deleted = true
+		}
+	}
+	if !slices.Equal(bodies, []string{"First, <b> & more", "First, edited"}) || !deleted {
+		t.Fatalf("the comment's history: %v, deleted %v", bodies, deleted)
+	}
+
+	// What each refuses: a ticket missing or deleted, a body the store
+	// refuses, a key, an id or a body it would not look at.
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-9/comments", map[string]any{"opId": opID(), "body": "x"}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", map[string]any{"opId": opID(), "body": ""}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", map[string]any{"opId": opID(), "body": "a\x01b"}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", map[string]any{"opId": opID(), "body": strings.Repeat("b", dispatch.MaxCommentBody+1)}, http.StatusConflict, "bound")
+	e.expect(t, "POST", "/api/dispatch/tickets/cmr-1/comments", map[string]any{"opId": opID(), "body": "x"}, http.StatusBadRequest, "invalid_request")
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments", map[string]any{"opId": opID(), "body": "x", "author": "agent:x"}, http.StatusBadRequest, "invalid_request")
+	for _, id := range []string{"nope", "0123456789ABCDEF", first + "0"} {
+		edit("CMR-1", id, map[string]any{"body": "x"}, http.StatusBadRequest, "invalid_request")
+		e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments/"+id+"/delete", map[string]any{"opId": opID()}, http.StatusBadRequest, "invalid_request")
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-1/comments/0123456789abcdef/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/CMR-2/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	if rc := receiptOf(t, e.expect(t, "POST", "/api/dispatch/tickets/CMR-2/comments", map[string]any{"opId": opID(), "body": "x"}, http.StatusNotFound, "not_found")); rc["status"] != "failed" {
+		t.Fatalf("a comment on a deleted ticket: %v", rc)
+	}
+}
+
+// The label and milestone routes: each made, edited at its revision and
+// refused one behind it, and deleted to a tombstone that leaves every
+// ticket that had it, a deleted one among them, each ticket's revision
+// bumped and one change row on each; a label's name free again after
+// it; and what each refuses.
+func TestDispatchLabelAndMilestoneRoutes(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	e.newDispatchProject(t, "LBL", nil)
+	e.newDispatchProject(t, "OTH", nil)
+	status, raw, out := e.call(t, "POST", "/api/dispatch/projects/LBL/labels", map[string]any{"opId": "l1", "byName": "Nate", "name": "api <v1>", "color": "blue"})
+	if status != http.StatusCreated {
+		t.Fatalf("a label's create: %d %s", status, raw)
+	}
+	rc, lb := receiptOf(t, out), entityOf(t, out, "label")
+	if rc["intent"] != "label.create" || rc["id"] != lb["id"] || lb["name"] != "api <v1>" || lb["color"] != "blue" || lb["rev"] != 1.0 || lb["deletedAt"] != nil {
+		t.Fatalf("a label's create: %v", out)
+	}
+	label := lb["id"].(string)
+	labelPath := "/api/dispatch/projects/LBL/labels/" + label
+	// A name a live label holds, whatever its case; a colour none of the
+	// twelve; a name past its bound.
+	e.expect(t, "POST", "/api/dispatch/projects/LBL/labels", map[string]any{"opId": opID(), "name": "API <V1>", "color": "red"}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/projects/LBL/labels", map[string]any{"opId": opID(), "name": "web", "color": "#ff0000"}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/projects/LBL/labels", map[string]any{"opId": opID(), "name": strings.Repeat("n", dispatch.MaxLabelName+1), "color": "red"}, http.StatusConflict, "bound")
+	// An edit at its revision; one behind, one that changes nothing.
+	lb = entityOf(t, e.expect(t, "POST", labelPath+"/edit", map[string]any{"opId": opID(), "expectedRev": 1, "name": "api", "color": "teal"}, http.StatusOK, ""), "label")
+	if lb["name"] != "api" || lb["color"] != "teal" || lb["rev"] != 2.0 {
+		t.Fatalf("a label's edit: %v", lb)
+	}
+	e.expect(t, "POST", labelPath+"/edit", map[string]any{"opId": opID(), "expectedRev": 1, "name": "lost"}, http.StatusConflict, "stale_revision")
+	e.expect(t, "POST", labelPath+"/edit", map[string]any{"opId": opID(), "name": "api"}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/projects/OTH/labels/"+label+"/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusNotFound, "not_found")
+
+	// Two tickets have the label, the second of them deleted, and a third
+	// has not: the delete leaves the two, and the third is untouched.
+	e.newDispatchTicket(t, "LBL", "One", map[string]any{"labels": []string{label}})
+	e.newDispatchTicket(t, "LBL", "Two", map[string]any{"labels": []string{label}})
+	e.newDispatchTicket(t, "LBL", "Three", nil)
+	e.expect(t, "POST", "/api/dispatch/tickets/LBL-2/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	read := func(key string) map[string]any {
+		t.Helper()
+		return entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket")
+	}
+	revs := map[string]any{}
+	for _, key := range []string{"LBL-1", "LBL-2", "LBL-3"} {
+		revs[key] = read(key)["rev"]
+	}
+	lb = entityOf(t, e.expect(t, "POST", labelPath+"/delete", map[string]any{"opId": opID(), "expectedRev": 2}, http.StatusOK, ""), "label")
+	if lb["deletedAt"] == nil || lb["rev"] != 3.0 || lb["name"] != "api" {
+		t.Fatalf("a label's delete: %v", lb)
+	}
+	for _, key := range []string{"LBL-1", "LBL-2"} {
+		if tk := read(key); len(tk["labels"].([]any)) != 0 || tk["rev"] != revs[key].(float64)+1 {
+			t.Fatalf("%s after the label's delete: %v", key, tk)
+		}
+		removed := 0
+		for _, ch := range listOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key+"/history", nil, http.StatusOK, ""), "changes") {
+			if ch["field"] == "labels" && ch["op"] == "remove" && ch["value"] == label {
+				removed++
+			}
+		}
+		if removed != 1 {
+			t.Fatalf("%s's history holds %d removes of the label", key, removed)
+		}
+	}
+	if tk := read("LBL-3"); tk["rev"] != revs["LBL-3"] {
+		t.Fatalf("a ticket without the label moved: %v", tk)
+	}
+	// Its name is free; the tombstone takes no write.
+	again := entityOf(t, e.expect(t, "POST", "/api/dispatch/projects/LBL/labels", map[string]any{"opId": opID(), "name": "api", "color": "gray"}, http.StatusCreated, ""), "label")
+	e.expect(t, "POST", labelPath+"/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", labelPath+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+
+	// A milestone: made, edited, and deleted off every ticket naming it.
+	status, raw, out = e.call(t, "POST", "/api/dispatch/projects/LBL/milestones", map[string]any{"opId": "m1", "name": "1.0", "description": "The first <cut>", "target": "2026-12-31"})
+	if status != http.StatusCreated {
+		t.Fatalf("a milestone's create: %d %s", status, raw)
+	}
+	rc, ms := receiptOf(t, out), entityOf(t, out, "milestone")
+	if rc["intent"] != "milestone.create" || rc["id"] != ms["id"] || ms["name"] != "1.0" || ms["description"] != "The first <cut>" || ms["target"] != "2026-12-31" ||
+		ms["state"] != "open" || ms["rev"] != 1.0 {
+		t.Fatalf("a milestone's create: %v", out)
+	}
+	milestone := ms["id"].(string)
+	milestonePath := "/api/dispatch/projects/LBL/milestones/" + milestone
+	for _, body := range []map[string]any{{"name": "x", "target": "31/12/2026"}, {"name": "x", "state": "done"}, {"name": ""}} {
+		body["opId"] = opID()
+		e.expect(t, "POST", "/api/dispatch/projects/LBL/milestones", body, http.StatusConflict, "invalid")
+	}
+	e.expect(t, "POST", "/api/dispatch/projects/LBL/milestones", map[string]any{"opId": opID(), "name": "x", "description": strings.Repeat("d", dispatch.MaxMilestoneDescription+1)}, http.StatusConflict, "bound")
+	ms = entityOf(t, e.expect(t, "POST", milestonePath+"/edit", map[string]any{"opId": opID(), "expectedRev": 1, "state": "closed", "target": ""}, http.StatusOK, ""), "milestone")
+	if ms["state"] != "closed" || ms["target"] != "" || ms["name"] != "1.0" || ms["rev"] != 2.0 {
+		t.Fatalf("a milestone's edit: %v", ms)
+	}
+	e.expect(t, "POST", milestonePath+"/edit", map[string]any{"opId": opID(), "expectedRev": 1, "name": "lost"}, http.StatusConflict, "stale_revision")
+	e.expect(t, "POST", milestonePath+"/edit", map[string]any{"opId": opID(), "state": "closed"}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/projects/OTH/milestones/"+milestone+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/LBL-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"milestone": milestone}}, http.StatusOK, "")
+	e.newDispatchTicket(t, "LBL", "Four", map[string]any{"milestone": milestone})
+	for _, key := range []string{"LBL-1", "LBL-3", "LBL-4"} {
+		revs[key] = read(key)["rev"]
+	}
+	ms = entityOf(t, e.expect(t, "POST", milestonePath+"/delete", map[string]any{"opId": opID()}, http.StatusOK, ""), "milestone")
+	if ms["deletedAt"] == nil || ms["rev"] != 3.0 {
+		t.Fatalf("a milestone's delete: %v", ms)
+	}
+	for _, key := range []string{"LBL-1", "LBL-4"} {
+		if tk := read(key); tk["milestoneId"] != "" || tk["rev"] != revs[key].(float64)+1 {
+			t.Fatalf("%s after the milestone's delete: %v", key, tk)
+		}
+	}
+	if tk := read("LBL-3"); tk["rev"] != revs["LBL-3"] {
+		t.Fatalf("a ticket without the milestone moved: %v", tk)
+	}
+	e.expect(t, "POST", milestonePath+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", milestonePath+"/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusNotFound, "not_found")
+	// The project's read offers the live ones alone.
+	out = e.expect(t, "GET", "/api/dispatch/projects/LBL", nil, http.StatusOK, "")
+	if ls := listOf(t, out, "labels"); len(ls) != 1 || ls[0]["id"] != again["id"] || len(listOf(t, out, "milestones")) != 0 {
+		t.Fatalf("the project's read: %v", out)
+	}
+
+	// What both refuse: a project missing or archived, a key, an id or a
+	// body the store would not look at.
+	for _, kind := range []string{"labels", "milestones"} {
+		body := func() map[string]any { return map[string]any{"opId": opID(), "name": "x", "color": "red"} }
+		if kind == "milestones" {
+			body = func() map[string]any { return map[string]any{"opId": opID(), "name": "x"} }
+		}
+		e.expect(t, "POST", "/api/dispatch/projects/NOPE/"+kind, body(), http.StatusNotFound, "not_found")
+		e.expect(t, "POST", "/api/dispatch/projects/lbl/"+kind, body(), http.StatusBadRequest, "invalid_request")
+		bogus := body()
+		bogus["bogus"] = true
+		e.expect(t, "POST", "/api/dispatch/projects/LBL/"+kind, bogus, http.StatusBadRequest, "invalid_request")
+		for _, route := range []string{"edit", "delete"} {
+			e.expect(t, "POST", "/api/dispatch/projects/LBL/"+kind+"/xyz/"+route, map[string]any{"opId": opID()}, http.StatusBadRequest, "invalid_request")
+		}
+	}
+	e.expect(t, "POST", "/api/dispatch/projects/OTH/archive", map[string]any{"opId": opID()}, http.StatusOK, "")
+	e.expect(t, "POST", "/api/dispatch/projects/OTH/labels", map[string]any{"opId": opID(), "name": "x", "color": "red"}, http.StatusConflict, "archived")
+	e.expect(t, "POST", "/api/dispatch/projects/OTH/milestones", map[string]any{"opId": opID(), "name": "x"}, http.StatusConflict, "archived")
+}
+
+// The relation routes: a blocks added, answered with the ticket and the
+// relation among its own, the other ticket blocked by it; the same again,
+// a cycle, the ticket itself, another project's ticket, one missing and a
+// kind that is none refused; a removal through the other end's key
+// answered with that ticket, no longer blocked; and a relation added
+// again after its removal a new one.
+func TestDispatchRelationRoutes(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	e.newDispatchProject(t, "REL", nil)
+	e.newDispatchProject(t, "OTR", nil)
+	a := e.newDispatchTicket(t, "REL", "A", nil)
+	b := e.newDispatchTicket(t, "REL", "B", nil)
+	e.newDispatchTicket(t, "REL", "C", nil)
+	e.newDispatchTicket(t, "OTR", "Elsewhere", nil)
+	relate := func(key string, body map[string]any, status int, code string) map[string]any {
+		t.Helper()
+		body["opId"] = opID()
+		return e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/relations", body, status, code)
+	}
+	read := func(key string) map[string]any {
+		t.Helper()
+		return entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket")
+	}
+	out := relate("REL-1", map[string]any{"expectedRev": a["rev"], "byName": "Nate", "kind": "blocks", "to": "REL-2"}, http.StatusCreated, "")
+	rc, tk := receiptOf(t, out), entityOf(t, out, "ticket")
+	rels := listOf(t, tk, "relations")
+	if rc["intent"] != "relation.add" || tk["key"] != "REL-1" || tk["rev"] != a["rev"].(float64)+1 || rc["rev"] != tk["rev"] || len(rels) != 1 ||
+		rels[0]["id"] != rc["id"] || rels[0]["kind"] != "blocks" || rels[0]["fromId"] != a["id"] || rels[0]["toId"] != b["id"] ||
+		rels[0]["createdBy"] != "Nate" || rels[0]["other"].(map[string]any)["key"] != "REL-2" {
+		t.Fatalf("a relation's add: %v", out)
+	}
+	relation := rc["id"].(string)
+	if other := read("REL-2"); other["blocked"] != true || other["rev"] != b["rev"].(float64)+1 || len(other["relations"].([]any)) != 1 {
+		t.Fatalf("the blocked end: %v", other)
+	}
+	relate("REL-1", map[string]any{"expectedRev": a["rev"], "kind": "relates", "to": "REL-3"}, http.StatusConflict, "stale_revision")
+	relate("REL-1", map[string]any{"kind": "blocks", "to": "REL-2"}, http.StatusConflict, "invalid")
+	relate("REL-2", map[string]any{"kind": "blocks", "to": "REL-3"}, http.StatusCreated, "")
+	relate("REL-3", map[string]any{"kind": "blocks", "to": "REL-1"}, http.StatusConflict, "cycle")
+	relate("REL-1", map[string]any{"kind": "blocks", "to": "REL-1"}, http.StatusConflict, "cycle")
+	relate("REL-1", map[string]any{"kind": "relates", "to": "REL-1"}, http.StatusConflict, "invalid")
+	relate("REL-1", map[string]any{"kind": "relates", "to": "OTR-1"}, http.StatusConflict, "invalid")
+	relate("REL-1", map[string]any{"kind": "relates", "to": "REL-9"}, http.StatusNotFound, "not_found")
+	relate("REL-1", map[string]any{"kind": "depends", "to": "REL-3"}, http.StatusConflict, "invalid")
+	// A relates reads the same from either end: its reverse is held.
+	relate("REL-3", map[string]any{"kind": "relates", "to": "REL-1"}, http.StatusCreated, "")
+	relate("REL-1", map[string]any{"kind": "relates", "to": "REL-3"}, http.StatusConflict, "invalid")
+
+	// Removed through the other end's key: the reply is that ticket, no
+	// longer blocked.
+	out = e.expect(t, "POST", "/api/dispatch/tickets/REL-2/relations/"+relation+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	if rc, tk = receiptOf(t, out), entityOf(t, out, "ticket"); rc["intent"] != "relation.remove" || tk["key"] != "REL-2" || tk["blocked"] != false || rc["rev"] != tk["rev"] {
+		t.Fatalf("a relation's removal: %v", out)
+	}
+	for _, r := range listOf(t, tk, "relations") {
+		if r["id"] == relation {
+			t.Fatalf("the relation removed is still REL-2's: %v", r)
+		}
+	}
+	if rels := listOf(t, read("REL-1"), "relations"); len(rels) != 1 || rels[0]["kind"] != "relates" {
+		t.Fatalf("REL-1 after the removal: %v", rels)
+	}
+	// Removed again, through a ticket that is neither end, an id that is
+	// not one.
+	e.expect(t, "POST", "/api/dispatch/tickets/REL-1/relations/"+relation+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	bc := listOf(t, read("REL-2"), "relations")[0]["id"].(string)
+	e.expect(t, "POST", "/api/dispatch/tickets/REL-1/relations/"+bc+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/REL-1/relations/nope/delete", map[string]any{"opId": opID()}, http.StatusBadRequest, "invalid_request")
+	// Added again after its removal, it is a new relation.
+	if again := receiptOf(t, relate("REL-1", map[string]any{"kind": "blocks", "to": "REL-2"}, http.StatusCreated, "")); again["id"] == relation {
+		t.Fatalf("a relation added again kept its id: %v", again)
+	}
+	// A deleted ticket takes no relation, at either end.
+	e.expect(t, "POST", "/api/dispatch/tickets/REL-3/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	relate("REL-1", map[string]any{"kind": "relates", "to": "REL-3"}, http.StatusNotFound, "not_found")
+	relate("REL-3", map[string]any{"kind": "relates", "to": "REL-2"}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/REL-1/relations", map[string]any{"opId": opID(), "kind": "relates", "to": "REL-2", "from": "REL-1"}, http.StatusBadRequest, "invalid_request")
+}
+
+// The link routes: a delivery link without a ref takes its URL as one and
+// meets a delivery close policy; the same identity again refused, another
+// URL another link; a run link to a run nobody has refused not_found, to
+// a recorded run linked, and to the same run from a second ticket refused
+// run_linked with the first named in the receipt; a link removed, removed
+// again refused, and added again a new one.
+func TestDispatchLinkRoutes(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	run := crew.Run{ID: "linked-0000beef", CrewID: "linked", Name: "Linked", StartedAt: time.Now().UTC().Add(-time.Hour), State: crew.RunFinished}
+	if err := e.srv.records.Save(run); err != nil {
+		t.Fatal(err)
+	}
+	e.newDispatchProject(t, "LNK", map[string]any{"closeRequires": []string{"delivery"}})
+	a := e.newDispatchTicket(t, "LNK", "Shipped", nil)
+	e.newDispatchTicket(t, "LNK", "Also", nil)
+	link := func(key string, body map[string]any, status int, code string) map[string]any {
+		t.Helper()
+		body["opId"] = opID()
+		return e.expect(t, "POST", "/api/dispatch/tickets/"+key+"/links", body, status, code)
+	}
+	linkOf := func(tk map[string]any, id string) map[string]any {
+		t.Helper()
+		for _, l := range listOf(t, tk, "links") {
+			if l["id"] == id {
+				return l
+			}
+		}
+		return nil
+	}
+	pr := "https://github.com/rocksolidlabs/conductor/pull/1"
+	out := link("LNK-1", map[string]any{"expectedRev": a["rev"], "byName": "Nate", "kind": "delivery", "url": pr, "note": "Merged <today>"}, http.StatusCreated, "")
+	rc, tk := receiptOf(t, out), entityOf(t, out, "ticket")
+	delivery := rc["id"].(string)
+	l := linkOf(tk, delivery)
+	if rc["intent"] != "link.add" || rc["rev"] != tk["rev"] || tk["rev"] != a["rev"].(float64)+1 || l == nil || l["kind"] != "delivery" || l["ref"] != pr ||
+		l["url"] != pr || l["note"] != "Merged <today>" || l["createdBy"] != "Nate" || tk["close"].(map[string]any)["met"].(map[string]any)["delivery"] != true {
+		t.Fatalf("a delivery link's add: %v", out)
+	}
+	// Its identity, the kind and the ref, is taken; another URL is another
+	// link.
+	link("LNK-1", map[string]any{"kind": "delivery", "url": pr}, http.StatusConflict, "invalid")
+	link("LNK-1", map[string]any{"kind": "delivery", "ref": pr, "url": "https://example.com/other"}, http.StatusConflict, "invalid")
+	link("LNK-1", map[string]any{"kind": "delivery", "url": pr + "/files"}, http.StatusCreated, "")
+	link("LNK-1", map[string]any{"expectedRev": a["rev"], "kind": "delivery", "url": pr + "/commits"}, http.StatusConflict, "stale_revision")
+	// A delivery or an external link names its URL, http or https; a run
+	// link names its run; no other kind is one.
+	for _, body := range []map[string]any{
+		{"kind": "delivery"}, {"kind": "external", "ref": "ABC-1"}, {"kind": "external", "url": "ftp://example.com/x"},
+		{"kind": "run"}, {"kind": "plan", "url": pr},
+	} {
+		link("LNK-1", body, http.StatusConflict, "invalid")
+	}
+	out = link("LNK-1", map[string]any{"kind": "external", "ref": "ABC-1", "url": "https://tracker.example.com/ABC-1"}, http.StatusCreated, "")
+	if l := linkOf(entityOf(t, out, "ticket"), receiptOf(t, out)["id"].(string)); l == nil || l["ref"] != "ABC-1" {
+		t.Fatalf("an external link with its ref: %v", out)
+	}
+	// A run link names a run the engine holds or has a record of, and a
+	// run belongs to one ticket.
+	if rc := receiptOf(t, link("LNK-1", map[string]any{"kind": "run", "ref": "nobody-0000dead"}, http.StatusNotFound, "not_found")); rc["status"] != "failed" || rc["refusal"] != "not_found" {
+		t.Fatalf("a run nobody has: %v", rc)
+	}
+	runLink := receiptOf(t, link("LNK-1", map[string]any{"kind": "run", "ref": run.ID}, http.StatusCreated, ""))["id"].(string)
+	if rc := receiptOf(t, link("LNK-2", map[string]any{"kind": "run", "ref": run.ID}, http.StatusConflict, "run_linked")); rc["key"] != "LNK-1" || rc["status"] != "failed" {
+		t.Fatalf("a run linked to another ticket: %v", rc)
+	}
+	if tk := entityOf(t, e.expect(t, "GET", "/api/dispatch/links?run="+run.ID, nil, http.StatusOK, ""), "ticket"); tk["key"] != "LNK-1" {
+		t.Fatalf("the run's ticket: %v", tk)
+	}
+
+	// Removed: gone from the ticket; removed again, through another
+	// ticket's key, an id that is not one, refused.
+	out = e.expect(t, "POST", "/api/dispatch/tickets/LNK-1/links/"+delivery+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	if rc, tk := receiptOf(t, out), entityOf(t, out, "ticket"); rc["intent"] != "link.remove" || tk["key"] != "LNK-1" || linkOf(tk, delivery) != nil {
+		t.Fatalf("a link's removal: %v", out)
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/LNK-1/links/"+delivery+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/LNK-2/links/"+runLink+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/LNK-1/links/nope/delete", map[string]any{"opId": opID()}, http.StatusBadRequest, "invalid_request")
+	// Added again after its removal, a link is a new one; a run unlinked
+	// is free for another ticket.
+	if again := receiptOf(t, link("LNK-1", map[string]any{"kind": "delivery", "url": pr}, http.StatusCreated, "")); again["id"] == delivery {
+		t.Fatalf("a link added again kept its id: %v", again)
+	}
+	e.expect(t, "POST", "/api/dispatch/tickets/LNK-1/links/"+runLink+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+	link("LNK-2", map[string]any{"kind": "run", "ref": run.ID}, http.StatusCreated, "")
+	link("LNK-1", map[string]any{"kind": "external", "url": pr, "title": "x"}, http.StatusBadRequest, "invalid_request")
+	link("LNK-9", map[string]any{"kind": "external", "url": pr}, http.StatusNotFound, "not_found")
+}
+
+// The view routes: a view of a project made with its query the JSON it
+// is, kept compacted, and one of every project; the list, every view or a
+// project's own and every project's; an edit at its revision and one
+// behind it; a query that is not a list's or past 8 KiB refused, one of
+// spaces past 8 KiB compacted under it taken; a delete to a tombstone no
+// longer listed; a view of an archived project read and not written; and
+// what the routes refuse.
+func TestDispatchViewRoutes(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	ctx := context.Background()
+	vw := e.newDispatchProject(t, "VW", nil)
+	e.newDispatchProject(t, "OTH", nil)
+	if views := listOf(t, e.expect(t, "GET", "/api/dispatch/views", nil, http.StatusOK, ""), "views"); len(views) != 0 {
+		t.Fatalf("views: %v", views)
+	}
+	body := []byte(`{"opId":"v1","byName":"Nate","project":"VW","name":"Mine <now>","kind":"board",
+		"query": { "status": ["in_progress", "in_review"], "sort": "priority", "desc": true, "group": "owner" }}`)
+	status, raw, out := e.call(t, "POST", "/api/dispatch/views", body)
+	if status != http.StatusCreated {
+		t.Fatalf("a view's create: %d %s", status, raw)
+	}
+	rc, v := receiptOf(t, out), entityOf(t, out, "view")
+	query, _ := v["query"].(map[string]any)
+	if rc["intent"] != "view.create" || rc["id"] != v["id"] || v["projectId"] != vw["id"] || v["name"] != "Mine <now>" || v["kind"] != "board" || v["rev"] != 1.0 ||
+		query == nil || !slices.Equal(query["status"].([]any), []any{"in_progress", "in_review"}) || query["sort"] != "priority" || query["desc"] != true || query["group"] != "owner" {
+		t.Fatalf("a view's create: %v", out)
+	}
+	mine := v["id"].(string)
+	// Kept as the JSON it is, compacted.
+	if kept, err := e.srv.dispatch.View(ctx, mine); err != nil || string(kept.Query) != `{"status":["in_progress","in_review"],"sort":"priority","desc":true,"group":"owner"}` {
+		t.Fatalf("the query kept: %s %v", kept.Query, err)
+	}
+	create := func(body map[string]any, status int, code string) map[string]any {
+		t.Helper()
+		body["opId"] = opID()
+		return e.expect(t, "POST", "/api/dispatch/views", body, status, code)
+	}
+	if every := entityOf(t, create(map[string]any{"name": "Everything", "kind": "list", "query": map[string]any{}}, http.StatusCreated, ""), "view"); every["projectId"] != "" {
+		t.Fatalf("a view of every project: %v", every)
+	}
+	theirs := entityOf(t, create(map[string]any{"project": "OTH", "name": "Theirs", "kind": "roadmap", "query": map[string]any{"horizon": []string{"now"}}}, http.StatusCreated, ""), "view")["id"].(string)
+	names := func(query string) []string {
+		t.Helper()
+		var names []string
+		for _, v := range listOf(t, e.expect(t, "GET", "/api/dispatch/views"+query, nil, http.StatusOK, ""), "views") {
+			names = append(names, v["name"].(string))
+		}
+		return names
+	}
+	for query, want := range map[string][]string{
+		"": {"Everything", "Mine <now>", "Theirs"}, "?project=": {"Everything", "Mine <now>", "Theirs"},
+		"?project=VW": {"Everything", "Mine <now>"}, "?project=OTH": {"Everything", "Theirs"},
+	} {
+		if got := names(query); !slices.Equal(got, want) {
+			t.Errorf("views%s: %v, want %v", query, got, want)
+		}
+	}
+
+	// An edit at its revision; one behind, one that changes nothing.
+	edit := func(id string, body map[string]any, status int, code string) map[string]any {
+		t.Helper()
+		body["opId"] = opID()
+		return e.expect(t, "POST", "/api/dispatch/views/"+id+"/edit", body, status, code)
+	}
+	v = entityOf(t, edit(mine, map[string]any{"expectedRev": 1, "name": "Mine", "query": map[string]any{"status": []string{"done"}}}, http.StatusOK, ""), "view")
+	if q, _ := v["query"].(map[string]any); v["name"] != "Mine" || v["kind"] != "board" || v["rev"] != 2.0 || q == nil || !slices.Equal(q["status"].([]any), []any{"done"}) || len(q) != 1 {
+		t.Fatalf("a view's edit: %v", v)
+	}
+	edit(mine, map[string]any{"expectedRev": 1, "name": "Lost"}, http.StatusConflict, "stale_revision")
+	edit(mine, map[string]any{"name": "Mine"}, http.StatusConflict, "invalid")
+	// A query that is not a list's: a string of one, null, a field it does
+	// not have, a value outside its vocabulary; a kind that is none.
+	for _, bad := range []any{`{"status":["done"]}`, nil, map[string]any{"colour": "red"}, map[string]any{"status": []string{"shipped"}}, []any{}} {
+		edit(mine, map[string]any{"query": bad}, http.StatusConflict, "invalid")
+		create(map[string]any{"name": "Bad", "kind": "list", "query": bad}, http.StatusConflict, "invalid")
+	}
+	edit(mine, map[string]any{"kind": "table"}, http.StatusConflict, "invalid")
+	create(map[string]any{"name": "No query", "kind": "list"}, http.StatusConflict, "invalid")
+	// A query past 8 KiB as kept is refused bound; one of spaces past it,
+	// compacted under it, is taken.
+	long := []byte(`{"opId":"` + opID() + `","name":"Long","kind":"list","query":{"q":"` + strings.Repeat("w", dispatch.MaxViewQuery) + `"}}`)
+	e.expect(t, "POST", "/api/dispatch/views", long, http.StatusConflict, "bound")
+	e.expect(t, "POST", "/api/dispatch/views/"+mine+"/edit", []byte(`{"opId":"`+opID()+`","query":{"q":"`+strings.Repeat("w", dispatch.MaxViewQuery)+`"}}`), http.StatusConflict, "bound")
+	spaced := []byte(`{"opId":"` + opID() + `","name":"Spaced","kind":"list","query":{"sort":"key"` + strings.Repeat(" ", dispatch.MaxViewQuery) + `}}`)
+	if v := entityOf(t, e.expect(t, "POST", "/api/dispatch/views", spaced, http.StatusCreated, ""), "view"); v["query"].(map[string]any)["sort"] != "key" {
+		t.Fatalf("a query of spaces: %v", v)
+	}
+
+	// A delete: a tombstone, listed no more, which takes no write.
+	if v = entityOf(t, e.expect(t, "POST", "/api/dispatch/views/"+mine+"/delete", map[string]any{"opId": opID(), "expectedRev": 2}, http.StatusOK, ""), "view"); v["deletedAt"] == nil || v["rev"] != 3.0 {
+		t.Fatalf("a view's delete: %v", v)
+	}
+	if got := names("?project=VW"); !slices.Equal(got, []string{"Everything", "Spaced"}) {
+		t.Fatalf("the views after the delete: %v", got)
+	}
+	e.expect(t, "POST", "/api/dispatch/views/"+mine+"/delete", map[string]any{"opId": opID()}, http.StatusNotFound, "not_found")
+	edit(mine, map[string]any{"name": "Back"}, http.StatusNotFound, "not_found")
+	// A view of an archived project is read, never written.
+	e.expect(t, "POST", "/api/dispatch/projects/OTH/archive", map[string]any{"opId": opID()}, http.StatusOK, "")
+	edit(theirs, map[string]any{"name": "Theirs, archived"}, http.StatusConflict, "archived")
+	e.expect(t, "POST", "/api/dispatch/views/"+theirs+"/delete", map[string]any{"opId": opID()}, http.StatusConflict, "archived")
+	create(map[string]any{"project": "OTH", "name": "Late", "kind": "list", "query": map[string]any{}}, http.StatusConflict, "archived")
+	if got := names("?project=OTH"); !slices.Equal(got, []string{"Everything", "Spaced", "Theirs"}) {
+		t.Fatalf("an archived project's views: %v", got)
+	}
+
+	// What the routes refuse: a project missing or not a key, an id that
+	// is not one, a body or a parameter they do not take.
+	create(map[string]any{"project": "NOPE", "name": "x", "kind": "list", "query": map[string]any{}}, http.StatusNotFound, "not_found")
+	create(map[string]any{"project": "vw", "name": "x", "kind": "list", "query": map[string]any{}}, http.StatusBadRequest, "invalid_request")
+	create(map[string]any{"name": "x", "kind": "list", "query": map[string]any{}, "bogus": 1}, http.StatusBadRequest, "invalid_request")
+	edit("nope", map[string]any{"name": "x"}, http.StatusBadRequest, "invalid_request")
+	edit("0123456789abcdef", map[string]any{"name": "x"}, http.StatusNotFound, "not_found")
+	edit(mine, map[string]any{"project": "VW"}, http.StatusBadRequest, "invalid_request")
+	e.expect(t, "GET", "/api/dispatch/views?project=NOPE", nil, http.StatusNotFound, "not_found")
+	for _, q := range []string{"?project=vw", "?project=VW&project=OTH", "?bogus=1"} {
+		e.expect(t, "GET", "/api/dispatch/views"+q, nil, http.StatusBadRequest, "invalid_request")
+	}
+}
+
 // The list filters and sorts on the server, pages by its cursor and says
 // how many it holds; a value outside its vocabulary or bound is 400.
 func TestDispatchTicketListFiltersAndRefusesBadValues(t *testing.T) {
@@ -864,7 +1440,7 @@ func TestDispatchReadsRefuseParametersTheyDoNotTake(t *testing.T) {
 			e.expect(t, method, path+sep+q, nil, http.StatusBadRequest, "invalid_request")
 		}
 	})
-	if reads != 9 {
+	if reads != 10 {
 		t.Fatalf("%d reads", reads)
 	}
 }
@@ -1286,7 +1862,7 @@ func worstViewQuery(t *testing.T) string {
 // The largest project read, its fields at their bounds, 100 labels, 100
 // milestones with 4 KiB descriptions and 200 views with 8 KiB queries,
 // every text at its escaped worst, is under maxProjectReply and read back
-// whole.
+// whole; so is the views' read, which carries the same 200 views.
 func TestDispatchTheLargestProjectIsUnderItsBound(t *testing.T) {
 	t.Parallel()
 	done := doneOf(t)
@@ -1340,6 +1916,30 @@ func TestDispatchTheLargestProjectIsUnderItsBound(t *testing.T) {
 	for _, m := range out.Milestones {
 		if len(m.Description) != dispatch.MaxMilestoneDescription {
 			t.Fatal("a milestone's description did not read back whole")
+		}
+	}
+	for _, path := range []string{"/api/dispatch/views?project=LARGE", "/api/dispatch/views"} {
+		status, raw, _ := e.call(t, "GET", path, nil)
+		if status != http.StatusOK {
+			t.Fatalf("%s: %d %.300s", path, status, raw)
+		}
+		t.Logf("the largest views' reply, %s: %d bytes of %d", path, len(raw), maxProjectReply)
+		if len(raw) >= maxProjectReply {
+			t.Fatalf("the views' reply, %s, is %d bytes, not under %d", path, len(raw), maxProjectReply)
+		}
+		var read struct {
+			Views []dispatch.View `json:"views"`
+		}
+		if err := json.Unmarshal(raw, &read); err != nil {
+			t.Fatal(err)
+		}
+		if len(read.Views) != dispatch.MaxViews {
+			t.Fatalf("%s: %d views", path, len(read.Views))
+		}
+		for _, v := range read.Views {
+			if string(v.Query) != query || v.Name == "" {
+				t.Fatalf("%s: a view did not read back whole", path)
+			}
 		}
 	}
 }

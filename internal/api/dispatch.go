@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -20,19 +21,21 @@ import (
 	"github.com/rocksolidlabs/conductor/internal/store"
 )
 
-// Dispatch over HTTP (docs/plans/dispatch.md): the projects, the people
-// and the tickets, the ticket a run is linked to, and the receipts. Every
-// route is the admin's (Owner decisions, 17: share-link viewers see no
-// ticket) and a switchyard's 403 (launching), since a switchyard keeps no
-// tickets. Every write is one of the store's typed operations under the
-// actor admin (dispatch.Store.Apply): its body carries the operation's id,
-// which the client mints, the revision of the entity it expects and the
-// display name kept as by, beside the operation's fields, and the answer
-// is the receipt with the entity as it stands after it, so a reply lost to
-// the network is asked for again with the same id and answered without a
-// second change. Replies are written with HTML escaping off
-// (writeDispatch), so a text field encodes to at most twice its bytes and
-// the largest reply is bounded by its shape (maxTicketReply).
+// Dispatch over HTTP (docs/plans/dispatch.md): the projects with their
+// labels and milestones, the people, the tickets with their comments,
+// relations and links, the saved views, the ticket a run is linked to, and
+// the receipts. Every route is the admin's (Owner decisions, 17:
+// share-link viewers see no ticket) and a switchyard's 403 (launching),
+// since a switchyard keeps no tickets. Every write is one of the store's
+// typed operations under the actor admin (dispatch.Store.Apply): its body
+// carries the operation's id, which the client mints, the revision of the
+// entity it expects and the display name kept as by, beside the
+// operation's fields, and the answer is the receipt with the entity as it
+// stands after it, so a reply lost to the network is asked for again with
+// the same id and answered without a second change. Replies are written
+// with HTML escaping off (writeDispatch), so a text field encodes to at
+// most twice its bytes and the largest reply is bounded by its shape
+// (maxTicketReply).
 
 const (
 	// maxTicketBody bounds the body of a ticket's create and edit: every
@@ -99,6 +102,12 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/projects/{key}/edit", s.handleDispatchEditProject},
 		{"POST /api/dispatch/projects/{key}/archive", s.handleDispatchArchiveProject},
 		{"POST /api/dispatch/projects/{key}/unarchive", s.handleDispatchUnarchiveProject},
+		{"POST /api/dispatch/projects/{key}/labels", s.handleDispatchCreateLabel},
+		{"POST /api/dispatch/projects/{key}/labels/{id}/edit", s.handleDispatchEditLabel},
+		{"POST /api/dispatch/projects/{key}/labels/{id}/delete", s.handleDispatchDeleteLabel},
+		{"POST /api/dispatch/projects/{key}/milestones", s.handleDispatchCreateMilestone},
+		{"POST /api/dispatch/projects/{key}/milestones/{id}/edit", s.handleDispatchEditMilestone},
+		{"POST /api/dispatch/projects/{key}/milestones/{id}/delete", s.handleDispatchDeleteMilestone},
 		{"GET /api/dispatch/people", s.handleDispatchPeople},
 		{"POST /api/dispatch/people", s.handleDispatchAddPerson},
 		{"GET /api/dispatch/tickets", s.handleDispatchTickets},
@@ -111,7 +120,18 @@ func (s *Server) dispatchRoutes() []dispatchRoute {
 		{"POST /api/dispatch/tickets/{key}/undelete", s.handleDispatchUndeleteTicket},
 		{"GET /api/dispatch/tickets/{key}/history", s.handleDispatchHistory},
 		{"GET /api/dispatch/tickets/{key}/comments", s.handleDispatchComments},
+		{"POST /api/dispatch/tickets/{key}/comments", s.handleDispatchAddComment},
+		{"POST /api/dispatch/tickets/{key}/comments/{id}/edit", s.handleDispatchEditComment},
+		{"POST /api/dispatch/tickets/{key}/comments/{id}/delete", s.handleDispatchDeleteComment},
+		{"POST /api/dispatch/tickets/{key}/relations", s.handleDispatchAddRelation},
+		{"POST /api/dispatch/tickets/{key}/relations/{id}/delete", s.handleDispatchRemoveRelation},
+		{"POST /api/dispatch/tickets/{key}/links", s.handleDispatchAddLink},
+		{"POST /api/dispatch/tickets/{key}/links/{id}/delete", s.handleDispatchRemoveLink},
 		{"GET /api/dispatch/links", s.handleDispatchRunTicket},
+		{"GET /api/dispatch/views", s.handleDispatchViews},
+		{"POST /api/dispatch/views", s.handleDispatchCreateView},
+		{"POST /api/dispatch/views/{id}/edit", s.handleDispatchEditView},
+		{"POST /api/dispatch/views/{id}/delete", s.handleDispatchDeleteView},
 		{"GET /api/dispatch/ops/{opId}", s.handleDispatchOp},
 	}
 }
@@ -231,6 +251,50 @@ type (
 	acceptBody struct {
 		dispatchOp
 		Note string `json:"note,omitempty"`
+	}
+	commentBody struct {
+		dispatchOp
+		Body string `json:"body"`
+	}
+	labelCreateBody struct {
+		dispatchOp
+		dispatch.NewLabel
+	}
+	labelEditBody struct {
+		dispatchOp
+		dispatch.LabelEdit
+	}
+	milestoneCreateBody struct {
+		dispatchOp
+		dispatch.NewMilestone
+	}
+	milestoneEditBody struct {
+		dispatchOp
+		dispatch.MilestoneEdit
+	}
+	relationBody struct {
+		dispatchOp
+		Kind string `json:"kind"`
+		To   string `json:"to"`
+	}
+	linkBody struct {
+		dispatchOp
+		dispatch.NewLink
+	}
+	// A view's query travels as the JSON it is, an object, never as a
+	// string of it (viewQuery).
+	viewCreateBody struct {
+		dispatchOp
+		Project string          `json:"project,omitempty"`
+		Name    string          `json:"name"`
+		Kind    string          `json:"kind"`
+		Query   json.RawMessage `json:"query"`
+	}
+	viewEditBody struct {
+		dispatchOp
+		Name  *string         `json:"name,omitempty"`
+		Kind  *string         `json:"kind,omitempty"`
+		Query json.RawMessage `json:"query,omitempty"`
 	}
 )
 
@@ -364,6 +428,46 @@ func ticketKey(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return key, true
 }
 
+// pathID reads a route's {id}: the id of the row it names (a comment, a
+// label, a milestone, a relation, a link or a view), 16 lower-case hex
+// characters, 400 invalid_request otherwise, as a path's key that is not
+// one is: the store would refuse it not_found and keep the refusal's
+// receipt. When it reports false it has answered.
+func pathID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := r.PathValue("id")
+	if !dispatch.ValidID(id) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "an id is 16 lower-case hex characters")
+		return "", false
+	}
+	return id, true
+}
+
+// opAt starts the operation a route names by its path: the store for a
+// write (dispatchWriter), then the path's key as keyOf reads it
+// (projectKey or ticketKey; none when keyOf is nil), then its {id} when
+// the route's pattern has one (pathID), then the body, at most maxBody,
+// decoded into v, op being v's (readOp). When it reports false it has
+// answered.
+func (s *Server) opAt(w http.ResponseWriter, r *http.Request, keyOf func(http.ResponseWriter, *http.Request) (string, bool), v any, op *dispatchOp) (ds *dispatch.Store, key, id string, ok bool) {
+	if ds, ok = s.dispatchWriter(w); !ok {
+		return nil, "", "", false
+	}
+	if keyOf != nil {
+		if key, ok = keyOf(w, r); !ok {
+			return nil, "", "", false
+		}
+	}
+	if strings.Contains(r.Pattern, "{id}") {
+		if id, ok = pathID(w, r); !ok {
+			return nil, "", "", false
+		}
+	}
+	if !readOp(w, r, v, op, maxBody) {
+		return nil, "", "", false
+	}
+	return ds, key, id, true
+}
+
 // projectAfter is what a project operation's reply carries: the project's
 // row as read after it, by the key the receipt names (a create's), else
 // key; nothing when there is neither.
@@ -396,6 +500,48 @@ func ticketAfter(ctx context.Context, ds *dispatch.Store, key string) func(dispa
 		}
 		return v, nil
 	}
+}
+
+// rowAfter is what an operation on a row with a rev of its own (a
+// comment, a label, a milestone, a view) answers beside its receipt: the
+// row as read after it, deleted or not, by the id the route names, else
+// the one the receipt names (a create's); nothing when there is neither.
+func rowAfter[T any](id string, read func(id string) (T, error)) func(dispatch.Receipt) (any, error) {
+	return func(rc dispatch.Receipt) (any, error) {
+		rid := cmp.Or(id, rc.ID)
+		if rid == "" {
+			return nil, nil
+		}
+		v, err := read(rid)
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	}
+}
+
+// commentAfter is a comment of the ticket with the key as an operation's
+// reply carries it, with its number (rowAfter).
+func commentAfter(ctx context.Context, ds *dispatch.Store, key, id string) func(dispatch.Receipt) (any, error) {
+	return rowAfter(id, func(id string) (dispatch.Comment, error) { return ds.Comment(ctx, key, id) })
+}
+
+// labelAfter is a label of the project with the key as an operation's
+// reply carries it (rowAfter).
+func labelAfter(ctx context.Context, ds *dispatch.Store, project, id string) func(dispatch.Receipt) (any, error) {
+	return rowAfter(id, func(id string) (dispatch.Label, error) { return ds.Label(ctx, project, id) })
+}
+
+// milestoneAfter is a milestone of the project with the key as an
+// operation's reply carries it (rowAfter).
+func milestoneAfter(ctx context.Context, ds *dispatch.Store, project, id string) func(dispatch.Receipt) (any, error) {
+	return rowAfter(id, func(id string) (dispatch.Milestone, error) { return ds.Milestone(ctx, project, id) })
+}
+
+// viewAfter is a saved view as an operation's reply carries it, its
+// query the JSON it is (rowAfter).
+func viewAfter(ctx context.Context, ds *dispatch.Store, id string) func(dispatch.Receipt) (any, error) {
+	return rowAfter(id, func(id string) (dispatch.View, error) { return ds.View(ctx, id) })
 }
 
 // dispatchQuery is a read's query string, each parameter one the route
@@ -654,6 +800,119 @@ func (s *Server) archiveProject(w http.ResponseWriter, r *http.Request, archive 
 	}
 	rc, err := archiveOrNot(ctx, body.op(), key)
 	s.writeOp(w, "project", rc, err, false, "project", projectAfter(ctx, ds, key))
+}
+
+// The labels and the milestones.
+
+// handleDispatchCreateLabel makes a label in a project (label.create):
+// body {opId, byName?, name, color}, the name 1 to 40 characters with no
+// control character that no live label of the project holds, whatever
+// its case, and the colour one of the twelve (dispatch.LabelColors); 201
+// {receipt, label}; 404 not_found for a project missing; 409 invalid for
+// a name or a colour the store refuses, bound past 100 live labels,
+// archived for an archived project.
+func (s *Server) handleDispatchCreateLabel(w http.ResponseWriter, r *http.Request) {
+	var body labelCreateBody
+	ds, key, _, ok := s.opAt(w, r, projectKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.CreateLabel(ctx, body.op(), key, body.NewLabel)
+	s.writeOp(w, "label", rc, err, true, "label", labelAfter(ctx, ds, key, ""))
+}
+
+// handleDispatchEditLabel sets the fields given of a live label of the
+// project (label.edit): body {opId, expectedRev?, byName?, name?,
+// color?}, each held to its create's rule; {receipt, label}; 404
+// not_found for a label missing, deleted or another project's; 409
+// invalid for an edit that changes nothing.
+func (s *Server) handleDispatchEditLabel(w http.ResponseWriter, r *http.Request) {
+	var body labelEditBody
+	ds, key, id, ok := s.opAt(w, r, projectKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.EditLabel(ctx, body.op(), key, id, body.LabelEdit)
+	s.writeOp(w, "label", rc, err, false, "label", labelAfter(ctx, ds, key, id))
+}
+
+// handleDispatchDeleteLabel deletes a live label of the project
+// (label.delete): body {opId, expectedRev?, byName?}; {receipt, label},
+// a tombstone whose name is free for a new label. It leaves every ticket
+// that has it, deleted ones included, one change row on each, and its
+// commit's dispatch events name the label and those tickets: one event
+// for them when they are more than maxDispatchEach (events.go). 404
+// not_found for a label missing, deleted already or another project's.
+func (s *Server) handleDispatchDeleteLabel(w http.ResponseWriter, r *http.Request) {
+	var body dispatchOp
+	ds, key, id, ok := s.opAt(w, r, projectKey, &body, &body)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.DeleteLabel(ctx, body.op(), key, id)
+	s.writeOp(w, "label", rc, err, false, "label", labelAfter(ctx, ds, key, id))
+}
+
+// handleDispatchCreateMilestone makes a milestone in a project
+// (milestone.create): body {opId, byName?, name, description?, target?,
+// state?}, the name 1 to 60 characters, the description Markdown of at
+// most 4 KiB, the target a date (YYYY-MM-DD) or none, the state open (the
+// default) or closed; 201 {receipt, milestone}; 404 not_found for a
+// project missing; 409 invalid for a field the store refuses, bound past
+// 100 live milestones, archived for an archived project.
+func (s *Server) handleDispatchCreateMilestone(w http.ResponseWriter, r *http.Request) {
+	var body milestoneCreateBody
+	ds, key, _, ok := s.opAt(w, r, projectKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.CreateMilestone(ctx, body.op(), key, body.NewMilestone)
+	s.writeOp(w, "milestone", rc, err, true, "milestone", milestoneAfter(ctx, ds, key, ""))
+}
+
+// handleDispatchEditMilestone sets the fields given of a live milestone
+// of the project (milestone.edit): body {opId, expectedRev?, byName?,
+// name?, description?, target?, state?}, each held to its create's rule,
+// the target "" for none; {receipt, milestone}; 404 not_found for a
+// milestone missing, deleted or another project's; 409 invalid for an
+// edit that changes nothing.
+func (s *Server) handleDispatchEditMilestone(w http.ResponseWriter, r *http.Request) {
+	var body milestoneEditBody
+	ds, key, id, ok := s.opAt(w, r, projectKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.EditMilestone(ctx, body.op(), key, id, body.MilestoneEdit)
+	s.writeOp(w, "milestone", rc, err, false, "milestone", milestoneAfter(ctx, ds, key, id))
+}
+
+// handleDispatchDeleteMilestone deletes a live milestone of the project
+// (milestone.delete): body {opId, expectedRev?, byName?}; {receipt,
+// milestone}, a tombstone. It leaves every ticket naming it, deleted ones
+// included, its milestone cleared with one change row on each, and its
+// commit's dispatch events name the milestone and those tickets, as a
+// label's delete does. 404 not_found for a milestone missing, deleted
+// already or another project's.
+func (s *Server) handleDispatchDeleteMilestone(w http.ResponseWriter, r *http.Request) {
+	var body dispatchOp
+	ds, key, id, ok := s.opAt(w, r, projectKey, &body, &body)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.DeleteMilestone(ctx, body.op(), key, id)
+	s.writeOp(w, "milestone", rc, err, false, "milestone", milestoneAfter(ctx, ds, key, id))
 }
 
 // The people.
@@ -1014,6 +1273,137 @@ func (s *Server) handleDispatchComments(w http.ResponseWriter, r *http.Request) 
 	writeDispatch(w, http.StatusOK, map[string]any{"comments": comments})
 }
 
+// handleDispatchAddComment comments on a live ticket (comment.add): body
+// {opId, expectedRev?, byName?, body}, Markdown of 1 to 16 KiB, its
+// author the admin, kept as the actor admin and by the display name; 201
+// {receipt, comment}, the comment with its number n; expectedRev the
+// ticket's; 404 not_found for a ticket missing or deleted; 409 invalid
+// for an empty body, bound past 16 KiB or past the ticket's 2,000
+// comments, archived for an archived project.
+func (s *Server) handleDispatchAddComment(w http.ResponseWriter, r *http.Request) {
+	var body commentBody
+	ds, key, _, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.AddComment(ctx, body.op(), key, body.Body)
+	s.writeOp(w, "comment", rc, err, true, "comment", commentAfter(ctx, ds, key, ""))
+}
+
+// handleDispatchEditComment replaces the body of a live comment of a live
+// ticket (comment.edit): body {opId, expectedRev?, byName?, body}, the
+// body it replaces kept in the history; {receipt, comment}; expectedRev
+// the comment's; 404 not_found for a comment missing, deleted or another
+// ticket's; 409 invalid for the body it holds already.
+func (s *Server) handleDispatchEditComment(w http.ResponseWriter, r *http.Request) {
+	var body commentBody
+	ds, key, id, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.EditComment(ctx, body.op(), key, id, body.Body)
+	s.writeOp(w, "comment", rc, err, false, "comment", commentAfter(ctx, ds, key, id))
+}
+
+// handleDispatchDeleteComment deletes a live comment of a live ticket
+// (comment.delete): body {opId, expectedRev?, byName?}; {receipt,
+// comment}, a tombstone that keeps its place and its number; 404
+// not_found for a comment missing, deleted already or another ticket's.
+func (s *Server) handleDispatchDeleteComment(w http.ResponseWriter, r *http.Request) {
+	var body dispatchOp
+	ds, key, id, ok := s.opAt(w, r, ticketKey, &body, &body)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.DeleteComment(ctx, body.op(), key, id)
+	s.writeOp(w, "comment", rc, err, false, "comment", commentAfter(ctx, ds, key, id))
+}
+
+// The relations and the links: members of a ticket's sets, with no rev of
+// their own, so an operation on one answers the ticket, whose rev it
+// bumps and expectedRev is.
+
+// handleDispatchAddRelation relates a live ticket to another of its
+// project (relation.add): body {opId, expectedRev?, byName?, kind, to},
+// kind blocks (the ticket blocks to) or relates, to the other's key; 201
+// {receipt, ticket}, the ticket in full, the receipt naming the
+// relation's id; both tickets' revs bumped, expectedRev the first's. 404
+// not_found for either ticket missing or deleted; 409 cycle for a blocks
+// that would close a cycle, the ticket blocking itself among them; 409
+// invalid for a to of another project, a kind that is none of the two or
+// a relation held already; bound past 100 on either ticket.
+func (s *Server) handleDispatchAddRelation(w http.ResponseWriter, r *http.Request) {
+	var body relationBody
+	ds, key, _, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.AddRelation(ctx, body.op(), key, body.Kind, body.To)
+	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
+}
+
+// handleDispatchRemoveRelation removes a live relation from a live ticket
+// at either of its ends (relation.remove): body {opId, expectedRev?,
+// byName?}; {receipt, ticket}, the ticket with the key, both tickets'
+// revs bumped; 404 not_found for a relation missing, removed or not the
+// ticket's, and for one whose other end is deleted.
+func (s *Server) handleDispatchRemoveRelation(w http.ResponseWriter, r *http.Request) {
+	var body dispatchOp
+	ds, key, id, ok := s.opAt(w, r, ticketKey, &body, &body)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.RemoveRelation(ctx, body.op(), key, id)
+	s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
+}
+
+// handleDispatchAddLink links a live ticket outward (link.add): body
+// {opId, expectedRev?, byName?, kind, ref?, url?, note?}. A delivery or
+// an external link names its url (http or https) and takes it as its ref
+// when it names none; a run link names its run as ref, one the engine
+// holds or has a record of (404 not_found otherwise) and that no other
+// live ticket's live run link names (409 run_linked, the receipt's key
+// naming that ticket). 201 {receipt, ticket}, the receipt naming the
+// link's id; 409 invalid for a second live link of the same kind and ref
+// or a field the store refuses, bound past 50.
+func (s *Server) handleDispatchAddLink(w http.ResponseWriter, r *http.Request) {
+	var body linkBody
+	ds, key, _, ok := s.opAt(w, r, ticketKey, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.AddLink(ctx, body.op(), key, body.NewLink)
+	s.writeOp(w, "ticket", rc, err, true, "ticket", ticketAfter(ctx, ds, key))
+}
+
+// handleDispatchRemoveLink removes a live link from a live ticket
+// (link.remove): body {opId, expectedRev?, byName?}; {receipt, ticket};
+// a link added again after it is a new one with a new id; 404 not_found
+// for a link missing, removed or another ticket's.
+func (s *Server) handleDispatchRemoveLink(w http.ResponseWriter, r *http.Request) {
+	var body dispatchOp
+	ds, key, id, ok := s.opAt(w, r, ticketKey, &body, &body)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.RemoveLink(ctx, body.op(), key, id)
+	s.writeOp(w, "ticket", rc, err, false, "ticket", ticketAfter(ctx, ds, key))
+}
+
 // handleDispatchRunTicket answers the ticket a run is linked to, for the
 // run page's chip: {ticket: {id, key, title, status, deletedAt?}}, the
 // live ticket whose live run link names ?run= (one at most), else, when
@@ -1047,6 +1437,121 @@ func (s *Server) handleDispatchRunTicket(w http.ResponseWriter, r *http.Request)
 		out = &dispatch.RelatedTicket{ID: tk.ID, Key: tk.Key, Title: tk.Title, Status: tk.Status, DeletedAt: tk.DeletedAt}
 	}
 	writeDispatch(w, http.StatusOK, map[string]any{"ticket": out})
+}
+
+// The saved views.
+
+// viewQuery is a view's query as the store keeps it: the JSON the body
+// carried, compacted, so what is kept is what every reply shows (a
+// json.RawMessage is written compacted) and its bound, 8 KiB as stored,
+// counts no space; "" when the body carried none, which the store
+// refuses. The body decoded, so it is JSON, an object or not: the store
+// refuses any other (invalid).
+func viewQuery(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		return string(raw)
+	}
+	return b.String()
+}
+
+// handleDispatchViews answers the live saved views, by name: {views},
+// each {id, projectId, name, kind, query, createdAt, updatedAt, rev}, its
+// query the JSON it is; with ?project= a project's key, the views its
+// pages offer, its own and every project's, else every live view. 404
+// not_found for a project missing; 400 invalid_request for a key that is
+// not one and for any other parameter. At most 200 live views with
+// queries of 8 KiB, every project's together: under maxProjectReply, as
+// the project's read that carries them is.
+func (s *Server) handleDispatchViews(w http.ResponseWriter, r *http.Request) {
+	ds, ok := s.dispatchStore(w)
+	if !ok {
+		return
+	}
+	q, err := readQuery(r, "project")
+	var project string
+	if err == nil {
+		project, err = q.one("project")
+	}
+	if err == nil && project != "" && !dispatch.ValidKey(project) {
+		err = errors.New("project is a project's key")
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	views, err := ds.Views(r.Context(), project)
+	if err != nil {
+		s.dispatchError(w, "project", err)
+		return
+	}
+	writeDispatch(w, http.StatusOK, map[string]any{"views": views})
+}
+
+// handleDispatchCreateView saves a view (view.create): body {opId,
+// byName?, project?, name, kind, query}, of the project with the key or,
+// without one, of every project; the name 1 to 60 characters; the kind
+// list, board or roadmap; the query a JSON object of a list's filter,
+// sort and grouping (dispatch.ViewQuery), its values each in its
+// vocabulary, at most 8 KiB as kept (viewQuery). 201 {receipt, view}; 404
+// not_found for a project missing; 409 invalid for a field the store
+// refuses, a query that is not one among them, bound past 8 KiB or past
+// 200 live views, archived for an archived project.
+func (s *Server) handleDispatchCreateView(w http.ResponseWriter, r *http.Request) {
+	var body viewCreateBody
+	ds, _, _, ok := s.opAt(w, r, nil, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	if body.Project != "" && !dispatch.ValidKey(body.Project) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "project is a project's key, or absent for every project")
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.CreateView(ctx, body.op(), dispatch.NewView{Project: body.Project, Name: body.Name, Kind: body.Kind, Query: viewQuery(body.Query)})
+	s.writeOp(w, "view", rc, err, true, "view", viewAfter(ctx, ds, ""))
+}
+
+// handleDispatchEditView sets the fields given of a live view
+// (view.edit): body {opId, expectedRev?, byName?, name?, kind?, query?},
+// each held to its create's rule, its project never changing; {receipt,
+// view}; 404 not_found for a view missing or deleted; 409 invalid for an
+// edit that changes nothing, archived for a view of an archived project.
+func (s *Server) handleDispatchEditView(w http.ResponseWriter, r *http.Request) {
+	var body viewEditBody
+	ds, _, id, ok := s.opAt(w, r, nil, &body, &body.dispatchOp)
+	if !ok {
+		return
+	}
+	edit := dispatch.ViewEdit{Name: body.Name, Kind: body.Kind}
+	if body.Query != nil {
+		query := viewQuery(body.Query)
+		edit.Query = &query
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.EditView(ctx, body.op(), id, edit)
+	s.writeOp(w, "view", rc, err, false, "view", viewAfter(ctx, ds, id))
+}
+
+// handleDispatchDeleteView deletes a live view (view.delete): body {opId,
+// expectedRev?, byName?}; {receipt, view}, a tombstone; 404 not_found for
+// a view missing or deleted already; 409 archived for a view of an
+// archived project.
+func (s *Server) handleDispatchDeleteView(w http.ResponseWriter, r *http.Request) {
+	var body dispatchOp
+	ds, _, id, ok := s.opAt(w, r, nil, &body, &body)
+	if !ok {
+		return
+	}
+	ctx, cancel := opContext(r)
+	defer cancel()
+	rc, err := ds.DeleteView(ctx, body.op(), id)
+	s.writeOp(w, "view", rc, err, false, "view", viewAfter(ctx, ds, id))
 }
 
 // handleDispatchOp answers an operation's receipt of the admin's without
