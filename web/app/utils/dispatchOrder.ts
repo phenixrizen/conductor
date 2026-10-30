@@ -7,11 +7,15 @@
  * one. A reply carrying an entity whose `rev` is below the one shown is dropped whatever its number: the store's `rev` orders the states of
  * an entity, which the numbers, saying only when a request was sent, cannot (a list carries no `rev` and is taken by number alone). A thing
  * no longer shown is dropped (`drop`: a filter changed is a new thing), so its late replies are dropped, and the thing asked for again
- * starts afresh. Pure: the pages hold one each, vitest proves it.
+ * starts afresh. A reply that the thing does not exist (a 404) is ordered as any other (`takeAbsent`), so a slow one never hides what a
+ * later read found. A stream started again forgets everything (`reset`), since it may follow a store restored from a backup whose `rev`s
+ * are below those shown. Pure: the pages hold one each, vitest proves it.
  */
 export class DispatchOrder {
   /** The number of the last request asked: every request's number is above every number before it. */
   private last = 0
+  /** The replies to requests numbered at or below this were asked before the last reset, every thing's. */
+  private floor = 0
   /** By thing: the number of the last reply applied. */
   private readonly applied = new Map<string, number>()
   /** By thing: the `rev` of the entity shown, for a thing whose replies carry one. */
@@ -30,10 +34,21 @@ export class DispatchOrder {
    * below the one shown. When it is, it is recorded as the reply applied, its `rev` as the one shown.
    */
   take(thing: string, n: number, rev?: number): boolean {
-    if (n <= (this.floors.get(thing) ?? 0) || n <= (this.applied.get(thing) ?? 0)) return false
+    if (n <= this.floor || n <= (this.floors.get(thing) ?? 0) || n <= (this.applied.get(thing) ?? 0)) return false
     if (rev !== undefined && rev < (this.revs.get(thing) ?? 0)) return false
     this.applied.set(thing, n)
     if (rev !== undefined) this.revs.set(thing, rev)
+    return true
+  }
+
+  /**
+   * Whether the reply to request `n` saying that `thing` does not exist (a 404) is to be applied: by its number alone, as a list's, since
+   * nothing that is absent has a `rev`. When it is, the `rev` shown is forgotten: nothing is shown, and the thing read again later is
+   * taken at whatever `rev` it has then.
+   */
+  takeAbsent(thing: string, n: number): boolean {
+    if (!this.take(thing, n)) return false
+    this.revs.delete(thing)
     return true
   }
 
@@ -48,6 +63,18 @@ export class DispatchOrder {
     this.applied.delete(thing)
     this.revs.delete(thing)
   }
+
+  /**
+   * Forgets every thing shown, for a stream started again (a `snapshot`), which may follow a store restored from a backup whose `rev`s
+   * are below those shown: a reply to any request asked until now is dropped, and every thing read after it is taken at whatever `rev`
+   * it has, so the page shows the store as it is and its next operation expects the `rev` the store has.
+   */
+  reset(): void {
+    this.floor = this.last
+    this.floors.clear()
+    this.applied.clear()
+    this.revs.clear()
+  }
 }
 
 /**
@@ -60,6 +87,39 @@ export async function through<T>(gate: DispatchOrder, thing: string, send: () =>
   const reply = await send()
   if (!gate.take(thing, n, rev?.(reply))) return false
   apply(reply)
+  return true
+}
+
+/** How `throughOrAbsent` applies a reply, and tells and applies that the thing does not exist. */
+export interface AbsentOptions<T> {
+  /** Applies the reply, when the gate takes it. */
+  apply: (reply: T) => void
+  /** The revision of the entity the reply carries (none for a list). */
+  rev?: (reply: T) => number | undefined
+  /** Whether a failure says the thing does not exist (a 404). */
+  absent: (e: unknown) => boolean
+  /** Shows that it does not, when the gate takes that answer. */
+  gone: () => void
+}
+
+/**
+ * `through`, for a thing that may not exist (a ticket's key no ticket has yet, a project's): a failure that `absent` says is no such thing
+ * answers that it does not, ordered as any reply (`takeAbsent`), so `gone` is applied only when the gate takes it: a slow 404 never hides
+ * what a later read found, and a later read's thing replaces it. Any other failure rejects with its error and applies nothing.
+ */
+export async function throughOrAbsent<T>(gate: DispatchOrder, thing: string, send: () => Promise<T>, o: AbsentOptions<T>): Promise<boolean> {
+  const n = gate.ask()
+  let reply: T
+  try {
+    reply = await send()
+  } catch (e) {
+    if (!o.absent(e)) throw e
+    if (!gate.takeAbsent(thing, n)) return false
+    o.gone()
+    return true
+  }
+  if (!gate.take(thing, n, o.rev?.(reply))) return false
+  o.apply(reply)
   return true
 }
 

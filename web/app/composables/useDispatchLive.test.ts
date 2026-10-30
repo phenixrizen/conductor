@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DispatchOrder, through } from '../utils/dispatchOrder'
 import type { DispatchEvent } from './useDispatch'
 import { DISPATCH_RETRY_MAX_MS, DispatchLive, asDispatchEvent, listWatch, projectsWatch, ticketWatch } from './useDispatchLive'
 
@@ -185,6 +186,99 @@ describe('a re-read that fails', () => {
     expect(r.count).toBe(4)
     await vi.advanceTimersByTimeAsync(WINDOW)
     expect(r.count).toBe(5)
+  })
+})
+
+describe("a page's own read of part of it, asked through the store", () => {
+  it("is asked again after the window when it fails, doubled, by the watch's read, until one answers", async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads(1)
+    const watch = listWatch(() => 'CND', read)
+    live.subscribe(watch)
+    // A filter changed: the page reads its new list, which fails.
+    let own = 0
+    live.ask(watch, () => {
+      own++
+      return Promise.reject(new Error('Cannot reach the server'))
+    })
+    expect([own, r.count]).toEqual([1, 0])
+    await vi.advanceTimersByTimeAsync(20_000)
+    // The watch's read at 250 (failed again) and 750 (answered), and nothing after.
+    expect(r.at).toEqual([250, 750])
+    expect(own).toBe(1)
+  })
+
+  it('stands for no event: a window gathered before it still reads the whole page, once, and reads for its failure too', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    const watch = listWatch(() => 'CND', read)
+    live.subscribe(watch)
+    // A label renamed: the project's event gathers a read of the whole page; the filter changes 100 ms into the window.
+    live.event(ev({ project: 'CND' }))
+    await vi.advanceTimersByTimeAsync(100)
+    let own = 0
+    live.ask(watch, () => {
+      own++
+      return Promise.reject(new Error('Cannot reach the server'))
+    })
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    // The window's read, at 250 as gathered: not dropped for the list's read, and no retry of its own besides.
+    expect(own).toBe(1)
+    expect(r.at).toEqual([250])
+  })
+
+  it('reads nothing for a page not subscribed, or gone, and asks nothing again for one gone while its read was on its way', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    const watch = listWatch(() => 'CND', read)
+    let own = 0
+    let fail!: (e: Error) => void
+    const send = () => {
+      own++
+      return new Promise<void>((_, reject) => (fail = reject))
+    }
+    live.ask(watch, send)
+    expect(own).toBe(0)
+    const stop = live.subscribe(watch)
+    live.ask(watch, send)
+    expect(own).toBe(1)
+    stop()
+    fail(new Error('Cannot reach the server'))
+    live.ask(watch, send)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect([own, r.count]).toEqual([1, 0])
+  })
+})
+
+describe('a snapshot after a store restored from a backup', () => {
+  it("shows the store as restored: the page's gate forgets the rev it showed, a reply asked before is dropped, the next edit expects the store's rev", async () => {
+    const live = new DispatchLive()
+    const gate = new DispatchOrder()
+    type Shown = { rev: number; title: string }
+    let store: Shown = { rev: 10, title: 'before the restore' }
+    let shown: Shown | null = null
+    const read = () => through(gate, 'ticket:CND-12', () => Promise.resolve({ ...store }), (t) => (shown = t), (t) => t.rev)
+    live.subscribe({ ...ticketWatch(() => 't1', () => 'CND', read), reset: () => gate.reset() })
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(shown).toEqual({ rev: 10, title: 'before the restore' })
+    // A read asked before the stream dropped, answered after it started again.
+    let answer!: (t: Shown) => void
+    const asked = through(gate, 'ticket:CND-12', () => new Promise<Shown>((resolve) => (answer = resolve)), (t) => (shown = t), (t) => t.rev)
+    // The server restarts on a backup: the ticket is at rev 3 there.
+    store = { rev: 3, title: 'restored' }
+    live.snapshot()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(shown).toEqual({ rev: 3, title: 'restored' })
+    answer({ rev: 11, title: 'asked before the restore' })
+    expect(await asked).toBe(false)
+    expect(shown).toEqual({ rev: 3, title: 'restored' })
+    expect(gate.rev('ticket:CND-12')).toBe(3)
+    // Its events are read again as the store has them.
+    store = { rev: 4, title: 'edited after the restore' }
+    live.event(ev({ at: 1, entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(shown).toEqual({ rev: 4, title: 'edited after the restore' })
   })
 })
 

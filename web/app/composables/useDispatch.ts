@@ -1,4 +1,4 @@
-import { DispatchOrder, through } from '~/utils/dispatchOrder'
+import { DispatchOrder, through, throughOrAbsent, type AbsentOptions } from '~/utils/dispatchOrder'
 
 // Dispatch's client (docs/plans/dispatch.md, "web/app"; the routes in docs/protocol.md, Dispatch): the types of every reply, as
 // useSessions.ts holds the crews' and the runs', the dispatch event's beside them, and the routes over useApi. Every page's state goes
@@ -392,8 +392,8 @@ export type DispatchApi = ReturnType<typeof useDispatchApi>
 
 /**
  * A Dispatch page's client and its ordering gate (utils/dispatchOrder.ts): `read` sends a request about one thing the page shows and
- * applies its reply only when the gate takes it, so every read and every operation's reply on the page lands in the order the gate keeps.
- * One gate per page: each call makes its own.
+ * applies its reply only when the gate takes it, so every read and every operation's reply on the page lands in the order the gate keeps;
+ * `readOrAbsent` the same for a thing that may not exist, its 404 ordered as any reply. One gate per page: each call makes its own.
  */
 export function useDispatch() {
   const api = useDispatchApi()
@@ -401,5 +401,8 @@ export function useDispatch() {
   function read<T>(thing: string, send: () => Promise<T>, apply: (reply: T) => void, rev?: (reply: T) => number | undefined): Promise<boolean> {
     return through(gate, thing, send, apply, rev)
   }
-  return { api, gate, read }
+  function readOrAbsent<T>(thing: string, send: () => Promise<T>, o: AbsentOptions<T>): Promise<boolean> {
+    return throughOrAbsent(gate, thing, send, o)
+  }
+  return { api, gate, read, readOrAbsent }
 }

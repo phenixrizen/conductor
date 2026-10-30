@@ -4,8 +4,9 @@ import { expect, test, type Api } from './fixtures'
 // Dispatch's pages (docs/plans/dispatch.md, PR-8): a project made from the projects page, a ticket made from the project page's New
 // ticket button, the ticket's page editing its title, its description (the preview shown), its priority and its owner, its history
 // listing the fields set, the counts; and a second browser that sees the title edited and the projects page's open count move with no
-// reload, by the dispatch events. The spec names what it made: a project of its own (E2E, or E2E1, E2E2… when a repeat on the same
-// server finds the earlier ones), and counts only the rows of that project.
+// reload, by the dispatch events. Then what review round 1 found: a filter whose first read fails read again; a ticket's page opened
+// before its ticket is made. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the
+// earlier ones), and counts only the rows of that project.
 test.describe.configure({ mode: 'serial' })
 
 let other: BrowserContext | null = null
@@ -29,6 +30,17 @@ async function freeKey(api: Api): Promise<string> {
     if (!taken.has(key)) return key
   }
   throw new Error('every E2E key is taken on this server')
+}
+
+/** An op id of the spec's own, unique on the server since the project's key is: E2E3-t1. */
+function opOf(key: string, what: string): string {
+  return `${key.toLowerCase()}-${what}`
+}
+
+/** A project made through the API, and its first ticket when `title` is given (its key KEY-1). */
+async function made(api: Api, key: string, title?: string): Promise<void> {
+  await api.ok('POST', '/api/dispatch/projects', { opId: opOf(key, 'p'), key, name: `E2E project ${key}` })
+  if (title) await api.ok('POST', '/api/dispatch/tickets', { opId: opOf(key, 't1'), project: key, title })
 }
 
 /** A second person's workbench on the same server. */
@@ -174,4 +186,44 @@ test('a project, a ticket made from its page and edited on its own page, its his
   const mine = page.locator(`[data-project-row="${key}"]`)
   await expect(mine.locator('[data-project-open]')).toHaveAttribute('data-count', '1')
   await expect(mine.locator('[data-project-done]')).toHaveAttribute('data-count', '0')
+})
+
+test('a filter whose first read fails is read again, with no further event and nothing done', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'Waiting')
+  await page.goto(`/dispatch/${key}`)
+  const row = page.locator(`[data-ticket-row="${key}-1"]`)
+  await expect(row).toBeVisible()
+  // The filtered list's read fails, and so does the one retry of it that $fetch makes of a GET by itself, as a server busy for a moment
+  // answers; the next goes through.
+  let asked = 0
+  await page.route(/\/api\/dispatch\/tickets\?.*status=backlog/, async (route) => {
+    if (++asked <= 2) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'The store is busy.' } }) })
+    return route.continue()
+  })
+  await page.locator('[data-filter-status]').click()
+  await page.getByRole('option', { name: 'Backlog', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(page).toHaveURL(/status=backlog/)
+  // Asked again after the window, by the page alone.
+  await expect.poll(() => asked).toBeGreaterThanOrEqual(3)
+  await expect(row).toBeVisible()
+  await expect(page.locator('[data-list-total]')).toHaveAttribute('data-count', '1')
+})
+
+test("a ticket's page opened before its ticket is made says so, and shows it once it is made, with no reload", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key)
+  // A project key no project has says so too.
+  const none = await freeKey(api)
+  await page.goto(`/dispatch/${none}`)
+  await expect(page.locator('[data-project-missing]')).toBeVisible()
+
+  await page.goto(`/dispatch/${key}/1`)
+  await expect(page.locator('[data-ticket-missing]')).toBeVisible()
+  await mark(page)
+  await api.ok('POST', '/api/dispatch/tickets', { opId: opOf(key, 't1'), project: key, title: 'Made since' })
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Made since')
+  await expect(page.locator('[data-ticket-missing]')).toHaveCount(0)
+  expect(await marked(page)).toBe('kept')
 })

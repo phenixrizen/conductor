@@ -16,6 +16,11 @@ export interface DispatchWatch {
   later: (e: DispatchEvent) => boolean
   /** The page's re-read, through its ordering gate: resolves once it answered, rejects when it failed. */
   read: () => Promise<unknown>
+  /**
+   * Called on a `snapshot` before the page is read again: the stream started over, maybe on a store restored from a backup whose `rev`s
+   * are below those shown, so the page forgets what its ordering gate knows (DispatchOrder.reset) and shows what the read finds.
+   */
+  reset?: () => void
 }
 
 /**
@@ -107,14 +112,41 @@ export class DispatchLive {
     }
   }
 
-  /** The stream started again: what was missed is unknown, so every page reads again at once. Seqs start over (a restored store). */
+  /**
+   * The stream started again: what was missed is unknown, so every page reads again at once. Seqs start over, and so do the `rev`s each
+   * page's gate knows (`reset`), for a store restored from a backup.
+   */
   snapshot(): void {
     this.seen = -1
     for (const w of [...this.watching]) {
       w.delay = this.windowMs
       w.covered = -1
+      w.watch.reset?.()
       this.read(w)
     }
+  }
+
+  /**
+   * Reads part of a subscribed page now by `send` (the list a changed filter names), so that a failure is asked again as a re-read's is:
+   * after the delay, doubled each time up to the most, by the watch's read, until one answers or a snapshot reads it. It stands for no
+   * event, so a window gathered or a retry pending still reads the whole page, and reads for its failure too. A watch not subscribed (a
+   * page gone) reads nothing.
+   */
+  ask(watch: DispatchWatch, send: () => Promise<unknown>): void {
+    const w = [...this.watching].find((x) => x.watch === watch)
+    if (!w) return
+    let read: Promise<unknown>
+    try {
+      read = Promise.resolve(send())
+    } catch (e) {
+      read = Promise.reject(e)
+    }
+    read.then(
+      () => {
+        if (!w.gone) w.delay = this.windowMs
+      },
+      () => this.retry(w),
+    )
   }
 
   /** How many pages are watching (for a test). */
@@ -148,14 +180,17 @@ export class DispatchLive {
       () => {
         if (!w.gone) w.delay = this.windowMs
       },
-      () => {
-        // A window gathered while it was on its way reads again anyway.
-        if (w.gone || w.timer !== undefined) return
-        const wait = w.delay
-        w.delay = Math.min(w.delay * 2, this.maxDelayMs)
-        w.timer = setTimeout(() => this.fire(w), wait)
-      },
+      () => this.retry(w),
     )
+  }
+
+  /** A read failed: the page is read again after the delay, doubled for the next, unless it is gone. */
+  private retry(w: Watching): void {
+    // A window gathered while it was on its way, or a retry pending, reads again anyway.
+    if (w.gone || w.timer !== undefined) return
+    const wait = w.delay
+    w.delay = Math.min(w.delay * 2, this.maxDelayMs)
+    w.timer = setTimeout(() => this.fire(w), wait)
   }
 }
 
@@ -165,8 +200,11 @@ export function dispatchLive(): DispatchLive {
   return (live ??= new DispatchLive())
 }
 
-/** Subscribes a page's watch to the live events while it is mounted, and starts the stream (useAttention) when nothing has. */
-export function useDispatchLive(watch: DispatchWatch): void {
+/**
+ * Subscribes a page's watch to the live events while it is mounted, and starts the stream (useAttention) when nothing has. `ask` reads
+ * part of the page now through the live store (DispatchLive.ask), so that a read the page asks of itself is asked again after a failure.
+ */
+export function useDispatchLive(watch: DispatchWatch): { ask: (read: () => Promise<unknown>) => void } {
   const attention = useAttention()
   let stop: (() => void) | undefined
   onMounted(() => {
@@ -174,4 +212,5 @@ export function useDispatchLive(watch: DispatchWatch): void {
     stop = dispatchLive().subscribe(watch)
   })
   onBeforeUnmount(() => stop?.())
+  return { ask: (read) => dispatchLive().ask(watch, read) }
 }

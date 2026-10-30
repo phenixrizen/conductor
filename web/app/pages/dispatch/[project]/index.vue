@@ -10,14 +10,15 @@ import { apiQuery, filterFromURL, filterNarrows, filterToURL, type DispatchFilte
 // A project's page (docs/plans/dispatch.md, PR-8): its tickets as a list, filtered and sorted on the server, the filter in the link
 // (utils/dispatchQuery.ts), pages of 200; New ticket; the board and the roadmap as tabs, which come with the next change. The project and
 // the list are read through the page's ordering gate, the list by its filter (a filter changed is a new list, the old one's late pages
-// dropped), as the page opens and again after the window on any dispatch event of the project, and on a snapshot. Nothing polls.
+// dropped), as the page opens and again after the window on any dispatch event of the project, and on a snapshot, which forgets what the
+// gate knew (a store restored from a backup). A filter's read that fails is asked again as a re-read is. Nothing polls.
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
 const admin = useWorkbenchToken()
 const sessions = useSessions()
-const { api, gate, read } = useDispatch()
+const { api, gate, read, readOrAbsent } = useDispatch()
 
 /** The project's key, from the link: a key is upper case. */
 const project = computed(() => String(route.params.project ?? '').toUpperCase())
@@ -98,27 +99,25 @@ function noSuch(e: unknown): boolean {
   return e instanceof ApiError && ((e.status === 404 && e.code === 'not_found') || (e.status === 400 && e.code === 'invalid_request'))
 }
 
+/** Reads the project; a key no project has says so, through the gate as any reply, so a slow 404 never hides a project read since. */
 async function readProject(): Promise<void> {
   const key = project.value
   if (!validProjectKey(key)) {
     projectMissing.value = true
     return
   }
-  try {
-    await read(
-      `project:${key}`,
-      () => api.project(key),
-      (p) => {
-        if (key !== project.value) return
-        projectRead.value = p
-        projectMissing.value = false
-      },
-      (p) => p.project.rev,
-    )
-  } catch (e) {
-    if (!noSuch(e)) throw e
-    if (key === project.value) projectMissing.value = true
-  }
+  await readOrAbsent(`project:${key}`, () => api.project(key), {
+    apply: (p) => {
+      if (key !== project.value) return
+      projectRead.value = p
+      projectMissing.value = false
+    },
+    rev: (p) => p.project.rev,
+    absent: noSuch,
+    gone: () => {
+      if (key === project.value) projectMissing.value = true
+    },
+  })
 }
 
 /** Reads the pages of the list shown, as one reply, for the filter shown. Nothing until the project is read: its names resolve the filter. */
@@ -197,11 +196,21 @@ onMounted(() => {
 onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, load)
 
-// Another filter is another list: the old one's late pages are dropped, and the new one is read from its first page.
+const live = useDispatchLive({ ...listWatch(() => project.value, reload), reset: () => gate.reset() })
+
+// Another filter is another list: the old one's late pages are dropped, and the new one is read from its first page, through the live
+// store (DispatchLive.ask), so that a read that fails is asked again after the window, doubled, as a re-read is, with no further event.
 watch(listThing, (_, before) => {
   gate.drop(before)
   pages.value = 1
-  void readList().catch((e: Error) => (error.value = e.message))
+  live.ask(async () => {
+    try {
+      await readList()
+    } catch (e) {
+      error.value = (e as Error).message
+      throw e
+    }
+  })
 })
 // Another project on the same page: what was shown goes.
 watch(project, (_, before) => {
@@ -212,8 +221,6 @@ watch(project, (_, before) => {
   shownThing.value = ''
   void load()
 })
-
-useDispatchLive(listWatch(() => project.value, reload))
 
 function more() {
   pages.value++

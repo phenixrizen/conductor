@@ -6,7 +6,8 @@ import { relativeTime } from '~/utils/sessions'
 
 // Dispatch's projects (docs/plans/dispatch.md, PR-8): each with its key, its name, how many of its tickets are open and done, and its
 // tracker; New project makes one. The list is read through the page's ordering gate as the page opens, and again after the window on
-// any dispatch event at all (a ticket's status moves its project's counts), and on a snapshot. Nothing polls.
+// any dispatch event at all (a ticket's status moves its project's counts), and on a snapshot, which forgets what the gate knew. Nothing
+// polls.
 
 useHead({ title: 'Dispatch' })
 
@@ -74,7 +75,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => window.clearInterval(tick))
 watch(() => admin.token.value, load)
-useDispatchLive(projectsWatch(reload))
+useDispatchLive({ ...projectsWatch(reload), reset: () => gate.reset() })
 
 /** A project made: its page. */
 function created(p: DispatchProject) {

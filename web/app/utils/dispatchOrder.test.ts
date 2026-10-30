@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DispatchOrder, serially, through } from './dispatchOrder'
+import { DispatchOrder, serially, through, throughOrAbsent } from './dispatchOrder'
 
 /** A request whose reply the test hands back, or fails, when it wants. */
 function deferred<T>() {
@@ -127,6 +127,81 @@ describe('the ordering gate', () => {
     const n = g.ask()
     expect(g.take('projects', n)).toBe(true)
     expect(g.take('projects', n)).toBe(false)
+  })
+})
+
+describe('a thing that may not exist', () => {
+  /** A ticket page's state, its reads through the gate, a 404 among their answers. */
+  function ticketPage() {
+    const gate = new DispatchOrder()
+    const shown: { ticket: Shown | null; missing: boolean } = { ticket: null, missing: false }
+    const notFound = new Error('No ticket has the key CND-12.')
+    function read(reply: Promise<Shown>): Promise<boolean> {
+      return throughOrAbsent(gate, 'ticket:CND-12', () => reply, {
+        apply: (t) => {
+          shown.ticket = t
+          shown.missing = false
+        },
+        rev: (t) => t.rev,
+        absent: (e) => e === notFound,
+        gone: () => (shown.missing = true),
+      })
+    }
+    return { gate, shown, read, notFound }
+  }
+
+  it("drops a 404 that answers after a later read's success: the ticket made since the page opened stays shown", async () => {
+    const p = ticketPage()
+    // The page opens before the ticket is made; its read is slow.
+    const first = deferred<Shown>()
+    const opened = p.read(first.promise)
+    // The ticket is made, and its event's re-read answers first.
+    expect(await p.read(Promise.resolve({ key: 'CND-12', rev: 1, title: 'made since' }))).toBe(true)
+    first.reject(p.notFound)
+    expect(await opened).toBe(false)
+    expect(p.shown).toEqual({ ticket: { key: 'CND-12', rev: 1, title: 'made since' }, missing: false })
+  })
+
+  it('applies a 404 that answers last, and forgets the rev shown, so the thing read again is taken at the rev it has', async () => {
+    const p = ticketPage()
+    expect(await p.read(Promise.resolve({ key: 'CND-12', rev: 7, title: 'seven' }))).toBe(true)
+    expect(await p.read(Promise.reject(p.notFound))).toBe(true)
+    expect(p.shown.missing).toBe(true)
+    expect(p.gate.rev('ticket:CND-12')).toBe(0)
+    expect(await p.read(Promise.resolve({ key: 'CND-12', rev: 2, title: 'two' }))).toBe(true)
+    expect(p.shown).toEqual({ ticket: { key: 'CND-12', rev: 2, title: 'two' }, missing: false })
+  })
+
+  it('rejects any other failure, applying nothing and moving nothing', async () => {
+    const p = ticketPage()
+    expect(await p.read(Promise.resolve({ key: 'CND-12', rev: 4, title: 'four' }))).toBe(true)
+    await expect(p.read(Promise.reject(new Error('Cannot reach the server')))).rejects.toThrow('Cannot reach the server')
+    expect(p.shown).toEqual({ ticket: { key: 'CND-12', rev: 4, title: 'four' }, missing: false })
+    expect(p.gate.rev('ticket:CND-12')).toBe(4)
+  })
+})
+
+describe('a stream started again', () => {
+  it('drops every reply asked before it, and takes the next read at the rev it has: a store restored from a backup is shown as it is', async () => {
+    const p = page()
+    expect(await p.send(Promise.resolve({ key: 'CND-12', rev: 10, title: 'before the restore' }))).toBe(true)
+    const late = deferred<Shown>()
+    const asked = p.send(late.promise)
+    const list = deferred<string>()
+    let rows = 'before'
+    const listed = through(p.gate, 'list:CND?', () => list.promise, (v) => (rows = v))
+    p.gate.reset()
+    expect(p.gate.rev(p.thing)).toBe(0)
+    expect(await p.send(Promise.resolve({ key: 'CND-12', rev: 3, title: 'restored' }))).toBe(true)
+    late.resolve({ key: 'CND-12', rev: 11, title: 'asked before the restore' })
+    expect(await asked).toBe(false)
+    expect(p.shown.ticket).toEqual({ key: 'CND-12', rev: 3, title: 'restored' })
+    // The next operation expects the rev the store has.
+    expect(p.gate.rev(p.thing)).toBe(3)
+    // A list, which has no rev, asked before it is dropped the same way.
+    list.resolve('asked before the restore')
+    expect(await listed).toBe(false)
+    expect(rows).toBe('before')
   })
 })
 

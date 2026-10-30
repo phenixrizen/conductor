@@ -11,13 +11,13 @@ import { serially } from '~/utils/dispatchOrder'
  * A ticket's page (docs/plans/dispatch.md, PR-8): its key and title, its description and acceptance criteria as Markdown with a
  * preview, its status, priority, horizon, owner and assignees, and its history as the store recorded it. Every edit is one operation on
  * the revision shown (useDispatchOps), and every read and every operation's reply goes through the page's ordering gate, the ticket's by
- * its key. The live events read it again: at once when one names the ticket, after the window on any other of its project, and on a
- * snapshot. Its comments, attachments, parent and relations, labels and milestones, and the close policy come with the next changes,
- * and the page says so. One column on a phone.
+ * its key, a 404 among them. The live events read it again: at once when one names the ticket, after the window on any other of its
+ * project, and on a snapshot, which forgets what the gate knew (a store restored from a backup). Its comments, attachments, parent and
+ * relations, labels and milestones, and the close policy come with the next changes, and the page says so. One column on a phone.
  */
 const props = defineProps<{ project: string; ticketKey: string }>()
 
-const { api, gate, read } = useDispatch()
+const { api, gate, read, readOrAbsent } = useDispatch()
 const ops = useDispatchOps(gate)
 const sessions = useSessions()
 const admin = useWorkbenchToken()
@@ -38,28 +38,28 @@ const now = ref(Date.now())
 
 useHead({ title: computed(() => (ticket.value ? `${ticket.value.key} ${ticket.value.title}` : props.ticketKey)) })
 
-/** Reads the ticket in full; a key no ticket has says so, and is no failure to ask again. */
+/**
+ * Reads the ticket in full; a key no ticket has says so, and is no failure to ask again. That answer goes through the gate as any reply,
+ * so a slow 404 never hides the ticket a later read found (one made since the page opened).
+ */
 async function readTicket(): Promise<void> {
   const key = props.ticketKey
   if (!parseTicketKey(key)) {
     missing.value = true
     return
   }
-  try {
-    await read(
-      `ticket:${key}`,
-      () => api.ticket(key),
-      (t) => {
-        if (key !== props.ticketKey) return
-        ticket.value = t
-        missing.value = false
-      },
-      (t) => t.rev,
-    )
-  } catch (e) {
-    if (!notFound(e)) throw e
-    if (key === props.ticketKey) missing.value = true
-  }
+  await readOrAbsent(`ticket:${key}`, () => api.ticket(key), {
+    apply: (t) => {
+      if (key !== props.ticketKey) return
+      ticket.value = t
+      missing.value = false
+    },
+    rev: (t) => t.rev,
+    absent: notFound,
+    gone: () => {
+      if (key === props.ticketKey) missing.value = true
+    },
+  })
 }
 
 /** A 404, or a 400 for what is no key: the ticket or the project has no row, which reading again does not change. */
@@ -171,7 +171,7 @@ watch(
   },
 )
 
-useDispatchLive(ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload))
+useDispatchLive({ ...ticketWatch(() => ticket.value?.id ?? '', () => props.project, reload), reset: () => gate.reset() })
 
 const projectRow = computed(() => projectRead.value?.project ?? null)
 const archived = computed(() => !!projectRow.value?.archivedAt)
