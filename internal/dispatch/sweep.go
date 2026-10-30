@@ -202,10 +202,11 @@ func listAttachments(root string) (contents, temps []listed, err error) {
 
 // openAttachments is what Open does for the attachments of a writable
 // store before any caller can upload: their directories made, the first's
-// name made durable (attachmentDirs), and the sweep. It returns the first
-// error, the sweep running whatever the directories did.
+// name made durable (attachmentDirs; a sync that fails here is tried again
+// by the next upload), and the sweep. It returns the first error, the
+// sweep running whatever the directories did.
 func (s *Store) openAttachments(ctx context.Context, now time.Time) error {
-	_, err := s.attachmentDirs(s.syncDir, true)
+	_, err := s.attachmentDirs(s.syncDir)
 	if serr := s.sweep(ctx, now); err == nil {
 		err = serr
 	}

@@ -117,13 +117,18 @@ type Store struct {
 	// in an upload between its lease's commit and the file's publication,
 	// and beforeCommit between the publication and the operation that
 	// writes the attachment's row: a test pauses an upload there. sweepErr
-	// is what the sweep at open ended with (SweepError).
+	// is what the sweep at open ended with (SweepError). dirSynced says a
+	// sync of the store's directory has succeeded since the attachments'
+	// directory was there (attachmentDirs): Open's, else an upload's, so
+	// one that failed at open is tried again before an upload is taken;
+	// read and written under mu.
 	syncDir       func(path string) error
 	unlink        func(path string) error
 	sweepGrace    time.Duration
 	beforePublish func()
 	beforeCommit  func()
 	sweepErr      error
+	dirSynced     bool
 }
 
 // Errors of a store that cannot serve.
@@ -173,10 +178,11 @@ type Change struct {
 // is taken under the working directory, and the store keeps it absolute.
 // A writable store then makes its attachments' directories when they are
 // missing and sweeps their files (sweep), before any caller can upload:
-// what the sweep could not delete is left for the next, and SweepError
-// says why, the store serving regardless. The receipts are pruned at open
-// (prune) and then every day by a goroutine of the store's, which Close
-// stops.
+// what the sweep could not delete is left for the next, a sync of the
+// store's directory that failed is tried again by the next upload, and
+// SweepError says why, the store serving regardless. The receipts are
+// pruned at open (prune) and then every day by a goroutine of the
+// store's, which Close stops.
 func Open(dir string) (*Store, error) { return openWith(dir, nil) }
 
 // openWith is Open, configure (when given) setting the store's fields
@@ -236,9 +242,11 @@ func openWith(dir string, configure func(*Store)) (*Store, error) {
 }
 
 // SweepError is what the sweep at open ended with (sweep): the first file
-// it could not delete, left for the next sweep, or the database's error;
-// nil when it found nothing it could not clear, and for a store opened
-// read-only, which sweeps nothing. The server logs it.
+// it could not delete, left for the next sweep, the database's error, or
+// the attachments' directories' (their making, or the sync of the store's
+// directory, which the next upload tries again); nil when it found nothing
+// it could not clear, and for a store opened read-only, which sweeps
+// nothing. The server logs it.
 func (s *Store) SweepError() error { return s.sweepErr }
 
 // startPruning starts the goroutine that prunes the receipts every

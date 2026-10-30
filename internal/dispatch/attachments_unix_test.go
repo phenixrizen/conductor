@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -171,6 +172,66 @@ func TestAFailedParentSyncLeavesAShardTheNextUploadSyncs(t *testing.T) {
 	mustPut(t, s, "a2", key, "f.txt", content)
 	if got := rec.take(); !slices.Equal(got, []string{shardOf(s, content), rootOf(s)}) {
 		t.Fatalf("the upload into the shard left behind synced %v", got)
+	}
+}
+
+// The store's directory is synced at open, which makes the attachments'
+// directory's name durable in it. A sync that fails there leaves the store
+// serving, SweepError saying why, and every upload tries it again before
+// it reads its file until one succeeds: an upload whose try fails is that
+// error, its file unread and nothing kept (no receipt, row, lease or
+// file); the first whose try succeeds syncs the store's directory, then
+// its shard and the attachments' directory, and is taken; the uploads
+// after it sync those two alone.
+func TestAFailedSyncAtOpenIsTriedAgainBeforeAnUpload(t *testing.T) {
+	ctx := context.Background()
+	dir := storeDir(t)
+	failure := errors.New("the store's directory did not sync")
+	var failing atomic.Bool
+	failing.Store(true)
+	rec := &recorder{fail: func(path string) error {
+		if path == dir && failing.Load() {
+			return failure
+		}
+		return nil
+	}}
+	s, err := openWith(dir, func(s *Store) { s.syncDir = rec.sync })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.SweepError(); !errors.Is(err, failure) {
+		t.Fatalf("the sync at open: %v", err)
+	}
+	if got := rec.take(); !slices.Equal(got, []string{dir}) {
+		t.Fatalf("the open synced %v", got)
+	}
+	newProject(t, s, "CND")
+	_, key := newTicket(t, s, "CND", "Attached")
+	content := []byte("after a failed sync at open")
+	var read bytes.Buffer
+	if _, _, err := s.AddAttachment(ctx, testOp("a1"), key, "f.txt", "text/plain", io.TeeReader(bytes.NewReader(content), &read)); !errors.Is(err, failure) || read.Len() != 0 {
+		t.Fatalf("an upload, the store's directory failing still: %v, %d bytes read", err, read.Len())
+	}
+	if got := rec.take(); !slices.Equal(got, []string{dir}) {
+		t.Fatalf("the upload that failed synced %v", got)
+	}
+	if _, found, _ := s.Receipt(ctx, "test", "a1"); found || count(t, s, "SELECT COUNT(*) FROM attachments")+count(t, s, "SELECT COUNT(*) FROM uploads") != 0 ||
+		len(contentFiles(t, s)) != 0 {
+		t.Fatal("an upload whose sync failed kept a receipt, a row, a lease or a file")
+	}
+	failing.Store(false)
+	a := mustPut(t, s, "a2", key, "f.txt", content)
+	if got := rec.take(); !slices.Equal(got, []string{dir, shardOf(s, content), rootOf(s)}) {
+		t.Fatalf("the upload after it synced %v", got)
+	}
+	other := []byte("its name durable now")
+	mustPut(t, s, "a3", key, "g.txt", other)
+	if got := rec.take(); !slices.Equal(got, []string{shardOf(s, other), rootOf(s)}) {
+		t.Fatalf("the next upload synced %v", got)
+	}
+	if !bytes.Equal(readContent(t, s, a.ID), content) {
+		t.Fatal("the attachment did not open whole")
 	}
 }
 

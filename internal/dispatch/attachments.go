@@ -97,11 +97,12 @@ type received struct {
 //
 // An error, and no receipt kept, when the operation cannot be looked at
 // (a bad op id, actor or display name, which is checked before r is read;
-// the store closed), when r fails (its error, wrapped), when the file
-// cannot be written or published (a sync among it), or when the database
-// fails: the lease is dropped in a transaction of its own when the
-// database answers, else left to expire, and a file published is the
-// sweep's.
+// the store closed), when the store's directory cannot be synced
+// (attachmentDirs, until a sync of it has succeeded; before r is read),
+// when r fails (its error, wrapped), when the file cannot be written or
+// published (a sync among it), or when the database fails: the lease is
+// dropped in a transaction of its own when the database answers, else left
+// to expire, and a file published is the sweep's.
 func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType string, r io.Reader) (Receipt, Attachment, error) {
 	const intent = "attachment.add"
 	if err := op.check(); err != nil {
@@ -117,7 +118,7 @@ func (s *Store) AddAttachment(ctx context.Context, op Op, key, name, contentType
 	case readOnly:
 		return readOnlyReceipt(op, intent, why), Attachment{}, nil
 	}
-	root, err := s.attachmentDirs(syncDir, false)
+	root, err := s.attachmentDirs(syncDir)
 	if err != nil {
 		return Receipt{}, Attachment{}, err
 	}
@@ -275,20 +276,30 @@ func uploadMade(name string) (time.Time, bool) {
 // attachmentDirs makes the attachments' directory and its uploads'
 // directory when they are missing (0700) and returns the first. The first's
 // name is made durable in the store's directory (syncDir) before anything
-// is put in it: when it made it, and always when always is set, which
-// Open sets, so the name is durable whoever made it (another server on
-// the same directory, or an open that stopped before its sync) before
-// this store takes an upload.
-func (s *Store) attachmentDirs(syncDir func(string) error, always bool) (string, error) {
+// is put in it: when it made it, and until a sync of the store's directory
+// has succeeded in this store (dirSynced), which Open's is the first to
+// try, so the name is durable whoever made it (another server on the same
+// directory, or an open that stopped before its sync) before this store
+// takes an upload, and a sync that failed at open is tried again by every
+// upload until one succeeds, an upload whose sync fails being that error.
+func (s *Store) attachmentDirs(syncDir func(string) error) (string, error) {
 	root := filepath.Join(s.dir, attachmentsDir)
+	made := false
 	switch err := os.Mkdir(root, 0o700); {
 	case err == nil:
-		always = true
+		made = true
 	case !errors.Is(err, fs.ErrExist):
 		return "", err
 	}
-	if always {
-		if err := syncDir(s.dir); err != nil {
+	s.mu.Lock()
+	synced := s.dirSynced && !made
+	s.mu.Unlock()
+	if !synced {
+		err := syncDir(s.dir)
+		s.mu.Lock()
+		s.dirSynced = err == nil
+		s.mu.Unlock()
+		if err != nil {
 			return "", err
 		}
 	}
