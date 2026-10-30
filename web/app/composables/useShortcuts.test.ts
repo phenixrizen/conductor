@@ -113,7 +113,8 @@ describe("Dispatch's keys (docs/plans/dispatch.md, Owner decisions, 9 and 10)", 
   })
   it("list the list's keys, none of them reaching past a terminal", () => {
     expect(DISPATCH_SHORTCUTS.title).toBe('Dispatch')
-    expect(DISPATCH_SHORTCUTS.rows.map((r) => r.keys.join('+'))).toEqual(['J', 'K', 'enter', 'escape'])
+    // Linear's letters (PR-9): the selection, a new ticket, the six pickers, a card's move, then Escape.
+    expect(DISPATCH_SHORTCUTS.rows.map((r) => r.keys.join('+'))).toEqual(['J', 'K', 'enter', 'X', 'C', 'S', 'P', 'A', 'L', 'M', 'O', 'arrowright', 'escape'])
     for (const r of DISPATCH_SHORTCUTS.rows) {
       expect(r.terminal).toBeUndefined()
       expect(r.label).not.toMatch(/in a terminal/)

@@ -73,6 +73,15 @@ function load(): void {
   live.ask(reload)
 }
 
+// The page's group in the palette: New project, and each project's page.
+usePalette().registerPage(() => ({
+  label: 'Dispatch',
+  rows: [
+    { key: 'page:new-project', label: 'New project', icon: 'i-lucide-folder-plus', run: () => void nextTick(() => (newOpen.value = true)) },
+    ...projects.value.map((p) => ({ key: `page:project:${p.key}`, label: `${p.key} ${p.name}`, detail: `${p.open} open · ${p.done} done${p.archivedAt ? ' · archived' : ''}`, icon: 'i-lucide-folder-kanban', run: () => void router.push(projectPath(p.key)), href: projectPath(p.key) })),
+  ],
+}))
+
 let tick: number | undefined
 onMounted(() => {
   tick = window.setInterval(() => (now.value = Date.now()), 30_000)
