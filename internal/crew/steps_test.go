@@ -920,6 +920,105 @@ func TestAPortIsLetGoOnlyOnceItsTreesEndIsCommitted(t *testing.T) {
 	}
 }
 
+// Two ports of one tree never share a number (EN1 PR-3; the independent
+// review of #426): natively two binds of 127.0.0.1:0 may give one number
+// twice, so a number an earlier port of the tree drew is drawn again for
+// the later one. The executor scripted to repeat a number, the tree's two
+// ports differ and both are leased to it, and its step's environment, its
+// session, its task files, its event, its row and its receipt all carry
+// the distinct numbers.
+func TestATreesTwoPortsNeverShareANumber(t *testing.T) {
+	const repeated = 41500
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	fl.ports.script(repeated, repeated)
+	m := Manifest{Ports: []string{"web", "db"}, Setup: []Check{shStep("env", `env > "$CONDUCTOR_STATE_DIR/env.txt"`)}}
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	a := waitAttempt(t, e, run.ID, "build", ledger.AttemptRunning)
+	ports := map[string]int{"web": repeated, "db": fakePortsFirst}
+	if draws := fl.ports.draws(); !slices.Equal(draws, []int{repeated, repeated, fakePortsFirst}) {
+		t.Fatalf("the draws: %v", draws)
+	}
+	worktree := "build.1 " + ledger.TreeWorktree
+	if got := leases(e); !maps.Equal(got, map[int]string{repeated: worktree, fakePortsFirst: worktree}) {
+		t.Fatalf("the leases: %v", got)
+	}
+	web, db := strconv.Itoa(ports["web"]), strconv.Itoa(ports["db"])
+	if env := envFile(t, filepath.Join(a.Attempt.Worktree, ".conductor", "state", "env.txt")); env["CONDUCTOR_PORT_WEB"] != web || env["CONDUCTOR_PORT_DB"] != db {
+		t.Fatalf("the step's ports: %v", conductorVars(env))
+	}
+	fl.mu.Lock()
+	call := fl.calls[len(fl.calls)-1]
+	fl.mu.Unlock()
+	if call.inject["CONDUCTOR_PORT_WEB"] != web || call.inject["CONDUCTOR_PORT_DB"] != db {
+		t.Fatalf("the session's ports: %v", call.inject)
+	}
+	md, f := taskFileOf(t, a)
+	if f.Manifest == nil || !maps.Equal(f.Manifest.Ports, ports) || !strings.Contains(md, "web "+web+" (`CONDUCTOR_PORT_WEB`)") || !strings.Contains(md, "db "+db+" (`CONDUCTOR_PORT_DB`)") {
+		t.Fatalf("the task file's ports: %+v\n%s", f.Manifest, md)
+	}
+	if p := l.payloads(run.ID, "manifest.ports"); len(p) != 1 {
+		t.Fatalf("manifest.ports: %v", p)
+	} else if got, _ := p[0]["ports"].(map[string]int); !maps.Equal(got, ports) {
+		t.Fatalf("manifest.ports: %v", p[0])
+	}
+	if tr, _ := l.treeRow(run.ID, "build", 1, ledger.TreeWorktree); !maps.Equal(tr.Ports, ports) {
+		t.Fatalf("the worktree's row: %+v", tr)
+	}
+	if rows := l.stepRows(run.ID, "build", 1); len(rows) != 1 || !maps.Equal(rows[0].Ports, ports) {
+		t.Fatalf("the receipt:\n%s", rowWords(rows))
+	}
+	stopRun(t, e, run.ID)
+}
+
+// A port's draws are bounded (EN1 PR-3; the independent review of #426):
+// a number another live tree holds is drawn again at most maxPortDraws
+// times a port, so a tree never loops on held numbers. A worktree whose
+// every draw for its port is the number another run's tree holds fails at
+// manifest with the words after exactly maxPortDraws draws, attributed by
+// a worktree's rule (uncounted, the run paused), the tree never made: no
+// row, no manifest.resolved, nothing written in it, no lease.
+func TestAPortsDrawsAreBounded(t *testing.T) {
+	const held = 41500
+	dir := newRepo(t)
+	e, fl, l := managedEngine(t)
+	m := Manifest{Ports: []string{"web"}, Setup: []Check{shStep("deps", "true")}}
+	fl.ports.script(held)
+	holder := launchManaged(t, e, repoManifestCrew(dir, m, work("build", "lead")))
+	waitAttempt(t, e, holder.ID, "build", ledger.AttemptRunning)
+	fl.ports.script(slices.Repeat([]int{held}, maxPortDraws)...)
+	before := len(fl.ports.draws())
+	run := launchManaged(t, e, repoManifestCrew(dir, m, work("docs", "writer")))
+	attemptFailed(t, e, run.ID, "docs", 1)
+	row := l.attemptWhen(t, run.ID, "docs", 1, failedRow)
+	words := fmt.Sprintf("the port web: %d numbers drawn, each another tree's", maxPortDraws)
+	if row.Stage != "manifest" || row.Error != words {
+		t.Fatalf("docs' attempt 1: %+v\nwant %q", row, words)
+	}
+	if draws := fl.ports.draws()[before:]; len(draws) != maxPortDraws || slices.ContainsFunc(draws, func(n int) bool { return n != held }) {
+		t.Fatalf("docs' draws: %v", draws)
+	}
+	if failed := l.payloads(run.ID, "attempt.failed"); len(failed) != 1 || failed[0]["uncounted"] != true || failed[0]["stage"] != "manifest" {
+		t.Fatalf("attempt.failed: %v", failed)
+	}
+	why := "attempt 1 could not be made usable at manifest: " + words
+	waitTrue(t, "the run paused", func() bool { r, _ := e.Get(run.ID); return r.Paused && r.PausedWhy == why })
+	if ts := taskOf(t, e, run.ID, "docs"); ts.State != ledger.TaskReady || ts.Reason != why {
+		t.Fatalf("docs: %+v", ts)
+	}
+	if _, err := os.Lstat(filepath.Join(row.Worktree, ".conductor")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("written in the worktree: %v", err)
+	}
+	if _, ok := l.treeRow(run.ID, "docs", 1, ledger.TreeWorktree); ok || l.count(run.ID, "manifest.resolved") != 0 || len(l.stepRows(run.ID, "docs", 1)) != 0 {
+		t.Fatalf("a tree was made: %v", l.kinds(run.ID))
+	}
+	if got := leases(e); !maps.Equal(got, map[int]string{held: "build.1 " + ledger.TreeWorktree}) {
+		t.Fatalf("the leases: %v", got)
+	}
+	stopRun(t, e, run.ID)
+	stopRun(t, e, holder.ID)
+}
+
 // The native executor draws a port of the loopback and lets it go: the
 // number it gives is free to bind. Another process may take a free number
 // between the two, so a number that cannot be bound is drawn again, three
