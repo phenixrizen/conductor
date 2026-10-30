@@ -184,8 +184,9 @@ the end of your turn finishes nothing; only a submitted result does.
 
 A person may link your run to a Dispatch ticket, Conductor's own record of
 the work: what was asked, the criteria its owner accepts it against, and
-the discussion around it. When your run has one, read it before you start,
-with the ticket_read tool or:
+the discussion around it. Read it before you start, with the ticket_read
+tool or the command below; a run with no ticket says so (no_ticket), and
+there is nothing more to do about it.
 
       "${CONDUCTOR_BIN:-conductor}" task ticket
 
@@ -198,7 +199,7 @@ with the ticket_read tool or:
       "${CONDUCTOR_BIN:-conductor}" task ticket comment "the cause is the cache key, which ignores the locale; the fix is in the handler"
 
 - You read the ticket and comment on it, nothing more: you cannot change
-  it, close it or make another. A run linked to no ticket says it has none.
+  it, close it or make another.
 
 ## Rules
 

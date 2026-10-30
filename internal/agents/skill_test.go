@@ -61,7 +61,7 @@ func TestSkillText(t *testing.T) {
 		// it, nothing more.
 		`"${CONDUCTOR_BIN:-conductor}" task ticket`,
 		`"${CONDUCTOR_BIN:-conductor}" task ticket comment "the cause is the cache key, which ignores the locale; the fix is in the handler"`,
-		"with the ticket_read tool", "with the ticket_comment tool",
+		"with the ticket_read\ntool or the command below; a run with no ticket says so (no_ticket)", "with the ticket_comment tool",
 		"You read the ticket and comment on it, nothing more: you cannot change\n  it, close it or make another.",
 		"ever call notify or crew outside a Conductor session; the commands exit silently there",
 		"CONDUCTOR_AGENT", "at most 2 a session", "at most 12 members",
