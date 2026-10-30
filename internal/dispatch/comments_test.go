@@ -157,8 +157,7 @@ func TestAddEditAndDeleteAComment(t *testing.T) {
 	pid := newProject(t, s, "CND")
 	tid, key := newTicket(t, s, "CND", "Talked about")
 	_, other := newTicket(t, s, "CND", "Elsewhere")
-	var got []Change
-	s.OnChange(func(c Change) { got = append(got, c) })
+	calls := listen(s)
 	op := Op{Actor: "admin", ID: "c1", By: "Alice"}
 	rc, err := s.AddComment(ctx, op, key, "First, <b> & \"quoted\"")
 	want(t, rc, err, StatusDone, "")
@@ -166,7 +165,7 @@ func TestAddEditAndDeleteAComment(t *testing.T) {
 	if len(id) != IDLen || rc.Rev != 1 || rc.Intent != "comment.add" {
 		t.Fatalf("the receipt: %+v", rc)
 	}
-	if len(got) != 1 || got[0] != (Change{Seq: got[0].Seq, Entity: EntityComment, ID: id, Ticket: tid, Project: "CND"}) {
+	if got := calls.one(t); len(got) != 1 || got[0] != (Change{Seq: got[0].Seq, Entity: EntityComment, ID: id, Ticket: tid, Project: "CND"}) {
 		t.Fatalf("OnChange: %+v", got)
 	}
 	// A create row with what never changes, then the body: the author is

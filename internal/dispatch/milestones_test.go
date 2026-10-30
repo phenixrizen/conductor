@@ -188,8 +188,7 @@ func TestADeletedMilestoneLeavesEveryTicket(t *testing.T) {
 	rc, err := s.DeleteTicket(ctx, testOp("del3"), k3)
 	want(t, rc, err, StatusDone, "")
 	revs := map[string]int64{k1: ticketOf(t, s, k1).Rev, k2: ticketOf(t, s, k2).Rev, k3: ticketOf(t, s, k3).Rev}
-	var got []Change
-	s.OnChange(func(c Change) { got = append(got, c) })
+	calls := listen(s)
 	rc, err = s.DeleteMilestone(ctx, testOp("d1"), "CND", id)
 	want(t, rc, err, StatusDone, "")
 	if rc.Rev != 2 {
@@ -205,7 +204,9 @@ func TestADeletedMilestoneLeavesEveryTicket(t *testing.T) {
 			t.Fatalf("ticket %d's row: %+v", i+1, r)
 		}
 	}
-	if len(got) != 3 || got[0].Entity != EntityMilestone || got[1].ID != t1 || got[2].ID != t3 {
+	// One call, one change per entity: the milestone, then each ticket it
+	// left.
+	if got := calls.one(t); len(got) != 3 || got[0].Entity != EntityMilestone || got[1].ID != t1 || got[2].ID != t3 {
 		t.Fatalf("OnChange: %+v", got)
 	}
 	if tk := ticketOf(t, s, k1); tk.MilestoneID != "" || tk.Rev != revs[k1]+1 {

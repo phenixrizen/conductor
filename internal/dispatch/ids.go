@@ -23,10 +23,11 @@ func newID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// validID reports whether id is an id's shape (IDLen lower-case hex
+// ValidID reports whether id is an id's shape (IDLen lower-case hex
 // characters): what a query names a label, a milestone or a cursor's row
-// by.
-func validID(id string) bool {
+// by, and a route's path a comment, a label, a milestone, a relation, a
+// link or a view.
+func ValidID(id string) bool {
 	if len(id) != IDLen {
 		return false
 	}

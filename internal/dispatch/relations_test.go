@@ -21,8 +21,7 @@ func TestAddAndRemoveARelation(t *testing.T) {
 	pid := newProject(t, s, "CND")
 	aID, a := newTicket(t, s, "CND", "A")
 	bID, b := newTicket(t, s, "CND", "B")
-	var got []Change
-	s.OnChange(func(c Change) { got = append(got, c) })
+	calls := listen(s)
 	op := testOp("r1")
 	op.ExpectedRev = 1
 	rc, err := s.AddRelation(ctx, op, a, RelationBlocks, b)
@@ -45,7 +44,7 @@ func TestAddAndRemoveARelation(t *testing.T) {
 	if ticketOf(t, s, a).Rev != 2 || ticketOf(t, s, b).Rev != 2 {
 		t.Fatal("the two tickets' revs were not both bumped")
 	}
-	if len(got) != 2 || got[0] != (Change{Seq: rows[0].Seq, Entity: EntityTicket, ID: aID, Ticket: aID, Project: "CND"}) ||
+	if got := calls.one(t); len(got) != 2 || got[0] != (Change{Seq: rows[0].Seq, Entity: EntityTicket, ID: aID, Ticket: aID, Project: "CND"}) ||
 		got[1] != (Change{Seq: rows[0].Seq, Entity: EntityTicket, ID: bID, Ticket: bID, Project: "CND"}) {
 		t.Fatalf("OnChange: %+v", got)
 	}
@@ -69,7 +68,7 @@ func TestAddAndRemoveARelation(t *testing.T) {
 	// Removed through the other end's key: the row named whole, its prior
 	// the add's tag, both revs bumped, the ticket with the key the
 	// receipt's subject.
-	got = nil
+	*calls = nil
 	revA, revB := ticketOf(t, s, a).Rev, ticketOf(t, s, b).Rev
 	rc, err = s.RemoveRelation(ctx, testOp("x1"), b, id)
 	want(t, rc, err, StatusDone, "")
@@ -82,7 +81,7 @@ func TestAddAndRemoveARelation(t *testing.T) {
 		rows[0].Prior != EncodeTags([]Tag{{"test", "r1", 0}}) || json.Unmarshal([]byte(rows[0].Value), &removed) != nil || removed.ID != id || removed.ToID != bID {
 		t.Fatalf("the remove's rows: %+v", rows)
 	}
-	if len(got) != 2 || got[0].ID != bID || got[1].ID != aID {
+	if got := calls.one(t); len(got) != 2 || got[0].ID != bID || got[1].ID != aID {
 		t.Fatalf("OnChange of the remove: %+v", got)
 	}
 	if rs, err := s.Relations(ctx, a); err != nil || len(rs) != 1 || rs[0].Kind != RelationRelates {

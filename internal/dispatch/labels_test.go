@@ -216,8 +216,7 @@ func TestADeletedLabelLeavesEveryTicketAndFreesItsName(t *testing.T) {
 	for _, k := range []string{k1, k2, k3, k4, k5} {
 		revs[k] = ticketOf(t, s, k).Rev
 	}
-	var got []Change
-	s.OnChange(func(c Change) { got = append(got, c) })
+	calls := listen(s)
 	rc, err = s.DeleteLabel(ctx, testOp("d1"), "CND", id)
 	want(t, rc, err, StatusDone, "")
 	if rc.Rev != 2 {
@@ -234,7 +233,9 @@ func TestADeletedLabelLeavesEveryTicketAndFreesItsName(t *testing.T) {
 			t.Fatalf("the remove row of ticket %d: %+v", i+1, r)
 		}
 	}
-	// One call per entity: the label, then each ticket it left.
+	// One call, one change per entity: the label, then each ticket it
+	// left.
+	got := calls.one(t)
 	if len(got) != 5 || got[0].Entity != EntityLabel || got[0].ID != id || got[0].Project != "CND" {
 		t.Fatalf("OnChange: %+v", got)
 	}

@@ -415,8 +415,8 @@ func (t *tx) bump() (int64, error) {
 	return rev, nil
 }
 
-// changes is what the operation changed, for OnChange: one per entity,
-// with the commit's last seq.
+// changes is what the operation changed, for OnChange's one call: one
+// per entity, with the commit's last seq.
 func (t *tx) changes() []Change {
 	out := make([]Change, 0, len(t.touched))
 	for _, e := range t.touched {
@@ -454,8 +454,9 @@ func fingerprint(intent string, args any) (string, error) {
 // a refusal's, and the resend runs as a new operation. An error is the
 // database's own, a bad op id, actor or display name, or the store
 // closed: nothing was written, and nothing is answered; a read-only store
-// answers a read_only refusal, written nowhere. OnChange's listeners run
-// after the commit, on this goroutine.
+// answers a read_only refusal, written nowhere. OnChange's listeners are
+// called after the commit, on this goroutine, each once with all the
+// operation changed.
 func (s *Store) Apply(ctx context.Context, op Op, intent string, args any, change func(*tx) error) (Receipt, error) {
 	if !OpIDPattern.MatchString(op.ID) {
 		return Receipt{}, ErrBadOpID
