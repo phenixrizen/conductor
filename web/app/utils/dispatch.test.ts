@@ -313,4 +313,48 @@ describe("a ticket's history", () => {
     ])
     expect(entries[1]!.seq).toBe(changes[4]!.seq)
   })
+  it('says an acceptance once, one made again for the same owner among them, and says one taken back', () => {
+    const at = (h: number) => `2026-10-30T1${h}:00:00.000000000Z`
+    const criteria = (c: string) => c.repeat(64)
+    // The rows AcceptTicket and UnacceptTicket record: one per field that changes, in the order accepted_at, accepted_by, accepted_for,
+    // accepted_criteria, accepted_note.
+    const changes = [
+      // Accepted for Alice: every field from nothing, the note none.
+      row({ field: 'accepted_at', value: at(0), opId: 'a1' }),
+      row({ field: 'accepted_by', value: 'Nate', opId: 'a1', n: 1 }),
+      row({ field: 'accepted_for', value: 'Alice', opId: 'a1', n: 2 }),
+      row({ field: 'accepted_criteria', value: criteria('1'), opId: 'a1', n: 3 }),
+      // Accepted again once the criteria changed, for the same owner, by the same person, with no note: its time and the criteria alone.
+      row({ field: 'accepted_at', value: at(1), prior: at(0), opId: 'a2' }),
+      row({ field: 'accepted_criteria', value: criteria('2'), prior: criteria('1'), opId: 'a2', n: 1 }),
+      // Accepted again with nothing else changed: its time alone.
+      row({ field: 'accepted_at', value: at(2), prior: at(1), opId: 'a3' }),
+      // Accepted again with a note: its time and the note.
+      row({ field: 'accepted_at', value: at(3), prior: at(2), opId: 'a4' }),
+      row({ field: 'accepted_note', value: 'Checked on staging', opId: 'a4', n: 1 }),
+      // Accepted again for Bob, the owner since: the owner's row says it, and the time's says nothing more.
+      row({ field: 'accepted_at', value: at(4), prior: at(3), opId: 'a5' }),
+      row({ field: 'accepted_for', value: 'Bob', prior: 'Alice', opId: 'a5', n: 1 }),
+      // Taken back: every field that held something, cleared.
+      row({ field: 'accepted_at', value: '', prior: at(4), opId: 'a6' }),
+      row({ field: 'accepted_by', value: '', prior: 'Nate', opId: 'a6', n: 1 }),
+      row({ field: 'accepted_for', value: '', prior: 'Bob', opId: 'a6', n: 2 }),
+      row({ field: 'accepted_criteria', value: '', prior: criteria('2'), opId: 'a6', n: 3 }),
+      row({ field: 'accepted_note', value: '', prior: 'Checked on staging', opId: 'a6', n: 4 }),
+      // Accepted after it was taken back: from nothing again, for its owner.
+      row({ field: 'accepted_at', value: at(5), opId: 'a7' }),
+      row({ field: 'accepted_by', value: 'Nate', opId: 'a7', n: 1 }),
+      row({ field: 'accepted_for', value: 'Bob', opId: 'a7', n: 2 }),
+      row({ field: 'accepted_criteria', value: criteria('2'), opId: 'a7', n: 3 }),
+    ]
+    expect(historyEntries(changes).map((e) => e.lines)).toEqual([
+      ['accepted it for Alice'],
+      ['accepted it again'],
+      ['accepted it again'],
+      ['accepted it again', 'noted "Checked on staging"'],
+      ['accepted it for Bob'],
+      ['took the acceptance back'],
+      ['accepted it for Bob'],
+    ])
+  })
 })

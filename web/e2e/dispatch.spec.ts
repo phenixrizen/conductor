@@ -8,8 +8,10 @@ import { expect, test, type Api } from './fixtures'
 // editor's save that never replaces another person's text unseen; a filter whose first read fails read again; a ticket's page opened
 // before its ticket is made. And review round 2's: an edit waiting behind one whose reply a later read overtook, made on the revision
 // that one committed; each page's first read, failed with the stream connected already, read again; what is typed while an editor's
-// save goes, kept. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the earlier
-// ones), and counts only the rows of that project.
+// save goes, kept. And review round 3's: an edit waiting behind one whose reply carries no ticket, made on the revision its receipt
+// names; an owner picked back while the edit of another is on its way, kept; an acceptance made again for the same owner, in the
+// history. The spec names what it made: a project of its own per test (E2E, or E2E1, E2E2… when the server holds the earlier ones),
+// and counts only the rows of that project.
 test.describe.configure({ mode: 'serial' })
 
 let other: BrowserContext | null = null
@@ -488,4 +490,125 @@ test("what is typed while an editor's save goes is kept: the save is done, the n
   await expect(page.locator('[data-ticket-title]')).toHaveText('Typed on, first and more')
   expect((await stored(api, `${key}-1`)).title).toBe('Typed on, first and more')
   expect(titled.map((b) => b.set)).toEqual([{ title: 'Typed on, first' }, { title: 'Typed on, first and more' }])
+})
+
+test("an edit waiting behind one whose reply carries no ticket is made on the revision that reply's receipt names", async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'No ticket')
+  const ticketRead = new RegExp(`/api/dispatch/tickets/${key}-1$`)
+  // The page's reads of its ticket from the first edit's commit on, held until two are asked or the second edit is sent. The commit's
+  // event reads the page again at once: answered then, it could show the revision committed before the second edit is made, which would
+  // expect it whether the page read it after the reply or not. With the page's own read after the reply, two are asked.
+  let holding = false
+  let reads = 0
+  let letReadsGo!: () => void
+  const readsGo = new Promise<void>((resolve) => (letReadsGo = resolve))
+  await page.route(ticketRead, async (route) => {
+    if (route.request().method() !== 'GET' || !holding) return route.fallback()
+    if (++reads >= 2) letReadsGo()
+    await readsGo
+    await route.fallback()
+  })
+  // The page's edits, in order: the first held on its way, then answered as the server answers when its read after the commit fails,
+  // its receipt done and no ticket.
+  const sent: SentEdit[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  let receiptRev: number | undefined
+  await page.route('**/api/dispatch/tickets/*/edit', async (route) => {
+    sent.push(route.request().postDataJSON())
+    if (sent.length > 1) {
+      letReadsGo()
+      return route.continue()
+    }
+    await held
+    holding = true
+    const response = await route.fetch()
+    const reply = (await response.json()) as { receipt: { rev?: number }; ticket: unknown }
+    receiptRev = reply.receipt.rev
+    await route.fulfill({ response, json: { ...reply, ticket: null } })
+  })
+  await page.goto(`/dispatch/${key}/1`)
+  const rev = page.locator('[data-ticket-rev]')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '1')
+  // The page's stream is connected and its snapshot taken: the ticket's description set through the API, whose event reads the page
+  // again at once.
+  await api.ok('POST', `/api/dispatch/tickets/${key}-1/edit`, { opId: opOf(key, 'd'), set: { description: 'Set elsewhere' } })
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+
+  // The priority set: its edit held on its way. The owner set meanwhile: its edit waits its turn behind the priority's.
+  await page.locator('[data-ticket-priority]').click()
+  await page.getByRole('option', { name: 'Urgent' }).click()
+  await expect.poll(() => sent.length).toBe(1)
+  const owner = `Owner ${key}`
+  await page.locator('[data-ticket-owner]').click()
+  await page.getByPlaceholder('A name…', { exact: true }).fill(owner)
+  await page.getByRole('option', { name: `Make ${owner} the owner` }).click()
+  release()
+
+  // The priority's edit commits rev 3, which its reply says in its receipt alone: the page reads the ticket at it before the owner's edit
+  // is made, which expects rev 3 and is done. Made on the rev 2 shown, it would be refused stale_revision.
+  await expect(rev).toHaveAttribute('data-ticket-rev', '4')
+  expect(receiptRev).toBe(3)
+  await expect(page.locator('[data-ticket-priority]')).toContainText('Urgent')
+  await expect(page.locator('[data-ticket-owner]')).toContainText(owner)
+  expect(sent.map((b) => [b.set, b.expectedRev])).toEqual([
+    [{ priority: 4 }, 2],
+    [{ owner }, 3],
+  ])
+  expect(await stored(api, `${key}-1`)).toMatchObject({ priority: 4, owner })
+})
+
+test('an owner picked back while the edit setting another is on its way is the owner the ticket keeps', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'Owned')
+  const first = `Alice ${key}`
+  const second = `Bob ${key}`
+  await api.ok('POST', `/api/dispatch/tickets/${key}-1/edit`, { opId: opOf(key, 'o1'), set: { owner: first } })
+  await api.ok('POST', '/api/dispatch/people', { opId: opOf(key, 'b'), name: second })
+  let release!: () => void
+  const sent = await recordEdits(page, { n: 1, until: new Promise<void>((resolve) => (release = resolve)) })
+  await page.goto(`/dispatch/${key}/1`)
+  const rev = page.locator('[data-ticket-rev]')
+  await expect(rev).toHaveAttribute('data-ticket-rev', '2')
+  const owner = page.locator('[data-ticket-owner]')
+  await expect(owner).toContainText(first)
+
+  // Bob picked: the edit held on its way, and the picker still shows Alice, the owner the store last answered. Alice picked back.
+  await owner.click()
+  await page.getByRole('option', { name: second, exact: true }).click()
+  await expect.poll(() => sent.length).toBe(1)
+  await expect(owner).toContainText(first)
+  await owner.click()
+  await page.getByRole('option', { name: first, exact: true }).click()
+  release()
+
+  // Bob's edit is done, then Alice's, made on the revision Bob's left: the ticket keeps the owner picked last.
+  await expect(rev).toHaveAttribute('data-ticket-rev', '4')
+  await expect(owner).toContainText(first)
+  expect(sent.map((b) => [b.set, b.expectedRev])).toEqual([
+    [{ owner: second }, 2],
+    [{ owner: first }, 3],
+  ])
+  expect((await stored(api, `${key}-1`)).owner).toBe(first)
+})
+
+test('an acceptance made again for the same owner is in the history, each acceptance said once', async ({ page, api }) => {
+  const key = await freeKey(api)
+  await made(api, key, 'Accepted twice')
+  const owner = `Owner ${key}`
+  const ticket = `${key}-1`
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/edit`, { opId: opOf(key, 'e1'), set: { owner, acceptance: 'It works' } })
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/accept`, { opId: opOf(key, 'a1') })
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/edit`, { opId: opOf(key, 'e2'), set: { acceptance: 'It works, and fast' } })
+  // Accepted again for the same owner, by the same person: the store records its time and the criteria it was made against, no owner.
+  await api.ok('POST', `/api/dispatch/tickets/${ticket}/accept`, { opId: opOf(key, 'a2') })
+  await page.goto(`/dispatch/${key}/1`)
+  const lines = page.locator('[data-ticket-history] [data-history-line]')
+  await expect.poll(async () => (await lines.allTextContents()).filter((l) => l.includes('accept'))).toEqual([
+    'wrote the acceptance criteria',
+    `accepted it for ${owner}`,
+    'edited the acceptance criteria',
+    'accepted it again',
+  ])
 })

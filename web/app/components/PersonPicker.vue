@@ -31,10 +31,15 @@ onMounted(load)
 
 const items = computed(() => [...new Set([...people.value, ...(props.modelValue ? [props.modelValue] : [])])].sort((a, b) => a.localeCompare(b)))
 
+/**
+ * A pick, said whatever the picker shows: what it shows is the owner as the store last answered, while an edit setting another may still
+ * be on its way, so the name shown picked again takes that edit back. The page's edit, made when it is sent, changes nothing when the
+ * ticket holds the name then.
+ */
 function pick(v: unknown) {
   const name = typeof v === 'string' ? v.trim() : ''
   open.value = false
-  if (name !== props.modelValue) emit('update:modelValue', name)
+  emit('update:modelValue', name)
 }
 </script>
 

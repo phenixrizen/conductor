@@ -209,12 +209,14 @@ type Made = TicketEdit | null | false
 /**
  * Reads the ticket again when the page shows it below `rev`, the revision an edit of it has just committed, before the next edit is
  * made: that edit's reply is dropped by the gate when a read numbered after it (a re-read for another ticket's event) was served before
- * its commit and answered first, and the next edit, made on the older ticket shown, would expect its revision and be refused
- * stale_revision. This read is sent after the commit, so it finds it. One that fails leaves the next edit to the store's check, whose
- * refusal reads the page again.
+ * its commit and answered first, and a reply whose read after the commit failed carries no ticket at all, only its receipt; either way
+ * the next edit, made on the older ticket shown, would expect its revision and be refused stale_revision. `rev` is the reply's ticket's,
+ * else its receipt's; with neither (a resend answered from a receipt since pruned, its read failed too) the ticket is read whatever is
+ * shown. This read is sent after the commit, so it finds it. One that fails leaves the next edit to the store's check, whose refusal
+ * reads the page again.
  */
 async function caughtUp(key: string, rev: number | undefined): Promise<void> {
-  if (rev === undefined || key !== props.ticketKey || (ticket.value?.rev ?? 0) >= rev) return
+  if (key !== props.ticketKey || (rev !== undefined && (ticket.value?.rev ?? 0) >= rev)) return
   await readTicket().catch(() => {})
 }
 
@@ -248,7 +250,7 @@ const edit = serially(async (key: string, make: () => Made): Promise<boolean> =>
   // edit is sent, so that one expects the revision the store has.
   if (refused) await reload().catch(() => {})
   else if (reply) {
-    await caughtUp(key, reply.ticket?.rev)
+    await caughtUp(key, reply.ticket?.rev ?? reply.receipt.rev)
     void readHistory().catch(() => {})
   }
   return !!reply
@@ -346,6 +348,10 @@ function setHorizon(v: unknown) {
   if (h === undefined) return
   void edit(props.ticketKey, () => (h !== ticket.value?.horizon ? { set: { horizon: h as Horizon } } : null))
 }
+/**
+ * Every pick of the owner, the name shown among them (PersonPicker): picked while the edit of another name is on its way, it is made after
+ * that one and takes it back; when its turn comes and the ticket holds the name already, nothing is sent.
+ */
 function setOwner(name: string) {
   void edit(props.ticketKey, () => (name !== ticket.value?.owner ? { set: { owner: name } } : null))
 }

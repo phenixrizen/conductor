@@ -458,7 +458,11 @@ function ticketChange(c: DispatchChange, names: ChangeNames): string {
     case 'accepted_for':
       return v ? `accepted it for ${v}` : ''
     case 'accepted_at':
-      return v ? '' : 'took the acceptance back'
+      // Set by every acceptance. One for an owner it was not made for says so in accepted_for's row, beside which historyEntries leaves
+      // this one out; one made again for the same owner has no such row (the store records only the fields that change), and this
+      // one says it.
+      if (!v) return 'took the acceptance back'
+      return c.prior ? 'accepted it again' : 'accepted it'
     case 'accepted_by':
     case 'accepted_criteria':
       // The acceptance's own record: accepted_for's row and accepted_at's say it.
@@ -501,20 +505,30 @@ export interface HistoryEntry {
 
 /**
  * A ticket's history as entries, one per operation: an operation's changes are consecutive in the log, so a run of rows of one (actor,
- * opId) is one entry, oldest first.
+ * opId) is one entry, oldest first. An acceptance is said once: by accepted_for's row when its operation has one, else by its time's (an
+ * acceptance made again for the same owner, whose operation records its time and whatever else changed, and no accepted_for).
  */
 export function historyEntries(changes: readonly DispatchChange[], names: ChangeNames = {}): HistoryEntry[] {
-  const out: HistoryEntry[] = []
+  const ops: DispatchChange[][] = []
   for (const c of changes) {
-    const key = `${c.actor}\n${c.opId}`
-    const words = changeWords(c, names)
-    let last = out.at(-1)
-    if (!last || last.key !== key) {
-      last = { key, who: c.by || c.actor, at: c.at, lines: [], seq: c.seq }
-      out.push(last)
-    }
-    if (words) last.lines.push(words)
-    last.seq = c.seq
+    const last = ops.at(-1)
+    if (last && last[0]!.actor === c.actor && last[0]!.opId === c.opId) last.push(c)
+    else ops.push([c])
   }
-  return out.filter((e) => e.lines.length)
+  const out: HistoryEntry[] = []
+  for (const rows of ops) {
+    const first = rows[0]!
+    const forOwner = rows.some((c) => accepting(c, 'accepted_for'))
+    const lines = rows
+      .filter((c) => !(forOwner && accepting(c, 'accepted_at')))
+      .map((c) => changeWords(c, names))
+      .filter((words) => words)
+    if (lines.length) out.push({ key: `${first.actor}\n${first.opId}`, who: first.by || first.actor, at: first.at, lines, seq: rows.at(-1)!.seq })
+  }
+  return out
+}
+
+/** Whether `c` is a ticket's row of an acceptance's `field` as one is made, not as one is taken back: set to a value. */
+function accepting(c: DispatchChange, field: 'accepted_for' | 'accepted_at'): boolean {
+  return c.entity === 'ticket' && c.field === field && !!c.value
 }
