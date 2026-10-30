@@ -156,6 +156,14 @@ add its rule here.
   its processes (`endRuns` in `internal/crew`); anything else a test leaves
   running is ended the same way, before the cleanup that removes what it
   writes to.
+- Check what must last again after a redraw the test causes. A check made
+  only as a view first appears races the page's own redraws (a clock
+  tick, a live update): the run page's graph dropped a task's needs edge
+  at every redraw after its first (Vue Flow ran the editor's connection
+  check on every edge it was handed, #281), and the spec that read the
+  edge on arrival failed only when the page's 5 s tick came first. Switch
+  a mode or toggle a setting, then check again, so a bug that only a
+  redraw shows fails every run.
 - Prove a flake fix the way it failed: `go test -race -count=30` (on the
   Mac too when it flaked there), `npx playwright test <spec> --repeat-each
   10`, and once more under load.
