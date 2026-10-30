@@ -1,8 +1,11 @@
 // Package proc runs one command outside a PTY, bounded: an argv array and
 // never a shell line, a directory, a timeout, the output capped at both
 // ends, what the command leaves in its process group ended with it. The
-// managed-run checks (docs/plans/agent-harness-order.md) are its callers; a
-// probe and git have runners of their own.
+// managed-run checks (docs/plans/agent-harness-order.md) and a project
+// manifest's steps (docs/plans/project-manifests.md) are Run's callers; a
+// manifest's services are Serve's, a command that runs until it is
+// stopped (SIGTERM to its group, SIGKILL after a grace). A probe and git
+// have runners of their own.
 package proc
 
 import (
@@ -72,8 +75,9 @@ type Spec struct {
 	// refused (injectable), so no token comes in by this door: the run
 	// does not start.
 	Inject map[string]string
-	// Timeout is required: the process group is killed past it, and at
-	// most MaxTimeout.
+	// Timeout is required by Run: the process group is killed past it, and
+	// at most MaxTimeout. A service has no timeout of its life: Serve's,
+	// when given, bounds its start alone.
 	Timeout time.Duration
 	// Head and Tail are the bytes of output kept in memory, the first and
 	// the last; DefaultHead and DefaultTail when zero.
@@ -137,6 +141,15 @@ type Result struct {
 // caller's context ending (Canceled).
 var errTimeout = errors.New("proc: timeout")
 
+// sig is a signal lifecycle.signal sends: sigKill ends the process and its
+// group at once, sigTerm asks them to end (Service.Stop).
+type sig int
+
+const (
+	sigKill sig = iota
+	sigTerm
+)
+
 // Run runs s and reports what became of it. The process runs in a process
 // group of its own. When it has exited (on its own, or killed at the
 // timeout or the context's end), and before it is reaped, the whole group
@@ -151,56 +164,90 @@ var errTimeout = errors.New("proc: timeout")
 // so. A Log writer still stalled then is left behind too.
 func Run(ctx context.Context, s Spec) Result {
 	res := Result{Exit: -1}
-	if len(s.Argv) == 0 || s.Argv[0] == "" {
-		res.Err = "proc: no command"
+	head, tail, logLimit, why := s.bounds(false)
+	if why != "" {
+		res.Err = why
 		return res
-	}
-	if s.Timeout <= 0 || s.Timeout > MaxTimeout {
-		res.Err = fmt.Sprintf("proc: the timeout must be between 0 and %s", MaxTimeout)
-		return res
-	}
-	if !filepath.IsAbs(s.Dir) {
-		res.Err = "proc: the directory must be absolute"
-		return res
-	}
-	for k := range s.Env {
-		if err := checkName(k); err != nil {
-			res.Err = err.Error()
-			return res
-		}
-	}
-	for k := range s.Inject {
-		if !injectable(k) {
-			res.Err = fmt.Sprintf("proc: %q is not one of Conductor's own names a command is given", k)
-			return res
-		}
-	}
-	head, tail := s.Head, s.Tail
-	if head <= 0 {
-		head = DefaultHead
-	}
-	if tail <= 0 {
-		tail = DefaultTail
-	}
-	logLimit := s.LogLimit
-	if logLimit <= 0 {
-		logLimit = DefaultLogLimit
 	}
 	if err := ctx.Err(); err != nil {
 		res.Canceled = true
 		res.Err = "proc: " + err.Error()
 		return res
 	}
-
 	ctx, cancel := context.WithTimeoutCause(ctx, s.Timeout, errTimeout)
 	defer cancel()
+	l, res, ok := launch(ctx, s, head, tail, logLimit)
+	if !ok {
+		return res
+	}
+	return l.end(ctx)
+}
+
+// bounds checks s for Run, or for Serve (service), and gives the output it
+// keeps: the head and tail in memory and the log's limit. why says what
+// refuses s, "" when it may start. Run requires a timeout; a service has
+// none of its life (Serve: a timeout given bounds its start alone).
+func (s Spec) bounds(service bool) (head, tail int, logLimit int64, why string) {
+	if len(s.Argv) == 0 || s.Argv[0] == "" {
+		return 0, 0, 0, "proc: no command"
+	}
+	if (s.Timeout <= 0 && !service) || s.Timeout < 0 || s.Timeout > MaxTimeout {
+		return 0, 0, 0, fmt.Sprintf("proc: the timeout must be between 0 and %s", MaxTimeout)
+	}
+	if !filepath.IsAbs(s.Dir) {
+		return 0, 0, 0, "proc: the directory must be absolute"
+	}
+	for k := range s.Env {
+		if err := checkName(k); err != nil {
+			return 0, 0, 0, err.Error()
+		}
+	}
+	for k := range s.Inject {
+		if !injectable(k) {
+			return 0, 0, 0, fmt.Sprintf("proc: %q is not one of Conductor's own names a command is given", k)
+		}
+	}
+	head, tail, logLimit = s.Head, s.Tail, s.LogLimit
+	if head <= 0 {
+		head = DefaultHead
+	}
+	if tail <= 0 {
+		tail = DefaultTail
+	}
+	if logLimit <= 0 {
+		logLimit = DefaultLogLimit
+	}
+	return head, tail, logLimit, ""
+}
+
+// launched is a command started, its exit watched and its output read, as
+// Run and Serve start one: end reads what became of it.
+type launched struct {
+	cmd    *exec.Cmd
+	g      *lifecycle
+	r      *os.File
+	exited <-chan error
+	wait   func() error
+	mem    *capture
+	lg     *logSink
+	eof    chan struct{}
+	res    Result
+}
+
+// launch starts s's command under ctx, whose end kills its group: in a
+// process group of its own, its output into a pipe of ours, its exit
+// watched without reaping, Started told once it exists, and its output
+// read from then on. ok is false when it did not start, or when its exit
+// could not be watched (it is ended then): res says why.
+func launch(ctx context.Context, s Spec, head, tail int, logLimit int64) (l *launched, res Result, ok bool) {
+	res = Result{Exit: -1}
 	// The output pipe is ours: the process and what it starts write to it,
-	// Run reads it after Started, and its end of file says the last holder
+	// it is read after Started, and its end of file says the last holder
 	// is gone, which the wait after the exit relies on.
 	r, w, err := os.Pipe()
 	if err != nil {
 		res.Err = err.Error()
-		return res
+		return nil, res, false
 	}
 	cmd := exec.CommandContext(ctx, s.Argv[0], s.Argv[1:]...)
 	cmd.Dir = s.Dir
@@ -217,7 +264,7 @@ func Run(ctx context.Context, s Spec) Result {
 		r.Close()
 		res.Err = err.Error()
 		classify(ctx, &res)
-		return res
+		return nil, res, false
 	}
 	w.Close() // the process holds the write end now
 	res.Started = started
@@ -227,7 +274,7 @@ func Run(ctx context.Context, s Spec) Result {
 	// command is ended now, while that holds for certain.
 	exited, wait, werr := watchExit(cmd, g)
 	if werr != nil {
-		g.signal(cmd)
+		g.signal(cmd, sigKill)
 		if err := g.reap(cmd); err != nil {
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) {
@@ -241,27 +288,34 @@ func Run(ctx context.Context, s Spec) Result {
 		}
 		res.Err = "proc: the exit could not be watched, so the command was ended: " + werr.Error()
 		classify(ctx, &res)
-		return res
+		return nil, res, false
 	}
 	if s.Started != nil {
 		s.Started(res.Process)
 	}
 
-	mem := &capture{headMax: head, tailMax: tail}
-	var sink io.Writer = mem
-	var lg *logSink
+	l = &launched{cmd: cmd, g: g, r: r, exited: exited, wait: wait, mem: &capture{headMax: head, tailMax: tail}, eof: make(chan struct{}), res: res}
+	var sink io.Writer = l.mem
 	if s.Log != nil {
-		lg = newLogSink(s.Log, logLimit)
-		sink = io.MultiWriter(mem, lg)
+		l.lg = newLogSink(s.Log, logLimit)
+		sink = io.MultiWriter(l.mem, l.lg)
 	}
-	eof := make(chan struct{})
 	go func() {
-		defer close(eof)
+		defer close(l.eof)
 		io.Copy(sink, r)
 	}()
+	return l, res, true
+}
 
-	watchErr := <-exited
-	res.Duration = time.Since(started)
+// end waits for the launched command's exit, ends what it left in its
+// group, reaps it and reads what became of it: the pipe given holdGrace to
+// close at the exit (Killed: held by a child, which went with the group)
+// and WaitDelay after the reaping (a holder that left the group is left
+// alone, and Err says so).
+func (l *launched) end(ctx context.Context) Result {
+	res := l.res
+	watchErr := <-l.exited
+	res.Duration = time.Since(res.Started)
 	// The pipe closes with the process, at once, unless a child it left
 	// behind holds it: that child goes with the group now. A watch that
 	// failed saw no exit: the process is ended now, while its id is its own
@@ -269,15 +323,15 @@ func Run(ctx context.Context, s Spec) Result {
 	held := false
 	if watchErr == nil {
 		select {
-		case <-eof:
+		case <-l.eof:
 		case <-time.After(holdGrace):
 			held = true
 		}
 	}
-	g.signal(cmd)
-	err = wait()
-	if cmd.ProcessState != nil {
-		res.Exit, res.Signal = exitStatus(cmd.ProcessState)
+	l.g.signal(l.cmd, sigKill)
+	err := l.wait()
+	if l.cmd.ProcessState != nil {
+		res.Exit, res.Signal = exitStatus(l.cmd.ProcessState)
 	}
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
@@ -288,18 +342,18 @@ func Run(ctx context.Context, s Spec) Result {
 	}
 	classify(ctx, &res)
 	select {
-	case <-eof:
+	case <-l.eof:
 		res.Killed = held
 	case <-time.After(WaitDelay):
 		// A holder that left the group: not ours to kill any more.
-		r.Close()
-		<-eof
+		l.r.Close()
+		<-l.eof
 		res.Err = "proc: a process that left the group still holds the output; it is left alone"
 	}
-	r.Close()
-	res.Head, res.Tail, res.Total, res.Truncated = mem.bytes()
-	if lg != nil {
-		res.LogErr = lg.finish(WaitDelay)
+	l.r.Close()
+	res.Head, res.Tail, res.Total, res.Truncated = l.mem.bytes()
+	if l.lg != nil {
+		res.LogErr = l.lg.finish(WaitDelay)
 	}
 	return res
 }

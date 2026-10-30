@@ -20,17 +20,23 @@ type lifecycle struct {
 	reaped bool
 }
 
-// signal kills the process's group, and the process itself should it have
-// joined another group (Setpgid makes a group; it does not keep the process
-// in it). os.ErrProcessDone once the process is reaped, or before it exists.
-func (g *lifecycle) signal(cmd *exec.Cmd) error {
+// signal sends s to the process's group, and to the process itself should
+// it have joined another group (Setpgid makes a group; it does not keep the
+// process in it): sigKill kills them, sigTerm asks them to end (a service's
+// stop). It is the one place proc signals a process. os.ErrProcessDone once
+// the process is reaped, or before it exists.
+func (g *lifecycle) signal(cmd *exec.Cmd, s sig) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.reaped || cmd.Process == nil {
 		return os.ErrProcessDone
 	}
-	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	n := syscall.SIGKILL
+	if s == sigTerm {
+		n = syscall.SIGTERM
+	}
+	syscall.Kill(-cmd.Process.Pid, n)
+	if err := cmd.Process.Signal(n); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	return nil
@@ -49,8 +55,12 @@ func (g *lifecycle) reap(cmd *exec.Cmd) error {
 // process through the lifecycle, so never after the reaping.
 func attr(cmd *exec.Cmd, g *lifecycle) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return g.signal(cmd) }
+	cmd.Cancel = func() error { return g.signal(cmd, sigKill) }
 }
+
+// noServiceRunner is nil here: Serve runs a service. A test makes it the
+// refusal of a platform without a process group (run_other.go).
+var noServiceRunner = func() error { return nil }
 
 // group is the command's process group: its own pid (Setpgid).
 func group(cmd *exec.Cmd) int { return cmd.Process.Pid }
