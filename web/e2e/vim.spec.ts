@@ -494,6 +494,18 @@ async function serverCaughtUp(page: Page, id: string): Promise<void> {
   // Behind keys Neovim never took and the open of another tab's Neovim (15 s at most, the server's bound).
   await page.waitForFunction((ts) => !!(window as unknown as SocketSeam).pongs?.includes(ts), ts, { timeout: 30_000 })
 }
+/** Hands the page a frame on session id's connection as its server would send it. */
+async function deliver(page: Page, id: string, msg: Record<string, unknown>): Promise<void> {
+  await page.evaluate(
+    ({ id, frame }) => {
+      const w = window as unknown as SocketSeam
+      const ws = w.sockets?.filter((s) => s.url.includes(`/ws/sessions/${id}?`) && s.readyState === WebSocket.OPEN).pop()
+      if (!ws) throw new Error(`no open connection to session ${id}`)
+      ws.onmessage?.(new MessageEvent('message', { data: new Uint8Array(frame).buffer }))
+    },
+    { id, frame: [...controlFrame(msg)] },
+  )
+}
 
 // Characters typed in insert mode show at once (the local echo); Neovim, stopped here (SIGSTOP, so it reads none of them), dies
 // before it has them. The tab keeps them: the text Neovim last held with what was typed laid over it, and its changes that come
@@ -542,6 +554,69 @@ test('a Neovim lost while typed characters wait for it keeps them in its tab', a
     await expect(lines).toContainText('alphaxyz')
     // And the banner says which characters Neovim never had.
     await expect(area.locator('[data-nvim-unconfirmed]')).toHaveText('xyz')
+    await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible()
+  } finally {
+    await api.stopSession(s.id)
+  }
+})
+
+// The same behind another tab: a tab not in front whose Neovim is lost keeps the characters typed that it never had, and a
+// refusal of them that comes after its end changes nothing, as in front. Keys that reach the server once the editor of a Neovim
+// that died has been let go are refused, and the tab not in front took that word as if its Neovim lived (#429); the refusal is
+// handed to the page here, so the order is the test's, not the machine's.
+test('a Neovim lost behind another tab keeps the characters typed it never had, though a refusal of them follows its end', async ({ page, api, state }) => {
+  await watchSockets(page)
+  const cwd = join(state.root, 'files-vim-lost-held')
+  mkdirSync(cwd, { recursive: true })
+  writeFileSync(join(cwd, 'notes.txt'), 'alpha\n')
+  writeFileSync(join(cwd, 'other.txt'), 'beta\n')
+  const s = await api.ok<Session>('POST', '/api/sessions', { agentId: 'claude', name: 'vim-lost-held', cwd })
+  try {
+    await page.goto(`/sessions/${s.id}`)
+    await page.locator('[data-inspector] [data-rail-item="explorer"]').click()
+    const pane = page.locator('[data-files-mode]')
+    await expect(pane.locator('[data-files-tree] [data-file-node]').first()).toBeVisible({ timeout: 30_000 })
+    await pane.locator(`[data-file-node="${cwd}/notes.txt"]`).click()
+    const area = page.locator('[data-editor-area]')
+    await expect(area.locator('.monaco-editor')).toBeVisible({ timeout: 30_000 })
+    await area.locator('[data-editor-keymap]').click()
+    const status = area.locator('[data-nvim-status]')
+    await expect(status).toHaveAttribute('data-nvim-mode', /^(n|normal)$/, { timeout: 30_000 })
+    const lines = area.locator('.monaco-editor .view-lines')
+    const tab = (name: string) => area.locator('[data-editor-tab]', { hasText: name })
+    await lines.click()
+    await page.keyboard.type(':echo getpid()')
+    await page.keyboard.press('Enter')
+    const message = status.locator('[data-nvim-message]')
+    await expect(message).toHaveText(/^\d+$/, { timeout: 15_000 })
+    const pid = Number(await message.textContent())
+    await page.keyboard.type('A')
+    await expect(status.locator('[data-nvim-mode-words]')).toHaveText('-- INSERT --', { timeout: 15_000 })
+    await expect(area.locator('[data-editor-keymap]')).toBeEnabled({ timeout: 15_000 })
+    process.kill(pid, 'SIGSTOP')
+    await page.keyboard.type('xyz')
+    await expect(lines).toContainText('alphaxyz', { timeout: 5_000 })
+    // Another tab in front: notes.txt's Neovim held behind it, what was typed laid over its text.
+    await pane.locator(`[data-file-node="${cwd}/other.txt"]`).click()
+    await expect(area.locator('[data-editor-tab-active]')).toContainText('other.txt')
+    process.kill(pid, 'SIGKILL')
+    // The keys typed while it was stopped, the last sent of each.
+    const sent = (await page.evaluate(() => (window as unknown as SocketSeam).nvimSent ?? [])).reverse()
+    const id = sent.find((k) => k.keys === 'x')?.id ?? ''
+    const ySeq = sent.find((k) => k.keys === 'y' && k.id === id)?.seq
+    expect(id).not.toBe('')
+    expect(ySeq).toBeGreaterThan(0)
+    // Its end, then a refusal of one of the keys it never had, as for keys that reached the server once its editor was let go.
+    await page.waitForFunction((id) => !!(window as unknown as SocketSeam).nvimClosed?.includes(id), id, { timeout: 15_000 })
+    await deliver(page, s.id, { t: 'nvim_event', id, kind: 'error', ack: ySeq, code: 'file_denied', message: 'session: file access denied' })
+    // Whatever the server itself said of the keys typed, the page has had it.
+    await serverCaughtUp(page, s.id)
+    // In front again: lost, the text it last held with every character it never had, all named.
+    await tab('notes.txt').click()
+    await expect(area.locator('[data-nvim-lost]')).toContainText('Neovim ended unexpectedly', { timeout: 15_000 })
+    await expect(lines).toContainText('alphaxyz')
+    await expect(area.locator('[data-nvim-unconfirmed]')).toHaveText('xyz')
+    await expect(status).not.toContainText('Keys did not reach Neovim')
     await expect(area.locator('[data-editor-tab-active] [data-editor-dirty]')).toBeVisible()
   } finally {
     await api.stopSession(s.id)

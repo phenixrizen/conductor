@@ -421,8 +421,10 @@ function follow(bridge: NvimBridge, id: string, echoAsLeft: NvimEcho | null, fro
       // A question it asks meanwhile shows when the tab does (its buttons answer it).
       h.state.message = ev.messageKind === 'clear' ? '' : (ev.text ?? '')
       h.state.messageKind = ev.messageKind ?? ''
-    } else if (ev.kind === 'error' && ev.ack) {
-      // Keys refused while the tab was not in front: said on its status line when it is, and its Neovim kept until then.
+    } else if (ev.kind === 'error' && ev.ack && !h.state.lost) {
+      // Keys refused while the tab was not in front: said on its status line when it is, and its Neovim kept until then. Not once its
+      // Neovim is lost, as in front (onNvimEvent): keys refused after its end (its editor let go) are among those it never had, which
+      // the tab keeps over its text and names; taken off, one was gone from the tab (#429).
       const keys = echoAsLeft?.noteRefused(ev.ack, ev.text) ?? ev.text ?? ''
       h.state.refused = (h.state.refused ?? '') + keys
       h.state.message = `Keys did not reach Neovim (${ev.message ?? ev.code ?? 'refused'}): ${h.state.refused}`
