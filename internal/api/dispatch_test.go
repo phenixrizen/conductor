@@ -26,7 +26,10 @@ import (
 )
 
 // The Dispatch routes (docs/plans/dispatch.md, PR-5), through the real
-// store in a temp data directory.
+// store in a temp data directory. Each test has a server and a store of
+// its own, and runs beside the others after the package's sequential
+// tests: a store's every commit is synced to the disk, and the largest
+// fixtures take hundreds of them.
 
 // dispatchOps mints the tests' operation ids.
 var dispatchOps atomic.Int64
@@ -246,6 +249,7 @@ func eachDispatchRoute(t *testing.T, srv *Server, f func(method, path string, bo
 // wrong one, a host token and a share token, a controller's link
 // included, are refused 401, and nothing is written.
 func TestDispatchRoutesAreTheAdminsAlone(t *testing.T) {
+	t.Parallel()
 	e := dispatchEnv(t)
 	// Every refusal is the token's: the per-client limiter would answer
 	// some with 429.
@@ -273,6 +277,7 @@ func TestDispatchRoutesAreTheAdminsAlone(t *testing.T) {
 // A switchyard keeps no tickets: every Dispatch route answers 403
 // switchyard, and no store is opened in its data directory.
 func TestDispatchOnASwitchyard(t *testing.T) {
+	t.Parallel()
 	e := switchyardEnv(t, true)
 	eachDispatchRoute(t, e.srv, func(method, path string, body any) {
 		if resp, out := e.do(method, path, adminToken, body); resp.StatusCode != http.StatusForbidden || errorCode(out) != "switchyard" {
@@ -292,6 +297,7 @@ func TestDispatchOnASwitchyard(t *testing.T) {
 // store, a copy of a new one, opens for writing as a store made there
 // would.)
 func TestDispatchWithoutADataDirectory(t *testing.T) {
+	t.Parallel()
 	e := newTestEnv(t, nil)
 	if e.srv.dispatch == nil {
 		t.Fatal("no Dispatch store in a data directory")
@@ -316,6 +322,7 @@ func TestDispatchWithoutADataDirectory(t *testing.T) {
 // the server running without it: every route answers 503
 // dispatch_unavailable, unavailable rather than absent.
 func TestDispatchStoreThatCannotOpen(t *testing.T) {
+	t.Parallel()
 	e := newTestEnv(t, func(cfg *config.Config) {
 		cfg.DataDir = filepath.Join(t.TempDir(), "data")
 		dir := filepath.Join(cfg.DataDir, "dispatch")
@@ -355,6 +362,7 @@ func openRaw(t *testing.T, path string) *sql.DB {
 // as it can, and every write is 503 dispatch_unavailable with why, the
 // store left as it was.
 func TestDispatchReadOnlyStoreAnswersReadsAndRefusesWrites(t *testing.T) {
+	t.Parallel()
 	done := doneOf(t)
 	data := filepath.Join(t.TempDir(), "data")
 	dir := filepath.Join(data, "dispatch")
@@ -413,6 +421,7 @@ func TestDispatchReadOnlyStoreAnswersReadsAndRefusesWrites(t *testing.T) {
 // without the archived ones and its counts, and the bodies the store
 // would not look at.
 func TestDispatchProjectRoutes(t *testing.T) {
+	t.Parallel()
 	e := dispatchEnv(t)
 	create := map[string]any{"opId": "p1", "byName": "Nate", "key": "CND", "name": "Conductor", "description": "The <app> & more"}
 	status, raw, out := e.call(t, "POST", "/api/dispatch/projects", create)
@@ -539,6 +548,7 @@ func TestDispatchProjectRoutes(t *testing.T) {
 // The people: the directory read by name, a name added, and one held
 // already refused.
 func TestDispatchPeopleRoutes(t *testing.T) {
+	t.Parallel()
 	e := dispatchEnv(t)
 	if out := e.expect(t, "GET", "/api/dispatch/people", nil, http.StatusOK, ""); len(out["people"].([]any)) != 0 {
 		t.Fatalf("people: %v", out)
@@ -567,6 +577,7 @@ func TestDispatchPeopleRoutes(t *testing.T) {
 // cycle, a delete and what a tombstone answers, its undelete, the history
 // and the comments.
 func TestDispatchTicketRoutes(t *testing.T) {
+	t.Parallel()
 	done := doneOf(t)
 	e := dispatchEnv(t)
 	ctx := context.Background()
@@ -727,6 +738,7 @@ func TestDispatchTicketRoutes(t *testing.T) {
 // The list filters and sorts on the server, pages by its cursor and says
 // how many it holds; a value outside its vocabulary or bound is 400.
 func TestDispatchTicketListFiltersAndRefusesBadValues(t *testing.T) {
+	t.Parallel()
 	done := doneOf(t)
 	e := dispatchEnv(t)
 	ctx := context.Background()
@@ -804,6 +816,7 @@ func TestDispatchTicketListFiltersAndRefusesBadValues(t *testing.T) {
 // one's and a refused one's, 404 for an id unknown or another actor's,
 // 400 for an id that is not one.
 func TestDispatchReceiptIsReadBackWithoutActing(t *testing.T) {
+	t.Parallel()
 	done := doneOf(t)
 	e := dispatchEnv(t)
 	created := e.expect(t, "POST", "/api/dispatch/projects", map[string]any{"opId": "r1", "key": "CND", "name": "Conductor"}, http.StatusCreated, "")
@@ -836,6 +849,7 @@ func TestDispatchReceiptIsReadBackWithoutActing(t *testing.T) {
 // store's bound, and a body past maxTicketBody is 413 bound, on the
 // create and on the edit. The other writes take 64 KiB.
 func TestDispatchTicketBodiesAreBounded(t *testing.T) {
+	t.Parallel()
 	e := dispatchEnv(t)
 	e.newDispatchProject(t, "BND", nil)
 	description := strings.Repeat(`"`, dispatch.MaxTicketDescription/2) + strings.Repeat(`\`, dispatch.MaxTicketDescription/2)
@@ -1033,8 +1047,6 @@ func buildLargestTicket(t *testing.T, e *testEnv, f filler, key string) largestT
 // '<' and '>', which the reply holds as they are and never as the six
 // bytes of the default encoder.
 func TestDispatchTheLargestTicketIsUnderItsBound(t *testing.T) {
-	// Each makes hundreds of operations, a commit and its sync each: the
-	// three run beside each other, after the package's sequential tests.
 	t.Parallel()
 	for i, f := range []filler{worstFiller, angleFiller} {
 		t.Run(f.name, func(t *testing.T) {
@@ -1159,8 +1171,6 @@ func worstViewQuery(t *testing.T) string {
 // every text at its escaped worst, is under maxProjectReply and read back
 // whole.
 func TestDispatchTheLargestProjectIsUnderItsBound(t *testing.T) {
-	// Each makes hundreds of operations, a commit and its sync each: the
-	// three run beside each other, after the package's sequential tests.
 	t.Parallel()
 	done := doneOf(t)
 	e := dispatchEnv(t)
@@ -1222,8 +1232,6 @@ func TestDispatchTheLargestProjectIsUnderItsBound(t *testing.T) {
 // whole over two pages, each under maxProjectsPage: a summary carries
 // none of what grows.
 func TestDispatchProjectsArePagedUnderTheirBound(t *testing.T) {
-	// Each makes hundreds of operations, a commit and its sync each: the
-	// three run beside each other, after the package's sequential tests.
 	t.Parallel()
 	done := doneOf(t)
 	e := dispatchEnv(t)
@@ -1277,6 +1285,7 @@ func TestDispatchProjectsArePagedUnderTheirBound(t *testing.T) {
 // which removes the first's link. A run link names a run the engine holds
 // or has a record of, and nothing else.
 func TestDispatchRunTicketLookup(t *testing.T) {
+	t.Parallel()
 	done := doneOf(t)
 	e := dispatchEnv(t)
 	ctx := context.Background()
@@ -1384,6 +1393,7 @@ func (e *testEnv) eventStream(t *testing.T) <-chan string {
 // owner, a person whose event names no id) and an edit; nothing for a
 // refusal.
 func TestDispatchEventsReachTheStream(t *testing.T) {
+	t.Parallel()
 	e := dispatchEnv(t)
 	queued := e.srv.events.subscribe()
 	defer e.srv.events.unsubscribe(queued)
