@@ -2180,54 +2180,175 @@ func TestDispatchEventsReachTheStream(t *testing.T) {
 	}
 }
 
+// Every write of this change reaches the pages as dispatch events naming
+// what it changed, a commit's queued as one entry before its reply and
+// written on a live stream in order: a comment's names it and its
+// ticket; a relation's both its tickets, the one the route names first;
+// a link's its ticket; a label's, a milestone's and a view's their
+// project, and a label's or a milestone's delete every ticket it left
+// beside it; a view of every project names no project. A refusal sends
+// nothing.
+func TestDispatchEventsNameWhatEveryWriteChanged(t *testing.T) {
+	t.Parallel()
+	e := dispatchEnv(t)
+	queued := e.srv.events.subscribe()
+	defer e.srv.events.unsubscribe(queued)
+	stream := e.eventStream(t)
+	var streamed []string
+	var seq int64
+	// commit fails the test unless the next entry queued is one commit's
+	// events, those wanted in their order, each with the commit's seq,
+	// later than the commit before it.
+	commit := func(what string, want ...dispatchEvent) {
+		t.Helper()
+		var msg []byte
+		select {
+		case msg = <-queued:
+		default:
+			t.Fatalf("%s: no event queued by the time the reply came", what)
+		}
+		var got []dispatchEvent
+		for _, data := range dispatchData(t, msg) {
+			var ev dispatchEvent
+			if err := json.Unmarshal([]byte(data), &ev); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, ev)
+			streamed = append(streamed, "dispatch "+data)
+		}
+		if len(got) == 0 || got[0].Seq <= seq {
+			t.Fatalf("%s: %+v after the seq %d", what, got, seq)
+		}
+		seq = got[0].Seq
+		for i := range want {
+			want[i].Seq = seq
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s: %+v, want %+v", what, got, want)
+		}
+	}
+	project := e.newDispatchProject(t, "EVW", nil)
+	commit("the project's create", dispatchEvent{Entity: "project", ID: project["id"].(string), Project: "EVW"})
+	ticket := func(tk map[string]any) dispatchEvent {
+		id := tk["id"].(string)
+		return dispatchEvent{Entity: "ticket", ID: id, Ticket: id, Project: "EVW"}
+	}
+	a := e.newDispatchTicket(t, "EVW", "A", nil)
+	commit("A's create", ticket(a))
+	b := e.newDispatchTicket(t, "EVW", "B", nil)
+	commit("B's create", ticket(b))
+	write := func(path string, body map[string]any, status int) map[string]any {
+		t.Helper()
+		body["opId"] = opID()
+		return e.expect(t, "POST", path, body, status, "")
+	}
+
+	// A comment's add, edit and delete name it and its ticket.
+	comment := entityOf(t, write("/api/dispatch/tickets/EVW-1/comments", map[string]any{"body": "Said"}, http.StatusCreated), "comment")["id"].(string)
+	commented := dispatchEvent{Entity: "comment", ID: comment, Ticket: a["id"].(string), Project: "EVW"}
+	commit("a comment's add", commented)
+	write("/api/dispatch/tickets/EVW-1/comments/"+comment+"/edit", map[string]any{"body": "Said again"}, http.StatusOK)
+	commit("a comment's edit", commented)
+	write("/api/dispatch/tickets/EVW-1/comments/"+comment+"/delete", map[string]any{}, http.StatusOK)
+	commit("a comment's delete", commented)
+
+	// A relation's add and removal name both its tickets, the route's
+	// first; a link's its ticket.
+	relation := receiptOf(t, write("/api/dispatch/tickets/EVW-1/relations", map[string]any{"kind": "blocks", "to": "EVW-2"}, http.StatusCreated))["id"].(string)
+	commit("a relation's add", ticket(a), ticket(b))
+	write("/api/dispatch/tickets/EVW-2/relations/"+relation+"/delete", map[string]any{}, http.StatusOK)
+	commit("a relation's removal", ticket(b), ticket(a))
+	link := receiptOf(t, write("/api/dispatch/tickets/EVW-1/links", map[string]any{"kind": "external", "url": "https://example.com/1"}, http.StatusCreated))["id"].(string)
+	commit("a link's add", ticket(a))
+	write("/api/dispatch/tickets/EVW-1/links/"+link+"/delete", map[string]any{}, http.StatusOK)
+	commit("a link's removal", ticket(a))
+
+	// A label's and a milestone's name their project, and their delete
+	// every ticket it left.
+	label := entityOf(t, write("/api/dispatch/projects/EVW/labels", map[string]any{"name": "api", "color": "blue"}, http.StatusCreated), "label")["id"].(string)
+	labelled := dispatchEvent{Entity: "label", ID: label, Project: "EVW"}
+	commit("a label's create", labelled)
+	write("/api/dispatch/projects/EVW/labels/"+label+"/edit", map[string]any{"color": "red"}, http.StatusOK)
+	commit("a label's edit", labelled)
+	write("/api/dispatch/tickets/EVW-1/edit", map[string]any{"add": map[string]any{"labels": []string{label}}}, http.StatusOK)
+	commit("the label set on A", ticket(a))
+	write("/api/dispatch/projects/EVW/labels/"+label+"/delete", map[string]any{}, http.StatusOK)
+	commit("a label's delete", labelled, ticket(a))
+	milestone := entityOf(t, write("/api/dispatch/projects/EVW/milestones", map[string]any{"name": "1.0"}, http.StatusCreated), "milestone")["id"].(string)
+	planned := dispatchEvent{Entity: "milestone", ID: milestone, Project: "EVW"}
+	commit("a milestone's create", planned)
+	write("/api/dispatch/projects/EVW/milestones/"+milestone+"/edit", map[string]any{"state": "closed"}, http.StatusOK)
+	commit("a milestone's edit", planned)
+	write("/api/dispatch/tickets/EVW-2/edit", map[string]any{"set": map[string]any{"milestone": milestone}}, http.StatusOK)
+	commit("the milestone set on B", ticket(b))
+	write("/api/dispatch/projects/EVW/milestones/"+milestone+"/delete", map[string]any{}, http.StatusOK)
+	commit("a milestone's delete", planned, ticket(b))
+
+	// A view's name its project, none for a view of every project.
+	view := entityOf(t, write("/api/dispatch/views", map[string]any{"project": "EVW", "name": "Mine", "kind": "list", "query": map[string]any{}}, http.StatusCreated), "view")["id"].(string)
+	viewed := dispatchEvent{Entity: "view", ID: view, Project: "EVW"}
+	commit("a view's create", viewed)
+	write("/api/dispatch/views/"+view+"/edit", map[string]any{"kind": "board"}, http.StatusOK)
+	commit("a view's edit", viewed)
+	write("/api/dispatch/views/"+view+"/delete", map[string]any{}, http.StatusOK)
+	commit("a view's delete", viewed)
+	every := entityOf(t, write("/api/dispatch/views", map[string]any{"name": "Every", "kind": "list", "query": map[string]any{}}, http.StatusCreated), "view")["id"].(string)
+	commit("a view of every project", dispatchEvent{Entity: "view", ID: every})
+
+	// A refusal, kept or not, sends nothing.
+	e.expect(t, "POST", "/api/dispatch/tickets/EVW-9/comments", map[string]any{"opId": opID(), "body": "x"}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/projects/EVW/labels", map[string]any{"opId": opID(), "name": "x", "color": "plaid"}, http.StatusConflict, "invalid")
+	e.expect(t, "POST", "/api/dispatch/views/"+view+"/edit", map[string]any{"opId": opID(), "name": "x"}, http.StatusNotFound, "not_found")
+	e.expect(t, "POST", "/api/dispatch/tickets/EVW-1/links/nope/delete", map[string]any{"opId": opID()}, http.StatusBadRequest, "invalid_request")
+	if len(queued) != 0 {
+		t.Fatalf("a refusal sent %d entries", len(queued))
+	}
+	// The live stream carries each event in order, no other dispatch event
+	// between them.
+	for _, w := range streamed {
+		found := false
+		for ev := range stream {
+			if ev == w {
+				found = true
+				break
+			}
+			if strings.HasPrefix(ev, "dispatch ") {
+				t.Fatalf("the stream sent %s before %s", ev, w)
+			}
+		}
+		if !found {
+			t.Fatalf("the stream ended before %s", w)
+		}
+	}
+}
+
 // A commit that changed more entities than a client's queue holds
-// entries, a label deleted on more tickets than eventQueue, reaches every
-// client as one entry and leaves its stream open: a client nobody drains
-// while the store commits holds the commit as one entry, the label's
+// entries reaches every client as one entry and leaves its stream open:
+// a label and then a milestone deleted through their routes, each from
+// more tickets than eventQueue. A client that reads nothing while a
+// delete commits holds it as one entry, the label's (or the milestone's)
 // event and one for the tickets it left, more than maxDispatchEach of
-// them, and a live stream carries those and then the next commit's. An
-// entry per change dropped the client nobody drained at the 257th, and
-// the live stream too unless its handler wrote out enough of them while
-// the commit queued them.
+// them, naming no ticket; a live GET /api/events stream carries those,
+// stays open through both, and carries the next commit's. An entry per
+// change dropped the client that read nothing at the 257th, and the live
+// stream too unless its handler wrote out enough of them while the
+// commit queued them.
 func TestDispatchALargeCommitKeepsTheStreamOpen(t *testing.T) {
 	t.Parallel()
 	e := dispatchEnv(t)
 	ds, done, ctx := e.srv.dispatch, doneOf(t), context.Background()
 	done(ds.CreateProject(ctx, adminOp("Tester"), dispatch.NewProject{Key: "BIG", Name: "Big"}))
 	label := done(ds.CreateLabel(ctx, adminOp("Tester"), "BIG", dispatch.NewLabel{Name: "everywhere", Color: "teal"})).ID
+	milestone := done(ds.CreateMilestone(ctx, adminOp("Tester"), "BIG", dispatch.NewMilestone{Name: "Everything"})).ID
 	var tickets []string
 	for i := range eventQueue + 1 {
-		tickets = append(tickets, done(ds.CreateTicket(ctx, adminOp("Tester"), dispatch.NewTicket{Project: "BIG", Title: fmt.Sprintf("Ticket %d", i+1), Labels: []string{label}})).ID)
+		tickets = append(tickets, done(ds.CreateTicket(ctx, adminOp("Tester"), dispatch.NewTicket{
+			Project: "BIG", Title: fmt.Sprintf("Ticket %d", i+1), Labels: []string{label}, Milestone: milestone,
+		})).ID)
 	}
 	stream := e.eventStream(t)
 	queued := e.srv.events.subscribe()
 	defer e.srv.events.unsubscribe(queued)
-	done(ds.DeleteLabel(ctx, adminOp("Tester"), "BIG", label))
-	// The delete's events: the label's, then one for the tickets it left,
-	// naming no ticket, with the commit's seq.
-	if len(queued) != 1 {
-		t.Fatalf("the delete queued %d entries, want 1", len(queued))
-	}
-	var want []dispatchEvent
-	for _, data := range dispatchData(t, <-queued) {
-		var ev dispatchEvent
-		if err := json.Unmarshal([]byte(data), &ev); err != nil {
-			t.Fatal(err)
-		}
-		want = append(want, ev)
-	}
-	if len(want) != 2 || want[0].Entity != "label" || want[0].ID != label || want[0].Ticket != "" || want[0].Project != "BIG" ||
-		want[1] != (dispatchEvent{Seq: want[0].Seq, Entity: "ticket", Project: "BIG"}) {
-		t.Fatalf("the delete's events: %+v, want the label's and one for its tickets", want)
-	}
-	select {
-	case _, open := <-queued:
-		if !open {
-			t.Fatal("the client nobody drained was dropped")
-		}
-		t.Fatal("an entry more than the delete's")
-	default:
-	}
 	// next is the next dispatch event on the live stream.
 	next := func(what string) dispatchEvent {
 		t.Helper()
@@ -2245,13 +2366,49 @@ func TestDispatchALargeCommitKeepsTheStreamOpen(t *testing.T) {
 		t.Fatalf("the stream ended before %s", what)
 		return dispatchEvent{}
 	}
-	for i, w := range want {
-		if ev := next(fmt.Sprintf("the delete's event %d", i)); ev != w {
-			t.Fatalf("the stream's event %d of the delete: %+v, want %+v", i, ev, w)
+	var seq int64
+	for _, del := range []struct{ entity, id string }{{"label", label}, {"milestone", milestone}} {
+		e.expect(t, "POST", "/api/dispatch/projects/BIG/"+del.entity+"s/"+del.id+"/delete", map[string]any{"opId": opID()}, http.StatusOK, "")
+		// Its events, queued before the reply: its own, then one for the
+		// tickets it left, naming no ticket, with the commit's seq.
+		if len(queued) != 1 {
+			t.Fatalf("the %s's delete queued %d entries, want 1", del.entity, len(queued))
+		}
+		var want []dispatchEvent
+		for _, data := range dispatchData(t, <-queued) {
+			var ev dispatchEvent
+			if err := json.Unmarshal([]byte(data), &ev); err != nil {
+				t.Fatal(err)
+			}
+			want = append(want, ev)
+		}
+		if len(want) != 2 || want[0].Entity != del.entity || want[0].ID != del.id || want[0].Ticket != "" || want[0].Project != "BIG" ||
+			want[0].Seq <= seq || want[1] != (dispatchEvent{Seq: want[0].Seq, Entity: "ticket", Project: "BIG"}) {
+			t.Fatalf("the %s's delete: %+v, want its event and one for its tickets", del.entity, want)
+		}
+		seq = want[0].Seq
+		for i, w := range want {
+			if ev := next(fmt.Sprintf("the %s's delete's event %d", del.entity, i)); ev != w {
+				t.Fatalf("the stream's event %d of the %s's delete: %+v, want %+v", i, del.entity, ev, w)
+			}
 		}
 	}
+	select {
+	case _, open := <-queued:
+		if !open {
+			t.Fatal("the client that read nothing was dropped")
+		}
+		t.Fatal("an entry more than the deletes'")
+	default:
+	}
 	e.expect(t, "POST", "/api/dispatch/tickets/BIG-1/edit", map[string]any{"opId": opID(), "set": map[string]any{"title": "After"}}, http.StatusOK, "")
-	if ev := next("the edit after the delete"); ev.Entity != "ticket" || ev.ID != tickets[0] || ev.Seq <= want[0].Seq {
+	if ev := next("the edit after the deletes"); ev.Entity != "ticket" || ev.ID != tickets[0] || ev.Seq <= seq {
 		t.Fatalf("the edit's event: %+v", ev)
+	}
+	// Every ticket left both.
+	for _, key := range []string{"BIG-1", fmt.Sprintf("BIG-%d", len(tickets))} {
+		if tk := entityOf(t, e.expect(t, "GET", "/api/dispatch/tickets/"+key, nil, http.StatusOK, ""), "ticket"); len(tk["labels"].([]any)) != 0 || tk["milestoneId"] != "" {
+			t.Fatalf("%s after the deletes: %v", key, tk)
+		}
 	}
 }
