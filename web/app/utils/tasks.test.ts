@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunTask } from '~/composables/useSessions'
-import { CommandRefused, mintCommandId, sendCommand, taskActions, taskBadges, taskCounts, taskWords, type Receipt } from './tasks'
+import { CommandRefused, commandBody, mintCommandId, sendCommand, taskActions, taskBadges, taskCounts, taskWords, type CommandBody, type Receipt } from './tasks'
 
 const task = (p: Partial<RunTask>): RunTask => ({ id: 'build', member: 'lead', kind: 'work', state: 'ready', attempts: 0, ...p })
 
@@ -86,29 +86,88 @@ describe('commands with receipts', () => {
     expect(a).toMatch(/^[0-9a-f]{16}$/)
     expect(b).not.toBe(a)
   })
+  it("mints a command's body: its id, and the revision it expects only when one is given", () => {
+    const body = commandBody(7)
+    expect(body.commandId).toMatch(/^[0-9a-f]{16}$/)
+    expect(body.expectedRevision).toBe(7)
+    expect(commandBody()).not.toHaveProperty('expectedRevision')
+    expect(commandBody(0)).not.toHaveProperty('expectedRevision')
+    expect(commandBody().commandId).not.toBe(body.commandId)
+  })
   it('sends one id, carries the expected revision, and retries a lost reply once with the same id', async () => {
     const ids: string[] = []
     let calls = 0
-    const r = await sendCommand(async (body) => {
+    const r = await sendCommand(async (body: CommandBody) => {
       ids.push(body.commandId)
       expect(body.expectedRevision).toBe(7)
       if (++calls === 1) throw Object.assign(new Error('Cannot reach the server'), { status: 0 })
       return { receipt: receipt({ commandId: body.commandId, repeat: true }) }
-    }, 7)
+    }, commandBody(7))
     expect(calls).toBe(2)
     expect(ids[0]).toBe(ids[1])
-    expect(r.repeat).toBe(true)
-    expect(r.commandId).toBe(ids[0])
+    expect(r.receipt.repeat).toBe(true)
+    expect(r.receipt.commandId).toBe(ids[0])
   })
   it('gives up after a second lost reply, and leaves other errors as they are', async () => {
-    await expect(sendCommand(async () => Promise.reject(Object.assign(new Error('Cannot reach the server'), { status: 0 })))).rejects.toThrow('Cannot reach the server')
-    await expect(sendCommand(async () => Promise.reject(Object.assign(new Error('stale'), { status: 409, code: 'stale_revision' })))).rejects.toThrow('stale')
+    await expect(sendCommand(async () => Promise.reject(Object.assign(new Error('Cannot reach the server'), { status: 0 })), commandBody())).rejects.toThrow('Cannot reach the server')
+    await expect(sendCommand(async () => Promise.reject(Object.assign(new Error('stale'), { status: 409, code: 'stale_revision' })), commandBody())).rejects.toThrow('stale')
   })
   it('turns a refusal with a receipt into its words', async () => {
     const failed = receipt({ status: 'failed', error: 'the task is not in a state for that: it is running', refusal: 'task_state' })
-    const err = await sendCommand(async () => Promise.reject(Object.assign(new Error('refused'), { status: 409, body: { error: { code: 'task_state', message: failed.error }, receipt: failed } }))).catch((e: unknown) => e)
+    const err = await sendCommand(async () => Promise.reject(Object.assign(new Error('refused'), { status: 409, body: { error: { code: 'task_state', message: failed.error }, receipt: failed } })), commandBody()).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(CommandRefused)
     expect((err as CommandRefused).message).toBe('the task is not in a state for that: it is running')
     expect((err as CommandRefused).receipt.refusal).toBe('task_state')
+  })
+})
+
+// The same sender takes a Dispatch operation's body (docs/plans/dispatch.md, useDispatchOps.ts): the op id it carries, its expected
+// revision and display name sent as they are, the whole reply (the receipt and the entity) handed back, a lost reply asked for once
+// more with the same op id, and a refusal (a 409, or a 404 not_found, carrying the receipt) read from the receipt.
+describe('a Dispatch operation sent as a command', () => {
+  /** A Dispatch operation's body and receipt (docs/protocol.md, Dispatch operations). */
+  interface OpBody {
+    opId: string
+    expectedRev?: number
+    byName?: string
+  }
+  interface DispatchReceipt {
+    opId: string
+    intent: string
+    status: 'done' | 'failed'
+    rev?: number
+    error?: string
+    refusal?: string
+    repeat?: boolean
+    missing?: string[]
+  }
+  const op = (p: Partial<DispatchReceipt>): DispatchReceipt => ({ opId: 'op1', intent: 'ticket.edit', status: 'done', rev: 4, ...p })
+  it('sends the op body as it is, retries a lost reply with the same op id, and hands back the whole reply', async () => {
+    const sent: OpBody[] = []
+    const body: OpBody = { opId: mintCommandId(), expectedRev: 3, byName: 'Nate' }
+    const reply = await sendCommand(async (b: OpBody) => {
+      sent.push({ ...b })
+      if (sent.length === 1) throw Object.assign(new Error('Cannot reach the server'), { status: 0 })
+      return { receipt: op({ opId: b.opId, repeat: true }), ticket: { key: 'CND-12', rev: 4 } }
+    }, body)
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toEqual(body)
+    expect(sent[1]).toEqual(body)
+    expect(reply.receipt.opId).toBe(body.opId)
+    expect(reply.receipt.repeat).toBe(true)
+    expect(reply.ticket).toEqual({ key: 'CND-12', rev: 4 })
+  })
+  it("reads a refusal from the operation's receipt, a 404 not_found's among them", async () => {
+    for (const [status, refusal, words] of [
+      [409, 'stale_revision', 'CND-12 is at revision 5, not 3'],
+      [409, 'close_policy', "CND-12 lacks the owner's acceptance"],
+      [404, 'not_found', 'CND-12 is deleted'],
+    ] as const) {
+      const failed = op({ status: 'failed', refusal, error: words, rev: undefined, missing: refusal === 'close_policy' ? ['acceptance'] : undefined })
+      const err = await sendCommand(async () => Promise.reject(Object.assign(new Error('refused'), { status, body: { error: { code: refusal, message: words }, receipt: failed } })), { opId: 'op1' } as OpBody).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(CommandRefused)
+      expect((err as CommandRefused<DispatchReceipt>).message).toBe(words)
+      expect((err as CommandRefused<DispatchReceipt>).receipt.refusal).toBe(refusal)
+    }
   })
 })
