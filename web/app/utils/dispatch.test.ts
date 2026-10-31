@@ -29,6 +29,8 @@ import {
   ticketWords,
   validProjectKey,
 } from './dispatch'
+import { PICK_KEYS, allPages, boardStep, milestoneProgress, moveEdit, newestRows, paletteListed, patchRows, pickAdds, pickEdit, pickHeld, roadmapStep, targetWords, ticketSummaryOf, typedPick, withMoves, withPatched } from './dispatch'
+import type { DispatchTicket, TicketSummary } from '~/composables/useDispatch'
 
 describe('the key parser', () => {
   it("reads a ticket's key as the store does: the project's key, a dash, a number without a leading zero", () => {
@@ -356,5 +358,216 @@ describe("a ticket's history", () => {
       ['took the acceptance back'],
       ['accepted it for Bob'],
     ])
+  })
+})
+
+// PR-9: the board's and the roadmap's moves, the list's letters and their pickers, the rows an edit's answer patches, the roadmap's
+// milestones.
+
+/** A ticket as a list shows it, at revision 1 and in the backlog unless told otherwise. */
+function row(key: string, p: Partial<TicketSummary> = {}): TicketSummary {
+  return { id: key.toLowerCase(), projectId: 'p1', number: Number(key.split('-')[1]), key, title: `Ticket ${key}`, status: 'backlog', priority: 0, horizon: '', owner: '', assignees: [], labels: [], milestoneId: '', parentId: '', blocked: false, createdAt: '2026-10-30T10:00:00Z', updatedAt: '2026-10-30T10:00:00Z', rev: 1, ...p }
+}
+
+describe("the board's and the roadmap's moves", () => {
+  it('move a card a column right or left on the board, never past either end, and never from a status the board lacks', () => {
+    expect(boardStep('backlog', 1)).toBe('ready')
+    expect(boardStep('in_progress', 1)).toBe('in_review')
+    expect(boardStep('in_review', -1)).toBe('in_progress')
+    expect(boardStep('backlog', -1)).toBeNull()
+    expect(boardStep('cancelled', 1)).toBeNull()
+    expect(boardStep('triage', 1)).toBeNull()
+  })
+  it('move a card through Now, Next, Later and Not planned on the roadmap, never past either end', () => {
+    expect(roadmapStep('now', 1)).toBe('next')
+    expect(roadmapStep('next', 1)).toBe('later')
+    expect(roadmapStep('later', 1)).toBe('')
+    expect(roadmapStep('next', -1)).toBe('now')
+    expect(roadmapStep('', -1)).toBe('later')
+    expect(roadmapStep('now', -1)).toBeNull()
+    expect(roadmapStep('', 1)).toBeNull()
+    expect(roadmapStep('someday', 1)).toBeNull()
+  })
+  it("show a moved card in its new column until the store answers, and every other as it is; with no move the rows as they are", () => {
+    const rows = [row('A-1'), row('A-2', { horizon: 'now' })]
+    const moved = withMoves(rows, new Map([['A-1', { status: 'in_review' as const }], ['A-2', { horizon: 'next' as const }]]))
+    expect(moved.map((t) => [t.key, t.status, t.horizon])).toEqual([
+      ['A-1', 'in_review', ''],
+      ['A-2', 'backlog', 'next'],
+    ])
+    // Its entry gone (refused), the card is back where the store holds it.
+    expect(withMoves(rows, new Map()).map((t) => t.status)).toEqual(['backlog', 'backlog'])
+    expect(rows[0]!.status).toBe('backlog')
+  })
+  it('make the edit a move asks for, and none when the card is in that column already', () => {
+    expect(moveEdit(row('A-1'), { status: 'in_review' })).toEqual({ set: { status: 'in_review' } })
+    expect(moveEdit(row('A-1'), { status: 'backlog' })).toBeNull()
+    expect(moveEdit(row('A-1', { horizon: 'now' }), { horizon: 'next' })).toEqual({ set: { horizon: 'next' } })
+    expect(moveEdit(row('A-1', { horizon: 'now' }), { horizon: '' })).toEqual({ set: { horizon: '' } })
+    expect(moveEdit(row('A-1'), { horizon: '' })).toBeNull()
+    expect(moveEdit(row('A-1'), {})).toBeNull()
+  })
+})
+
+describe("the rows an edit's answer patches", () => {
+  it("make a list's summary of a ticket in full, its closed and deleted times only when set", () => {
+    const full = { ...row('A-3', { status: 'done', rev: 4 }), description: 'long', acceptance: '', source: 'native', createdBy: 'Nate', closedAt: '2026-10-30T11:00:00Z', children: { tickets: [], total: 0 }, relations: [], relationsTotal: 0, links: [], attachments: [], comments: [], close: { requires: [], met: { acceptance: false, delivery: false }, missing: [] } } as unknown as DispatchTicket
+    const s = ticketSummaryOf(full)
+    expect(s).toEqual({ ...row('A-3', { status: 'done', rev: 4 }), closedAt: '2026-10-30T11:00:00Z' })
+    expect(s).not.toHaveProperty('description')
+    expect(s).not.toHaveProperty('deletedAt')
+  })
+  it('replace a row by an answer at its revision or later, never by an older one', () => {
+    const rows = [row('A-1', { rev: 3 }), row('A-2', { rev: 2 })]
+    expect(patchRows(rows, row('A-1', { status: 'ready', rev: 4 }))[0]!.status).toBe('ready')
+    expect(patchRows(rows, row('A-1', { status: 'ready', rev: 2 }))[0]!.status).toBe('backlog')
+    expect(patchRows(rows, row('A-9', { rev: 9 }))).toEqual(rows)
+  })
+  it("keep an answer newer than a list read served after it, until a read has the same revision or a later one", () => {
+    const known = new Map([['A-1', row('A-1', { status: 'in_review', rev: 5 })]])
+    expect(newestRows([row('A-1', { rev: 4 }), row('A-2')], known).map((t) => [t.key, t.status, t.rev])).toEqual([
+      ['A-1', 'in_review', 5],
+      ['A-2', 'backlog', 1],
+    ])
+    expect(newestRows([row('A-1', { status: 'done', rev: 6 })], known)[0]!.status).toBe('done')
+    expect(newestRows([row('A-1', { status: 'ready', rev: 5 })], known)[0]!.status).toBe('ready')
+  })
+})
+
+describe("the list's letters and their pickers (Owner decisions, 10)", () => {
+  it('give each letter its field: S status, P priority, A assignees, L labels, M milestone, O owner', () => {
+    expect(PICK_KEYS).toEqual({ s: 'status', p: 'priority', a: 'assignees', l: 'labels', m: 'milestone', o: 'owner' })
+  })
+  it('tick what every ticket picked over holds: a scalar shared by all, a set\'s members held by all', () => {
+    const a = row('A-1', { status: 'ready', priority: 2, assignees: ['person:Ann', 'agent:claude'], labels: ['l1', 'l2'], milestoneId: 'm1', owner: 'Ann' })
+    const b = row('A-2', { status: 'ready', priority: 3, assignees: ['person:Ann'], labels: ['l2'], milestoneId: '', owner: 'Ann' })
+    expect(pickHeld('status', [a, b])).toEqual(['ready'])
+    expect(pickHeld('priority', [a, b])).toEqual([])
+    expect(pickHeld('owner', [a, b])).toEqual(['Ann'])
+    expect(pickHeld('milestone', [a, b])).toEqual([])
+    expect(pickHeld('milestone', [b])).toEqual([''])
+    expect(pickHeld('assignees', [a, b])).toEqual(['person:Ann'])
+    expect(pickHeld('labels', [a, b])).toEqual(['l2'])
+    expect(pickHeld('labels', [])).toEqual([])
+  })
+  it("add a set's member some ticket lacks, and take away one every ticket holds", () => {
+    const a = row('A-1', { labels: ['l1'] })
+    const b = row('A-2', { labels: [] })
+    expect(pickAdds('labels', [a, b], 'l1')).toBe(true)
+    expect(pickAdds('labels', [a], 'l1')).toBe(false)
+    expect(pickAdds('assignees', [a], 'person:Ann')).toBe(true)
+  })
+  it("make each ticket's edit for a pick, none for one holding it already", () => {
+    const t = row('A-1', { status: 'ready', priority: 1, labels: ['l1'], assignees: ['person:Ann'], milestoneId: 'm1', owner: 'Ann' })
+    expect(pickEdit('status', t, 'in_review')).toEqual({ set: { status: 'in_review' } })
+    expect(pickEdit('status', t, 'ready')).toBeNull()
+    expect(pickEdit('priority', t, 4)).toEqual({ set: { priority: 4 } })
+    expect(pickEdit('priority', t, 1)).toBeNull()
+    expect(pickEdit('milestone', t, '')).toEqual({ set: { milestone: '' } })
+    expect(pickEdit('milestone', t, 'm1')).toBeNull()
+    expect(pickEdit('owner', t, 'Bob')).toEqual({ set: { owner: 'Bob' } })
+    expect(pickEdit('owner', t, '')).toEqual({ set: { owner: '' } })
+    expect(pickEdit('owner', t, 'Ann')).toBeNull()
+    expect(pickEdit('labels', t, 'l2', true)).toEqual({ add: { labels: ['l2'] } })
+    expect(pickEdit('labels', t, 'l1', true)).toBeNull()
+    expect(pickEdit('labels', t, 'l1', false)).toEqual({ remove: { labels: ['l1'] } })
+    expect(pickEdit('labels', t, 'l2', false)).toBeNull()
+    expect(pickEdit('assignees', t, 'agent:codex', true)).toEqual({ add: { assignees: ['agent:codex'] } })
+    expect(pickEdit('assignees', t, 'person:Ann', false)).toEqual({ remove: { assignees: ['person:Ann'] } })
+  })
+  it('say the tickets a pick acts on: the key of one, the count of several', () => {
+    expect(targetWords(['A-1'])).toBe('A-1')
+    expect(targetWords(['A-1', 'A-2', 'A-3'])).toBe('3 tickets')
+  })
+})
+
+describe("the roadmap's milestones", () => {
+  const m = (id: string, p: { target?: string; state?: string; name?: string } = {}) => ({ id, name: p.name ?? id, target: p.target ?? '', state: p.state ?? 'open' })
+  it('come open first by their target, the soonest first and one with no target after, then the closed', () => {
+    const order = milestoneProgress([m('closed', { state: 'closed', target: '2026-01-01' }), m('none'), m('late', { target: '2026-12-01' }), m('soon', { target: '2026-11-01' })], [])
+    expect(order.map((p) => p.milestone.id)).toEqual(['soon', 'late', 'none', 'closed'])
+  })
+  it('count the tickets shown in each and those done, the cancelled in neither', () => {
+    const tickets = [row('A-1', { milestoneId: 'm1', status: 'done' }), row('A-2', { milestoneId: 'm1', status: 'in_progress' }), row('A-3', { milestoneId: 'm1', status: 'cancelled' }), row('A-4', { milestoneId: 'm2', status: 'done' }), row('A-5')]
+    expect(milestoneProgress([m('m1'), m('m2'), m('m3')], tickets).map((p) => [p.milestone.id, p.done, p.total])).toEqual([
+      ['m1', 1, 2],
+      ['m2', 1, 1],
+      ['m3', 0, 0],
+    ])
+  })
+})
+
+describe("the palette's Tickets cache", () => {
+  it('reads every page by its cursor: 450 projects over three pages of 200, the last ones among them', async () => {
+    const all = Array.from({ length: 450 }, (_, i) => `P${i}`)
+    const asked: string[] = []
+    const read = async (cursor: string) => {
+      asked.push(cursor)
+      const from = cursor ? Number(cursor) : 0
+      const items = all.slice(from, from + 200)
+      return { items, next: from + 200 < all.length ? String(from + 200) : undefined }
+    }
+    const got = await allPages(read)
+    expect(got).toHaveLength(450)
+    expect(got.at(-1)).toBe('P449')
+    expect(asked).toEqual(['', '200', '400'])
+  })
+
+  it('stops at the most asked for, reading no page past it', async () => {
+    let reads = 0
+    const got = await allPages(async (cursor) => {
+      reads++
+      const from = cursor ? Number(cursor) : 0
+      return { items: Array.from({ length: 200 }, (_, i) => from + i), next: String(from + 200) }
+    }, 500)
+    expect(got).toHaveLength(500)
+    expect(reads).toBe(3)
+  })
+
+  it('lists a ticket not done, cancelled or deleted', () => {
+    expect(paletteListed(row('A-1', { status: 'in_progress' }))).toBe(true)
+    expect(paletteListed(row('A-1', { status: 'done' }))).toBe(false)
+    expect(paletteListed(row('A-1', { status: 'cancelled' }))).toBe(false)
+    expect(paletteListed(row('A-1', { deletedAt: '2026-10-30T11:00:00Z' }))).toBe(false)
+  })
+
+  it("keeps an edit's ticket over a read served before its commit and answered after it: the older row never comes back", () => {
+    const patched = new Map([['A-1', row('A-1', { status: 'ready', rev: 2 })]])
+    const { rows, keep } = withPatched([row('A-1', { rev: 1 }), row('A-2')], patched)
+    expect(rows.map((t) => [t.key, t.status, t.rev])).toEqual([
+      ['A-1', 'ready', 2],
+      ['A-2', 'backlog', 1],
+    ])
+    // Still needed: a later read may be older still.
+    expect([...keep.keys()]).toEqual(['A-1'])
+  })
+
+  it("drops a row an edit's answer closed, when the read is older than that answer", () => {
+    const patched = new Map([['A-1', row('A-1', { status: 'done', rev: 3 })]])
+    expect(withPatched([row('A-1', { rev: 2 }), row('A-2')], patched).rows.map((t) => t.key)).toEqual(['A-2'])
+  })
+
+  it('takes a read that carries the ticket at the revision of the edit or later, and forgets the edit then', () => {
+    const patched = new Map([['A-1', row('A-1', { status: 'ready', rev: 2 })]])
+    const { rows, keep } = withPatched([row('A-1', { status: 'in_review', rev: 3 })], patched)
+    expect(rows[0]!.status).toBe('in_review')
+    expect(keep.size).toBe(0)
+  })
+})
+
+describe('a name typed into the owner and assignee pickers', () => {
+  it('offers the person when only an agent has the name typed: agent:claude never stands for the person Claude', () => {
+    expect(typedPick('assignees', 'Claude', ['person:Nate', 'agent:claude'])).toBe('person:Claude')
+  })
+
+  it('offers nothing new when a person has the name, whatever its case', () => {
+    expect(typedPick('assignees', 'nate', ['person:Nate', 'agent:claude'])).toBeNull()
+    expect(typedPick('owner', 'NATE', ['', 'Nate'])).toBeNull()
+  })
+
+  it('offers the owner typed, trimmed and at most 60 characters, and nothing for a blank', () => {
+    expect(typedPick('owner', '  Priya ', ['', 'Nate'])).toBe('Priya')
+    expect(typedPick('owner', 'x'.repeat(70), [])).toBe('x'.repeat(60))
+    expect(typedPick('assignees', '   ', [])).toBeNull()
   })
 })

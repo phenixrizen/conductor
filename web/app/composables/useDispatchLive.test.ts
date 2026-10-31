@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DispatchOrder, through } from '../utils/dispatchOrder'
 import type { DispatchEvent } from './useDispatch'
 import { DISPATCH_RETRY_MAX_MS, DispatchLive, asDispatchEvent, listWatch, projectsWatch, ticketWatch } from './useDispatchLive'
+import { viewsWatch } from './useDispatchLive'
 
 // The live events' rules (docs/plans/dispatch.md, "The SSE event"), on fake timers: what each page reads again, when, and how often.
 
@@ -370,5 +371,76 @@ describe('the stream data', () => {
     expect(asDispatchEvent(null)).toBeNull()
     expect(asDispatchEvent({ entity: 'ticket' })).toBeNull()
     expect(asDispatchEvent({ seq: '7', entity: 'ticket' })).toBeNull()
+  })
+})
+
+describe("a list's saved views (PR-9)", () => {
+  it('are read again once after the window on a view event of every project (project ""), for a list of any project', async () => {
+    const live = new DispatchLive()
+    const cnd = reads()
+    const api = reads()
+    live.subscribe(viewsWatch(() => 'CND', cnd.read))
+    live.subscribe(viewsWatch(() => 'API', api.read))
+    live.event(ev({ entity: 'view', id: 'v1', ticket: '', project: '' }))
+    expect([cnd.r.count, api.r.count]).toEqual([0, 0])
+    await vi.advanceTimersByTimeAsync(WINDOW - 1)
+    expect([cnd.r.count, api.r.count]).toEqual([0, 0])
+    await vi.advanceTimersByTimeAsync(1)
+    expect([cnd.r.count, api.r.count]).toEqual([1, 1])
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect([cnd.r.count, api.r.count]).toEqual([1, 1])
+  })
+
+  it("are read again on a view event of their own project, and not on another project's", async () => {
+    const live = new DispatchLive()
+    const cnd = reads()
+    const api = reads()
+    live.subscribe(viewsWatch(() => 'CND', cnd.read))
+    live.subscribe(viewsWatch(() => 'API', api.read))
+    live.event(ev({ entity: 'view', id: 'v2', ticket: '', project: 'CND' }))
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect([cnd.r.count, api.r.count]).toEqual([1, 0])
+  })
+
+  it('are not read again for any other event, and three view events in one window are one read', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads()
+    live.subscribe(viewsWatch(() => 'CND', read))
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
+    live.event(ev({ entity: 'label', id: 'l1', ticket: '', project: 'CND' }))
+    live.event(ev({ entity: 'person', id: '', ticket: '', project: '' }))
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(r.count).toBe(0)
+    for (const id of ['v1', 'v2', 'v3']) live.event(ev({ entity: 'view', id, ticket: '', project: id === 'v2' ? 'CND' : '' }))
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect(r.count).toBe(1)
+  })
+
+  it('beside the list, which is read again on its project\'s events and not on a view of every project', async () => {
+    const live = new DispatchLive()
+    const list = reads()
+    const views = reads()
+    live.subscribe(listWatch(() => 'CND', list.read))
+    live.subscribe(viewsWatch(() => 'CND', views.read))
+    live.event(ev({ entity: 'view', id: 'v1', ticket: '', project: '' }))
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect([list.r.count, views.r.count]).toEqual([0, 1])
+    live.event(ev({ entity: 'ticket', id: 't1', ticket: 't1', project: 'CND' }))
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect([list.r.count, views.r.count]).toEqual([1, 1])
+  })
+
+  it('are read again by a snapshot, and a read that fails is asked again after the window, doubled', async () => {
+    const live = new DispatchLive()
+    const { r, read } = reads(2)
+    live.subscribe(viewsWatch(() => 'CND', read))
+    live.snapshot()
+    expect(r.count).toBe(1)
+    await vi.advanceTimersByTimeAsync(WINDOW)
+    expect(r.count).toBe(2)
+    await vi.advanceTimersByTimeAsync(2 * WINDOW)
+    expect(r.count).toBe(3)
+    await vi.advanceTimersByTimeAsync(10 * WINDOW)
+    expect(r.count).toBe(3)
   })
 })

@@ -272,6 +272,10 @@ const edit = serially(async (key: string, make: () => Made): Promise<boolean> =>
   } else if (reply) {
     await caughtUp(key, reply.ticket?.rev ?? reply.receipt.rev)
     void readHistory().catch(() => {})
+  } else {
+    // A failure that is no refusal (both replies lost to the network) may follow a commit: the ticket is read before the next edit is
+    // made, so that one is made on what the store holds, as after a refusal.
+    await caughtUp(key, undefined)
   }
   return !!reply
 })
