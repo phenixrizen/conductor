@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test, type Session } from './fixtures'
+import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatch-helpers'
 
 // The command palette (#302): Ctrl+K opens it over the page and Escape
 // closes it; what needs you is the first row and ↓ then a digit answers it
@@ -312,5 +313,142 @@ test("the editor's own rows (#321): Save writes from the palette, Close file ask
   } else {
     await expect(row('page:keys')).toContainText('Neovim')
     await page.keyboard.press('Escape')
+  }
+})
+
+test("Dispatch's tickets (#409): a key typed puts its ticket first and Enter opens it; → Copy key says so; > New ticket in a project opens the dialog", async ({ page, api, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  const key = await freeProjectKey(api, 'EP')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Palette ticket one' })
+  await makeTicket(api, key, '2', { title: 'Palette ticket two' })
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  const palette = page.locator('[data-palette]')
+  const input = palette.locator('input[data-palette-input]')
+
+  // The key typed: its ticket first in Tickets and first of all, and Enter in the input opens its page.
+  await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible()
+  await input.fill(`${key}-1`)
+  await expect(palette.locator('[data-palette-group="tickets"] [data-palette-row]').first()).toHaveAttribute('data-palette-row', `ticket:${key}-1`)
+  await expect(palette.locator('[data-palette-list] [data-palette-row]').first()).toHaveAttribute('data-palette-row', `ticket:${key}-1`)
+  await expect(palette.locator(`[data-palette-row="ticket:${key}-1"] [data-palette-label]`)).toHaveText(`${key}-1 Palette ticket one`)
+  await input.press('Enter')
+  await expect(palette).toBeHidden()
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}/1$`))
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Palette ticket one')
+
+  // A word of a title finds it too; → shows the row's actions, and Copy key says it copied.
+  await page.keyboard.press('Control+k')
+  await input.fill('palette ticket two')
+  const two = palette.locator(`[data-palette-row="ticket:${key}-2"]`)
+  await expect(two).toBeVisible()
+  await two.focus()
+  await expect(two).toHaveAttribute('data-palette-focused', '')
+  await page.keyboard.press('ArrowRight')
+  await expect(two.locator('[data-palette-actions]')).toBeVisible()
+  await two.locator('[data-palette-action="copy-key"]').click()
+  await expect(page.locator('li').filter({ hasText: `${key}-2 copied` }).last()).toBeVisible({ timeout: 15_000 })
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(`${key}-2`)
+  // Copy key closes the palette: Control+K goes in once it has gone, never into its closing animation, where CI's press was lost.
+  await expect(palette).toBeHidden()
+
+  // > New ticket in the project: the dialog, the ticket made.
+  await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible()
+  await input.fill(`> new ticket in ${key}`)
+  const row = palette.locator(`[data-palette-row="action:new-ticket:${key}"]`)
+  await expect(row).toBeVisible()
+  await row.click()
+  await expect(palette).toBeHidden()
+  const dialog = page.locator('[data-new-ticket]')
+  await expect(dialog).toBeVisible()
+  await expect(page.getByRole('dialog').filter({ has: dialog })).toContainText(`New ticket in ${key}`)
+  await page.locator('[data-new-ticket-title]').fill('Made from the palette')
+  await page.locator('[data-new-ticket-submit]').click()
+  await expect(page.locator('li').filter({ hasText: `${key}-3 made` }).last()).toBeVisible({ timeout: 15_000 })
+  expect((await storedTicket(api, `${key}-3`)).title).toBe('Made from the palette')
+})
+
+test("Dispatch's tickets (#409): a read of them that fails after an event is asked again with no further event, the rows read before shown meanwhile", async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EP')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Read before the failure' })
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  const palette = page.locator('[data-palette]')
+  const input = palette.locator('input[data-palette-input]')
+  await page.keyboard.press('Control+k')
+  await expect(palette).toBeVisible()
+  await input.fill(`${key}-1`)
+  await expect(palette.locator(`[data-palette-row="ticket:${key}-1"] [data-palette-label]`)).toHaveText(`${key}-1 Read before the failure`)
+
+  // The next read of the tickets fails: the event of a ticket made reads them, the read fails, and it is asked again on its own.
+  let failed = 0
+  const tickets = (url: URL) => url.pathname === '/api/dispatch/tickets'
+  await page.route(tickets, async (route) => {
+    if (failed === 0) {
+      failed++
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'internal', message: 'injected by the test' } }) })
+      return
+    }
+    await route.continue()
+  })
+  try {
+    await makeTicket(api, key, '2', { title: 'Made while the read failed' })
+    await input.fill(`${key}-2`)
+    await expect(palette.locator(`[data-palette-row="ticket:${key}-2"] [data-palette-label]`)).toHaveText(`${key}-2 Made while the read failed`)
+    expect(failed).toBe(1)
+    await input.fill(`${key}-1`)
+    await expect(palette.locator(`[data-palette-row="ticket:${key}-1"] [data-palette-label]`)).toHaveText(`${key}-1 Read before the failure`)
+  } finally {
+    await page.unroute(tickets)
+  }
+})
+
+test("Dispatch's tickets (#409): a status picked back while the first pick is on its way is sent after it, made on what the first left", async ({ page, api }) => {
+  const key = await freeProjectKey(api, 'EP')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Picked and picked back' })
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+  const palette = page.locator('[data-palette]')
+  const picker = page.locator('[data-picker]')
+  /** Set status… from the ticket's row, and a choice picked. */
+  const setStatus = async (to: string) => {
+    await page.keyboard.press('Control+k')
+    await expect(palette).toBeVisible()
+    await palette.locator('input[data-palette-input]').fill(`${key}-1`)
+    const row = palette.locator(`[data-palette-row="ticket:${key}-1"]`)
+    await expect(row).toBeVisible()
+    await row.focus()
+    await page.keyboard.press('ArrowRight')
+    await row.locator('[data-palette-action="set-status"]').click()
+    await expect(picker).toHaveAttribute('data-picker-field', 'status')
+    await picker.locator(`[data-pick-value="${to}"]`).click()
+    await expect(picker).toBeHidden()
+  }
+  // The first edit is held until the second is picked.
+  const edits: string[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const edit = (url: URL) => url.pathname === `/api/dispatch/tickets/${key}-1/edit`
+  await page.route(edit, async (route) => {
+    edits.push((route.request().postDataJSON() as { set?: { status?: string } }).set?.status ?? '')
+    if (edits.length === 1) await held
+    await route.continue()
+  })
+  try {
+    await setStatus('ready')
+    await expect.poll(() => edits.length).toBe(1)
+    // The cache still shows Backlog: picked back, it is queued behind Ready and made on what Ready left, not taken for no change.
+    await setStatus('backlog')
+    release()
+    await expect.poll(() => edits).toEqual(['ready', 'backlog'])
+    await expect.poll(async () => (await storedTicket(api, `${key}-1`)).status).toBe('backlog')
+  } finally {
+    release()
+    await page.unroute(edit)
   }
 })

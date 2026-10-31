@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { expect, test, type Session } from './fixtures'
+import { freeProjectKey, makeProject, makeTicket, storedTicket } from './dispatch-helpers'
 
 // Every palette row does what it says (#332): each row run from the
 // palette, its visible effect asserted. A row named for showing something
@@ -30,12 +31,16 @@ async function closePalette(page: Page) {
   }
   await expect(palette).toBeHidden()
 }
-/** Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares), else Ctrl+K where no terminal has the focus. */
+/**
+ * Opens the palette and returns it: Alt+/ (the terminal's way, which the page shares; the layout's own listener, from a terminal or
+ * not). Alt+/ only ever opens it, so a second press is safe where Ctrl+K, a toggle, was not: under load the first Alt+/ opened the
+ * palette after the 1.5 s look, and the Ctrl+K sent then closed it again.
+ */
 async function openPalette(page: Page) {
   const palette = page.locator('[data-palette]')
   await closePalette(page)
   await page.keyboard.press('Alt+/')
-  if (!(await palette.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false))) await page.keyboard.press('Control+k')
+  if (!(await palette.waitFor({ state: 'visible', timeout: 1500 }).then(() => true, () => false))) await page.keyboard.press('Alt+/')
   await expect(palette).toBeVisible()
   return palette
 }
@@ -357,4 +362,86 @@ test('verbs and switches: go, mark, share, answer; the theme, the sidebar, notif
     await expect(palette.locator('[data-palette-chip]')).toHaveText(chip)
     await closePalette(page)
   }
+})
+
+test("the Dispatch pages' rows (#409): go dispatch; the projects page's New project; the project page's views, Save, a saved view and New ticket; a ticket row's Set status… and Assign to me; the ticket page's Copy and Back", async ({ page, api, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await page.addInitScript(() => localStorage.setItem('conductor.displayName', 'Nate'))
+  const key = await freeProjectKey(api, 'ER')
+  await makeProject(api, key)
+  await makeTicket(api, key, '1', { title: 'Rows one' })
+  await page.goto('/agents')
+  await expect(page.locator('[data-session-list]')).toBeVisible({ timeout: 30_000 })
+
+  // go dispatch, the verb: the projects page.
+  const palette = await openPalette(page)
+  await palette.locator('input[data-palette-input]').fill('go dispatch')
+  await expect(palette.locator('[data-palette-row="verb:go:dispatch"]')).toBeVisible()
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/dispatch$/)
+
+  // The projects page's group: New project opens its dialog.
+  await runRow(page, 'page:new-project', 'new project')
+  await expect(page.locator('[data-new-project]')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('[data-new-project]')).toBeHidden()
+
+  // The project page's group: the views, Save the filter as a view, the saved view's own row, New ticket.
+  await page.goto(`/dispatch/${key}`)
+  await expect(page.locator('[data-list-total]')).toHaveAttribute('data-count', '1')
+  await runRow(page, 'page:view:board', 'show the board')
+  await expect(page.locator(`[data-board] [data-card="${key}-1"]`)).toBeVisible()
+  await expect(page).toHaveURL(/view=board/)
+  await runRow(page, 'page:view:list', 'show the list')
+  await expect(page.locator(`[data-ticket-row="${key}-1"]`)).toBeVisible()
+  await runRow(page, 'page:save-view', 'save the filter')
+  await expect(page.locator('[data-view-dialog]')).toBeVisible()
+  await page.locator('[data-view-dialog] [data-view-name-input]').fill('All of it')
+  await page.locator('[data-view-submit]').click()
+  const chip = page.locator('[data-view-chip][data-view-name="All of it"]')
+  await expect(chip).toHaveAttribute('data-active', '')
+  const viewId = (await chip.getAttribute('data-view-chip')) ?? ''
+  try {
+    await runRow(page, 'page:view:roadmap', 'show the roadmap')
+    await expect(page.locator('[data-roadmap]')).toBeVisible()
+    await runRow(page, `page:saved-view:${viewId}`, 'saved view: all of it')
+    await expect(page.locator(`[data-ticket-row="${key}-1"]`)).toBeVisible()
+    await expect(chip).toHaveAttribute('data-active', '')
+    await runRow(page, 'page:new-ticket', `new ticket in ${key}`)
+    await expect(page.locator('[data-new-ticket]')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.locator('[data-new-ticket]')).toBeHidden()
+  } finally {
+    await api.ok('POST', `/api/dispatch/views/${viewId}/delete`, { opId: `${key.toLowerCase()}-vdel` })
+  }
+
+  // A ticket's row: Set status… opens the picker and sets it; Assign to me adds the name as a person.
+  const ticketRow = async () => {
+    const p = await openPalette(page)
+    await p.locator('input[data-palette-input]').fill(`${key}-1`)
+    const row = p.locator(`[data-palette-row="ticket:${key}-1"]`)
+    await expect(row).toBeVisible()
+    await row.focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(row.locator('[data-palette-actions]')).toBeVisible()
+    return row
+  }
+  await (await ticketRow()).locator('[data-palette-action="set-status"]').click()
+  const picker = page.locator('[data-picker]')
+  await expect(picker).toHaveAttribute('data-picker-field', 'status')
+  await picker.locator('[data-pick-value="in_progress"]').click()
+  await expect.poll(async () => (await storedTicket(api, `${key}-1`)).status).toBe('in_progress')
+  await expect(toast(page, `Status of ${key}-1 set`)).toBeVisible({ timeout: 15_000 })
+  await (await ticketRow()).locator('[data-palette-action="assign-me"]').click()
+  await expect.poll(async () => (await storedTicket(api, `${key}-1`)).assignees).toEqual(['person:Nate'])
+  await expect(toast(page, `${key}-1 assigned to Nate`)).toBeVisible({ timeout: 15_000 })
+
+  // The ticket page's group: Copy the key, Back to the project.
+  await page.goto(`/dispatch/${key}/1`)
+  await expect(page.locator('[data-ticket-title]')).toHaveText('Rows one')
+  await runRow(page, 'page:copy-key', `copy ${key}-1`)
+  await expect(toast(page, `${key}-1 copied`)).toBeVisible({ timeout: 15_000 })
+  await runRow(page, 'page:back', `back to ${key}`)
+  await expect(page).toHaveURL(new RegExp(`/dispatch/${key}$`))
 })
