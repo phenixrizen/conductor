@@ -94,7 +94,11 @@
 // hosted service can take them as its wire records. Every bound and wait
 // is a constant of this package, and every record a provider hands the
 // server has a Valid method the guard applies and the provider can call
-// itself.
+// itself. Two returned records have none, since no code of this
+// repository takes them: RoomJoin (Room has no caller until Program item
+// CL1's rooms, which add its check with it) and Entitlement (the private
+// repositories' providers ask the entitlement source; this repository
+// never does).
 //
 // # Stability
 //

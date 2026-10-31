@@ -2,6 +2,7 @@ package ext
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 )
 
@@ -105,8 +106,9 @@ type registry struct {
 var reg = &registry{}
 
 // RegisterIdentity registers the identity provider. One value; it panics on
-// a nil provider, a bad name, a second identity provider, a name another
-// slot holds for a different value, and after Freeze.
+// a nil provider (a nil interface, or one holding a nil pointer), a bad
+// name, a second identity provider, a name another slot holds for a
+// different value, and after Freeze.
 func RegisterIdentity(p IdentityProvider) { register(kindIdentity, p) }
 
 // RegisterRouter registers the decision router; one value, as
@@ -240,7 +242,7 @@ func Freeze() Providers {
 // register adds p to slot k, or panics with the slot and the reason.
 func register(k kind, p Provider) {
 	slot := kindNames[k]
-	if p == nil {
+	if p == nil || nilValue(p) {
 		panic(fmt.Sprintf("ext: register %s: a nil provider", slot))
 	}
 	name := p.Name() // before the lock: a Name that reads the registry must not deadlock
@@ -272,6 +274,18 @@ func register(k kind, p Provider) {
 	}
 	reg.names[name] = p
 	reg.slots[k] = append(held, Entry{Kind: slot, Name: name, Value: p})
+}
+
+// nilValue reports whether p, an interface that is not nil, holds a nil
+// pointer, map, slice, func or channel: a provider that is not there, whose
+// Name would panic without naming the slot or answer for a value that is
+// none.
+func nilValue(p Provider) bool {
+	switch v := reflect.ValueOf(p); v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return v.IsNil()
+	}
+	return false
 }
 
 // sameValue reports whether a and b are one value: of one comparable

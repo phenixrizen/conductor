@@ -60,6 +60,13 @@ func (i incomparable) Route(context.Context, ext.Decision) (ext.Route, error) {
 }
 func (i incomparable) Resolved(context.Context, ext.Resolution) {}
 
+// nilSafe is a provider whose methods never read their receiver: a nil
+// *nilSafe answers a name, and is still no provider.
+type nilSafe struct{}
+
+func (*nilSafe) Name() string     { return "constant" }
+func (*nilSafe) Where() ext.Where { return ext.WhereNative }
+
 // registers is each Register function by its kind, for a fake.
 var registers = []struct {
 	kind string
@@ -130,6 +137,14 @@ func TestRegisterRefuses(t *testing.T) {
 		for kind, fn := range nilRegisters {
 			refuses(t, kind, fn)
 		}
+	})
+	t.Run("typed nil", func(t *testing.T) {
+		fresh(t)
+		for _, r := range registers {
+			refuses(t, r.kind, func() { r.reg((*fake)(nil)) }) // a Name that reads its receiver
+		}
+		refuses(t, ext.KindIdentity, func() { ext.RegisterIdentity((*incomparable)(nil)) }) // a Name of a value receiver
+		refuses(t, ext.KindRuntime, func() { ext.RegisterRuntime((*nilSafe)(nil)) })        // a Name that answers from a nil pointer
 	})
 	t.Run("bad name", func(t *testing.T) {
 		for _, bad := range []string{"", "Cloud", "-cloud", "cloud_push", "cloud push", "clöud", strings.Repeat("a", ext.MaxProviderName+1)} {
@@ -277,7 +292,7 @@ func TestFreezeOnceAndCopies(t *testing.T) {
 	first := ext.Freeze()
 	// What a caller does to what it was given never reaches the registry.
 	first.Context[0] = &fake{name: "changed"}
-	first.Notifications = append(first.Notifications, &fake{name: "added"})
+	first.Notifications[0] = &fake{name: "changed"}
 	first.All[0].Name = "changed"
 	first.Identity = nil
 	ext.ContextProviders()[0] = &fake{name: "changed"}

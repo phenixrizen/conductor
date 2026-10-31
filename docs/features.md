@@ -3079,13 +3079,20 @@ sidebar S1–S7 and chat C1–C5, each matched to its screen ids.
   name in a list, a list past its bound, a name another value holds and
   after `Freeze`, and takes one value in several slots under one name);
   the eight interfaces and their records with JSON tags, bounds, waits and
-  a `Valid` method on each record a provider hands the server; `Starter`,
+  a `Valid` method on each record a provider hands the server (`RoomJoin`
+  and `Entitlement` have none: no code of this repository takes them);
+  `ICEServer.Valid` takes only STUN and TURN URIs WebRTC takes, and a TURN
+  one only with a username and a credential, since one server Pion or a
+  browser refuses fails the whole configuration; `Starter`,
   `Host`, their records and errors, declared for PR-4. `app` (`Run`,
   `Main`), and `cmd/conductor`'s `main` as `app.Main()`. Tests:
   `TestRegisterRefuses`, `TestRegisteredOrder`, `TestFreezeOnceAndCopies`,
   `TestAllListsEverySlot`, `TestRegistryConcurrent`,
-  `TestRecordsRoundTrip`, `TestValid`, `TestRunVersion` and
-  `TestPlainBuildRegistersNothing`. Nothing calls `ext` yet.
+  `TestRecordsRoundTrip`, `TestValid`, `TestRunVersion`,
+  `TestPlainBuildRegistersNothing`, `TestExtBoundsAreTheServers` (each
+  bound `ext` copies from `internal/proto` and `internal/crew` held to its
+  source) and `TestExtICEServerValidAsPion` (a server `Valid` takes is one
+  Pion takes). Nothing calls `ext` yet.
 
   PR-2 (#474): ext/local: the free defaults and Fill. Planned.
 
